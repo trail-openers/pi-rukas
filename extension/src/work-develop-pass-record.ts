@@ -23,11 +23,8 @@
 
 import type { ClassifyArgs, CrashVerdict, DevelopPassResult } from "./work-develop-crash.ts";
 import { crashedBranchCompleted } from "./work-develop-crash.ts";
-import {
-  driverCommitShasFor,
-  unfinishedBranchCompleted,
-} from "./work-develop-unfinished.ts";
 import type { ExecFn } from "./work-develop-git.ts";
+import { driverCommitShasFor, unfinishedBranchCompleted } from "./work-develop-unfinished.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** What the caller's classify seam is given, so the driver's own commits reach

@@ -18,11 +18,11 @@
  */
 
 import type { ClassifyArgs, CrashVerdict } from "./work-develop-crash.ts";
+import { readTreeBounded } from "./work-develop-git-tree.ts";
 import {
   type GreenPassFields,
   decideGreenFromTree,
   ownCommitsAheadOfBase,
-  readTreeBounded,
 } from "./work-develop-unfinished.ts";
 
 /**

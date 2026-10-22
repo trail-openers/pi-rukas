@@ -36,10 +36,7 @@ import {
   passCompletedEvent,
   passVerdict,
 } from "./work-develop-pass-record.ts";
-import type {
-  BranchCompletedExtra,
-  WorkstreamVerdict,
-} from "./work-develop-verdict-source.ts";
+import type { BranchCompletedExtra, WorkstreamVerdict } from "./work-develop-verdict-source.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";

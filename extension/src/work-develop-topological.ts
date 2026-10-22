@@ -9,18 +9,16 @@
  */
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { parkOnDevelopCrash } from "./work-develop-crash.ts";
-import { flushParkedSiblings } from "./work-develop-parked-flush.ts";
-import { developUnfinishedPass } from "./work-develop-unfinished-pass.ts";
 import { isValidBaseSha } from "./work-develop-git.ts";
-import { childOwnWork } from "./work-develop-greens.ts";
-import { downgradeReason } from "./work-develop-greens.ts";
+import { settleCommitlessGreen } from "./work-develop-green-gate.ts";
+import { childOwnWork, downgradeReason } from "./work-develop-greens.ts";
 import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
+import { flushParkedSiblings } from "./work-develop-parked-flush.ts";
 import {
   type PreservedGreens,
   greenCountsAsWork,
   makeBranchCompletedPersister,
   reRecordKeptGreens,
-  recordDowngrade,
   retryResetFor,
   runIndependentFanout,
   withPersistNotes,
@@ -30,7 +28,7 @@ import {
   makeRunOneWorkstream,
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
-import { runUnfinishedCorrectiveRound } from "./work-develop-unfinished-round.ts";
+import { developUnfinishedPass } from "./work-develop-unfinished-pass.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
@@ -109,12 +107,6 @@ async function runDevelopTopological(
   // pass judged "done" and a tree the net later commits share one base.
   const basesFor = (id: string): string | undefined =>
     next.pipelineState.workstreamBaseShas?.[id] ?? next.pipelineState.baseSha;
-  // #1768 — the ONE classify seam both phases and the corrective round share,
-  // so the first pass, its round and the dependent phase all describe a tree
-  // the same way. A test may replace it wholesale to drive a verdict without a
-  // repository; production leaves it unset and the closure calls the real
-  // classifier with `baseFor` and `execFn`.
-  const sharedClassify = ctx.classifyDevelopPassFn;
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
     activeIssues,
@@ -131,7 +123,6 @@ async function runDevelopTopological(
     // these two, which is all they contribute.
     execFn,
     baseFor: basesFor,
-    classifyPass: sharedClassify,
     // #838 — the develop dispatch's deck tag: the workstream id when N>1
     // (per-workstream rows), "default" for the single-workstream shape.
     deckTagFor: (id) => (ids.length > 1 ? id : "default"),
@@ -224,24 +215,10 @@ async function runDevelopTopological(
       // and that driver-made commit then satisfied the rule — orchard
       // cycle-id's `agent done: developer` beside `safety net committed
       // default (d81ce007)` while the child's own last line said work remained.
-      if (!childOwnWork(r)) {
-        // No commit of the child's own. An unfinished pass (dirty tree, named
-        // paths) already carries the classify seam's verdict reason and its own
-        // `unfinished` record; a clean tree has no work for the net to recover,
-        // so the existing GREEN_DOWNGRADE reason is used. Either way the net is
-        // skipped: it commits recovery for a pass that earned its green and
-        // never for one that did not, so the work stays in the tree for the
-        // corrective round rather than riding into commit-pr on the driver's
-        // own commit.
-        recordDowngrade(persister, id, undefined);
-        return {
-          id,
-          ok: false,
-          reason: r.reason ?? downgradeReason(),
-          claimed: true,
-          ...(r.noRetry ? { noRetry: true } : {}),
-        };
-      }
+      // The rule and the downgrade it records are `work-develop-green-gate.ts`,
+      // shared with the dependent phase so neither can call the same tree two
+      // different things; the net stays here because earning it IS the green.
+      if (!childOwnWork(r)) return settleCommitlessGreen(r, persister.emit);
       // A pass with its own commits earns the net: leftover edits it never
       // staged are recovered, and its untracked work would otherwise be lost.
       if (isValidBaseSha(base)) {
@@ -284,7 +261,6 @@ async function runDevelopTopological(
     dispatch,
     execFn,
     basesFor,
-    sharedClassify,
     persister,
     branchEvents,
     verdicts,

@@ -45,17 +45,17 @@ import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
+import { treeReader } from "./work-develop-git-tree.ts";
 import {
   type ExecFn,
   INVALID_BASE_MSG,
   commitEntriesOf,
   commitsAheadOfBase,
   errText,
-  parseStatus,
   runGit,
 } from "./work-develop-git.ts";
-import type { OwnCommitCheck } from "./work-develop-unfinished-facts.ts";
 import { classifyGreenPass } from "./work-develop-green-classify.ts";
+import type { OwnCommitCheck } from "./work-develop-unfinished-facts.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -193,43 +193,6 @@ function namePaths(paths: string[]): string {
   if (paths.length === 0) return "none";
   const shown = paths.slice(0, SHOWN_PATHS).join(", ");
   return paths.length > SHOWN_PATHS ? `${shown} (+${paths.length - SHOWN_PATHS} more)` : shown;
-}
-
-/** How long the crash classification waits for one git read before calling the
- *  tree unreadable. Generous for a healthy tree (a big monorepo `git status`
- *  is seconds) and short enough that a hung git cannot stall the develop step. */
-const TREE_READ_TIMEOUT_MS = 30_000;
-
-/** The classifier's own status reader: same argv, same `-z` parse as
- *  `worktreeStatus`, plus an explicit bound — a hung `git status` (a stale
- *  worktree, a lock left by the child that just died) must degrade to
- *  `unreadable`, not block the develop fan-out. */
-function treeReader(execFn: ExecFn): (cwd: string) => Promise<ReturnType<typeof parseStatus>> {
-  return async (cwd) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const p = execFn("git", {
-        cwd,
-        argv: ["status", "--porcelain", "-z", "--untracked-files=all"],
-        maxBuffer: 16 * 1024 * 1024,
-        timeout: TREE_READ_TIMEOUT_MS,
-      });
-      const settled = await Promise.race([
-        p,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`git status timed out after ${TREE_READ_TIMEOUT_MS}ms`)),
-            TREE_READ_TIMEOUT_MS,
-          );
-        }),
-      ]);
-      return parseStatus(settled.stdout);
-    } catch (err) {
-      return { unreadable: errText(err) };
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  };
 }
 
 /**

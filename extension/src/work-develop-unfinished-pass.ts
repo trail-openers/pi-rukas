@@ -24,19 +24,18 @@
  *    second, generic cap for the same failure.
  */
 
-import { type DevelopRunState, makeRunOneWorkstream } from "./work-develop-run.ts";
-import type { ClassifyArgs, CrashVerdict } from "./work-develop-crash.ts";
 import type { ExecFn } from "./work-develop-git.ts";
 import { flushParkedSiblings } from "./work-develop-parked-flush.ts";
+import { type DevelopRunState, makeRunOneWorkstream } from "./work-develop-run.ts";
+import { runUnfinishedCorrectiveRound } from "./work-develop-unfinished-round.ts";
 import {
   type UnfinishedWorkstream,
   developUnfinished,
   parkOnDevelopUnfinished,
 } from "./work-develop-unfinished.ts";
-import { runUnfinishedCorrectiveRound } from "./work-develop-unfinished-round.ts";
+import type { WorkstreamVerdict } from "./work-develop-verdict-source.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
-import type { WorkstreamVerdict } from "./work-develop-verdict-source.ts";
 
 /** What the step handler needs back: the state to continue from, and whether
  *  the step is over (parked) with the state to hand to `endStep`. */
@@ -104,7 +103,6 @@ export async function developUnfinishedPass(args: {
   dispatch: NonNullable<CycleContext["dispatchFn"]>;
   execFn: ExecFn;
   basesFor: (id: string) => string | undefined;
-  sharedClassify?: (a: ClassifyArgs) => Promise<CrashVerdict>;
   persister: { emit: (ev: WorkEvent) => void };
   branchEvents: WorkEvent[];
   verdicts: WorkstreamVerdict[];
@@ -143,7 +141,6 @@ export async function developUnfinishedPass(args: {
     dispatch,
     execFn,
     basesFor,
-    sharedClassify,
     persister,
     branchEvents,
     verdicts,
@@ -174,7 +171,6 @@ export async function developUnfinishedPass(args: {
         // corrective round — not a fresh attempt the operator has to infer.
         deckTagFor: (wid) => (ids.length > 1 ? `${wid}:corrective` : "corrective"),
         corrective,
-        classifyPass: sharedClassify,
         get verdicts() {
           return verdicts;
         },

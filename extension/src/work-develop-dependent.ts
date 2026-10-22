@@ -14,8 +14,9 @@
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import { assertInsideWorktrees, errText, isValidBaseSha } from "./work-develop-git.ts";
-import { childOwnWork, downgradeReason } from "./work-develop-greens.ts";
-import { recordDowngrade, retryOnce, settleVerdict } from "./work-develop-retry.ts";
+import { settleCommitlessGreen } from "./work-develop-green-gate.ts";
+import { childOwnWork } from "./work-develop-greens.ts";
+import { retryOnce, settleVerdict } from "./work-develop-retry.ts";
 import { reuseRefusal } from "./work-develop-reuse.ts";
 import { type DependentRunState, parkDeferredLeftover } from "./work-develop-run.ts";
 import type { BranchCompletedExtra } from "./work-develop-verdict-source.ts";
@@ -361,9 +362,11 @@ export async function runDependentWorkstreams(
         if (!childOwnWork(outcome)) {
           failedOrSkipped.add(id);
           if (failureSource) failureSource[id] = "failed";
-          if (run.emitBranchCompleted)
-            recordDowngrade({ emit: run.emitBranchCompleted }, id, undefined);
-          settleVerdict(verdicts, { id, ok: false, reason: downgradeReason(undefined) });
+          const settled = settleCommitlessGreen(
+            outcome,
+            run.emitBranchCompleted ?? (() => undefined),
+          );
+          settleVerdict(verdicts, { id, ok: false, reason: settled.reason });
         } else if (isValidBaseSha(ownBase)) {
           const sn = await safetyNetWorktree(
             id,

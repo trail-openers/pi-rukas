@@ -261,17 +261,6 @@ export interface DriverContext {
    * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
    */
   verifyExecFn?: DriverExecFn;
-  /**
-   * #1768 — optional test seam for the develop pass classification (the tree
-   * reading that decides whether a child-reported green is actually done).
-   * Production callers omit it and both develop phases, and #1768's corrective
-   * round, call the real `classifyDevelopPass` with the step's own `execFn` and
-   * base resolution. Mirrors `verifyExecFn`: the point is that a test drives
-   * the VERDICT without a repository, not that production has two classifiers.
-   */
-  classifyDevelopPassFn?: (
-    args: import("./work-develop-crash.ts").ClassifyArgs,
-  ) => Promise<import("./work-develop-crash.ts").CrashVerdict>;
   /** #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
    * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:
    * the checkpoint's git calls keep calling `execp`, so a fake cannot make

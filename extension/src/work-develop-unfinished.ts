@@ -50,15 +50,13 @@
 import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
+import { readTreeBounded } from "./work-develop-git-tree.ts";
 import {
   type ExecFn,
   type GitExec,
   INVALID_BASE_MSG,
-  type StatusEntry,
-  commitEntriesOf,
   commitsAheadOfBase,
   errText,
-  parseStatus,
   runGit,
 } from "./work-develop-git.ts";
 import {
@@ -82,47 +80,9 @@ export * from "./work-develop-unfinished-facts.ts";
  *  look like a developer's. */
 export const SAFETY_NET_COMMIT_SUBJECT_PREFIX = "wip: driver safety-net recovery commit";
 
-/** How long one git read waits before the tree is called unreadable. Same
- *  bound as the #1403 classifier: generous for a healthy tree, short enough
- *  that a hung git cannot stall the develop fan-out. */
-const TREE_READ_TIMEOUT_MS = 30_000;
-
 /** The event's `paths` list, the corrective prompt's path list and the cap
  *  sentence are all bounded: each is rendered verbatim somewhere. */
 const EVENT_PATHS_MAX = 20;
-
-/** Bounded `git status --porcelain -z`: the same argv and parse the crash
- *  classifier uses, so "what is in the tree" has one definition across the
- *  develop step. A hung git degrades to `unreadable`, never to `[]`. */
-export async function readTreeBounded(
-  execFn: ExecFn,
-  cwd: string,
-): Promise<{ entries: StatusEntry[] } | { unreadable: string }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const p = execFn("git", {
-      cwd,
-      argv: ["status", "--porcelain", "-z", "--untracked-files=all"],
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: TREE_READ_TIMEOUT_MS,
-    });
-    const settled = await Promise.race([
-      p,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`git status timed out after ${TREE_READ_TIMEOUT_MS}ms`)),
-          TREE_READ_TIMEOUT_MS,
-        );
-      }),
-    ]);
-    const parsed = parseStatus(settled.stdout);
-    return Array.isArray(parsed) ? { entries: commitEntriesOf(parsed) } : { unreadable: parsed.unreadable };
-  } catch (err) {
-    return { unreadable: errText(err) };
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
 
 /**
  * The commits between `base` and HEAD, oldest first, as one entry per commit:
