@@ -17,13 +17,16 @@ export type TierBoundMs = number;
  * it is green, in the repo-level cache file. Optional on both: absent means
  * this cycle never probed, which the gate treats as "no opinion", never as
  * "the base is fine".
+ *
+ * No timestamp: a green is trusted for as long as its key matches, and the
+ * reasoning for that (an immutable commit; the develop gate still judges the
+ * change) is in `work-driver-verify-base-health.ts`.
  */
 export interface BaseHealthVerdict {
   status: "green" | "red" | "unknown";
   baseSha: string;
   command: string;
   tierBoundMs: TierBoundMs;
-  at: number;
   /** Why a probe established nothing (worktree add failed, missing deps). */
   reason?: string;
 }
