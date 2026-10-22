@@ -395,7 +395,8 @@ export async function verifyDevelopOutcome(
   // failure was a cross-worktree artifact.
   const plan = await planDevelopVerify(ctx, touchedPaths, worktrees, baseSha, execFn, notes);
   const cmd = plan.cmd;
-  // #1765 — the base probe's two claims about this command.
+  // #1765 — the base probe's two claims, each recorded by `aggregateVerifyOutcome`
+  // from the verdict it got back; `reportBaselineLeg` below reads them.
   const baselineLeg = { red: false, established: false };
   if (!cmd) {
     notes.push(
@@ -493,8 +494,6 @@ export async function verifyDevelopOutcome(
   }
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
   await runContinuePrGate(execFn, state, worktrees, failures);
-  // #1765 — the two claims the base probe makes about this command; both are
-  // re-checked against the command by `reportBaselineLeg` at the gate's tail.
-  reportBaselineLeg(baselineLeg, failures, cmd, { onBaselineRedOnly, onBaselineRedEstablished });
+  reportBaselineLeg(baselineLeg, { onBaselineRedOnly, onBaselineRedEstablished });
   return undefined;
 }

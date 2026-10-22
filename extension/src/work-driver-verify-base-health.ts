@@ -70,16 +70,18 @@ import { trace } from "./trace.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import {
-  BASELINE_RED_MARKER,
+  baseHealthPark,
+  baselineRedForCmd,
+  baselineRedForCommand,
+} from "./work-driver-verify-base-park.ts";
+import {
   type RedBaselineVerdict,
-  baselineRedMessage,
   isRedBaseline,
   probeBaselineVerify,
 } from "./work-driver-verify-baseline.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
 import { verifyChildEnv, verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { isValidSha } from "./work-driver-verify-develop-helpers.ts";
-import { summaryCount } from "./work-driver-verify-names.ts";
 import { baseHealthProbeEnabled } from "./work-driver-verify-pr17.ts";
 import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import { matchingVerdict } from "./workflow-state-schema-base-health.ts";
@@ -90,6 +92,9 @@ import { type WorkState, appendEvent, workStateDir } from "./workflow-state.ts";
 // reads); re-exported so every consumer of the probe reads one name.
 export type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 export { baseHealthKey, matchingVerdict } from "./workflow-state-schema-base-health.ts";
+// The two prose readers are re-exported so the develop gate and the cause seams
+// read them from the probe module they already know.
+export { baselineRedForCmd, baselineRedForCommand } from "./work-driver-verify-base-park.ts";
 
 /** The repo-level cache file: driver-written runtime state beside the cycle files. */
 export function baseHealthCacheFile(repoRoot: string): string {
@@ -137,6 +142,26 @@ function keyOf(raw: unknown): BaseHealthKey {
 }
 
 /**
+ * The one `unknown` this probe raises when it never got an answer from the
+ * gate: the verdict that records the attempt, and the note that says so. Never
+ * a park — a probe that could not run has established nothing, and the whole
+ * cost model of this seam rests on that being cheap.
+ */
+function unknownVerdict(
+  baseSha: string,
+  cmd: string,
+  tierBoundMs: number,
+  why: string,
+): BaseHealthProbeOutcome {
+  const reason = `probe could not run (${why})`;
+  return {
+    ran: false,
+    verdict: { status: "unknown", baseSha, command: cmd, tierBoundMs, reason },
+    notes: [`base-health: ${reason}; the cycle proceeds`],
+  };
+}
+
+/**
  * Write the cross-cycle cache. True when the record landed, false when the write
  * faulted — a failed write costs a later re-probe and nothing else, which is why
  * the fault is swallowed. The boolean keeps that swallowing honest: a GREEN the
@@ -158,31 +183,11 @@ export async function writeBaseHealthCache(
 }
 
 /**
- * Whether a probe entry attributes to `cmd`: it LEADS with the `[baseline-red]`
- * marker AND names the verify command the probe re-ran, in backticks, from
- * either arm of `baselineRedMessage`. The marker is required, not decorative:
- * the `red-timed-out` arm leads with `[baseline-red] [verify-timeout]`, so a
- * bare `[verify-timeout]` entry — a fast-tier, smoke or consolidated run the
- * gate itself killed at its bound — names no base at all and must not read as
- * the base being red. Position of the COMMAND decides nothing (the timed-out
- * arm puts it after both labels); position of the MARKER decides everything.
- * `verifyCapFor` still routes a killed run's own timeout, host-exhaustion or
- * residue entry ahead of this claim, so its precedence is untouched.
+ * The prose rules a probe entry is judged by (`baselineRedForCommand` /
+ * `baselineRedForCmd`) and the park itself (`baseHealthPark`) live in
+ * `work-driver-verify-base-park.ts`, a leaf the probe imports; the probe module
+ * re-exports the two readers so every consumer still reads one name.
  */
-export function baselineRedForCommand(failure: string, cmd: string): boolean {
-  return failure.startsWith(BASELINE_RED_MARKER) && failure.includes(`\`${cmd}\``);
-}
-
-/**
- * The develop gate's mixed-set rule, over the whole failure list: at least one
- * `[baseline-red]` entry names `cmd`. Position decides nothing; the entries
- * beside it are the caller's business (secondary evidence), and `verifyCapFor`
- * still routes a timeout, host-exhaustion or residue entry ahead of this one —
- * so a `[baseline-red]` beside a `[verify-timeout]` stays `verify-timeout`.
- */
-export function baselineRedForCmd(failures: readonly string[], cmd: string): boolean {
-  return failures.some((f) => baselineRedForCommand(f, cmd));
-}
 
 /** What the probe did, as the branch step reports it. */
 export interface BaseHealthProbeOutcome {
@@ -260,146 +265,137 @@ export async function applyBaseHealthProbe(
       notes: ["base-health: baseSha unreadable — probe not run, the cycle proceeds"],
     };
   }
-  const tierBoundMs = (await developTierTimeouts(ctx.repoRoot)).suite;
-  const key = { baseSha, command: cmd, tierBoundMs };
-  const hit = await cachedBaseHealth(state, ctx.repoRoot, key);
-  if (hit.verdict !== undefined && hit.verdict.status === "green") {
-    // Only a GREEN verdict crosses cycles. A cached red never answers for a
-    // cycle it did not run in, so it is not read here at all.
-    trace(
-      `work-driver: base-health — base ${baseSha.slice(0, 12)} GREEN (cached from ${hit.from}), no probe run`,
-    );
-    return {
-      ran: false,
-      verdict: hit.verdict,
-      notes: [
-        `base-health: reused the cached GREEN verdict for base ${baseSha.slice(0, 12)} (${hit.from}) — no suite run paid for`,
-      ],
-    };
-  }
-  // #1765 lens round 1 — an interrupt the cycle is already carrying is not a
+  // #1765 lens round 1/3 — an interrupt the cycle is already carrying is not a
   // verdict about the base commit. The runner aborts on SIGTERM / SIGINT / its
   // own `--timeout`, and a suite run started inside that window answers nothing
-  // and would hold the branch step for the length of the bound. So the abort is
-  // checked before the suite run is paid for and while it runs, and either way
-  // the answer is `unknown` with a note — never a park, never a green.
+  // and would hold the branch step for the length of the bound. The listener is
+  // registered at the top of the probe's own work — before the tier read, the
+  // cache read, the suite run and the green write, each of which awaits — and
+  // removed in the `finally` below, so an abort during any of them answers
+  // `unknown`: never a park, never a green a later cycle would trust.
   const signal = ctx.signal;
-  if (signal?.aborted === true) {
-    return unknownVerdict(baseSha, cmd, tierBoundMs, "the cycle was already interrupted");
-  }
   let aborted = false;
   const onAbort = () => {
     aborted = true;
   };
   signal?.addEventListener("abort", onAbort, { once: true });
-  trace(
-    `work-driver: base-health — probing base ${baseSha.slice(0, 12)} with \`${cmd}\` (one extra suite run, bound ${(tierBoundMs / 60000).toFixed(0)} min)`,
-  );
-  const probe = await probeBaselineVerify(execFn, {
-    repoRoot: ctx.repoRoot,
-    baseSha,
-    // A label the develop step's `baseline-verify-<issue>` tree can never
-    // collide with: two seams sharing one throwaway checkout is how one step's
-    // teardown removes the other's tree mid-run.
-    issue: `branch-${ctx.issue}`,
-    cmd,
-    timeoutMs: tierBoundMs,
-    env: verifyChildEnv(),
-  });
-  signal?.removeEventListener("abort", onAbort);
-  if (aborted || signal?.aborted) {
-    return unknownVerdict(
+  try {
+    const tierBoundMs = (await developTierTimeouts(ctx.repoRoot)).suite;
+    const key = { baseSha, command: cmd, tierBoundMs };
+    const hit = await cachedBaseHealth(state, ctx.repoRoot, key);
+    if (aborted || signal?.aborted) {
+      return unknownVerdict(baseSha, cmd, tierBoundMs, "the cycle was interrupted");
+    }
+    if (hit.verdict !== undefined && hit.verdict.status === "green") {
+      // Only a GREEN verdict crosses cycles. A cached red never answers for a
+      // cycle it did not run in, so it is not read here at all.
+      trace(
+        `work-driver: base-health — base ${baseSha.slice(0, 12)} GREEN (cached from ${hit.from}), no probe run`,
+      );
+      return {
+        ran: false,
+        verdict: hit.verdict,
+        notes: [
+          `base-health: reused the cached GREEN verdict for base ${baseSha.slice(0, 12)} (${hit.from}) — no suite run paid for`,
+        ],
+      };
+    }
+    trace(
+      `work-driver: base-health — probing base ${baseSha.slice(0, 12)} with \`${cmd}\` (one extra suite run, bound ${(tierBoundMs / 60000).toFixed(0)} min)`,
+    );
+    const probe = await probeBaselineVerify(execFn, {
+      repoRoot: ctx.repoRoot,
       baseSha,
+      // A label the develop step's `baseline-verify-<issue>` tree can never
+      // collide with: two seams sharing one throwaway checkout is how one step's
+      // teardown removes the other's tree mid-run.
+      issue: `branch-${ctx.issue}`,
       cmd,
-      tierBoundMs,
-      "the cycle was interrupted while the probe ran",
-    );
-  }
-  const timedOut = probe.status === "red-timed-out";
-  const verdict: BaseHealthVerdict = {
-    status: isRedBaseline(probe) ? "red" : probe.status === "green" ? "green" : "unknown",
-    baseSha,
-    command: cmd,
-    tierBoundMs,
-    ...(probe.status === "unknown" ? { reason: probe.reason } : {}),
-    // The one field that says WHICH red this is. The develop gate's reuse
-    // rebuilds its arm from this record, and a killed run has no stream, no
-    // tally and no assertion to reason from — see `BaseHealthVerdict.timedOut`.
-    ...(timedOut ? { timedOut: true as const } : {}),
-  };
-  if (isRedBaseline(probe)) {
-    // Deliberately NOT cached across cycles: the next cycle re-probes before it
-    // parks, so one flaky red cannot park cycles it never ran in. The verdict IS
-    // recorded on the state here, in the same append that raises the park — a red
-    // is the one verdict whose record must survive the park, because the handoff
-    // names the verdict it parked on. The cache file stays untouched on this
-    // path: one flaky red must not erase a green the same key earned, and the key
-    // already says a green cannot answer for a different base, gate or budget.
-    const parked = baseHealthPark(
-      { ...state, pipelineState: { ...state.pipelineState, baseHealthProbe: verdict } },
-      verdict,
-      probe,
-    );
-    return {
-      ran: true,
-      verdict,
-      park: parked,
-      notes: [`base-health: base ${baseSha.slice(0, 12)} is RED — the gate was already red`],
-    };
-  }
-  if (verdict.status === "green") {
-    // The cache write is the green's EVIDENCE: it is what a later cycle reads back
-    // instead of paying for the suite. `writeBaseHealthCache` swallows its own
-    // fault (a failed write costs a later re-probe, nothing else), but it reports
-    // whether the write landed, and a green that did not land is no verdict at
-    // all — the in-state copy answers for this cycle's key exactly as the file
-    // would. The canary is case 17 of `test-verify-baseline-attribution.ts`: with
-    // this check removed it reports state green / cache absent.
-    const recorded = await writeBaseHealthCache(
-      async (file, contents) => {
-        await fs.mkdir(path.dirname(file), { recursive: true });
-        await fs.writeFile(file, contents, "utf8");
-      },
-      ctx.repoRoot,
-      verdict,
-    );
-    if (!recorded) {
+      timeoutMs: tierBoundMs,
+      env: verifyChildEnv(),
+    });
+    if (aborted || signal?.aborted) {
       return unknownVerdict(
         baseSha,
         cmd,
         tierBoundMs,
-        "the green could not be recorded — the cache file was not written",
+        "the cycle was interrupted while the probe ran",
       );
     }
-    return { ran: true, verdict, notes: [`base-health: base ${baseSha.slice(0, 12)} is GREEN`] };
+    const timedOut = probe.status === "red-timed-out";
+    const verdict: BaseHealthVerdict = {
+      status: isRedBaseline(probe) ? "red" : probe.status === "green" ? "green" : "unknown",
+      baseSha,
+      command: cmd,
+      tierBoundMs,
+      ...(probe.status === "unknown" ? { reason: probe.reason } : {}),
+      // The one field that says WHICH red this is. The develop gate's reuse
+      // rebuilds its arm from this record, and a killed run has no stream, no
+      // tally and no assertion to reason from — see `BaseHealthVerdict.timedOut`.
+      ...(timedOut ? { timedOut: true as const } : {}),
+    };
+    if (isRedBaseline(probe)) {
+      // Deliberately NOT cached across cycles: the next cycle re-probes before it
+      // parks, so one flaky red cannot park cycles it never ran in. The verdict IS
+      // recorded on the state here, in the same append that raises the park — a red
+      // is the one verdict whose record must survive the park, because the handoff
+      // names the verdict it parked on. The cache file stays untouched on this
+      // path: one flaky red must not erase a green the same key earned, and the key
+      // already says a green cannot answer for a different base, gate or budget.
+      const parked = baseHealthPark(
+        { ...state, pipelineState: { ...state.pipelineState, baseHealthProbe: verdict } },
+        verdict,
+        probe,
+      );
+      return {
+        ran: true,
+        verdict,
+        park: parked,
+        notes: [`base-health: base ${baseSha.slice(0, 12)} is RED — the gate was already red`],
+      };
+    }
+    if (verdict.status === "green") {
+      // The cache write is the green's EVIDENCE: it is what a later cycle reads back
+      // instead of paying for the suite. `writeBaseHealthCache` swallows its own
+      // fault (a failed write costs a later re-probe, nothing else), but it reports
+      // whether the write landed, and a green that did not land is no verdict at
+      // all — the in-state copy answers for this cycle's key exactly as the file
+      // would. The canary is case 17 of `test-verify-baseline-attribution.ts`: with
+      // this check removed it reports state green / cache absent.
+      const recorded = await writeBaseHealthCache(
+        async (file, contents) => {
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          await fs.writeFile(file, contents, "utf8");
+        },
+        ctx.repoRoot,
+        verdict,
+      );
+      if (!recorded) {
+        return unknownVerdict(
+          baseSha,
+          cmd,
+          tierBoundMs,
+          "the green could not be recorded — the cache file was not written",
+        );
+      }
+      // Checked AFTER the write: a green that landed while the cycle was being
+      // torn down is a verdict nobody asked for, and the file behind it would
+      // spare a later cycle a suite run this one never completed judging.
+      if (aborted || signal?.aborted) {
+        return unknownVerdict(baseSha, cmd, tierBoundMs, "the cycle was interrupted");
+      }
+      return { ran: true, verdict, notes: [`base-health: base ${baseSha.slice(0, 12)} is GREEN`] };
+    }
+    return {
+      ran: true,
+      verdict,
+      notes: [
+        `base-health: not established — ${verdict.reason ?? "the probe reached no verdict"}; the cycle proceeds`,
+      ],
+    };
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
-  return {
-    ran: true,
-    verdict,
-    notes: [
-      `base-health: not established — ${verdict.reason ?? "the probe reached no verdict"}; the cycle proceeds`,
-    ],
-  };
-}
-
-/**
- * The one `unknown` this probe raises when it never got an answer from the
- * gate: the verdict that records the attempt, and the note that says so. Never
- * a park — a probe that could not run has established nothing, and the whole
- * cost model of this seam rests on that being cheap.
- */
-function unknownVerdict(
-  baseSha: string,
-  cmd: string,
-  tierBoundMs: number,
-  why: string,
-): BaseHealthProbeOutcome {
-  const reason = `probe could not run (${why})`;
-  return {
-    ran: false,
-    verdict: { status: "unknown", baseSha, command: cmd, tierBoundMs, reason },
-    notes: [`base-health: ${reason}; the cycle proceeds`],
-  };
 }
 
 /**
@@ -408,7 +404,9 @@ function unknownVerdict(
  * park `verify-baseline-red:branch` on an established red. Both branch paths
  * (mechanized, ops fallback) call this and nothing else, so the two cannot
  * drift into two probe policies. Notes land in the event log as the step's
- * `step-completed` summary tail rather than as a new event kind.
+ * `step-completed` summary tail rather than as a new event kind, and that
+ * event's `ms` is the probe's measured wall clock — a probe that ran the whole
+ * suite must not report 0 ms as though it had run nothing.
  *
  * Nothing here may throw. `verifyCmdFor`, `developTierTimeouts` and the probe's
  * own executor each reach the filesystem or a child process, and this call sits
@@ -424,18 +422,27 @@ export async function probeBaseAtBranch(
   state: WorkState,
 ): Promise<WorkState> {
   let outcome: BaseHealthProbeOutcome;
+  // The probe's real duration: a branch step that spent seven minutes in one
+  // suite run must not report 0 ms, because the event's `ms` is the only number
+  // a reader of the log has for what the probe cost.
+  const startedAt = Date.now();
   try {
     const cmd = await verifyCmdFor(ctx.repoRoot);
     outcome = await applyBaseHealthProbe(execFn, ctx, state, cmd);
   } catch (err) {
-    const message = (err as Error).message ?? String(err);
-    trace(`work-driver: base-health — probe could not run: ${message.slice(0, 200)}`);
+    // Bounded, and bounded HERE rather than through a shared helper: this text
+    // lands in the event log and the handoff, and an executor message is
+    // untrusted child output. A 200-char tail is the same bound the neighbouring
+    // verify seams put on an exec rejection; naming `errText` here would pull the
+    // whole develop-git module into the branch step's import graph for one slice.
+    const message = String((err as Error)?.message ?? err).slice(0, 200);
+    trace(`work-driver: base-health — probe could not run: ${message}`);
     // NO `verdict` on this outcome: the state keeps whatever it already held,
     // including a verdict from an earlier successful probe, which a synthesised
     // `unknown` would overwrite.
     outcome = {
       ran: false,
-      notes: [`base-health: probe could not run (${message.slice(0, 200)})`],
+      notes: [`base-health: probe could not run (${message})`],
     };
   }
   if (outcome.park !== undefined) {
@@ -455,42 +462,10 @@ export async function probeBaseAtBranch(
         step: "branch",
         label: "driver:base-health",
         summary: outcome.notes.join("; "),
-        startedAt: Date.now(),
+        startedAt,
         now: Date.now(),
       }),
     );
   }
   return next;
-}
-
-/**
- * The branch step's park on a red base: `verify-baseline-red:branch`, cause
- * class environment (the cause table routes on the marker in the evidence),
- * and NO develop dispatch — the probe builds it and `probeBaseAtBranch`
- * returns it as the step's state, so the router reads the trailing cap-hit as
- * its own routing to `handoff`. The probe tree is already gone:
- * `probeBaselineVerify` removes it in its own `finally`. The evidence carries
- * the gate's own tally when the loop printed one, so the operator sees which
- * suite broke rather than only that it did.
- */
-function baseHealthPark(
-  state: WorkState,
-  verdict: BaseHealthVerdict,
-  arm: RedBaselineVerdict,
-): WorkState {
-  const message = baselineRedMessage(arm, {
-    cmd: verdict.command,
-    baseSha: verdict.baseSha,
-    timeoutMs: verdict.tierBoundMs,
-    changeFailure: "",
-  });
-  const tally = arm.status === "red" ? summaryCount(arm.rawStream) : undefined;
-  return appendEvent(state, {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap: "verify-baseline-red:branch",
-    reviewRound: state.pipelineState.reviewRound,
-    nextStep: "handoff",
-    evidence: `${message}${tally === undefined ? "" : `\nFailing at base: ${tally} test(s)`}`,
-  });
 }

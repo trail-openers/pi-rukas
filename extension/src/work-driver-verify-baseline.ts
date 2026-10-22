@@ -33,6 +33,7 @@ import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
 import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
+import { baseStreamIsHarnessOnly } from "./work-driver-verify-echo.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
 import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -286,82 +287,6 @@ export async function probeBaselineVerify(
   } finally {
     await remove();
   }
-}
-
-/**
- * #1765 — is `raw` nothing but node's own `Command failed: <cmd>` echo? The
- * executor error's message starts with that line and `combinedExecFailureStream`
- * hands it back verbatim when the child produced no stdout and no stderr, so a
- * stream that reduces to it is the harness talking, not the project's gate. The
- * command is stripped in escaped and quoted forms too: node echoes the whole
- * invocation, and a shell-wrapped `sh -c 'sh gate.sh'` names it inside quotes.
- *
- * #1765 lens round 1 — the WHOLE stream decides, not its first line. The old
- * rule bailed out on any newline, so an echo followed by a real failure line
- * (`Command failed: sh gate.sh\nerror: test failed`) read as "the gate spoke"
- * on the strength of the echo alone — the wrong direction only because the
- * failure happened to be real: a harness that prints its own banner under the
- * echo would have handed the probe a red base it never observed. Now every
- * line is stripped of the echo's spellings and the answer is `true` only when
- * nothing but whitespace survives across ALL of them, so any real gate output
- * means it is not harness-only.
- */
-function baseStreamIsHarnessOnly(raw: string, cmd: string): boolean {
-  const head = "Command failed:";
-  const lines = raw.trimStart().split("\n");
-  // The echo's own line is the first non-empty one; anything before it means
-  // the child printed something of its own, and this is not the harness alone.
-  const first = lines[0] ?? "";
-  if (!first.trimStart().startsWith(head)) return false;
-  const afterEcho = stripCmdEcho(first.trimStart().slice(head.length), cmd);
-  // A residual shell wrapper is harness punctuation, not gate output: a caller
-  // whose command is `sh gate.sh` and whose executor ran `sh -c "sh gate.sh"`
-  // echoes the invocation with the wrapper and its quoting, and none of that
-  // was printed by the project. Whatever survives the command's own spellings
-  // is therefore content only if it is not a bare wrapper remnant.
-  if (afterEcho.length > 0 && !isWrapperRemnant(afterEcho)) return false;
-  return lines.slice(1).every((line) => stripCmdEcho(line, cmd).length === 0);
-}
-
-/** Leftovers of the executor's own `sh -c "…"` wrapper, quotes and all. */
-function isWrapperRemnant(rest: string): boolean {
-  return /^[-/]?(?:bin\/)?(?:sh|bash)?[\s"'\\-]*c?[\s"'\\-]*$/i.test(rest);
-}
-
-/**
- * Every spelling the executor's echo can carry the invoked command in: the
- * command itself, its quoted forms, and each of those embedded in a shell
- * wrapper (`sh -c '…'`, `bash -c "…"`), because node echoes the WHOLE
- * invocation — a shell-wrapped gate arrives with its inner command quoted, and
- * a residual quote or a leftover `-c` is the harness's own punctuation, not
- * gate output. Reading punctuation as content is the wrong direction for this
- * rule (it invents a red base out of nothing), and the whole point of the rule
- * is that only what the gate printed may survive.
- */
-const ECHO_WRAPPERS = ["sh -c ", "bash -c ", "/bin/sh -c ", "/bin/bash -c "] as const;
-
-/** Remove every spelling of the invoked command from the executor's echo. */
-function stripCmdEcho(rest: string, cmd: string): string {
-  let out = rest;
-  for (const form of commandEchoForms(cmd)) {
-    if (!form) continue;
-    out = out.split(form).join("");
-  }
-  return out.trim();
-}
-
-/** The command, bare and wrapped, each in its raw / quoted / escaped spellings. */
-function commandEchoForms(cmd: string): string[] {
-  const spell = (s: string): string[] => [s, JSON.stringify(s), `'${s}'`, `"${s}"`];
-  const forms = spell(cmd);
-  for (const wrap of ECHO_WRAPPERS) {
-    // `wrap + cmd` is what a caller wrote; `wrap + quoted(cmd)` is what node
-    // echoes after the shell re-quoted it. Both are stripped.
-    for (const inner of [`${wrap}${cmd}`, `${wrap}${JSON.stringify(cmd)}`]) {
-      forms.push(...spell(inner));
-    }
-  }
-  return forms;
 }
 
 /**
