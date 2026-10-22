@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type HostBudget, __setHostBudget } from "../src/host-resources.ts";
 import type { DriverExecFn } from "../src/work-driver-context.ts";
+import { synthesizeDriverCompletion } from "../src/work-driver-events.ts";
 import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
 import {
   type BaseHealthVerdict,
@@ -39,7 +40,7 @@ import {
   baselineProbeWorktreePath,
 } from "../src/work-driver-verify-baseline.ts";
 import { developTierTimeouts } from "../src/work-driver-verify-budget.ts";
-import { initialState } from "../src/workflow-state.ts";
+import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 import {
   PROBE_CMD as CMD,
   GREEN_GATE,
@@ -52,7 +53,6 @@ import {
 } from "./lib/base-health-probe-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
 import { redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
-
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
@@ -484,11 +484,16 @@ for (const [label, env] of [
   assert(r.state.pipelineState.baseSha === f.baseSha, "the probe leaves baseSha on the state");
 }
 
-// Cases 13 and 14 — the red-base ATTRIBUTION rule (a bare `[verify-timeout]`
-// names no base) and the pre-#1765 legacy-cache rule (a cache file that still
-// carries `at` stays readable) live in
-// `test-verify-baseline-attribution.ts`: both are pure and were over this
-// file's AGENTS.md §12 budget.
+// ── 13/14 — the red-base ATTRIBUTION rule (a bare `[verify-timeout]` names no
+// base) and the pre-#1765 legacy-cache rule (a cache file that still carries
+// `at` stays readable) live in `test-verify-baseline-attribution.ts`: both are
+// pure and were over this file's AGENTS.md §12 budget.
+
+// ── 15/16 — the arms a probe FAILS on (a red that parks, an echo that proves
+// nothing, an executor that threw) and the two abort arms live in
+// `test-verify-base-health-probe-failures.ts`: they drive the same entry with
+// hostile executors, and splitting along that seam is what keeps both files
+// inside the AGENTS.md §12 line budget. The fixtures are shared, not duplicated.
 
 rmSync(root, { recursive: true, force: true });
 process.exit(exit);

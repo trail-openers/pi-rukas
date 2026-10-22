@@ -156,6 +156,12 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
   }
   const failures: string[] = [];
   let baselineRedOnly = false;
+  // #1765 — the CAP's claim travels through `reportBaselineLeg`, not through
+  // `onBaselineRedOnly`: the excuse claim (above) is voided by one foreign
+  // entry, and pricing the cap on it is what spent three develop rounds on a
+  // base nothing could pass. So this counts the ESTABLISHED callback, which is
+  // what the three cap call sites read.
+  let baselineRedEstablished = false;
   await verifyDevelopOutcome(
     { host: {} as unknown as DriverContext["host"], repoRoot: repo, issue: 9 } as DriverContext,
     state,
@@ -166,9 +172,12 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
       onBaselineRedOnly: () => {
         baselineRedOnly = true;
       },
+      onBaselineRedEstablished: () => {
+        baselineRedEstablished = true;
+      },
     },
   );
-  return { failures, baselineRedOnly };
+  return { failures, baselineRedOnly, baselineRedEstablished };
 }
 
 {
@@ -178,10 +187,20 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
     "red at base: the probe finding leads",
   );
   assert(red.baselineRedOnly, "red at base, verify failures only → baseline-red-only reported");
+  // #1765 — the established claim reaches the caller through the gate's own
+  // tail (`reportBaselineLeg`), not just the excuse claim beside it.
+  assert(
+    red.baselineRedEstablished,
+    "red at base: onBaselineRedEstablished fired through reportBaselineLeg",
+  );
   const green = await develop("green", false, false);
   assert(
     green.failures.length > 0 && !green.baselineRedOnly,
     "green at base → not baseline-red-only",
+  );
+  assert(
+    !green.baselineRedEstablished,
+    "green at base: no established claim — the gate did not blame the base",
   );
   const mixed = await develop("mixed", true, true);
   // #1765 — the inverted pin. The old rule required the `[baseline-red]` entry
@@ -203,6 +222,10 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
       "verify-baseline-red:develop",
     "the mixed set caps verify-baseline-red:develop, not verify-failed:develop",
   );
+  assert(
+    mixed.baselineRedEstablished,
+    "mixed set: onBaselineRedEstablished still fired — the foreign entry voids the excuse, not the base claim",
+  );
   // The work-item shape: the foreign failure is pushed BEFORE the verify chain,
   // so the old `before === 0` half of the rule failed as well as the length
   // half. Attribution by command does not care about either.
@@ -212,6 +235,10 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
       fenceFirst.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)) &&
       fenceFirst.failures.length > 1,
     `a fence failure pushed before the verify chain still lets the probe win the cap (${fenceFirst.failures.length} failures)`,
+  );
+  assert(
+    fenceFirst.baselineRedEstablished,
+    "fence-first: onBaselineRedEstablished fired for the gate's whole failure list, not just the verify leg",
   );
 }
 
