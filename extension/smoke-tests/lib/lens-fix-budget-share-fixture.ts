@@ -132,19 +132,44 @@ export const lensApprovedEv = (
 });
 
 /** A context whose git/gh are scripted: `currentPatchIdentity` resolves and
- *  `gh pr comment` is recorded (or made to fail). */
-export function disclosureCtx(opts: { ghFails?: string; headSha?: string } = {}) {
+ *  `gh pr comment` is recorded (or made to fail).
+ *
+ *  #1774 — three scripted faults the budget-park path must fail closed on, plus
+ *  the exec `opts` every `gh` call was made with (so a test can prove the post
+ *  was BOUNDED, not just attempted):
+ *   - `noTip`: the branch tip cannot be resolved to a commit;
+ *   - `noMainline`: both mainline probes fail;
+ *   - `ghTimesOut`: the post rejects the way an exec timeout rejection does. */
+export function disclosureCtx(
+  opts: {
+    ghFails?: string;
+    headSha?: string;
+    noTip?: boolean;
+    noMainline?: boolean;
+    ghTimesOut?: boolean;
+  } = {},
+) {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "pi-ens-1742-disc-"));
   const gh: string[] = [];
+  /** The exec opts each scripted `gh` call was made with (#1774). */
+  const ghOpts: Array<{ line: string; timeout?: number }> = [];
   const notices: string[] = [];
   const execFn: DriverExecFn = async (cmd, o) => {
     const line = commandOf(cmd, o);
     if (/^gh\b/.test(line)) {
       gh.push(line);
+      ghOpts.push({ line, timeout: o?.timeout });
+      if (opts.noMainline && /^gh repo view/.test(line))
+        throw new Error("gh repo view: could not resolve defaultBranchRef");
+      if (opts.ghTimesOut && /^gh pr comment/.test(line))
+        throw new Error("gh pr comment timed out after 30000ms (SIGTERM)");
       if (opts.ghFails && /^gh pr comment/.test(line)) throw new Error(opts.ghFails);
       return { stdout: "https://example.test/pull/17420\n" };
     }
-    if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+    if (cmd.startsWith("git symbolic-ref")) {
+      if (opts.noMainline) throw new Error("git symbolic-ref: no origin/HEAD");
+      return { stdout: "main\n" };
+    }
     if (cmd.startsWith("git config --get remote.origin.url"))
       return { stdout: "https://github.com/o/r\n" };
     if (cmd.startsWith("git remote get-url")) return { stdout: "https://github.com/o/r\n" };
@@ -152,7 +177,8 @@ export function disclosureCtx(opts: { ghFails?: string; headSha?: string } = {})
     if (cmd.includes("git patch-id")) return { stdout: `${"3".repeat(40)} (stdin)\n` };
     // #1742 — the branch tip `currentPatchIdentity` now reports beside the
     // patch id; the owed-round route compares it against the recorded head.
-    if (line.includes("rev-parse")) return { stdout: `${opts.headSha ?? HEAD_SHA}\n` };
+    if (line.includes("rev-parse"))
+      return { stdout: opts.noTip ? "\n" : `${opts.headSha ?? HEAD_SHA}\n` };
     return { stdout: "" };
   };
   const host: DriverHost = {
@@ -168,7 +194,7 @@ export function disclosureCtx(opts: { ghFails?: string; headSha?: string } = {})
     emitSink: createEmitSink(() => undefined),
     verifyExecFn: execFn,
   };
-  return { ctx, repoRoot, gh, notices };
+  return { ctx, repoRoot, gh, ghOpts, notices };
 }
 
 type ScriptedDispatch = NonNullable<DriverContext["dispatchFn"]>;

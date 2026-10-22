@@ -54,6 +54,9 @@ const mkFinding = (
     1,
     {} as unknown as DriverContext,
     initialState(456),
+    // #1774 — the round's OWN resolved head is a required argument now; this
+    // case is the APPROVED branch, which records no headSha at all.
+    undefined,
   );
   const approved = next.eventLog.find((e) => e.kind === "lens-approved");
   assert(approved?.kind === "lens-approved", "the verdict bank appends lens-approved on APPROVED");
@@ -63,6 +66,56 @@ const mkFinding = (
   assert(
     parsed.length === 1 && parsed[0]?.title === "duplicate locks",
     "...and the blob round-trips the computed (sub-threshold) findings",
+  );
+}
+
+// ------------------------- (1b) #1774 — the verdict's head is the ROUND's, not the state's
+
+{
+  const summary: LensReviewSummary = {
+    verdict: "ISSUES_FOUND",
+    totalFindings: 1,
+    bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 1, LOW: 0 },
+    lenses: [],
+    findings: [mkFinding("SIMPLICITY", "MEDIUM", "a.ts", "duplicate locks", 85)],
+  };
+  const HEAD_A = "a".repeat(40);
+  const HEAD_B = "b".repeat(40);
+  const stamped = {
+    ...initialState(1774),
+    pipelineState: { ...initialState(1774).pipelineState, lensReviewedHead: HEAD_A },
+  };
+  const unresolved = await applyLensVerdict(
+    summary,
+    "job-1",
+    1,
+    {} as unknown as DriverContext,
+    stamped,
+    // This round resolved no head; the state stamp from an EARLIER round must
+    // not vouch for it (it used to be read off `pipelineState`).
+    undefined,
+  );
+  const unresolvedEv = unresolved.eventLog.find(
+    (e) => e.kind === "lens-issues-found",
+  ) as Extract<WorkEvent, { kind: "lens-issues-found" }>;
+  assert(
+    unresolvedEv?.headSha === undefined,
+    "#1774: a round that resolved no head records no headSha, even with lensReviewedHead set — the owed-round route then fails closed",
+  );
+  const resolved = await applyLensVerdict(
+    summary,
+    "job-1",
+    1,
+    {} as unknown as DriverContext,
+    stamped,
+    HEAD_B,
+  );
+  const resolvedEv = resolved.eventLog.find(
+    (e) => e.kind === "lens-issues-found",
+  ) as Extract<WorkEvent, { kind: "lens-issues-found" }>;
+  assert(
+    resolvedEv?.headSha === HEAD_B,
+    "…and the head it DOES record is the round's own, never the state stamp",
   );
 }
 

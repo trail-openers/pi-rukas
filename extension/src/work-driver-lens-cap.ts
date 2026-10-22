@@ -37,6 +37,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
+import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
@@ -135,6 +136,11 @@ export const OWED_ROUND_DISCLOSURE_PREFIX =
 export type ResidualDisclosureRoute =
   | {
       kind: "round-cap";
+      /** #1774 — the round the comment names and the fact records. On BOTH arms
+       *  now: the round used to be a positional argument beside the route, so
+       *  the loop counter and the round the findings came from could disagree
+       *  between the posted comment and the recorded fact. */
+      round: number;
       /** The identity already computed by the caller's own gate, so the
        *  disclosure is keyed on the SAME string the route was licensed on
        *  rather than a second git read that could disagree with the first
@@ -156,13 +162,10 @@ export type ResidualDisclosureRoute =
     };
 
 /** Everything the two routes differ on, derived from `kind` in ONE place
- *  (#1774): prefix, trace label, comment wording, scratch-file suffix. A new
- *  route-shape field is added here or not at all. `commentRound` is the round
- *  the comment names — the route's own for the owed variant. */
-function routeShape(
-  route: ResidualDisclosureRoute,
-  positionalRound: number,
-): {
+ *  (#1774): prefix, trace label, comment wording, scratch-file suffix, and the
+ *  round both the comment and the fact name. A new route-shape field is added
+ *  here or not at all. */
+function routeShape(route: ResidualDisclosureRoute): {
   prefix: string;
   traceLabel: string;
   scratchSuffix: string;
@@ -185,7 +188,7 @@ function routeShape(
     prefix: ROUND_CAP_DISCLOSURE_PREFIX,
     traceLabel: "round-cap",
     scratchSuffix: "",
-    commentRound: positionalRound,
+    commentRound: route.round,
   };
 }
 
@@ -209,14 +212,15 @@ function routeShape(
 export async function discloseResidualsAndRoute(
   ctx: CycleContext,
   state: WorkState,
-  round: number,
   verdict: string,
   findingsBlob: string,
-  route: ResidualDisclosureRoute = { kind: "round-cap" },
+  route: ResidualDisclosureRoute,
 ): Promise<{ nextStep: "ci" | "handoff"; state: WorkState }> {
   // #1774 — every route-varying string (plumb prefix, trace label, comment
-  // wording, scratch suffix) comes from `routeShape`, keyed on `kind`.
-  const shape = routeShape(route, round);
+  // wording, scratch suffix, AND the round) comes from `routeShape`, keyed on
+  // `kind`. The round is no longer a positional argument beside the route, so
+  // the comment and the fact cannot name different rounds.
+  const shape = routeShape(route);
   const label = shape.traceLabel;
   const prefix = shape.prefix;
   // #1398 round 3 — the identity is computed HERE and passed to both the post
@@ -257,7 +261,10 @@ export async function discloseResidualsAndRoute(
     return {
       nextStep: "ci",
       state: await recordLensResidualsPosted(ctx, state, {
-        round,
+        // #1774 — the SAME round the comment above names (`shape.commentRound`
+        // is what `renderResidualFindings` was handed), so the operator and the
+        // ready gate never read two different round numbers for one disclosure.
+        round: shape.commentRound,
         step: "lens-review",
         // #1774 — the identity this disclosure was keyed on: the fact and the
         // marker on the posted comment come from ONE git read, so the ready
@@ -358,7 +365,18 @@ async function discloseResidualFindings(
       forge?.forge === "gitlab"
         ? `glab mr note ${prNumber} --body-file ${JSON.stringify(file)}`
         : `gh pr comment ${prNumber} --body-file ${JSON.stringify(file)}`;
-    await execFn(cmd, { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 });
+    // #1774 — BOUNDED, and the bound is the disclosure's own: an unbounded
+    // `gh pr comment` against a stalled API hangs the whole budget-park path
+    // (this post is what licenses the `ci` route, so a hang is neither a
+    // disclosure nor a refusal). A rejection — the timeout included — lands in
+    // the catch below as `{ ok: false }`, which parks; it never routes on.
+    // `FORGE_EXEC_TIMEOUT_MS` is the shared forge-exec bound (the merge guard
+    // and the forge detector's remote resolution already pass it).
+    await execFn(cmd, {
+      cwd: ctx.repoRoot,
+      maxBuffer: 256 * 1024,
+      timeout: FORGE_EXEC_TIMEOUT_MS,
+    });
     return { ok: true };
   } catch (err) {
     return {
@@ -403,7 +421,10 @@ export async function appendReviewCapHit(
       verdict === "ISSUES_FOUND" &&
       adversarialGateApproved(state.eventLog)
     ) {
-      const routed = await discloseResidualsAndRoute(ctx, next, round, verdict, findingsBlob);
+      const routed = await discloseResidualsAndRoute(ctx, next, verdict, findingsBlob, {
+        kind: "round-cap",
+        round,
+      });
       nextStep = routed.nextStep;
       next = routed.state;
     }
