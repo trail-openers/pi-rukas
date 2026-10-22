@@ -20,11 +20,13 @@
  */
 import { reviewAcceptVerdict } from "../src/review-accept-guard.ts";
 import {
-  HALO_ALREADY_ALLOWED_AT_BASE,
-  HALO_KEEP_REFUSED,
   HALO_RED_TO_GREEN,
   HALO_STILL_REFUSED_BY_CLAUSE,
 } from "./review-accept-guard-halo-cases.ts";
+import {
+  HALO_ALREADY_ALLOWED_AT_BASE,
+  HALO_KEEP_REFUSED,
+} from "./review-accept-guard-halo-refusals.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

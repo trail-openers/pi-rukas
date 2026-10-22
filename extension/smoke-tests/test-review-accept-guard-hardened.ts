@@ -133,7 +133,7 @@ registerReviewAcceptGuard({
 assert(typeof handlers.tool_call === "function", "hook: a tool_call handler is registered");
 
 const call = async (command: string) =>
-  (await handlers.tool_call({ toolName: "bash", input: { command } }, {})) as
+  (await handlers.tool_call?.({ toolName: "bash", input: { command } }, {})) as
     | { block?: boolean; reason?: string }
     | undefined;
 

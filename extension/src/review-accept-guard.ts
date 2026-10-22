@@ -117,6 +117,7 @@ import {
   unquote,
 } from "./review-accept-command.ts";
 import { type ScopeClause, inScope } from "./review-accept-scope.ts";
+import { redactSecrets } from "./secret-patterns.ts";
 import { trace, traceWarn } from "./trace.ts";
 /** The one source of truth for the CLI the refusal tells the operator to use. */
 const ACCEPT_CLI = "extension/scripts/review-accept.ts";
@@ -177,7 +178,7 @@ const CLAUSE_SENTENCE: Record<ScopeClause, string> = {
 };
 
 function refusalReason(
-  clause: ScopeClause = "store-name",
+  clause: ScopeClause,
   opts: { vcsWrite?: boolean; dataOperand?: boolean; target?: string } = {},
 ): string {
   if (opts.target)
@@ -342,6 +343,25 @@ function scanCommand(command: string): GuardVerdict | undefined {
   return undefined;
 }
 
+/** A scan that threw is not a store ACCUSATION. Clause (1)'s sentence tells the agent its
+ * command NAMED the findings store and sends it to the accept CLI — when the guard itself
+ * crashed that is simply false, and it points the investigation at the wrong file. The
+ * reason says what actually happened, and the REDACTED command goes to `traceWarn` where
+ * an operator can read what broke (#1764 fix round). */
+const SCAN_CRASH =
+  "The review-accept guard could not READ this command, so it refused it fail-closed: no agent command may reach the review findings store through text the guard cannot read.";
+
+function scanReasonOrCrash(command: string): string | undefined {
+  try {
+    return scanCommand(command)?.reason;
+  } catch (err) {
+    traceWarn(
+      `review-accept-guard: scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)}) — command: ${traceCommand(redactSecrets(command).text)}`,
+    );
+    return SCAN_CRASH;
+  }
+}
+
 /** The refusal text when a bash command could reach the findings store, else undefined. */
 export function runsReviewAccept(command: string): string | undefined {
   return scanCommand(command)?.reason;
@@ -420,18 +440,9 @@ export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
         return { block: true, reason: refusalReason("store-name") };
       const command = typeof raw === "string" ? raw : "";
       // A scan that throws must not read as "nothing to block": a guard that fails
-      // open on its own bug stops being a guard (clause (a) again).
-      let reason: string | undefined;
-      try {
-        reason = scanCommand(command)?.reason;
-      } catch (err) {
-        traceWarn(
-          `review-accept-guard: scan threw, refusing fail-open (${
-            err instanceof Error ? err.message : String(err)
-          })`,
-        );
-        reason = refusalReason("store-name");
-      }
+      // open on its own bug stops being a guard (clause (a) again) — and must not read as
+      // a store ACCUSATION either: the reason names the guard's own failure.
+      const reason = scanReasonOrCrash(command);
       if (!reason) return;
       trace("review-accept-guard: BLOCKED agent-run finding acceptance (mode-independent)");
       return { block: true, reason };

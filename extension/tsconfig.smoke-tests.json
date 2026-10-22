@@ -48,6 +48,12 @@
     "smoke-tests/test-adversarial-ledger-nonce-roundtrip.ts",
     "smoke-tests/review-accept-guard-misfire-cases.ts",
     "smoke-tests/test-review-accept-guard-misfire-1665.ts",
+    "smoke-tests/review-accept-guard-cases.ts",
+    "smoke-tests/review-accept-guard-halo-cases.ts",
+    "smoke-tests/test-review-accept-guard-halo.ts",
+    "smoke-tests/test-review-accept-guard-hardened.ts",
+    "smoke-tests/test-review-accept-units.ts",
+    "smoke-tests/test-review-accept-arms-direct.ts",
     "smoke-tests/test-backlog-reminder.ts"
   ]
 }

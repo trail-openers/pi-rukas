@@ -7,232 +7,61 @@
  * git VERB position is one such view and lives in `review-accept-verb.ts`.
  */
 
-/** The names whose stem marks a protected path, whatever suffix follows. */
-export const PROTECTED_STEMS = [
-  String.fromCharCode(
-    114,
-    101,
-    118,
-    105,
-    101,
-    119,
-    45,
-    102,
-    105,
-    110,
-    100,
-    105,
-    110,
-    103,
-    115,
-    45,
-    115,
-    116,
-    111,
-    114,
-    101,
-  ),
-  String.fromCharCode(114, 101, 118, 105, 101, 119, 45, 97, 99, 99, 101, 112, 116),
-  String.fromCharCode(114, 101, 118, 105, 101, 119, 45, 102, 105, 110, 100, 105, 110, 103, 115),
-];
-/** A basename that IS the store: the data file, its siblings, the modules. */
-export const PROTECTED_BASENAME =
-  /^review-(?:findings\.json(?:\.[a-z0-9-]+)?|findings-store(?:\.[a-z0-9-]+)?|accept(?:-row)?)(?:\.ts)?$/;
-
-/** Characters that make a word UNREADABLE, so its final form is unknown: `$` (an
- * expansion or command substitution), a backtick, a backslash, and the brace / comma of
- * a brace expansion. One regex for the whole guard: the segment-wide gate in
- * `review-accept-guard.ts` and the `-C <path>` target test in `review-accept-arms.ts`
- * ask the SAME question — what the guard cannot read it cannot clear — and two literals
- * that must stay identical are one literal short of drifting. */
-export const UNREADABLE = /[$`\\{}]/;
-
-/** Tokenise into maximal runs of word / dot / hyphen / slash characters. */
-export function tokensOf(text: string): string[] {
-  return Array.from(text.matchAll(/[A-Za-z0-9._/-]+/g), (m) => m[0] as string);
-}
-
-/** The basename of a token, on either separator. */
-export function baseName(token: string): string {
-  const i = Math.max(token.lastIndexOf("/"), token.lastIndexOf("\\"));
-  return i < 0 ? token : token.slice(i + 1);
-}
-
-/** Does a token name the findings store — as path, module, bare stem or sibling?
- *
- * The stem test is a PREFIX, not an equality: an exact-basename match loses to a
- * one-byte suffix, so `cat review-findings.json?`, `…:` and `…*` all read as ordinary
- * words while the shell still expands them onto the store's bytes. A name that merely
- * STARTS with a protected stem is therefore protected, and the collateral refusals
- * (`review-acceptance-notes`, `review-findings.jsonx`) are clause (b)'s accepted cost.
- * A name that ends in a MODULE extension is the one exception — `review-accept-guard.ts`
- * is a module BESIDE the store and `review-findings-store.ts` is the store module — so
- * `.ts`/`.tsx` are stripped and compared for EQUALITY, exactly as before. Any other
- * spelling takes the PREFIX: a name that merely STARTS with a stem is refused, which is
- * what catches `review-findings.jsonx` (a `.json` sibling carrying one more byte) and,
- * through the `?*[]:,;` strip above, the glob and punctuation spellings of the data file.
- *
- * TWO erasures are asked of every name, because both happen before the program ever sees
- * an argument. QUOTES: `cat 'rev''iew-findings.json'` is ONE word that the shell
- * concatenates into the exact store name, and at this level a balanced quoted span is
- * indistinguishable from a concatenation — so the word is matched twice, once as written
- * and once with ALL quote characters removed, which is the text the shell passes. CASE:
- * the candidate is lowercased HERE, so every caller is case-insensitive rather than one
- * caller remembering to do it. Both erasures point the same way (clause (b)'s accepted
- * cost), and `review-accept-guard.ts` — a module BESIDE the store — is still admitted,
- * because a `.ts` name is stripped and compared for EQUALITY.
- */
-export function isProtectedToken(token: string): boolean {
-  const matches = (base: string): boolean => {
-    if (PROTECTED_BASENAME.test(base)) return true;
-    if (/\.tsx?$/.test(base)) return PROTECTED_STEMS.includes(base.replace(/\.tsx?$/, ""));
-    return PROTECTED_STEMS.some((stem) => base.startsWith(stem));
-  };
-  // The word as the shell hands it over: every quote character gone (a `'a''b'`
-  // concatenation is one word, not prose), then the trailing glob / punctuation bytes,
-  // then the case a case-insensitive filesystem does not distinguish.
-  return [token, baseName(token).replace(/["']/g, "")].some((word) =>
-    matches(
-      baseName(word)
-        .replace(/^['"]+|['"]+$/g, "")
-        .replace(/[?*\[\]:,;]+$/, "")
-        .toLowerCase(),
-    ),
-  );
-}
-
-/**
- * Clause (a): does this text name the store anywhere, token-wise? Asked of the text
- * AS WRITTEN and, inside `namesStore`, of its views — quote removal must not be able
- * to hide a name that the shell still hands to a program.
- */
-export function namesProtected(text: string): boolean {
-  return tokensOf(text).some(isProtectedToken);
-}
-
-/** Every quote, brace and comma character, gone: the text the shell passes when it
- * performs a concatenation (`'rev''iew-findings.json'`) or a brace expansion
- * (`rev{iew-findings}.json`). Both spellings name the store although the raw text
- * never spells it, so the matcher is also asked of THIS view. */
-export function eraseShellPunctuation(text: string): string {
-  return text.replace(/["'`{},]/g, "");
-}
-
-/** Every backslash, gone: the text the program receives once the shell has removed its
- * escapes. `cat re\view-findings.json` is one ordinary-looking word that becomes the
- * exact store name on the way to `cat`, so the matcher is asked of THIS view too (#1665).
- * It is what lets a backslash out of the "unreadable word" scope rule — where it was
- * refusing `echo -e "a\nb"`, `printf 'x\n'` and every `grep` BRE — without letting an
- * escaped spelling of the store's name through that door. Removing backslashes is
- * conservative in the REFUSING direction: it can only add a match, never lose one.
- *
- * A LINE CONTINUATION is erased FIRST, and deleted rather than left in: `foo \<newline>bar`
- * is one word `foobar` to the shell, so the pair vanishes and the two halves join. Erasing
- * the backslashes alone kept the newline, which is a token separator in `tokensOf`, so
- * `.git/review\` + newline + `-findings.json` came back as two words that name nothing and
- * the store hid behind a line break (lens review of #1738). CRLF is the same continuation
- * with a carriage return in it, so it joins too. */
-export function eraseBackslashes(text: string): string {
-  return text.replace(/\\\r?\n/g, "").replace(/\\/g, "");
-}
-
-/** The operator script's basename stem. Its own name is protected — running it from an
- * agent shell is the act the whole guard exists to refuse — while a name that merely
- * STARTS with it (`review-acceptance-notes`) and the guard module beside it
- * (`review-accept-guard.ts`) are not: a word is asked for EQUALITY here, not for the
- * stem prefix the store's own names take. */
-const SCRIPT_STEM = String.fromCharCode(
-  114,
-  101,
-  118,
-  105,
-  101,
-  119,
-  45,
-  97,
-  99,
-  99,
-  101,
-  112,
-  116,
-);
-/** Does a token name the operator's accept script, or the script run by path
- * (`extension/scripts/review-accept.ts`)? The BASENAME is what decides, so a command
- * that spells the script by path is in scope; a word that merely starts with the stem
- * (`review-acceptance-notes`) and the guard module beside it (`review-accept-guard.ts`)
- * are not. */
-export function isAcceptScriptToken(token: string): boolean {
-  const base = baseName(token)
-    .replace(/["']/g, "")
-    .replace(/^['"]+|['"]+$/g, "")
-    .replace(/[?*\[\]:,;]+$/, "")
-    .toLowerCase();
-  return base === SCRIPT_STEM || base === `${SCRIPT_STEM}.ts` || base === `${SCRIPT_STEM}-row.ts`;
-}
-
-/**
- * The gate of clause (a): does this command name the findings store — the data file,
- * the store module, their stems, a `.tmp` / `.corrupt` sibling? Asked of every view
- * listed below, because each spelling reaches the store's bytes by a different route,
- * and the matcher (`isProtectedToken`) supplies its own quote-erasure and case folding:
- *
- *  (i)   the RAW text — a name is a name wherever it appears;
- *  (ii)  the NORMALISED text — quoted spans already folded away, so this is what a
- *        program receives as an argument;
- *  (iii) the raw text with every quote, brace and comma REMOVED — the word the shell
- *        assembles from a concatenation or a brace expansion;
- *  (iv)  the heredoc body, which is part of the raw text, so (i) already covers it;
- *  (v)   an `extra` matcher the caller adds — the guard passes the OPERATOR SCRIPT's
- *        basename, whose path (`extension/scripts/…`) is the route the acceptance runs;
- *  (vi)  a value ATTACHED to an option, which no tokeniser ever hands out bare: a
- *        pickaxe / grep value (`git log -Greview-findings-store`, `-S…`, `--grep=…`) or
- *        an output value (`git show HEAD:x -oreview-findings.json`), where the option
- *        prefix GLUES the name to the flag. Each is matched case-insensitively because
- *        the guard asks this of its lowercased view, and git reads such a value exactly
- *        as written.
- *  (vii) the raw text with every BACKSLASH removed — the word the program receives once
- *        the shell has unescaped it, which is how `cat re\view-findings.json` is the store
- *        although no word spells it (#1665) — and with every LINE CONTINUATION joined
- *        first, which is how a name split across two lines by `\` + newline is the store
- *        although no line spells it either (#1738).
- *
- * Clause (a) scopes the allowlist to commands that name the store, so this predicate —
- * not the arms — decides whether the adjudication applies at all. A command that does
- * not name the store (`mkdir -p tmp/x`, `git add -A`, `npm install`) is an ordinary
- * agent command and no arm is asked of it.
- */
-export function namesStore(
-  command: string,
-  normalised: string,
-  extra?: (token: string) => boolean,
-): boolean {
-  const asked = extra ? (t: string): boolean => isProtectedToken(t) || extra(t) : isProtectedToken;
-  return [
-    command,
-    normalised,
-    eraseShellPunctuation(command),
-    eraseBackslashes(command),
-    eraseBackslashes(eraseShellPunctuation(command)),
-  ].some((text) => tokensOf(text).some(asked));
-}
-
-/** An option value ATTACHED to its flag lives in `review-accept-names.ts` (#1764, §12's
- * file-size limit): it is the one protected-name route the tokeniser cannot see, and the
- * question it answers is not the question this module answers. */
+// The protected-NAME vocabulary lives in `review-protected-names.ts` (§12's file-size
+// limit): deciding what NAMES the store is a different question from what the shell will
+// run. Re-exported so every consumer keeps importing the vocabulary from the one module
+// the guard's readers have always pointed at.
+export {
+  EXPANSION,
+  PROTECTED_BASENAME,
+  PROTECTED_STEMS,
+  UNREADABLE,
+  baseName,
+  eraseBackslashes,
+  eraseShellPunctuation,
+  isAcceptScriptToken,
+  isProtectedToken,
+  namesProtected,
+  namesStore,
+  tokensOf,
+} from "./review-protected-names.ts";
 
 /** Collapse whitespace and newlines to a single space. */
 export function squeeze(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/** What one heredoc scan learned. `end` is the index just past the delimiter; `quoted`
+ * says whether the TAG was quoted, which is the ONLY spelling whose body the shell does
+ * not expand — a view that drops a body may drop only those (#1764 fix round,
+ * criterion 4). `bodyStart` / `bodyEnd` frame the body so a caller can keep it or set it
+ * aside without re-parsing; everything from `bodyEnd` to `end` is the DELIMITER LINE's
+ * tail, which the shell still parses (`cat <<EOF\nx\nEOF | sh` keeps `| sh`, criterion 5). */
+export interface HeredocSkip {
+  readonly end: number;
+  readonly quoted: boolean;
+  readonly bodyStart: number;
+  readonly bodyEnd: number;
+  /** The words after the closing tag on the delimiter line (`| sh`), which the shell
+   * still parses as the command's own arguments. */
+  readonly tail: string;
+  /** The words AFTER the opening tag on its own line (`cat <<EOF > $F` — the `> $F`),
+   * which the shell parses as this command's arguments too. Dropping them made a quoted
+   * heredoc write wherever an unreadable path pointed (#1764 fix round, criterion 5). */
+  readonly head: string;
+}
+
 /**
- * Skip one heredoc starting at `start` and return the index just past it, or
- * PARSE_FAIL when the delimiter never returns — the body is REPORTED unreadable rather
- * than guessed at, and what an unreadable command MEANS is the guard's scope predicate's
- * call, not this parser's (clause (a)). Handles `<<TAG`, `<<-TAG`, `<<~TAG` and a
- * quoted tag.
+ * Skip one heredoc starting at `start`, or report PARSE_FAIL when the delimiter never
+ * returns — the body is REPORTED unreadable rather than guessed at, and what an
+ * unreadable command MEANS is the guard's scope predicate's call, not this parser's
+ * (clause (a)). Handles `<<TAG`, `<<-TAG`, `<<~TAG` and a quoted tag.
+ *
+ * The closing line is a line that IS the tag or STARTS with the tag and a space: the
+ * words after the tag on that line are not body, and a scanner that swallowed them made
+ * `cat <<EOF\nx\nEOF | sh` read as a command that runs nothing.
  */
-export function skipHeredoc(command: string, start: number): number | "PARSE_FAIL" {
+export function skipHeredoc(command: string, start: number): HeredocSkip | "PARSE_FAIL" {
   let i = start + 2;
   while (command[i] === "-" || command[i] === "~") i++;
   // A QUOTED delimiter is the common spelling of a non-expanding heredoc (`<<'EOF'`,
@@ -254,11 +83,35 @@ export function skipHeredoc(command: string, start: number): number | "PARSE_FAI
   }
   const lineEnd = command.indexOf("\n", i);
   if (lineEnd < 0) return "PARSE_FAIL";
+  const quoted = quote !== undefined;
+  // Whatever sits between the tag and the newline is an argument of THIS command, not
+  // body: `cat <<'EOF' > $F` redirects to `$F`, and a scanner that began the body at the
+  // newline lost the redirection from every view the scope test reads.
+  const head = command.slice(i, lineEnd).trim();
   let cursor = lineEnd + 1;
   for (;;) {
     const at = command.indexOf("\n", cursor);
-    const line = command.slice(cursor, at < 0 ? undefined : at).trim();
-    if (line === tag) return at < 0 ? command.length : at + 1;
+    const line = command.slice(cursor, at < 0 ? undefined : at);
+    const end = at < 0 ? command.length : at + 1;
+    if (line.trim() === tag)
+      return { quoted, end, bodyStart: lineEnd + 1, bodyEnd: cursor, tail: "", head };
+    // `EOF | sh`: the tag closes the body and the rest of the line is an argument list.
+    const trimmed = line.trim();
+    if (trimmed.startsWith(tag) && /^\s/.test(trimmed.slice(tag.length))) {
+      const lead = line.length - line.trimStart().length;
+      // `bodyEnd` is the ABSOLUTE index the caller slices the command with; `tail` is
+      // read out of `line`, which is already cut at its own start. Mixing the two reads
+      // the tail out of the wrong string.
+      const bodyEnd = cursor + lead + tag.length;
+      return {
+        quoted,
+        end,
+        bodyStart: lineEnd + 1,
+        bodyEnd,
+        tail: line.slice(lead + tag.length).trim(),
+        head,
+      };
+    }
     if (at < 0) return "PARSE_FAIL";
     cursor = at + 1;
   }
@@ -325,8 +178,14 @@ export function normalise(command: string): NormaliseResult {
     if (command.startsWith("<<", i)) {
       const past = skipHeredoc(command, i);
       if (past === "PARSE_FAIL") return fail("heredoc body never terminates");
-      out += " << ";
-      i = past;
+      // The body becomes the bare marker (the arms refuse it whatever it spells); the
+      // words AFTER the closing tag are arguments and stay where they were (#1764
+      // criterion 5 — `cat <<EOF\nx\nEOF | sh` runs a shell, and a scanner that dropped
+      // `| sh` read it as a command that runs nothing). The words after the OPENING tag
+      // are arguments of the same command (`cat <<EOF > $F`), so they stay too.
+      const args = [past.head, past.tail].filter((x) => x !== "").join(" ");
+      out += args === "" ? " << " : ` << ${args} `;
+      i = past.end;
       continue;
     }
     out += ch;
@@ -416,6 +275,59 @@ export function armsOf(text: string): string[] {
   return out;
 }
 
+/**
+ * The segments a PIPE feeds: every segment whose own start was cut by a single `|`, and
+ * nothing else. `armsOf` throws the operator away, so `echo x; sh f` and `echo x | sh`
+ * are the same pair of segments to it — but only the second hands the shell a program on
+ * stdin, which is the difference clause (4) decides on (#1764 fix round, criterion 8).
+ * `&&`, `||`, `&`, `;` and a newline are separators that do NOT pipe, so a segment opened
+ * by one of them is never a pipe target.
+ */
+export function pipeTargets(text: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  // The operator that OPENED the segment being accumulated: "" before the first cut.
+  let sep = "";
+  let i = 0;
+  const flush = (next: string) => {
+    if (sep === "|" && cur.trim() !== "") out.push(cur.trim());
+    cur = "";
+    sep = next;
+  };
+  while (i < text.length) {
+    const c = text[i] as string;
+    if (c === "'" || c === '"') {
+      const end = closingQuote(text, i);
+      const stop = end < 0 ? text.length : end + 1;
+      cur += text.slice(i, stop);
+      // Same rule as every other walk here: an unpaired quote must still move forward.
+      i = stop > i ? stop : i + 1;
+      continue;
+    }
+    if (text.startsWith("&&", i)) {
+      flush("&&");
+      i += 2;
+      continue;
+    }
+    if (text.startsWith("||", i)) {
+      // A list operator, not a pipe: the segment it opens runs on the failing exit, not
+      // on the bytes of the previous command.
+      flush("||");
+      i += 2;
+      continue;
+    }
+    if (c === "|" || c === ";" || c === "&" || c === "\n") {
+      flush(c);
+      i++;
+      continue;
+    }
+    cur += c;
+    i++;
+  }
+  flush("");
+  return out;
+}
+
 /** One shell word: adjacent quoted and unquoted runs glue together as the shell glues them. */
 export function shellWords(text: string): string[] {
   const words: string[] = [];
@@ -470,9 +382,12 @@ export function unquote(word: string): string {
     if (c === "'" || c === '"') {
       const end = closingQuote(word, i);
       if (end >= 0) {
-        // The escapes a double-quoted span carries are removed by the shell before the
-        // program sees the word, so the word the tool receives is the span without them.
-        out += word.slice(i + 1, end).replace(/\\(["\\])/g, "$1");
+        // Inside DOUBLE quotes the shell removes an escape before the program sees the
+        // word. Inside SINGLE quotes a backslash is LITERAL — `'a\nb'` is four
+        // characters — so the span comes out with its backslashes intact (#1764 fix
+        // round: folding both kinds alike silently rewrote every single-quoted pattern).
+        const inner = word.slice(i + 1, end);
+        out += c === '"' ? inner.replace(/\\(["\\])/g, "$1") : inner;
         i = end + 1;
         continue;
       }
