@@ -31,6 +31,7 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 import { recordDevelopVerdict } from "./work-driver-develop-verdict.ts";
+import { parkDevelopFixOverrun } from "./work-driver-lens-fix-budget.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import {
   applySafetyNet,
@@ -74,6 +75,11 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
+  // #1644 — the shared budget-park marker (see DevelopRunState.budgetPark):
+  // the closure marks it instead of dispatching a doomed fix pass; the check
+  // below turns the mark into the step's short-circuit, with the cap-hit
+  // landing as the tail the step router reads.
+  const budgetPark: { at?: number } = {};
   const persistNotes: string[] = [...preserved.notes];
   const persister = makeBranchCompletedPersister(
     ctx.repoRoot,
@@ -123,6 +129,7 @@ async function runDevelopTopological(
     },
     branchEvents: branchEvents as WorkEvent[],
     stateRef,
+    budgetPark,
   });
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
@@ -305,6 +312,28 @@ async function runDevelopTopological(
       },
     };
     return endStep(withPersistNotes(next, persistNotes));
+  }
+  // #1644 — the review-loop budget parked a fix pass: nothing was dispatched
+  // for it, and the safety-net/verify gates would append events AFTER the cap
+  // and displace the tail the step router reads (the same reason the
+  // deferred-leftover short-circuit above exists). Flush the siblings, then
+  // let the budget module land its cap-hit as the tail and persist.
+  if (budgetPark.at !== undefined) {
+    next = stateRef.current;
+    next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        worktrees,
+        workstreamBaseShas: {
+          ...workstreamBaseShas,
+          ...next.pipelineState.workstreamBaseShas,
+        },
+      },
+    };
+    next = await parkDevelopFixOverrun(ctx, withPersistNotes(next, persistNotes), Date.now());
+    return endStep(next);
   }
   // The state ref above is the memory-inject appends' shared state; the slow
   // events the developer children recorded are collected in the driver's

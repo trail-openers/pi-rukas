@@ -31,7 +31,11 @@ import {
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
-import { reviewFixDispatchBoundMs, reviewLoopActive } from "./work-driver-lens-fix-budget.ts";
+import {
+  developFixPassFits,
+  reviewFixDispatchBoundMs,
+  reviewLoopActive,
+} from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
   inlineDevelopPrompt,
@@ -68,6 +72,13 @@ export interface DevelopRunState {
   >;
   /** All workstream ids (independent + dependent). */
   ids: string[];
+  /** #1742/#1644 — the shared budget-park marker. A review-loop fix pass
+   *  whose remaining budget cannot fit `MIN_USEFUL_MS.develop` marks this
+   *  INSTEAD of dispatching (zero dispatches), and the topological caller
+   *  short-circuits the safety-net/verify gates on it — the same shape the
+   *  deferred-leftover park uses: flush the sibling events, then land the
+   *  `lens-review-timeout` cap-hit as the TAIL the step router reads. */
+  budgetPark?: { at?: number };
   /** The dispatch function (ctx.dispatchFn ?? dispatchCore). */
   dispatch: NonNullable<DriverContext["dispatchFn"]>;
   /** #838 — the deck tag for this workstream's dispatch rows (the
@@ -208,12 +219,25 @@ export function makeRunOneWorkstream(
     // re-reviews after a lens-fix) runs under the same 90-minute review-loop
     // budget the widget prints. A fix pass is the other half of the fix loop;
     // leaving it unbounded is the bug the lens-fix dispatch had.
-    const reviewFixBoundMs =
-      ws?.fixFindings &&
+    const isReviewFixPass =
+      Boolean(ws?.fixFindings) &&
       (s.stateRef.current.pipelineState.lastCompletedStep === "lens-fix" ||
-        reviewLoopActive(s.stateRef.current))
-        ? reviewFixDispatchBoundMs(s.stateRef.current, "lens-fix", startedAt)
-        : undefined;
+        reviewLoopActive(s.stateRef.current));
+    const reviewFixBoundMs = isReviewFixPass
+      ? reviewFixDispatchBoundMs(s.stateRef.current, "lens-fix", startedAt)
+      : undefined;
+    // #1644 — the fix pass was BOUND but never PARKED: with the budget spent
+    // it dispatched anyway under the 60-second floor and was killed to produce
+    // nothing. Refuse it the way the lens-fix refuses itself: zero dispatches,
+    // and the cap (named for this refused step) lands at the event tail via
+    // the topological caller's short-circuit.
+    if (isReviewFixPass && !developFixPassFits(s.stateRef.current, startedAt)) {
+      if (s.budgetPark) s.budgetPark.at = startedAt;
+      const reason =
+        "lens-review-timeout: the review-loop budget cannot fit the develop fix pass — not dispatched";
+      s.verdicts.push({ id, ok: false, reason });
+      return { id, ok: false, reason };
+    }
     const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);
     // #679 case 1 — sibling workstreams for the informational injection.
     // Gated on N>1 and workstreamId !== "default" (the existing `parallel`
@@ -314,7 +338,9 @@ export function makeRunOneWorkstream(
               developNote(s.stateRef.current),
               fastVerifyCmd,
               // #1676 — the protected paths the plan persisted, annotated beside the fence.
-              { deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [] },
+              {
+                deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
+              },
             ),
             cwd,
           },
