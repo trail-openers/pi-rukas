@@ -139,7 +139,16 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
   { c: `echo "${D}HOME"`, why: "an expansion in the argument of a tool that reads no file" },
   { c: `grep -n ${Q}a${D}${Q} src/x.ts`, why: "a `$` in a search PATTERN, which is prose" },
   { c: `printf "count: %s\\n" "${D}n"`, why: "printf printing a variable" },
-  { c: `ls -la ${D}PWD`, why: "a listing whose argument is an expansion" },
+  // `ls` is NOT here any more. It reads the file it is handed (its directory entry), so
+  // an unresolved operand is an unresolved READ and `ls -la $PWD` is refused — the cost
+  // the fix round accepted, recorded with its clause in `FIELDBOX_STILL_REFUSED_BY_CLAUSE`.
+  // What stays allowed is the same tool on a path the guard can read.
+  { c: "ls -la /tmp/build", why: "a listing of a path the guard can name" },
+  // A QUOTED heredoc tag is the one body the shell never expands: the bytes go to the
+  // program's stdin as written, so an expansion inside it is text, not a path (#1764
+  // criterion 4 — the bug was excluding UNQUOTED bodies too, which are substituted).
+  { c: `cat <<'PY'${NL}echo ${D}HOME${NL}PY`, why: "a quoted heredoc body carrying an expansion" },
+  { c: "wc -l README.md", why: "a file-stat tool on a path the guard can name" },
   { c: `cd extension && echo ${D}PWD`, why: "the chained form that brickwalled plan cycles" },
   { c: `grep -rn foo src && echo ${D}?`, why: "a search followed by an exit code" },
   {
@@ -162,6 +171,40 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
  * runs the operator's accept script, and stays refused.
  */
 export const STORE_REACHING_REFUSALS: Case[] = [
+  // ── the narrowing holes the fix round closed (#1764 review) ──
+  // Each of these was ALLOWED by the first cut of the narrowing, which asked only
+  // "is the first positional a file, and is there a `$` among the tool's own args".
+  { c: `cat > ${D}F <<'PY'${NL}x${NL}PY`, why: "ACCEPTANCE: a redirection target no arm ever saw" },
+  {
+    c: `echo done > ${D}OUT`,
+    why: "a PRINT tool redirecting to an unresolved path — the redirect test runs on every program",
+  },
+  { c: `grep --include=${D}F -r x .`, why: "a flag-attached value is a path the tool opens" },
+  { c: `grep -e "" ${D}F`, why: "with an explicit -e the positional is a FILE, not the pattern" },
+  { c: `grep -f ${D}P notes.txt`, why: "the value of -f is itself a path" },
+  { c: `grep -e pat -- ${D}F`, why: "`--` ends the options, not the operands" },
+  {
+    c: `ls -la ${D}PWD`,
+    why: "a directory listing reads the entry it is handed — the cost the fix round accepted",
+  },
+  { c: `wc -l ${D}F`, why: "counting the bytes of an unreadable path is reading it" },
+  { c: `cat ${D}F; F=notes.txt`, why: "a binding in a LATER segment resolves nothing" },
+  {
+    c: `F=one.txt; F=two.txt; cat ${D}F`,
+    why: "a name bound twice differently is left unreadable, not guessed",
+  },
+  {
+    c: `cat <<EOF${NL}ls${NL}EOF | sh`,
+    why: "ACCEPTANCE: a heredoc feeding a SHELL is text some one will execute",
+  },
+  {
+    c: `cat <<EOF${NL}ls${NL}EOF | bash`,
+    why: "the same shape under bash — absent from READ_TOOLS precisely because it executes",
+  },
+  {
+    c: `cat <<'EOF'${NL}ls${NL}EOF | sh`,
+    why: "a QUOTED body still pipes into a shell: the tail after the tag is visible",
+  },
   // A repo-location selector pointing AT the store's directory (the git common dir, where
   // review-findings.json lives) makes every "plain read" a read of the store's tree.
   { c: "git -C /repo/.git status --porcelain", why: "ACCEPTANCE: -C at the store's directory" },
