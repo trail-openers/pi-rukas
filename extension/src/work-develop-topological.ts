@@ -24,9 +24,11 @@ import {
 } from "./work-develop-retry.ts";
 import {
   type DevelopRunState,
+  dispatchUnfinishedCorrective,
   makeRunOneWorkstream,
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
+import { requireOwnCommit } from "./work-develop-own-commit.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
@@ -138,7 +140,7 @@ async function runDevelopTopological(
   // pass judged "done" and a tree the net later commits share one base.
   const basesFor = (id: string): string | undefined =>
     next.pipelineState.workstreamBaseShas?.[id] ?? next.pipelineState.baseSha;
-  const runOneWorkstream = makeRunOneWorkstream({
+  const runState: DevelopRunState = {
     ctx,
     activeIssues,
     scratchAbs,
@@ -165,7 +167,8 @@ async function runDevelopTopological(
     branchEvents: branchEvents as WorkEvent[],
     stateRef,
     budgetPark,
-  });
+  };
+  const runOneWorkstream = makeRunOneWorkstream(runState);
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
   const globalBaseSha = next.pipelineState.baseSha;
@@ -225,6 +228,9 @@ async function runDevelopTopological(
   // #746 — every dispatched independent has a worktree (the rest failed above).
   // #1016 — a green with no commits ahead of its base fails inside runAt.
   const firstPassFailed = new Set<string>();
+  // #1768 — workstreams whose pass ended with dirt and no commit of its own,
+  // even after the one corrective pass. The park below names their paths.
+  const unfinished = new Map<string, string[]>();
   verdicts = await runIndependentFanout({
     independent,
     preserved: preserved.kept,
@@ -239,6 +245,24 @@ async function runDevelopTopological(
       if (!r.ok)
         return { id, ok: false, reason: r.reason, ...(r.noRetry ? { noRetry: true } : {}) };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
+      // #1768 — the child must have COMMITTED its own work before this pass
+      // counts as done. Pre-fix the net ran first, so a child that exited 0
+      // mid-step with a dirty tree and no commit had its dirt committed by the
+      // driver, and that commit satisfied the green check: unfinished work was
+      // reported as `agent done: developer`. When there is no commit of its own
+      // the net does NOT run: the workstream gets one corrective pass in its own
+      // worktree, and failing that parks as `develop-incomplete-uncommitted`.
+      const own = await requireOwnCommit({
+        id,
+        cwd,
+        base,
+        execFn,
+        corrective: (paths) => dispatchUnfinishedCorrective(runState, id, cwd, paths),
+      });
+      if (own.kind === "unfinished") {
+        unfinished.set(id, own.uncommitted);
+        return { id, ok: false, reason: own.reason, claimed: true };
+      }
       // #1016 — the #622 safety net commits leftover edits before the green check.
       if (isValidBaseSha(base)) {
         const sn = await safetyNetWorktree(id, ctx.repoRoot, cwd, base, execFn, persistNotes);
@@ -315,6 +339,9 @@ async function runDevelopTopological(
       // `pipelineState`, which the phase writes through the shared persister
       // as each dependent's worktree and base are created.
       baseFor: basesFor,
+      // #1768 — the dependent phase's corrective pass reuses the same dispatch
+      // seam and the same unfinished map the develop step parks on.
+      unfinishedState: { ...runState, unfinished },
     },
   );
   await persister.flush();

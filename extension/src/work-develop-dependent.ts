@@ -22,9 +22,11 @@ import {
   settleVerdict,
 } from "./work-develop-retry.ts";
 import { reuseRefusal } from "./work-develop-reuse.ts";
+import { requireOwnCommit } from "./work-develop-own-commit.ts";
 import {
   type BranchCompletedExtra,
   type DependentRunState,
+  dispatchUnfinishedCorrective,
   parkDeferredLeftover,
 } from "./work-develop-run.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -90,6 +92,13 @@ export async function runDependentWorkstreams(
 }> {
   const wtRef = { worktrees, workstreamBaseShas };
   const { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource } = run;
+  // #1768 — dependents whose pass ended with dirt and no commit of its own, even
+  // after the one corrective pass. The develop step parks on this map.
+  const unfinished = run.unfinishedState?.unfinished ?? new Map<string, string[]>();
+  const dispatchCorrective = (wid: string, cwd: string, paths: string[]) =>
+    run.unfinishedState
+      ? dispatchUnfinishedCorrective(run.unfinishedState, wid, cwd, paths)
+      : Promise.resolve(undefined);
   // #799 F2 — the dependent phase's wall-clock span (fire-once, above healthy band).
   const cancelPhaseNotice = armStepNotice({
     state: stateRef.current,
@@ -354,6 +363,25 @@ export async function runDependentWorkstreams(
       // leftover edits first, then a green needs commits ahead of its base. A
       // green that fails it is downgraded, so its verdict and its dependents agree.
       if (outcome.ok) {
+        // #1768 — as for an independent: no commit of its own and a dirty tree
+        // is UNFINISHED, not a green. The net does not run for that workstream
+        // (its commit would have been the only one, and would have made the
+        // unfinished pass read as done); the dependent gets one corrective pass
+        // in its own worktree, and failing that parks.
+        const own = await requireOwnCommit({
+          id,
+          cwd: createdPath,
+          base: ownBase,
+          execFn,
+          corrective: (paths) => dispatchCorrective(id, createdPath, paths),
+        });
+        if (own.kind === "unfinished") {
+          unfinished.set(id, own.uncommitted);
+          failedOrSkipped.add(id);
+          if (failureSource) failureSource[id] = "failed";
+          settleVerdict(verdicts, { id, ok: false, reason: own.reason });
+          continue;
+        }
         if (isValidBaseSha(ownBase)) {
           const sn = await safetyNetWorktree(
             id,

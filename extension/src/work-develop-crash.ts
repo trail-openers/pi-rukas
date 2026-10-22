@@ -165,6 +165,8 @@ const TREE_READ_TIMEOUT_MS = 30_000;
  *  `worktreeStatus`, plus an explicit bound — a hung `git status` (a stale
  *  worktree, a lock left by the child that just died) must degrade to
  *  `unreadable`, not block the develop fan-out. */
+export /** The classifier's own status reader — also the #1768 own-commit read (see
+ *  `uncommittedPaths` below): one reader, one bound, one parse. */
 function treeReader(execFn: ExecFn): (cwd: string) => Promise<ReturnType<typeof parseStatus>> {
   return async (cwd) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -212,6 +214,19 @@ function treeReader(execFn: ExecFn): (cwd: string) => Promise<ReturnType<typeof 
  * degrades to `evidence: undefined` rather than stalling the develop step,
  * whose write-ahead dispatch marker is already recorded by then.
  */
+/** #1768 — the crash path's status read, shared with the own-commit check: same
+ *  argv, same `-z` parse, same bound, and driver artefacts (`.pi/`, `tmp/`) dropped
+ *  by the same `commitEntriesOf` rule the safety net uses. `paths` is empty for a
+ *  genuinely clean tree; `unreadable` is never read as clean. */
+export async function uncommittedPaths(
+  execFn: ExecFn,
+  cwd: string,
+): Promise<{ paths: string[] } | { unreadable: string }> {
+  const status = await treeReader(execFn)(cwd);
+  if (!Array.isArray(status)) return { unreadable: status.unreadable };
+  return { paths: commitEntriesOf(status).map((e) => e.path) };
+}
+
 export async function classifyDevelopPass(args: {
   id: string;
   cwd: string;
