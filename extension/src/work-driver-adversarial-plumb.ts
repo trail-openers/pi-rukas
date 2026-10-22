@@ -10,12 +10,15 @@
  */
 
 import { postPassFault } from "./work-driver-adversarial-fix-scope.ts";
-import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
+import type { AdversarialOutcome, PendingFix } from "./work-driver-adversarial-types.ts";
 import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** Bound on the findings carried in an event / the fix prompt (state-file hygiene). */
 export const FIX_FINDINGS_MAX = 4000;
+
+/** Bound on the corrective-admission disclosure the park report carries. */
+export const FIX_ADMISSIONS_MAX = 2000;
 
 /**
  * Cuts one sibling's findings to `max` characters and says so, so a cut
@@ -76,31 +79,30 @@ export function noteFixPass(state: WorkState, note: string, now: number): WorkSt
   };
 }
 
-/** The pending fix as the park report renders it. */
-export interface ParkedFixRequest {
-  workstreamId: string;
-  round: number;
-  findings: string;
-}
-
 /**
- * Records the handoff report naming the rounds, the reason and the findings.
- * #1760 — it also carries what the pass ADMITTED: a park that discloses the
- * refusals but not the authorisations reads as a fence that never widened, and
- * an admission the operator never sees is a fence that widened invisibly.
+ * Records the handoff report naming the rounds, the reason, the findings, and
+ * what the pass ADMITTED. #1760 — a park that discloses the refusals but not
+ * the authorisations reads as a fence that never widened, and an admission the
+ * operator never sees is a fence that widened invisibly. `admissions` is a
+ * REQUIRED parameter for that reason: every caller passes what
+ * {@link postPassFault} returned (an empty array when the fence ran and admitted
+ * nothing), and the block is capped like the findings block.
  */
 export function withFixPassReport(
   state: WorkState,
-  pending: readonly ParkedFixRequest[],
+  pending: readonly PendingFix[],
   reason: string,
   now: number,
-  admissions: readonly string[] = [],
+  admissions: readonly string[],
 ): WorkState {
   const rounds = pending.map((p) => `${p.workstreamId} round ${p.round}`).join(", ");
   const findings = capWithMarker(pending.map((p) => p.findings).join("\n---\n"), FIX_FINDINGS_MAX);
   const admitted =
     admissions.length > 0
-      ? `\nWhat the pass admitted before parking:\n${admissions.map((a) => `- ${a}`).join("\n")}`
+      ? `\nWhat the pass admitted before parking:\n${capWithMarker(
+          admissions.map((a) => `- ${a}`).join("\n"),
+          FIX_ADMISSIONS_MAX,
+        )}`
       : "";
   return {
     ...state,
@@ -121,15 +123,16 @@ export function withFixPassReport(
 
 /**
  * Parks the fix pass: the handoff report, the verify evidence the handoff's
- * cap text reads, and the pass's own cap event. `admissions` threads the
- * fence's authorisations into the report even though the pass did not clear.
+ * cap text reads, and the pass's own cap event. `admissions` is REQUIRED and
+ * threads the fence's authorisations into the report even though the pass did
+ * not clear — see {@link withFixPassReport}.
  */
 export function parkFixPass(
   state: WorkState,
-  pending: readonly ParkedFixRequest[],
+  pending: readonly PendingFix[],
   reason: string,
   now: number,
-  admissions: readonly string[] = [],
+  admissions: readonly string[],
 ): WorkState {
   // The handoff's cap text reads verifyEvidence, not the event: without it the
   // park reads as one whose reason was never recorded. The prefix is what
