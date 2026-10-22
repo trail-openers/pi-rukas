@@ -30,16 +30,56 @@ const NL = String.fromCharCode(10);
  * `env`/`nice` ARE sanctioned prefixes, and there the operand test is what refuses.
  */
 export const ROUND4_PREFIX: readonly Round4Case[] = [
-  { c: `timeout 300 cat ${D}V`, why: "timeout swallows 300 and runs cat on a path nobody names", clause: "unreadable-word" },
-  { c: `timeout 5 head -40 ${D}V`, why: "the same with an option-bearing read tool", clause: "unreadable-word" },
-  { c: `timeout 300 grep secret ${D}V`, why: "a search tool's operand under a prefix word", clause: "unreadable-word" },
-  { c: `stdbuf -o0 cat ${D}V`, why: "a sanctioned prefix is still not the program — the -o0 operand block makes the program unrecognised", clause: "unreadable-word" },
-  { c: `xargs cat ${D}V`, why: "xargs turns ITS operands into cat's arguments", clause: "unreadable-word" },
-  { c: `printf x | xargs cat ${D}V`, why: "the pipe is no help: the xargs segment is not understood", clause: "unreadable-word" },
-  { c: `parallel cat ${D}V`, why: "parallel redistributes operands across jobs", clause: "unreadable-word" },
-  { c: `watch -n 1 cat ${D}V`, why: "watch RE-EXECUTES the rest of the segment on a timer", clause: "unreadable-word" },
-  { c: `env A=1 cat ${D}V`, why: "a sanctioned prefix, an unresolved operand — the operand test refuses it", clause: "unreadable-word" },
-  { c: `nice -n 1 cat ${D}V`, why: "the -n value block leaves the program unrecognised behind nice", clause: "unreadable-word" },
+  {
+    c: `timeout 300 cat ${D}V`,
+    why: "timeout swallows 300 and runs cat on a path nobody names",
+    clause: "unreadable-word",
+  },
+  {
+    c: `timeout 5 head -40 ${D}V`,
+    why: "the same with an option-bearing read tool",
+    clause: "unreadable-word",
+  },
+  {
+    c: `timeout 300 grep secret ${D}V`,
+    why: "a search tool's operand under a prefix word",
+    clause: "unreadable-word",
+  },
+  {
+    c: `stdbuf -o0 cat ${D}V`,
+    why: "a sanctioned prefix is still not the program — the -o0 operand block makes the program unrecognised",
+    clause: "unreadable-word",
+  },
+  {
+    c: `xargs cat ${D}V`,
+    why: "xargs turns ITS operands into cat's arguments",
+    clause: "unreadable-word",
+  },
+  {
+    c: `printf x | xargs cat ${D}V`,
+    why: "the pipe is no help: the xargs segment is not understood",
+    clause: "unreadable-word",
+  },
+  {
+    c: `parallel cat ${D}V`,
+    why: "parallel redistributes operands across jobs",
+    clause: "unreadable-word",
+  },
+  {
+    c: `watch -n 1 cat ${D}V`,
+    why: "watch RE-EXECUTES the rest of the segment on a timer",
+    clause: "unreadable-word",
+  },
+  {
+    c: `env A=1 cat ${D}V`,
+    why: "a sanctioned prefix, an unresolved operand — the operand test refuses it",
+    clause: "unreadable-word",
+  },
+  {
+    c: `nice -n 1 cat ${D}V`,
+    why: "the -n value block leaves the program unrecognised behind nice",
+    clause: "unreadable-word",
+  },
 ];
 
 /**
@@ -49,10 +89,26 @@ export const ROUND4_PREFIX: readonly Round4Case[] = [
  * the resolver only ever counted literal bindings.
  */
 export const ROUND4_ASSIGNMENTS: readonly Round4Case[] = [
-  { c: `F=x; F=${D}V; cat ${D}F`, why: "an expansion-valued rebinding makes F ambiguous, not literal", clause: "unreadable-word" },
-  { c: `F=x; F=$(printf a); cat ${D}F`, why: "a command substitution binding counts too", clause: "unreadable-word" },
-  { c: `F=x; F=${D}V; rg ${D}F`, why: "the same rebinding in the PATTERN position — prose means PROSE, a substituted pattern is an operand", clause: "unreadable-word" },
-  { c: `F=x; F=${D}V; head -10 ${D}{F}`, why: "the same rebinding behind a content reader's file operand", clause: "unreadable-word" },
+  {
+    c: `F=x; F=${D}V; cat ${D}F`,
+    why: "an expansion-valued rebinding makes F ambiguous, not literal",
+    clause: "unreadable-word",
+  },
+  {
+    c: `F=x; F=$(printf a); cat ${D}F`,
+    why: "a command substitution binding counts too",
+    clause: "unreadable-word",
+  },
+  {
+    c: `F=x; F=${D}V; rg ${D}F`,
+    why: "the same rebinding in the PATTERN position — prose means PROSE, a substituted pattern is an operand",
+    clause: "unreadable-word",
+  },
+  {
+    c: `F=x; F=${D}V; head -10 ${D}{F}`,
+    why: "the same rebinding behind a content reader's file operand",
+    clause: "unreadable-word",
+  },
 ];
 
 /** A shell EXECUTES its operand whatever the quotes say: `bash -c "cat $V"` reaches the
@@ -79,10 +135,20 @@ export const ROUND4_STILL_ALLOWED: readonly { c: string; why: string }[] = [
     c: "export PATH=/tmp/bats-core/bin:$PATH; timeout 900 bats tests/install-meshvpn.bats 2>&1 | tail -8",
     why: "the harvest's class-a shape: every segment understood, every positional literal",
   },
-  { c: 'tofu fmt -check -recursive; echo "FMT_EXIT=$?"', why: "the PRINT class echoes its arguments, it does not open them" },
-  { c: "cd extension && echo $PWD", why: "the row #1764 was filed for — print class, literal operands" },
-  { c: "grep -n 'a$' src/x.ts", why: "a SINGLE-QUOTED pattern is prose; the file operand is literal" },
-  { c: `f=notes.md; cat ${D}f`, why: "one literal binding resolves the way the shell resolves it" },
+  {
+    c: 'tofu fmt -check -recursive; echo "FMT_EXIT=$?"',
+    why: "the PRINT class echoes its arguments, it does not open them",
+  },
+  {
+    c: "cd extension && echo $PWD",
+    why: "the row #1764 was filed for — print class, literal operands",
+  },
+  {
+    c: "grep -n 'a$' src/x.ts",
+    why: "a SINGLE-QUOTED pattern is prose; the file operand is literal",
+  },
+  // REMOVED in fix round 5: `f=notes.md; cat $f` was here because the exemption proof read
+  // a text the guard itself had substituted. It is refused now, pinned in ROUND5_ACCEPTED_COSTS.
   {
     c: "awk 'NR>=1 && NR<=2 { print $1 }' notes.txt",
     why: "a pattern tool's single-quoted program is prose, its file operand is literal",
@@ -99,8 +165,7 @@ export const ROUND4_STILL_ALLOWED: readonly { c: string; why: string }[] = [
     c: `cat <<'PY' > notes.md${NL}price ${D}5${NL}PY`,
     why: "a quoted heredoc body is data; the redirect target is literal",
   },
-  {
-    c: `F=.git/notes.txt; cat > ${D}F`,
-    why: "the one binding resolves to a literal non-store path — resolution still exempts what it can read",
-  },
+  // REMOVED in fix round 5: `F=.git/notes.txt; cat > $F` was here on the same substituted
+  // text — and a REDIRECTION target is the last word in the command to guess at. Refused
+  // now, pinned in ROUND5_ACCEPTED_COSTS.
 ];

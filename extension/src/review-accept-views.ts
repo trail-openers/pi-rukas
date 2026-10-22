@@ -43,8 +43,17 @@ const ASSIGNMENT = /^(?:export\s+)?([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$/;
  * rebinds, or binds to text the guard cannot read, never resolves. Counting only the
  * literal bindings is what made `F=x; F=$V; cat $F` resolve to the stale `x`. */
 export const ASSIGNMENT_SHAPE = /^(?:export\s+)?([a-zA-Z_][a-zA-Z0-9_]*)=/;
-/** A `$NAME` / `${NAME}` occurrence, the unit the substitution below decides about. */
-const REFERENCE = /\$\{?([a-zA-Z_][a-zA-Z0-9_]*)\}?/g;
+/**
+ * A `$NAME` / `${NAME}` occurrence, the unit the substitution below decides about — and
+ * ONLY those two spellings. The optional-brace form `\$\{?NAME\}?` matched `${F` without
+ * requiring its closing brace, so `cat ${F//zz/}` was substituted into the literal value
+ * and the operator form the shell ACTUALLY ran (`${F//zz/}`) vanished from the text the
+ * guard read. An operator form (`${F#x}`, `${F%x}`, `${F//x/}`, `${F:5}`, `${F:-x}`) is a
+ * DIFFERENT expansion the guard cannot evaluate, so it is never a match here: no match
+ * means no substitution means the raw text stands, which is the safe direction (#1764
+ * round 5, MUST-DO 2). Both alternatives are anchored on their own delimiters.
+ */
+const REFERENCE = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\$([a-zA-Z_][a-zA-Z0-9_]*)/g;
 
 /** A value the guard can substitute: quoted or bare, but spelling no expansion of its
  * own — `VAR=$OTHER` is a value the guard still cannot read, so it binds nothing. */
@@ -77,7 +86,9 @@ function expandWord(word: string, values: Map<string, string>, ambiguous: Set<st
       REFERENCE.lastIndex = 0;
       const match = REFERENCE.exec(word.slice(i));
       if (match && (match.index ?? 0) === 0) {
-        const name = match[1] as string;
+        // One of the two alternatives fired: the braced form carries the name in group 1,
+        // the bare `$NAME` form in group 2.
+        const name = (match[1] ?? match[2]) as string;
         const value = ambiguous.has(name) ? undefined : values.get(name);
         if (value !== undefined) {
           out += value;

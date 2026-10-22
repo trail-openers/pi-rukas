@@ -26,7 +26,7 @@
  *    (its bytes, its size, its inode, its directory), so an unreadable operand is an
  *    unreadable read exactly as `cat`'s is. They sit in the PRINT class no longer: `wc -l
  *    $F` is `cat $F` with a different verb, and the fix round moved all four back (#1764);
- *  - PRINT tools (`echo`, `printf`, `pwd`, `true`, `basename`, `dirname`, `which`) — they
+ *  - PRINT tools (`echo`, `printf`, `pwd`, `true`, `basename`, `dirname`) — they
  *    read no file an agent could be reaching for the store with, so an expansion among
  *    their arguments is ordinary shell (`echo "FMT_EXIT=$?"`);
  *  - NAVIGATE (`cd`) — admitted, but neither a reader nor a print tool: its operand moves
@@ -51,6 +51,10 @@
  *
  * A store name spelled in the clear is still caught — by test (1), which asks every
  * word including a search pattern. This module decides only the unreadable-word question.
+ *
+ * The TOOL KINDS themselves (the content / search / file / print / navigate split and the
+ * derived `CHECKED_TOOLS` / `PATTERN_FIRST_TOOLS` sets this module asks) live in
+ * `review-accept-toolkinds.ts`; this one holds the word-level arithmetic.
  */
 
 import {
@@ -62,7 +66,7 @@ import {
   skipHeredoc,
   unquote,
 } from "./review-accept-command.ts";
-import { withSameCommandAssignmentsApplied } from "./review-accept-views.ts";
+import { CHECKED_TOOLS, PATTERN_FIRST_TOOLS } from "./review-accept-toolkinds.ts";
 
 /** A redirection operator, with whatever the shell glued to it: `>`, `>>`, `2>`, `&>`,
  * `<`, and the attached spellings `>OUT` / `2>OUT`. The word after a bare operator is the
@@ -100,76 +104,6 @@ const HERE_STRING_WORD = /^(?:\d*)?<<<(.*)$/;
  * `--x=y` spelling is read by the caller's `=` split. */
 const ATTACHED_VALUE = /^-[A-Za-z](.*)$/;
 
-/** Tools that print the CONTENT of the file they are handed. */
-const CONTENT_TOOLS: ReadonlySet<string> = new Set(["cat", "head", "tail"]);
-/** Tools that search a file: the pattern is prose, the rest are files — until a pattern
- * flag makes every positional a file. */
-const SEARCH_TOOLS: ReadonlySet<string> = new Set(["grep", "rg"]);
-/** Pattern-argument tools no arm admits: `ag` is a grep peer the allowlist never named,
- * and `sed` / `awk` were REMOVED from the allowlist because each can run a shell or write
- * a file. They are still asked the operand question — all three print the bytes of the
- * file they are handed — so an unresolved operand on any of them is in scope, where no arm
- * will then admit the segment (#1764 fix round, criterion 1's pattern-tool list). */
-const PATTERN_TOOLS_ONLY: ReadonlySet<string> = new Set(["ag", "sed", "awk"]);
-/** Tools that read the file they are handed to describe it, not to print it: `wc` counts
- * its bytes, `file` its magic, `stat` its inode, `ls` its directory entry. An unreadable
- * operand is an unreadable read (#1764 fix round: they left PRINT_TOOLS for this). */
-const FILE_TOOLS: ReadonlySet<string> = new Set(["ls", "wc", "file", "stat"]);
-/** Tools that print their own arguments or move the shell along: they read no file the
- * guard could be protecting, so an expansion among their arguments is ordinary shell
- * text and brings nothing into scope (#1764 criterion 1's never-a-trigger list). */
-const PRINT_TOOLS: ReadonlySet<string> = new Set([
-  "echo",
-  "printf",
-  "pwd",
-  "true",
-  "basename",
-  "dirname",
-  "which",
-]);
-/** A navigate tool: admitted by A8, reads no file, prints no file. Separated from the
- * print class so "PRINT_TOOLS is exactly the seven argument-printers" stays a checkable
- * claim (#1764 fix round, criterion 3). */
-const NAVIGATE_TOOLS: ReadonlySet<string> = new Set(["cd"]);
-
-/** The read tools arm A8 admits. Defined HERE, as the union of the kinds the scope test
- * distinguishes, so the arm's list and the clause's classification cannot drift into each
- * other — a tool added to one and not the other is the bug this shape prevents. The
- * pattern tools no arm admits are deliberately NOT in this union. */
-export const READ_TOOLS: ReadonlySet<string> = new Set([
-  ...CONTENT_TOOLS,
-  ...SEARCH_TOOLS,
-  ...FILE_TOOLS,
-  ...PRINT_TOOLS,
-  ...NAVIGATE_TOOLS,
-]);
-
-/** The tools whose FILE operands the scope test asks: everything that opens a file it was
- * handed, admissible or not. A SEARCH-class tool's first positional is its pattern; the
- * two sets share that arithmetic because the pattern prose is the same fact for `grep` and
- * for `awk` alike. Exported for the exemption module (#1764 round 4), whose per-segment
- * understanding test asks the SAME "is there a checked tool in this segment" question —
- * two lists would be one drift away from an under-refusal. */
-export const CHECKED_TOOLS: ReadonlySet<string> = new Set([
-  ...CONTENT_TOOLS,
-  ...FILE_TOOLS,
-  ...SEARCH_TOOLS,
-  ...PATTERN_TOOLS_ONLY,
-]);
-/** Among the checked tools, the ones whose FIRST positional is a pattern / program rather
- * than a file. Exported for the exemption module (same reason as `CHECKED_TOOLS`). */
-export const PATTERN_FIRST_TOOLS: ReadonlySet<string> = new Set([
-  ...SEARCH_TOOLS,
-  ...PATTERN_TOOLS_ONLY,
-]);
-/** The print class, exported for the exemption module: an argument of one of these is
- * text the tool ECHOES, never a path it opens, so the understanding test does not price
- * them as operands (#1764 criterion 1's never-a-trigger list). */
-export const PRINT_TOOLS_ONLY: ReadonlySet<string> = PRINT_TOOLS;
-/** The navigate tool, exported for the same reason: its operand moves the shell, and an
- * unreadable one is still a directory the guard cannot name. */
-export const NAVIGATE_TOOLS_ONLY: ReadonlySet<string> = NAVIGATE_TOOLS;
-
 /** The value an option carries: `--include=X` → `X`, `-Gpath` → `path`. `""` when the
  * option takes no attached value (a switch, or a spaced option whose value is the NEXT
  * word and is handled by the caller). */
@@ -181,32 +115,68 @@ function attachedOptionValue(word: string): string {
   return ATTACHED_VALUE.exec(word)?.[1] ?? "";
 }
 
-/** Is a search tool's PATTERN word prose the guard can read? A pattern is prose exactly
- * when the shell will hand it to the tool as written: a single-quoted span is literal,
- * and a backslash before `$` / a backtick removes its meaning. A pattern the shell will
- * SUBSTITUTE (`rg $F`, `grep "${F}"` — double quotes do not protect a `$`) is not prose:
- * the guard cannot say what the tool finally receives, and an unresolved word in the
- * pattern position is an operand (#1764 round 4: base refused `rg $F` command-wide, and
- * a pattern-position exemption was the guard EXEMPTING a shape it never understood).
- * An escaped `\$` at the end of an ERE (the harvested `grep -E "…\\$" Dockerfile` row)
- * stays prose — the backslash is what the author typed to mean a literal `$`. */
+/** What a `$` must be followed by to be an expansion at all: a name character, a brace, a
+ * paren, a digit, or a special-parameter punctuator. A `$` with none of those behind it —
+ * end of word, `"`, a space, `}` — is a LITERAL dollar the shell leaves alone, and a
+ * trailing `$` is exactly what an ERE anchored at end-of-line is (`grep -E "…$" Dockerfile`
+ * is a harvested corpus shape). Without this the prose test would refuse an anchor as an
+ * expansion, which is the #1764 misfire class this module exists to close. */
+const EXPANDS_AFTER = /[A-Za-z0-9_({$`#!*?@-]/;
+
+/** Is a word PROSE — text the shell hands the program exactly as written?
+ *
+ * Both quote kinds are honoured, and they behave DIFFERENTLY, which is the whole point of
+ * this scanner (#1764 round 5, MUST-DO 3): a single-quoted span is inert (the shell
+ * substitutes nothing inside one, so `'a$'` and `'${F//zz/}'` are prose), while a
+ * double-quoted span substitutes (`"a'$F"`, `"x'$CMD"` are NOT prose — the guard cannot say
+ * what the tool finally receives). A backslash removes the next character's meaning outside
+ * single quotes, which is what keeps the harvested `\$` ERE anchor prose. An UNCLOSED quote
+ * of either kind is UNREADABLE, not prose: a word whose quoting never resolved has no
+ * determinable final form, and the answer to "is this inert text?" is then no.
+ *
+ * A pattern the shell will SUBSTITUTE (`rg $F`, `grep "${F}"`) is therefore not prose: an
+ * unresolved word in the pattern position is an operand (#1764 round 4: base refused `rg $F`
+ * command-wide, and a pattern-position exemption was the guard EXEMPTING a shape it never
+ * understood). */
 export function patternIsProse(rawWord: string): boolean {
+  let single = false;
+  let double = false;
   let i = 0;
   while (i < rawWord.length) {
     const c = rawWord[i] as string;
-    if (c === "'") {
-      const end = rawWord.indexOf("'", i + 1);
-      i = end < 0 ? rawWord.length : end + 1;
+    if (single) {
+      if (c === "'") single = false;
+      i++;
       continue;
     }
     if (c === "\\") {
+      // Outside single quotes an escape removes the next character's meaning: `\$`, `\``
+      // and `\\` are all literal, and `\"` does not close the double-quoted span.
       i += 2;
       continue;
     }
-    if (c === "$" || c === "`") return false;
+    if (c === "'" && !double) {
+      single = true;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      // A `"` inside single quotes is data — the `single` branch above owns that case.
+      double = !double;
+      i++;
+      continue;
+    }
+    if (c === "`") return false;
+    if (c === "$") {
+      const next = rawWord[i + 1];
+      if (next !== undefined && EXPANDS_AFTER.test(next)) return false;
+      i++;
+      continue;
+    }
     i++;
   }
-  return true;
+  // A quote that never closed: the word is unreadable, and unreadable is not prose.
+  return !single && !double;
 }
 
 /**
@@ -228,6 +198,16 @@ export function patternIsProse(rawWord: string): boolean {
  * Exported for the exemption module (#1764 round 4), which asks the SAME operand
  * question to decide whether it UNDERSTANDS a segment — one operand scanner, two asks.
  */
+/** Is the value a PATTERN FLAG consumed PROSE — inert enough that the guard may still
+ * understand the segment? The same question the pattern position asks. A consumed value the
+ * shell substitutes is a word the tool receives whose final form the guard cannot name,
+ * and for `sed` / `awk` it is a PROGRAM those tools run: `sed -e $P f` and `awk -e $P f`
+ * execute whatever `$P` holds, so a flag that CONSUMES the next word may not skip asking
+ * it (#1764 round 5, MUST-DO 4). */
+function patternValueIsProse(raw: string | undefined): boolean {
+  return raw === undefined || raw === "" || patternIsProse(raw);
+}
+
 export function operandWords(words: string[], search: boolean): string[] {
   const operands: string[] = [];
   let patternTaken = false;
@@ -270,7 +250,18 @@ export function operandWords(words: string[], search: boolean): string[] {
             if (next !== "") operands.push(next);
             i++;
           }
-        } else if (attached === "") i++;
+        } else if (attached !== "") {
+          // `-e<value>`: the value rode inside the flag word and the tool receives it.
+          if (!patternValueIsProse(attached)) operands.push(attached);
+        } else {
+          // `-e <value>`: the flag CONSUMES the next word. Until round 5 that word was
+          // skipped entirely, which is how `sed -e $P f` kept its exemption — the consumed
+          // word is now asked the same prose question the pattern position asks, and an
+          // unreadable one is an operand.
+          const nextRaw = words[i + 1];
+          if (!patternValueIsProse(nextRaw)) operands.push(unquote(nextRaw ?? ""));
+          i++;
+        }
         continue;
       }
       const attached = attachedOptionValue(word);
@@ -404,12 +395,26 @@ const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * segment's PROGRAM is the checked tool the guard reasons about, and a second step-over
  * scanner would be one drift away from exempting `timeout 300 cat $V`. */
 export function programName(words: string[]): string {
-  for (const raw of words) {
-    const word = unquote(raw).replace(/^[([{]+|[)\]};]+$/g, "");
+  const at = programWordIndex(words);
+  if (at < 0) return "";
+  // The SAME punctuation strip the index walk applied: `(cat $F)` runs `cat`, and a name
+  // left wearing its group brackets matches no tool set — which read as "no checked tool
+  // here" and walked free past the operand test.
+  return baseName(unquote(words[at] as string).replace(/^[([{]+|[)\]};]+$/g, ""));
+}
+
+/** The INDEX of the word `programName` reads as the program, or -1 when the segment hands
+ * out nothing but punctuation, prefixes and bindings. Exported for the exemption module:
+ * an assignment BEFORE the program is one the shell consumes as the program's
+ * environment, and an assignment AFTER it is an argv entry the program itself interprets
+ * — the two are different questions and the proof asks them differently (#1764 round 5). */
+export function programWordIndex(words: string[]): number {
+  for (let i = 0; i < words.length; i++) {
+    const word = unquote(words[i] as string).replace(/^[([{]+|[)\]};]+$/g, "");
     if (word === "" || LEADING_ASSIGNMENT.test(word) || NOT_THE_PROGRAM.test(word)) continue;
-    return baseName(word);
+    return i;
   }
-  return "";
+  return -1;
 }
 
 /**
@@ -422,7 +427,14 @@ export function programName(words: string[]): string {
  * name, and the command is the guard's business.
  */
 export function readToolCarriesUnresolvedOperand(command: string): boolean {
-  const text = withSameCommandAssignmentsApplied(heredocArgumentText(command) ?? command);
+  // RAW text (#1764 round 5): the operand question is asked of the words the shell
+  // receives, never of a view `withSameCommandAssignmentsApplied` pasted together. That
+  // view feeds the STORE-NAME test alone, where resolving a variable can only ever ADD a
+  // name to the text asked and so can only add a refusal; asked of an operand test it did
+  // the opposite — `cat ${F//zz/}` was read as the literal path the guard chose to believe,
+  // because the old `\$\{?NAME\}?` matcher matched `${F` without its closing brace and
+  // pasted the value in where an OPERATOR expansion actually stands.
+  const text = heredocArgumentText(command) ?? command;
   return armsOf(text).some((segment) => {
     const words = shellWords(segment);
     // The redirect test runs FIRST and on EVERY segment: a segment's own program kind says
