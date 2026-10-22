@@ -112,7 +112,8 @@ async function runDevelopTopological(
   // #1644 — the shared budget-park marker (see DevelopRunState.budgetPark):
   // the closure marks it instead of dispatching a doomed fix pass; the check
   // below turns the mark into the step's short-circuit, with the cap-hit
-  // landing as the tail the step router reads.
+  // landing as the tail the step router reads. #1774: REQUIRED, so a
+  // construction site cannot forget the mechanism it reads.
   const budgetPark: { at?: number } = {};
   const persistNotes: string[] = [...preserved.notes];
   const persister = makeBranchCompletedPersister(
@@ -350,6 +351,11 @@ async function runDevelopTopological(
   // #1742 MINOR 2 — one helper, so the two parks cannot drift), then let the
   // budget module land its cap-hit as the tail and persist.
   if (budgetPark.at !== undefined) {
+    // #1774 — the adjudication runs on the instant the REFUSAL was decided
+    // (`startedAt` in the dispatch closure), not on a fresh `Date.now()` here:
+    // the sibling flush above takes wall-clock time, and re-reading the clock
+    // after it made "does the step fit the budget the loop has left?" a
+    // question about a moment that no longer described the refusal.
     next = flushParkedSiblings(
       stateRef.current,
       begun.jobId,
@@ -357,7 +363,7 @@ async function runDevelopTopological(
       worktrees,
       workstreamBaseShas,
     );
-    next = await parkDevelopFixOverrun(ctx, withPersistNotes(next, persistNotes), Date.now());
+    next = await parkDevelopFixOverrun(ctx, withPersistNotes(next, persistNotes), budgetPark.at);
     return endStep(next);
   }
   // The state ref above is the memory-inject appends' shared state; the slow

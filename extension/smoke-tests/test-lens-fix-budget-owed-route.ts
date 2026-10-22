@@ -313,6 +313,107 @@ async function main() {
     }
   }
 
+  {
+    // #1774 — the branch TIP cannot be resolved (a `git rev-parse` that answers
+    // nothing): the head comparison is then unprovable, so the route parks and
+    // records no disclosure fact — even though the verdict's own head is set.
+    const { ctx, repoRoot, gh } = disclosureCtx({ noTip: true });
+    try {
+      const base = appendEvent(
+        reviewStateAt(Date.now() - 85 * MIN, HEAD_SHA),
+        approvedEv,
+        issuesEv("ISSUES_FOUND", HEAD_SHA),
+      );
+      const out = await parkLensRoundNoFit(ctx, base, Date.now());
+      const tail = out.eventLog[out.eventLog.length - 1];
+      assert(
+        tail?.kind === "cap-hit" &&
+          tail.cap === "lens-review-timeout" &&
+          tail.nextStep === "handoff",
+        `#1774: a tip that will not resolve parks the route (got ${JSON.stringify({ kind: tail?.kind, nextStep: (tail as { nextStep?: string }).nextStep })})`,
+      );
+      assert(
+        !out.eventLog.some((e) => e.kind === "lens-residuals-posted"),
+        "…and no disclosure fact is recorded against a tip nobody could read",
+      );
+      assert(
+        !gh.some((c) => /^gh pr comment/.test(c)),
+        "…and nothing is posted on an unprovable head comparison",
+      );
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+  {
+    // #1774 — the MAINLINE cannot be resolved (both probes fail): same shape,
+    // a patch identity that cannot be computed is a failed disclosure, not a
+    // pass. The cap evidence names the gate that could not read the git refs.
+    const { ctx, repoRoot, gh } = disclosureCtx({ noMainline: true });
+    try {
+      const base = appendEvent(
+        reviewStateAt(Date.now() - 85 * MIN, HEAD_SHA),
+        approvedEv,
+        issuesEv("ISSUES_FOUND", HEAD_SHA),
+      );
+      const out = await parkLensRoundNoFit(ctx, base, Date.now());
+      const tail = out.eventLog[out.eventLog.length - 1];
+      assert(
+        tail?.kind === "cap-hit" &&
+          tail.cap === "lens-review-timeout" &&
+          tail.nextStep === "handoff",
+        "#1774: an unresolvable mainline parks the route — no identity, no disclosure, no ci",
+      );
+      assert(
+        !out.eventLog.some((e) => e.kind === "lens-residuals-posted"),
+        "…and no disclosure fact is recorded for an identity that could not be computed",
+      );
+      assert(
+        !gh.some((c) => /^gh pr comment/.test(c)),
+        "…and nothing is posted against an identity the guard cannot match",
+      );
+      assert(
+        tail?.kind === "cap-hit" && /not disclosed/.test(tail.evidence ?? ""),
+        "…and the cap evidence says the residuals were not disclosed, with the named cause",
+      );
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+  {
+    // #1774 — the forge post TIMES OUT. A slow `gh` is not a disclosure and is
+    // not a refusal, so it must not ride to CI: the rejection lands as a failed
+    // disclosure and parks. The assertion also proves the exec was BOUNDED (a
+    // `timeout` on its opts) — an unbounded post is the hang this closes.
+    const { ctx, repoRoot, gh, ghOpts } = disclosureCtx({ ghTimesOut: true });
+    try {
+      const base = appendEvent(
+        reviewStateAt(Date.now() - 85 * MIN, HEAD_SHA),
+        approvedEv,
+        issuesEv("ISSUES_FOUND", HEAD_SHA),
+      );
+      const out = await parkLensRoundNoFit(ctx, base, Date.now());
+      const tail = out.eventLog[out.eventLog.length - 1];
+      assert(
+        gh.some((c) => /^gh pr comment/.test(c)),
+        "#1774: a timing-out post was still attempted (the fault is the timeout, not a skip)",
+      );
+      assert(
+        ghOpts.some((c) => /^gh pr comment/.test(c.line) && typeof c.timeout === "number"),
+        "…and the forge exec carried an explicit timeout — the disclosure can never hang the park path",
+      );
+      assert(
+        tail?.kind === "cap-hit" && tail.nextStep === "handoff",
+        "…and the timeout parks: a slow gh is neither a disclosure nor a licence to route on",
+      );
+      assert(
+        !out.eventLog.some((e) => e.kind === "lens-residuals-posted"),
+        "…and no disclosure fact is recorded for a comment that never landed",
+      );
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
   process.exit(exit);
 }
 

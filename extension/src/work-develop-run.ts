@@ -78,8 +78,9 @@ export interface DevelopRunState {
    *  INSTEAD of dispatching (zero dispatches), and the topological caller
    *  short-circuits the safety-net/verify gates on it — the same shape the
    *  deferred-leftover park uses: flush the sibling events, then land the
-   *  `lens-review-timeout` cap-hit as the TAIL the step router reads. */
-  budgetPark?: { at?: number };
+   *  `lens-review-timeout` cap-hit as the TAIL the step router reads. #1774:
+   *  REQUIRED — the mark and the caller's short-circuit are one mechanism. */
+  budgetPark: { at?: number };
   /** The dispatch function (ctx.dispatchFn ?? dispatchCore). */
   dispatch: NonNullable<DriverContext["dispatchFn"]>;
   /** #838 — the deck tag for this workstream's dispatch rows (the
@@ -233,7 +234,7 @@ export function makeRunOneWorkstream(
     // and the cap (named for this refused step) lands at the event tail via
     // the topological caller's short-circuit.
     if (isReviewFixPass && !developFixPassFits(s.stateRef.current, startedAt)) {
-      if (s.budgetPark) s.budgetPark.at = startedAt;
+      s.budgetPark.at = startedAt;
       const reason =
         "lens-review-timeout: the review-loop budget cannot fit the develop fix pass — not dispatched";
       // #1774 — `noRetry`: a clock reading, not transient — settled, not retried.

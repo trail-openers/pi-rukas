@@ -376,11 +376,17 @@ export async function misdirectedLedgerWrite(
  * repo has no remotes — the callers fail closed.
  */
 export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<string | undefined> {
+  // #1774 — BOUNDED. `currentPatchIdentity` reaches this on the owed-round
+  // budget-park path (directly and through `identityBase`), and it was the one
+  // git read on that path with no bound: a `git config`/`git remote` that
+  // parked hung the refusal that exists to stop a doomed step. An unbounded
+  // read here is not a neutral default — it is the path's only unbounded exit.
   for (const name of ["origin", "upstream"]) {
     try {
       const { stdout } = await execFn(`git config --get remote.${name}.url`, {
         cwd,
         maxBuffer: 64 * 1024,
+        timeout: LOCAL_GIT_TIMEOUT_MS,
       });
       if (stdout.trim()) return name;
     } catch {
@@ -388,7 +394,11 @@ export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<str
     }
   }
   try {
-    const { stdout } = await execFn("git remote", { cwd, maxBuffer: 64 * 1024 });
+    const { stdout } = await execFn("git remote", {
+      cwd,
+      maxBuffer: 64 * 1024,
+      timeout: LOCAL_GIT_TIMEOUT_MS,
+    });
     return stdout.trim().split("\n")[0]?.trim() || undefined;
   } catch {
     return undefined;

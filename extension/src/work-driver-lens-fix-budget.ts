@@ -261,19 +261,14 @@ async function parkReviewNoFit(
       // cannot be tied to the current head parks, exactly as before.
       const current = await owedVerdictOnCurrentHead(ctx, next, owed);
       if (current.ok) {
-        const routed = await discloseResidualsAndRoute(
-          ctx,
-          next,
-          owed.round,
-          owed.verdict,
-          owed.findings,
-          {
-            kind: "owed-round",
-            round: owed.round,
-            budgetLeftMin: Math.max(0, Math.round(remaining / 60_000)),
-            identity: current.identity,
-          },
-        );
+        const routed = await discloseResidualsAndRoute(ctx, next, owed.verdict, owed.findings, {
+          kind: "owed-round",
+          // #1774 — the round rides on the route, so the posted comment and the
+          // `lens-residuals-posted` fact name the SAME round by construction.
+          round: owed.round,
+          budgetLeftMin: Math.max(0, Math.round(remaining / 60_000)),
+          identity: current.identity,
+        });
         nextStep = routed.nextStep;
         next = routed.state;
       } else {

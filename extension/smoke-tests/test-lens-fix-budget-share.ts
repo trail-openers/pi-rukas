@@ -177,6 +177,11 @@ async function main() {
   }
 
 
+  // ─────── 3. lives in test-lens-fix-budget-owed-route.ts — the refused round's ROUTE ───────
+  // (the numbers are shared across the two files on purpose: the sections were
+  // split for the §12 line cap, not renumbered, so a finding cited as "section 3"
+  // in either file names the same behaviour.)
+
   // ─────────────── 4. #1644 — the develop fix pass is parked, not dispatched ───────────────
   {
     const { repo } = await fixture("fixpass");

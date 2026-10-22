@@ -338,7 +338,12 @@ export async function runLens(
     });
   }
 
-  next = await applyLensVerdict(summary, jobId, round, ctx, next);
+  // #1774 — the head THIS round read (`fixDelta.head`, resolved before the
+  // dispatch), not `pipelineState.lensReviewedHead`: that stamp only moves on a
+  // round that resolved one, so reading it here let an unresolved round inherit
+  // the PREVIOUS round's head and license the owed-round `ci` route on a head
+  // its findings never described.
+  next = await applyLensVerdict(summary, jobId, round, ctx, next, fixDelta.head);
 
   // #280 §B — round-1 seam escalation: detectRepeatSeam fires, route to
   // step-back (SDD analysis). Round ≥2 unchanged.

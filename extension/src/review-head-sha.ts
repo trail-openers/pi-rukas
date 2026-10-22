@@ -22,6 +22,7 @@
  * design).
  */
 
+import { LOCAL_GIT_TIMEOUT_MS } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 
@@ -55,6 +56,12 @@ export async function resolveHeadSha(
       cwd,
       argv: ["-C", cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
       maxBuffer: 8 * 1024,
+      // #1774 — BOUNDED like every other identity git read. This resolution is
+      // what the owed-round `ci` route compares the verdict's head against, and
+      // an unbounded rev-parse (a lock, a hung filter driver) hung the park path
+      // that exists to refuse a doomed step. A failure here is `undefined`,
+      // which the caller fails closed on — never a route on.
+      timeout: LOCAL_GIT_TIMEOUT_MS,
     });
     return stdout.trim() || undefined;
   } catch (err) {
