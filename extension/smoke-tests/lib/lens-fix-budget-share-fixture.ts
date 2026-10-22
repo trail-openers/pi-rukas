@@ -27,6 +27,13 @@ export const MIN = 60_000;
  *  assertions and turns an exact `=== undefined` into a flake. */
 export const NOW = 1_800_000_000_000;
 
+/** The tip `origin/<branch>` resolves to in the scripted git exec — the head a
+ *  lens round is said to have reviewed when a test wants the `ci` route (#1742). */
+export const HEAD_SHA = "9f3c1e5d7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d";
+/** A DIFFERENT tip: what the branch carries after a lens-fix committed. A
+ *  verdict recorded on `HEAD_SHA` must not license a route over this one. */
+export const OTHER_HEAD_SHA = "11223344556677889900aabbccddeeff00112233";
+
 const git = (cwd: string, args: string[]) =>
   execFileP("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });
 
@@ -49,7 +56,10 @@ export async function fixture(name: string): Promise<{ repo: string; branch: str
   return { repo, branch };
 }
 
-export function reviewStateAt(reviewCapStartedAt: number): WorkState {
+export function reviewStateAt(
+  reviewCapStartedAt: number,
+  lensReviewedHead?: string,
+): WorkState {
   const s = initialState(1742);
   return {
     ...s,
@@ -61,6 +71,7 @@ export function reviewStateAt(reviewCapStartedAt: number): WorkState {
       prNumber: 17420,
       reviewRound: 1,
       reviewCapStartedAt,
+      ...(lensReviewedHead ? { lensReviewedHead } : {}),
     },
   };
 }
@@ -82,19 +93,31 @@ export const approvedEv: WorkEvent = {
   jobId: "adv",
   round: 1,
 };
-export const issuesEv = (verdict: string): WorkEvent => ({
+/** The verdict event the lens step persists. `headSha` is the head the round
+ *  read (#1742): the owed-round `ci` route may only be taken when it equals
+ *  the branch tip, so a test that wants the route passes HEAD_SHA and a test
+ *  that wants the park passes a head that is no longer current. */
+export const issuesEv = (verdict: string, headSha?: string): WorkEvent => ({
   kind: "lens-issues-found",
   at: 1_000_003,
   jobId: "j",
   round: 1,
   verdict,
+  ...(headSha ? { headSha } : {}),
   findings: FINDINGS,
   totalFindings: 1,
+});
+/** A round that came back clean — it supersedes any earlier round's findings. */
+export const lensApprovedEv = (round: number): WorkEvent => ({
+  kind: "lens-approved",
+  at: 1_000_004,
+  jobId: "j2",
+  round,
 });
 
 /** A context whose git/gh are scripted: `currentPatchIdentity` resolves and
  *  `gh pr comment` is recorded (or made to fail). */
-export function disclosureCtx(opts: { ghFails?: string } = {}) {
+export function disclosureCtx(opts: { ghFails?: string; headSha?: string } = {}) {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "pi-ens-1742-disc-"));
   const gh: string[] = [];
   const notices: string[] = [];
@@ -111,6 +134,9 @@ export function disclosureCtx(opts: { ghFails?: string } = {}) {
     if (cmd.startsWith("git remote get-url")) return { stdout: "https://github.com/o/r\n" };
     if (cmd.startsWith("git merge-base")) return { stdout: `${"1".repeat(40)}\n` };
     if (cmd.includes("git patch-id")) return { stdout: `${"3".repeat(40)} (stdin)\n` };
+    // #1742 — the branch tip `currentPatchIdentity` now reports beside the
+    // patch id; the owed-round route compares it against the recorded head.
+    if (line.includes("rev-parse")) return { stdout: `${opts.headSha ?? HEAD_SHA}\n` };
     return { stdout: "" };
   }) as never;
   const ctx = {

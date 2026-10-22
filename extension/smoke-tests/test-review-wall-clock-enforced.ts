@@ -398,10 +398,13 @@ async function main() {
           fixFindings: "MEDIUM: naming drift in b.txt",
         },
       };
+      // 50m of the 90m wall clock left: the owed lens round's 10m reserve is
+      // withheld from the fixer, so the dispatch must be armed at 40m.
+      const tClock = Date.now() - (CAP - 50 * MIN);
       const withClock = {
-        ...stateFor(repo, branch, Date.now() - (CAP - 40 * MIN)),
+        ...stateFor(repo, branch, tClock),
         pipelineState: {
-          ...stateFor(repo, branch, Date.now() - (CAP - 40 * MIN)).pipelineState,
+          ...stateFor(repo, branch, tClock).pipelineState,
           workstreams: passWorkstreams,
         },
       };
@@ -418,9 +421,17 @@ async function main() {
         "job-1416-fixpass",
       );
       const dev = seen.find((s) => s.label === "developer");
+      // #1742 (MINOR 3) — an exact pin, not an upper bound: 50m remains and the
+      // owed lens round's 10m reserve is withheld from the fixer, so the bound
+      // is 40m. `<= 50 * MIN` passed whether or not the reserve was subtracted,
+      // which is the whole rule this module exists to enforce. The window is
+      // one-sided because the bound is computed at the dispatch closure's own
+      // Date.now(), a few ms after the clock was stamped: an exact `===` there
+      // is the ms-flake the NOW lesson names; ≤ 40m and > 39m still fails the
+      // unreserved (50m) and over-reserved (30m) bounds this rule exists to catch.
       assert(
-        dev !== undefined && dev.timeoutMs !== undefined && dev.timeoutMs <= 50 * MIN,
-        `a develop fix pass under the review clock is bound to the remaining budget (got ${dev?.timeoutMs})`,
+        dev !== undefined && dev.timeoutMs !== undefined && dev.timeoutMs <= 40 * MIN && dev.timeoutMs > 35 * MIN,
+        `a develop fix pass under the review clock is bound to the remaining budget MINUS the owed round's reserve (50m left → 40m; got ${dev?.timeoutMs})`,
       );
 
       // A first develop pass (no fixFindings) must NOT inherit the review cap.

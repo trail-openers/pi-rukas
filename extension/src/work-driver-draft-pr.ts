@@ -51,6 +51,8 @@ import type { ForgeType } from "./forge-detect.ts";
 import type { NormalizedPullRequest } from "./forge-types.ts";
 import type { Forge } from "./forge.ts";
 import { mergeIdentity } from "./merge-guard-reads.ts";
+import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
+import { remoteName } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { prCarriesDisclosure, readyHoldReason } from "./work-driver-draft-hold.ts";
@@ -445,7 +447,7 @@ export async function currentPatchIdentity(
   execFn: VerifyExec,
   cwd: string,
   branch: string,
-): Promise<{ ok: true; patchId: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; patchId: string; headSha?: string } | { ok: false; reason: string }> {
   // #1398 round 2 — the branch reaches `git merge-base`/`git patch-id` through
   // an exec string, so the same allowlist every networked git call applies
   // (`netRefProblem`, #1095) is applied here before any command runs: a ref
@@ -454,7 +456,18 @@ export async function currentPatchIdentity(
   if (refProblem !== undefined) return { ok: false, reason: refProblem };
   const mainline = await resolveMainline(cwd, execFn);
   if (!mainline.ok) return mainline;
-  return mergeIdentity(execFn, cwd, branch, mainline.branch);
+  const identity = await mergeIdentity(execFn, cwd, branch, mainline.branch);
+  if (!identity.ok) return identity;
+  // #1742 — the branch TIP beside the patch id. The disclosure key is a patch
+  // id (a rebased branch keeps its identity); the owed-round `ci` route needs
+  // the COMMIT the refused review actually read, which a patch id deliberately
+  // cannot tell it. Absent when the tip cannot be resolved — every consumer of
+  // this field fails closed on absent.
+  const remote = await remoteName(execFn, cwd);
+  const tip = remote ? await resolveHeadSha(cwd, `${remote}/${branch}`, execFn) : undefined;
+  return isFullCommitSha(tip ?? "")
+    ? { ok: true, patchId: identity.patchId, headSha: tip }
+    : identity;
 }
 
 /**

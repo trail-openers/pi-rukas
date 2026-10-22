@@ -44,6 +44,39 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
+ * #1742 (MINOR 2) — the ONE flush both mid-step parks share.
+ *
+ * A develop step that parks part-way through must land the same shape: the
+ * write-ahead `beginDispatch` marker cleared, every sibling / skip-cascade
+ * `branch-completed` the phases collected appended BEFORE the cap (so the cap
+ * stays the log tail `nextStep` reads), and the worktree + base maps the phases
+ * created folded in — a later resume reads trees that exist. The dirty-leftover
+ * park passes `[]` because `parkDeferredLeftover` already flushed them; the
+ * budget park passes the collected events. Two hand-written copies of this
+ * block is how one of them ends up dropping the cascade.
+ */
+function flushParkedSiblings(
+  state: WorkState,
+  jobId: string,
+  events: readonly WorkEvent[],
+  worktrees: Record<string, string>,
+  workstreamBaseShas: Record<string, string>,
+): WorkState {
+  const cleared = appendEvent(clearDispatch(state, jobId), ...events);
+  return {
+    ...cleared,
+    pipelineState: {
+      ...cleared.pipelineState,
+      worktrees,
+      workstreamBaseShas: {
+        ...workstreamBaseShas,
+        ...cleared.pipelineState.workstreamBaseShas,
+      },
+    },
+  };
+}
+
+/**
  * #679 — topological-dispatch core of runDevelop (see work-develop-run.ts).
  */
 async function runDevelopTopological(
@@ -298,40 +331,27 @@ async function runDevelopTopological(
     // be cleared on this path too — the non-park path does it just below; on the
     // parked path the cycle terminates via handoff, but leaving the job in
     // inFlightJobIds would trip detectInconsistencies on a later read.
-    next = stateRef.current;
-    next = appendEvent(clearDispatch(next, begun.jobId));
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        worktrees,
-        workstreamBaseShas: {
-          ...workstreamBaseShas,
-          ...next.pipelineState.workstreamBaseShas,
-        },
-      },
-    };
+    // `[]`: the dependent phase's own events (the failing dependent plus its
+    // skip cascade) were already flushed by `parkDeferredLeftover`, which put
+    // them before its cap-hit — re-flushing here would duplicate them.
+    next = flushParkedSiblings(stateRef.current, begun.jobId, [], worktrees, workstreamBaseShas);
     return endStep(withPersistNotes(next, persistNotes));
   }
   // #1644 — the review-loop budget parked a fix pass: nothing was dispatched
   // for it, and the safety-net/verify gates would append events AFTER the cap
   // and displace the tail the step router reads (the same reason the
-  // deferred-leftover short-circuit above exists). Flush the siblings, then
-  // let the budget module land its cap-hit as the tail and persist.
+  // deferred-leftover short-circuit above exists). Flush the siblings AND the
+  // dependents' skip-cascade events (the same set the parked branch flushes,
+  // #1742 MINOR 2 — one helper, so the two parks cannot drift), then let the
+  // budget module land its cap-hit as the tail and persist.
   if (budgetPark.at !== undefined) {
-    next = stateRef.current;
-    next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        worktrees,
-        workstreamBaseShas: {
-          ...workstreamBaseShas,
-          ...next.pipelineState.workstreamBaseShas,
-        },
-      },
-    };
+    next = flushParkedSiblings(
+      stateRef.current,
+      begun.jobId,
+      branchEvents,
+      worktrees,
+      workstreamBaseShas,
+    );
     next = await parkDevelopFixOverrun(ctx, withPersistNotes(next, persistNotes), Date.now());
     return endStep(next);
   }
