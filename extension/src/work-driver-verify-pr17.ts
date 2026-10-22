@@ -73,9 +73,28 @@ const execp: VerifyExecFn = (cmd, opts) =>
  * if git cannot give it, the commit evidence is unverifiable, which is a failure.
  */
 /** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
-function verifyGateEnabled(): boolean {
+export function verifyGateEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_VERIFY;
   return v !== "0" && v !== "false";
+}
+
+/**
+ * #1765 — the pre-develop base-health probe's opt-out. Two switches, with
+ * different reach, and both of them skip the probe:
+ *
+ *   - `PI_ENSEMBLE_DEVELOP_BASELINE_PROBE=0` suppresses ONLY the pre-develop
+ *     probe. The develop gate's post-failure `compareWithBaseline` — the
+ *     pre-#1765 behaviour — keeps running, so the operator gets the old cost
+ *     model back, not a stricter gate.
+ *   - `PI_ENSEMBLE_VERIFY=0` is the gate's own switch and skips the probe too:
+ *     one gate, one switch. A probe that parks the cycle while the gate it
+ *     belongs to is switched off would be a second gate wearing the first's
+ *     name.
+ */
+export function baseHealthProbeEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_DEVELOP_BASELINE_PROBE;
+  if (v === "0" || v === "false") return false;
+  return verifyGateEnabled();
 }
 
 /**

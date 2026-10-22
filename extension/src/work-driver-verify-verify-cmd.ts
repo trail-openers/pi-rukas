@@ -490,6 +490,10 @@ async function runVerifyCommandGateBody(
     perWorktreeVerifyFailures,
     failures,
     notes,
-    onBaselineAttributed: () => opts.onBaselineAttributed?.(),
+    // #1765 — reuse the branch step's verdict for this key; see verify-baseline.
+    ...(state.pipelineState.baseHealthProbe !== undefined
+      ? { baseHealthProbe: state.pipelineState.baseHealthProbe }
+      : {}),
+    onBaselineAttributed: opts.onBaselineAttributed,
   });
 }
