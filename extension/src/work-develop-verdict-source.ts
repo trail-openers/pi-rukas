@@ -42,6 +42,11 @@ export interface VerdictLine {
   attempts: number;
 }
 
+/** #1774 — one workstream's IN-FLIGHT verdict: the shape both develop
+ *  phases settle on, before the attempts/text mapping. The #1644 budget
+ *  refusal carries `noRetry` so the fan-out settles it like a refused reset. */
+export type WorkstreamVerdict = { id: string; ok: boolean; reason?: string; noRetry?: true };
+
 /** One raw verdict before the id/ok/reason → line-text mapping. */
 export interface RawVerdict {
   id: string;
@@ -50,6 +55,11 @@ export interface RawVerdict {
   /** #1016 — the developer CLAIMED green, even when no commit backed it: the
    *  develop gate must run to say so. Set only by the fan-out's green check. */
   claimed?: true;
+  /** #1774 — the failure is DETERMINISTIC: re-running it produces the same
+   *  refusal (the #1644 budget check is the carrier today). The fan-out
+   *  settles it where it stands — like a refused reset, never into the retry
+   *  set — because a reset would first destroy work the pass never made. */
+  noRetry?: true;
 }
 
 /** Plain rendering of one verdict (no retry annotation). */

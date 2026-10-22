@@ -48,13 +48,20 @@ import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./work
 const MINUTE_MS = 60_000;
 
 /**
+ * #1742 — one lens round's floor, stated ONCE. `MIN_USEFUL_MS["lens-review"]`
+ * and `lensRoundReserveMs()` (work-driver-lens-fix-budget.ts) both read it, so
+ * the round's start gate and the reserve the fixer withholds cannot drift.
+ */
+export const LENS_REVIEW_MIN_USEFUL_MS = 10 * MINUTE_MS;
+
+/**
  * #1567 item 6 — the least useful time (before `deadline − handoff grace`) a
  * step needs to be worth starting. A step not listed needs only some.
  */
 export const MIN_USEFUL_MS: Partial<Record<WorkStep, number>> = {
   develop: 15 * MINUTE_MS,
   "lens-fix": 15 * MINUTE_MS,
-  "lens-review": 10 * MINUTE_MS,
+  "lens-review": LENS_REVIEW_MIN_USEFUL_MS,
 };
 
 /** Below this an epoch is in seconds, not ms (1e12 ms is September 2001). */

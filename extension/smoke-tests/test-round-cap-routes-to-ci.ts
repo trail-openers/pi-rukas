@@ -299,12 +299,28 @@ await withRepo(async (repo) => {
   const capParked = [
     { kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "handoff" },
   ] as WorkEvent[];
+  // #1742 — the review-loop BUDGET module has the same shape (disclose the
+  // residuals, carry on to `ci`), so its cap holds the merge on the same
+  // terms. Its ordinary wall-clock park routes to `handoff` and never reaches
+  // this gate, so the `nextStep` condition keeps it out.
+  const budgetRoutedToCi = [
+    { kind: "cap-hit", at: 1, cap: "lens-review-timeout", reviewRound: 1, nextStep: "ci" },
+  ] as WorkEvent[];
+  const budgetParked = [
+    { kind: "cap-hit", at: 1, cap: "lens-review-timeout", reviewRound: 1, nextStep: "handoff" },
+  ] as WorkEvent[];
   assert(
     heldByUnresolvedReview(capRoutedToCi),
     "canary: a round cap routed to ci holds the merge even where authority is granted",
   );
   assert(
-    !heldByUnresolvedReview(capParked) && !heldByUnresolvedReview([]),
+    heldByUnresolvedReview(budgetRoutedToCi),
+    "canary #1742: a lens-review-timeout cap routed to ci is held too — the budget route is not a route to a merge nobody reviewed",
+  );
+  assert(
+    !heldByUnresolvedReview(capParked) &&
+      !heldByUnresolvedReview(budgetParked) &&
+      !heldByUnresolvedReview([]),
     "invariant: an ordinary cycle is not held — only one routed past an unresolved review",
   );
   assert(

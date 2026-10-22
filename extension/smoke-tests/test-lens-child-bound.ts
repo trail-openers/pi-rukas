@@ -161,7 +161,15 @@ const summary = {
   lenses: [bounded],
   findings: bounded.findings,
 };
-const next = await applyLensVerdict(summary, "job-1", 1, {} as never, initialState(1564));
+const next = await applyLensVerdict(
+  summary,
+  "job-1",
+  1,
+  {} as never,
+  initialState(1564),
+  // #1774 — required: the head THIS round read. REVIEW_INCOMPLETE records none.
+  undefined,
+);
 const cap = next.eventLog.find((e) => e.kind === "cap-hit");
 assert(
   cap?.kind === "cap-hit" && cap.cap === "review-incomplete",

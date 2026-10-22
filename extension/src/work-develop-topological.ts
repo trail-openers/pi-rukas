@@ -31,6 +31,7 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 import { recordDevelopVerdict } from "./work-driver-develop-verdict.ts";
+import { parkDevelopFixOverrun } from "./work-driver-lens-fix-budget.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import {
   applySafetyNet,
@@ -41,6 +42,39 @@ import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+
+/**
+ * #1742 (MINOR 2) — the ONE flush both mid-step parks share.
+ *
+ * A develop step that parks part-way through must land the same shape: the
+ * write-ahead `beginDispatch` marker cleared, every sibling / skip-cascade
+ * `branch-completed` the phases collected appended BEFORE the cap (so the cap
+ * stays the log tail `nextStep` reads), and the worktree + base maps the phases
+ * created folded in — a later resume reads trees that exist. The dirty-leftover
+ * park passes `[]` because `parkDeferredLeftover` already flushed them; the
+ * budget park passes the collected events. Two hand-written copies of this
+ * block is how one of them ends up dropping the cascade.
+ */
+function flushParkedSiblings(
+  state: WorkState,
+  jobId: string,
+  events: readonly WorkEvent[],
+  worktrees: Record<string, string>,
+  workstreamBaseShas: Record<string, string>,
+): WorkState {
+  const cleared = appendEvent(clearDispatch(state, jobId), ...events);
+  return {
+    ...cleared,
+    pipelineState: {
+      ...cleared.pipelineState,
+      worktrees,
+      workstreamBaseShas: {
+        ...workstreamBaseShas,
+        ...cleared.pipelineState.workstreamBaseShas,
+      },
+    },
+  };
+}
 
 /**
  * #679 — topological-dispatch core of runDevelop (see work-develop-run.ts).
@@ -66,6 +100,7 @@ async function runDevelopTopological(
     ok: boolean;
     reason?: string;
     claimed?: true;
+    noRetry?: true;
   }> = [];
   const branchEvents: WorkEvent[] = [];
   const dependsOnMap: Record<string, string[]> = {};
@@ -74,6 +109,12 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
+  // #1644 — the shared budget-park marker (see DevelopRunState.budgetPark):
+  // the closure marks it instead of dispatching a doomed fix pass; the check
+  // below turns the mark into the step's short-circuit, with the cap-hit
+  // landing as the tail the step router reads. #1774: REQUIRED, so a
+  // construction site cannot forget the mechanism it reads.
+  const budgetPark: { at?: number } = {};
   const persistNotes: string[] = [...preserved.notes];
   const persister = makeBranchCompletedPersister(
     ctx.repoRoot,
@@ -123,6 +164,7 @@ async function runDevelopTopological(
     },
     branchEvents: branchEvents as WorkEvent[],
     stateRef,
+    budgetPark,
   });
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
@@ -191,7 +233,11 @@ async function runDevelopTopological(
       const cwd = worktrees[id];
       if (typeof cwd !== "string") return { id, ok: false, reason: "no worktree" };
       const r = await runOneWorkstream(id, cwd);
-      if (!r.ok) return { id, ok: false, reason: r.reason };
+      // #1774 — the budget refusal's `noRetry` marker rides through this
+      // wrapper: dropped here, the fan-out would treat a deterministic
+      // refusal as a transient failure and retry it.
+      if (!r.ok)
+        return { id, ok: false, reason: r.reason, ...(r.noRetry ? { noRetry: true } : {}) };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
       // #1016 — the #622 safety net commits leftover edits before the green check.
       if (isValidBaseSha(base)) {
@@ -291,20 +337,34 @@ async function runDevelopTopological(
     // be cleared on this path too — the non-park path does it just below; on the
     // parked path the cycle terminates via handoff, but leaving the job in
     // inFlightJobIds would trip detectInconsistencies on a later read.
-    next = stateRef.current;
-    next = appendEvent(clearDispatch(next, begun.jobId));
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        worktrees,
-        workstreamBaseShas: {
-          ...workstreamBaseShas,
-          ...next.pipelineState.workstreamBaseShas,
-        },
-      },
-    };
+    // `[]`: the dependent phase's own events (the failing dependent plus its
+    // skip cascade) were already flushed by `parkDeferredLeftover`, which put
+    // them before its cap-hit — re-flushing here would duplicate them.
+    next = flushParkedSiblings(stateRef.current, begun.jobId, [], worktrees, workstreamBaseShas);
     return endStep(withPersistNotes(next, persistNotes));
+  }
+  // #1644 — the review-loop budget parked a fix pass: nothing was dispatched
+  // for it, and the safety-net/verify gates would append events AFTER the cap
+  // and displace the tail the step router reads (the same reason the
+  // deferred-leftover short-circuit above exists). Flush the siblings AND the
+  // dependents' skip-cascade events (the same set the parked branch flushes,
+  // #1742 MINOR 2 — one helper, so the two parks cannot drift), then let the
+  // budget module land its cap-hit as the tail and persist.
+  if (budgetPark.at !== undefined) {
+    // #1774 — the adjudication runs on the instant the REFUSAL was decided
+    // (`startedAt` in the dispatch closure), not on a fresh `Date.now()` here:
+    // the sibling flush above takes wall-clock time, and re-reading the clock
+    // after it made "does the step fit the budget the loop has left?" a
+    // question about a moment that no longer described the refusal.
+    next = flushParkedSiblings(
+      stateRef.current,
+      begun.jobId,
+      branchEvents,
+      worktrees,
+      workstreamBaseShas,
+    );
+    next = await parkDevelopFixOverrun(ctx, withPersistNotes(next, persistNotes), budgetPark.at);
+    return endStep(next);
   }
   // The state ref above is the memory-inject appends' shared state; the slow
   // events the developer children recorded are collected in the driver's

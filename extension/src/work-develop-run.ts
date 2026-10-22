@@ -28,10 +28,15 @@ import {
   classifyDevelopPass,
   crashedBranchCompleted,
 } from "./work-develop-crash.ts";
+import type { WorkstreamVerdict } from "./work-develop-verdict-source.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
-import { reviewFixDispatchBoundMs, reviewLoopActive } from "./work-driver-lens-fix-budget.ts";
+import {
+  developFixPassFits,
+  reviewFixDispatchBoundMs,
+  reviewLoopActive,
+} from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
   inlineDevelopPrompt,
@@ -68,6 +73,14 @@ export interface DevelopRunState {
   >;
   /** All workstream ids (independent + dependent). */
   ids: string[];
+  /** #1742/#1644 — the shared budget-park marker. A review-loop fix pass
+   *  whose remaining budget cannot fit `MIN_USEFUL_MS.develop` marks this
+   *  INSTEAD of dispatching (zero dispatches), and the topological caller
+   *  short-circuits the safety-net/verify gates on it — the same shape the
+   *  deferred-leftover park uses: flush the sibling events, then land the
+   *  `lens-review-timeout` cap-hit as the TAIL the step router reads. #1774:
+   *  REQUIRED — the mark and the caller's short-circuit are one mechanism. */
+  budgetPark: { at?: number };
   /** The dispatch function (ctx.dispatchFn ?? dispatchCore). */
   dispatch: NonNullable<DriverContext["dispatchFn"]>;
   /** #838 — the deck tag for this workstream's dispatch rows (the
@@ -97,7 +110,7 @@ export interface DevelopRunState {
     result: DevelopPassResult;
   }) => Promise<CrashVerdict>;
   /** Per-branch verdicts accumulated across both phases. */
-  verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
+  verdicts: WorkstreamVerdict[];
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
   branchEvents: WorkEvent[];
   /** #1016 — persists a `branch-completed` as its workstream finishes (the
@@ -194,7 +207,7 @@ export function developNote(state: WorkState): string | undefined {
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
-): (id: string, cwd: string) => Promise<{ id: string; ok: boolean; reason?: string }> {
+): (id: string, cwd: string) => Promise<WorkstreamVerdict> {
   return async (id: string, cwd: string) => {
     const { ctx, activeIssues, scratchAbs, workstreams, ids, dispatch, deckTagFor } = s;
     // The speculative-explore knob is a global env var, not per-run state,
@@ -208,12 +221,41 @@ export function makeRunOneWorkstream(
     // re-reviews after a lens-fix) runs under the same 90-minute review-loop
     // budget the widget prints. A fix pass is the other half of the fix loop;
     // leaving it unbounded is the bug the lens-fix dispatch had.
-    const reviewFixBoundMs =
-      ws?.fixFindings &&
+    const isReviewFixPass =
+      Boolean(ws?.fixFindings) &&
       (s.stateRef.current.pipelineState.lastCompletedStep === "lens-fix" ||
-        reviewLoopActive(s.stateRef.current))
-        ? reviewFixDispatchBoundMs(s.stateRef.current, "lens-fix", startedAt)
-        : undefined;
+        reviewLoopActive(s.stateRef.current));
+    const reviewFixBoundMs = isReviewFixPass
+      ? reviewFixDispatchBoundMs(s.stateRef.current, "lens-fix", startedAt)
+      : undefined;
+    // #1644 — the fix pass was BOUND but never PARKED: with the budget spent
+    // it dispatched anyway under the 60-second floor and was killed to produce
+    // nothing. Refuse it the way the lens-fix refuses itself: zero dispatches,
+    // and the cap (named for this refused step) lands at the event tail via
+    // the topological caller's short-circuit.
+    if (isReviewFixPass && !developFixPassFits(s.stateRef.current, startedAt)) {
+      s.budgetPark.at = startedAt;
+      const reason =
+        "lens-review-timeout: the review-loop budget cannot fit the develop fix pass — not dispatched";
+      // #1774 — `noRetry`: a clock reading, not transient — settled, not retried.
+      s.verdicts.push({ id, ok: false, reason, noRetry: true });
+      // #1742 (MINOR 2) — the refusal is recorded like every other develop
+      // failure (#753: "record for EVERY plan size — the N>1 guard made a
+      // single-workstream failure completely silent"). The step short-circuits
+      // before the verify gates, so this is the only thing the state file will
+      // ever say about this workstream; its dependents' skip events join it in
+      // the same flush the deferred-leftover park uses.
+      s.branchEvents.push({
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: id,
+        ok: false,
+        ms: 0,
+        at: startedAt,
+        error: reason,
+      } satisfies Extract<WorkEvent, { kind: "branch-completed" }>);
+      return { id, ok: false, reason, noRetry: true };
+    }
     const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);
     // #679 case 1 — sibling workstreams for the informational injection.
     // Gated on N>1 and workstreamId !== "default" (the existing `parallel`
@@ -314,7 +356,9 @@ export function makeRunOneWorkstream(
               developNote(s.stateRef.current),
               fastVerifyCmd,
               // #1676 — the protected paths the plan persisted, annotated beside the fence.
-              { deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [] },
+              {
+                deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
+              },
             ),
             cwd,
           },

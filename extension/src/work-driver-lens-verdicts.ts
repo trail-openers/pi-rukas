@@ -26,6 +26,15 @@ export async function applyLensVerdict(
   round: number,
   ctx: CycleContext,
   next: WorkState,
+  /** #1774 — the head THIS round resolved (`fixDelta.head` at the call site),
+   *  required. Read off `pipelineState.lensReviewedHead` it used to be the
+   *  PREVIOUS round's head whenever this round could not resolve one: the stamp
+   *  only moves on a resolved round, so a verdict that had read nothing got
+   *  vouched for by a head a different round read — and the owed-round `ci`
+   *  route then disclosed it as though it judged the current tip. Unresolved
+   *  here means NO `headSha` on the event, which is what makes the route fail
+   *  closed to a park. */
+  roundHead: string | undefined,
 ): Promise<WorkState> {
   let state = next;
   if (summary.verdict === "APPROVED") {
@@ -55,6 +64,14 @@ export async function applyLensVerdict(
       at: Date.now(),
       jobId,
       round,
+      // #1742 — the head this round actually read, bound to the verdict. The
+      // owed-round `ci` route may only be taken by a cycle whose findings were
+      // produced against the head the PR now carries; without this the route
+      // could disclose an H1 verdict as though it judged H2 (a lens-fix commits
+      // between the verdict and the refused round). Absent when THIS round
+      // resolved no head (#1774) — never the stale state stamp — so the route
+      // fails closed to a park.
+      ...(roundHead ? { headSha: roundHead } : {}),
       findings: findingsBlob,
       verdict: summary.verdict,
     });
