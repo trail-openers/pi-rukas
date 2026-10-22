@@ -28,7 +28,6 @@ import { runDevelopTopological } from "./work-develop-topological.ts";
 import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
 import {
   type FixRequest,
-  correctiveEvidenceFrom,
   overlayWorkstreams,
   planFixPass,
   postPassFault,
@@ -40,10 +39,13 @@ import {
   freshPlumbQuestion,
   noChangeProven,
   noteFixPass,
+  parkFixPass,
   withDeveloperPlumbReplies,
+  withFixPassReport,
 } from "./work-driver-adversarial-plumb.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { correctiveRoundsOf } from "./work-driver-corrective-admission.ts";
 import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
@@ -57,7 +59,6 @@ export { namedPaths } from "./work-driver-adversarial-fix-scope.ts";
 export { plumbQuestion, withParsedSiblings } from "./work-driver-adversarial-plumb.ts";
 
 export { FIX_FINDINGS_MAX };
-
 /** A workstream id as the event log keys it (N=1 rounds carry no workstreamId). */
 const keyOf = (workstreamId: string | undefined): string => workstreamId ?? "default";
 
@@ -257,64 +258,6 @@ function lastReviewVerdict(
   return undefined;
 }
 
-/** Records the handoff report naming the rounds, the reason and the findings. */
-function withFixPassReport(
-  state: WorkState,
-  pending: readonly PendingFix[],
-  reason: string,
-  now: number,
-): WorkState {
-  const rounds = pending.map((p) => `${p.workstreamId} round ${p.round}`).join(", ");
-  const findings = capWithMarker(pending.map((p) => p.findings).join("\n---\n"), FIX_FINDINGS_MAX);
-  return {
-    ...state,
-    pipelineState: {
-      ...state.pipelineState,
-      plumbReports: [
-        ...(state.pipelineState.plumbReports ?? []),
-        {
-          step: "develop",
-          role: "driver",
-          body: `adversarial fix pass (${rounds}) parked: ${reason}. The findings that triggered it:\n${findings}`,
-          at: now,
-        },
-      ],
-    },
-  };
-}
-
-function parkFixPass(
-  state: WorkState,
-  pending: readonly PendingFix[],
-  reason: string,
-  now: number,
-): WorkState {
-  // The handoff's cap text reads verifyEvidence, not the event: without it the
-  // park reads as one whose reason was never recorded. The prefix is what
-  // keeps that text from blaming the outcome gate.
-  const reported = withFixPassReport(state, pending, reason, now);
-  const evidenced: WorkState = {
-    ...reported,
-    pipelineState: {
-      ...reported.pipelineState,
-      verifyEvidence: {
-        step: "develop",
-        failures: [`${FIX_PASS_EVIDENCE_PREFIX}${reason}`],
-        at: now,
-        origin: "fix-pass",
-      },
-    },
-  };
-  return appendEvent(evidenced, {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap: "fix-pass-park", // #1349 — the pass's own check, not the outcome gate
-    reviewRound: state.pipelineState.reviewRound,
-    nextStep: "handoff",
-    evidence: `${FIX_PASS_EVIDENCE_PREFIX}${reason}`,
-  });
-}
-
 /**
  * The develop fix pass for the pending workstreams. Reuses their worktrees;
  * named finding paths widen a declared fence for this pass only; all develop
@@ -417,8 +360,9 @@ export async function runAdversarialFixPass(
     plans,
     ps.baseSha ?? "",
     // #1698(b) — the corrective round dispatched inside this pass edits the
-    // files its own evidence named; those are driver-ordered, not strays.
-    correctiveEvidenceFrom(restored.eventLog.slice(startLen)),
+    // files its own evidence named; those are driver-ordered, not strays. The
+    // pass-scoped window, and the gate derives the evidence from the records.
+    correctiveRoundsOf(restored.eventLog.slice(startLen)),
   );
   if (post.reason) {
     // #1137 — a no-change fix pass whose workstream carried a plumb report
@@ -435,10 +379,11 @@ export async function runAdversarialFixPass(
           pending,
           `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
           now,
+          post.admissions,
         );
       }
     }
-    return parkFixPass(restored, pending, post.reason, now);
+    return parkFixPass(restored, pending, post.reason, now, post.admissions);
   }
   // The operator's kill switch is NOT a failed check: a disabled check reads
   // NOT CHECKED (as every other reader renders it) and the pass proceeds with
