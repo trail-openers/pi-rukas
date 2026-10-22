@@ -26,6 +26,8 @@ import type { redGateFixture } from "./verify-baseline-probe-harness.ts";
 
 /** The project's verify command, as `.pi/verify-cmd` carries it in every case. */
 export const PROBE_CMD = "sh gate.sh";
+/** The new file's own alias for it, so both files name one command. */
+export { PROBE_CMD as CMD } from "./base-health-probe-fixture.ts";
 /**
  * The harness maps any test name that is not `allpass*` onto the always-failing
  * fixture, so a GREEN base gate has to be named `allpass-*`: that mapping is the
