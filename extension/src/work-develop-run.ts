@@ -28,6 +28,7 @@ import {
   classifyDevelopPass,
   crashedBranchCompleted,
 } from "./work-develop-crash.ts";
+import type { WorkstreamVerdict } from "./work-develop-verdict-source.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
@@ -108,7 +109,7 @@ export interface DevelopRunState {
     result: DevelopPassResult;
   }) => Promise<CrashVerdict>;
   /** Per-branch verdicts accumulated across both phases. */
-  verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
+  verdicts: WorkstreamVerdict[];
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
   branchEvents: WorkEvent[];
   /** #1016 — persists a `branch-completed` as its workstream finishes (the
@@ -205,7 +206,7 @@ export function developNote(state: WorkState): string | undefined {
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
-): (id: string, cwd: string) => Promise<{ id: string; ok: boolean; reason?: string }> {
+): (id: string, cwd: string) => Promise<WorkstreamVerdict> {
   return async (id: string, cwd: string) => {
     const { ctx, activeIssues, scratchAbs, workstreams, ids, dispatch, deckTagFor } = s;
     // The speculative-explore knob is a global env var, not per-run state,
@@ -235,7 +236,8 @@ export function makeRunOneWorkstream(
       if (s.budgetPark) s.budgetPark.at = startedAt;
       const reason =
         "lens-review-timeout: the review-loop budget cannot fit the develop fix pass — not dispatched";
-      s.verdicts.push({ id, ok: false, reason });
+      // #1774 — `noRetry`: a clock reading, not transient — settled, not retried.
+      s.verdicts.push({ id, ok: false, reason, noRetry: true });
       // #1742 (MINOR 2) — the refusal is recorded like every other develop
       // failure (#753: "record for EVERY plan size — the N>1 guard made a
       // single-workstream failure completely silent"). The step short-circuits
@@ -251,7 +253,7 @@ export function makeRunOneWorkstream(
         at: startedAt,
         error: reason,
       } satisfies Extract<WorkEvent, { kind: "branch-completed" }>);
-      return { id, ok: false, reason };
+      return { id, ok: false, reason, noRetry: true };
     }
     const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);
     // #679 case 1 — sibling workstreams for the informational injection.

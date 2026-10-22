@@ -28,7 +28,7 @@ import { execp } from "./exec.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { currentPatchIdentity } from "./work-driver-draft-pr.ts";
+import { type PatchIdentity, currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { rawErrorText } from "./work-driver-draft-rearm.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import type { WorkStep } from "./workflow-state.ts";
@@ -76,7 +76,18 @@ import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 export async function recordLensResidualsPosted(
   ctx: DriverContext,
   state: WorkState,
-  opts: { round: number; prNumber?: number; note?: string; step?: WorkStep },
+  opts: {
+    round: number;
+    prNumber?: number;
+    note?: string;
+    step?: WorkStep;
+    /** #1774 — the identity the disclosure was keyed on, threaded in so the
+     *  fact and the marker on the posted comment come from ONE git read. The
+     *  disclosure route already failed closed on a not-ok identity, so a
+     *  success path always has one; absent (the other callers) falls back to
+     *  computing it here. */
+    identity?: PatchIdentity;
+  },
 ): Promise<WorkState> {
   // A note means the disclosure FAILED (that is the convention of
   // postLensResidualDisclosure's return) — the failure event belongs to
@@ -89,7 +100,7 @@ export async function recordLensResidualsPosted(
     return declineUndisclosed(state, opts, "the cycle has no branch name to key it on");
   }
   const execFn = ctx.verifyExecFn ?? execp;
-  const identity = await currentPatchIdentity(execFn, ctx.repoRoot, branch);
+  const identity = opts.identity ?? (await currentPatchIdentity(execFn, ctx.repoRoot, branch));
   if (!identity.ok) {
     trace(`work-driver: the residual-disclosure fact was not recorded — ${identity.reason}`);
     // item 4 — the handoff must explain a draft it cannot lift, so the reason

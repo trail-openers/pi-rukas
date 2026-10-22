@@ -72,16 +72,13 @@ import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { notifyAgent } from "./agent-message.ts";
 import { execp } from "./exec.ts";
 import { REVIEW_WALL_CLOCK_ENV, reviewWallClockMs } from "./review-budget.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 import { childBoundGraceMs, lensChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import { MIN_USEFUL_MS } from "./work-driver-deadline.ts";
-import { currentPatchIdentity } from "./work-driver-draft-pr.ts";
-import {
-  OWED_ROUND_DISCLOSURE_PREFIX,
-  type ResidualPatchIdentity,
-  discloseResidualsAndRoute,
-} from "./work-driver-lens-cap.ts";
+import { LENS_REVIEW_MIN_USEFUL_MS, MIN_USEFUL_MS } from "./work-driver-deadline.ts";
+import { type PatchIdentity, currentPatchIdentity } from "./work-driver-draft-pr.ts";
+import { discloseResidualsAndRoute } from "./work-driver-lens-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -170,12 +167,13 @@ export function reviewFixDispatchBoundMs(
  * remaining budget, the owed round was refused by this module's own start
  * gate, and the cycle capped with the fix unverified.
  *
- * Read per call (like every other knob here) so tests can flip it. Default:
- * the lens round's own minimum — reserving less than a round's floor would
- * reserve a round that gets refused anyway.
+ * Not an env knob: the reserve is the lens round's own floor, stated once as
+ * `LENS_REVIEW_MIN_USEFUL_MS` (work-driver-deadline.ts) and read by the
+ * round's start gate too — reserving less than a round's floor would reserve
+ * a round that gets refused anyway, and a second literal would drift.
  */
 export function lensRoundReserveMs(): number {
-  return MIN_USEFUL_MS["lens-review"] ?? 10 * 60_000;
+  return LENS_REVIEW_MIN_USEFUL_MS;
 }
 
 /**
@@ -270,10 +268,9 @@ async function parkReviewNoFit(
           owed.verdict,
           owed.findings,
           {
-            owedRound: true,
+            kind: "owed-round",
+            round: owed.round,
             budgetLeftMin: Math.max(0, Math.round(remaining / 60_000)),
-            disclosurePrefix: OWED_ROUND_DISCLOSURE_PREFIX,
-            traceLabel: "lens-review-timeout",
             identity: current.identity,
           },
         );
@@ -315,10 +312,18 @@ async function parkReviewNoFit(
 }
 
 /** The last lens round's verdict + findings blob, with the round and the head
- *  it was produced on — or `undefined` when nothing is owed to disclose. */
-function lastOwedRoundFindings(
-  state: WorkState,
-): { verdict: string; findings: string; round: number; headSha?: string } | undefined {
+ *  it was produced on — or `undefined` when nothing is owed to disclose. The
+ *  verdict keeps the event's own narrow type (#1774): the caller's
+ *  `=== "ISSUES_FOUND"` bar must not silently widen to `string`, or a renamed
+ *  verdict token becomes a prose comparison nobody can see failing. */
+function lastOwedRoundFindings(state: WorkState):
+  | {
+      verdict: Extract<WorkEvent, { kind: "lens-issues-found" }>["verdict"];
+      findings: string;
+      round: number;
+      headSha?: string;
+    }
+  | undefined {
   const log = state.eventLog;
   let idx = -1;
   for (let i = log.length - 1; i >= 0; i--) {
@@ -362,14 +367,19 @@ async function owedVerdictOnCurrentHead(
   ctx: CycleContext,
   state: WorkState,
   owed: { round: number; headSha?: string },
-): Promise<{ ok: true; identity: ResidualPatchIdentity } | { ok: false; reason: string }> {
+): Promise<{ ok: true; identity: PatchIdentity } | { ok: false; reason: string }> {
   const branch = state.pipelineState.branchName;
   if (!branch) return { ok: false, reason: "the cycle recorded no branch name" };
-  const reviewed = owed.headSha ?? state.pipelineState.lensReviewedHead;
-  if (!reviewed) {
+  // #1774 — the verdict's OWN head, only. The old `?? lensReviewedHead`
+  // fallback let a state-level stamp vouch for a verdict that never recorded
+  // one: the stamp moves when a later round reads a different head, so the
+  // comparison could pass while the findings described an entirely different
+  // commit. An unrecorded or malformed head parks (the pre-#1742 behaviour).
+  const reviewed = owed.headSha;
+  if (!reviewed || !isFullCommitSha(reviewed)) {
     return {
       ok: false,
-      reason: `round ${owed.round}'s verdict recorded no head to compare (pre-#1742 state, or a review that never resolved one)`,
+      reason: `round ${owed.round}'s verdict recorded no full commit head to compare (pre-#1742 state, or a review that never resolved one)`,
     };
   }
   const execFn = ctx.verifyExecFn ?? execp;

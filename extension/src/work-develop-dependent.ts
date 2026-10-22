@@ -80,7 +80,7 @@ export async function runDependentWorkstreams(
   runOneWorkstream: (
     id: string,
     cwd: string,
-  ) => Promise<{ id: string; ok: boolean; reason?: string }>,
+  ) => Promise<{ id: string; ok: boolean; reason?: string; noRetry?: true }>,
   /** #753 — the per-run state (in-cycle worktrees, park flag, dep-completion timestamps, failure source). */
   run: DependentRunState,
 ): Promise<{
@@ -324,7 +324,11 @@ export async function runDependentWorkstreams(
         // retried, and gets the same one-shot retry an independent gets.
         failedOrSkipped.add(id);
         if (failureSource) failureSource[id] = "failed";
-        if (allIds.length > 1 && run.resetFor) {
+        // #1774 — `noRetry`: the #1644 budget refusal is a clock reading, not
+        // a transient failure. A retry would reset the worktree (destroying
+        // work) and re-dispatch into the same refusal; the independent
+        // fan-out excludes the same marker from its retry set.
+        if (allIds.length > 1 && run.resetFor && outcome.noRetry !== true) {
           const resetFor = run.resetFor;
           outcome = await retryOnce({
             id,

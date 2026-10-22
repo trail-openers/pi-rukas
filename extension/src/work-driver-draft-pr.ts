@@ -443,11 +443,19 @@ function persistedOrEmpty(
  * them). A local clone that has not seen the latest push computes a stale id —
  * the fail-closed direction: a stale id never matches a current one.
  */
+/** #1774 — the ONE name for a patch identity: the merge-guard's own patch id
+ *  for the branch tip, or why it could not be read. Exported so every
+ *  disclosure route (work-driver-lens-cap.ts, work-driver-lens-fix-budget.ts)
+ *  takes the same shape instead of hand-mirroring it. */
+export type PatchIdentity =
+  | { ok: true; patchId: string; headSha?: string }
+  | { ok: false; reason: string };
+
 export async function currentPatchIdentity(
   execFn: VerifyExec,
   cwd: string,
   branch: string,
-): Promise<{ ok: true; patchId: string; headSha?: string } | { ok: false; reason: string }> {
+): Promise<PatchIdentity> {
   // #1398 round 2 — the branch reaches `git merge-base`/`git patch-id` through
   // an exec string, so the same allowlist every networked git call applies
   // (`netRefProblem`, #1095) is applied here before any command runs: a ref

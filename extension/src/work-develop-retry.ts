@@ -258,8 +258,14 @@ export async function runIndependentFanout(args: {
   // Retry only when some workstream is green (kept or fresh): a fan-out where
   // every workstream failed is a step failure and goes straight to the verdicts.
   const finals = new Map(first.map((r) => [r.id, r]));
-  const failed = first.filter((r) => !r.ok).map((r) => r.id);
-  for (const id of failed) firstPassFailed?.add(id);
+  const failedFirst = first.filter((r) => !r.ok);
+  for (const r of failedFirst) firstPassFailed?.add(r.id);
+  // #1774 — a `noRetry` verdict is deterministic (the #1644 budget refusal is
+  // the carrier: the same clock that refused the first pass refuses the
+  // retry). It settles where it stands, like a refused reset below: a retry
+  // would run a worktree reset — destroying the partial work the save exists
+  // to protect — and re-dispatch into the same refusal.
+  const failed = failedFirst.filter((r) => r.noRetry !== true).map((r) => r.id);
   const someGreen = first.some((r) => r.ok) || kept.length > 0;
   if (multi && someGreen && failed.length > 0) {
     trace(`work-driver: re-dispatching failed workstreams once — ${failed.join(", ")}`);
