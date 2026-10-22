@@ -28,8 +28,25 @@
  * listed as secondary evidence. The no-verdict families (timeout, host
  * exhaustion, build residue) keep their precedence — see `verifyCapFor`.
  *
+ * Both halves have one caller: `probeBaseAtBranch` (the branch step's only
+ * base-health entry point) asks `applyBaseHealthProbe` and, when the outcome
+ * carries a `park`, returns it. The park already carries the verdict recorded
+ * on the state, so the caller cannot drop it. Nothing else reaches in, so
+ * nothing else can park on a verdict the probe did not earn.
+ *
  * What this module never does: it never turns a failure into a pass, never
  * parks on `unknown`, and never reads a malformed cache as green.
+ *
+ * How long a GREEN is trusted: indefinitely, for its exact
+ * (baseSha, command, tier bound) key. There is no age term and none is
+ * needed. The commit a green was earned on is an immutable commit, so only a
+ * different command or a different bound can judge it differently, and both
+ * are in the key. What a green actually skips is only the branch probe: the
+ * develop step runs its own verify gate on the change regardless, so a base
+ * that went red under some other influence after the probe is caught there,
+ * at the point where it costs a develop round rather than a whole cycle. An
+ * expiry would re-pay a full suite run to re-learn a fact about a commit that
+ * cannot change.
  *
  * The switch reads (`baseHealthProbeEnabled`) are exported from
  * `work-driver-verify-pr17.ts` rather than here: `verifyGateEnabled` — the
@@ -74,7 +91,13 @@ export function baseHealthKey(v: {
   return `${v.baseSha}\u0000${v.command}\u0000${v.tierBoundMs}`;
 }
 
-/** A verdict whose shape we can reason about. Anything else is re-probe, never green. */
+/**
+ * A verdict whose shape we can reason about. Anything else is re-probe, never
+ * green. An `at` field on an older cache file is IGNORED, not required: the
+ * record no longer carries one (see the module header's trust rule), and a
+ * cache written by an earlier build must stay readable rather than force a
+ * suite re-run for a field nothing reads.
+ */
 function usableVerdict(raw: unknown): BaseHealthVerdict | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const v = raw as Record<string, unknown>;
@@ -83,21 +106,14 @@ function usableVerdict(raw: unknown): BaseHealthVerdict | undefined {
   if (typeof v.command !== "string" || v.command === "") return undefined;
   if (typeof v.tierBoundMs !== "number" || !Number.isFinite(v.tierBoundMs) || v.tierBoundMs <= 0)
     return undefined;
-  if (typeof v.at !== "number" || !Number.isFinite(v.at)) return undefined;
   const verdict: BaseHealthVerdict = {
     status: v.status,
     baseSha: v.baseSha,
     command: v.command,
     tierBoundMs: v.tierBoundMs,
-    at: v.at,
   };
   if (typeof v.reason === "string") verdict.reason = v.reason;
   return verdict;
-}
-
-/** True only for a well-formed GREEN verdict — a malformed record is never green. */
-export function isGreenVerdict(raw: unknown): raw is BaseHealthVerdict {
-  return usableVerdict(raw)?.status === "green";
 }
 
 /**
@@ -155,17 +171,19 @@ export async function writeBaseHealthCache(
 }
 
 /**
- * Whether a probe entry attributes to `cmd`: it names the verify command the
- * probe re-ran, in backticks, from either arm of `baselineRedMessage`. Neither
- * position nor the leading marker decides — the timed-out arm leads with
- * `[verify-timeout]` — so the command inside the entry is the only reliable
- * attribution the develop gate's cap rule has.
+ * Whether a probe entry attributes to `cmd`: it LEADS with the `[baseline-red]`
+ * marker AND names the verify command the probe re-ran, in backticks, from
+ * either arm of `baselineRedMessage`. The marker is required, not decorative:
+ * the `red-timed-out` arm leads with `[baseline-red] [verify-timeout]`, so a
+ * bare `[verify-timeout]` entry — a fast-tier, smoke or consolidated run the
+ * gate itself killed at its bound — names no base at all and must not read as
+ * the base being red. Position of the COMMAND decides nothing (the timed-out
+ * arm puts it after both labels); position of the MARKER decides everything.
+ * `verifyCapFor` still routes a killed run's own timeout, host-exhaustion or
+ * residue entry ahead of this claim, so its precedence is untouched.
  */
 export function baselineRedForCommand(failure: string, cmd: string): boolean {
-  return (
-    (failure.startsWith(BASELINE_RED_MARKER) || failure.includes(VERIFY_TIMEOUT_LABEL)) &&
-    failure.includes(`\`${cmd}\``)
-  );
+  return failure.startsWith(BASELINE_RED_MARKER) && failure.includes(`\`${cmd}\``);
 }
 
 /**
@@ -179,20 +197,17 @@ export function baselineRedForCmd(failures: readonly string[], cmd: string): boo
   return failures.some((f) => baselineRedForCommand(f, cmd));
 }
 
-/** The marker, re-exported for the attribution consumers in this module's seam. */
-export { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
-import { VERIFY_TIMEOUT_LABEL } from "./work-driver-verify-develop-helpers.ts";
-
 /** What the probe did, as the branch step reports it. */
 export interface BaseHealthProbeOutcome {
   /** Nothing ran (no command, a switch off, an unreadable base). */
   ran: boolean;
   verdict?: BaseHealthVerdict;
   /**
-   * Set only on an established RED. The branch step parks on it; nothing else
-   * reads it, so a caller cannot park on a verdict this probe did not earn.
+   * Set only on an established RED: the branch step's park, built here and
+   * returned by `probeBaseAtBranch`, the only caller. It carries the verdict
+   * the probe just earned, so a park cannot be reached from any other record.
    */
-  red?: RedBaselineVerdict;
+  park?: WorkState;
   /** A note for the operator: why nothing ran, or why the cache answered. */
   notes: string[];
 }
@@ -221,8 +236,8 @@ type BaseHealthKey = { baseSha: string; command: string; tierBoundMs: TierBoundM
  * The branch step's pre-develop probe, called through ONE line from both
  * branch paths (mechanized and ops fallback) after `baseSha` and the worktrees
  * are on the state. Everything the probe cannot establish is a note, never a
- * park; only an established red reaches the caller as a verdict it must park
- * on. The added suite run is disclosed in a trace line.
+ * park; only an established red reaches the caller as a `park` state it must
+ * return. The added suite run is disclosed in a trace line.
  */
 export async function applyBaseHealthProbe(
   execFn: DriverExecFn,
@@ -256,7 +271,6 @@ export async function applyBaseHealthProbe(
         baseSha: baseSha ?? "",
         command: cmd,
         tierBoundMs: 0,
-        at: Date.now(),
         reason: "no readable baseSha on the state",
       },
       notes: ["base-health: baseSha unreadable — probe not run, the cycle proceeds"],
@@ -298,16 +312,26 @@ export async function applyBaseHealthProbe(
     baseSha,
     command: cmd,
     tierBoundMs,
-    at: Date.now(),
     ...(probe.status === "unknown" ? { reason: probe.reason } : {}),
   };
   if (isRedBaseline(probe)) {
     // Deliberately NOT cached across cycles: the next cycle re-probes before it
     // parks, so one flaky red cannot park cycles it never ran in.
+    //
+    // The verdict is recorded on the state HERE, in the same append that raises
+    // the park: a red is the one verdict whose record must survive the park,
+    // because `probeBaseAtBranch` returns this state as the step's state and
+    // the handoff names the verdict it parked on. A `red` that reached the
+    // caller without it would be a park with no record behind it.
+    const parked = baseHealthPark(
+      { ...state, pipelineState: { ...state.pipelineState, baseHealthProbe: verdict } },
+      verdict,
+      probe,
+    );
     return {
       ran: true,
       verdict,
-      red: probe,
+      park: parked,
       notes: [`base-health: base ${baseSha.slice(0, 12)} is RED — the gate was already red`],
     };
   }
@@ -331,13 +355,6 @@ export async function applyBaseHealthProbe(
   };
 }
 
-/** The probe's own verdict shape, as the branch step holds it before parking. */
-export interface BaseHealthRed {
-  verdict: BaseHealthVerdict;
-  /** The probe's red arm — the evidence `baselineRedMessage` renders. */
-  red: RedBaselineVerdict;
-}
-
 /**
  * The branch step's whole base-health seam, in one call: resolve the project's
  * verify command, probe it at `baseSha`, record the verdict on the state, and
@@ -353,18 +370,15 @@ export async function probeBaseAtBranch(
 ): Promise<WorkState> {
   const cmd = await verifyCmdFor(ctx.repoRoot);
   const outcome = await applyBaseHealthProbe(execFn, ctx, state, cmd);
-  let next: WorkState = outcome.verdict
-    ? { ...state, pipelineState: { ...state.pipelineState, baseHealthProbe: outcome.verdict } }
-    : state;
-  if (outcome.red !== undefined) {
+  if (outcome.park !== undefined) {
     trace(
       "work-driver: base-health — parking at verify-baseline-red:branch (no developer dispatched)",
     );
-    return appendBaseHealthPark(next, {
-      verdict: outcome.verdict as BaseHealthVerdict,
-      red: outcome.red,
-    });
+    return outcome.park;
   }
+  let next: WorkState = outcome.verdict
+    ? { ...state, pipelineState: { ...state.pipelineState, baseHealthProbe: outcome.verdict } }
+    : state;
   if (outcome.notes.length > 0) {
     trace(`work-driver: base-health — ${outcome.notes.join("; ")}`);
     next = appendEvent(
@@ -384,14 +398,18 @@ export async function probeBaseAtBranch(
 /**
  * The branch step's park on a red base: `verify-baseline-red:branch`, cause
  * class environment (the cause table routes on the marker in the evidence),
- * and NO develop dispatch — the step returns this state and the router reads
- * the trailing cap-hit as its own routing to `handoff`. The probe tree is
- * already gone: `probeBaselineVerify` removes it in its own `finally`. The
- * evidence carries the gate's own tally when the loop printed one, so the
- * operator sees which suite broke rather than only that it did.
+ * and NO develop dispatch — the probe builds it and `probeBaseAtBranch`
+ * returns it as the step's state, so the router reads the trailing cap-hit as
+ * its own routing to `handoff`. The probe tree is already gone:
+ * `probeBaselineVerify` removes it in its own `finally`. The evidence carries
+ * the gate's own tally when the loop printed one, so the operator sees which
+ * suite broke rather than only that it did.
  */
-export function appendBaseHealthPark(state: WorkState, red: BaseHealthRed): WorkState {
-  const { verdict, red: arm } = red;
+function baseHealthPark(
+  state: WorkState,
+  verdict: BaseHealthVerdict,
+  arm: RedBaselineVerdict,
+): WorkState {
   const message = baselineRedMessage(arm, {
     cmd: verdict.command,
     baseSha: verdict.baseSha,

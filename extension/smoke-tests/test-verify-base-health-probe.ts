@@ -31,7 +31,6 @@ import {
   baseHealthCacheFile,
   baseHealthKey,
   cachedBaseHealth,
-  isGreenVerdict,
   matchingVerdict,
   readBaseHealthCache,
 } from "../src/work-driver-verify-base-health.ts";
@@ -61,6 +60,30 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+/**
+ * The cache file's reader, inlined here rather than exported from the module:
+ * the seam is a guard on the CACHE WRITER (a green must reach the file in a
+ * shape a later cycle can read), not a behaviour the driver calls — its
+ * production twin is `usableVerdict`, which the probe already runs. A
+ * malformed or non-green record is not green, so this is the writer's
+ * assertion, never a second opinion the probe could consult.
+ */
+function looksLikeGreenVerdict(raw: unknown): raw is BaseHealthVerdict {
+  const v = raw as Record<string, unknown> | null;
+  return (
+    v !== null &&
+    typeof v === "object" &&
+    v.status === "green" &&
+    typeof v.baseSha === "string" &&
+    v.baseSha !== "" &&
+    typeof v.command === "string" &&
+    v.command !== "" &&
+    typeof v.tierBoundMs === "number" &&
+    Number.isFinite(v.tierBoundMs) &&
+    v.tierBoundMs > 0
+  );
 }
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-base-health-"));
@@ -127,7 +150,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "green base: the verdict is recorded on the state",
   );
   assert(
-    r.cacheRaw !== undefined && isGreenVerdict(JSON.parse(r.cacheRaw).verdict),
+    r.cacheRaw !== undefined && looksLikeGreenVerdict(JSON.parse(r.cacheRaw).verdict),
     "green base: the green verdict is written to the repo-level cache",
   );
   assert(
@@ -276,7 +299,6 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     baseSha: f.baseSha,
     command: CMD,
     tierBoundMs: bound,
-    at: 0,
   };
   assert(
     matchingVerdict(green, {
@@ -313,7 +335,6 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     baseSha: f.baseSha,
     command: CMD,
     tierBoundMs: 1,
-    at: 0,
   };
   const read = await readBaseHealthCache(async () => JSON.stringify({ verdict: red }), f.repo);
   assert(
@@ -375,7 +396,6 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     baseSha: f.baseSha,
     command: CMD,
     tierBoundMs: bound,
-    at: 0,
   };
   held.pipelineState.baseHealthProbe = red;
   let worktreeAdds = 0;
@@ -463,6 +483,12 @@ for (const [label, env] of [
   );
   assert(r.state.pipelineState.baseSha === f.baseSha, "the probe leaves baseSha on the state");
 }
+
+// Cases 13 and 14 — the red-base ATTRIBUTION rule (a bare `[verify-timeout]`
+// names no base) and the pre-#1765 legacy-cache rule (a cache file that still
+// carries `at` stays readable) live in
+// `test-verify-baseline-attribution.ts`: both are pure and were over this
+// file's AGENTS.md §12 budget.
 
 rmSync(root, { recursive: true, force: true });
 process.exit(exit);

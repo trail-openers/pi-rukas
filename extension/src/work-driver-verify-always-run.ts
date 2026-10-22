@@ -209,6 +209,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-subagent-git-guard.ts",
   "smoke-tests/test-troubleshooting-cap-entries.ts",
   "smoke-tests/test-verify-base-health-probe.ts",
+  "smoke-tests/test-verify-baseline-attribution.ts",
   "smoke-tests/test-verify-child-env-paths.ts",
   "smoke-tests/test-verify-child-env.ts",
   "smoke-tests/test-verify-cmd-no-bare-bunx.ts",

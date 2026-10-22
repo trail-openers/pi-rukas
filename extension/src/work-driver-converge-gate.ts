@@ -37,6 +37,7 @@ import path from "node:path";
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
+import { developVerifyCap } from "./work-develop-verify-failure.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   type ConvergeVerdict,
@@ -46,7 +47,6 @@ import {
 } from "./work-driver-converge.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
-import { verifyCapFor } from "./work-driver-verify-develop-helpers.ts";
 import { recordDevelopGateEvents } from "./work-driver-verify-events.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -221,12 +221,12 @@ export async function runConvergeGateHandler(
       );
       const cap2 = conflictText
         ? ("consolidated-verify-conflict" as const)
-        : verifyCapFor(
-            "develop",
-            gate2.failures,
-            gate2.baselineRedOnly,
-            gate2.buildResidueOnly === true,
-          );
+        : // #1765 — the shared develop cap helper. This site used to spread the
+          // two red claims by hand and dropped `baselineRedEstablished`, so a
+          // corrective re-run whose gate had just proved the base red capped
+          // `verify-failed:develop` — the cap a corrective round answers — and
+          // the cycle paid for another round on a base nothing can pass.
+          developVerifyCap(gate2);
       next = {
         ...next,
         pipelineState: {
