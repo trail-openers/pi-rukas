@@ -62,9 +62,9 @@ export function settleCommitlessGreen(
   verdict: WorkstreamVerdict,
   emit: (ev: WorkEvent) => void,
 ): GreenGateOutcome {
-  const unfinished = verdict.reason;
-  if (unfinished === undefined) {
-    // Clean tree, no own commits: the GREEN_DOWNGRADE shape, verbatim.
+  if (verdict.unfinished !== true) {
+    // No own commits and the classify seam did NOT call it unfinished: the
+    // GREEN_DOWNGRADE shape, verbatim.
     recordDowngrade({ emit }, verdict.id, undefined);
     return {
       id: verdict.id,
@@ -76,11 +76,11 @@ export function settleCommitlessGreen(
   }
   // The unfinished branch already recorded its own `branch-completed` with the
   // `unfinished` fragment (work-develop-pass-record.ts), so no second record is
-  // emitted here — one event is one finding.
+  // emitted here — one event is one finding. Its reason names the paths.
   return {
     id: verdict.id,
     ok: false,
-    reason: unfinished,
+    reason: verdict.reason ?? downgradeReason(),
     claimed: true,
     ...(verdict.noRetry ? { noRetry: true as const } : {}),
   };

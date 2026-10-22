@@ -99,10 +99,6 @@ export interface DevelopRunState {
    *  time, so a dependent classified after its own entry landed is described
    *  against ITS base, not the global one). */
   baseFor: (id: string) => string | undefined;
-  /** #1403 — the pass's classification, with the crash record (#1403) and the
-   *  unfinished record (#1768) built from ONE tree reading. A test injects a
-   *  fake tree; absent, the closure calls `classifyDevelopPass`. */
-  classifyPass?: (args: ClassifyArgs) => Promise<CrashVerdict>;
   /** #1768 — the corrective round's prompt and label; absent on every ordinary
    *  pass, so the prompt the developer sees is byte-identical to today's. */
   corrective?: CorrectiveDispatch;
@@ -438,7 +434,11 @@ export function makeRunOneWorkstream(
       // code 1)` and exited non-zero fell onto the ordinary failure path with
       // a reason drawn from the completion event's tail — nothing said it had
       // crashed, and nothing named the work it left uncommitted.
-      const verdict = await (s.classifyPass ?? classifyDevelopPass)(
+      // The classification is NOT injectable. It used to be (`classifyPass?`),
+      // and no caller ever supplied it — a fakeable classifier is exactly how a
+      // test could assert a green the real tree reading would never have granted,
+      // which is the class of bug #1768 is about. The tree is the only evidence.
+      const verdict = await classifyDevelopPass(
         classifyArgsForPass({
           id,
           cwd,

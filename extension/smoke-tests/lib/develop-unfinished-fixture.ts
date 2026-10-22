@@ -19,8 +19,29 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { type WorkState, appendEvent, initialState } from "../../src/workflow-state.ts";
+import { realExec } from "./exec-fake.ts";
 
+/** The promisified `execFile` for the git a test runs OUTSIDE the driver's
+ *  executor (repo setup, and the child-style commits the safety-net cases stage
+ *  by hand). Driver code is never handed a local executor — only `realExec`
+ *  from lib/exec-fake.ts — and nothing here forwards a `(cmd, opts)` pair to
+ *  this, which is the shape test-exec-argv-fakes.ts refuses. */
 const execFileP = promisify(execFile);
+
+/** A child-style commit of PRESENT paths by explicit name (`git add -- <paths>`
+ *  then commit): the shape a corrective child leaves behind when it finishes the
+ *  step but does not stage everything. `commit()` below stages the whole tree,
+ *  which is the right shape for a green pass and the wrong one here — a removed
+ *  sibling would ride into the index and the tree would read clean for the wrong
+ *  reason. */
+export async function childCommitPaths(
+  wt: string,
+  subject: string,
+  files: string[],
+): Promise<void> {
+  if (files.length > 0) await execFileP("git", ["-C", wt, "add", "--", ...files]);
+  await execFileP("git", ["-C", wt, "commit", "-q", "-m", subject, "--", ...files]);
+}
 
 /** Print a check the way every smoke test in this directory prints one; returns
  *  the caller's exit code so each file ends on one verdict of its own. */
@@ -40,22 +61,6 @@ export function makeAssert(): {
     failed: () => failed,
   };
 }
-
-/** A `DriverExecFn` fake over the real git binary, matching what `execp` does
- *  with the argv form (`execFile(cmd, argv, …)` — the array goes to git as-is,
- *  so a commit message with spaces survives without shell quoting) and
- *  PROPAGATING the exit status (see the module header). */
-export function gitExec(defaultCwd: string) {
-  return (cmd: string, opts?: { cwd?: string; argv?: string[] }): Promise<{ stdout: string }> =>
-    execFileP(cmd, opts?.argv ?? [], {
-      cwd: opts?.cwd ?? defaultCwd,
-    }).then((r) => ({ stdout: r.stdout }));
-}
-
-/** The raw `execFile` promise, for the fixtures that run git outside the
- *  driver's executor (repo setup, and the child-style commits the safety-net
- *  cases stage by hand). */
-export { execFileP };
 
 /** A git repo with a base commit and one detached worktree (same shape as
  *  test-develop-safety-net.ts — it must be the real one here). */

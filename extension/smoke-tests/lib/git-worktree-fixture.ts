@@ -42,11 +42,39 @@ export function gitIn(cwd: string, args: string[]): string {
   }).trim();
 }
 
-/** #1016 — the mock developer's work: task-c leaves its edit UNCOMMITTED (the
- *  case the #622 safety net commits); every other developer commits. */
+/** #1016 — the mock developer's work. EVERY mock developer commits, task-c
+ *  included.
+ *
+ *  #1768 changed this helper. task-c used to leave its edit uncommitted and the
+ *  assertions still passed, because the #622 safety net committed it — which is
+ *  precisely the behaviour #1768 removes: a child that never commits is no
+ *  longer certified done by a driver-made commit. The `ahead === 1` assertion in
+ *  test-work-driver-workstreams.ts therefore now verifies that a developer that
+ *  DOES commit is counted green, which is what it was always meant to show.
+ *  The "child left work uncommitted" case lives in test-develop-unfinished.ts,
+ *  where it asserts the OPPOSITE outcome (the step parks). */
 export function mockDeveloperWork(cwd: string, label: string | undefined): void {
-  if (label === "developer[task-c]") writeFileSync(path.join(cwd, "edit.txt"), "uncommitted");
-  else gitIn(cwd, ["commit", "--allow-empty", "-qm", `work ${label}`]);
+  gitIn(cwd, ["commit", "--allow-empty", "-qm", `work ${label}`]);
+}
+
+/** #1768 — the mock developer that does what the develop prompt actually tells
+ *  the real one: commit its own work, in ITS OWN worktree (`spec.cwd`).
+ *
+ *  A developer that returns ok:true without ever committing is the bug #1768
+ *  detects, not a shape a fixture may stand in for: pre-fix the #622 safety net
+ *  committed it silently and the pass looked green, which is how a mid-step quit
+ *  became a completed step and unfinished work reached a PR. A fixture that
+ *  mocks a SUCCESSFUL developer must therefore commit in the worktree the
+ *  dispatch was given; `repoRoot` is an integration point, not a developer tree,
+ *  so committing there is not a substitute and the develop step correctly parks
+ *  the cycle as `develop-incomplete-uncommitted`.
+ *
+ *  Real commits, not faked git output: the develop green is a count of commits
+ *  ahead of the workstream's base, so a fixture whose git is stubbed cannot earn
+ *  one — see the module header. */
+export function mockDeveloperCommit(cwd: string | undefined, label: string | undefined): void {
+  if (!cwd) return;
+  gitIn(cwd, ["commit", "--allow-empty", "-qm", `developer work ${label ?? ""}`.trim()]);
 }
 
 /** Create `<dir>/.worktrees/<id>` as a repo with one base commit; returns id → base SHA. */
@@ -57,9 +85,15 @@ export async function makeBaseWorktrees(
   const shas: Record<string, string> = {};
   for (const id of ids) {
     const wt = path.join(dir, ".worktrees", id);
+    // #1768 — the develop green is a COUNT of commits ahead of the workstream's
+    // base, so the base itself must be readable: an unborn HEAD makes every
+    // `rev-list <base>..HEAD` unreadable, and an unreadable count is never
+    // evidence of a green (see work-develop-git.ts `commitsAheadOfBase`).
     await mkdir(wt, { recursive: true });
-    gitIn(wt, ["init", "-q"]);
-    gitIn(wt, ["commit", "--allow-empty", "-qm", "base"]);
+    gitIn(wt, ["init", "-q", "--initial-branch=main"]);
+    writeFileSync(path.join(wt, "base.txt"), `${id} base\n`);
+    gitIn(wt, ["add", "base.txt"]);
+    gitIn(wt, ["commit", "-qm", "base"]);
     shas[id] = gitIn(wt, ["rev-parse", "HEAD"]);
   }
   return shas;

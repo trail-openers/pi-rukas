@@ -204,9 +204,18 @@ async function runDevelopTopological(
       const r = await runOneWorkstream(id, cwd);
       // #1774 — the budget refusal's `noRetry` marker rides through this
       // wrapper: dropped here, the fan-out would treat a deterministic
-      // refusal as a transient failure and retry it.
+      // refusal as a transient failure and retry it. #1768 — so does the
+      // `unfinished` marker: the green gate below distinguishes a mid-step quit
+      // from an ordinary failure by it, and the corrective round resumes only
+      // from a pass the classify seam actually called unfinished.
       if (!r.ok)
-        return { id, ok: false, reason: r.reason, ...(r.noRetry ? { noRetry: true } : {}) };
+        return {
+          id,
+          ok: false,
+          reason: r.reason,
+          ...(r.noRetry ? { noRetry: true } : {}),
+          ...(r.unfinished ? { unfinished: true } : {}),
+        };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
       // #1768 — the green is decided by the pass's OWN commits (the classify
       // seam read them inside `runOneWorkstream`, discounting the driver's own

@@ -93,6 +93,12 @@ export function passVerdict(args: {
   ok: boolean;
   reason?: string;
   noRetry?: true;
+  /** #1768 — set ONLY on a pass the classify seam judged unfinished (it exited
+   *  0, reported itself done, and left its work uncommitted). The green gate
+   *  branches on this, never on the presence of `reason`: a dispatch that
+   *  genuinely failed also has a reason, and conflating the two would rewrite
+   *  an ordinary failure as a mid-step quit. */
+  unfinished?: true;
   ownCommits?: NonNullable<CrashVerdict["ownCommits"]>;
 } {
   const { id, verdict, tail } = args;
@@ -104,6 +110,6 @@ export function passVerdict(args: {
     id,
     ok: false,
     reason,
-    ...(verdict.unfinished === true ? { noRetry: true as const } : {}),
+    ...(verdict.unfinished === true ? { noRetry: true as const, unfinished: true as const } : {}),
   };
 }

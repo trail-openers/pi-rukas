@@ -69,14 +69,18 @@ export async function readTreeBounded(
 }
 
 /** The classifier's own status reader in the shape `classifyDevelopPass`
- *  consumes: the same read, but the raw `-z` parse (a rename contributes both
- *  of its paths) and an empty list for the unreadable case, because the crash
- *  record reports dirt and readability as two separate fields. */
+ *  consumes: the same bounded read, returning the raw `-z` parse (a rename
+ *  contributes both of its paths) or the reason it could not be read.
+ *
+ *  The `unreadable` case is passed through and never collapsed to an empty
+ *  list: #1403's crash record reports dirt and readability as two separate
+ *  fields, and an empty list read as "readable and clean" is the confident-
+ *  wrong record that issue exists to remove. */
 export function treeReader(
   execFn: ExecFn,
 ): (cwd: string) => Promise<ReturnType<typeof parseStatus>> {
   return async (cwd) => {
     const read = await readTreeBounded(execFn, cwd);
-    return "entries" in read ? read.entries : [];
+    return "entries" in read ? read.entries : { unreadable: read.unreadable };
   };
 }

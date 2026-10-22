@@ -55,6 +55,12 @@ export type WorkstreamVerdict = {
    *  reads this instead of asking git after the net has already committed the
    *  pass's leftovers. */
   ownCommits?: import("./work-develop-unfinished-facts.ts").OwnCommitCheck;
+  /** #1768 — the classify seam judged this pass UNFINISHED: the child exited 0,
+   *  reported itself done, made no commit of its own ahead of base and left its
+   *  work in the tree. The green gate branches on THIS, never on the presence of
+   *  `reason` — an ordinary failed dispatch has a reason too, and conflating the
+   *  two rewrites a real failure as a mid-step quit. */
+  unfinished?: true;
 };
 
 /** #753 — the optional fields a `branch-completed` record may carry beyond the
@@ -82,6 +88,9 @@ export interface RawVerdict {
   /** #1768 — carried through from the in-flight verdict (see
    *  `WorkstreamVerdict.ownCommits`); the green rule reads it. */
   ownCommits?: import("./work-develop-unfinished-facts.ts").OwnCommitCheck;
+  /** #1768 — carried through from the in-flight verdict; see
+   *  `WorkstreamVerdict.unfinished`. */
+  unfinished?: true;
 }
 
 /** Plain rendering of one verdict (no retry annotation). */

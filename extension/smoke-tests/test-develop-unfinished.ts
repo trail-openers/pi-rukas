@@ -45,13 +45,13 @@ import {
 } from "../src/work-develop-unfinished.ts";
 import { safetyNetWorktree } from "../src/work-driver-safety-net.ts";
 import {
+  childCommitPaths,
   commit,
-  execFileP,
-  gitExec,
   greenResult,
   makeAssert,
   mkRepo,
 } from "./lib/develop-unfinished-fixture.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const { assert, failed } = makeAssert();
 
@@ -120,7 +120,7 @@ function caseOne() {
 // --------------------------------------------- (2) ownCommitsAheadOfBase, real git
 async function caseTwo() {
   const { root, wt, baseSha } = await mkRepo();
-  const exec = gitExec(root);
+  const exec = realExec;
   try {
     const empty = await ownCommitsAheadOfBase(exec, wt, baseSha);
     assert("commits" in empty && empty.commits === 0, "(2) a fresh worktree has 0 own commits");
@@ -131,7 +131,7 @@ async function caseTwo() {
 
     // The pre-fix shape: the ONLY commit ahead of base is the driver's net.
     const repo2 = await mkRepo();
-    const exec2 = gitExec(repo2.root);
+    const exec2 = realExec;
     await commit(repo2.wt, "leftover.ts", `${SAFETY_NET_COMMIT_SUBJECT_PREFIX} for default`);
     const netOnly = await ownCommitsAheadOfBase(exec2, repo2.wt, repo2.baseSha);
     assert(
@@ -164,7 +164,7 @@ async function caseThree() {
       id: "default",
       cwd: wt,
       base: baseSha,
-      execFn: gitExec(root),
+      execFn: realExec,
       result: greenResult(),
     });
     assert(v.ok === false, "(3) a claimed green over a dirty tree is NOT ok");
@@ -193,7 +193,7 @@ async function caseThree() {
       id: "default",
       cwd: wt,
       base: baseSha,
-      execFn: gitExec(root),
+      execFn: realExec,
       result: greenResult(),
       ownCommits: async () => ({ driverOnly: true }),
     });
@@ -206,7 +206,7 @@ async function caseThree() {
       id: "default",
       cwd: wt,
       base: baseSha,
-      execFn: gitExec(root),
+      execFn: realExec,
       result: greenResult(),
       ownCommits: async () => ({ commits: 3 }),
     });
@@ -236,7 +236,7 @@ async function caseFour() {
   const { root, wt, baseSha } = await mkRepo();
   try {
     writeFileSync(path.join(wt, "dirt.ts"), "wip\n");
-    const exec = gitExec(root);
+    const exec = realExec;
     // The green rule the phases now apply BEFORE the net: no own commit, so no
     // green — and the net is not consulted for the verdict at all.
     const own = await ownCommitsAheadOfBase(exec, wt, baseSha);
@@ -267,7 +267,7 @@ async function caseFour() {
     // SUBJECT reads like a developer's. Discounting by the SHA the net recorded
     // is what keeps the pass from being certified on the driver's own work.
     const repo3 = await mkRepo();
-    const exec3 = gitExec(repo3.root);
+    const exec3 = realExec;
     try {
       const notes: string[] = [];
       writeFileSync(path.join(repo3.wt, "net-only.ts"), "driver wrote this\n");
@@ -287,8 +287,7 @@ async function caseFour() {
       assert(netShas.length === 1, "(4b) the net names the commit it created");
       // A later commit that re-stages the net's file, under a developer subject.
       writeFileSync(path.join(repo3.wt, "net-only.ts"), "driver wrote this (touched)\n");
-      await execFileP("git", ["-C", repo3.wt, "add", "-A"]);
-      await execFileP("git", ["-C", repo3.wt, "commit", "-q", "-m", "feat(x): child work"]);
+      await childCommitPaths(repo3.wt, "feat(x): child work", ["net-only.ts"]);
       const bySubject = await ownCommitsAheadOfBase(exec3, repo3.wt, repo3.baseSha);
       assert(
         "commits" in bySubject && bySubject.commits >= 1,
@@ -301,7 +300,7 @@ async function caseFour() {
       );
       // And a stack of ONLY that kind is no work at all.
       const repo4 = await mkRepo();
-      const exec4 = gitExec(repo4.root);
+      const exec4 = realExec;
       const notes4: string[] = [];
       writeFileSync(path.join(repo4.wt, "dirt.ts"), "child dirt\n");
       const netEv2 = await safetyNetWorktree(
@@ -314,15 +313,7 @@ async function caseFour() {
       );
       const shas2 = netEv2 && netEv2.kind === "safety-net-commit" ? (netEv2.commitShas ?? []) : [];
       writeFileSync(path.join(repo4.wt, "dirt.ts"), "child dirt touched\n");
-      await execFileP("git", ["-C", repo4.wt, "add", "-A"]);
-      await execFileP("git", [
-        "-C",
-        repo4.wt,
-        "commit",
-        "-q",
-        "-m",
-        "wip: driver safety-net recovery commit amend",
-      ]);
+      await childCommitPaths(repo4.wt, "wip: driver safety-net recovery commit amend", ["dirt.ts"]);
       const allDriver = await ownCommitsAheadOfBase(exec4, repo4.wt, repo4.baseSha, shas2);
       assert(
         "driverOnly" in allDriver,

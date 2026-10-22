@@ -39,12 +39,12 @@ import { execp } from "../src/work-driver-verify.ts";
 import { CAP_HIT_FIXED_LITERALS, isKnownCap } from "../src/workflow-state-validate-caps.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "../src/workflow-state.ts";
 import {
-  execFileP,
-  gitExec,
+  childCommitPaths,
   makeAssert,
   mkRepo,
   stateWith,
 } from "./lib/develop-unfinished-fixture.ts";
+import { realExec } from "./lib/exec-fake.ts";
 
 const { assert, failed } = makeAssert();
 
@@ -139,7 +139,10 @@ async function caseFive() {
       throw new Error("dispatch blew up");
     },
   });
-  assert(out2.parked === true, "(5) a throwing corrective dispatch still parks, never green-lights");
+  assert(
+    out2.parked === true,
+    "(5) a throwing corrective dispatch still parks, never green-lights",
+  );
 
   const prompt = unfinishedCorrectivePrompt({
     issue: 1768,
@@ -183,15 +186,14 @@ async function caseSix() {
   const { root, wt, baseSha } = await mkRepo();
   try {
     writeFileSync(path.join(wt, "wip.ts"), "wip\n");
-    const exec = gitExec(root);
+    const exec = realExec;
     const ctx = { issue: 1768 } as never;
 
     // (6a) the round commits its own work → no park, and the net still recovers
     // the leftovers it earned. The tree is put back to the state a green pass
     // leaves: the corrective commit landed, and one path is still uncommitted.
     writeFileSync(path.join(wt, "done.ts"), "feat(x): finished the step\n");
-    await execFileP("git", ["-C", wt, "add", "done.ts"]);
-    await execFileP("git", ["-C", wt, "commit", "-q", "-m", "feat(x): finished the step"]);
+    await childCommitPaths(wt, "feat(x): finished the step", ["done.ts"]);
     writeFileSync(path.join(wt, "leftover.ts"), "still uncommitted\n");
     const ref1 = { current: stateWith(1768, []) };
     ref1.current = appendEvent(
