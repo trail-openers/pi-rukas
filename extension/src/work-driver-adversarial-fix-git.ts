@@ -23,6 +23,24 @@ export interface TreeChanges {
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 
+/**
+ * #1698 — the bound on the fix pass's OWN git reads.
+ *
+ * These are `rev-parse`, `ls-tree` and `diff --name-only`: milliseconds-scale
+ * commands. They were first bounded by `verifyTimeoutMs()`, a 10-minute number
+ * that belongs to the project's verify command, so a hung read stalled a whole
+ * fix pass for ten minutes before anyone could say so. A bound that is 20× the
+ * worst case is not a bound, and it is the wrong knob for an operator to turn.
+ * The verify tiers keep their own budgets in work-driver-verify-budget.ts; this
+ * is the fence's, and it is deliberately a separate constant.
+ */
+export const GIT_READ_TIMEOUT_MS = 30_000;
+
+/** The bound every fix-pass git read runs under unless the caller overrides it. */
+export function gitReadTimeoutMs(): number {
+  return GIT_READ_TIMEOUT_MS;
+}
+
 async function run(
   execFn: FixExec,
   cmd: string,
@@ -87,9 +105,20 @@ export async function committedChanges(
   return r.ok ? { ok: true, value: lines(r.value) } : r;
 }
 
-/** The one refusal shape for a non-SHA commit argument. */
+/**
+ * The one refusal shape for a non-SHA commit argument.
+ *
+ * `value` comes from driver state, and a state file is a hand-editable file:
+ * the field can hold arbitrary text, and this reason is interpolated into a
+ * park reason an operator reads — possibly through a terminal. Only a token
+ * made of path/SHA-safe characters is echoed, and only its first 12; anything
+ * else is reported by shape (`<non-hex, N chars>`), never by content.
+ */
+const ECHO_SAFE = /^[0-9a-zA-Z._/-]+$/;
 function notSha(which: "base" | "head", value: string): GitRead<never> {
-  return { ok: false, reason: `the ${which} commit is not a SHA: ${value.slice(0, 12)}…` };
+  const head = value.slice(0, 12);
+  const shown = ECHO_SAFE.test(head) ? `${head}…` : `<non-hex, ${value.length} chars>`;
+  return { ok: false, reason: `the ${which} commit is not a SHA: ${shown}` };
 }
 
 /** The commit a worktree's HEAD points at. */
