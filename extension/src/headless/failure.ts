@@ -34,6 +34,13 @@ export const FAILURE_KINDS = [
    *  unexpectedly`) and left uncommitted work. Additive: a host treats an
    *  unknown kind like `cap`. */
   "crashed",
+  /** #1768 — a develop child exited 0 with its work still UNCOMMITTED and no
+   *  commit of its own, and the corrective pass committed nothing either. The
+   *  work is on disk and unfinished — not a crash (the engine was fine), not
+   *  `verify` (the gate never judged it), not `cap` (something did fail). A host
+   *  must not re-queue it: the same child leaves the same dirt. Additive: an
+   *  unknown kind reads as `cap`. */
+  "unfinished",
   /** The verify gate ran and judged the code (or the base commit) red. */
   "verify",
   /** The system refused to start a process, so the gate never ran. */
@@ -156,6 +163,12 @@ function capKind(cap: string): FailureKind {
     // sitting uncommitted in a worktree waiting for a person.
     case "develop-child-crash":
       return "crashed";
+    // #1768 — the child finished and did not finish the WORK. Not `process` (it
+    // exited 0), not `verify` (nothing ran the gate on it), not `cap` (a pass
+    // that quits mid-step is a failure, not a rule stopping the cycle), and
+    // never `timeout` — the child was not killed.
+    case "develop-incomplete-uncommitted":
+      return "unfinished";
     case "loop-detected":
     case "token-budget":
       return "guard";

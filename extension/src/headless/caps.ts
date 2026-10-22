@@ -75,6 +75,9 @@ export const FIXED_CAPS = [
   "dependency-timeout",
   "develop-child-crash",
   "develop-incomplete-deliverables",
+  // #1768 — a develop pass ended with uncommitted paths and no commit of its
+  // own, and the corrective pass committed nothing either.
+  "develop-incomplete-uncommitted",
   // #1398 — the review re-ran after the PR was marked ready and the driver
   // could not put the PR back to a draft.
   "draft-rearm-failed",

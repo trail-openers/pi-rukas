@@ -94,10 +94,10 @@ export async function runDependentWorkstreams(
   const { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource } = run;
   // #1768 — dependents whose pass ended with dirt and no commit of its own, even
   // after the one corrective pass. The develop step parks on this map.
-  const unfinished = run.unfinishedState?.unfinished ?? new Map<string, string[]>();
+  const unfinished = run.unfinished ?? new Map<string, string[]>();
   const dispatchCorrective = (wid: string, cwd: string, paths: string[]) =>
-    run.unfinishedState
-      ? dispatchUnfinishedCorrective(run.unfinishedState, wid, cwd, paths)
+    run.ownCommit
+      ? dispatchUnfinishedCorrective(run.ownCommit, wid, cwd, paths)
       : Promise.resolve(undefined);
   // #799 F2 — the dependent phase's wall-clock span (fire-once, above healthy band).
   const cancelPhaseNotice = armStepNotice({
@@ -377,6 +377,7 @@ export async function runDependentWorkstreams(
         });
         if (own.kind === "unfinished") {
           unfinished.set(id, own.uncommitted);
+          if (run.unfinished) run.unfinished.set(id, own.uncommitted);
           failedOrSkipped.add(id);
           if (failureSource) failureSource[id] = "failed";
           settleVerdict(verdicts, { id, ok: false, reason: own.reason });

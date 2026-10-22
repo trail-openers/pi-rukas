@@ -18,7 +18,7 @@ import {
 } from "./work-driver-explain-consolidation.ts";
 import { explainConvergeIncomplete } from "./work-driver-explain-converge.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
-import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
+import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts"; import { explainOwnCommitIncomplete } from "./work-driver-explain-own-commit.ts"; // #1768
 import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPlan } from "./work-driver-explain-plan.ts";
@@ -336,6 +336,8 @@ export function explainCap(
     case "develop-child-crash":
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);
+    case "develop-incomplete-uncommitted":
+      return explainOwnCommitIncomplete(state); // #1768
     case "deadline": {
       // #1238 — the deadline was within the handoff grace at a step boundary,
       // so no new step started; #1593 — or a step ran past it and its own

@@ -227,7 +227,7 @@ export async function safetyNetWorktree(
       .join(", ");
     const more = candidates.length > 10 ? ` (+${candidates.length - 10} more)` : "";
     notes.push(
-      `${wsId}: safety net skipped after ${ahead.commits} developer commit(s); ${candidates.length} uncommitted path(s) left out of the PR — ${shown}${more}`,
+      `${wsId}: safety net skipped after ${ahead.commits} commit(s) of the child's own; ${candidates.length} uncommitted path(s) left out of the PR — ${shown}${more}`,
     );
     trace(
       `work-driver: safety net skipped ${wsId} — already has ${ahead.commits} commit(s) ahead of its base`,
@@ -238,7 +238,9 @@ export async function safetyNetWorktree(
   const workPaths = candidates.map((e) => e.path);
 
   // Fire the safety net: stage the work paths and commit.
-  trace(`work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s)`);
+  trace(
+    `work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s); this is a RECOVERY commit made by the driver, not a commit of the child`,
+  );
   let commitSha: string | undefined;
   // One `git add` for the present paths (chunked), and `rm --cached` for the
   // absent ones (a staged rename's origin is already out of the index, so `git
@@ -271,7 +273,7 @@ export async function safetyNetWorktree(
   try {
     // Commit with driver-attributed message so the operator can tell
     // this from a developer's seam commit.
-    const commitMsg = `wip: driver safety-net commit for ${wsId}`;
+    const commitMsg = `wip: driver safety-net recovery commit for ${wsId} (made by the driver, not the developer)`;
     await git(
       ["--literal-pathspecs", "commit", "-q", "--no-verify", "-m", commitMsg, "--", ...workPaths],
       { cwd, maxBuffer: 256 * 1024 },
@@ -298,14 +300,14 @@ export async function safetyNetWorktree(
     commitSha = shaOut.trim();
   } catch (err) {
     commitSha = "HEAD";
-    const note = `${wsId}: safety net committed, but the commit sha could not be read — ${errText(err)}`;
+    const note = `${wsId}: safety net made its recovery commit, but the commit sha could not be read — ${errText(err)}`;
     trace(`work-driver: ${note}`);
     notes.push(note);
   }
 
   if (commitSha) {
     trace(
-      `work-driver: safety net committed ${wsId} (${commitSha.slice(0, 8)}) — ${workPaths.length} file(s)`,
+      `work-driver: safety net made its recovery commit for ${wsId} (${commitSha.slice(0, 8)}) — ${workPaths.length} file(s), committed by the driver, not by the child`,
     );
     return {
       kind: "safety-net-commit",

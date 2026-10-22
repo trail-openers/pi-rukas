@@ -303,6 +303,19 @@ export type WorkCapLiteral =
   // behind — so the cycle parks as a handoff with the leftover list rather
   // than advancing on a tree whose state it does not know.
   | "develop-child-crash"
+  // #1768 — a develop child exited 0 with uncommitted paths and NO commit of its
+  // own, and the one corrective pass in its own worktree committed nothing
+  // either. Pre-fix the #622 safety net committed that dirt BEFORE the green
+  // check, so the driver's own commit satisfied commits > 0 and the step printed
+  // `agent done: developer` over unfinished work (orchard #507: `test/review_test.sh`
+  // never written; orchard #439: 80 minutes, 3 paths, the net's commit the only
+  // copy).
+  //
+  // Distinct from `develop-child-crash` (that child's ENGINE died — an
+  // infrastructure fault) and from `develop-incomplete-deliverables` (the
+  // converge gate: the code builds and is COMMITTED, a named deliverable is
+  // absent). This says: work is on disk, uncommitted, and nobody finished it.
+  | "develop-incomplete-uncommitted"
   // #1396 (round 3) — the branch step's same-issue residue pass could not read
   // `git worktree list` (the listing is bounded since #1396, so a hang is a
   // rejection). The pass cannot tell whether a same-issue tree holds work, and

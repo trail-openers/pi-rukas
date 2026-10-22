@@ -66,6 +66,12 @@ export const CAP_HIT_FIXED_LITERALS = [
   // re-dispatch. Distinct from the verify-failed:develop template (the
   // code builds; the diff is incomplete).
   "develop-incomplete-deliverables",
+  // #1768 — a develop child exited 0 with uncommitted paths and no commit of its
+  // own, and the one corrective pass committed nothing either. A deliberate park
+  // terminalized as a handoff (not `step-failed:develop`, which reads as a
+  // dispatch failure and terminalizes as `aborted`, hiding that the work sits
+  // uncommitted in the worktree). The evidence names the paths.
+  "develop-incomplete-uncommitted",
   // #753 — a DEPENDENT workstream's deferred worktree creation was refused
   // by a dirty same-issue leftover. A deliberate park terminalized as a
   // handoff (not `step-failed:` — that prefix would read as a mid-flight

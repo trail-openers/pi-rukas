@@ -52,6 +52,9 @@ export const KIND_CLASS: Record<FailureKind, CauseClass | undefined> = {
   guard: "environment",
   process: "environment",
   crashed: "environment",
+  // #1768 — unfinished work is the change's problem, not the host's: a host that
+  // re-queues the cycle gets the same child quitting at the same place.
+  unfinished: "change",
   driver: "pi-rukas",
   verify: "change",
   // #1702 — a forge refusal is a decision about the CONTENT the issue asked for, never a
@@ -229,6 +232,16 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
     cls: "change",
     reason: "develop finished without producing every deliverable the spec names",
     action: CHANGE_FIX,
+  },
+  // #1768 — the child exited 0 mid-step: its work is on disk, uncommitted, and
+  // it never committed anything of its own. `change`, not `environment` — the
+  // work is the problem, not the host — and not `issue`: nothing says the spec
+  // was unreadable, only that the pass stopped early.
+  "develop-incomplete-uncommitted": {
+    cls: "change",
+    reason: "a develop pass ended with uncommitted work and no commit of its own",
+    action:
+      "finish the uncommitted work named in the evidence and commit it in the worktree, or split the issue so one pass fits, then re-run `/work {issue} --restart`",
   },
   "draft-rearm-failed": {
     cls: "environment",

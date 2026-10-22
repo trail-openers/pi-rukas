@@ -12,25 +12,18 @@
  * and `parkDeferredLeftover` stays in this file). The closure captures per-run
  * state via `DevelopRunState` so the caller shares it across both dispatch
  * phases.
- *
- * `runDevelopTopological` — the #679 topological-dispatch core (independent
- * fan-out, failed/skipped detection, the safety net + verify gate) — lives
- * in work-develop-topological.ts.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { developChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
-import type { DispatchResult } from "./types.ts";
 import {
   type CrashVerdict,
   type DevelopPassResult,
   classifyDevelopPass,
   crashedBranchCompleted,
-  developPassIsOk,
 } from "./work-develop-crash.ts";
-import { unfinishedPromptSuffix } from "./work-develop-own-commit.ts";
 import type { WorkstreamVerdict } from "./work-develop-verdict-source.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
@@ -41,6 +34,7 @@ import {
   reviewLoopActive,
 } from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { dispatchUnfinishedCorrective as dcf, unfinishedPromptSuffix } from "./work-develop-own-commit-dispatch.ts";
 import {
   inlineDevelopPrompt,
   inlineSpeculativeExplorePrompt,
@@ -121,20 +115,8 @@ export interface DevelopRunState {
   emitBranchCompleted: (ev: WorkEvent) => void;
   /** The current state (mutated by appendEvent for memory-inject events). */
   stateRef: { current: WorkState };
-  /** #1768 — test seam for the corrective dispatch. Absent → `dispatch`. */
-  correctiveDispatch?: DevelopRunState["dispatch"];
-  /** #1768 — set by the pass itself: builds this workstream's corrective prompt
-   *  (its original brief + the finish-and-commit paragraph for `paths`). Absent
-   *  until a pass has run, so a caller cannot dispatch on an empty brief. */
-  lastPrompt?: (paths: string[]) => string;
+  lastPrompt?: (paths: string[]) => string; correctiveDispatch?: DevelopRunState["dispatch"]; // #1768
 }
-
-/** #1768 — the fields the dependent phase shares with the develop step: the
- *  corrective-dispatch seam, and the map the unfinished park reads. Declared
- *  apart so `DependentRunState` and `DevelopRunState` cannot drift. */
-export type DevelopUnfinishedState = DevelopRunState & {
-  unfinished?: Map<string, string[]>;
-};
 
 /** #753 — per-run state threaded into the dependent phase (always passed together). */
 export interface DependentRunState {
@@ -174,9 +156,7 @@ export interface DependentRunState {
   ) => Promise<{ attempt: number; patch?: string }>;
   /** #1016 — driver notes (saved patches), surfaced in the handoff. */
   notes?: string[];
-  /** #1768 — the corrective-dispatch seam and the unfinished map the develop
-   *  step parks on (shared with the independent fan-out). */
-  unfinishedState?: DevelopUnfinishedState;
+  ownCommit?: DevelopRunState; unfinished?: Map<string, string[]>; // #1768
 }
 
 /** #753 — the optional `extra` fields added to a failed dependent's
@@ -221,38 +201,6 @@ export function developNote(state: WorkState): string | undefined {
   const cp = state.pipelineState.continuedPr;
   const parts = [cp && continuePrNote(cp), interruptedDevelopNote(state)].filter(Boolean);
   return parts.length > 0 ? parts.join("\n\n") : undefined;
-}
-
-/**
- * #1768 — the ONE corrective pass a workstream gets when its develop child
- * exited without a commit of its own (work-develop-own-commit.ts). Same
- * workstream, SAME worktree, no reset and no clean (the dirt IS the work),
- * through the same dispatch seam the first pass used, with the child's original
- * brief plus a paragraph naming the paths it left uncommitted. A pass with no
- * captured brief dispatches nobody: the caller parks.
- */
-export async function dispatchUnfinishedCorrective(
-  s: DevelopUnfinishedState,
-  id: string,
-  cwd: string,
-  paths: string[],
-): Promise<DispatchResult | undefined> {
-  const prompt = s.lastPrompt?.(paths);
-  if (prompt === undefined) return undefined;
-  return (s.correctiveDispatch ?? s.dispatch)(
-    s.ctx.host,
-    { role: "developer", prompt, cwd },
-    {
-      label: s.ids.length > 1 ? `developer[${id}:unfinished]` : "developer[unfinished]",
-      childBoundMs: developChildBoundMs(),
-      deck: {
-        ...driverDeckOpts(s.ctx.issue, "develop", s.ids.length > 1 ? id : "default"),
-        label: s.ids.length > 1 ? `developer[${id}:unfinished]` : "developer[unfinished]",
-      },
-      // The child writes only inside its own worktree, as the first pass did.
-      writeFence: { root: cwd, repo: s.ctx.repoRoot, scratch: s.scratchAbs },
-    },
-  );
 }
 
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
@@ -388,34 +336,31 @@ export function makeRunOneWorkstream(
       // "checked, none present" state; the prompt guard treats it as absent
       // and falls back to the re-fetch line.
       const issueBodyArtifactPaths = artifactPaths;
-      // #1768 — the SAME prompt this workstream's first pass was built from,
-      // captured here so the one corrective pass the own-commit check dispatches
-      // is that brief plus a paragraph naming what the child left uncommitted.
-      const developPrompt = inlineDevelopPrompt(
-        activeIssues,
-        scratchAbs,
-        ws,
-        ids.length > 1 ? id : undefined,
-        speculativeOn ? speculativeContextPath : undefined,
-        brief.text,
-        siblingWorkstreams,
-        verifyCmd,
-        issueBodyArtifactPaths,
-        ws?.fixFindings,
-        developNote(s.stateRef.current),
-        fastVerifyCmd,
-        // #1676 — the protected paths the plan persisted, annotated beside the fence.
-        {
-          deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
-        },
+      const dp = inlineDevelopPrompt(
+              activeIssues,
+              scratchAbs,
+              ws,
+              ids.length > 1 ? id : undefined,
+              speculativeOn ? speculativeContextPath : undefined,
+              brief.text,
+              siblingWorkstreams,
+              verifyCmd,
+              issueBodyArtifactPaths,
+              ws?.fixFindings,
+              developNote(s.stateRef.current),
+              fastVerifyCmd,
+              // #1676 — the protected paths the plan persisted, annotated beside the fence.
+              {
+                deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
+              },
       );
-      s.lastPrompt = (paths: string[]) => `${developPrompt}${unfinishedPromptSuffix(paths)}`;
+      s.lastPrompt = (paths: string[]) => `${dp}${unfinishedPromptSuffix(paths)}`;
       const [developerSettled, speculativeSettled] = await Promise.allSettled([
         dispatch(
           ctx.host,
           {
             role: "developer",
-            prompt: developPrompt,
+            prompt: dp,
             cwd,
           },
           {
@@ -554,3 +499,5 @@ export function makeRunOneWorkstream(
 /** #799 — the dependent phase moved to work-develop-dependent.ts (verbatim,
  * for 500-line headroom); re-exported so existing imports keep their path. */
 export { runDependentWorkstreams } from "./work-develop-dependent.ts";
+export const dispatchUnfinishedCorrective = (s: DevelopRunState, id: string, cwd: string, paths: string[]) => // #1768
+  dcf({ ...s, dispatch: s.correctiveDispatch ?? s.dispatch }, id, cwd, paths);
