@@ -61,7 +61,9 @@ assert(
   `corpus: exactly 2 assignment rows (got ${ROUND3_ASSIGNMENTS.length})`,
 );
 assert(
-  ROUND3_STILL_ALLOWED.length === 10,
+  // 10 → 9 in fix round 5: `f=notes.md; cat $f` left for the accepted-cost table — the
+  // exemption may not read a text it substituted for itself.
+  ROUND3_STILL_ALLOWED.length === 9,
   `corpus: exactly 10 must-stay-allowed rows (got ${ROUND3_STILL_ALLOWED.length})`,
 );
 

@@ -22,8 +22,8 @@ import {
   tokensOf,
   unquote,
 } from "./review-accept-command.ts";
-import { READ_TOOLS } from "./review-accept-readtools.ts";
 import { REPO_LOCATION_FLAG, hasUnresolvedRepoSelector } from "./review-accept-selector.ts";
+import { READ_TOOLS } from "./review-accept-toolkinds.ts";
 import { gitPreVerbCleared, gitVerbIndex, gitVerbOfSegment } from "./review-accept-verb.ts";
 /** A JS runtime: its invocation executes a program, so it is never a read tool.
  * Exported because the guard's pre-checks ask the same question of the whole command. */

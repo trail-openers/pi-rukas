@@ -180,8 +180,6 @@ export const ROUND3_STILL_ALLOWED: readonly { c: string; why: string }[] = [
     c: `grep -o -E "[a-z][a-z0-9][a-z0-9.+-]*[[:space:]]+\\\\${D}" /repo/Dockerfile`,
     why: "a `-E` pattern carrying a `$` — folded onto `-e`, whose value stays prose",
   },
-  {
-    c: `f=notes.md; cat ${D}f`,
-    why: "one literal binding, resolved the way the shell resolves it",
-  },
+  // REMOVED in fix round 5: `f=notes.md; cat $f` — allowed on a text the guard substituted
+  // for itself. Refused now; pinned as an accepted cost in ROUND5_ACCEPTED_COSTS.
 ];

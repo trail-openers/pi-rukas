@@ -159,10 +159,9 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
     c: `python3 - <<'PY'${NL}print("${D}x")${NL}PY`,
     why: "a quoted heredoc into an interpreter that is no runtime the guard enumerates",
   },
-  {
-    c: `f=notes.md; cat ${D}f`,
-    why: "an expansion the SAME command assigned — the guard reads it as the shell does",
-  },
+  // REMOVED in fix round 5 — `f=notes.md; cat $f` was here, allowed because the exemption
+  // proof read a text `withSameCommandAssignmentsApplied` had rewritten, which is not a text
+  // the shell ever runs. It is refused now and pinned in `ROUND5_ACCEPTED_COSTS`.
 ];
 
 /**

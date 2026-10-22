@@ -32,7 +32,8 @@ import {
   unquote,
 } from "../src/review-accept-command.ts";
 import { reviewAcceptVerdict } from "../src/review-accept-guard.ts";
-import { READ_TOOLS, readToolCarriesUnresolvedOperand } from "../src/review-accept-readtools.ts";
+import { READ_TOOLS } from "../src/review-accept-toolkinds.ts";
+import { readToolCarriesUnresolvedOperand } from "../src/review-accept-readtools.ts";
 import { inScope } from "../src/review-accept-scope.ts";
 import { gitVerbIndex } from "../src/review-accept-verb.ts";
 import {
@@ -178,9 +179,14 @@ assert(
   readToolCarriesUnresolvedOperand(`cat ${D}F`),
   "readtools: a content reader on an unresolved operand is the guard's business",
 );
+// #1764 fix round 5 — POLARITY FLIPPED. This row asserted the opposite: the guard resolved
+// `f=notes.md` itself, saw an expansion-free operand, and called the read readable. That
+// text is one `withSameCommandAssignmentsApplied` wrote, and the shell never runs it — the
+// bytes bash expands are `cat $f`, whose value only the shell knows. The operand test now
+// reads raw text only; a reference it cannot evaluate is an unresolved operand.
 assert(
-  !readToolCarriesUnresolvedOperand(`f=notes.md; cat ${D}f`),
-  "readtools: an operand the command resolved itself is a readable read",
+  readToolCarriesUnresolvedOperand(`f=notes.md; cat ${D}f`),
+  "readtools: the operand test never reads a substituted text — a binding is not evidence",
 );
 assert(
   readToolCarriesUnresolvedOperand(`grep -rn pattern ${D}SRC`),
@@ -407,7 +413,10 @@ assert(
   `command: every scanner returns on a character it does not consume (${verdicts}/${PATHOLOGICAL.length} verdicts, ${elapsed}ms total, slowest ${slowest[1]}ms ${JSON.stringify(slowest[0])})`,
 );
 for (const [c, ms] of perCase) {
-  assert(ms < 100, `command: one pathological shape costs no measurable time (${ms}ms) — ${JSON.stringify(c)}`);
+  assert(
+    ms < 100,
+    `command: one pathological shape costs no measurable time (${ms}ms) — ${JSON.stringify(c)}`,
+  );
 }
 // The four shapes the fix brief names, with the polarity each one is supposed to have.
 assert(
@@ -423,8 +432,11 @@ assert(
   "guard: `<` as an assignment value is data, not a redirect the guard must chase",
 );
 assert(
-  reviewAcceptVerdict("F=x; (cat $F)") === undefined,
-  "guard: a binding EARLIER in the same command resolves a SUBSHELL's read — the shell exports it",
+  reviewAcceptVerdict("F=x; (cat $F)")?.clause === "unreadable-word",
+  // POLARITY FLIPPED in fix round 5: the binding earlier in the command does export into the
+  // subshell, and the guard used to assume it had already been substituted — a text the
+  // guard wrote, not one the shell runs. The subshell's unresolved operand is unresolved.
+  "guard: a binding EARLIER in the same command no longer resolves a SUBSHELL's read",
 );
 assert(
   reviewAcceptVerdict("(cat $F)") !== undefined,
