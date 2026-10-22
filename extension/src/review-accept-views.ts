@@ -37,6 +37,12 @@ import { gitVerbIndex } from "./review-accept-verb.ts";
 /** An assignment the shell has already resolved by the time the command runs: `NAME=`
  * followed by a literal value, with or without a leading `export`. */
 const ASSIGNMENT = /^(?:export\s+)?([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$/;
+/** The SHAPE of an assignment, whatever its value: `NAME=` with or without `export`.
+ * #1764 round 4 (rule (b)): the ambiguity count asks this, not `ASSIGNMENT`, so an
+ * EXPANSION-valued binding (`F=$V`, `F=$(printf a)`) is COUNTED — a name the command
+ * rebinds, or binds to text the guard cannot read, never resolves. Counting only the
+ * literal bindings is what made `F=x; F=$V; cat $F` resolve to the stale `x`. */
+export const ASSIGNMENT_SHAPE = /^(?:export\s+)?([a-zA-Z_][a-zA-Z0-9_]*)=/;
 /** A `$NAME` / `${NAME}` occurrence, the unit the substitution below decides about. */
 const REFERENCE = /\$\{?([a-zA-Z_][a-zA-Z0-9_]*)\}?/g;
 
@@ -182,18 +188,28 @@ function forEachToken(command: string, onToken: (text: string, isWord: boolean) 
  * nothing — a body line that reads `F=x` is text, not an assignment.
  */
 export function withSameCommandAssignmentsApplied(command: string): string {
-  // Pass one: every literal binding the command states, and the names it binds twice with
-  // DIFFERENT values. Judged over the whole command, before any substitution decision.
+  // Pass one: EVERY binding the command states — literal or not (#1764 round 4, rule
+  // (b)). A name bound more than once (even to the same value), or bound once to text the
+  // guard cannot read, is ambiguous and NEVER resolves: the guard cannot say which value
+  // the shell used at the point of use, and a stale literal standing in for an
+  // expansion-valued rebinding is exactly how `F=x; F=$V; cat $F` read as a resolved
+  // read. Judged over the whole command, before any substitution decision.
   const stated = new Map<string, string>();
   const ambiguous = new Set<string>();
   const collected = forEachToken(command, (text, isWord) => {
     if (!isWord || text.startsWith("-")) return;
+    const shape = ASSIGNMENT_SHAPE.exec(unquote(text));
+    if (!shape) return;
+    const name = shape[1] as string;
     const binding = literalValue(text);
-    if (!binding) return;
-    const [name, value] = binding;
-    const prior = stated.get(name);
-    if (prior !== undefined && prior !== value) ambiguous.add(name);
-    else if (prior === undefined) stated.set(name, value);
+    if (!binding) {
+      // An expansion-valued (or empty) binding: the name is bound, the value is unknown.
+      ambiguous.add(name);
+      return;
+    }
+    const [bound, value] = binding;
+    if (stated.has(bound)) ambiguous.add(bound);
+    else stated.set(bound, value);
   });
   if (!collected) return command;
 

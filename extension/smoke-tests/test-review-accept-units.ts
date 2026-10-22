@@ -274,10 +274,18 @@ assert(
   "arms: A2 keeps a quoted filter with a pipe inside it — the word is one word",
 );
 
-// ── the predicate the narrowing left without a caller is GONE ────────────────────
+// ── the command-wide predicate the monotone floor needs (#1764 round 4) ─────────
+// Round 2 deleted this predicate when clause (5) went per-segment; round 4 restored it
+// as base's DEFAULT verdict — the per-segment analysis may only EXEMPT a command it
+// fully understands, and the exemption's floor is asked command-wide, exactly as base
+// spelled it. A guard that lost this predicate could not state the floor at all.
 assert(
-  !("namesReadTool" in arms),
-  "arms: the command-wide read-tool predicate clause (5) used is removed, not shelved",
+  "namesReadTool" in arms && arms.namesReadTool("cat notes.md") === true,
+  "arms: the command-wide read-tool predicate is restored as the monotone base floor",
+);
+assert(
+  arms.namesReadTool("timeout 300 run-task --flag") === false,
+  "arms: the base floor still asks which programs run — a command with no read tool is not its business",
 );
 
 // ── the one git-verb reader, and the shells clause (4) must reach ───────────────
@@ -321,8 +329,8 @@ assert(
   "views: a name bound twice with different values is left unresolved, not guessed at",
 );
 assert(
-  withSameCommandAssignmentsApplied(`F=x; F=x; cat ${D}F`).includes("cat x"),
-  "views: the same value bound twice is not an ambiguity",
+  !withSameCommandAssignmentsApplied(`F=x; F=x; cat ${D}F`).includes("cat x"),
+  "views: a name bound TWICE is ambiguous even to the same value (#1764 round 4 rule (b): EVERY binding counts)",
 );
 assert(
   !withSameCommandAssignmentsApplied(`echo 'F=x'; cat ${D}F`).includes("cat x"),
