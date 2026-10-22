@@ -239,17 +239,22 @@ git -C "$CLONE" config gc.autoPackLimit 0
 git -C "$CLONE" config gc.pruneExpire never
 git -C "$CLONE" config remote.origin.prune false
 
-# Offline-tolerant: a failed or timed-out fetch degrades to local refs rather than ending the cycle.
+# The base is origin/main, never the local main: a --shared clone copies the source checkout's
+# local main, which can be behind the forge or carry unpushed commits. A fetch that did not
+# complete therefore leaves no trustworthy base, and the cycle refuses unless the operator opts in.
 fanout_bounded "${FANOUT_TIMEOUT_FETCH:-120}" git -C "$CLONE" fetch --tags origin >/dev/null 2>&1
 rc=$?
-case "$rc" in
-  0)   ;;
-  124) warn "forge fetch timed out after ${FANOUT_TIMEOUT_FETCH:-120}s (FANOUT_TIMEOUT_FETCH) — running on local refs" ;;
-  *)   warn "forge fetch failed (offline?) — running on local refs" ;;
-esac
-git -C "$CLONE" checkout main >/dev/null 2>&1 \
-  || git -C "$CLONE" checkout -B main origin/main >/dev/null 2>&1 \
-  || die "checkout failed — is 'main' the mainline? The driver detects it via origin/HEAD, but the clone needs a starting ref." 9
+if [ "$rc" != 0 ]; then
+  why="failed"
+  [ "$rc" != 124 ] || why="timed out after ${FANOUT_TIMEOUT_FETCH:-120}s (FANOUT_TIMEOUT_FETCH)"
+  [ "${FANOUT_ALLOW_LOCAL_BASE:-0}" = 1 ] \
+    || die "forge fetch $why, so origin/main is not known to be current. Refusing to branch from a stale or unpushed local main. Fix the connection, or set FANOUT_ALLOW_LOCAL_BASE=1 to accept the clone's last-known origin/main." 9
+  warn "forge fetch $why; FANOUT_ALLOW_LOCAL_BASE=1 accepts the clone's last-known origin/main as the base"
+fi
+git -C "$CLONE" rev-parse --verify -q origin/main >/dev/null 2>&1 \
+  || die "origin/main is not present in the clone, so there is no base to build on. Is the mainline named main?" 9
+git -C "$CLONE" checkout -q -B main origin/main >/dev/null 2>&1 \
+  || die "could not check out origin/main as the base" 9
 
 # ---------------------------------------------------------------------------
 # dependencies and role prompts

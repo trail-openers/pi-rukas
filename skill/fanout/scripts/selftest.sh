@@ -266,6 +266,8 @@ echo "== declared-file entries are normalised before the existence check =="
 check "norm: (new) entry keeps its path" "$(fanout_norm_path 'src/a.ts (new)')" "src/a.ts"
 check "norm: annotation stripped" "$(fanout_norm_path 'src/a.ts (edits)')" "src/a.ts"
 check "norm: leading space trimmed" "$(fanout_norm_path ' src/b.ts')" "src/b.ts"
+check "norm: trailing slash trimmed (claim 'src/')" "$(fanout_norm_path 'src/')" "src"
+check "norm: leading ./ stripped (claim './src/a.ts')" "$(fanout_norm_path './src/a.ts')" "src/a.ts"
 check "norm: blank cell dash skipped" "$(fanout_norm_path -)" ""
 check "norm_list: dash vanishes, (new) kept" "$(fanout_norm_list '-,src/q.ts (new),src/r.ts (edits)')" "$(printf 'src/q.ts\nsrc/r.ts')"
 # The runtime is used as "$(fanout_node)". It must resolve to one executable path, never to a

@@ -80,9 +80,35 @@ expect "annotated candidate is still gated" 7 env FANOUT_FORGE_CHECK=0 FANOUT_RE
 # A blank "-" cell declares no path: the gate must say it is blind, not pass in silence.
 blind_out="$(env FANOUT_FORGE_CHECK=0 FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9504 2>&1)"
 check "blind warning fires for a '-' cell" "$(printf '%s' "$blind_out" | grep -c 'therefore blind')" 1
+# Claim-side spelling: a trailing-slash directory and a ./ path must still block src/a.ts.
+FANOUT_ALIVE_PID="$HARNESS_PID" "$JS" -e '
+const fs=require("fs");
+fs.writeFileSync("/tmp/fanout-selftest/.pi/work-state/path-claims.json", JSON.stringify([
+  { issue: 9999, pid: parseInt(process.env.FANOUT_ALIVE_PID,10), startedAt: Date.now(), paths: ["src/"] }
+]));'
+expect "claim 'src/' (trailing slash) blocks src/a.ts" 7 env FANOUT_FORGE_CHECK=0 FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
+FANOUT_ALIVE_PID="$HARNESS_PID" "$JS" -e '
+const fs=require("fs");
+fs.writeFileSync("/tmp/fanout-selftest/.pi/work-state/path-claims.json", JSON.stringify([
+  { issue: 9999, pid: parseInt(process.env.FANOUT_ALIVE_PID,10), startedAt: Date.now(), paths: ["./src/a.ts"] }
+]));'
+expect "claim './src/a.ts' blocks src/a.ts" 7 env FANOUT_FORGE_CHECK=0 FANOUT_REPO=/tmp/fanout-selftest FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo /tmp/fanout-selftest --dry-run 9002
 rm -f /tmp/fanout-selftest/.pi/work-state/path-claims.json
 
 echo
+echo "== a failed fetch refuses to build on the local main (fail closed) =="
+SB=/tmp/fanout-selftest-stalebase
+rm -rf "$SB"
+mkdir -p "$SB/tmp/fanout"
+git init -q -b main "$SB"
+git -C "$SB" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+printf "$TRIAGE_HEAD\n" >"$SB/tmp/fanout/triage.tsv"
+printf '9602\tchore\t-\tmodule\t-\t-\tready\t-\tS\n' >>"$SB/tmp/fanout/triage.tsv"
+sb_out="$(env FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_TIMEOUT_FETCH=5 FANOUT_REPO="$SB" FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo "$SB" 9602 2>&1)"
+check "unreachable forge without opt-in is exit 9" "$?" 9
+check "the refusal names the stale base" "$(printf '%s' "$sb_out" | grep -c 'not known to be current')" 1
+rm -rf "$SB"
+
 echo "== a failed bun install is reported as one, not masked by tail =="
 # On a fresh clone with no extension/ directory, bun install cannot run. The old pipeline let
 # tail's success hide that and the message the operator saw was a later, vaguer one.
@@ -93,7 +119,7 @@ git init -q -b main "$IN"
 git -C "$IN" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 printf "$TRIAGE_HEAD\n" >"$IN/tmp/fanout/triage.tsv"
 printf '9601\tchore\t-\tmodule\t-\t-\tready\t-\tS\n' >>"$IN/tmp/fanout/triage.tsv"
-install_out="$(env FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_REPO="$IN" FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo "$IN" 9601 2>&1)"
+install_out="$(env FANOUT_ALLOW_LOCAL_BASE=1 FANOUT_TIMEOUT_FETCH=5 FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_REPO="$IN" FANOUT_FORGE_URL=https://example.invalid/x.git "$S/worker.sh" --repo "$IN" 9601 2>&1)"
 install_rc=$?
 check "bun install failure exits 10" "$install_rc" 10
 check "bun install failure names itself" "$(printf '%s' "$install_out" | grep -c 'bun install failed')" 1

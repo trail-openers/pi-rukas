@@ -88,6 +88,11 @@ fanout_norm_path() {  # $1 = raw entry
   p="${p#"${p%%[![:space:]]*}"}"
   p="${p%"${p##*[![:space:]]}"}"
   case "$p" in ''|-) return 0 ;; esac
+  # A claim and a candidate must reduce to one spelling: "./src/a.ts" and "src/" name the same
+  # tree as "src/a.ts" and "src". The containment test is string-exact, so they must match first.
+  while [ "${p#./}" != "$p" ]; do p="${p#./}"; done
+  while [ "${p%/}" != "$p" ] && [ "$p" != "/" ]; do p="${p%/}"; done
+  case "$p" in ''|.) return 0 ;; esac
   printf '%s' "$p"
 }
 

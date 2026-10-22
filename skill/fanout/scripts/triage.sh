@@ -76,7 +76,8 @@ printf '%s' "$RAW" | TRIAGE_ID="$ID_FIELD" TRIAGE_CAP="$CAP" "$(fanout_node)" -e
         process.exit(3);
       }
       if (rows.length >= cap) {
-        console.error("[fanout][error] the listing hit its cap of " + cap + " and is truncated: the oldest issues are the ones dropped. Raise FANOUT_TRIAGE_LIMIT (gh) or split the backlog. Nothing written.");
+        const gl = process.env.TRIAGE_ID === "iid";
+        console.error("[fanout][error] the listing hit its cap of " + cap + " and is truncated: the oldest issues are the ones dropped. " + (gl ? "The GitLab path does not paginate yet (glab -P 100 is a single page), so a backlog of 100+ open issues is refused until it does. " : "Raise FANOUT_TRIAGE_LIMIT or split the backlog. ") + "Nothing written.");
         process.exit(3);
       }
       console.log("issue\ttitle-bucket\tfiles-likely-touched\tblast-radius\tdepends-on\tcollides-with-live\tverdict\tblocked-reason\teffort");

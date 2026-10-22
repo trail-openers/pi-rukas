@@ -45,6 +45,8 @@ echo "== closed and attention gates say when they did not run (finding 15) =="
 dry_out="$(env FANOUT_FORGE_CHECK=0 FANOUT_REPO="$FIX" $NOFORGE "$S/worker.sh" --repo "$FIX" --dry-run 9002 2>&1)"
 check "dry run reports closed/attention NOT CHECKED" "$(printf '%s' "$dry_out" | grep -c 'closed/attention: NOT CHECKED')" 1
 check "skipped closed gate warns" "$(printf '%s' "$dry_out" | grep -c 'closed-issue gate NOT CHECKED')" 1
+drive_dry="$(env FANOUT_REPO="$FIX" $NOFORGE "$S/drive.sh" --repo "$FIX" --dry-run 9002 2>&1)"
+check "drive dry run marks an unchecked forge gate" "$(printf '%s' "$drive_dry" | grep -c 'would run  (forge closed/attention NOT CHECKED)')" 1
 
 echo
 echo "== the triage header is validated once (finding 16) =="
@@ -128,7 +130,7 @@ FB=/tmp/fanout-selftest-fakebun
 rm -rf "$FB"; mkdir -p "$FB"
 printf '#!/bin/bash\nexec sleep 30\n' >"$FB/bun"
 chmod +x "$FB/bun"
-inst_out="$(env PATH="$FB:$PATH" FANOUT_JS="$JS" FANOUT_TIMEOUT_INSTALL=1 FANOUT_TIMEOUT_FETCH=5 FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_REPO="$IN2" $NOFORGE "$S/worker.sh" --repo "$IN2" 9701 2>&1)"
+inst_out="$(env PATH="$FB:$PATH" FANOUT_ALLOW_LOCAL_BASE=1 FANOUT_JS="$JS" FANOUT_TIMEOUT_INSTALL=1 FANOUT_TIMEOUT_FETCH=5 FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_REPO="$IN2" $NOFORGE "$S/worker.sh" --repo "$IN2" 9701 2>&1)"
 inst_rc=$?
 check "a hung install is exit 10" "$inst_rc" 10
 check "the install timeout is named" "$(printf '%s' "$inst_out" | grep -c 'bun install timed out')" 1
@@ -304,7 +306,7 @@ chmod +x "$FT/fake-runner"
 printf "$TRIAGE_HDR\n" >"$FT/tmp/fanout/triage.tsv"
 printf '9703\tchore\t-\tmodule\t-\t-\tready\t-\tS\n' >>"$FT/tmp/fanout/triage.tsv"
 printf '9704\tchore\t-\tmodule\t-\t-\tready\t-\tS\n' >>"$FT/tmp/fanout/triage.tsv"
-FT_ENV="PATH=$FTB:$PATH FANOUT_JS=$JS FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_TIMEOUT_FETCH=5 FANOUT_REPO=$FT FANOUT_FORGE_URL=https://example.invalid/x.git"
+FT_ENV="PATH=$FTB:$PATH FANOUT_ALLOW_LOCAL_BASE=1 FANOUT_JS=$JS FANOUT_SKIP_PUSH_CHECK=1 FANOUT_FORGE_CHECK=0 FANOUT_TIMEOUT_FETCH=5 FANOUT_REPO=$FT FANOUT_FORGE_URL=https://example.invalid/x.git"
 
 build_out="$(env $FT_ENV FAKE_BUILD_FAIL=1 "$S/worker.sh" --repo "$FT" 9703 2>&1)"
 check "a failed build is exit 11" "$?" 11

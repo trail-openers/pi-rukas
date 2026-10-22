@@ -185,7 +185,10 @@ if [ "$DRY_RUN" = 1 ]; then
     out="$("$SCRIPT_DIR/worker.sh" --repo "$FANOUT_REPO" --dry-run ${EXTRA_WORKER_ARGS[@]+"${EXTRA_WORKER_ARGS[@]}"} "$i" 2>&1)"
     rc=$?
     if [ "$rc" = 0 ]; then
-      echo "  $i  would run"
+      # A dry run skips the forge reads by default; say so on the line, or a CLOSED issue reads as runnable.
+      note=""
+      case "$out" in *"NOT CHECKED"*) note="  (forge closed/attention NOT CHECKED)" ;; esac
+      echo "  $i  would run$note"
     else
       echo "  $i  refused (exit $rc): $(printf '%s' "$out" | tail -1)"
     fi
