@@ -38,8 +38,20 @@ function assert(cond: boolean, msg: string) {
 }
 
 assert(
-  HALO_RED_TO_GREEN.length >= 30,
-  `corpus: at least 30 harvested rows went refused → allowed (got ${HALO_RED_TO_GREEN.length})`,
+  HALO_RED_TO_GREEN.length === 39,
+  `corpus: exactly 39 harvested rows went refused → allowed (got ${HALO_RED_TO_GREEN.length})`,
+);
+assert(
+  HALO_ALREADY_ALLOWED_AT_BASE.length === 35,
+  `corpus: exactly 35 rows allowed at base are pinned (got ${HALO_ALREADY_ALLOWED_AT_BASE.length})`,
+);
+assert(
+  HALO_KEEP_REFUSED.length === 26,
+  `corpus: exactly 26 KEEP-REFUSED rows are pinned (got ${HALO_KEEP_REFUSED.length})`,
+);
+assert(
+  HALO_STILL_REFUSED_BY_CLAUSE.length === 14,
+  `corpus: exactly 14 accepted costs are pinned (got ${HALO_STILL_REFUSED_BY_CLAUSE.length})`,
 );
 
 for (const t of HALO_RED_TO_GREEN) {

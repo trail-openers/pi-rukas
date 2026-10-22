@@ -68,12 +68,34 @@ import { withSameCommandAssignmentsApplied } from "./review-accept-views.ts";
  * `<`, and the attached spellings `>OUT` / `2>OUT`. The word after a bare operator is the
  * PATH the bytes move through, and it is asked like an operand. */
 const REDIRECT_WORD = /^(?:\d*)?(?:&>>?|>>?|<)(.*)$/;
-/** A `-e <pat>` / `--regexp <pat>` pair, attached or spaced: its VALUE is prose, like the
- * bare pattern — but its PRESENCE says the positional is not the pattern either. */
+/** A `-e <pat>` / `--regexp <pat>` pair, attached or spaced. Its PRESENCE says the
+ * positional is not the pattern. Its VALUE: the LONG spelling is a word the tool receives
+ * and is asked like any other flag value (#1764 fix round 3, H1); the SHORT `-e` is not,
+ * because the arms receive the command case-folded and `grep -E` (extended regex, whose
+ * value is the pattern) folds onto `-e` — asking `-e`'s value refused a harvested corpus row
+ * (`grep -o -E "[a-z]…$" Dockerfile`) whose unreadable word is a regex nobody opens. The
+ * harvested row is the reason the two spellings are not one rule. */
 const PATTERN_FLAG = /^(?:-e|--regexp)(?:$|=)/;
+/** The pattern-bearing spellings whose VALUE is asked as an operand: `-f` / `--file` name
+ * a file the tool opens, and `--regexp` is a word the tool receives. Only the `-e` spelling
+ * keeps a prose value. */
+const PATTERN_VALUE_ASKED = /^(?:--regexp|-f|--file)(?:$|=)/;
 /** `-f <file>` / `--file <file>`: patterns read FROM A FILE, so the value is a path and
  * every positional is a path too. */
 const PATTERN_FILE_FLAG = /^(?:-f|--file)(?:$|=)/;
+/** A long option whose value is the NEXT word when spelled with a space, and a PATH or a
+ * program the tool opens or runs. Spelled with `=` the value already rode inside the flag
+ * word and was asked; spaced, it used to fall through as an ordinary word — and for a
+ * SEARCH tool the first ordinary word is the PATTERN, which is prose, so
+ * `grep --include $F -r x .` read the store path as a regex and walked free (#1764 fix
+ * round 3, H1). A spaced value is asked EXACTLY as the attached one is. */
+const VALUE_TAKING_LONG =
+  /^--(?:exclude-from|ignore-file|pre|pre-glob|include|exclude|file|regexp|exec|command)(?:$|=)/;
+/** A HERE-STRING operator (`<<<`, optionally with an fd in front) and whatever the shell
+ * glued to it. A here-string is a REDIRECTION of one word to the program's stdin, so the
+ * word is asked like any other redirect target — it is not a heredoc and has no body
+ * (#1764 fix round 3, H4). */
+const HERE_STRING_WORD = /^(?:\d*)?<<<(.*)$/;
 /** An option carrying its own value on a SHORT flag: `-Gpath`, `-odata`. The long
  * `--x=y` spelling is read by the caller's `=` split. */
 const ATTACHED_VALUE = /^-[A-Za-z](.*)$/;
@@ -169,6 +191,20 @@ function operandWords(words: string[], search: boolean): string[] {
   let optionsOver = false;
   for (let i = 1; i < words.length; i++) {
     const raw = words[i] as string;
+    // A here-string's word is an operand, not a body: `cat <<<$F` hands the program the
+    // bytes of whatever `$F` is, and the scan must not stop at the `<`s the way it stops
+    // at a heredoc (#1764 H4).
+    if (/^(?:\d*)?<<</.test(raw)) {
+      const here = HERE_STRING_WORD.exec(unquote(raw));
+      const inline = here?.[1] ?? "";
+      if (inline !== "") operands.push(inline);
+      else {
+        const next = unquote(words[i + 1] ?? "");
+        if (next !== "") operands.push(next);
+        i++;
+      }
+      continue;
+    }
     if (raw.startsWith("<<")) break;
     const word = unquote(raw);
     if (word === "") continue;
@@ -177,27 +213,35 @@ function operandWords(words: string[], search: boolean): string[] {
       continue;
     }
     if (!optionsOver && word.startsWith("-")) {
-      if (search && PATTERN_FILE_FLAG.test(word)) {
+      if (search && (PATTERN_FILE_FLAG.test(word) || PATTERN_FLAG.test(word))) {
+        // The flag's PRESENCE is what makes every later positional a file. Its value is
+        // asked as an operand when the spelling is one whose value the tool opens or
+        // receives (`--file`, `--regexp`); the folded-`-E` `-e` keeps its prose value and
+        // simply consumes it when spaced, so the pattern does not resurface as a file.
+        patternTaken = true;
         const attached = attachedOptionValue(word);
-        if (attached !== "") operands.push(attached);
-        else {
-          const next = unquote(words[i + 1] ?? "");
-          if (next !== "") operands.push(next);
-          i++;
-        }
-        patternTaken = true;
-        continue;
-      }
-      if (search && PATTERN_FLAG.test(word)) {
-        // The value of `-e` / `--regexp` is prose. Spaced, it is the NEXT word; attached,
-        // it is inside this one. Either way it is not a path — but its presence is what
-        // makes every LATER positional a file.
-        patternTaken = true;
-        if (attachedOptionValue(word) === "") i++;
+        if (PATTERN_VALUE_ASKED.test(word)) {
+          if (attached !== "") operands.push(attached);
+          else {
+            const next = unquote(words[i + 1] ?? "");
+            if (next !== "") operands.push(next);
+            i++;
+          }
+        } else if (attached === "") i++;
         continue;
       }
       const attached = attachedOptionValue(word);
-      if (attached !== "") operands.push(attached);
+      if (attached !== "") {
+        operands.push(attached);
+        continue;
+      }
+      if (VALUE_TAKING_LONG.test(word)) {
+        // Spaced: the value is the next word, and the tool opens it. Same question as the
+        // `=` spelling, which the branch above already asked.
+        const next = unquote(words[i + 1] ?? "");
+        if (next !== "") operands.push(next);
+        i++;
+      }
       continue;
     }
     if (search && !patternTaken && !optionsOver) {
@@ -218,6 +262,19 @@ function redirectTargets(words: string[]): string[] {
   const targets: string[] = [];
   for (let i = 0; i < words.length; i++) {
     const word = unquote(words[i] ?? "");
+    // A here-string is a redirection of ONE word, so unlike a heredoc it does not end the
+    // scan — the word it points at is a target the guard has to be able to name.
+    if (/^(?:\d*)?<<</.test(word)) {
+      const inline = HERE_STRING_WORD.exec(word)?.[1] ?? "";
+      if (inline !== "") {
+        targets.push(inline);
+        continue;
+      }
+      const next = unquote(words[i + 1] ?? "");
+      if (next !== "") targets.push(next);
+      i++;
+      continue;
+    }
     if (word.startsWith("<<")) break;
     const match = REDIRECT_WORD.exec(word);
     if (match === null) continue;
@@ -246,7 +303,10 @@ function redirectTargets(words: string[]): string[] {
  * over-refusal of a file write the guard can read end to end (#1764 fix round, criteria 4
  * and 5 read together). `null` when a body never terminates (the flattened single-line
  * shape those harvested rows carry): the caller then asks the raw text, where the loops
- * below stop at the `<<` — the behaviour the corpus was measured against.
+ * below stop at the `<<` — the behaviour the corpus was measured against. On a body that
+ * never terminates the RAW command is handed back, never the prefix seen so far: a view
+ * that quietly loses the tail of a command is the guard failing open, and the loops below
+ * stop at the `<<` on their own (#1764 fix round 3, C1).
  */
 function heredocArgumentText(command: string): string {
   let visible = "";
@@ -260,9 +320,9 @@ function heredocArgumentText(command: string): string {
       i = end + 1;
       continue;
     }
-    if (command.startsWith("<<", i)) {
+    if (command.startsWith("<<", i) && !command.startsWith("<<<", i)) {
       const past = skipHeredoc(command, i);
-      if (past === "PARSE_FAIL") return visible;
+      if (past === "PARSE_FAIL") return command;
       visible += ` ${[past.head, past.tail].filter((x) => x !== "").join(" ")} `;
       i = past.end;
       continue;

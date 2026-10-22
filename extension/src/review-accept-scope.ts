@@ -168,7 +168,11 @@ export function inScope(raw: string, norm: string, words: string[]): ScopeClause
     return "executing-operand";
   // The two halves of test (5) ask DIFFERENT texts: the runtime / VCS half asks the whole
   // command (minus any heredoc body — data, never an argument), the read-tool half asks
-  // its own file operands only.
+  // its OWN file operands only — and it asks them of the RAW command, because that test
+  // runs its own heredoc scan (`heredocArgumentText`) and feeding it a text whose quoted
+  // bodies had already been cut out made the second scan report a body that never
+  // terminates and quietly truncate the command at the `<<`, losing the `> $F` the first
+  // scan had deliberately kept visible (#1764 fix round 3, C1).
   const readable = withoutHeredocBodies(raw);
   // A pipe whose TARGET runs a shell makes the SENDER the program the guard cannot read:
   // `cat $F | sh` executes whatever `$F` holds with no heredoc marker and no stdin dash for
@@ -177,7 +181,7 @@ export function inScope(raw: string, norm: string, words: string[]): ScopeClause
   // end — would be refused for piping at a program that runs nothing dangerous.
   if (namesPipedShell(norm) && EXPANSION.test(readable)) return "executing-operand";
   if (namesVcsOrRuntime(norm) && EXPANSION.test(readable)) return "unreadable-word";
-  if (readToolCarriesUnresolvedOperand(readable)) return "unreadable-word";
+  if (readToolCarriesUnresolvedOperand(raw)) return "unreadable-word";
   // Asked ONLY of a command that runs git / gh / glab (#1764 fix round, criterion 6): a
   // test runner's OWN flags are not the store's write surface, and the un-gated test was
   // refusing `bun test --reporter junit foo` and `verify-loop.sh --digest-mode on foo`

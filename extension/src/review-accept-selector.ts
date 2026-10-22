@@ -17,25 +17,37 @@ import {
   isAcceptScriptToken,
   unquote,
 } from "./review-accept-command.ts";
+import { gitOptionNames } from "./review-accept-verb.ts";
 import { isProtectedToken } from "./review-protected-names.ts";
 
-/** git's repo-location / config selectors that are NEVER cleared by their target:
+/** git's repo-location / config selectors that are NEVER cleared by their target: the
+ * rows of the ONE table in `review-accept-verb.ts` whose `clearable` column is false —
  * `--git-dir` and `--work-tree` move the object store or the work tree the read runs
- * against, and `--exec-path` can shadow `git-shell` with a program of the caller's
- * choosing. Refused by whole word and `=`-attached, either case. */
-const NEVER_CLEARED_SELECTOR = /^--(?:git-dir|work-tree|exec-path)(?:=|$)/i;
+ * against, `--exec-path` can shadow `git-shell` with a program of the caller's choosing,
+ * and `--namespace` / `--super-prefix` / `--config-env` rewrite what git reports or read
+ * their value out of the environment. Refused by whole word and `=`-attached, either case.
+ * Derived, not spelled: the verb scan that steps over these options and this audit that
+ * refuses them are the same rows or they drift (#1764 fix round 3, H3). */
+const NEVER_CLEARED_SELECTOR = new RegExp(
+  `^(?:${gitOptionNames((s) => !s.clearable)})(?:=|$)`,
+  "i",
+);
 /** The same selectors as a regex, for the FORGE read arm, which resolves nothing: `gh` and
  * `glab` have no `-C <path>` form to resolve, so a forge read carrying any of them is
  * refused outright (`armForgeRead` maps `unquote` over the segment before matching the
  * subcommand, so `hasFlag` would be looking at the quote characters rather than the
  * flag). */
-export const REPO_LOCATION_FLAG = /^(-c|--git-dir|--work-tree|--exec-path)(?:=|\s|$)/;
-/** `-C <path>` / `-c key=value`, the two selectors whose MEANING is in their value. The
- * arms receive the segment LOWERCASED, so an uppercase `-C <path>` is the word `-c
- * <path>` here; a lowercase `-c` is therefore indistinguishable from it, and that is
- * sound: git accepts `-c` only as `-c key=value`, so a value carrying no `=` cannot be a
- * config assignment and can only be the path form (#1643). */
-const VALUE_SELECTOR = /^-c(.*)$/i;
+export const REPO_LOCATION_FLAG = new RegExp(
+  `^(?:-c|${gitOptionNames((s) => !s.clearable)})(?:=|\s|$)`,
+  "i",
+);
+/** `-C <path>` / `-c key=value`, the selectors whose MEANING is in their value, taken from
+ * the same table's `clearable` column. The arms receive the segment LOWERCASED, so an
+ * uppercase `-C <path>` is the word `-c <path>` here; a lowercase `-c` is therefore
+ * indistinguishable from it, and that is sound: git accepts `-c` only as `-c key=value`,
+ * so a value carrying no `=` cannot be a config assignment and can only be the path form
+ * (#1643). */
+const VALUE_SELECTOR = new RegExp(`^(?:${gitOptionNames((s) => s.clearable)})(.*)$`, "i");
 /** A value that is a config assignment rather than a path (`-c core.pager=cat`): the `=`
  * is what makes it a hook / pager / alias the program then RUNS, which no target test can
  * clear. */
@@ -80,7 +92,9 @@ function targetReachesStore(target: string): boolean {
  * config selector is read together with its value, and one that cannot be CLEARED both
  * makes the command the guard's business and keeps the git arms from admitting it:
  *
- *  - `--git-dir` / `--work-tree` / `--exec-path`, spaced or `=`-attached: never cleared;
+ *  - every option the table marks `clearable: false` — `--git-dir` / `--work-tree` /
+ *    `--exec-path`, spaced or `=`-attached, and `--namespace` / `--super-prefix` /
+ *    `--config-env`: never cleared;
  *  - `-c key=value` (or `-C` spelling a `key=value`): a config the program then runs — a
  *    pager, a hook path, an alias — so no target test clears it (clause (b)'s accepted
  *    cost, and the position the case tables already record);
