@@ -20,4 +20,16 @@ export type CorrectiveRoundEvent = {
   command: string;
   /** The bounded assertion lines this workstream's developer was given. */
   evidenceLines: string[];
+  /**
+   * #1698(b) — the worktree's HEAD when this record was written, i.e. before
+   * any corrective developer started. The fix-pass fence bounds its corrective
+   * admission to files `git` reports as committed AFTER this commit, so an
+   * evidence-named file the pass itself wrote before the round is still a
+   * stray. Absent (a record written before #1698(b), or a HEAD the driver
+   * could not read) admits NOTHING: the fence's corrective route refuses it with
+   * the `no-baseline` reason — the commit window is the proof, and a record with
+   * no baseline proves nothing. See `CorrectiveRefusal` in
+   * work-driver-corrective-admission.ts for that route's whole vocabulary.
+   */
+  headAtRound?: string;
 };

@@ -41,6 +41,7 @@
     "smoke-tests/test-plan-spec-markup-slots.ts",
     "smoke-tests/test-plan-fence-dir-glob.ts",
     "smoke-tests/test-spec-slot-fence-admission.ts",
+    "smoke-tests/test-fix-pass-fence-1698.ts",
     "smoke-tests/test-stale-lock-sweep.ts",
     "smoke-tests/lib/arms/loop-behaviour.ts",
     "smoke-tests/test-adversarial-ledger-row-identity.ts",

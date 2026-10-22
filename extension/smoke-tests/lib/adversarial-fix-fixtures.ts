@@ -117,7 +117,10 @@ export function fixCtx(
   verifyExecFn?: DriverContext["verifyExecFn"],
 ): DriverContext {
   return {
-    host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
+    // A DriverHost is structural (sendUserMessage + emit); a test host records
+    // nothing on either, so it satisfies the type as written — no cast needed,
+    // and a cast here would hide a real shape change on the host seam.
+    host: { sendUserMessage: () => {}, emit: () => {} },
     repoRoot: dir,
     issue: 1114,
     issueBodyFetcherFn: async () => ({ stdout: "mock" }),

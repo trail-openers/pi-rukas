@@ -31,6 +31,7 @@ import { trace } from "./trace.ts";
 import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-crash.ts";
 import { runSymbolMergeRetry } from "./work-develop-symbol-merge.ts";
 import { appendDevelopVerifyFailure } from "./work-develop-verify-failure.ts";
+import { headOf } from "./work-driver-adversarial-fix-git.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { type CorrectiveDecision, decideCorrectiveRound } from "./work-driver-corrective-decide.ts";
@@ -42,6 +43,7 @@ import {
   recordDevelopVerdict,
 } from "./work-driver-develop-verdict.ts";
 import { beginDispatch, clearDispatch, resumeEnabled } from "./work-driver-resume.ts";
+import { verifyTimeoutMs } from "./work-driver-verify-budget.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
@@ -141,7 +143,20 @@ async function runCorrectiveRound(
   const { ctx, decision, ids } = a;
   const at = Date.now();
   const command = oneLine(decision.command);
-  const rounds: WorkEvent[] = decision.targets.map((t) => ({
+  // #1698(b) — the commit each worktree is at BEFORE any corrective developer
+  // starts. The fix-pass fence bounds its corrective admission to files
+  // committed after this SHA, so evidence alone cannot authorise a file the
+  // pass itself wrote before the round. A worktree whose HEAD cannot be read
+  // records no baseline and therefore admits nothing (the fence fails closed).
+  const heads = await Promise.all(
+    decision.targets.map(async (t) => {
+      const head = await headOf(a.execFn, t.cwd, verifyTimeoutMs());
+      if (!head.ok)
+        trace(`work-driver: corrective round ${t.id} recorded no HEAD baseline: ${head.reason}`);
+      return head.ok ? head.value : undefined;
+    }),
+  );
+  const rounds: WorkEvent[] = decision.targets.map((t, i) => ({
     kind: "corrective-round",
     at,
     step: "develop",
@@ -149,6 +164,7 @@ async function runCorrectiveRound(
     attempt: 1,
     command,
     evidenceLines: t.lines.map(oneLine),
+    ...(heads[i] !== undefined ? { headAtRound: heads[i] } : {}),
   }));
   const withRounds = appendEvent(
     {
