@@ -346,10 +346,18 @@ branch: feature/issue-553-fix
     // correct per-worktree cwd.
     const developerLabels = seenLabels.filter((l) => l.startsWith("developer["));
     // #1016 — task-b fails once, so exactly ONE selective re-dispatch of it:
-    // 4 developer dispatches (a, b, c, then b again); a and c never re-run.
+    // a, b, c, then b again; a and b never re-run. #1768 adds one more: task-c
+    // exits 0 with dirt and no commit of its own, so the own-commit check sends
+    // it ONE corrective pass in its own worktree. That pass is labelled
+    // `developer[<id>:unfinished]`, which is why the per-id counts below count
+    // plain labels and the corrective pass is asserted separately.
     assert(
-      developerLabels.length === 4,
-      "multi-workstream: 3 developer dispatches + 1 selective retry",
+      developerLabels.length === 5,
+      "multi-workstream: 3 dispatches + 1 selective retry + 1 corrective pass",
+    );
+    assert(
+      developerLabels.filter((l) => l === "developer[task-c:unfinished]").length === 1,
+      "multi-workstream: task-c's UNFINISHED pass gets exactly one corrective dispatch",
     );
     assert(
       developerLabels.filter((l) => l === "developer[task-b]").length === 2 &&

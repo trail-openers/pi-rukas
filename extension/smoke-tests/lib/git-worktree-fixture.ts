@@ -55,9 +55,14 @@ export function gitIn(cwd: string, args: string[]): string {
  */
 export function mockDeveloperWork(cwd: string, label: string | undefined): void {
   if (label === "developer[task-c]") writeFileSync(path.join(cwd, "edit.txt"), "uncommitted");
-  else if (label !== undefined && label.endsWith(":unfinished]"))
-    gitIn(cwd, ["commit", "-qm", `finish ${label}`]);
-  else gitIn(cwd, ["commit", "--allow-empty", "-qm", `work ${label}`]);
+  else if (label !== undefined && label.endsWith(":unfinished]")) {
+    // The corrective pass's job IS to commit — that is what #1768 asks it to
+    // do, and a mock that re-left the same dirt would be testing the wrong
+    // thing. It stages everything, exactly as a real developer finishing work
+    // does. Never weaken this branch to make a test pass.
+    gitIn(cwd, ["add", "-A"]);
+    gitIn(cwd, ["commit", "--allow-empty", "-qm", `finish ${label}`]);
+  } else gitIn(cwd, ["commit", "--allow-empty", "-qm", `work ${label}`]);
 }
 
 /** Create `<dir>/.worktrees/<id>` as a repo with one base commit; returns id → base SHA. */

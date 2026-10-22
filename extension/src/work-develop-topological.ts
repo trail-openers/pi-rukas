@@ -12,6 +12,8 @@ import { parkOnDevelopCrash } from "./work-develop-crash.ts";
 import { isValidBaseSha } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
 import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
+import { correctivePassFor } from "./work-develop-own-commit-dispatch.ts";
+import { parkUnfinishedDevelop, requireOwnCommit } from "./work-develop-own-commit.ts";
 import {
   type PreservedGreens,
   greenCountsAsWork,
@@ -22,8 +24,6 @@ import {
   runIndependentFanout,
   withPersistNotes,
 } from "./work-develop-retry.ts";
-import { parkUnfinishedDevelop, requireOwnCommit } from "./work-develop-own-commit.ts";
-import { correctivePassFor } from "./work-develop-own-commit-dispatch.ts";
 import {
   type DevelopRunState,
   makeRunOneWorkstream,

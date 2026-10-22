@@ -85,9 +85,14 @@ export const correctivePassFor = (
   // that breaks when a second caller appears. `lastPrompt` is read at CALL
   // time, because the dispatch closure writes it as each pass runs.
   return (id: string, cwd: string, paths: string[]) => {
-    if (s.lastPrompt?.(paths) === undefined) return Promise.resolve(undefined);
+    const prompt = s.lastPrompt?.(paths);
+    if (s.lastPrompt === undefined || prompt === undefined) return Promise.resolve(undefined);
     correctivePassCount.n++;
-    return correctiveFor({ ...s, dispatch: seam() }, id, cwd, paths);
+    // A COPY of the run state, never the state itself: the corrective pass is a
+    // second dispatch, and a dispatch closure writes `lastPrompt` while it runs.
+    // Mutating the shared object would hand the next pass in this fan-out a
+    // brief belonging to the last workstream that was dispatched.
+    return correctiveFor({ ...s, lastPrompt: () => prompt, dispatch: seam() }, id, cwd, paths);
   };
 };
 

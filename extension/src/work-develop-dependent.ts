@@ -99,10 +99,19 @@ export async function runDependentWorkstreams(
   // the work — no reset, no clean), the captured brief plus the finish-and-commit
   // paragraph, and the same dispatch seam and write fence as the first pass.
   const correctiveForId = (id: string, cwd: string, paths: string[]) => {
-    if (run.ownCommit?.lastPrompt?.(paths) === undefined) return Promise.resolve(undefined);
+    // `lastPrompt` is read when the pass RUNS: the dispatch closure writes it
+    // during each dispatch, and `run.ownCommit` is the SAME object the closure
+    // mutates. Reading it earlier (at phase start) sees no brief and dispatches
+    // nobody — the dependent's corrective pass would silently never happen.
+    const lastPrompt = run.ownCommit?.lastPrompt?.(paths);
+    if (run.ownCommit === undefined || lastPrompt === undefined) return Promise.resolve(undefined);
     correctivePassCount.n++;
     return correctiveFor(
-      { ...run.ownCommit, dispatch: run.correctiveDispatch ?? run.ownCommit.dispatch },
+      {
+        ...run.ownCommit,
+        lastPrompt: () => lastPrompt,
+        dispatch: run.correctiveDispatch ?? run.ownCommit.dispatch,
+      },
       id,
       cwd,
       paths,

@@ -14,9 +14,9 @@
  */
 import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
+import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { DEVELOP_INCOMPLETE_UNCOMMITTED } from "./work-develop-own-commit.ts";
 import { namePaths } from "./work-develop-paths.ts";
-import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
