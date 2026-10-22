@@ -39,21 +39,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
-import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
-import { baseHealthProbeEnabled } from "./work-driver-verify-pr17.ts";
-import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import {
   BASELINE_RED_MARKER,
+  type RedBaselineVerdict,
   baselineRedMessage,
   isRedBaseline,
   probeBaselineVerify,
-  type RedBaselineVerdict,
 } from "./work-driver-verify-baseline.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
+import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isValidSha } from "./work-driver-verify-develop-helpers.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
+import { baseHealthProbeEnabled } from "./work-driver-verify-pr17.ts";
 import type { BaseHealthVerdict, TierBoundMs } from "./workflow-state-schema-base-health.ts";
 import { type WorkState, appendEvent, workStateDir } from "./workflow-state.ts";
 
@@ -332,7 +332,8 @@ export async function applyBaseHealthProbe(
 }
 
 /** The probe's own verdict shape, as the branch step holds it before parking. */
-export interface BaseHealthRed {  verdict: BaseHealthVerdict;
+export interface BaseHealthRed {
+  verdict: BaseHealthVerdict;
   /** The probe's red arm — the evidence `baselineRedMessage` renders. */
   red: RedBaselineVerdict;
 }
@@ -357,9 +358,12 @@ export async function probeBaseAtBranch(
     : state;
   if (outcome.red !== undefined) {
     trace(
-      `work-driver: base-health — parking at verify-baseline-red:branch (no developer dispatched)`,
+      "work-driver: base-health — parking at verify-baseline-red:branch (no developer dispatched)",
     );
-    return appendBaseHealthPark(next, { verdict: outcome.verdict as BaseHealthVerdict, red: outcome.red });
+    return appendBaseHealthPark(next, {
+      verdict: outcome.verdict as BaseHealthVerdict,
+      red: outcome.red,
+    });
   }
   if (outcome.notes.length > 0) {
     trace(`work-driver: base-health — ${outcome.notes.join("; ")}`);

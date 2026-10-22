@@ -30,6 +30,7 @@ import {
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { type BaseHealthVerdict, matchingVerdict } from "./work-driver-verify-base-health.ts";
 import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
 import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
@@ -37,7 +38,6 @@ import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
 import { looksLikeMissingDeps, provisionWorktree } from "./worktree-provision.ts";
 import { type ExecFn, worktreePath } from "./worktree.ts";
-import { type BaseHealthVerdict, matchingVerdict } from "./work-driver-verify-base-health.ts";
 
 /** Leads the failure string of a red baseline; the explain renderer keys on it. */
 export const BASELINE_RED_MARKER = "[baseline-red]";
@@ -77,7 +77,7 @@ export type BaselineVerdict =
    * legitimately so, because the develop step compares one extracted assertion
    * and treats a red base as park-with-context either way.
    */
-  | {
+  | ({
       status: "red";
       /** The base run's combined stream — required, never defaulted to "". */
       rawStream: string;
@@ -86,7 +86,7 @@ export type BaselineVerdict =
       /** The child's exit code; `null` when the executor did not report one. */
       exitCode: number | null;
       assertion: string | null;
-    } & RedBaselineExtra
+    } & RedBaselineExtra)
   /**
    * The base run was killed at its bound. It judged nothing, so it has no
    * stream, no tally and no exit code to reason from — which is exactly why it
@@ -242,6 +242,22 @@ export async function probeBaselineVerify(
           reason: "the base checkout failed for want of dependencies, not on the gate itself",
         };
       }
+      // #1765 — a stream the gate never printed is no evidence about the base
+      // commit. When the executor captured nothing, `combinedExecFailureStream`
+      // falls back to the Error's own message, which node always leads with
+      // `Command failed: <cmd>` — so that fallback text, with nothing real
+      // beneath it, is the harness speaking and not the gate. It used to reach
+      // the red arm, where the pre-develop probe turns it straight into a
+      // `verify-baseline-red` PARK (and the develop gate into its excuse): a
+      // broken harness would park a cycle for a base that may be perfectly
+      // green. `probeBaselineVerify` can only ADD evidence, so here there is
+      // none: unknown, with the reason naming what came back.
+      if (baseStreamIsHarnessOnly(raw, cmd)) {
+        return {
+          status: "unknown",
+          reason: "the base run returned no output from the gate itself, only the executor error",
+        };
+      }
       // #1404 — the raw stream rides back on a red verdict. The develop step's
       // consumers read only the extracted assertion, so this was discarded;
       // the commit-pr seam's per-test attribution needs the whole stream
@@ -270,6 +286,35 @@ export async function probeBaselineVerify(
 }
 
 /**
+ * #1765 — is `raw` nothing but node's own `Command failed: <cmd>` echo? The
+ * executor error's message starts with that line and `combinedExecFailureStream`
+ * hands it back verbatim when the child produced no stdout and no stderr, so a
+ * stream that reduces to it is the harness talking, not the project's gate. The
+ * command is stripped in escaped and quoted forms too: node echoes the whole
+ * invocation, and a shell-wrapped `sh -c 'sh gate.sh'` names it inside quotes.
+ */
+function baseStreamIsHarnessOnly(raw: string, cmd: string): boolean {
+  let rest = raw.trim();
+  if (!rest.startsWith("Command failed:")) return false;
+  rest = rest.slice("Command failed:".length).trim();
+  // The whole invocation is one line: whatever survives the echo is content the
+  // gate itself printed, so anything left means the run did produce output.
+  const endOfLine = rest.indexOf("\n");
+  if (endOfLine !== -1) return false;
+  return stripCmdEcho(rest, cmd).length === 0;
+}
+
+/** Remove every spelling of the invoked command from the executor's echo. */
+function stripCmdEcho(rest: string, cmd: string): string {
+  let out = rest;
+  for (const form of [cmd, JSON.stringify(cmd), `'${cmd}'`, `"${cmd}"`]) {
+    if (!form) continue;
+    out = out.split(form).join("").trim();
+  }
+  return out;
+}
+
+/**
  * The failure string for a red baseline. Kept short: cap evidence keeps only
  * the last 800 chars of each failure (work-develop-cap-evidence.ts).
  * `changeFailure` is the text the change's own run failed with — the "same
@@ -294,7 +339,7 @@ export function baselineRedMessage(
   return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. Fix the gate at the base commit (or the host it runs on), then re-run`;
 }
 
-/** One failure of the change's own verify run, for the baseline comparison. */export interface ChangeFailure {
+/** One failure of the change's own verify run, for the baseline comparison. */ export interface ChangeFailure {
   text: string;
   timedOut: boolean;
 }

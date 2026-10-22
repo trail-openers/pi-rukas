@@ -45,9 +45,9 @@ import { runDevelopTopological } from "./work-develop-topological.ts";
 import { pendingFixes, runAdversarialFixPass } from "./work-driver-adversarial-fix.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
-import { verifyStepOutcome } from "./work-driver-verify.ts";
 // #1765 — the pre-develop base-health probe, called from BOTH branch paths.
 import { probeBaseAtBranch } from "./work-driver-verify-base-health.ts";
+import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
