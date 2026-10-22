@@ -6,12 +6,19 @@
  * as a parameter; it is never written into the persisted pipeline state.
  *
  * Widening is bounded by three conditions, and only these: a finding-named path
- * widens the fence when it is tracked at base, not protected per
- * `protectedPathsIn` (the single source of protected paths), and in the same
- * non-root directory as a declared or already-changed path. There is no list of
- * project-specific modules: the /work driver runs on other repositories too. A
- * driver module is therefore no more editable in a fix pass than on a first
- * develop pass, which has the same fence and the same gates.
+ * widens the fence when it is tracked at base OR already changed by this cycle
+ * (#1698 — the committed diff from `baseSha` to the worktree's head before the
+ * pass, so a file the cycle's own earlier round created is reachable), not
+ * protected per `protectedPathsIn` (the single source of protected paths), and
+ * in the same non-root directory as a declared or already-changed path. There
+ * is no list of project-specific modules: the /work driver runs on other
+ * repositories too. A driver module is therefore no more editable in a fix pass
+ * than on a first develop pass, which has the same fence and the same gates.
+ *
+ * #1698(b): a corrective round the driver dispatches INSIDE a fix pass edits
+ * the files its own evidence lines name; those files are admitted from the
+ * stray set (unprotected, unfenced) because the driver ordered the edit. The
+ * rule and its rejected alternative are stated at the admission site.
  *
  * #1557 adds the one thing that rule could not reach: a file that does not
  * exist yet. A spec deliverable's PATTERN slot (`review-ledger-*.ts`,
@@ -29,6 +36,7 @@ import {
   type FixExec,
   type GitRead,
   type TreeChanges,
+  committedChanges,
   headOf,
   trackedPaths,
   treeChanges,
@@ -47,6 +55,7 @@ import {
   specPatternSlots,
 } from "./work-driver-spec-slot-admission.ts";
 import type { PipelineState, Workstream } from "./workflow-state-schema.ts";
+import type { WorkEvent } from "./workflow-state.ts";
 
 export interface FixRequest {
   workstreamId: string;
@@ -62,7 +71,7 @@ export interface PassPlan {
   /** Changes against the base commit before the pass (the N=1 baseline). */
   before: TreeChanges;
   declared: string[];
-  /** Tracked, unprotected paths a finding names in an anchor's directory (see namedPaths). */
+  /** Unprotected paths a finding names, tracked at base or already changed by this cycle, in an anchor's directory (see namedPaths). */
   named: string[];
   /** Named paths that widen a declared fence for this pass only. */
   widened: string[];
@@ -85,16 +94,20 @@ function dirOfPath(p: string): string {
 
 /**
  * Named paths a fix pass may widen its fence onto. Generic, not a project list:
- * a finding-named path qualifies only if it is (a) tracked at base, (b) not
- * protected per `protectedPathsIn` (the single source of protected paths), and
- * (c) in the same directory as an anchor — a declared path or a file the
- * workstream already changed. A directory entry (`src/foo/`) is its own
- * directory. The repo root is not an anchor: a root-level anchor would make every
- * root file widenable. Named as a whole path token (`data.txt` does not name `a.txt`).
+ * a finding-named path qualifies only if it is (a) in `candidates` — the union
+ * of the tree tracked at base and the files this cycle already committed
+ * (#1698: a file the cycle's own round created is never tracked at base, so
+ * the tracked-at-base reading alone made it un-nameable by construction),
+ * (b) not protected per `protectedPathsIn` (the single source of protected
+ * paths), and (c) in the same directory as an anchor — a declared path or a
+ * file the workstream already changed. A directory entry (`src/foo/`) is its
+ * own directory. The repo root is not an anchor: a root-level anchor would make
+ * every root file widenable. Named as a whole path token (`data.txt` does not
+ * name `a.txt`).
  */
 export function namedPaths(
   findings: string,
-  tracked: readonly string[],
+  candidates: readonly string[],
   anchors: readonly string[],
 ): string[] {
   const dirs = new Set(
@@ -105,7 +118,7 @@ export function namedPaths(
       })
       .filter((d) => d !== ""),
   );
-  return tracked.filter(
+  return [...new Set(candidates)].filter(
     (p) => protectedPathsIn([p]).length === 0 && dirs.has(dirOfPath(p)) && pathTokenIn(findings, p),
   );
 }
@@ -149,9 +162,20 @@ export async function planFixPass(
     if (!head.ok) return fenced(head.reason);
     const before = await treeChanges(execFn, worktree, ps.baseSha ?? "");
     if (!before.ok) return fenced(before.reason);
+    // #1698(a) — "already changed by this cycle" is the COMMITTED diff from
+    // base to the pass's head (treeChanges is worktree-vs-base and also
+    // carries uncommitted/untracked residue; the committed read is the
+    // precise record of what the cycle itself made).
+    const cycle = await committedChanges(execFn, worktree, ps.baseSha ?? "", head.value);
+    if (!cycle.ok) return fenced(cycle.reason);
     const declared = (ps.workstreams?.[p.workstreamId]?.paths ?? []).map(cleaned);
     // Widening anchors: the declared fence, and what the workstream already changed.
-    const named = namedPaths(p.findings, tracked.value, [...declared, ...before.value.names]);
+    // Widening candidates: tracked at base OR already changed by this cycle.
+    const named = namedPaths(
+      p.findings,
+      [...tracked.value, ...cycle.value],
+      [...declared, ...before.value.names],
+    );
     plans.push({
       id: p.workstreamId,
       worktree,
@@ -280,12 +304,28 @@ function strayReason(
   const naming = strays
     .map((s) =>
       pathTokenIn(plan.findings, s.file)
-        ? `A finding names ${s.file}, but it does not widen the fence (a named file widens only when it is tracked at base, unprotected, and in the directory of a declared or already-changed non-root path); ${WHY[s.refused]}`
+        ? `A finding names ${s.file}, but it does not widen the fence (a named file widens only when it is tracked at base or already changed by this cycle, unprotected, and in the directory of a declared or already-changed non-root path); ${s.refused === "no-slot" ? "no spec pattern slot matches it" : WHY[s.refused]}`
         : `No finding names ${s.file} — ${WHY[s.refused]}`,
     )
     .join("; ");
   const files = strays.map((s) => s.file).join(", ");
   return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
+}
+
+/**
+ * #1698(b) — the joined evidence text of each workstream's `corrective-round`
+ * events, from the events the fix pass appended. The corrective round's
+ * developer is dispatched with these exact lines and told to repair the files
+ * they name, so a committed file the evidence names is driver-ordered work,
+ * not a stray.
+ */
+export function correctiveEvidenceFrom(events: readonly WorkEvent[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const e of events) {
+    if (e.kind !== "corrective-round") continue;
+    out[e.workstreamId] = `${out[e.workstreamId] ?? ""}\n${e.evidenceLines.join("\n")}`;
+  }
+  return out;
 }
 
 /**
@@ -304,6 +344,7 @@ export async function postPassFault(
   execFn: FixExec,
   plans: readonly PassPlan[],
   baseSha: string,
+  corrective?: Readonly<Record<string, string>>,
 ): Promise<PostPass> {
   const diffs: Record<string, string> = {};
   // #1725 round 3 — one disclosure note per admitted (workstream, file),
@@ -354,8 +395,32 @@ export async function postPassFault(
       onAdmit: (id, file, slot) => admissions.push(admissionNote(id, file, slot)),
     });
     const strays: Array<{ file: string; refused: AdmissionRefusal }> = [];
+    const evidence = corrective?.[plan.id] ?? "";
     for (const file of s.value.names) {
       if (allowed.some((a) => allows(a, file))) continue;
+      // #1698(b) — a corrective round the driver dispatched INSIDE this fix
+      // pass edits the files its own evidence lines named; capping the cycle
+      // for making the ordered edit is the defect this admits away. Two fixes
+      // were on the table; this is the smaller correct one. Re-capturing
+      // `headBefore` before each corrective dispatch was rejected: the
+      // corrective round runs deep inside `runDevelopTopological` (verify →
+      // recordDevelopVerdict → onDevelopVerifyFailed), so refreshing the
+      // capture would either blind the stray set to fix-pass strays committed
+      // before the round or force headBefore through develop's core as extra
+      // state; and headBefore is also the baseline the no-op and
+      // comment-retention checks read, so moving it moves those too. Admitting
+      // by evidence keeps every other check on the same baseline, and it is
+      // bounded: a corrective developer that wanders onto a file its evidence
+      // never named is still a stray, and protected/fenced paths stay refused.
+      if (
+        evidence.length > 0 &&
+        protectedPathsIn([file]).length === 0 &&
+        !plan.outOfScope.some((entry) => fencedBy(entry, file)) &&
+        pathTokenIn(evidence, file)
+      ) {
+        admissions.push(`${plan.id}: ${file} admitted — the corrective round's evidence named it`);
+        continue;
+      }
       const decision = specAdmitsFile(admit, plan, file);
       if (!decision.admitted) strays.push({ file, refused: decision.refused });
     }
