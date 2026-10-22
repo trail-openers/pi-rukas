@@ -55,10 +55,6 @@ import {
   runGit,
 } from "./work-develop-git.ts";
 import type { OwnCommitCheck } from "./work-develop-unfinished-facts.ts";
-import {
-  SAFETY_NET_COMMIT_SUBJECT_PREFIX,
-  ownCommitsAheadOfBase,
-} from "./work-develop-unfinished.ts";
 import { classifyGreenPass } from "./work-develop-green-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -126,7 +122,14 @@ export interface CrashVerdict {
 
 /**
  * The arguments `classifyDevelopPass` takes — exported so the test seam on
- * `DriverContext` names the same shape rather than restating it and drifting.
+ * `DriverContext` and the classify closure in `work-develop-pass-record.ts`
+ * name the same shape rather than restating it and drifting.
+ *
+ * `ownCommits` is the test seam for the green-path commit attribution: the
+ * count itself comes from `commitsAheadOfBase`, so a fake cannot make an
+ * unreadable tree look like a committed one. `driverShas` carries the driver's
+ * own commit SHAs for the workstream (collected by `driverCommitShasFor`) to
+ * that read; a supplied `ownCommits` owns the answer and these are unused.
  */
 export type ClassifyArgs = {
   id: string;
@@ -135,17 +138,7 @@ export type ClassifyArgs = {
   base: string | undefined;
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
   result: DevelopPassResult;
-  /** Test seam for the green-path commit attribution (the count itself comes
-   *  from `commitsAheadOfBase`, so a fake cannot make an unreadable tree look
-   *  like a committed one). */
-  ownCommits?: (
-    cwd: string,
-    base: string | undefined,
-  ) => Promise<import("./work-develop-unfinished-facts.ts").OwnCommitCheck>;
-  /** #1768 — the driver's own commit SHAs for this workstream, collected from
-   *  its `safety-net-commit` records by the caller (see
-   *  `driverCommitShasFor`). A supplied `ownCommits` seam owns the answer and
-   *  these are unused. */
+  ownCommits?: (cwd: string, base: string | undefined) => Promise<OwnCommitCheck>;
   driverShas?: readonly string[];
 };
 

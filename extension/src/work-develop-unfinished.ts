@@ -22,7 +22,7 @@
  *  2. `classifyDevelopPass` early-returned on the green path WITHOUT reading
  *     the worktree (`uncommitted: []`), so the only later reader of the tree
  *     was the #622 safety net — which COMMITS the leftover dirt when the pass
- *     has 0 commits ahead, and that driver-made commit then satisfies
+ *     has 0 commits ahead, and that driver-made commit then satisfied
  *     `greenCountsAsWork`'s commits>0 rule. A quit mid-step became a completed
  *     step riding into commit-pr on a `wip: driver safety-net commit`.
  *  3. The net ran BEFORE the green check in both develop phases, so it could
@@ -39,6 +39,12 @@
  * Fail closed, like `greenCountsAsWork`: an unreadable tree or commit count is
  * never read as clean. And the net keeps its charter — recovery for a pass that
  * earned its green, never a paper-over for one that did not.
+ *
+ * The pure rule and the record vocabulary are in
+ * `work-develop-unfinished-facts.ts` (re-exported below); the one corrective
+ * round is in `work-develop-unfinished-round.ts`; the step-level decision is in
+ * `work-develop-unfinished-pass.ts`. All three are the §12 size split, not
+ * three places one rule is decided.
  */
 
 import * as lifecycle from "./lifecycle-events.ts";
@@ -48,6 +54,7 @@ import {
   type ExecFn,
   type GitExec,
   INVALID_BASE_MSG,
+  type StatusEntry,
   commitEntriesOf,
   commitsAheadOfBase,
   errText,
@@ -80,16 +87,17 @@ export const SAFETY_NET_COMMIT_SUBJECT_PREFIX = "wip: driver safety-net recovery
  *  that a hung git cannot stall the develop fan-out. */
 const TREE_READ_TIMEOUT_MS = 30_000;
 
-/** The event's `paths` list is bounded: the handoff renders it verbatim. */
+/** The event's `paths` list, the corrective prompt's path list and the cap
+ *  sentence are all bounded: each is rendered verbatim somewhere. */
 const EVENT_PATHS_MAX = 20;
 
 /** Bounded `git status --porcelain -z`: the same argv and parse the crash
  *  classifier uses, so "what is in the tree" has one definition across the
  *  develop step. A hung git degrades to `unreadable`, never to `[]`. */
-async function readStatusBounded(
+export async function readTreeBounded(
   execFn: ExecFn,
   cwd: string,
-): Promise<{ entries: ReturnType<typeof commitEntriesOf> } | { unreadable: string }> {
+): Promise<{ entries: StatusEntry[] } | { unreadable: string }> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const p = execFn("git", {
@@ -108,9 +116,7 @@ async function readStatusBounded(
       }),
     ]);
     const parsed = parseStatus(settled.stdout);
-    return Array.isArray(parsed)
-      ? { entries: commitEntriesOf(parsed) }
-      : { unreadable: parsed.unreadable };
+    return Array.isArray(parsed) ? { entries: commitEntriesOf(parsed) } : { unreadable: parsed.unreadable };
   } catch (err) {
     return { unreadable: errText(err) };
   } finally {
@@ -221,45 +227,6 @@ export async function ownCommitsAheadOfBase(
   return own.length > 0 ? { commits: own.length } : { driverOnly: true };
 }
 
-/**
- * The green-path reading of one workstream's worktree, from the two facts the
- * child's claim cannot supply. Runs only on a child-reported green — the
- * failure path of #1403 already reads the tree for its own record, so a pass
- * is read once either way.
- *
- * Both reads are independent and bounded: `Promise.all` so a slow tree costs
- * one window, and each read degrades to `unreadable` rather than throwing, so
- * a hung git is a blocked pass, never a green one and never a stalled step.
- */
-export async function readGreenPass(args: {
-  cwd: string;
-  base: string | undefined;
-  execFn: ExecFn;
-  /** #1768 — the driver's own commit SHAs for this workstream (see
-   *  `driverCommitShasFor`); absent means none were recorded. */
-  driverShas?: readonly string[];
-}): Promise<GreenReading> {
-  const { cwd, base, execFn, driverShas } = args;
-  const [own, status] = await Promise.all([
-    ownCommitsAheadOfBase(execFn, cwd, base, driverShas),
-    readStatusBounded(execFn, cwd),
-  ]);
-  if ("unreadable" in status) {
-    return {
-      done: false,
-      unfinished: false,
-      unreadable: true,
-      evidence: "unreadable",
-      uncommitted: [],
-      reason: `the child reported ok but the worktree could not be read (${status.unreadable}), so the driver cannot certify the pass as done`,
-    };
-  }
-  return decideGreenFromTree(
-    own,
-    status.entries.map((e) => e.path),
-  );
-}
-
 /** What the classify seam needs: the reading, plus the raw commit answer (so
  *  the caller's green check reports the count it was given rather than asking
  *  git a second time) and the dirt the pass left. */
@@ -267,40 +234,6 @@ export interface GreenPassFields {
   reading: GreenReading;
   own: OwnCommitCheck;
   uncommitted: string[];
-}
-
-/** `readGreenPass` with the inputs the classify seam already holds, and the
- *  count seam a test uses to drive the three-state answer without a real
- *  repository. The status read is never injectable: an unreadable tree stays
- *  unreadable whatever a fake says about it. */
-export async function readGreenPassFields(
-  execFn: ExecFn,
-  cwd: string,
-  base: string | undefined,
-  ownCommits?: (cwd: string, base: string | undefined) => Promise<OwnCommitCheck>,
-  /** #1768 — the driver's own commit SHAs for this workstream, threaded to the
-   *  real attribution read (a supplied `ownCommits` seam owns the answer and
-   *  needs none). */
-  driverShas?: readonly string[],
-): Promise<GreenPassFields> {
-  const ownFn = ownCommits ?? ((c, b) => ownCommitsAheadOfBase(execFn, c, b, driverShas));
-  const [own, status] = await Promise.all([ownFn(cwd, base), readStatusBounded(execFn, cwd)]);
-  if ("unreadable" in status) {
-    return {
-      own,
-      uncommitted: [],
-      reading: {
-        done: false,
-        unfinished: false,
-        unreadable: true,
-        evidence: "unreadable",
-        uncommitted: [],
-        reason: `the child reported ok but the worktree could not be read (${status.unreadable}), so the driver cannot certify the pass as done`,
-      },
-    };
-  }
-  const paths = status.entries.map((e) => e.path);
-  return { own, uncommitted: paths, reading: decideGreenFromTree(own, paths) };
 }
 
 /** The event fragment for a blocked green. Absent on every other pass — a
@@ -463,6 +396,7 @@ export function parkOnDevelopUnfinished(state: WorkState, issue: number): WorkSt
     `a developer child reported ok without committing its own work (${blocked
       .map((r) => `${r.id}: ${r.tree}`)
       .join(", ")}); the pass is not counted as done and the safety net will not commit it`,
+    issue,
   );
   trace(
     `work-driver: develop-incomplete-uncommitted — ${blocked.map((r) => `${r.id} (${r.tree})`).join(", ")}`,

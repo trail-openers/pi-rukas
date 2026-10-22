@@ -18,7 +18,39 @@
  */
 
 import type { ClassifyArgs, CrashVerdict } from "./work-develop-crash.ts";
-import { readGreenPassFields } from "./work-develop-unfinished.ts";
+import {
+  type GreenPassFields,
+  decideGreenFromTree,
+  ownCommitsAheadOfBase,
+  readTreeBounded,
+} from "./work-develop-unfinished.ts";
+
+/**
+ * The two facts the child's claim cannot supply, read together and
+ * independently: its own commits ahead of base, and its own dirt. `Promise.all`
+ * so a slow tree costs one window, and each read degrades to `unreadable`
+ * rather than throwing — a hung git is a blocked pass, never a green one and
+ * never a stalled step.
+ *
+ * The status read is never injectable: an unreadable tree stays unreadable
+ * whatever a fake says about the commits. `ownCommits` is the test seam that
+ * drives the three-state answer without a repository.
+ */
+export async function readGreenPassFields(
+  execFn: ClassifyArgs["execFn"],
+  cwd: string,
+  base: string | undefined,
+  ownCommits?: ClassifyArgs["ownCommits"],
+  driverShas?: readonly string[],
+): Promise<GreenPassFields> {
+  const ownFn = ownCommits ?? ((c, b) => ownCommitsAheadOfBase(execFn, c, b, driverShas));
+  const [own, status] = await Promise.all([ownFn(cwd, base), readTreeBounded(execFn, cwd)]);
+  if ("unreadable" in status) {
+    return { own, uncommitted: [], reading: decideGreenFromTree(own, undefined) };
+  }
+  const paths = status.entries.map((e) => e.path);
+  return { own, uncommitted: paths, reading: decideGreenFromTree(own, paths) };
+}
 
 /**
  * The verdict for a pass whose child reported ok. Three outcomes, and the
@@ -39,7 +71,7 @@ import { readGreenPassFields } from "./work-develop-unfinished.ts";
  * worktree is the same class of confident-wrong record #1403 removed.
  */
 export async function classifyGreenPass(args: ClassifyArgs): Promise<CrashVerdict> {
-  const { id, cwd, base, execFn, result } = args;
+  const { cwd, base, execFn, result } = args;
   const reading = await readGreenPassFields(execFn, cwd, base, args.ownCommits, args.driverShas);
   if (reading.reading.done) {
     return {

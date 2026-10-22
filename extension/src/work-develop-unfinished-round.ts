@@ -30,7 +30,6 @@
  */
 
 import { trace } from "./trace.ts";
-import { childOwnWork } from "./work-develop-greens.ts";
 import {
   type UnfinishedWorkstream,
   developUnfinished,
@@ -130,6 +129,3 @@ export async function runUnfinishedCorrectiveRound(args: {
   if (blocked.length === 0) return { parked: false, state: stateRef.current, recovered, blocked };
   return { parked: true, state: stateRef.current, recovered, blocked };
 }
-
-/** Re-exported so the caller's import list stays short. */
-export { childOwnWork };

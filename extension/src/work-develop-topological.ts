@@ -31,14 +31,6 @@ import {
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
 import { runUnfinishedCorrectiveRound } from "./work-develop-unfinished-round.ts";
-// #1768 — a pass that quit mid-step earns ONE corrective round that resumes
-// from its own uncommitted work, and parks on a named cap when that round does
-// not finish either.
-import {
-  type UnfinishedWorkstream,
-  developUnfinished,
-  parkOnDevelopUnfinished,
-} from "./work-develop-unfinished.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
@@ -241,7 +233,7 @@ async function runDevelopTopological(
         // never for one that did not, so the work stays in the tree for the
         // corrective round rather than riding into commit-pr on the driver's
         // own commit.
-        recordDowngrade(persister, id, r.reason === undefined ? undefined : undefined);
+        recordDowngrade(persister, id, undefined);
         return {
           id,
           ok: false,

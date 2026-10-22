@@ -22,6 +22,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { applySafetyNet } from "../src/work-driver-safety-net.ts";
+// The net's own commit subject, read from the ONE constant that names it (the
+// same constant the #1768 unfinished rule discounts).
+import { SAFETY_NET_COMMIT_SUBJECT_PREFIX } from "../src/work-develop-unfinished.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -115,7 +118,7 @@ async function caseA_uncommittedOnly(): Promise<void> {
       assert(/^[0-9a-f]{40}$/.test(snEvents[0].commitSha), "(a) commitSha is a valid 40-char SHA");
       const { stdout: log } = await execFileP("git", ["-C", wt, "log", "--oneline", "-1"]);
       assert(
-        log.includes("driver safety-net commit"),
+        log.includes(SAFETY_NET_COMMIT_SUBJECT_PREFIX),
         `(a) commit message is driver-attributed (got: ${log.trim()})`,
       );
       assert(snEvents[0].workstreamId === "default", "(a) workstreamId is 'default'");

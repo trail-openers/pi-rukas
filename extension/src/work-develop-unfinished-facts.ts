@@ -88,8 +88,14 @@ export function nameUnfinishedPaths(paths: string[]): string {
  * the DRIVER did not create; `uncommitted` is the worktree's own dirt with the
  * driver artefacts (`.pi/`, `tmp/`) already excluded.
  */
-export function decideGreenFromTree(own: OwnCommitCheck, uncommitted: string[]): GreenReading {
-  const dirty = uncommitted.length > 0;
+export function decideGreenFromTree(
+  own: OwnCommitCheck,
+  /** The worktree's own dirt, or `undefined` when the read itself failed (the
+   *  caller must not claim a count for a tree it could not read). */
+  uncommitted: string[] | undefined,
+): GreenReading {
+  const dirty = uncommitted !== undefined && uncommitted.length > 0;
+  const dirt = uncommitted ?? [];
   if ("commits" in own) {
     if (own.commits > 0) {
       // The child committed its own work: green exactly as today, including
@@ -99,7 +105,7 @@ export function decideGreenFromTree(own: OwnCommitCheck, uncommitted: string[]):
         unfinished: false,
         unreadable: false,
         evidence: "own-commits",
-        uncommitted,
+        uncommitted: dirt,
       };
     }
     if (dirty) {
@@ -108,7 +114,7 @@ export function decideGreenFromTree(own: OwnCommitCheck, uncommitted: string[]):
         unfinished: true,
         unreadable: false,
         evidence: "leftover",
-        uncommitted,
+        uncommitted: dirt,
         reason: `the child reported ok but made no commit of its own and left ${uncommitted.length} uncommitted path(s) in the worktree: ${nameUnfinishedPaths(uncommitted)} — the step is not done`,
       };
     }
@@ -119,7 +125,7 @@ export function decideGreenFromTree(own: OwnCommitCheck, uncommitted: string[]):
       unfinished: false,
       unreadable: false,
       evidence: "none",
-      uncommitted,
+      uncommitted: dirt,
     };
   }
   if ("driverOnly" in own) {
@@ -128,7 +134,7 @@ export function decideGreenFromTree(own: OwnCommitCheck, uncommitted: string[]):
       unfinished: dirty,
       unreadable: false,
       evidence: dirty ? "leftover" : "none",
-      uncommitted,
+      uncommitted: dirt,
       reason: dirty
         ? `the child reported ok but the only commits ahead of its base are the driver's own safety-net recovery commits, and it left ${uncommitted.length} uncommitted path(s) in the worktree: ${nameUnfinishedPaths(uncommitted)} — the step is not done`
         : `the child reported ok but the only commits ahead of its base are the driver's own safety-net recovery commits — a pass that committed nothing of its own is not done`,

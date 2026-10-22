@@ -44,12 +44,12 @@ import {
   unfinishedUnrecoverable,
 } from "../src/work-develop-unfinished-facts.ts";
 import { runUnfinishedCorrectiveRound } from "../src/work-develop-unfinished-round.ts";
+import { readGreenPassFields } from "../src/work-develop-green-classify.ts";
 import {
   SAFETY_NET_COMMIT_SUBJECT_PREFIX,
   developUnfinished,
   ownCommitsAheadOfBase,
   parkOnDevelopUnfinished,
-  readGreenPassFields,
   unfinishedBranchCompleted,
   unfinishedCorrectivePrompt,
 } from "../src/work-develop-unfinished.ts";
