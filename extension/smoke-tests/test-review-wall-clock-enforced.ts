@@ -151,8 +151,8 @@ async function main() {
     );
     const early = reviewFixDispatchBoundMs(at(20 * MIN), "lens-fix", now);
     assert(
-      early !== undefined && early === CAP - 20 * MIN,
-      `20m into the budget → bound to what remains, never beyond it (got ${early})`,
+      early !== undefined && early === CAP - 20 * MIN - 10 * MIN,
+      `20m into the budget → bound to what remains MINUS the owed round's 10m reserve (#1742) (got ${early})`,
     );
     assert(
       reviewFixDispatchBoundMs(at(20 * MIN), "develop", now) === undefined,
@@ -164,19 +164,19 @@ async function main() {
       `80m in → the fixer is bound to what remains (got ${tight})`,
     );
     assert(
-      reviewFixDispatchBoundMs(at(CAP - 2 * MIN), "lens-fix", now) === 2 * MIN,
-      "88m in → still bounded to what remains (#1242: this band used to run unbounded)",
+      reviewFixDispatchBoundMs(at(CAP - 2 * MIN), "lens-fix", now) === MIN_FIX_DISPATCH_MS,
+      "88m in → bounded, never unbounded, never below the floor (#1242: this band used to run unbounded; #1742: the reserve floors at the minimum, not at the leftover)",
     );
     assert(
       reviewFixDispatchBoundMs(at(100 * MIN), "lens-fix", now) === MIN_FIX_DISPATCH_MS,
       "100m in → bounded, never unbounded (unbounded is the bug)",
     );
     assert(
-      reviewFixDispatchBoundMs(at(CAP - 10 * MIN), "lens-fix", now, 30 * MIN) === 10 * MIN,
-      "the cap only ever SHORTENS a dispatch the caller already bounded",
+      reviewFixDispatchBoundMs(at(CAP - 20 * MIN), "lens-fix", now, 30 * MIN) === 10 * MIN,
+      "the cap only ever SHORTENS a dispatch the caller already bounded (20m left − 10m owed round)",
     );
     assert(
-      reviewFixDispatchBoundMs(at(CAP - 10 * MIN), "lens-fix", now, 3 * MIN) === 3 * MIN,
+      reviewFixDispatchBoundMs(at(CAP - 30 * MIN), "lens-fix", now, 3 * MIN) === 3 * MIN,
       "…and never lengthens the caller's own bound",
     );
     assert(
@@ -203,8 +203,8 @@ async function main() {
         "canary: with budget left the fixer IS dispatched (a cap that never dispatches is not a cap, it is a halt)",
       );
       assert(
-        seen?.timeoutMs === CAP - 60 * MIN,
-        `…and bound to the budget that remains (60m in → ${seen?.timeoutMs / MIN}m, expected 30m)`,
+        seen?.timeoutMs === CAP - 60 * MIN - 10 * MIN,
+        `…and bound to the budget that remains minus the owed round's reserve (60m in → ${seen?.timeoutMs / MIN}m, expected 20m)`,
       );
       const tail = out.eventLog[out.eventLog.length - 1];
       assert(
@@ -262,13 +262,14 @@ async function main() {
         seen = o;
       });
       const nowAt = Date.now();
-      await runLensFix(ctx, stateFor(repo, branch, nowAt - (CAP - 20 * MIN)), nowAt);
+      await runLensFix(ctx, stateFor(repo, branch, nowAt - (CAP - 40 * MIN)), nowAt);
       assert(
-        seen?.timeoutMs === 20 * MIN,
-        `70m in: the fixer IS dispatched but bound to the remaining budget (got ${seen?.timeoutMs})`,
+        seen?.timeoutMs === 30 * MIN,
+        `50m in: the fixer IS dispatched, bound to the remaining budget minus the owed round's 10m reserve (got ${seen?.timeoutMs})`,
       );
-      // #1567 item 6 / #1242 — 10 min left is less than the 15 a lens-fix
-      // needs: the fixer is not started (it used to run with no loop bound).
+      // #1567 item 6 / #1242 + #1742 — 10 min left is less than the 15 a
+      // lens-fix needs (plus the owed round's 10m reserve): the fixer is not
+      // started (it used to run with no loop bound).
       seen = undefined;
       const late = await runLensFix(ctx, stateFor(repo, branch, nowAt - (CAP - 10 * MIN)), nowAt);
       const tail = late.eventLog[late.eventLog.length - 1];
@@ -397,10 +398,13 @@ async function main() {
           fixFindings: "MEDIUM: naming drift in b.txt",
         },
       };
+      // 50m of the 90m wall clock left: the owed lens round's 10m reserve is
+      // withheld from the fixer, so the dispatch must be armed at 40m.
+      const tClock = Date.now() - (CAP - 50 * MIN);
       const withClock = {
-        ...stateFor(repo, branch, Date.now() - (CAP - 10 * MIN)),
+        ...stateFor(repo, branch, tClock),
         pipelineState: {
-          ...stateFor(repo, branch, Date.now() - (CAP - 10 * MIN)).pipelineState,
+          ...stateFor(repo, branch, tClock).pipelineState,
           workstreams: passWorkstreams,
         },
       };
@@ -417,9 +421,20 @@ async function main() {
         "job-1416-fixpass",
       );
       const dev = seen.find((s) => s.label === "developer");
+      // #1742 (MINOR 3) — an exact pin, not an upper bound: 50m remains and the
+      // owed lens round's 10m reserve is withheld from the fixer, so the bound
+      // is 40m. `<= 50 * MIN` passed whether or not the reserve was subtracted,
+      // which is the whole rule this module exists to enforce. The window is
+      // one-sided because the bound is computed at the dispatch closure's own
+      // Date.now(), a few ms after the clock was stamped: an exact `===` there
+      // is the ms-flake the NOW lesson names; ≤ 40m and > 39m still fails the
+      // unreserved (50m) and over-reserved (30m) bounds this rule exists to catch.
       assert(
-        dev !== undefined && dev.timeoutMs !== undefined && dev.timeoutMs <= 10 * MIN,
-        `a develop fix pass under the review clock is bound to the remaining budget (got ${dev?.timeoutMs})`,
+        dev !== undefined &&
+          dev.timeoutMs !== undefined &&
+          dev.timeoutMs <= 40 * MIN &&
+          dev.timeoutMs > 39 * MIN,
+        `a develop fix pass under the review clock is bound to the remaining budget MINUS the owed round's reserve (50m left → 40m; got ${dev?.timeoutMs})`,
       );
 
       // A first develop pass (no fixFindings) must NOT inherit the review cap.

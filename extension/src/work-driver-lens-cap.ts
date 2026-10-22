@@ -37,13 +37,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
+import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
 import { type CycleContext, type DriverContext, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
-import { currentPatchIdentity } from "./work-driver-draft-pr.ts";
+import { type PatchIdentity, currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -70,16 +71,32 @@ export function renderResidualFindings(
   round: number,
   verdict: string,
   marker?: string,
+  wording?: { owedRound: true; budgetLeftMin: number },
 ): string {
   const rendered = renderLensFindings(findingsBlob, verdict);
   if (rendered.length === 0) return "";
   return [
-    "## Six-pass review — findings still open at the round cap",
-    "",
-    `The lens review ran its ${round}-round fix loop and stopped with these`,
-    "outstanding. None is CRITICAL and the adversarial gate passed the diff, so the",
-    "cycle carried on to CI instead of parking — but nothing listed here has been",
-    "fixed. Decide them before merging.",
+    // #1742 — the owed-round route says what actually happened. A round-cap
+    // text on this route told the operator the fix LOOP had stopped, when it
+    // was the re-review that never started, and named the wrong round.
+    ...(wording?.owedRound
+      ? [
+          `## Six-pass review — findings from round ${round} unverified against the current head`,
+          "",
+          `The re-review of round ${round}'s fix was refused with ${wording.budgetLeftMin}m of review`,
+          `budget left; these findings from round ${round} are unverified against the current`,
+          "head. None is CRITICAL and the adversarial gate passed the diff, so the cycle carried",
+          "on to CI instead of parking — but nothing listed here has been verified since the fix.",
+          "Decide them before merging.",
+        ]
+      : [
+          "## Six-pass review — findings still open at the round cap",
+          "",
+          `The lens review ran its ${round}-round fix loop and stopped with these`,
+          "outstanding. None is CRITICAL and the adversarial gate passed the diff, so the",
+          "cycle carried on to CI instead of parking — but nothing listed here has been",
+          "fixed. Decide them before merging.",
+        ]),
     "",
     ...rendered,
     // The marker is the renderer's own line (never passed through the
@@ -99,6 +116,205 @@ export const ROUND_CAP_DISCLOSURE_PREFIX =
   "Round cap with non-critical findings: could not post them to the PR (";
 
 /**
+ * #1742 — the owed round's own prefix. The step that was refused is the
+ * re-review a fix owed, not the round cap, so the plumb report the handoff
+ * renders must name the gate that actually refused it (a "Round cap" line on a
+ * wall-clock refusal sends the operator to the wrong gate — the #398 class of
+ * bug).
+ */
+export const OWED_ROUND_DISCLOSURE_PREFIX =
+  "Refused lens re-review with non-critical findings: could not post them to the PR (";
+
+/**
+ * How one disclosure route words its comment, its trace lines and its plumb
+ * report. Both routes share the mechanics (identity, marker, fact, decline);
+ * only the prose differs, and the prose is what the operator reads. #1774 —
+ * a DISCRIMINATED union: `kind` selects every wording/label/suffix in one
+ * derivation (`routeShape`), so a field cannot arrive on the wrong route and
+ * no caller can assemble a half-owed route by omission.
+ */
+export type ResidualDisclosureRoute =
+  | {
+      kind: "round-cap";
+      /** #1774 — the round the comment names and the fact records. On BOTH arms
+       *  now: the round used to be a positional argument beside the route, so
+       *  the loop counter and the round the findings came from could disagree
+       *  between the posted comment and the recorded fact. */
+      round: number;
+      /** The identity already computed by the caller's own gate, so the
+       *  disclosure is keyed on the SAME string the route was licensed on
+       *  rather than a second git read that could disagree with the first
+       *  (#1742). Absent ⇒ computed here. */
+      identity?: PatchIdentity;
+    }
+  | {
+      kind: "owed-round";
+      /** Minutes of review budget left at the refusal — the owed-round wording
+       *  names it, so it must not be omissible. */
+      budgetLeftMin: number;
+      /** The round whose findings are disclosed: the comment names it, so the
+       *  route carries it rather than trusting a positional argument. */
+      round: number;
+      /** Required: the owed route is only reachable after
+       *  `owedVerdictOnCurrentHead` computed it — the disclosure keys on the
+       *  SAME string the head gate licensed on (#1742). */
+      identity: PatchIdentity;
+    };
+
+/** Everything the two routes differ on, derived from `kind` in ONE place
+ *  (#1774): prefix, trace label, comment wording, scratch-file suffix, and the
+ *  round both the comment and the fact name. A new route-shape field is added
+ *  here or not at all. */
+function routeShape(route: ResidualDisclosureRoute): {
+  prefix: string;
+  traceLabel: string;
+  scratchSuffix: string;
+  commentRound: number;
+  wording?: { owedRound: true; budgetLeftMin: number };
+} {
+  if (route.kind === "owed-round") {
+    return {
+      prefix: OWED_ROUND_DISCLOSURE_PREFIX,
+      traceLabel: "lens-review-timeout",
+      // The owed-round post is a different comment on a different subject (one
+      // round's unverified findings, not the loop's residuals) — it must not
+      // overwrite the round-cap file of the same round number.
+      scratchSuffix: "-owed",
+      commentRound: route.round,
+      wording: { owedRound: true, budgetLeftMin: route.budgetLeftMin },
+    };
+  }
+  return {
+    prefix: ROUND_CAP_DISCLOSURE_PREFIX,
+    traceLabel: "round-cap",
+    scratchSuffix: "",
+    commentRound: route.round,
+  };
+}
+
+/**
+ * The one disclosure path the two cap routes share (#1742).
+ *
+ * `appendReviewCapHit`'s round-cap branch and `parkReviewNoFit`'s refused-owed-
+ * round branch answer the same question — *can these findings be disclosed, and
+ * what does the answer license?* — and must not drift: same patch identity
+ * computed here and passed to both the post and the fact, same marker rule (no
+ * marker ⇒ failed disclosure), same `lens-residualsPosted` fact on success, same
+ * plumb-report on failure. The owed round the fixer starved is the round-cap's
+ * merge-worthy shape once the adversarial gate has since re-checked the diff
+ * AND the verdict still describes the current head, so it earns the same `ci`
+ * route — under the same disclosure precondition.
+ *
+ * Returns the route the caller's cap-hit should carry and the state carrying
+ * the fact (or the decline). It does NOT append the cap-hit: the caller owns
+ * the cap kind, evidence, and its own routing rules (wall-clock still parks).
+ */
+export async function discloseResidualsAndRoute(
+  ctx: CycleContext,
+  state: WorkState,
+  verdict: string,
+  findingsBlob: string,
+  route: ResidualDisclosureRoute,
+): Promise<{ nextStep: "ci" | "handoff"; state: WorkState }> {
+  // #1774 — every route-varying string (plumb prefix, trace label, comment
+  // wording, scratch suffix, AND the round) comes from `routeShape`, keyed on
+  // `kind`. The round is no longer a positional argument beside the route, so
+  // the comment and the fact cannot name different rounds.
+  const shape = routeShape(route);
+  const label = shape.traceLabel;
+  const prefix = shape.prefix;
+  // #1398 round 3 — the identity is computed HERE and passed to both the post
+  // and the fact, so the comment the PR carries and the record the ready gate
+  // reads are keyed on the same string by construction. When it cannot be
+  // computed the disclosure FAILS (no marker ⇒ no disclosure ⇒ park) and
+  // `recordLensResidualsPosted` records the decline as a plumb-report, so the
+  // handoff explains the hold it is about to cause.
+  const branch = state.pipelineState.branchName;
+  const execFn = ctx.verifyExecFn ?? execp;
+  const identity: PatchIdentity =
+    route.identity ??
+    (branch
+      ? await currentPatchIdentity(execFn, ctx.repoRoot, branch)
+      : ({ ok: false, reason: "the cycle has no branch name" } as const));
+  const marker = identity.ok && branch ? lensResidualsMarker(branch, identity.patchId) : undefined;
+  if (!identity.ok) {
+    trace(`work-driver: ${label} — no patch identity for the disclosure (${identity.reason})`);
+  }
+  const disclosed = await discloseResidualFindings(
+    ctx,
+    state,
+    shape.commentRound,
+    findingsBlob,
+    verdict,
+    marker,
+    shape,
+  );
+  if (disclosed.ok) {
+    // #1398 — the route that DOES disclose now records that it did. This route
+    // posted the findings and recorded only its own `cap-hit`, so the draft
+    // gate could not tell a disclosed cap from an undisclosed one and had to
+    // guess from the cap's NAME. The fact is keyed on the patch identity, so a
+    // later fix push does not inherit it. #1774: `step` is the step the
+    // disclosure ran under — `lens-review` for BOTH routes (the owed-round
+    // route refuses a lens round too), so the row distinguishes patches by
+    // their identity, not disclosure paths by their step.
+    return {
+      nextStep: "ci",
+      state: await recordLensResidualsPosted(ctx, state, {
+        // #1774 — the SAME round the comment above names (`shape.commentRound`
+        // is what `renderResidualFindings` was handed), so the operator and the
+        // ready gate never read two different round numbers for one disclosure.
+        round: shape.commentRound,
+        step: "lens-review",
+        // #1774 — the identity this disclosure was keyed on: the fact and the
+        // marker on the posted comment come from ONE git read, so the ready
+        // gate can never read a fact recorded against a tip the comment does
+        // not carry.
+        ...(identity.ok ? { identity } : {}),
+        ...(state.pipelineState.prNumber !== undefined
+          ? { prNumber: state.pipelineState.prNumber }
+          : {}),
+      }),
+    };
+  }
+  trace(`work-driver: ${label} — residual findings undisclosed (${disclosed.reason})`);
+  // #1398 round 3 — on BOTH the event log and `plumbReports`: the field is
+  // what `plumbReportSection` in work-driver-handoff-markdown.ts renders, so an
+  // event-only note is the #408 shape — a signal the driver produces and the
+  // handoff never shows. The operator reading a parked cap has to be told it
+  // parked for want of a disclosure, not for want of a converging fix loop.
+  let next = appendEvent(state, {
+    kind: "plumb-report",
+    at: Date.now(),
+    step: "lens-review",
+    role: "driver",
+    body: prefix + disclosed.reason,
+  });
+  const prior = next.pipelineState.plumbReports ?? [];
+  const dup = prior.some(
+    (r) => r.step === "lens-review" && r.role === "driver" && r.body === prefix + disclosed.reason,
+  );
+  if (!dup) {
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        plumbReports: [
+          ...prior,
+          {
+            step: "lens-review",
+            role: "driver",
+            body: prefix + disclosed.reason,
+            at: Date.now(),
+          },
+        ],
+      },
+    };
+  }
+  return { nextStep: "handoff", state: next };
+}
+
+/**
  * Post the residual findings to the PR.
  *
  * Fails rather than throws, and every failure mode ends the same way for the
@@ -111,10 +327,11 @@ async function discloseResidualFindings(
   findingsBlob: string,
   verdict: string,
   marker: string | undefined,
+  shape: ReturnType<typeof routeShape>,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const prNumber = state.pipelineState.prNumber;
   if (!prNumber) return { ok: false, reason: "no PR number was captured at commit-pr" };
-  const body = renderResidualFindings(findingsBlob, round, verdict, marker);
+  const body = renderResidualFindings(findingsBlob, round, verdict, marker, shape.wording);
   if (!body) return { ok: false, reason: "the review recorded no renderable findings" };
   if (!marker) {
     // item 1 — a body with no marker discloses nothing the guard or the draft
@@ -128,7 +345,13 @@ async function discloseResidualFindings(
         "(git merge-base against the branch/mainline refs is what failed)",
     };
   }
-  const file = path.join(scratchDir(ctx.repoRoot, ctx.issue), `lens-residual-round-${round}.md`);
+  const file = path.join(
+    scratchDir(ctx.repoRoot, ctx.issue),
+    // The suffix comes from the route shape (#1774): the owed-round post is a
+    // different comment on a different subject and must not overwrite the
+    // round-cap file of the same round number.
+    `lens-residual-round-${round}${shape.scratchSuffix}.md`,
+  );
   try {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, body, "utf8");
@@ -142,10 +365,24 @@ async function discloseResidualFindings(
       forge?.forge === "gitlab"
         ? `glab mr note ${prNumber} --body-file ${JSON.stringify(file)}`
         : `gh pr comment ${prNumber} --body-file ${JSON.stringify(file)}`;
-    await execFn(cmd, { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 });
+    // #1774 — BOUNDED, and the bound is the disclosure's own: an unbounded
+    // `gh pr comment` against a stalled API hangs the whole budget-park path
+    // (this post is what licenses the `ci` route, so a hang is neither a
+    // disclosure nor a refusal). A rejection — the timeout included — lands in
+    // the catch below as `{ ok: false }`, which parks; it never routes on.
+    // `FORGE_EXEC_TIMEOUT_MS` is the shared forge-exec bound (the merge guard
+    // and the forge detector's remote resolution already pass it).
+    await execFn(cmd, {
+      cwd: ctx.repoRoot,
+      maxBuffer: 256 * 1024,
+      timeout: FORGE_EXEC_TIMEOUT_MS,
+    });
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: (err as Error).message?.slice(0, 200) ?? "unknown error" };
+    return {
+      ok: false,
+      reason: (err as Error).message?.slice(0, 200) ?? "unknown error",
+    };
   }
 }
 
@@ -184,85 +421,12 @@ export async function appendReviewCapHit(
       verdict === "ISSUES_FOUND" &&
       adversarialGateApproved(state.eventLog)
     ) {
-      // #1398 round 3 — the identity is computed HERE and passed to both the
-      // post and the fact, so the comment the PR carries and the record the
-      // ready gate reads are keyed on the same string by construction. When it
-      // cannot be computed the disclosure FAILS (no marker ⇒ no disclosure ⇒
-      // park) and `recordLensResidualsPosted` records the decline as a
-      // plumb-report, so the handoff explains the hold it is about to cause.
-      const branch = state.pipelineState.branchName;
-      const execFn = ctx.verifyExecFn ?? execp;
-      const identity = branch
-        ? await currentPatchIdentity(execFn, ctx.repoRoot, branch)
-        : ({ ok: false, reason: "the cycle has no branch name" } as const);
-      const marker =
-        identity.ok && branch ? lensResidualsMarker(branch, identity.patchId) : undefined;
-      if (!identity.ok) {
-        trace(`work-driver: round-cap — no patch identity for the disclosure (${identity.reason})`);
-      }
-      const disclosed = await discloseResidualFindings(
-        ctx,
-        state,
+      const routed = await discloseResidualsAndRoute(ctx, next, verdict, findingsBlob, {
+        kind: "round-cap",
         round,
-        findingsBlob,
-        verdict,
-        marker,
-      );
-      if (disclosed.ok) {
-        nextStep = "ci";
-        // #1398 — the route that DOES disclose now records that it did. This
-        // route posted the findings and recorded only its own `cap-hit`, so the
-        // draft gate could not tell a disclosed cap from an undisclosed one and
-        // had to guess from the cap's NAME. The fact is keyed on the patch
-        // identity, so a later fix push does not inherit it. `step` names this
-        // route so the recorded row says which disclosure path produced it.
-        next = await recordLensResidualsPosted(ctx, next, {
-          round,
-          step: "lens-review",
-          ...(state.pipelineState.prNumber !== undefined
-            ? { prNumber: state.pipelineState.prNumber }
-            : {}),
-        });
-      } else {
-        trace(`work-driver: round-cap — residual findings undisclosed (${disclosed.reason})`);
-        // #1398 round 3 — on BOTH the event log and `plumbReports`: the field is
-        // what `plumbReportSection` in work-driver-handoff-markdown.ts renders,
-        // so an event-only note is the #408 shape — a signal the driver produces
-        // and the handoff never shows. The operator reading a parked round cap
-        // has to be told it parked for want of a disclosure, not for want of a
-        // converging fix loop.
-        next = appendEvent(next, {
-          kind: "plumb-report",
-          at: Date.now(),
-          step: "lens-review",
-          role: "driver",
-          body: ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
-        });
-        const prior = next.pipelineState.plumbReports ?? [];
-        const dup = prior.some(
-          (r) =>
-            r.step === "lens-review" &&
-            r.role === "driver" &&
-            r.body === ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
-        );
-        if (!dup) {
-          next = {
-            ...next,
-            pipelineState: {
-              ...next.pipelineState,
-              plumbReports: [
-                ...prior,
-                {
-                  step: "lens-review",
-                  role: "driver",
-                  body: ROUND_CAP_DISCLOSURE_PREFIX + disclosed.reason,
-                  at: Date.now(),
-                },
-              ],
-            },
-          };
-        }
-      }
+      });
+      nextStep = routed.nextStep;
+      next = routed.state;
     }
     return appendEvent(next, {
       kind: "cap-hit",

@@ -241,6 +241,8 @@ export type WorkEvent =
       at: number;
       jobId: string;
       round: number;
+      /** #1742 — the pushed branch head this round read (`lensReviewedHead`), so a later route can tell whether the verdict still describes the current head. */
+      headSha?: string;
       findings: string;
       /** "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" — preserved verbatim from the verdict. */
       verdict: "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";

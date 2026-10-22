@@ -25,6 +25,7 @@ import { FIXED_CAPS } from "../src/headless/caps.ts";
 import { deadlineCheck } from "../src/work-driver-deadline.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import {
+  MIN_FIX_DISPATCH_MS,
   parkLensFixOverrun,
   parkLensRoundNoFit,
   reviewFixDispatchBoundMs,
@@ -176,8 +177,8 @@ try {
       };
     };
     assert(
-      reviewFixDispatchBoundMs(at(CAP - 5 * MIN), "lens-fix", T0) === 5 * MIN,
-      "a fix pass with 5 min of the loop left is bounded to it (this band ran unbounded)",
+      reviewFixDispatchBoundMs(at(CAP - 5 * MIN), "lens-fix", T0) === MIN_FIX_DISPATCH_MS,
+      "a fix pass with 5 min of the loop left is floored at the minimum (#1742: the owed round's reserve eats what used to be the bound)",
     );
     const fix = await parkLensFixOverrun(ctx, at(CAP - 14 * MIN), T0);
     const fixTail = fix.eventLog[fix.eventLog.length - 1];
@@ -187,8 +188,18 @@ try {
         fix.pipelineState.currentStep === "handoff",
       "a lens-fix with 14 min of the loop left is not dispatched — it parks lens-review-timeout",
     );
-    const fixOk = at(CAP - 15 * MIN);
-    assert((await parkLensFixOverrun(ctx, fixOk, T0)) === fixOk, "…with 15 min it is dispatched");
+    // #1742: the fixer's need is now 15m PLUS the 10m owed-round reserve —
+    // 15 min left no longer fits a fixer; 25 min does.
+    const fixNo = at(CAP - 15 * MIN);
+    assert(
+      (await parkLensFixOverrun(ctx, fixNo, T0)) !== fixNo,
+      "…15 min of the loop left is NO LONGER enough: the owed round's reserve has to survive the fixer too",
+    );
+    const fixOk = at(CAP - 25 * MIN);
+    assert(
+      (await parkLensFixOverrun(ctx, fixOk, T0)) === fixOk,
+      "…with 25 min (the 15m fixer + the 10m owed round) it is dispatched",
+    );
 
     const round84 = at(84 * MIN);
     const parked = await parkLensRoundNoFit(ctx, round84, T0);

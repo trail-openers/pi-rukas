@@ -5,6 +5,7 @@
  */
 
 import { execp } from "./exec.ts";
+import { lensFixBoundMs } from "./review-budget.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -85,7 +86,11 @@ export async function runLensFix(
   // dispatching; still under → the fixer is bound to what the budget leaves.
   const overrun = await parkLensFixOverrun(ctx, state, now);
   if (overrun !== state) return overrun;
-  const dispatchBoundMs = reviewFixDispatchBoundMs(state, "lens-fix", now);
+  // #1742 — the fixer carries a caller ceiling of its own
+  // (PI_ENSEMBLE_LENS_FIX_BOUND_MS, 45 min default) so one fixer can never
+  // outlive the loop's memory of why it started, even when the wall clock
+  // leaves more than that. The loop bound still only ever shortens it.
+  const dispatchBoundMs = reviewFixDispatchBoundMs(state, "lens-fix", now, lensFixBoundMs());
   // #654 — empty-diff shape: re-dispatch the fix ONCE with no-diff evidence
   // before re-flagging identical findings at escalating severity.
   const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
