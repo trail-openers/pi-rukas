@@ -84,9 +84,15 @@ function usableVerdict(raw: unknown): BaseHealthVerdict | undefined {
     tierBoundMs: v.tierBoundMs,
   };
   if (typeof v.reason === "string") verdict.reason = v.reason;
-  // Read with the same care as every other field: an absent flag is the plain
-  // red, and anything that is not exactly `true` is absent rather than a
-  // truthy value of some other type smuggled into the red-timed-out arm.
+  // #1765 lens round 3 — read with the same care as every other field, and
+  // STRICTER: `true` is the only value the field admits, so one that is PRESENT
+  // but not exactly `true` (`"true"`, `1`, `""`, `null` in an object that meant
+  // to say "timed out") makes the whole record unusable rather than being
+  // coerced or quietly dropped. A record this build cannot read means RE-PROBE:
+  // the alternative is to trust a colour whose arm — plain red versus killed at
+  // the bound — the record no longer states, and that arm is what tells the
+  // develop gate whether to name a test or a bound to the operator.
+  if ("timedOut" in v && v.timedOut !== true) return undefined;
   if (v.timedOut === true) verdict.timedOut = true;
   return verdict;
 }

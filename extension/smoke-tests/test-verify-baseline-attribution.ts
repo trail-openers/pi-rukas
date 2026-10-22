@@ -52,7 +52,11 @@ import {
   notesOf,
   probe,
 } from "./lib/base-health-probe-fixture.ts";
-import { probeFailureExecutor, stateWithRedProbe } from "./lib/base-health-verdict-fixture.ts";
+import {
+  commitAll,
+  probeFailureExecutor,
+  stateWithRedProbe,
+} from "./lib/base-health-verdict-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
 import { redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
 
@@ -343,6 +347,66 @@ for (const timedOut of [false, true]) {
   assert(
     notesOf(after).length === 1,
     `unrecordable probe: exactly one note reached the event log (got ${JSON.stringify(notesOf(after))})`,
+  );
+  // #1765 lens round 3 — the event's `ms` is the probe's REAL wall clock. It used
+  // to be synthesised from `startedAt: Date.now()` at the append, so a probe that
+  // spent seven minutes in one suite run reported 0 ms, and the one number a
+  // reader of the log has for what the probe cost was a lie that made the probe
+  // look free. The event is the branch step's only record of the probe, so the
+  // duration is not decoration. GREEN is the arm that reaches the note append
+  // (a RED returns its park early and appends nothing), and the gate sleeps past
+  // the floor so the measured ms cannot be satisfied by fixture setup alone.
+  //
+  // A second fixture, not this one: the cache path above is deliberately a plain
+  // file, so a green probe here could not be recorded and would answer `unknown`
+  // — which appends no event and would leave this assertion testing nothing.
+  const timed = await redGateFixture(seamRoot, "seam-timed", GREEN_GATE, { "notes.md": "x\n" });
+  const slowGate = path.join(seamRoot, "timed-gate.sh");
+  writeFileSync(slowGate, "#!/bin/sh\nsleep 0.4\nexit 0\n", {
+    mode: 0o755,
+  });
+  writeFileSync(path.join(timed.repo, "gate.sh"), `#!/bin/sh\nexec sh ${slowGate}\n`, {
+    mode: 0o755,
+  });
+  commitAll(timed.repo, "chore: timed gate");
+  // The fixture's own builder writes `.pi/verify-cmd` through the probe wrapper,
+  // not through `redGateFixture`, so this fixture has to declare its command the
+  // way a project does — without it the seam skips and reports the skip.
+  mkdirSync(path.join(timed.repo, ".pi"), { recursive: true });
+  writeFileSync(path.join(timed.repo, ".pi", "verify-cmd"), `${CMD}\n`);
+  const timedBase = (
+    await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: timed.repo })
+  ).stdout.trim();
+  const after17 = await probeBaseAtBranch(
+    async (command, o) => {
+      // The driver's `synthesizeDriverCompletion` reads `process.env.RUN_ID` via
+      // `makeRunId()`, which throws without it — and a smoke test that runs this
+      // seam outside `lib/verify-loop.sh` has no RUN_ID. Production always has
+      // one (the driver sets it per cycle), so the executor supplies the shape a
+      // real child has rather than the assertion testing a crash.
+      const line = o?.argv ? [command, ...o.argv].join(" ") : command;
+      if (line.startsWith("git ") || o?.env === undefined) {
+        return await realExec(command, o);
+      }
+      return await realExec(command, { ...o, env: { ...o.env, RUN_ID: "smoke-probe" } });
+    },
+    { host: {}, repoRoot: timed.repo, issue: 1765 } as never,
+    branchState(timedBase),
+  );
+  const probeEvent = after17.eventLog.find(
+    (e) => e.kind === "dispatch-completed" && e.label === "driver:base-health",
+  ) as { ms?: number; summary?: string } | undefined;
+  assert(
+    probeEvent !== undefined && typeof probeEvent.ms === "number" && probeEvent.ms >= 300,
+    `probe duration: the step-completed event carries the probe's measured ms (got ${probeEvent?.ms}) — not 0 as though nothing ran`,
+  );
+  assert(
+    (probeEvent?.summary ?? "").includes("is GREEN"),
+    `probe duration: the timed run still reached its verdict, so the ms is a real probe's (${JSON.stringify(probeEvent?.summary)})`,
+  );
+  assert(
+    after17.pipelineState.baseHealthProbe?.status === "green",
+    `probe duration: the timed probe recorded the green it earned (got ${after17.pipelineState.baseHealthProbe?.status ?? "absent"})`,
   );
   rmSync(seamRoot, { recursive: true, force: true });
 }

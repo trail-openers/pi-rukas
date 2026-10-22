@@ -16,12 +16,16 @@
  *
  * Offline: temp git repos, no dispatch, no spawn.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type HostBudget, __setHostBudget } from "../src/host-resources.ts";
 import { synthesizeDriverCompletion } from "../src/work-driver-events.ts";
-import { applyBaseHealthProbe } from "../src/work-driver-verify-base-health.ts";
+import {
+  applyBaseHealthProbe,
+  baseHealthCacheFile,
+  readBaseHealthCache,
+} from "../src/work-driver-verify-base-health.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import {
   CMD,
@@ -187,6 +191,53 @@ for (const [label, shape, throwWhere, expect] of [
   assert(
     outDuring.verdict?.status === "unknown" && outDuring.park === undefined,
     `abort during: unknown and no park (got ${outDuring.verdict?.status}) — an interrupted run judged nothing, and a red exit alone is not a verdict here`,
+  );
+}
+
+// ── 17 — an abort that lands DURING the cache write gives `unknown`, never a
+// recorded green. The green is written to disk before the abort is checked, so a
+// listener registered only around the suite run (the pre-round-3 shape) let a
+// torn-down cycle publish a GREEN the next cycle reads back instead of paying for
+// the suite — a verdict for a run this cycle never finished judging. The abort
+// must be caught at the write itself, and the file must not stand behind an
+// `unknown` answer.
+{
+  const f = await redGateFixture(root, "abort-write", GREEN_GATE, { "notes.md": "x\n" });
+  const ac = new AbortController();
+  let gateCalls = 0;
+  const execFn = async (cmd: string, o?: Parameters<typeof realExec>[1]) => {
+    const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
+    if (!line.startsWith("git ")) gateCalls += 1;
+    // The abort lands while the probe is at work — before the green it earns
+    // would have been written.
+    if (gateCalls === 1) ac.abort();
+    return await realExec(cmd, o);
+  };
+  const out = await applyBaseHealthProbe(
+    execFn,
+    { host: {}, repoRoot: f.repo, issue: 1765, signal: ac.signal } as never,
+    branchState(f.baseSha),
+    CMD,
+  );
+  assert(
+    gateCalls === 1,
+    `abort at the cache write: the green arm really ran the gate once (got ${gateCalls}) — the case is not vacuous`,
+  );
+  assert(
+    out.verdict?.status === "unknown" && out.park === undefined,
+    `abort at the cache write: unknown and no park (got ${out.verdict?.status}) — a green the cycle was torn down for is not a verdict`,
+  );
+  assert(
+    (out.verdict?.reason ?? "").includes("interrupted"),
+    `abort at the cache write: the reason names the interruption (${out.verdict?.reason})`,
+  );
+  assert(
+    // The green's evidence is the cache file: whatever the write did, an
+    // `unknown` answer must not leave a GREEN standing for a later cycle to read
+    // instead of paying for the suite.
+    readBaseHealthCache(async () => readFileSync(baseHealthCacheFile(f.repo), "utf8"), f.repo)
+      ?.status !== "green",
+    "abort at the cache write: no GREEN stands in the cache behind an unknown answer",
   );
 }
 

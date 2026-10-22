@@ -22,7 +22,6 @@
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
-import { baselineRedForCmd } from "./work-driver-verify-base-health.ts";
 import { baselineExplainsChange, compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
@@ -33,22 +32,22 @@ export type BaselineRedEstablished = (established: boolean) => void;
 
 /**
  * #1765 — the develop gate's tail rule, in one call so the two claims travel
- * from the one place that decides them. `established` (the CAP) is attribution
- * to the command the probe re-ran; `red` is #1349's excuse. Both are re-checked
- * against the command HERE, at the end of the gate, so a no-verdict entry the
- * gates after the verify command append (a killed run, residue) still wins
- * inside `verifyCapFor` rather than parking the cycle on the base.
+ * from the one place that decides them. Both are read off the ONE verdict the
+ * baseline probe returned (`aggregateVerifyOutcome` is its only producer):
+ * `established` is that verdict's colour — the CAP — and `red` is #1349's
+ * excuse question about it. Neither is re-derived from the failure prose: the
+ * `red-timed-out` arm leads its entry with `[verify-timeout]`, so matching the
+ * `[baseline-red]` marker in the list cannot tell a base the probe proved red
+ * from a killed run, and only the structured verdict knows which it judged.
+ * `verifyCapFor` still routes a no-verdict entry the gates after the verify
+ * command append (a killed run, residue) ahead of both claims.
  */
 export function reportBaselineLeg(
   leg: { red: boolean; established: boolean },
-  failures: readonly string[],
-  cmd: string | undefined,
   callbacks: { onBaselineRedOnly?: () => void; onBaselineRedEstablished?: () => void },
 ): void {
   if (leg.established) callbacks.onBaselineRedEstablished?.();
-  if (leg.red && cmd !== undefined && baselineRedForCmd(failures, cmd)) {
-    callbacks.onBaselineRedOnly?.();
-  }
+  if (leg.red) callbacks.onBaselineRedOnly?.();
 }
 
 /**
@@ -150,7 +149,17 @@ export async function aggregateVerifyOutcome(args: {
       // for a verdict this cycle already holds.
       ...(baseHealthProbe !== undefined ? { cachedVerdict: baseHealthProbe } : {}),
     });
-    if (verdict === undefined) return false;
+    if (verdict === undefined) {
+      onBaselineRedEstablished?.(false);
+      return false;
+    }
+    // #1765 — the CAP's claim is the verdict's own colour, not a re-derivation
+    // from the entry `compareWithBaseline` appended: the returned arm says whether
+    // the probe established a red base for the command THIS gate ran (it is built
+    // from the same `cmd`), and the `red-timed-out` arm leads its failure entry
+    // with `[verify-timeout]`, so prose could never have told it from a killed
+    // run. A reused verdict is still the base's colour, so it still raises the cap.
+    onBaselineRedEstablished?.(true);
     // #1765 — the excuse question is #1349's and stays its answer; what changed is
     // how the develop gate RAISES the cap on it. It used to require the probe's
     // entry to be the gate's ONLY failure at its own position, so one foreign
@@ -160,7 +169,6 @@ export async function aggregateVerifyOutcome(args: {
     // nothing to match the change's failures against, so never an excuse.
     const attributed = verdict.reused !== true && baselineExplainsChange(verdict, changeFailures);
     if (attributed) onBaselineAttributed?.();
-    onBaselineRedEstablished?.(baselineRedForCmd(failures, cmd));
     return attributed;
   }
   return false;
