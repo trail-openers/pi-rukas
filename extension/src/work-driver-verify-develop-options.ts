@@ -53,6 +53,11 @@ export interface VerifyDevelopOutcomeOptions {
   // at base AND the verify command's failures are the gate's only ones, so
   // the caller can park with verify-baseline-red instead of verify-failed.
   onBaselineRedOnly?: () => void;
+  // #1765 — fires when the probe ESTABLISHED a red base for the verify command:
+  // the claim the CAP reads, weaker than the one above (which also requires every
+  // failure to be the base's). A red base is the diagnosis whatever sits beside
+  // it, and a cycle must not pay for develop on one.
+  onBaselineRedEstablished?: () => void;
   // #1240 — out-parameter carrying the identity that justified skipping the
   // consolidated run (the single workstream's tree, already verified green).
   // The caller appends the `consolidated-verify-skipped` EVENT from it: a
