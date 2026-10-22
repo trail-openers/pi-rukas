@@ -45,6 +45,12 @@ const STANDS_AS_IS = new Set<string>([
   "token-budget",
   "provider-unavailable",
   "develop-child-crash",
+  // #1768 — a pass that quit mid-step and then failed its ONE corrective round
+  // is not a work problem: the child stopped of its own accord (exit 0) and no
+  // re-run of the same prompt produced commits. Like the crash family, it
+  // stands as the cap the driver actually named rather than being re-labelled a
+  // generic step failure.
+  "develop-incomplete-uncommitted",
 ]);
 const STANDS_AS_IS_PREFIXES = [
   "step-failed:",

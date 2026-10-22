@@ -156,6 +156,16 @@ function capKind(cap: string): FailureKind {
     // sitting uncommitted in a worktree waiting for a person.
     case "develop-child-crash":
       return "crashed";
+    // #1768 — a develop child that exited 0, reported itself done, and had
+    // committed none of its own work. NOT `timeout` (the child was never
+    // killed; it stopped short of the commit it was told to make, and a host
+    // that re-queues time bounds would re-run a child that will quit the same
+    // way), not `crashed` (that is #1403's dead engine) and not `process` (the
+    // child exited 0). `verify` is the class that means "the gate judged the
+    // work and it is not finished": the cause class it maps to is `change`, and
+    // the unfinished paths name themselves in the evidence.
+    case "develop-incomplete-uncommitted":
+      return "verify";
     case "loop-detected":
     case "token-budget":
       return "guard";

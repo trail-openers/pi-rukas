@@ -61,6 +61,13 @@ import {
   worktreeStatus,
 } from "./work-develop-git.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
+// #1768 — the safety net's own commit subject, read from the module that owns
+// the constant so the net's message and the unfinished-pass test that
+// discounts those commits cannot drift apart. A dependency cycle would need a
+// value import in the other direction to close it, and
+// `work-develop-unfinished.ts` deliberately does not import this module: the
+// net is recovery, and what it recovers is decided without it.
+import { SAFETY_NET_COMMIT_SUBJECT_PREFIX } from "./work-develop-unfinished.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { mergeInProgress } from "./work-driver-continue-pr-guard.ts";
 import { execp } from "./work-driver-verify.ts";
@@ -237,8 +244,13 @@ export async function safetyNetWorktree(
 
   const workPaths = candidates.map((e) => e.path);
 
-  // Fire the safety net: stage the work paths and commit.
-  trace(`work-driver: safety net firing for ${wsId} — ${workPaths.length} uncommitted path(s)`);
+  // Fire the recovery: stage the work paths and commit them on the driver's
+  // behalf. The line says so while it happens, so `… safety net firing …` can
+  // never again sit beside `agent done: developer` and read as the child's work
+  // (#1768: orchard cycle-id printed the two one second apart).
+  trace(
+    `work-driver: recovery commit by the driver for ${wsId} — ${workPaths.length} uncommitted path(s) the child left; not the child's commit`,
+  );
   let commitSha: string | undefined;
   // One `git add` for the present paths (chunked), and `rm --cached` for the
   // absent ones (a staged rename's origin is already out of the index, so `git
@@ -270,8 +282,11 @@ export async function safetyNetWorktree(
   // already in the index (staged by someone else) is never swept into it.
   try {
     // Commit with driver-attributed message so the operator can tell
-    // this from a developer's seam commit.
-    const commitMsg = `wip: driver safety-net commit for ${wsId}`;
+    // this from a developer's seam commit. #1768 — the subject also names it
+    // as a RECOVERY commit, and `work-develop-unfinished.ts` discounts
+    // commits carrying this prefix when it decides whether a pass committed
+    // its own work, so one constant is read by both sides.
+    const commitMsg = `${SAFETY_NET_COMMIT_SUBJECT_PREFIX} for ${wsId} (created by the driver, not the child)`;
     await git(
       ["--literal-pathspecs", "commit", "-q", "--no-verify", "-m", commitMsg, "--", ...workPaths],
       { cwd, maxBuffer: 256 * 1024 },
@@ -305,7 +320,7 @@ export async function safetyNetWorktree(
 
   if (commitSha) {
     trace(
-      `work-driver: safety net committed ${wsId} (${commitSha.slice(0, 8)}) — ${workPaths.length} file(s)`,
+      `work-driver: recovery commit created by the driver for ${wsId} (${commitSha.slice(0, 8)}) — ${workPaths.length} file(s); this is NOT the child's commit and does not make an unfinished pass done`,
     );
     return {
       kind: "safety-net-commit",
@@ -314,6 +329,17 @@ export async function safetyNetWorktree(
       worktreePath: cwd,
       commitSha,
       filesCommitted: workPaths.length,
+      // #1768 — the event says what it is: a driver-created recovery commit.
+      recovery: true,
+      // #1768 — and names it by SHA. `recovery: true` alone is not enough for
+      // the unfinished rule: the net commits its paths explicitly, so a later
+      // `git add <file>` by the corrective child that re-stages one of them
+      // carries the net's CONTENT under the child's own subject, where a subject
+      // prefix cannot see it. `commitShas` is the one attribution that survives
+      // that (#1773 added the field for the checkpoint's own-commit scan; the
+      // unfinished rule reads it too, and falls back to the subject when an
+      // older state file has no SHAs).
+      commitShas: [commitSha],
     };
   }
   return undefined;

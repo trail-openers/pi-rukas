@@ -230,6 +230,18 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
     reason: "develop finished without producing every deliverable the spec names",
     action: CHANGE_FIX,
   },
+  // #1768 — the child exited 0 and said so itself, and its step was unfinished.
+  // `change`, not `environment` and not `pi-rukas`: the work is real and sits
+  // uncommitted in the worktree, and the fix is to finish it. Distinct from
+  // `develop-child-crash` (an engine that died, usually a suspended host) — this
+  // child was never killed; it stopped short of the commit it was told to make.
+  "develop-incomplete-uncommitted": {
+    cls: "change",
+    reason:
+      "a develop child reported ok without committing its own work, and the corrective round left it unfinished",
+    action:
+      "finish the uncommitted work named in the evidence in its worktree and commit it there, then re-run `/work {issue} --restart`",
+  },
   "draft-rearm-failed": {
     cls: "environment",
     reason: "the forge would not return the PR to draft while its review re-ran",

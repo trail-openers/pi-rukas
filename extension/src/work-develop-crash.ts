@@ -54,6 +54,13 @@ import {
   parseStatus,
   runGit,
 } from "./work-develop-git.ts";
+import type { OwnCommitCheck } from "./work-develop-unfinished-facts.ts";
+import {
+  SAFETY_NET_COMMIT_SUBJECT_PREFIX,
+  ownCommitsAheadOfBase,
+} from "./work-develop-unfinished.ts";
+import { classifyGreenPass } from "./work-develop-green-classify.ts";
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** The substring of the child's collapsed transcript that names a dead engine.
@@ -88,6 +95,15 @@ export interface CrashVerdict {
   /** True when the child's engine died mid-pass. */
   crashed: boolean;
   /**
+   * #1768 — the child exited 0 and reported itself done, but the driver could
+   * not certify the pass: it made no commit of its own ahead of base and left
+   * work in the tree, or the tree could not be read. Distinct from `crashed`
+   * (an engine that DIED): this child never stopped, it stopped short.
+   */
+  unfinished?: boolean;
+  /** #1768 — the green-path tree reading behind an `unfinished` verdict. */
+  unfinishedReading?: import("./work-develop-unfinished-facts.ts").GreenReading;
+  /**
    * The claim the driver can honestly make about the worktree after this pass:
    * commits ahead of base, uncommitted leftovers, or nothing at all. Absent
    * when the tree could not be read.
@@ -101,7 +117,37 @@ export interface CrashVerdict {
   /** The child's exit code, when it exited — carried onto the event record so
    *  the handoff names `exit 1` the way the console line did. */
   exitCode?: number | null;
+  /** #1768 — the pass's OWN commits ahead of base (the driver's own recovery
+   *  commits discounted), read on the green path so the caller does not re-read
+   *  what the classify seam already read. Absent on the failure path, which has
+   *  its own `evidence` reading and needs no second one. */
+  ownCommits?: OwnCommitCheck;
 }
+
+/**
+ * The arguments `classifyDevelopPass` takes — exported so the test seam on
+ * `DriverContext` names the same shape rather than restating it and drifting.
+ */
+export type ClassifyArgs = {
+  id: string;
+  cwd: string;
+  /** The workstream's effective base (per-workstream SHA, else global). */
+  base: string | undefined;
+  execFn: NonNullable<DriverContext["verifyExecFn"]>;
+  result: DevelopPassResult;
+  /** Test seam for the green-path commit attribution (the count itself comes
+   *  from `commitsAheadOfBase`, so a fake cannot make an unreadable tree look
+   *  like a committed one). */
+  ownCommits?: (
+    cwd: string,
+    base: string | undefined,
+  ) => Promise<import("./work-develop-unfinished-facts.ts").OwnCommitCheck>;
+  /** #1768 — the driver's own commit SHAs for this workstream, collected from
+   *  its `safety-net-commit` records by the caller (see
+   *  `driverCommitShasFor`). A supplied `ownCommits` seam owns the answer and
+   *  these are unused. */
+  driverShas?: readonly string[];
+};
 
 /** What the classify seam is given: the part of a dispatch a verdict is
  *  derived from, plus the child's stderr tail. `errorStop` keeps
@@ -212,30 +258,16 @@ function treeReader(execFn: ExecFn): (cwd: string) => Promise<ReturnType<typeof 
  * degrades to `evidence: undefined` rather than stalling the develop step,
  * whose write-ahead dispatch marker is already recorded by then.
  */
-export async function classifyDevelopPass(args: {
-  id: string;
-  cwd: string;
-  /** The workstream's effective base (per-workstream SHA, else global). */
-  base: string | undefined;
-  execFn: ExecFn;
-  result: DevelopPassResult;
-}): Promise<CrashVerdict> {
+export async function classifyDevelopPass(args: ClassifyArgs): Promise<CrashVerdict> {
   const { id, cwd, base, execFn, result } = args;
   const crashed = engineCrashed(result);
   const ok = developPassIsOk(result) && !crashed;
 
-  // The healthy path is answered from the child's own result: the tree
-  // readings below exist for the FAILURE record, and on the green path the
-  // caller reads only `verdict.ok` (work-develop-run.ts). Reading the tree on
-  // every pass would fork git twice per pass to compute fields nobody reads.
-  if (ok)
-    return {
-      ok: true,
-      crashed: false,
-      uncommitted: [],
-      lostWork: false,
-      exitCode: result.exitCode,
-    };
+  // #1768 — the healthy path NO LONGER stops at the child's claim: the tree is
+  // read before any #622 safety net can commit its dirt and thereby certify the
+  // pass. That reading and its three outcomes are `classifyGreenPass`'s, kept
+  // with their reasoning in their own module.
+  if (ok) return classifyGreenPass(args);
 
   const git = runGit(execFn);
   const readTree = treeReader(execFn);

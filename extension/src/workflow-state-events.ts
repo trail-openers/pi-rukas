@@ -10,9 +10,14 @@ import type { AdversarialEventFragment } from "./workflow-state-events-adversari
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { PlanVerdict, WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+import type { ConvergeRedispatchEvent } from "./workflow-state-events-converge-redispatch.ts";
 // #1667 — the develop step's corrective round record (one per dispatched workstream).
 import type { CorrectiveRoundEvent } from "./workflow-state-events-corrective.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
+// #1768 — the unfinished-develop record lives in its own fragment rather than
+// inline here: this module sits at the §12 line cap, and an inline field would
+// have pushed a second event kind's documentation past it.
+import type { DevelopUnfinishedFragment } from "./workflow-state-events-develop-unfinished.ts";
 import type { FenceEvent } from "./workflow-state-events-fence.ts";
 import type {
   HandoffConsolidatedEvent,
@@ -25,6 +30,7 @@ import type {
 } from "./workflow-state-events-interrupted.ts";
 import type { InterruptedEvent } from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
+import type { LensIssuesFoundEvent } from "./workflow-state-events-lens-issues.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type {
@@ -54,6 +60,7 @@ export type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
+export type { LensIssuesFoundEvent } from "./workflow-state-events-lens-issues.ts";
 export type { DispatchSlowEvent };
 // #1446-size — interrupted / cycle-interrupted members re-exported from the
 // sibling fragment (the 500-line gate, AGENTS.md §12).
@@ -236,17 +243,7 @@ export type WorkEvent =
       /** #456 — sub-threshold findings retained on an APPROVED verdict (same shape as `lens-issues-found`). */
       findings?: string;
     }
-  | {
-      kind: "lens-issues-found";
-      at: number;
-      jobId: string;
-      round: number;
-      /** #1742 — the pushed branch head this round read (`lensReviewedHead`), so a later route can tell whether the verdict still describes the current head. */
-      headSha?: string;
-      findings: string;
-      /** "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" — preserved verbatim from the verdict. */
-      verdict: "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";
-    }
+  | LensIssuesFoundEvent
   | LensSkippedEmptyDiffEvent
   | {
       /**
@@ -261,18 +258,7 @@ export type WorkEvent =
       at: number;
       workstreamId: string;
     }
-  | {
-      /**
-       * #741 — the end-of-develop converge gate's one-shot corrective
-       * developer dispatch completed (the first absent set was reported to a
-       * re-dispatch). The follow-up gate re-ran; whether it passed is visible
-       * on the next event (cap-hit develop-incomplete-deliverables or step
-       * completion).
-       */
-      kind: "converge-redispatch";
-      step: "develop";
-      at: number;
-    }
+  | ConvergeRedispatchEvent
   | {
       kind: "cap-hit";
       at: number;
@@ -460,6 +446,18 @@ export type WorkEvent =
       refused?: true;
       /** #1403 — the pass's child engine died mid-flight; absent = it did not crash. */
       crash?: DevelopCrashFragment;
+      /**
+       * #1768 — the child reported ok and the driver could NOT certify the pass:
+       * it made no commit of its own ahead of base and left work in the tree, or
+       * the tree could not be read. Absent = the pass was certifiable (or failed
+       * for another reason, which the `crash` / `error` fields already name).
+       *
+       * Distinct from `crash`: that is an engine that died; this is a child that
+       * exited 0 and said so itself while its step was unfinished — the shape
+       * the #622 safety net used to commit away as a `wip: driver safety-net
+       * commit` while the console printed `agent done: developer`.
+       */
+      unfinished?: DevelopUnfinishedFragment;
     }
   | {
       /**

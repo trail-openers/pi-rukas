@@ -303,6 +303,22 @@ export type WorkCapLiteral =
   // behind — so the cycle parks as a handoff with the leftover list rather
   // than advancing on a tree whose state it does not know.
   | "develop-child-crash"
+  // #1768 — a develop child exited 0 and reported itself done, made NO commit
+  // of its own ahead of its base, and left its work UNCOMMITTED in the worktree
+  // (the orchard cycle-id / cycle-id shape: `safety net
+  // committed default (d81ce007)` printed beside the child's own `…
+  // test/review_test.sh remain, then the gate. Continuing.`, then `agent done:
+  // developer`). The #622 net used to commit that dirt and the net's own commit
+  // then satisfied the green rule, so a mid-step quit rode into commit-pr on a
+  // `wip: driver safety-net commit`.
+  //
+  // NOT `develop-child-crash` (that child's engine DIED; this one exited 0 and
+  // said so) and NOT `develop-incomplete-deliverables` (that diff builds and is
+  // judged by path presence after the verify gate passed; this step never
+  // earned a verify). Emitted only when the ONE corrective round that resumed
+  // from the child's own uncommitted work did not finish either — the paths
+  // name the unfinished work in `evidence`.
+  | "develop-incomplete-uncommitted"
   // #1396 (round 3) — the branch step's same-issue residue pass could not read
   // `git worktree list` (the listing is bounded since #1396, so a hang is a
   // rejection). The pass cannot tell whether a same-issue tree holds work, and

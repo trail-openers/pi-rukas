@@ -11,6 +11,9 @@ import path from "node:path";
  */
 
 import { crashTreeSentence } from "./work-develop-crash.ts";
+// #1768 — one sentence per reading, shared with the cap evidence and the
+// handoff explanation, so a mid-step quit reads the same on every surface.
+import { unfinishedTreeSentence } from "./work-develop-unfinished-facts.ts";
 import type { VerifyTarget } from "./workflow-state-events-verify.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
@@ -92,6 +95,24 @@ function crashTreeText(
         ? [...paths.slice(0, 3), `+${paths.length - 3} more`]
         : paths,
     reason: "",
+  });
+}
+
+/** #1768 — what an unfinished pass left in its worktree, in the same compact
+ *  register as `crashTreeText` above: one sentence per line, and the dirty
+ *  case shortened to the first three paths. */
+function unfinishedTreeText(
+  u: NonNullable<Extract<WorkEvent, { kind: "branch-completed" }>["unfinished"]>,
+): string {
+  const paths = u.paths ?? [];
+  return unfinishedTreeSentence({
+    id: "",
+    tree: u.tree,
+    paths:
+      u.tree === "dirty" && paths.length > 3
+        ? [...paths.slice(0, 3), `+${paths.length - 3} more`]
+        : paths,
+    reason: u.reason,
   });
 }
 
@@ -177,7 +198,13 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
               ? ""
               : `, exit ${e.crash.exitCode}`
           }) · ${crashTreeText(e.crash)}`
-        : `  branch-completed · ${e.step}[${e.workstreamId}] · ${e.ok ? "ok" : "FAIL"} · ${fmtElapsed(e.ms)}${e.error ? ` · ${e.error.slice(0, 40)}` : ""}`;
+        : // #1768 — a child that reported ok without committing its own work is
+          // equally not an ordinary FAIL: the line is where the operator sees
+          // that the driver refused the pass and what it left uncommitted, in
+          // the same register as the crash line above.
+          e.unfinished
+          ? `  branch-completed · ${e.step}[${e.workstreamId}] · UNFINISHED (reported ok, no commit of its own) · ${unfinishedTreeText(e.unfinished)}`
+          : `  branch-completed · ${e.step}[${e.workstreamId}] · ${e.ok ? "ok" : "FAIL"} · ${fmtElapsed(e.ms)}${e.error ? ` · ${e.error.slice(0, 40)}` : ""}`;
     case "branches-converged": {
       const okN = e.verdicts.filter((v) => v.ok).length;
       return `  branches-converged · ${e.step} · ${okN}/${e.verdicts.length} ok`;

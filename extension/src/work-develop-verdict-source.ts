@@ -45,7 +45,23 @@ export interface VerdictLine {
 /** #1774 — one workstream's IN-FLIGHT verdict: the shape both develop
  *  phases settle on, before the attempts/text mapping. The #1644 budget
  *  refusal carries `noRetry` so the fan-out settles it like a refused reset. */
-export type WorkstreamVerdict = { id: string; ok: boolean; reason?: string; noRetry?: true };
+export type WorkstreamVerdict = {
+  id: string;
+  ok: boolean;
+  reason?: string;
+  noRetry?: true;
+  /** #1768 — the pass's OWN commits ahead of base, read by the classify seam
+   *  with the driver's safety-net recovery commits discounted. The green rule
+   *  reads this instead of asking git after the net has already committed the
+   *  pass's leftovers. */
+  ownCommits?: import("./work-develop-unfinished-facts.ts").OwnCommitCheck;
+};
+
+/** #753 — the optional fields a `branch-completed` record may carry beyond the
+ *  required ones, so a caller can build one without naming the required fields.
+ *  Lives with the other verdict-record shapes rather than with the dispatch
+ *  closure that once owned it. */
+export type BranchCompletedExtra = Partial<Extract<WorkEvent, { kind: "branch-completed" }>>;
 
 /** One raw verdict before the id/ok/reason → line-text mapping. */
 export interface RawVerdict {
@@ -58,8 +74,14 @@ export interface RawVerdict {
   /** #1774 — the failure is DETERMINISTIC: re-running it produces the same
    *  refusal (the #1644 budget check is the carrier today). The fan-out
    *  settles it where it stands — like a refused reset, never into the retry
-   *  set — because a reset would first destroy work the pass never made. */
+   *  set — because a reset would first destroy work the pass never made.
+   *  #1768 — an unfinished pass carries it for the same reason: the corrective
+   *  round must resume from the child's uncommitted work, which the fan-out's
+   *  retry reset would discard. */
   noRetry?: true;
+  /** #1768 — carried through from the in-flight verdict (see
+   *  `WorkstreamVerdict.ownCommits`); the green rule reads it. */
+  ownCommits?: import("./work-develop-unfinished-facts.ts").OwnCommitCheck;
 }
 
 /** Plain rendering of one verdict (no retry annotation). */

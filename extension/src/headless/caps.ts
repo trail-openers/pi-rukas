@@ -75,6 +75,10 @@ export const FIXED_CAPS = [
   "dependency-timeout",
   "develop-child-crash",
   "develop-incomplete-deliverables",
+  // #1768 — a develop child that exited 0, reported itself done, and had
+  // committed none of its own work while its tree stayed dirty. Sorted where
+  // the sort puts it, after the sibling develop caps.
+  "develop-incomplete-uncommitted",
   // #1398 — the review re-ran after the PR was marked ready and the driver
   // could not put the PR back to a draft.
   "draft-rearm-failed",

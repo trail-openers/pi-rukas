@@ -19,6 +19,9 @@ import {
 import { explainConvergeIncomplete } from "./work-driver-explain-converge.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
+// #1768 — the mid-step-quit family, its own module (same seam as the crash one)
+// so this file stays under the §12 cap.
+import { explainDevelopUnfinished } from "./work-driver-explain-develop-unfinished.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
 import { explainPlan } from "./work-driver-explain-plan.ts";
@@ -336,6 +339,10 @@ export function explainCap(
     case "develop-child-crash":
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);
+    case "develop-incomplete-uncommitted":
+      // #1768 — the child exited 0 and said so itself; the sentence (and the
+      // paths it left uncommitted) lives with its own family module.
+      return explainDevelopUnfinished(state);
     case "deadline": {
       // #1238 — the deadline was within the handoff grace at a step boundary,
       // so no new step started; #1593 — or a step ran past it and its own

@@ -48,6 +48,26 @@ export function isInterruptedDevelop(state: WorkState): boolean {
   return window.some((e) => e.kind === "dispatch-started" && e.step === "develop");
 }
 
+/**
+ * #1768 — does this workstream's tree hold work the CHILD produced?
+ *
+ * The green rule both develop phases apply, stated once. Pre-#1768 it was
+ * `greenCountsAsWork` run AFTER the #622 safety net, so the net's own commit —
+ * the one it creates when a pass has 0 commits and a dirty tree — satisfied the
+ * rule and a child that quit mid-step read as done (orchard cycle-id:
+ * `safety net committed default (d81ce007)` beside `agent done: developer`).
+ * Now the count comes from `classifyDevelopPass`, which discounts commits
+ * carrying the net's own subject, and the caller supplies it here instead of
+ * asking git again.
+ */
+export function childOwnWork(verdict: {
+  /** The pass's own commits ahead of base, driver recovery commits discounted. */
+  ownCommits?: { commits: number } | { driverOnly: true } | { unreadable: string };
+}): boolean {
+  const own = verdict.ownCommits;
+  return own !== undefined && "commits" in own && own.commits > 0;
+}
+
 export function greenWorkstreamsFromInterruptedDevelop(state: WorkState): Set<string> {
   const green = new Set<string>();
   if (!isInterruptedDevelop(state)) return green;

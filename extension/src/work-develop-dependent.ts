@@ -14,19 +14,11 @@
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import { assertInsideWorktrees, errText, isValidBaseSha } from "./work-develop-git.ts";
-import { downgradeReason } from "./work-develop-greens.ts";
-import {
-  greenCountsAsWork,
-  recordDowngrade,
-  retryOnce,
-  settleVerdict,
-} from "./work-develop-retry.ts";
+import { childOwnWork, downgradeReason } from "./work-develop-greens.ts";
+import { recordDowngrade, retryOnce, settleVerdict } from "./work-develop-retry.ts";
 import { reuseRefusal } from "./work-develop-reuse.ts";
-import {
-  type BranchCompletedExtra,
-  type DependentRunState,
-  parkDeferredLeftover,
-} from "./work-develop-run.ts";
+import { type DependentRunState, parkDeferredLeftover } from "./work-develop-run.ts";
+import type { BranchCompletedExtra } from "./work-develop-verdict-source.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   type DeferredCreationResult,
@@ -80,7 +72,16 @@ export async function runDependentWorkstreams(
   runOneWorkstream: (
     id: string,
     cwd: string,
-  ) => Promise<{ id: string; ok: boolean; reason?: string; noRetry?: true }>,
+    /** #1768 — set for the unfinished corrective round only; the closure reads
+     *  its prompt and label and nothing else changes. */
+    corrective?: { prompt: string; label: string },
+  ) => Promise<{
+    id: string;
+    ok: boolean;
+    reason?: string;
+    noRetry?: true;
+    ownCommits?: import("./work-develop-unfinished-facts.ts").OwnCommitCheck;
+  }>,
   /** #753 — the per-run state (in-cycle worktrees, park flag, dep-completion timestamps, failure source). */
   run: DependentRunState,
 ): Promise<{
@@ -318,7 +319,7 @@ export async function runDependentWorkstreams(
           workstreamBaseShas: wtRef.workstreamBaseShas,
         },
       }));
-      let outcome = await runOneWorkstream(id, createdPath);
+      let outcome = await runOneWorkstream(id, createdPath, run.corrective);
       if (!outcome.ok) {
         // #1016 — a failed dependent keeps its own dependents skipped even when
         // retried, and gets the same one-shot retry an independent gets.
@@ -350,11 +351,20 @@ export async function runDependentWorkstreams(
       // dependency that shipped nothing is the incoherent-tree failure this
       // ticket fixes. Fail-safe: an unreadable count also blocks downstream.
       const ownBase = wtRef.workstreamBaseShas[id] ?? globalBaseSha;
-      // #1016 — the same green rule as an independent: the safety net commits
-      // leftover edits first, then a green needs commits ahead of its base. A
-      // green that fails it is downgraded, so its verdict and its dependents agree.
+      // #1016 — the same green rule as an independent. #1768 reordered the two
+      // halves: the child's OWN commits (read by the classify seam inside
+      // `runOneWorkstream`, with the driver's own recovery commits discounted)
+      // decide the green, and the safety net runs only for a pass that earned
+      // it. Pre-#1768 the net ran first and its commit satisfied the rule, which
+      // is exactly how a mid-step quit became a completed step.
       if (outcome.ok) {
-        if (isValidBaseSha(ownBase)) {
+        if (!childOwnWork(outcome)) {
+          failedOrSkipped.add(id);
+          if (failureSource) failureSource[id] = "failed";
+          if (run.emitBranchCompleted)
+            recordDowngrade({ emit: run.emitBranchCompleted }, id, undefined);
+          settleVerdict(verdicts, { id, ok: false, reason: downgradeReason(undefined) });
+        } else if (isValidBaseSha(ownBase)) {
           const sn = await safetyNetWorktree(
             id,
             ctx.repoRoot,
@@ -364,14 +374,6 @@ export async function runDependentWorkstreams(
             run.notes ?? [],
           );
           if (sn) run.updateState?.((s) => appendEvent(s, sn));
-        }
-        const green = await greenCountsAsWork(execFn, createdPath, ownBase);
-        if (!green.counts) {
-          failedOrSkipped.add(id);
-          if (failureSource) failureSource[id] = "failed";
-          if (run.emitBranchCompleted)
-            recordDowngrade({ emit: run.emitBranchCompleted }, id, green.detail);
-          settleVerdict(verdicts, { id, ok: false, reason: downgradeReason(green.detail) });
         }
       }
     }

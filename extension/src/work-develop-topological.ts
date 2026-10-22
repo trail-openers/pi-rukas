@@ -9,7 +9,10 @@
  */
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { parkOnDevelopCrash } from "./work-develop-crash.ts";
+import { flushParkedSiblings } from "./work-develop-parked-flush.ts";
+import { developUnfinishedPass } from "./work-develop-unfinished-pass.ts";
 import { isValidBaseSha } from "./work-develop-git.ts";
+import { childOwnWork } from "./work-develop-greens.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
 import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
 import {
@@ -27,6 +30,15 @@ import {
   makeRunOneWorkstream,
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
+import { runUnfinishedCorrectiveRound } from "./work-develop-unfinished-round.ts";
+// #1768 — a pass that quit mid-step earns ONE corrective round that resumes
+// from its own uncommitted work, and parks on a named cap when that round does
+// not finish either.
+import {
+  type UnfinishedWorkstream,
+  developUnfinished,
+  parkOnDevelopUnfinished,
+} from "./work-develop-unfinished.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
@@ -42,39 +54,6 @@ import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
-
-/**
- * #1742 (MINOR 2) — the ONE flush both mid-step parks share.
- *
- * A develop step that parks part-way through must land the same shape: the
- * write-ahead `beginDispatch` marker cleared, every sibling / skip-cascade
- * `branch-completed` the phases collected appended BEFORE the cap (so the cap
- * stays the log tail `nextStep` reads), and the worktree + base maps the phases
- * created folded in — a later resume reads trees that exist. The dirty-leftover
- * park passes `[]` because `parkDeferredLeftover` already flushed them; the
- * budget park passes the collected events. Two hand-written copies of this
- * block is how one of them ends up dropping the cascade.
- */
-function flushParkedSiblings(
-  state: WorkState,
-  jobId: string,
-  events: readonly WorkEvent[],
-  worktrees: Record<string, string>,
-  workstreamBaseShas: Record<string, string>,
-): WorkState {
-  const cleared = appendEvent(clearDispatch(state, jobId), ...events);
-  return {
-    ...cleared,
-    pipelineState: {
-      ...cleared.pipelineState,
-      worktrees,
-      workstreamBaseShas: {
-        ...workstreamBaseShas,
-        ...cleared.pipelineState.workstreamBaseShas,
-      },
-    },
-  };
-}
 
 /**
  * #679 — topological-dispatch core of runDevelop (see work-develop-run.ts).
@@ -138,6 +117,12 @@ async function runDevelopTopological(
   // pass judged "done" and a tree the net later commits share one base.
   const basesFor = (id: string): string | undefined =>
     next.pipelineState.workstreamBaseShas?.[id] ?? next.pipelineState.baseSha;
+  // #1768 — the ONE classify seam both phases and the corrective round share,
+  // so the first pass, its round and the dependent phase all describe a tree
+  // the same way. A test may replace it wholesale to drive a verdict without a
+  // repository; production leaves it unset and the closure calls the real
+  // classifier with `baseFor` and `execFn`.
+  const sharedClassify = ctx.classifyDevelopPassFn;
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
     activeIssues,
@@ -154,6 +139,7 @@ async function runDevelopTopological(
     // these two, which is all they contribute.
     execFn,
     baseFor: basesFor,
+    classifyPass: sharedClassify,
     // #838 — the develop dispatch's deck tag: the workstream id when N>1
     // (per-workstream rows), "default" for the single-workstream shape.
     deckTagFor: (id) => (ids.length > 1 ? id : "default"),
@@ -239,20 +225,38 @@ async function runDevelopTopological(
       if (!r.ok)
         return { id, ok: false, reason: r.reason, ...(r.noRetry ? { noRetry: true } : {}) };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
-      // #1016 — the #622 safety net commits leftover edits before the green check.
+      // #1768 — the green is decided by the pass's OWN commits (the classify
+      // seam read them inside `runOneWorkstream`, discounting the driver's own
+      // recovery commits), BEFORE the #622 net sees the tree. Pre-#1768 the net
+      // ran first: it commits the leftover dirt when a pass has 0 commits ahead,
+      // and that driver-made commit then satisfied the rule — orchard
+      // cycle-id's `agent done: developer` beside `safety net committed
+      // default (d81ce007)` while the child's own last line said work remained.
+      if (!childOwnWork(r)) {
+        // No commit of the child's own. An unfinished pass (dirty tree, named
+        // paths) already carries the classify seam's verdict reason and its own
+        // `unfinished` record; a clean tree has no work for the net to recover,
+        // so the existing GREEN_DOWNGRADE reason is used. Either way the net is
+        // skipped: it commits recovery for a pass that earned its green and
+        // never for one that did not, so the work stays in the tree for the
+        // corrective round rather than riding into commit-pr on the driver's
+        // own commit.
+        recordDowngrade(persister, id, r.reason === undefined ? undefined : undefined);
+        return {
+          id,
+          ok: false,
+          reason: r.reason ?? downgradeReason(),
+          claimed: true,
+          ...(r.noRetry ? { noRetry: true } : {}),
+        };
+      }
+      // A pass with its own commits earns the net: leftover edits it never
+      // staged are recovered, and its untracked work would otherwise be lost.
       if (isValidBaseSha(base)) {
         const sn = await safetyNetWorktree(id, ctx.repoRoot, cwd, base, execFn, persistNotes);
         if (sn) branchEvents.push(sn);
       }
-      const green = await greenCountsAsWork(execFn, cwd, base);
-      if (green.counts) return { ...r, claimed: true };
-      recordDowngrade(persister, id, green.detail);
-      return {
-        id,
-        ok: false,
-        reason: downgradeReason(green.detail),
-        claimed: true,
-      };
+      return { ...r, claimed: true };
     },
     resetFor: retryResetFor({
       execFn,
@@ -272,10 +276,45 @@ async function runDevelopTopological(
     failedOrSkipped.add(id);
     if (failureSource[id] === undefined) failureSource[id] = "failed";
   }
-  // #753 — populate the dep-completion map: dependents wait on their DIRECT
-  // dependency, so record the resolved fan-out time for every independent
-  // workstream; the dependent phase records its own completion as it goes.
-  for (const id of independent) depCompletedAtMap[id] = independentCompletedAt;
+  // #1768 — a pass that quit mid-step earns its ONE corrective round, and parks
+  // on `develop-incomplete-uncommitted` if that round fails too; the rule and
+  // its reasoning are in `work-develop-unfinished-pass.ts`, this is the routing.
+  const unfinishedPass = await developUnfinishedPass({
+    ctx,
+    stateRef,
+    state: next,
+    worktrees,
+    workstreamBaseShas,
+    globalBaseSha,
+    workstreams,
+    activeIssues,
+    scratchAbs,
+    dispatch,
+    execFn,
+    basesFor,
+    sharedClassify,
+    persister,
+    branchEvents,
+    verdicts,
+    ids,
+    budgetPark,
+    persistNotes,
+    begunJobId: begun.jobId,
+  });
+  next = unfinishedPass.state;
+  if (unfinishedPass.parked) {
+    // The cap-hit is the log tail and the step ends here, as the two parks
+    // below do.
+    return endStep(withPersistNotes(unfinishedPass.result, persistNotes));
+  }
+  // The round's verdicts replace the ones it re-dispatched, so dependents see
+  // whether their dependency actually finished.
+  for (const id of unfinishedPass.blocked) {
+    failedOrSkipped.add(id);
+    if (failureSource[id] === undefined) failureSource[id] = "failed";
+  }
+  for (const id of unfinishedPass.recovered) failedOrSkipped.delete(id);
+  // #753 — the dep-completion map: dependents wait on their DIRECT dependency.
   const wtResult = await runDependentWorkstreams(
     ctx,
     dependentOrdered,

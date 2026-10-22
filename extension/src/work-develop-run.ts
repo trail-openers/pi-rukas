@@ -23,12 +23,23 @@ import { buildMemoryBrief } from "./memory-brief.ts";
 import { developChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
 import {
+  type ClassifyArgs,
   type CrashVerdict,
   type DevelopPassResult,
   classifyDevelopPass,
   crashedBranchCompleted,
 } from "./work-develop-crash.ts";
-import type { WorkstreamVerdict } from "./work-develop-verdict-source.ts";
+// #1768 — the pass's records and verdict entry, built from ONE verdict so the
+// event and the verdict cannot disagree about whether the pass finished.
+import {
+  classifyArgsForPass,
+  passCompletedEvent,
+  passVerdict,
+} from "./work-develop-pass-record.ts";
+import type {
+  BranchCompletedExtra,
+  WorkstreamVerdict,
+} from "./work-develop-verdict-source.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
@@ -73,24 +84,17 @@ export interface DevelopRunState {
   >;
   /** All workstream ids (independent + dependent). */
   ids: string[];
-  /** #1742/#1644 — the shared budget-park marker. A review-loop fix pass
-   *  whose remaining budget cannot fit `MIN_USEFUL_MS.develop` marks this
-   *  INSTEAD of dispatching (zero dispatches), and the topological caller
-   *  short-circuits the safety-net/verify gates on it — the same shape the
-   *  deferred-leftover park uses: flush the sibling events, then land the
-   *  `lens-review-timeout` cap-hit as the TAIL the step router reads. #1774:
-   *  REQUIRED — the mark and the caller's short-circuit are one mechanism. */
+  /** #1742/#1644 — the shared budget-park marker: a fix pass whose remaining
+   *  budget cannot fit `MIN_USEFUL_MS.develop` marks this INSTEAD of
+   *  dispatching, and the caller short-circuits the gates on it. REQUIRED —
+   *  the mark and the caller's short-circuit are one mechanism. */
   budgetPark: { at?: number };
   /** The dispatch function (ctx.dispatchFn ?? dispatchCore). */
   dispatch: NonNullable<DriverContext["dispatchFn"]>;
-  /** #838 — the deck tag for this workstream's dispatch rows (the
-   *  workstream id when N>1, "default" for the single-workstream shape);
-   *  the deck option itself is composed inside the closure from the cycle
-   *  key + step. */
+  /** #838 — the deck tag for this workstream's dispatch rows (the workstream
+   *  id when N>1, "default" for the single-workstream shape). */
   deckTagFor: (id: string) => string;
-  /** #1403 — the executor the crash classification reads each worktree with
-   *  (the step's own `verifyExecFn`, so the fan-out and its gates describe the
-   *  same tree). */
+  /** #1403 — the executor the crash classification reads each worktree with. */
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
   /** #1403 — resolves the base a workstream's worktree is described against:
    *  its own entry in `workstreamBaseShas`, else the cycle's global base. The
@@ -98,23 +102,18 @@ export interface DevelopRunState {
    *  time, so a dependent classified after its own entry landed is described
    *  against ITS base, not the global one). */
   baseFor: (id: string) => string | undefined;
-  /** #1403 — the classify seam. The topological step supplies the one shared
-   *  across both dispatch phases (its own base resolution + executor); a test
-   *  injects a fake tree. Absent → the closure calls `classifyDevelopPass`
-   *  directly with `baseFor` and `execFn`. */
-  classifyPass?: (args: {
-    id: string;
-    cwd: string;
-    base: string | undefined;
-    execFn: NonNullable<DriverContext["verifyExecFn"]>;
-    result: DevelopPassResult;
-  }) => Promise<CrashVerdict>;
+  /** #1403 — the pass's classification, with the crash record (#1403) and the
+   *  unfinished record (#1768) built from ONE tree reading. A test injects a
+   *  fake tree; absent, the closure calls `classifyDevelopPass`. */
+  classifyPass?: (args: ClassifyArgs) => Promise<CrashVerdict>;
+  /** #1768 — the corrective round's prompt and label; absent on every ordinary
+   *  pass, so the prompt the developer sees is byte-identical to today's. */
+  corrective?: CorrectiveDispatch;
   /** Per-branch verdicts accumulated across both phases. */
   verdicts: WorkstreamVerdict[];
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
   branchEvents: WorkEvent[];
-  /** #1016 — persists a `branch-completed` as its workstream finishes (the
-   *  crash-resume record). */
+  /** #1016 — persists a `branch-completed` as its workstream finishes. */
   emitBranchCompleted: (ev: WorkEvent) => void;
   /** The current state (mutated by appendEvent for memory-inject events). */
   stateRef: { current: WorkState };
@@ -156,17 +155,19 @@ export interface DependentRunState {
     cwd: string,
     base: string | undefined,
   ) => Promise<{ attempt: number; patch?: string }>;
+  /** #1768 — set while the dispatch IS the unfinished corrective round. */
+  corrective?: CorrectiveDispatch;
+  /** #1768 — the round's verdicts settle into the caller's verdict list. */
+  settle?: (v: { id: string; ok: boolean; reason?: string }) => void;
   /** #1016 — driver notes (saved patches), surfaced in the handoff. */
   notes?: string[];
 }
 
-/** #753 — the optional `extra` fields added to a failed dependent's
- * branch-completed event. Typed as `Partial` of the `branch-completed` union
- * member: the `satisfies` check in `recordBranchCompleted` keeps the spread
- * type-checking against that member, so a mistyped `extra` field is a
- * compile error, not a read-time surprise. (Nothing here protects readers —
- * the branch-completed event is the record; the typing protects writers.) */
-export type BranchCompletedExtra = Partial<Extract<WorkEvent, { kind: "branch-completed" }>>;
+/** #1768 — the corrective round's dispatch identity. */
+export interface CorrectiveDispatch {
+  prompt: string;
+  label: string;
+}
 
 /**
  * #753 — append the dirty-leftover cap-hit and return `true` (the caller
@@ -215,7 +216,8 @@ export function makeRunOneWorkstream(
     const speculativeOn = process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE === "1";
     const ws = workstreams[id];
     const startedAt = Date.now();
-    const developerLabel = ids.length > 1 ? `developer[${id}]` : "developer";
+    const developerLabel =
+      s.corrective?.label ?? (ids.length > 1 ? `developer[${id}]` : "developer");
     // #1416 — a develop dispatch that IS a review fix pass (the adversarial
     // gate threads `fixFindings` for a rejected workstream, or the lens loop
     // re-reviews after a lens-fix) runs under the same 90-minute review-loop
@@ -342,24 +344,26 @@ export function makeRunOneWorkstream(
           ctx.host,
           {
             role: "developer",
-            prompt: inlineDevelopPrompt(
-              activeIssues,
-              scratchAbs,
-              ws,
-              ids.length > 1 ? id : undefined,
-              speculativeOn ? speculativeContextPath : undefined,
-              brief.text,
-              siblingWorkstreams,
-              verifyCmd,
-              issueBodyArtifactPaths,
-              ws?.fixFindings,
-              developNote(s.stateRef.current),
-              fastVerifyCmd,
-              // #1676 — the protected paths the plan persisted, annotated beside the fence.
-              {
-                deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
-              },
-            ),
+            prompt: s.corrective
+              ? s.corrective.prompt
+              : inlineDevelopPrompt(
+                  activeIssues,
+                  scratchAbs,
+                  ws,
+                  ids.length > 1 ? id : undefined,
+                  speculativeOn ? speculativeContextPath : undefined,
+                  brief.text,
+                  siblingWorkstreams,
+                  verifyCmd,
+                  issueBodyArtifactPaths,
+                  ws?.fixFindings,
+                  developNote(s.stateRef.current),
+                  fastVerifyCmd,
+                  // #1676 — the protected paths the plan persisted, annotated beside the fence.
+                  {
+                    deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
+                  },
+                ),
             cwd,
           },
           {
@@ -437,35 +441,29 @@ export function makeRunOneWorkstream(
       // code 1)` and exited non-zero fell onto the ordinary failure path with
       // a reason drawn from the completion event's tail — nothing said it had
       // crashed, and nothing named the work it left uncommitted.
-      const verdict = await (s.classifyPass ?? classifyDevelopPass)({
-        id,
-        cwd,
-        base: s.baseFor(id),
-        execFn: s.execFn,
-        result: res,
-      });
+      const verdict = await (s.classifyPass ?? classifyDevelopPass)(
+        classifyArgsForPass({
+          id,
+          cwd,
+          base: s.baseFor(id),
+          execFn: s.execFn,
+          result: res,
+          stateRef: s.stateRef,
+        }),
+      );
       const ok = verdict.ok;
-      // A crash gets its own structured branch-completed record whether or not
-      // the fan-out is multi-workstream: the crash is the finding, and for
-      // N=1 (every real cycle measured on this host) suppressing the event by
-      // `ids.length > 1` is what made it invisible to every later reader.
-      if (verdict.crashed) {
-        emitCompleted(crashedBranchCompleted({ id, ms: Date.now() - startedAt, verdict }));
-      } else if (ids.length > 1) {
-        emitCompleted({
-          kind: "branch-completed",
-          step: "develop",
-          workstreamId: id,
-          ok,
-          ms: Date.now() - startedAt,
-          at: Date.now(),
-        });
-      }
+      const completed = passCompletedEvent({
+        id,
+        ms: Date.now() - startedAt,
+        multi: ids.length > 1,
+        verdict,
+      });
+      if (completed) emitCompleted(completed);
       // #1016 — a first-pass failure carries its reason into the verdicts.
       const tail = "errorTail" in completionEvent ? completionEvent.errorTail : undefined;
-      const reason = ok ? undefined : (verdict.reason ?? tail ?? "developer did not complete ok");
-      s.verdicts.push(ok ? { id, ok } : { id, ok, reason });
-      return ok ? { id, ok } : { id, ok, reason };
+      const entry = passVerdict({ id, verdict, tail });
+      s.verdicts.push(entry);
+      return entry;
     } catch (err) {
       const errMsg = (err as Error).message?.slice(0, 200);
       s.branchEvents.push({
