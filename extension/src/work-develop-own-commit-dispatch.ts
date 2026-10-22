@@ -53,3 +53,10 @@ export async function dispatchUnfinishedCorrective(
     },
   );
 }
+
+export { unfinishedPromptSuffix };
+
+/** #1768 — the corrective pass bound to a run: the caller swaps `dispatch` to
+ *  override the seam (a test); `undefined` means there was no captured brief. */
+export const correctiveFor = (s: CorrectiveRunState, id: string, cwd: string, paths: string[]) =>
+  dispatchUnfinishedCorrective(s, id, cwd, paths);

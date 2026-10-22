@@ -15,6 +15,9 @@ import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import { assertInsideWorktrees, errText, isValidBaseSha } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
+import { dispatchUnfinishedCorrective } from "./work-develop-own-commit-dispatch.ts";
+import { correctiveFor } from "./work-develop-own-commit-dispatch.ts";
+import { requireOwnCommit } from "./work-develop-own-commit.ts";
 import {
   greenCountsAsWork,
   recordDowngrade,
@@ -22,13 +25,11 @@ import {
   settleVerdict,
 } from "./work-develop-retry.ts";
 import { reuseRefusal } from "./work-develop-reuse.ts";
-import { requireOwnCommit } from "./work-develop-own-commit.ts";
 import {
   type BranchCompletedExtra,
   type DependentRunState,
   parkDeferredLeftover,
 } from "./work-develop-run.ts";
-import { dispatchUnfinishedCorrective } from "./work-develop-own-commit-dispatch.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   type DeferredCreationResult,
@@ -97,7 +98,7 @@ export async function runDependentWorkstreams(
   const unfinished = run.unfinished ?? new Map<string, string[]>();
   const dispatchCorrective = (wid: string, cwd: string, paths: string[]) =>
     run.ownCommit
-      ? dispatchUnfinishedCorrective(
+      ? correctiveFor(
           { ...run.ownCommit, dispatch: run.correctiveDispatch ?? run.ownCommit.dispatch },
           wid,
           cwd,

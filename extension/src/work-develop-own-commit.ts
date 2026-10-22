@@ -4,34 +4,32 @@
  * and work-develop-dependent.ts ran the #622 safety net BEFORE
  * `greenCountsAsWork`, so a child that exited 0 with a dirty tree and no commit
  * of its own had its dirt committed by the net — and that DRIVER commit then
- * satisfied commits > 0, so unfinished work read as `agent done: developer`
- * (orchard #507: six paths committed by the net, its test never written; orchard
- * #439: same shape, the net's commit the only copy of the change).
+ * satisfied commits > 0, so unfinished work read as `agent done: developer` and
+ * reached verify missing its deliverables (orchard #507, #439).
  *
  * This asks the question the net was answering for the child, with primitives
- * the crash path already uses (no new git verb). commits > 0 -> own work, the
- * caller runs the net as today. 0 commits and clean -> unchanged, so the
- * existing GREEN_DOWNGRADE applies. 0 commits and dirty -> UNFINISHED: the net
- * does NOT run, one corrective pass goes into the SAME worktree (no reset, no
- * clean — the dirt IS the work) and one re-read follows. An unreadable read is
- * not-ok naming its cause: absence of evidence is not evidence of a finished
- * pass.
+ * the crash path already uses (no new git verb): commits > 0 -> own work, the
+ * caller runs the net as today; 0 commits + clean -> unchanged, so the existing
+ * GREEN_DOWNGRADE applies; 0 commits + dirty -> UNFINISHED, the net does NOT
+ * run, one corrective pass goes into the SAME worktree (the dirt IS the work)
+ * and one re-read follows. An unreadable read is not-ok naming its cause —
+ * absence of evidence is not evidence of a finished pass.
  */
 import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
-import { type ExecFn, commitEntriesOf, commitsAheadOfBase, runGit } from "./work-develop-git.ts";
 import { treeReader } from "./work-develop-crash.ts";
+import { type ExecFn, commitEntriesOf, commitsAheadOfBase, runGit } from "./work-develop-git.ts";
 import { namePaths, unfinishedPromptSuffix } from "./work-develop-paths.ts";
-import { appendEvent, type WorkState } from "./workflow-state.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** Bound on the reason string the verdict and the cap evidence carry. */
 const REASON_MAX = 400;
 
-/** The corrective pass: same workstream, same worktree, the dispatch seam the
- *  first pass used. `undefined` = could not be dispatched (no captured brief),
- *  which the caller still parks on — it never reads as green. */
+/** The corrective pass: same workstream, same worktree, the seam the first pass
+ *  used. `undefined` = no captured brief, so nobody was dispatched; the caller
+ *  still parks on it, never reads it as green. */
 export type CorrectiveDispatch = (paths: string[]) => Promise<DispatchResult | undefined>;
 
 export type OwnCommitOutcome =
@@ -45,17 +43,23 @@ export type OwnCommitOutcome =
   /** No commit of its own, dirt left, and the corrective pass did not fix it. */
   | { kind: "unfinished"; uncommitted: string[]; reason: string };
 
-/** The child's uncommitted paths, read through the crash classifier's bounded
- *  reader; `.pi/` and `tmp/` drop out via `commitEntriesOf`, so a driver file
- *  never makes a pass look dirty. Unreadable is `unreadable`, never []. */
 type PathsRead = { paths: string[] } | { unreadable: string };
 
+/** The child's uncommitted paths via the crash classifier's bounded reader;
+ *  `commitEntriesOf` drops `.pi/` and `tmp/`, so a driver file never makes a
+ *  pass look dirty, and an unreadable read stays `unreadable`, never []. */
 async function uncommittedPaths(execFn: ExecFn, cwd: string): Promise<PathsRead> {
   const parsed = await treeReader(execFn)(cwd);
   return Array.isArray(parsed)
     ? { paths: commitEntriesOf(parsed).map((e) => e.path) }
     : { unreadable: parsed.unreadable };
 }
+
+const fail = (uncommitted: string[], reason: string): OwnCommitOutcome => ({
+  kind: "unfinished",
+  uncommitted,
+  reason: reason.slice(0, REASON_MAX),
+});
 
 export async function requireOwnCommit(args: {
   id: string;
@@ -71,35 +75,28 @@ export async function requireOwnCommit(args: {
   const read = () => commitsAheadOfBase(git, cwd, base);
 
   const first = await read();
-  if (!("commits" in first))
-    return { kind: "unfinished", uncommitted: [], reason: `commits unreadable — ${first.unreadable}` };
+  if (!("commits" in first)) return fail([], `commits unreadable — ${first.unreadable}`);
   if (first.commits > 0) return { kind: "own-work" };
 
   const status = await uncommittedPaths(execFn, cwd);
-  if (!("paths" in status))
-    return { kind: "unfinished", uncommitted: [], reason: `status unreadable — ${status.unreadable}` };
+  if (!("paths" in status)) return fail([], `status unreadable — ${status.unreadable}`);
   const paths = status.paths;
   if (paths.length === 0) return { kind: "unchanged" };
 
-  trace(`work-driver: develop ${id} — no commit of its own, ${paths.length} uncommitted: ${namePaths(paths)}`);
-  const unfinished = (extra?: string): OwnCommitOutcome => ({
-    kind: "unfinished",
-    uncommitted: paths,
-    reason: `${paths.length} uncommitted path(s), no commit of its own: ${namePaths(paths)}${extra ? `; ${extra}` : ""}`.slice(0, REASON_MAX),
-  });
-  if (!args.corrective) return unfinished();
+  const named = `${paths.length} uncommitted path(s), no commit of its own: ${namePaths(paths)}`;
+  trace(`work-driver: develop ${id} — ${named}`);
+  if (!args.corrective) return fail(paths, named);
 
-  const again = await args.corrective(paths);
-  if (again === undefined) return unfinished("the corrective pass could not be dispatched");
-
+  if ((await args.corrective(paths)) === undefined)
+    return fail(paths, `${named}; the corrective pass could not be dispatched`);
   const second = await read();
   if (!("commits" in second))
-    return unfinished(`corrective pass left the commit count unreadable — ${second.unreadable}`);
+    return fail(paths, `${named}; corrective pass left the commit count unreadable`);
   if (second.commits > 0) {
     trace(`work-driver: develop ${id} — corrective pass committed (${second.commits})`);
     return { kind: "green" };
   }
-  return unfinished("the corrective pass committed nothing either");
+  return fail(paths, `${named}; the corrective pass committed nothing either`);
 }
 
 /** The cap this park emits — one name, so every registration and the test read
@@ -107,13 +104,12 @@ export async function requireOwnCommit(args: {
 export const DEVELOP_INCOMPLETE_UNCOMMITTED = "develop-incomplete-uncommitted";
 
 /** Park the workstreams whose develop pass ended with uncommitted paths and no
- *  commit of its own, after the one corrective pass in its own worktree. Returns
- *  the parked state, or `undefined` when none needs parking and the caller
- *  proceeds to the converged emit and the gates as before. Not the crash park
- *  beside it: a crash is an infrastructure fault; this is unfinished WORK the
- *  child itself declared done, and the operator's action is to finish or split
- *  it. Not the safety net either: committing that dirt is what made the pass
- *  read as done. */
+ *  commit of its own, after the one corrective pass in its own worktree;
+ *  `undefined` when none needs parking, and the caller proceeds to the converged
+ *  emit and the gates as before. Not the crash park beside it: a crash is an
+ *  infrastructure fault, this is unfinished WORK the child called done, so the
+ *  operator finishes it or splits the issue.
+ */
 export function parkUnfinishedDevelop(
   state: WorkState,
   unfinished: ReadonlyMap<string, string[]>,

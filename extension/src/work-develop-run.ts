@@ -12,6 +12,9 @@
  * and `parkDeferredLeftover` stays in this file). The closure captures per-run
  * state via `DevelopRunState` so the caller shares it across both dispatch
  * phases.
+ *
+ * `runDevelopTopological` — the #679 topological-dispatch core — lives in
+ * work-develop-topological.ts.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -24,6 +27,7 @@ import {
   classifyDevelopPass,
   crashedBranchCompleted,
 } from "./work-develop-crash.ts";
+import { correctiveFor, unfinishedPromptSuffix } from "./work-develop-own-commit-dispatch.ts";
 import type { WorkstreamVerdict } from "./work-develop-verdict-source.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
@@ -34,7 +38,6 @@ import {
   reviewLoopActive,
 } from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { unfinishedPromptSuffix } from "./work-develop-paths.ts";
 import {
   inlineDevelopPrompt,
   inlineSpeculativeExplorePrompt,
@@ -115,8 +118,9 @@ export interface DevelopRunState {
   emitBranchCompleted: (ev: WorkEvent) => void;
   /** The current state (mutated by appendEvent for memory-inject events). */
   stateRef: { current: WorkState };
-  lastPrompt?: (paths: string[]) => string; // #1768 corrective brief builder
-  correctiveDispatch?: DevelopRunState["dispatch"]; // #1768 test seam
+  /** #1768 — the corrective brief builder; `correctiveDispatch` overrides its seam. */
+  lastPrompt?: (paths: string[]) => string;
+  correctiveDispatch?: DevelopRunState["dispatch"];
 }
 
 /** #753 — per-run state threaded into the dependent phase (always passed together). */
@@ -157,9 +161,10 @@ export interface DependentRunState {
   ) => Promise<{ attempt: number; patch?: string }>;
   /** #1016 — driver notes (saved patches), surfaced in the handoff. */
   notes?: string[];
-  // #1768 — the dependent phase's corrective run state, unfinished map, seam.
+  // #1768 — the dependent phase reuses the run's corrective state + unfinished map.
   ownCommit?: DevelopRunState;
   unfinished?: Map<string, string[]>;
+  /** #1768 — the corrective pass's dispatch seam, overridable by a test. */
   correctiveDispatch?: DevelopRunState["dispatch"];
 }
 
@@ -172,18 +177,13 @@ export interface DependentRunState {
 export type BranchCompletedExtra = Partial<Extract<WorkEvent, { kind: "branch-completed" }>>;
 
 /**
- * #753 — append the dirty-leftover cap-hit and return `true` (the caller
- * returns `parked: true` and short-circuits). This helper is the SINGLE
- * place that couples the cap-hit append to the park flag: the flag and the
- * append are one structural unit (no code path sets one without the other),
- * and the append lands at the event-log TAIL — the step router routes on the
- * tail, and the caller's short-circuit (work-develop-topological.ts) must
- * keep it there.
- *
- * `branchEvents` (the accumulated sibling events: completion + branch-completed
- * records from the independent phase and earlier dependents) is flushed to the
- * state BEFORE the cap-hit lands, so sibling results survive in the durable log
- * and the cap-hit is still the tail.
+ * #753 — append the dirty-leftover cap-hit and return `true` (the caller parks
+ * and short-circuits). The SINGLE place coupling the append to the flag: one
+ * structural unit, no path sets one without the other, and the append lands at
+ * the event-log TAIL — the step router routes on the tail, and the caller
+ * short-circuits in work-develop-topological.ts to keep it there. `branchEvents`
+ * (sibling completion / branch-completed records) flush BEFORE the cap-hit, so
+ * sibling results survive the durable log and the cap-hit stays the tail.
  */
 export function parkDeferredLeftover(
   stateRef: { current: WorkState },
@@ -200,14 +200,11 @@ export function parkDeferredLeftover(
   return true;
 }
 
-/** The develop note: the continue-PR note (#1468), then the interrupted-attempt note. */
 export function developNote(state: WorkState): string | undefined {
   const cp = state.pipelineState.continuedPr;
   const parts = [cp && continuePrNote(cp), interruptedDevelopNote(state)].filter(Boolean);
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
-
-/** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
 ): (id: string, cwd: string) => Promise<WorkstreamVerdict> {
@@ -260,14 +257,10 @@ export function makeRunOneWorkstream(
       return { id, ok: false, reason, noRetry: true };
     }
     const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);
-    // #679 case 1 — sibling workstreams for the informational injection.
-    // Gated on N>1 and workstreamId !== "default" (the existing `parallel`
-    // framing gate). The N=1 default path passes nothing → byte-identical.
-    // This is INFORMATIONAL ONLY — the scope-fanout gate in
-    // work-driver-verify-develop.ts reads `workstream.paths` from state,
-    // never the prompt text.
-    // #1016 — per-completion persistence: every develop caller supplies emitBranchCompleted.
-    const emitCompleted = (ev: WorkEvent): void => s.emitBranchCompleted(ev);
+    // #679 case 1 — sibling workstreams for the informational injection: N>1
+    // and workstreamId !== "default" (the `parallel` framing gate), so the N=1
+    // default path passes nothing and stays byte-identical. INFORMATIONAL ONLY
+    // — the scope-fanout gate reads `workstream.paths` from state, not the text.
     const isParallel = ids.length > 1 && id !== "default";
     const siblingWorkstreams = isParallel
       ? ids
@@ -278,6 +271,7 @@ export function makeRunOneWorkstream(
           })
           .filter((x): x is { id: string; scope: string; paths: string[] } => x !== undefined)
       : undefined;
+    const emitCompleted = (ev: WorkEvent): void => s.emitBranchCompleted(ev);
     try {
       // Fire developer + (optional) speculative explore CONCURRENTLY;
       // allSettled so one failing does not abort the other.
@@ -340,23 +334,26 @@ export function makeRunOneWorkstream(
       // "checked, none present" state; the prompt guard treats it as absent
       // and falls back to the re-fetch line.
       const issueBodyArtifactPaths = artifactPaths;
+      // #1768 — captured so the corrective pass reuses this exact brief; the
+      // driver never builds that round from a thinner prompt than the one that
+      // just failed, and a workstream that never dispatched has no brief at all.
       const dp = inlineDevelopPrompt(
-              activeIssues,
-              scratchAbs,
-              ws,
-              ids.length > 1 ? id : undefined,
-              speculativeOn ? speculativeContextPath : undefined,
-              brief.text,
-              siblingWorkstreams,
-              verifyCmd,
-              issueBodyArtifactPaths,
-              ws?.fixFindings,
-              developNote(s.stateRef.current),
-              fastVerifyCmd,
-              // #1676 — the protected paths the plan persisted, annotated beside the fence.
-              {
-                deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
-              },
+        activeIssues,
+        scratchAbs,
+        ws,
+        ids.length > 1 ? id : undefined,
+        speculativeOn ? speculativeContextPath : undefined,
+        brief.text,
+        siblingWorkstreams,
+        verifyCmd,
+        issueBodyArtifactPaths,
+        ws?.fixFindings,
+        developNote(s.stateRef.current),
+        fastVerifyCmd,
+        // #1676 — the protected paths the plan persisted, annotated beside the fence.
+        {
+          deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
+        },
       );
       s.lastPrompt = (paths: string[]) => `${dp}${unfinishedPromptSuffix(paths)}`;
       const [developerSettled, speculativeSettled] = await Promise.allSettled([
@@ -500,5 +497,4 @@ export function makeRunOneWorkstream(
   };
 }
 
-export { runDependentWorkstreams } from "./work-develop-dependent.ts"; // #799 moved verbatim
-
+export { runDependentWorkstreams } from "./work-develop-dependent.ts";

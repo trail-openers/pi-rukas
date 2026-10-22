@@ -18,9 +18,10 @@ import {
 } from "./work-driver-explain-consolidation.ts";
 import { explainConvergeIncomplete } from "./work-driver-explain-converge.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
-import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts"; import { explainOwnCommitIncomplete } from "./work-driver-explain-own-commit.ts"; // #1768
+import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
 import { adversarialFailureCause, explainOther } from "./work-driver-explain-other.ts";
+import { explainOwnCommitIncomplete } from "./work-driver-explain-own-commit.ts";
 import { explainPlan } from "./work-driver-explain-plan.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainRepeatPark } from "./work-driver-explain-repeat.ts";
@@ -336,8 +337,8 @@ export function explainCap(
     case "develop-child-crash":
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);
-    case "develop-incomplete-uncommitted":
-      return explainOwnCommitIncomplete(state); // #1768
+    case "develop-incomplete-uncommitted": // #1768, sentence in its own module
+      return explainOwnCommitIncomplete(state);
     case "deadline": {
       // #1238 — the deadline was within the handoff grace at a step boundary,
       // so no new step started; #1593 — or a step ran past it and its own
@@ -488,8 +489,7 @@ export function explainCap(
         return "the merge step failed — authority was granted and CI passed, but `gh pr merge` itself did not succeed (auth / branch protection / conflicts / missing required review). This cap means the merge ATTEMPT failed, not that the project denies agents — a re-run would hit the same wall, so remove the blocking cause and merge once with `gh pr merge <PR-N> --squash --delete-branch` (check `gh repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed` for allowed methods)";
       case "step-back":
       case "handoff":
-        // These remain DEGRADED_OK in STEP_FAILURE_POLICY and should never
-        // produce a step-failed:<step> cap. Render generic if it ever happens.
+        // DEGRADED_OK in STEP_FAILURE_POLICY: never a step-failed:<step> cap.
         return `step "${step}" failed unexpectedly — see state-file event log`;
     }
   }
