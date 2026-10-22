@@ -22,11 +22,7 @@
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
-import {
-  BASELINE_RED_MARKER,
-  baselineExplainsChange,
-  compareWithBaseline,
-} from "./work-driver-verify-baseline.ts";
+import { baselineExplainsChange, compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -132,10 +128,4 @@ export async function aggregateVerifyOutcome(args: {
     return attributed;
   }
   return false;
-}
-
-/** The probe's marker leads the list (it is unshifted); no check before or
- *  after the verify command added a failure of its own. */
-export function baselineRedOnly(failures: readonly string[]): boolean {
-  return failures.length > 0 && failures[0]?.startsWith(BASELINE_RED_MARKER) === true;
 }
