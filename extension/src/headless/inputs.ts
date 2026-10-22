@@ -172,6 +172,12 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   family(ms("DECISION_TIMEOUT_MS_<SEAM>", null), SEAM_MEMBERS),
   flag("DECISIONS", true),
   int("DECK_MAX_ROWS", 20, "interactive"),
+  // #1765 — 0 skips the branch step's pre-develop base-health probe (the
+  // project's verify command at `baseSha`, before any developer is dispatched).
+  // The develop gate's POST-failure baseline comparison is untouched, so `0`
+  // restores the pre-#1765 cost model rather than a stricter gate. The gate's
+  // own switch, PI_ENSEMBLE_VERIFY=0, skips the probe too.
+  flag("DEVELOP_BASELINE_PROBE", true),
   ms("DEVELOP_BOUND_MS", 5_400_000),
   dir("DIR", null),
   flag("DISABLE_EXTENSION_FORWARD", false),

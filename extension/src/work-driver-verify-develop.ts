@@ -32,7 +32,7 @@ import {
 } from "./work-driver-protected-paths-read.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
+import { baselineRedForCmd } from "./work-driver-verify-base-health.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
 import {
   declaredPathsHaveSource,
@@ -394,7 +394,8 @@ export async function verifyDevelopOutcome(
   // failure was a cross-worktree artifact.
   const plan = await planDevelopVerify(ctx, touchedPaths, worktrees, baseSha, execFn, notes);
   const cmd = plan.cmd;
-  let verifyCmdEnd: number | undefined;
+  // #1765 — the probe established the base red for this command (the cap rule).
+  const baselineLeg = { red: false };
   if (!cmd) {
     notes.push(
       "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
@@ -427,8 +428,6 @@ export async function verifyDevelopOutcome(
       if (skipDecision.reason) notes.push(skipDecision.reason);
       // #794 — the per-worktree loop, consolidated run and classification
       // live in work-driver-verify-verify-cmd.ts (500-line gate).
-      const before = failures.length;
-      let attributed = false;
       // #1509 — both tier bounds come from one repoRoot in one call (see
       // `developTierTimeouts`): the fast exec takes `fast` through the wrapper,
       // the full exec takes `suite` as an argument. Deriving the fast bound from
@@ -457,7 +456,7 @@ export async function verifyDevelopOutcome(
         ...(fenceViolations !== undefined ? { fenceViolations } : {}),
         ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
         onBaselineAttributed: () => {
-          attributed = true;
+          baselineLeg.red = true;
         },
         ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
         ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
@@ -467,8 +466,6 @@ export async function verifyDevelopOutcome(
         ...(hangSink !== undefined ? { hangSink } : {}),
         ...(onGateRecorded !== undefined ? { onGateRecorded } : {}),
       }).finally(() => plan.finish(options.onSelectedVerify));
-      // #1349 — only a base that fails the way the change does excuses it.
-      verifyCmdEnd = before === 0 && attributed ? failures.length : undefined;
     }
   }
 
@@ -491,9 +488,10 @@ export async function verifyDevelopOutcome(
   }
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
   await runContinuePrGate(execFn, state, worktrees, failures);
-  // The probe's marker leads the list (it is unshifted); no check before or
-  // after the verify command added a failure of its own.
-  if (failures.length === verifyCmdEnd && failures[0]?.startsWith(BASELINE_RED_MARKER)) {
+  // #1765 — the mixed-set rule: the probe's finding for THIS command wins the cap
+  // whatever sits beside it; other entries stay failures, and `verifyCapFor`
+  // still routes the no-verdict families ahead of this one.
+  if (baselineLeg.red && cmd !== undefined && baselineRedForCmd(failures, cmd)) {
     onBaselineRedOnly?.();
   }
   return undefined;
