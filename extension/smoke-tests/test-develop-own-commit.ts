@@ -327,7 +327,8 @@ async function dirtyWorktree(
   // The safety net says it is the driver's recovery commit, not the child's.
   const net = read("work-driver-safety-net.ts");
   assert(
-    /recovery commit made by the driver/i.test(net) && /recovery commit for \$\{wsId\}/.test(net),
+    /driver safety-net commit for \$\{wsId\}/.test(net) &&
+      /recovery commit made by the driver/.test(net),
     "6: the safety-net trace and commit message say it is a recovery commit made by the driver",
   );
 }
