@@ -22,6 +22,8 @@ import {
   runIndependentFanout,
   withPersistNotes,
 } from "./work-develop-retry.ts";
+import { parkUnfinishedDevelop, requireOwnCommit } from "./work-develop-own-commit.ts";
+import { correctivePassFor } from "./work-develop-own-commit-dispatch.ts";
 import {
   type DevelopRunState,
   makeRunOneWorkstream,
@@ -138,7 +140,12 @@ async function runDevelopTopological(
   // pass judged "done" and a tree the net later commits share one base.
   const basesFor = (id: string): string | undefined =>
     next.pipelineState.workstreamBaseShas?.[id] ?? next.pipelineState.baseSha;
-  const runOneWorkstream = makeRunOneWorkstream({
+  // #1768 — the run state object the dispatch closure and the corrective pass
+  // share. `lastPrompt` is written by the closure during each dispatch, so a
+  // corrective pass reuses the brief the pass that just failed was given; one
+  // object, so the dependent phase's `ownCommit` cannot be a different object
+  // from the one the closure writes.
+  const runOneWorkstreamState: DevelopRunState = {
     ctx,
     activeIssues,
     scratchAbs,
@@ -165,7 +172,14 @@ async function runDevelopTopological(
     branchEvents: branchEvents as WorkEvent[],
     stateRef,
     budgetPark,
-  });
+  };
+  const runOneWorkstream = makeRunOneWorkstream(runOneWorkstreamState);
+  // #1768 — the corrective pass for one workstream: THIS run's captured brief
+  // (the closure writes `lastPrompt` as each dispatch runs), the step's own
+  // dispatch, or the smoke test's seam (`ctx.correctiveDispatchFn`, absent in
+  // production). Both seams resolve when the pass RUNS, so a test may install
+  // its scripted child after the cycle ctx was built.
+  const correctiveForId = correctivePassFor(runOneWorkstreamState, dispatch, ctx);
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
   const globalBaseSha = next.pipelineState.baseSha;
@@ -221,7 +235,12 @@ async function runDevelopTopological(
   // positive (the #545 scan is unbounded within a cycle). The dependent phase
   // grows this as it creates worktrees.
   const inCycleWorktrees: string[] = [...Object.values(worktrees)];
-
+  // #1768 — independents whose pass ended with dirt and no commit of its own,
+  // even after the one corrective pass. The dependent phase writes its own
+  // unfinished workstreams into the SAME map, and the step parks on the union
+  // beside the crash park below (a crash is an infrastructure fault; this is
+  // unfinished WORK the child called done).
+  const unfinished = new Map<string, string[]>();
   // #746 — every dispatched independent has a worktree (the rest failed above).
   // #1016 — a green with no commits ahead of its base fails inside runAt.
   const firstPassFailed = new Set<string>();
@@ -239,7 +258,27 @@ async function runDevelopTopological(
       if (!r.ok)
         return { id, ok: false, reason: r.reason, ...(r.noRetry ? { noRetry: true } : {}) };
       const base = workstreamBaseShas[id] ?? globalBaseSha;
-      // #1016 — the #622 safety net commits leftover edits before the green check.
+      // #1768 — as for a dependent: no commit of its own and a dirty tree is
+      // UNFINISHED, not a green. The #622 net deliberately does NOT run for
+      // that workstream (its commit would have been the only one, and made the
+      // unfinished pass read as done — the exact defect); the workstream gets
+      // one corrective pass in its OWN worktree, and failing that the step
+      // parks. A read failure parks the same way: absence of evidence is not
+      // evidence of a finished pass.
+      const own = await requireOwnCommit({
+        id,
+        cwd,
+        base,
+        execFn,
+        corrective: (paths) => correctiveForId(id, cwd, paths),
+      });
+      if (own.kind === "unfinished") {
+        unfinished.set(id, own.uncommitted);
+        return { id, ok: false, reason: own.reason, noRetry: true };
+      }
+      // #1016 — the #622 safety net commits leftover edits before the green
+      // check — for a pass that HAS commits of its own, which is all that is
+      // left here.
       if (isValidBaseSha(base)) {
         const sn = await safetyNetWorktree(id, ctx.repoRoot, cwd, base, execFn, persistNotes);
         if (sn) branchEvents.push(sn);
@@ -267,6 +306,12 @@ async function runDevelopTopological(
     firstPassFailed,
   });
   for (const v of verdicts) if (!v.ok) failedOrSkipped.add(v.id);
+  // #1768 — the independents left UNFINISHED above are failed for their
+  // dependents too, and keep their dirt on disk: the park below names them.
+  for (const id of unfinished.keys()) {
+    failedOrSkipped.add(id);
+    if (failureSource[id] === undefined) failureSource[id] = "failed";
+  }
   // #1016 — a first-pass failure keeps its dependents skipped, even when retried.
   for (const id of firstPassFailed) {
     failedOrSkipped.add(id);
@@ -299,6 +344,10 @@ async function runDevelopTopological(
       kept: preserved.kept,
       refused: preserved.refused,
       notes: persistNotes,
+      // #1768 — the dependent phase reuses this run's captured brief for its
+      // corrective pass and records its unfinished workstreams here too.
+      ownCommit: runOneWorkstreamState,
+      unfinished,
       emitBranchCompleted: persister.emit,
       updateState: persister.update,
       flushState: persister.flush,
@@ -383,6 +432,15 @@ async function runDevelopTopological(
     },
   };
   next = withPersistNotes(next, persistNotes);
+  // #1768 — an unfinished pass parks BEFORE the crash park, the converged emit
+  // and the gates. Two reasons, both about the event tail: the cap-hit must be
+  // the last event `nextStep` reads (the corrective round and the verify gate
+  // below both append after it, and the tail is what routes the cycle), and a
+  // pass whose child committed nothing has nothing for the net or the gate to
+  // judge — the gate's own answer for that tree was already wrong once, which
+  // is the defect this issue removes.
+  const unfinishedPark = parkUnfinishedDevelop(next, unfinished, ctx.issue);
+  if (unfinishedPark) return endStep(unfinishedPark);
   // #1403 — a develop child whose ENGINE DIED is a step outcome, not a
   // completion; the whole park (verdict filter, console notice, cap-hit with
   // the leftover paths named) lives in work-develop-crash.ts so this file

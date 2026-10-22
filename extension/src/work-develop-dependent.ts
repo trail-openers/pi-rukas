@@ -15,7 +15,6 @@ import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import { assertInsideWorktrees, errText, isValidBaseSha } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
-import { dispatchUnfinishedCorrective } from "./work-develop-own-commit-dispatch.ts";
 import { correctiveFor } from "./work-develop-own-commit-dispatch.ts";
 import { requireOwnCommit } from "./work-develop-own-commit.ts";
 import {

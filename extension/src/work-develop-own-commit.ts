@@ -13,14 +13,11 @@
  * read is not-ok naming its cause: absence of evidence is not evidence of a
  * finished pass.
  */
-import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { treeReader } from "./work-develop-crash.ts";
 import { type ExecFn, commitEntriesOf, commitsAheadOfBase, runGit } from "./work-develop-git.ts";
 import { namePaths, unfinishedPromptSuffix } from "./work-develop-paths.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** Bound on the reason string the verdict and the cap evidence carry. */
 const REASON_MAX = 400;
@@ -100,33 +97,12 @@ export async function requireOwnCommit(args: {
 export const DEVELOP_INCOMPLETE_UNCOMMITTED = "develop-incomplete-uncommitted";
 
 /** Park the workstreams whose develop pass ended with uncommitted paths and no
- *  commit of its own, after the one corrective pass in its own worktree;
- *  `undefined` when none needs parking, and the caller proceeds to the converged
- *  emit and the gates as before. Not the crash park beside it: a crash is an
- *  infrastructure fault, this is unfinished WORK the child called done, so the
- *  operator finishes it or splits the issue.
+ *  commit of its own. The park itself lives in `work-develop-unfinished.ts` —
+ *  moved for the §12 file-size cap, not out of the rule: the cap it emits is
+ *  named HERE, beside the decision that produces it, and the two modules are
+ *  read together. Re-exported so the develop step and the smoke test import the
+ *  park and its cap name from one place.
  */
-export function parkUnfinishedDevelop(
-  state: WorkState,
-  unfinished: ReadonlyMap<string, string[]>,
-  issue: number,
-): WorkState | undefined {
-  if (unfinished.size === 0) return undefined;
-  const named = [...unfinished.entries()].map(([id, p]) => `${id}: ${namePaths(p)}`).join(" | ");
-  lifecycle.emitStepNotice(
-    "develop",
-    `a developer ended its pass with uncommitted work and no commit of its own (${named}); the pass is not counted as done`,
-    issue,
-  );
-  trace(`work-driver: ${DEVELOP_INCOMPLETE_UNCOMMITTED} — ${named}`);
-  return appendEvent(state, {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap: DEVELOP_INCOMPLETE_UNCOMMITTED,
-    reviewRound: state.pipelineState.reviewRound,
-    nextStep: "handoff",
-    evidence: boundJoinFailures([named]),
-  });
-}
+export { parkUnfinishedDevelop } from "./work-develop-unfinished.ts";
 
 export { unfinishedPromptSuffix };

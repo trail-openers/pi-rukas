@@ -262,6 +262,14 @@ export interface DriverContext {
    */
   verifyExecFn?: DriverExecFn;
   /**
+   * #1768 — optional test seam for the CORRECTIVE develop pass only (the child
+   * that gets the finish-and-commit paragraph when its first pass exited 0 with
+   * dirt and no commit of its own). Production omits it and the corrective pass
+   * dispatches through `dispatchFn`, exactly like the first pass; a smoke test
+   * injects it to script that child's tree and to count the passes.
+   */
+  correctiveDispatchFn?: DriverContext["dispatchFn"];
+  /**
    * #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
    * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:
    * the checkpoint's git calls keep calling `execp`, so a fake cannot make

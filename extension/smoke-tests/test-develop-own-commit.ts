@@ -30,6 +30,8 @@ import path from "node:path";
 import { FIXED_CAPS } from "../src/headless/caps.ts";
 import { FAILURE_KINDS, failureOf } from "../src/headless/failure.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { runDevelopTopological } from "../src/work-develop-topological.ts";
+import { correctivePassCount } from "../src/work-develop-own-commit-dispatch.ts";
 import {
   DEVELOP_INCOMPLETE_UNCOMMITTED,
   parkUnfinishedDevelop,
@@ -37,6 +39,7 @@ import {
 } from "../src/work-develop-own-commit.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { nextStep } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { safetyNetWorktree } from "../src/work-driver-safety-net.ts";
 import { initialState, type WorkState } from "../src/workflow-state.ts";
 import { isKnownCap } from "../src/workflow-state-validate-caps.ts";
@@ -331,6 +334,114 @@ async function dirtyWorktree(
       /recovery commit made by the driver/.test(net),
     "6: the safety-net trace and commit message say it is a recovery commit made by the driver",
   );
+}
+
+// ---------------------------------------------------------------- case 7
+// The INDEPENDENT path end to end — the shape the REAL cycle takes. N=1 (the
+// degenerate `default` workstream every measured cycle runs) goes through
+// `runIndependentFanout`'s `runAt` wrapper, not the dependent phase, so wiring
+// only the dependent half would fix nothing: the child exits 0 with a dirty
+// tree and no commit, and BEFORE the wiring the #622 net committed that dirt
+// inside `runAt`, the green check counted the driver commit, and the step
+// advanced with the workstream reported done.
+{
+  const { wt, base } = await dirtyWorktree("i1", ["src/a.ts", "test/a_test.ts"]);
+  const before = commitCount(wt);
+  const state = initialState(1768, 1_000_000) as WorkState;
+  state.pipelineState.currentStep = "develop";
+  state.pipelineState.baseSha = base;
+  state.pipelineState.worktrees = { default: wt };
+  state.pipelineState.workstreamBaseShas = { default: base };
+  const workstreams = {
+    default: {
+      id: "default",
+      scope: "add the feature and its test",
+      paths: ["src/a.ts", "test/a_test.ts"],
+      outOfScope: [],
+    },
+  };
+  // The child that "finished": exit 0, dirt, no commit of its own. Its brief
+  // is the real develop prompt (built by the step), so the corrective round is
+  // the same brief plus the finish-and-commit paragraph.
+  const firstPass: DispatchResult = {
+    role: "developer",
+    ok: true,
+    text: "Implemented the feature.\n\nStatus: done",
+    toolUses: [],
+    ms: 1,
+    exitCode: 0,
+  };
+  const firstDispatch = async (): Promise<DispatchResult> => firstPass;
+  // The corrective pass also ends unfinished — it reports success, commits
+  // nothing, and leaves the same dirt. A corrective dispatch that committed
+  // would be the GREEN path (case 2 covers that through the unit seam).
+  const corrective = async (): Promise<DispatchResult> => okResult();
+  // Counted from zero here: the corrective dispatch runs AFTER the develop
+  // verify gate's own corrective round (a different mechanism — see #1667), so
+  // this count is the passes THIS path dispatched, not the step's total.
+  correctivePassCount.n = 0;
+  const ctx = {
+    host: { emit: () => undefined },
+    repoRoot: dir,
+    issue: 1768,
+    dispatchFn: firstDispatch,
+    verifyExecFn: realExec,
+    correctiveDispatchFn: corrective,
+  } as unknown as DriverContext;
+  const out = await runDevelopTopological(
+    ctx as never,
+    state,
+    ["default"],
+    workstreams,
+    [1768],
+    firstDispatch as never,
+    realExec as never,
+    Date.now(),
+    "job-1768-independent",
+  );
+  const tail = out.eventLog[out.eventLog.length - 1];
+  assert(
+    tail?.kind === "cap-hit" && tail.cap === DEVELOP_INCOMPLETE_UNCOMMITTED,
+    `7: the INDEPENDENT path parks on ${DEVELOP_INCOMPLETE_UNCOMMITTED} (got ${tail?.kind === "cap-hit" ? tail.cap : tail?.kind})`,
+  );
+  assert(
+    tail?.kind === "cap-hit" && tail.nextStep === "handoff",
+    "7: the cap routes to handoff",
+  );
+  assert(
+    tail?.kind === "cap-hit" &&
+      (tail.evidence ?? "").includes("src/a.ts") &&
+      (tail.evidence ?? "").includes("test/a_test.ts"),
+    `7: the cap evidence names the paths the child left (${tail?.kind === "cap-hit" ? tail.evidence : "-"})`,
+  );
+  assert(
+    nextStep(out).kind === "step" && nextStep(out).step === "handoff",
+    `7: the step router sends the cycle to handoff (${JSON.stringify(nextStep(out))})`,
+  );
+  // The safety net never committed the unfinished pass — the whole point.
+  assert(
+    countAhead(wt, base) === "0",
+    `7: no safety-net commit — nothing is ahead of base (${countAhead(wt, base)})`,
+  );
+  assert(
+    commitCount(wt) === before,
+    "7: the worktree's commit count is unchanged — the driver committed nothing",
+  );
+  assert(
+    existsSync(path.join(wt, "src/a.ts")) && existsSync(path.join(wt, "test/a_test.ts")),
+    "7: the child's dirt is still on disk for the operator to finish",
+  );
+  // 2 dispatches: the pass that quit mid-step, plus its ONE corrective pass.
+  // A third would be the fan-out's one-shot retry — which RESETS the worktree
+  // and destroys the dirt, and is exactly what `noRetry` prevents.
+  assert(
+    correctivePassCount.n === 1,
+    `7: exactly one corrective pass dispatched (${correctivePassCount.n})`,
+  );
+  const converged = out.eventLog.filter((e) => e.kind === "branches-converged");
+  assert(converged.length === 0, "7: the park lands BEFORE the converged emit and the gates");
+  const netEvents = out.eventLog.filter((e) => e.kind === "safety-net-commit");
+  assert(netEvents.length === 0, "7: no safety-net-commit event for the unfinished pass");
 }
 
 await rm(dir, { recursive: true, force: true });

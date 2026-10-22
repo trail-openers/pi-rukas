@@ -120,6 +120,9 @@ export interface DevelopRunState {
   stateRef: { current: WorkState };
   /** #1768 — the corrective brief builder; `correctiveDispatch` overrides its seam. */
   lastPrompt?: (paths: string[]) => string;
+  /** #1768 — the seam a workstream's CORRECTIVE pass dispatches through. The
+   *  driver passes the same seam as `dispatch`; a smoke test overrides it to
+   *  count the corrective passes and to script the child's tree. */
   correctiveDispatch?: DevelopRunState["dispatch"];
 }
 
