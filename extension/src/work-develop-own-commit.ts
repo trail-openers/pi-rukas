@@ -1,19 +1,17 @@
 /**
  * work-develop-own-commit — #1768: a develop pass counts as done only when the
- * child COMMITTED its own work. The green path in work-develop-topological.ts
- * and work-develop-dependent.ts ran the #622 safety net BEFORE
- * `greenCountsAsWork`, so a child that exited 0 with a dirty tree and no commit
- * of its own had its dirt committed by the net — and that DRIVER commit then
- * satisfied commits > 0, so unfinished work read as `agent done: developer` and
- * reached verify missing its deliverables (orchard #507, #439).
- *
- * This asks the question the net was answering for the child, with primitives
- * the crash path already uses (no new git verb): commits > 0 -> own work, the
- * caller runs the net as today; 0 commits + clean -> unchanged, so the existing
- * GREEN_DOWNGRADE applies; 0 commits + dirty -> UNFINISHED, the net does NOT
- * run, one corrective pass goes into the SAME worktree (the dirt IS the work)
- * and one re-read follows. An unreadable read is not-ok naming its cause —
- * absence of evidence is not evidence of a finished pass.
+ * child COMMITTED its own work. Both green paths (work-develop-topological.ts,
+ * work-develop-dependent.ts) ran the #622 safety net BEFORE `greenCountsAsWork`,
+ * so a child that exited 0 with a dirty tree and no commit had its dirt
+ * committed by the net, and that DRIVER commit satisfied commits > 0: unfinished
+ * work read as `agent done: developer` and reached verify missing its
+ * deliverables (orchard #507, #439). This asks the question the net was answering
+ * for the child, using primitives the crash path already has (no new git verb):
+ * commits > 0 -> own work, net as today; 0 + clean -> unchanged, so the existing
+ * GREEN_DOWNGRADE applies; 0 + dirty -> UNFINISHED, no net, one corrective pass
+ * in the SAME worktree (the dirt IS the work) then one re-read. An unreadable
+ * read is not-ok naming its cause: absence of evidence is not evidence of a
+ * finished pass.
  */
 import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
@@ -66,8 +64,7 @@ export async function requireOwnCommit(args: {
   cwd: string;
   base: string | undefined;
   execFn: ExecFn;
-  /** The caller's dispatch for this workstream, its brief carrying the
-   *  finish-and-commit paragraph for the paths it is given. */
+  /** Its brief carries the finish-and-commit paragraph for the paths given. */
   corrective?: CorrectiveDispatch;
 }): Promise<OwnCommitOutcome> {
   const { id, cwd, base, execFn } = args;
@@ -99,8 +96,7 @@ export async function requireOwnCommit(args: {
   return fail(paths, `${named}; the corrective pass committed nothing either`);
 }
 
-/** The cap this park emits — one name, so every registration and the test read
- *  it from here rather than each typing their own copy. */
+/** The cap this park emits — one name for every registration and the test. */
 export const DEVELOP_INCOMPLETE_UNCOMMITTED = "develop-incomplete-uncommitted";
 
 /** Park the workstreams whose develop pass ended with uncommitted paths and no

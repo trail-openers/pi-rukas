@@ -3,9 +3,8 @@
  * develop paths (#1768).
  *
  * Three readers name the same list — the crash verdict's reason, the unfinished
- * cap's evidence, and the corrective prompt the unfinished pass is given — and
- * a fourth would be a fourth way to say "the child left these files behind"
- * with its own truncation rule. One cap, one suffix, one join.
+ * cap's evidence, and the corrective prompt — and a fourth would be a fourth way
+ * to say "the child left these behind" with its own truncation rule.
  */
 
 /** How many uncommitted paths get named before the list says "+N more". */
@@ -19,8 +18,8 @@ export function namePaths(paths: string[]): string {
 }
 
 /** The paragraph a corrective develop pass is given: what is still uncommitted,
- *  and that finishing means COMMITTING. Short on purpose — the child already
- *  carries its full original brief, and the driver will not commit for it. */
+ *  and that finishing means COMMITTING. Short on purpose — the child carries its
+ *  full original brief, and the driver will not commit for it. */
 export function unfinishedPromptSuffix(paths: string[]): string {
   return [
     "",
