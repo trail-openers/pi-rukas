@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.5](https://github.com/trail-openers/pi-rukas/compare/v0.14.4...v0.14.5) (2026-10-22)
+
+
+### Bug Fixes
+
+* **review:** a lens-fix cannot eat the review loop ([#1774](https://github.com/trail-openers/pi-rukas/issues/1774)) ([fd14ebd](https://github.com/trail-openers/pi-rukas/commit/fd14ebd8f78ed05b77ff498fb7f318e451383776))
+
 ## [0.14.4](https://github.com/trail-openers/pi-rukas/compare/v0.14.3...v0.14.4) (2026-10-22)
 
 
