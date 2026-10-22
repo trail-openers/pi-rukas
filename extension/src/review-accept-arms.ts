@@ -50,11 +50,10 @@ export const WRITE_FLAGS: readonly string[] = ["-o", "--output", "-c", "--ext-di
  * makes it a route to the store is the value it sets (`core.fsmonitor=…`,
  * `alias.x=!cat <store>`), which is exactly what `hasUnresolvedRepoSelector` reads.
  * Asking `OUTPUT_FLAGS` where a `-C <path>` may appear keeps the #1643 sanctioned form
- * from matching a write flag on a case-folded `-C`. */
+ * from matching a write flag on a case-folded `-C`. This is also the list clause (b) of the
+ * scope test asks through `hasFlag` — the same list the arms and the remedy sentence name,
+ * which is why there is exactly one of them and no second spelling to keep in step. */
 export const OUTPUT_FLAGS: readonly string[] = WRITE_FLAGS.filter((flag) => flag !== "-c");
-/** The SPACED spellings of the write-capable arguments, as clause (b) of the scope test
- * asks them through `hasFlag` — the same list the arms and the remedy sentence name. */
-export const GIT_WRITE_ARG_FLAGS: readonly string[] = OUTPUT_FLAGS;
 /** A write-capable flag whose VALUE is glued to it with `=`: `--output=<name>`,
  * `--ext-diff=<name>`. One word, so an arm's `-o <name>` pair test cannot see it.
  *
@@ -72,7 +71,7 @@ const ATTACHED_WRITE_ARG = /(?:^|\s)(?:--output=\S|--ext-diff=\S|-o=\S|-c=\S)/;
  * scope rule and one by the arm, is how a flag is refused by one and admitted by the other. */
 export function hasWriteCapableArgument(words: string[]): boolean {
   const visible = words.map((w) => unquote(w)).join(" ");
-  return ATTACHED_WRITE_ARG.test(` ${visible} `) || hasFlag(words, ...GIT_WRITE_ARG_FLAGS);
+  return ATTACHED_WRITE_ARG.test(` ${visible} `) || hasFlag(words, ...OUTPUT_FLAGS);
 }
 /** A runner that executes text rather than a file: no arm admits one. */
 const EVAL_FLAGS = ["-e", "-p", "--print", "--eval", "-r", "--require", "--preload"];

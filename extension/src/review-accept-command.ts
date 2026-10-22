@@ -51,6 +51,14 @@ export interface HeredocSkip {
   readonly head: string;
 }
 
+/** Is the `<<` at `start` a HERE-STRING (`<<<`), i.e. not a heredoc at all? A here-string
+ * feeds ONE word to the program's stdin; it has no body and no delimiter line, so every
+ * heredoc scanner must step around it rather than report it unreadable (#1764 fix round 3,
+ * H4: `cat <<<$F` was being parsed as a heredoc whose delimiter never returned). */
+export function isHereString(text: string, start: number): boolean {
+  return text.startsWith("<<<", start);
+}
+
 /**
  * Skip one heredoc starting at `start`, or report PARSE_FAIL when the delimiter never
  * returns — the body is REPORTED unreadable rather than guessed at, and what an
@@ -62,6 +70,8 @@ export interface HeredocSkip {
  * `cat <<EOF\nx\nEOF | sh` read as a command that runs nothing.
  */
 export function skipHeredoc(command: string, start: number): HeredocSkip | "PARSE_FAIL" {
+  // `<<<` is a here-string, not a heredoc: no body follows, so there is nothing to skip.
+  if (isHereString(command, start)) return "PARSE_FAIL";
   let i = start + 2;
   while (command[i] === "-" || command[i] === "~") i++;
   // A QUOTED delimiter is the common spelling of a non-expanding heredoc (`<<'EOF'`,
@@ -175,6 +185,13 @@ export function normalise(command: string): NormaliseResult {
       i = end + 1;
       continue;
     }
+    if (isHereString(command, i)) {
+      // A here-string is ordinary text: the `<<<` and the word after it are arguments the
+      // guard reads like any other (#1764 H4). Only `<<` opens a body.
+      out += "<<<";
+      i += 3;
+      continue;
+    }
     if (command.startsWith("<<", i)) {
       const past = skipHeredoc(command, i);
       if (past === "PARSE_FAIL") return fail("heredoc body never terminates");
@@ -221,6 +238,23 @@ export function closingQuote(text: string, i: number): number {
 }
 
 /**
+ * Is the `&` at `i` part of a REDIRECTION operator rather than a list / background
+ * separator? `>&` and `<&` (the fd number, if any, sits in front of the `<`/`>`) and the
+ * combined `&>` / `&>>` forms. Asked of the text, not of a word list, because the operator
+ * is a character-level fact: `cat x >&$F` has to stay ONE segment for the redirect test to
+ * see the target its operator points at.
+ */
+function isRedirectAmpersand(text: string, i: number): boolean {
+  if (text[i] !== "&") return false;
+  // `&>` / `&>>`: the operator begins at the ampersand.
+  if (text[i + 1] === ">") return true;
+  // `>&` / `<&`, with an optional fd number between them (`2>&`).
+  let j = i - 1;
+  while (j >= 0 && /[0-9]/.test(text[j] as string)) j--;
+  return j >= 0 && (text[j] === ">" || text[j] === "<");
+}
+
+/**
  * Split a command into shell segments. An operator inside a quoted span is LITERAL —
  * `echo "a && b"` is one command — but a quoted span may still be glued to an operator
  * (`x.ts;rm`), so the span is stepped over and the operator outside it still cuts. The
@@ -249,6 +283,18 @@ export function armsOf(text: string): string[] {
     if (text.startsWith("&&", i) || text.startsWith("||", i)) {
       flush();
       i += 2;
+      continue;
+    }
+    // A FILE-DESCRIPTOR DUPLICATION is one operator, not a separator: `>&`, `<&`, `&>` and
+    // `&>>` (each optionally carrying the fd number in front) duplicate a descriptor, they
+    // do not end the command. Splitting on that `&` made `cat x >&$F` two segments — `cat
+    // x >` and `$F` — so the redirect test saw an operator with no target and the
+    // unresolved path rode in a segment of its own (#1764 fix round 3, C2). `&&`, `||` and
+    // a background `&` are still separators: the `&&`/`||` test above runs first, and a
+    // background `&` has no `<`/`>` in front of it and no `>` behind it.
+    if (c === "&" && isRedirectAmpersand(text, i)) {
+      cur += c;
+      i++;
       continue;
     }
     if (c === "|" || c === ";" || c === "&" || c === "\n") {
@@ -314,6 +360,13 @@ export function pipeTargets(text: string): string[] {
       // on the bytes of the previous command.
       flush("||");
       i += 2;
+      continue;
+    }
+    if (c === "&" && isRedirectAmpersand(text, i)) {
+      // One operator, not a separator — see `armsOf`. Cutting here would end the segment
+      // a redirection is still inside.
+      cur += c;
+      i++;
       continue;
     }
     if (c === "|" || c === ";" || c === "&" || c === "\n") {

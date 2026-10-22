@@ -365,22 +365,42 @@ const PATHOLOGICAL = [
   "''''",
   '""""',
   "cat << << << EOF",
+  // The round-3 scanners' own edges: a here-string that runs off the end, and an fd
+  // duplication left dangling — the two shapes the `&` and `<<<` handling introduced.
+  "cat <<<",
+  "cat <<<<",
+  "cat x >&",
+  "cat x 2>&",
+  "cat x <&",
+  "cat x &>>",
 ];
-const started = Date.now();
+const perCase: Array<[string, number]> = [];
 let verdicts = 0;
+const allStarted = Date.now();
 for (const c of PATHOLOGICAL) {
+  const started = Date.now();
   const kept = c.toLowerCase();
   const parsed = normalise(c);
   inScope(kept, parsed.ok ? parsed.text : kept.replace(/\s+/g, " ").trim(), shellWords(kept));
   readToolCarriesUnresolvedOperand(kept);
   armsOf(kept);
   shellWords(kept);
+  perCase.push([c, Date.now() - started]);
   verdicts++;
 }
+const elapsed = Date.now() - allStarted;
+// PER CASE, not one span over the whole list: a single budget lets one pathological input
+// burn 4.9s and a genuine hang in another still read as green, and the number a reviewer
+// can act on is the one that names the command. Nothing here should take measurable time —
+// 250ms over 12 shapes is two orders of magnitude above what they cost.
+const slowest = perCase.reduce((a, b) => (b[1] > a[1] ? b : a), ["", 0] as [string, number]);
 assert(
-  verdicts === PATHOLOGICAL.length && Date.now() - started < 5000,
-  `command: every scanner returns on a character it does not consume (${verdicts}/${PATHOLOGICAL.length} verdicts, ${Date.now() - started}ms)`,
+  verdicts === PATHOLOGICAL.length && elapsed < 250,
+  `command: every scanner returns on a character it does not consume (${verdicts}/${PATHOLOGICAL.length} verdicts, ${elapsed}ms total, slowest ${slowest[1]}ms ${JSON.stringify(slowest[0])})`,
 );
+for (const [c, ms] of perCase) {
+  assert(ms < 100, `command: one pathological shape costs no measurable time (${ms}ms) — ${JSON.stringify(c)}`);
+}
 // The four shapes the fix brief names, with the polarity each one is supposed to have.
 assert(
   reviewAcceptVerdict("cat <$F") !== undefined,

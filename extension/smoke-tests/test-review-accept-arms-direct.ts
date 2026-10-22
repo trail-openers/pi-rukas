@@ -15,7 +15,9 @@ import { isProtectedToken } from "../src/review-accept-command.ts";
 import { editsFindingsFile, registerReviewAcceptGuard, runsReviewAccept } from "../src/review-accept-guard.ts";
 
 /** Run the REAL tool_call hook over one bash input, as the hardened suite does. */
-async function registerBashCall(input: unknown): Promise<{ block?: boolean } | undefined> {
+async function registerBashCall(
+  input: unknown,
+): Promise<{ block?: boolean; reason?: string } | undefined> {
   let captured: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   registerReviewAcceptGuard({
     on: (_event: string, handler: typeof captured) => {
@@ -310,6 +312,17 @@ const nonStringCommand = await registerBashCall({ command: { toString: () => `ca
 assert(
   nonStringCommand?.block === true,
   "hook: a bash command that is present but not a string is refused",
+);
+// …and refused for the right reason: no scope test ran, so the reason must not send the
+// reader looking for a store path (`refusalReason`'s clause parameter has no default for
+// exactly this — a forgotten call site would otherwise inherit clause (1)'s remedy).
+assert(
+  (nonStringCommand?.reason ?? "").includes("not text") &&
+    !(nonStringCommand?.reason ?? "").includes("clause (1)") &&
+    !(nonStringCommand?.reason ?? "").includes("Run extension/scripts/review-accept.ts"),
+  `hook: a non-string command is refused as unreadable input, not as a store accusation — ${JSON.stringify(
+    (nonStringCommand?.reason ?? "").slice(0, 90),
+  )}`,
 );
 for (const input of [{}, { command: undefined }, { command: null }])
   assert(

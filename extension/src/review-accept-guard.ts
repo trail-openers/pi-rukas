@@ -177,9 +177,20 @@ const CLAUSE_SENTENCE: Record<ScopeClause, string> = {
     " Triggered by clause (6): an argument that can WRITE a file (`-o`, `--output`, `-c`, `--ext-diff`, a spaced write flag) stands on a VCS or runtime command — drop the flag.",
 };
 
+/** Why the guard refuses an input it could not scan at all. Distinct from every clause
+ * sentence: no scope test ran, so naming one would send whoever reads it looking for a
+ * store path that is not there. */
+function unreadableInputReason(what: string): string {
+  return `${BASE} The tool input carries a ${what} that is not text, so the guard could not scan it and refuses an input it cannot read.`;
+}
+
+/** `clause` is REQUIRED and has no default: a refusal that cannot say which of the six
+ * scope tests spoke cannot be triaged (#1764 criterion 10), and a default would let every
+ * forgotten call site inherit the store-name remedy — the sentence that tells an operator
+ * to go run the accept CLI, which is true of clause (1) and of nothing else. */
 function refusalReason(
   clause: ScopeClause,
-  opts: { vcsWrite?: boolean; dataOperand?: boolean; target?: string } = {},
+  opts: { vcsWrite?: boolean; dataOperand?: boolean; target?: string },
 ): string {
   if (opts.target)
     return `The review findings file (${opts.target}) is written only by ${ACCEPT_CLI}. Agents may not edit it.`;
@@ -437,7 +448,7 @@ export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
       // A `command` that is PRESENT but not a string cannot be scanned, and a scan that
       // cannot run is not a pass: refused fail-closed, like every other unreadable input.
       if (raw !== undefined && raw !== null && typeof raw !== "string")
-        return { block: true, reason: refusalReason("store-name") };
+        return { block: true, reason: unreadableInputReason("command") };
       const command = typeof raw === "string" ? raw : "";
       // A scan that throws must not read as "nothing to block": a guard that fails
       // open on its own bug stops being a guard (clause (a) again) — and must not read as

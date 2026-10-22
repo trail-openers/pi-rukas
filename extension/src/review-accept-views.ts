@@ -102,32 +102,32 @@ const WORD_END = /[\s;|&()<>]/;
  * the unreadable read it is. Single-quoted regions bind nothing and expand nothing, and a
  * heredoc BODY binds nothing — a body line that reads `F=x` is text, not an assignment.
  */
-export function withSameCommandAssignmentsApplied(command: string): string {
-  const values = new Map<string, string>();
-  const ambiguous = new Set<string>();
-  let out = "";
+/** Walk one command the way the substitution scanner needs to: quoted spans and heredocs
+ * come back as opaque COPY tokens (the shell substitutes nothing inside a single-quoted
+ * span, and a heredoc body is data that binds nothing), everything else comes back as a
+ * WORD. Returns false when a heredoc or a quote never closed — the caller then asks its
+ * question of the raw text rather than of a half-built rewrite. */
+function forEachToken(command: string, onToken: (text: string, isWord: boolean) => void): boolean {
   let i = 0;
   while (i < command.length) {
     const c = command[i] as string;
     if (c === "'") {
       const end = command.indexOf("'", i + 1);
       const stop = end < 0 ? command.length : end + 1;
-      out += command.slice(i, stop);
+      onToken(command.slice(i, stop), false);
       i = stop;
       continue;
     }
-    if (command.startsWith("<<", i)) {
+    if (command.startsWith("<<", i) && !command.startsWith("<<<", i)) {
       const past = skipHeredoc(command, i);
-      if (past === "PARSE_FAIL") return command;
-      // The whole heredoc is copied verbatim: the tag is no binding and a body line that
-      // reads `F=x` is DATA to the shell's parser, never an assignment. Leaving a `$F`
-      // inside a body unresolved keeps it in scope, which is the safe direction.
-      out += command.slice(i, past.end);
+      if (past === "PARSE_FAIL") return false;
+      onToken(command.slice(i, past.end), false);
       i = past.end;
       continue;
     }
     if (/\s/.test(c) || ";|&".includes(c)) {
-      out += c;
+      // A separator is copied too: the caller rebuilds the command text from the tokens.
+      onToken(c, false);
       i++;
       continue;
     }
@@ -155,24 +155,67 @@ export function withSameCommandAssignmentsApplied(command: string): string {
       // A shell metacharacter the word scan refuses to eat — `(`, `)`, a single `<` or `>`.
       // Copied verbatim and the walk moves on: a scan that made no progress here would
       // never terminate, and this one runs on every guarded command.
-      out += c;
+      onToken(c, false);
       i++;
       continue;
     }
-    const binding = word.startsWith("-") ? undefined : literalValue(word);
+    onToken(word, true);
+  }
+  return true;
+}
+
+/**
+ * Substitute the `$NAME` / `${NAME}` spellings of variables this SAME command assigned a
+ * literal value to, so `F=.git/review-findings.json; cat > $F` is adjudicated as the
+ * command the shell actually runs. Substitution is one-directional on purpose: the result
+ * is only ever handed to the NAME test, so resolving a variable can bring a command INTO
+ * scope, never take a store name out of it. An unresolved word is always COPIED — the
+ * substitution may add a name to the text the name test reads and may never remove an
+ * expansion from the text the unreadable-word test reads (#1764 fix round 3, H2).
+ *
+ * The scan is ORDER- and SEGMENT-aware (#1764 fix round, criterion 6) and needs TWO passes
+ * to be honest about it: a word sees only the bindings that stand BEFORE it, so
+ * `cat $F; F=notes.txt` keeps its unreadable operand; and the ambiguity of a name is judged
+ * over the WHOLE command, so a decoy rebinding anywhere — `F=a; cat $F; F=b` — leaves the
+ * name unreadable rather than resolving it to whichever value the scan happened to reach
+ * first. Single-quoted regions bind nothing and expand nothing, and a heredoc BODY binds
+ * nothing — a body line that reads `F=x` is text, not an assignment.
+ */
+export function withSameCommandAssignmentsApplied(command: string): string {
+  // Pass one: every literal binding the command states, and the names it binds twice with
+  // DIFFERENT values. Judged over the whole command, before any substitution decision.
+  const stated = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  const collected = forEachToken(command, (text, isWord) => {
+    if (!isWord || text.startsWith("-")) return;
+    const binding = literalValue(text);
+    if (!binding) return;
+    const [name, value] = binding;
+    const prior = stated.get(name);
+    if (prior !== undefined && prior !== value) ambiguous.add(name);
+    else if (prior === undefined) stated.set(name, value);
+  });
+  if (!collected) return command;
+
+  // Pass two: the rewrite, binding as it goes so a reference sees only what came BEFORE it.
+  const values = new Map<string, string>();
+  let out = "";
+  const rewritten = forEachToken(command, (text, isWord) => {
+    if (!isWord) {
+      out += text;
+      return;
+    }
+    const binding = text.startsWith("-") ? undefined : literalValue(text);
     if (binding) {
       const [name, value] = binding;
       const prior = values.get(name);
-      // Bound twice with DIFFERENT values: the guard cannot say which one the shell
-      // substitutes, so it abstains and the reference stays unreadable.
-      if (prior !== undefined && prior !== value) ambiguous.add(name);
-      else if (prior === undefined) values.set(name, value);
-      out += word;
-      continue;
+      if (prior === undefined && !ambiguous.has(name)) values.set(name, value);
+      out += text;
+      return;
     }
-    out += expandWord(word, values, ambiguous);
-  }
-  return out;
+    out += expandWord(text, values, ambiguous);
+  });
+  return rewritten ? out : command;
 }
 
 /** One walk of the command, split into the part the shell parses and the parts it only
@@ -197,7 +240,7 @@ function splitHeredocs(command: string): HeredocSplit {
       i = end + 1;
       continue;
     }
-    if (command.startsWith("<<", i)) {
+    if (command.startsWith("<<", i) && !command.startsWith("<<<", i)) {
       const past = skipHeredoc(command, i);
       if (past === "PARSE_FAIL") return { visible: command, bodies: "", readable: false };
       // A QUOTED tag is the one body the shell never expands, so only THAT body may be
