@@ -163,18 +163,6 @@ export const HALO_RED_TO_GREEN: readonly HaloCase[] = [
     cls: "f",
   },
   {
-    c: 'cat > /tmp/atk/w85.py <<\'PY\' import os, subprocess HOME = "/tmp/atk/root/h38" open(HOME + "/pi-work.py", "w").write("#!/bin/sh\\nprintf \'ARG[%s]\\\\n\' \\"$@\\"\\n") os.chmod(HOME + "/pi-work.py", 0o755) if os.path.exists(HOME + "/PWNED"): os.remo',
-    why: 'shape: cat > <path> <<\'PY\' import os, subprocess HOME = "<path>" open(HOME + "<path>", "w").write("#!<path> \'ARG[%s]\\\\n\' \\"$@\\"\\n") os.chmod(HOME + "<path>",',
-    count: 2,
-    cls: "d",
-  },
-  {
-    c: 'cat > /tmp/atk/w56.py <<\'PY\' import os, subprocess home = "/tmp/atk/root/home34" line = open(home + "/line.txt").read().strip() stub = home + "/run.sh" open(stub, "w").write("#!/bin/bash\\necho ARGS: \\"$@\\"\\n") os.chmod(stub, 0o755) tail = l',
-    why: 'shape: cat > <path> <<\'PY\' import os, subprocess home = "<path>" line = open(home + "<path>").read().strip() stub = home + "<path>" open(stub, "w").write("#!',
-    count: 2,
-    cls: "d",
-  },
-  {
     c: 'cd /tmp/pi-r-319/eh && python3 /tmp/pi-r-319/patchline.py tests/reconcile-config.bats \'run env PATH="$_stubs:$PATH" sh "$RECONCILE" "$@"\' \'run env PATH="$_stubs:$PATH" sh "$RECONCILE" "$@" < /dev/null\'',
     why: 'shape: cd <path> && python3 <path> tests<path> \'run env PATH="$_stubs:$PATH" sh "$RECONCILE" "$@"\' \'run env PATH="$_stubs:$PATH" sh "$RECONCILE" "$@" < <path',
     count: 2,
@@ -183,18 +171,6 @@ export const HALO_RED_TO_GREEN: readonly HaloCase[] = [
   {
     c: 'cd /home/janni/projects/pi-tehas-hermes-bridge && python3 scripts/file_size_ratchet.py --base origin/main; echo "rc=$?"',
     why: 'shape: cd <path> && python3 scripts<path> --base origin<path>; echo "rc=$?"',
-    count: 2,
-    cls: "a",
-  },
-  {
-    c: "cd /home/janni/projects/pi-tehas-hermes-bridge awk 'NR>=440 && NR<=534 { printf \"%d\\t%s\\n\", NR, $0 }' dashboard/dist/index.js",
-    why: "shape: cd <path> awk 'NR>=N && NR<=N { printf \"%d\\t%s\\n\", NR, $N }' dashboard<path>",
-    count: 2,
-    cls: "a",
-  },
-  {
-    c: 'cd /home/janni/projects/llm-iac/.worktrees/issue-319-default; grep -n "digest_of \\"$MARKER_PATH\\"" scripts/reconcile-config.sh',
-    why: 'shape: cd <path>; grep -n "digest_of \\"$MARKER_PATH\\"" scripts<path>',
     count: 2,
     cls: "a",
   },
@@ -213,18 +189,6 @@ export const HALO_RED_TO_GREEN: readonly HaloCase[] = [
   {
     c: 'cd /home/janni/projects/llm-iac; timeout 60 env PATH="/tmp/bats-core/bin:$PATH" bats --version 2>&1',
     why: 'shape: cd <path>; timeout N env PATH="<path>$PATH" bats --version N>&N',
-    count: 2,
-    cls: "a",
-  },
-  {
-    c: 'cd /home/janni/projects/llm-iac/.worktrees/issue-319-default; timeout 60 sh -n scripts/reconcile-config.sh; echo "r-c=$?"; timeout 60 sh -n scripts/reconcile-drift.sh; echo "r-d=$?"; timeout 60 bash -n scripts/reconcile-ssh.sh; echo "r-s=$?',
-    why: 'shape: cd <path>; timeout N sh -n scripts<path>; echo "r-c=$?"; timeout N sh -n scripts<path>; echo "r-d=$?"; timeout N bash -n scripts<path>; echo "r-s=$?";',
-    count: 2,
-    cls: "a",
-  },
-  {
-    c: 'echo \'import sys, shlex sys.path.insert(0,".") from pathlib import PurePosixPath from agents import arm_a_command as c for d in ["/tmp/harbor-pi-agent", "/tmp/a-b", "/tmp/o`x", "/tmp/a b"]: cmd = c.manifest_command(PurePosixPath(d)) print(d',
-    why: 'shape: echo \'import sys, shlex sys.path.insert(N,".") from pathlib import PurePosixPath from agents import arm_a_command as c for d in ["<path>", "<path>", "',
     count: 2,
     cls: "a",
   },
@@ -265,12 +229,6 @@ export const HALO_RED_TO_GREEN: readonly HaloCase[] = [
     cls: "c",
   },
   {
-    c: "cat /etc/debian_version 2>/dev/null; dash -c 'echo ok' ; dash -c 'case \"$0\" in *[!a-z0-9-]*) echo REJ;; tag:[a-z0-9]*) echo ACC;; *) echo OTH;; esac' 'tag:llm-iac'; echo \"--- bash for comparison ---\"; bash -c 'case \"$0\" in *[!a-z0-9-]*) ech",
-    why: "shape: cat <path> N><path>; dash -c 'echo ok' ; dash -c 'case \"$N\" in *[!a-z0-N-]*) echo REJ;; tag:[a-z0-N]*) echo ACC;; *) echo OTH;; esac' 'tag:llm-iac'; e",
-    count: 1,
-    cls: "c",
-  },
-  {
     c: 'git -C /home/boss/tehas/work/tehas log --oneline -5 && git commit -m "docs: record the \u0072eview-accept guard schema"',
     why: "halo shape: a worktree read chained to a store-naming commit",
     count: 219,
@@ -300,6 +258,73 @@ export const HALO_RED_TO_GREEN: readonly HaloCase[] = [
 export const HALO_STILL_REFUSED_BY_CLAUSE: readonly (HaloCase & {
   readonly clause: ScopeClause;
 })[] = [
+  // ── the accepted costs of the MONOTONE round (#1764 round 4) ────────────────────
+  // Base refused every one of these and the guard is monotone over base: the exemption
+  // may lift the base refusal only for a command it POSITIVELY understands, and none of
+  // these is understood. Reasons are per row.
+  {
+    ...{
+      c: 'cat > /tmp/atk/w85.py <<\'PY\' import os, subprocess HOME = "/tmp/atk/root/h38" open(HOME + "/pi-work.py", "w").write("#!/bin/sh\\nprintf \'ARG[%s]\\\\n\' \\"$@\\"\\n") os.chmod(HOME + "/pi-work.py", 0o755) if os.path.exists(HOME + "/PWNED"): os.remo',
+      why: "harvested one-liner: the heredoc delimiter never returns (the harvest flattened the newlines away) — a parse failure is no exemption (#1764 round 4)",
+      count: 2,
+      cls: "d",
+    },
+    clause: "unreadable-word",
+  },
+  {
+    ...{
+      c: 'cat > /tmp/atk/w56.py <<\'PY\' import os, subprocess home = "/tmp/atk/root/home34" line = open(home + "/line.txt").read().strip() stub = home + "/run.sh" open(stub, "w").write("#!/bin/bash\\necho ARGS: \\"$@\\"\\n") os.chmod(stub, 0o755) tail = l',
+      why: "harvested one-liner: the same truncated heredoc shape — no closing delimiter, no exemption (#1764 round 4)",
+      count: 2,
+      cls: "d",
+    },
+    clause: "unreadable-word",
+  },
+  {
+    ...{
+      c: "cd /home/janni/projects/pi-tehas-hermes-bridge awk 'NR>=440 && NR<=534 { printf \"%d\\t%s\\n\", NR, $0 }' dashboard/dist/index.js",
+      why: "harvest lost the && between the path and awk, so a CHECKED tool (awk) stands after an unrecognised word (cd) — rule (a) keeps the base refusal (#1764 round 4)",
+      count: 2,
+      cls: "a",
+    },
+    clause: "unreadable-word",
+  },
+  {
+    ...{
+      c: 'cd /home/janni/projects/llm-iac/.worktrees/issue-319-default; grep -n "digest_of \\"$MARKER_PATH\\"" scripts/reconcile-config.sh',
+      why: "the PATTERN is a double-quoted unescaped expansion the shell substitutes — prose means PROSE, an unreadable pattern is an operand (#1764 round 4; the escaped-row twin stays allowed)",
+      count: 2,
+      cls: "a",
+    },
+    clause: "unreadable-word",
+  },
+  {
+    ...{
+      c: 'cd /home/janni/projects/llm-iac/.worktrees/issue-319-default; timeout 60 sh -n scripts/reconcile-config.sh; echo "r-c=$?"; timeout 60 sh -n scripts/reconcile-drift.sh; echo "r-d=$?"; timeout 60 bash -n scripts/reconcile-ssh.sh; echo "r-s=$?',
+      why: "harvested one-liner cut mid-quote: an unbalanced quote is a parse failure, and a parse failure is no exemption (#1764 round 4)",
+      count: 2,
+      cls: "a",
+    },
+    clause: "unreadable-word",
+  },
+  {
+    ...{
+      c: 'echo \'import sys, shlex sys.path.insert(0,".") from pathlib import PurePosixPath from agents import arm_a_command as c for d in ["/tmp/harbor-pi-agent", "/tmp/a-b", "/tmp/o`x", "/tmp/a b"]: cmd = c.manifest_command(PurePosixPath(d)) print(d',
+      why: "harvested one-liner cut mid-quote: unbalanced single quote, no parse, no exemption (#1764 round 4)",
+      count: 2,
+      cls: "a",
+    },
+    clause: "unreadable-word",
+  },
+  {
+    ...{
+      c: "cat /etc/debian_version 2>/dev/null; dash -c 'echo ok' ; dash -c 'case \"$0\" in *[!a-z0-9-]*) echo REJ;; tag:[a-z0-9]*) echo ACC;; *) echo OTH;; esac' 'tag:llm-iac'; echo \"--- bash for comparison ---\"; bash -c 'case \"$0\" in *[!a-z0-9-]*) ech",
+      why: "harvested one-liner cut mid-quote; a SHELL segment carrying an expansion is understood only when expansion-free (#1764 round 4)",
+      count: 1,
+      cls: "c",
+    },
+    clause: "unreadable-word",
+  },
   {
     ...{
       c: "git -C /home/janni/projects/pi-ab-bench/.git/pi-plan-base/face8271c558b50a remote -v",

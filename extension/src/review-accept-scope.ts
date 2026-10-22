@@ -19,6 +19,7 @@ import {
   namesGitWriteVerb,
   namesInterpreter,
   namesPipedShell,
+  namesReadTool,
   namesShell,
   namesVcsOrForge,
   namesVcsOrRuntime,
@@ -30,6 +31,7 @@ import {
   namesStore,
   shellWords,
 } from "./review-accept-command.ts";
+import { commandFullyUnderstood } from "./review-accept-exempt.ts";
 import { namesAttachedValue } from "./review-accept-names.ts";
 import { readToolCarriesUnresolvedOperand } from "./review-accept-readtools.ts";
 import { hasUnresolvedRepoSelector } from "./review-accept-selector.ts";
@@ -98,11 +100,17 @@ import { storeNameSubject, withoutHeredocBodies } from "./review-accept-views.ts
  *      hands git as its verb — is not hidden by the quote fold. A `git commit -F- <<EOF`
  *      is neither — its heredoc is a message, read as text and written nowhere, which is
  *      why it stays allowed (#1643);
- *  (5) an UNREADABLE WORD carried by a command that can READ THE STORE. Two program sets
- *      qualify, and they are asked DIFFERENT questions (#1764 criterion 1): a runtime, git
- *      or a forge CLI is asked about ANY unreadable word — on those, a `$` can assemble a
- *      store name and no arm can vouch for the result (`cat {payload.js} | bun -`); a READ
- *      TOOL is asked only about the FILE operand it was handed, per tool kind — a content
+ *  (5) an UNREADABLE WORD carried by a command that can READ THE STORE — THE MONOTONE
+ *      FLOOR (#1764 round 4). Base asked this COMMAND-wide and program-agnostically
+ *      ("any read tool / VCS / runtime word, any `$` anywhere") and refused; the
+ *      per-segment analysis may only EXEMPT a command from that refusal, and only with a
+ *      completed proof that the guard understands EVERY segment (`review-accept-exempt
+ *      .ts`). Anything not understood falls back to the base refusal — the exemption,
+ *      never the refusal, is the thing that needs proof. When the proof holds, the two
+ *      halves of test (5) are still asked of DIFFERENT texts: a runtime, git or a forge
+ *      CLI is asked about ANY unreadable word outside a quoted heredoc body (on those a
+ *      `$` can assemble a store name and no arm vouches for the result); a READ TOOL is
+ *      asked only about the FILE operand it was handed, per tool kind — a content
  *      reader's (`cat`, `head`, `tail`), a file-stat tool's (`ls`, `wc`, `file`, `stat` —
  *      they read the file they are handed, so they are NOT print tools), and a search
  *      tool's (`grep`, `rg`) operands MINUS its pattern, where a pattern flag (`-e`,
@@ -114,8 +122,9 @@ import { storeNameSubject, withoutHeredocBodies } from "./review-accept-views.ts
  *      whatever its program (`echo x > $F` moves bytes through a path no arm saw), which
  *      is what makes the print class safe to keep. A word with `$` or a backtick has no
  *      determinable final text; an expansion the SAME command assigned a literal to is
- *      resolved first, in READING order and abstaining on a name bound twice with
- *      different values (criterion 6), and a QUOTED-tag heredoc BODY is never an operand
+ *      resolved first, in READING order, and EVERY `NAME=` binding counts — a name bound
+ *      more than once, or bound to a non-literal value, is ambiguous and never resolves
+ *      (round 4 rule (b)) — and a QUOTED-tag heredoc BODY is never an operand
  *      while an unquoted one is (criterion 4). A BACKSLASH is not such a word (#1665):
  *      the shell removes it, and the backslash-erased view of `namesStore` catches an
  *      escaped spelling of the store's name. On a program that is none of these — `awk`,
@@ -180,6 +189,25 @@ export function inScope(raw: string, norm: string, words: string[]): ScopeClause
   // is required as well, or `bun test 2>&1 | tee /tmp/log` — text the guard can read end to
   // end — would be refused for piping at a program that runs nothing dangerous.
   if (namesPipedShell(norm) && EXPANSION.test(readable)) return "executing-operand";
+  // ── THE MONOTONE FLOOR (#1764 round 4) ────────────────────────────────────────
+  // (5) is now THREE rules with one polarity: the refusal is the DEFAULT, and only a
+  // completed exemption proof may lift it. The first is base's clause (5) VERBATIM —
+  // command-wide, program-agnostic: any read tool / VCS / runtime word anywhere, any
+  // `$`/backtick anywhere in the raw text. When it triggers, the command is in scope
+  // UNLESS `commandFullyUnderstood` positively understands EVERY segment (prefix words,
+  // assignment ambiguity, every operand / redirect / option value literal-or-resolved,
+  // no unresolved heredoc, here-string or parse failure). The second two rules are the
+  // refusal-side improvements rounds 2-3 earned, kept as unconditional refusals.
+  if (
+    (namesVcsOrRuntime(norm) || namesReadTool(norm)) &&
+    EXPANSION.test(raw) &&
+    !commandFullyUnderstood(raw)
+  )
+    return "unreadable-word";
+  // A git / forge / JS-runtime segment carrying ANY expansion outside a quoted heredoc
+  // body: on those, a `$` can assemble a store name and no arm can vouch for the result
+  // (`cat {payload.js} | bun -`). Never exempted — this half is stricter than base and
+  // stays that way.
   if (namesVcsOrRuntime(norm) && EXPANSION.test(readable)) return "unreadable-word";
   if (readToolCarriesUnresolvedOperand(raw)) return "unreadable-word";
   // Asked ONLY of a command that runs git / gh / glab (#1764 fix round, criterion 6): a

@@ -147,16 +147,28 @@ export const READ_TOOLS: ReadonlySet<string> = new Set([
 /** The tools whose FILE operands the scope test asks: everything that opens a file it was
  * handed, admissible or not. A SEARCH-class tool's first positional is its pattern; the
  * two sets share that arithmetic because the pattern prose is the same fact for `grep` and
- * for `awk` alike. */
-const CHECKED_TOOLS: ReadonlySet<string> = new Set([
+ * for `awk` alike. Exported for the exemption module (#1764 round 4), whose per-segment
+ * understanding test asks the SAME "is there a checked tool in this segment" question —
+ * two lists would be one drift away from an under-refusal. */
+export const CHECKED_TOOLS: ReadonlySet<string> = new Set([
   ...CONTENT_TOOLS,
   ...FILE_TOOLS,
   ...SEARCH_TOOLS,
   ...PATTERN_TOOLS_ONLY,
 ]);
 /** Among the checked tools, the ones whose FIRST positional is a pattern / program rather
- * than a file. */
-const PATTERN_FIRST: ReadonlySet<string> = new Set([...SEARCH_TOOLS, ...PATTERN_TOOLS_ONLY]);
+ * than a file. Exported for the exemption module (same reason as `CHECKED_TOOLS`). */
+export const PATTERN_FIRST_TOOLS: ReadonlySet<string> = new Set([
+  ...SEARCH_TOOLS,
+  ...PATTERN_TOOLS_ONLY,
+]);
+/** The print class, exported for the exemption module: an argument of one of these is
+ * text the tool ECHOES, never a path it opens, so the understanding test does not price
+ * them as operands (#1764 criterion 1's never-a-trigger list). */
+export const PRINT_TOOLS_ONLY: ReadonlySet<string> = PRINT_TOOLS;
+/** The navigate tool, exported for the same reason: its operand moves the shell, and an
+ * unreadable one is still a directory the guard cannot name. */
+export const NAVIGATE_TOOLS_ONLY: ReadonlySet<string> = NAVIGATE_TOOLS;
 
 /** The value an option carries: `--include=X` → `X`, `-Gpath` → `path`. `""` when the
  * option takes no attached value (a switch, or a spaced option whose value is the NEXT
@@ -167,6 +179,34 @@ function attachedOptionValue(word: string): string {
     return eq < 0 ? "" : word.slice(eq + 1);
   }
   return ATTACHED_VALUE.exec(word)?.[1] ?? "";
+}
+
+/** Is a search tool's PATTERN word prose the guard can read? A pattern is prose exactly
+ * when the shell will hand it to the tool as written: a single-quoted span is literal,
+ * and a backslash before `$` / a backtick removes its meaning. A pattern the shell will
+ * SUBSTITUTE (`rg $F`, `grep "${F}"` — double quotes do not protect a `$`) is not prose:
+ * the guard cannot say what the tool finally receives, and an unresolved word in the
+ * pattern position is an operand (#1764 round 4: base refused `rg $F` command-wide, and
+ * a pattern-position exemption was the guard EXEMPTING a shape it never understood).
+ * An escaped `\$` at the end of an ERE (the harvested `grep -E "…\\$" Dockerfile` row)
+ * stays prose — the backslash is what the author typed to mean a literal `$`. */
+export function patternIsProse(rawWord: string): boolean {
+  let i = 0;
+  while (i < rawWord.length) {
+    const c = rawWord[i] as string;
+    if (c === "'") {
+      const end = rawWord.indexOf("'", i + 1);
+      i = end < 0 ? rawWord.length : end + 1;
+      continue;
+    }
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (c === "$" || c === "`") return false;
+    i++;
+  }
+  return true;
 }
 
 /**
@@ -184,8 +224,11 @@ function attachedOptionValue(word: string): string {
  *  - the option `-f` / `--file` takes a PATH as its value, and that path is asked;
  *  - `--` ends the OPTIONS, not the operands: every positional after it is a file, so
  *    `grep -e pat -- $F` is refused even though a naive scan treats `--` as a flag.
+ *
+ * Exported for the exemption module (#1764 round 4), which asks the SAME operand
+ * question to decide whether it UNDERSTANDS a segment — one operand scanner, two asks.
  */
-function operandWords(words: string[], search: boolean): string[] {
+export function operandWords(words: string[], search: boolean): string[] {
   const operands: string[] = [];
   let patternTaken = false;
   let optionsOver = false;
@@ -246,8 +289,12 @@ function operandWords(words: string[], search: boolean): string[] {
     }
     if (search && !patternTaken && !optionsOver) {
       // The FIRST non-option operand is the pattern — prose, not a path. `grep -n 'a$'
-      // src/x.ts` is a `$` in a pattern, and the row that this exception exists for.
+      // src/x.ts` is a `$` in a pattern, and the row that this exception exists for. But
+      // prose means PROSE: a pattern the shell will substitute (`rg $F`) is a word the
+      // tool receives whose final form the guard cannot name, and it counts as an
+      // operand — the pattern exemption covers text, not paths (#1764 round 4).
       patternTaken = true;
+      if (!patternIsProse(raw)) operands.push(word);
       continue;
     }
     operands.push(word);
@@ -257,8 +304,10 @@ function operandWords(words: string[], search: boolean): string[] {
 
 /** The targets of every redirection in one segment, bare-operator and attached alike.
  * Asked of EVERY segment whatever its program: a redirection moves bytes through a path
- * no arm ever saw, which is a fact about the segment, not about `cat` vs `echo`. */
-function redirectTargets(words: string[]): string[] {
+ * no arm ever saw, which is a fact about the segment, not about `cat` vs `echo`.
+ * Exported for the exemption module, which asks the same question to decide whether it
+ * understands the segment (#1764 round 4). */
+export function redirectTargets(words: string[]): string[] {
   const targets: string[] = [];
   for (let i = 0; i < words.length; i++) {
     const word = unquote(words[i] ?? "");
@@ -290,6 +339,13 @@ function redirectTargets(words: string[]): string[] {
   return targets;
 }
 
+/** Strict view of the same walk, exported for the exemption module (#1764 round 4):
+ * `null` reports the parse gap rather than handing back the raw text — the understanding
+ * test must not ask a command whose heredoc or quote never closed. */
+export function heredocArgumentWords(command: string): string | null {
+  return heredocArgumentText(command, true);
+}
+
 /** The command with every heredoc reduced to the words the shell parses as THIS command's
  * arguments — the words after the OPENING tag on its line (`cat <<'PY' > $F` redirects to
  * `$F`, and dropping them was the hole criterion 5 names) and the words after the CLOSING
@@ -308,21 +364,21 @@ function redirectTargets(words: string[]): string[] {
  * that quietly loses the tail of a command is the guard failing open, and the loops below
  * stop at the `<<` on their own (#1764 fix round 3, C1).
  */
-function heredocArgumentText(command: string): string {
+function heredocArgumentText(command: string, strict = false): string | null {
   let visible = "";
   let i = 0;
   while (i < command.length) {
     const c = command[i] as string;
     if (c === "'" || c === '"') {
       const end = c === "'" ? command.indexOf("'", i + 1) : closingQuote(command, i);
-      if (end < 0) return command;
+      if (end < 0) return strict ? null : command;
       visible += command.slice(i, end + 1);
       i = end + 1;
       continue;
     }
     if (command.startsWith("<<", i) && !command.startsWith("<<<", i)) {
       const past = skipHeredoc(command, i);
-      if (past === "PARSE_FAIL") return command;
+      if (past === "PARSE_FAIL") return strict ? null : command;
       visible += ` ${[past.head, past.tail].filter((x) => x !== "").join(" ")} `;
       i = past.end;
       continue;
@@ -343,8 +399,11 @@ const NOT_THE_PROGRAM =
 /** An environment binding in front of a program (`sudo F=x cat $F`): neither the program
  * nor one of its operands. */
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-/** The name of the program a segment runs, past whatever the shell puts in front of it. */
-function programName(words: string[]): string {
+/** The name of the program a segment runs, past whatever the shell puts in front of it.
+ * Exported for the exemption module: the round-4 prefix rule (a) asks whether the
+ * segment's PROGRAM is the checked tool the guard reasons about, and a second step-over
+ * scanner would be one drift away from exempting `timeout 300 cat $V`. */
+export function programName(words: string[]): string {
   for (const raw of words) {
     const word = unquote(raw).replace(/^[([{]+|[)\]};]+$/g, "");
     if (word === "" || LEADING_ASSIGNMENT.test(word) || NOT_THE_PROGRAM.test(word)) continue;
@@ -363,7 +422,7 @@ function programName(words: string[]): string {
  * name, and the command is the guard's business.
  */
 export function readToolCarriesUnresolvedOperand(command: string): boolean {
-  const text = withSameCommandAssignmentsApplied(heredocArgumentText(command));
+  const text = withSameCommandAssignmentsApplied(heredocArgumentText(command) ?? command);
   return armsOf(text).some((segment) => {
     const words = shellWords(segment);
     // The redirect test runs FIRST and on EVERY segment: a segment's own program kind says
@@ -372,6 +431,8 @@ export function readToolCarriesUnresolvedOperand(command: string): boolean {
     if (words.length < 2) return false;
     const tool = programName(words);
     if (!CHECKED_TOOLS.has(tool)) return false;
-    return operandWords(words, PATTERN_FIRST.has(tool)).some((operand) => EXPANSION.test(operand));
+    return operandWords(words, PATTERN_FIRST_TOOLS.has(tool)).some((operand) =>
+      EXPANSION.test(operand),
+    );
   });
 }

@@ -178,6 +178,15 @@ export function namesGitWriteVerb(text: string): boolean {
     }),
   );
 }
+/** Does the command run one of the READ TOOLS the arms admit (`cat`, `grep`, `rg`,
+ * `head`, `wc`, …)? Together with `namesVcsOrRuntime` this is the set of programs through
+ * which a store name can reach the guarded bytes at all. Restored in #1764 round 4 as
+ * the DEFAULT trigger of clause (5): base asked this COMMAND-wide, and the monotone
+ * invariant makes the command-wide question the floor — the per-segment operand analysis
+ * may only lift it when `review-accept-exempt.ts` proves it understands every segment. */
+export function namesReadTool(text: string): boolean {
+  return shellWords(text).some((w) => READ_TOOLS.has(baseName(unquote(w))));
+}
 /** Does some word of the ORIGINAL command (quotes intact) read as `-`? A runtime with a
  * bare `-` takes its PROGRAM from stdin, and a program the guard cannot read is the
  * store's worst unreadable half — which is why `cat payload.js | bun -` is in scope
