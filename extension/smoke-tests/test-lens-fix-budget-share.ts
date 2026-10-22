@@ -32,6 +32,7 @@
 
 import { rmSync } from "node:fs";
 import { lensFixBoundMs } from "../src/review-budget.ts";
+import { renderResidualFindings } from "../src/work-driver-lens-cap.ts";
 import {
   developFixPassFits,
   lensRoundReserveMs,
@@ -47,10 +48,14 @@ import {
   developCtx,
   disclosureCtx,
   dispatchCtx,
+  FINDINGS,
   fixture,
+  HEAD_SHA,
   issuesEv,
+  lensApprovedEv,
   MIN,
   NOW,
+  OTHER_HEAD_SHA,
   reviewStateAt,
 } from "./lib/lens-fix-budget-share-fixture.ts";
 
@@ -169,96 +174,6 @@ async function main() {
     }
   }
 
-  // ────────────── 3. #1695 — the refused owed round routes like the round cap ──────────────
-  {
-    // Adversarial approved the fix, findings are non-critical, the post lands:
-    // the refused round takes the round cap's `ci` route with the disclosure
-    // fact recorded.
-    const { ctx, repoRoot, gh, notices } = disclosureCtx();
-    try {
-      const base = appendEvent(
-        reviewStateAt(Date.now() - 85 * MIN),
-        approvedEv,
-        issuesEv("ISSUES_FOUND"),
-      );
-      const out = await parkLensRoundNoFit(ctx, base, Date.now());
-      const tail = out.eventLog[out.eventLog.length - 1];
-      assert(
-        tail?.kind === "cap-hit" && tail.cap === "lens-review-timeout" && tail.nextStep === "ci",
-        `an approved, disclosed, non-critical refused round routes to ci (got ${JSON.stringify({ kind: tail?.kind, nextStep: (tail as { nextStep?: string }).nextStep })})`,
-      );
-      assert(
-        out.eventLog.some((e) => e.kind === "lens-residuals-posted"),
-        "…and the disclosure fact is recorded — the ci route is the disclosed route",
-      );
-      assert(
-        gh.some((c) => /^gh pr comment /.test(c)),
-        "…the residuals were actually posted to the PR (the disclosure is the precondition, not a courtesy)",
-      );
-      assert(
-        notices.some((n) => /carries on to CI/.test(n)),
-        "…and the operator notice says which route it took and why",
-      );
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  }
-  {
-    // A failed disclosure parks: findings silently swallowed beat nothing.
-    const { ctx, repoRoot, gh } = disclosureCtx({ ghFails: "gh: HTTP 502 bad gateway" });
-    try {
-      const base = appendEvent(
-        reviewStateAt(Date.now() - 85 * MIN),
-        approvedEv,
-        issuesEv("ISSUES_FOUND"),
-      );
-      const out = await parkLensRoundNoFit(ctx, base, Date.now());
-      const tail = out.eventLog[out.eventLog.length - 1];
-      assert(
-        tail?.kind === "cap-hit" && tail.nextStep === "handoff",
-        "a refused round whose disclosure FAILED parks — no findings ride to CI under an unposted comment",
-      );
-      assert(
-        !out.eventLog.some((e) => e.kind === "lens-residuals-posted"),
-        "…and no disclosure fact is recorded for a comment that never landed",
-      );
-      assert(
-        (out.pipelineState.plumbReports ?? []).some((r) =>
-          /could not post them to the PR/.test(r.body),
-        ),
-        "…and the handoff will explain the disclosure failure to the operator",
-      );
-      assert(
-        gh.length > 0,
-        "…and the post was attempted (the failure is the scripted one, not a skip)",
-      );
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  }
-  {
-    // CRITICAL findings never take the ci route, disclosure or not.
-    const { ctx, repoRoot, gh } = disclosureCtx();
-    try {
-      const base = appendEvent(
-        reviewStateAt(Date.now() - 85 * MIN),
-        approvedEv,
-        issuesEv("CRITICAL_ISSUES_FOUND"),
-      );
-      const out = await parkLensRoundNoFit(ctx, base, Date.now());
-      const tail = out.eventLog[out.eventLog.length - 1];
-      assert(
-        tail?.kind === "cap-hit" && tail.nextStep === "handoff",
-        "CRITICAL_ISSUES_FOUND parks — the round being refused is the round that would have caught it",
-      );
-      assert(
-        !gh.some((c) => /^gh pr comment/.test(c)),
-        "…and no disclosure is attempted for a round that parks anyway",
-      );
-    } finally {
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  }
 
   // ─────────────── 4. #1644 — the develop fix pass is parked, not dispatched ───────────────
   {
@@ -287,7 +202,25 @@ async function main() {
       };
       assert(
         developFixPassFits(withClock, Date.now()) === false,
-        "developFixPassFits says no: 10m left is under MIN_USEFUL_MS.develop (15m)",
+        "developFixPassFits says no: 10m left is under the fix pass's 15m floor plus the owed round's 10m reserve",
+      );
+      // #1742 — the fit gate must demand what the bound subtracts. The pass is
+      // bounded by `reviewFixDispatchBoundMs(…, "lens-fix", …)`, which withholds
+      // the reserve, so a 15m "fit" armed a 5m dispatch: a dispatch built to be
+      // killed. 25m is the first number that both fits AND arms the 15m floor.
+      // ONE timestamp for state + every read: two Date.now() calls drift a ms
+      // apart and turn the exact `=== 15 * MIN` into a flake (the NOW lesson).
+      const tFit = Date.now();
+      const at15 = reviewStateAt(tFit - (90 * MIN - 15 * MIN));
+      assert(
+        developFixPassFits(at15, tFit) === false,
+        `…15m left parks too (the reserve is withheld from the bound, so 15m would arm a ${((reviewFixDispatchBoundMs(at15, "lens-fix", tFit) ?? 0) / MIN).toFixed(0)}m dispatch)`,
+      );
+      const at25 = reviewStateAt(tFit - (90 * MIN - 25 * MIN));
+      assert(
+        developFixPassFits(at25, tFit) === true &&
+          reviewFixDispatchBoundMs(at25, "lens-fix", tFit) === 15 * MIN,
+        `…25m fits and arms exactly the 15m floor (bound ${((reviewFixDispatchBoundMs(at25, "lens-fix", tFit) ?? 0) / MIN).toFixed(0)}m)`,
       );
       const { runDevelopTopological } = await import("../src/work-develop-topological.ts");
       const ctx = developCtx(repo, seen);

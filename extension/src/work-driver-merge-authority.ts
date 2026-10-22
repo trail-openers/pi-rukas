@@ -475,7 +475,18 @@ export function mergeHoldAction(
  * A separate exported predicate rather than a clause inside the guard, so the
  * decision can be tested directly; inlined, the only available check was a grep
  * for the guard's own source text.
+ *
+ * #1742 — the review-loop budget module's `lens-review-timeout` → `ci` route is
+ * held by the same rule. It discloses residuals and carries on exactly like the
+ * round cap, so a wall-clock cap that reached `ci` must not merge either; the
+ * `nextStep === "ci"` condition keeps the ordinary wall-clock park (which routes
+ * to `handoff`) out of it — that cycle never reaches this gate.
  */
 export function heldByUnresolvedReview(eventLog: WorkEvent[]): boolean {
-  return eventLog.some((e) => e.kind === "cap-hit" && e.cap === "round-cap" && e.nextStep === "ci");
+  return eventLog.some(
+    (e) =>
+      e.kind === "cap-hit" &&
+      e.nextStep === "ci" &&
+      (e.cap === "round-cap" || e.cap === "lens-review-timeout"),
+  );
 }

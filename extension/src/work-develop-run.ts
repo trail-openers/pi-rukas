@@ -236,6 +236,21 @@ export function makeRunOneWorkstream(
       const reason =
         "lens-review-timeout: the review-loop budget cannot fit the develop fix pass — not dispatched";
       s.verdicts.push({ id, ok: false, reason });
+      // #1742 (MINOR 2) — the refusal is recorded like every other develop
+      // failure (#753: "record for EVERY plan size — the N>1 guard made a
+      // single-workstream failure completely silent"). The step short-circuits
+      // before the verify gates, so this is the only thing the state file will
+      // ever say about this workstream; its dependents' skip events join it in
+      // the same flush the deferred-leftover park uses.
+      s.branchEvents.push({
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: id,
+        ok: false,
+        ms: 0,
+        at: startedAt,
+        error: reason,
+      } satisfies Extract<WorkEvent, { kind: "branch-completed" }>);
       return { id, ok: false, reason };
     }
     const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);

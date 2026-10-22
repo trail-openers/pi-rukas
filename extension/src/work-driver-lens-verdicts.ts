@@ -55,6 +55,15 @@ export async function applyLensVerdict(
       at: Date.now(),
       jobId,
       round,
+      // #1742 — the head this round actually read, bound to the verdict. The
+      // owed-round `ci` route may only be taken by a cycle whose findings were
+      // produced against the head the PR now carries; without this the route
+      // could disclose an H1 verdict as though it judged H2 (a lens-fix commits
+      // between the verdict and the refused round). Absent on pre-#1742 state
+      // files, where the route fails closed to a park.
+      ...(state.pipelineState.lensReviewedHead
+        ? { headSha: state.pipelineState.lensReviewedHead }
+        : {}),
       findings: findingsBlob,
       verdict: summary.verdict,
     });
