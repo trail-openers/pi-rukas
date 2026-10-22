@@ -42,6 +42,7 @@
  */
 
 import * as lifecycle from "./lifecycle-events.ts";
+import { namePaths } from "./work-develop-paths.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
@@ -150,12 +151,6 @@ const SHOWN_PATHS = 10;
  *  readable). */
 const REASON_MAX = 400;
 
-function namePaths(paths: string[]): string {
-  if (paths.length === 0) return "none";
-  const shown = paths.slice(0, SHOWN_PATHS).join(", ");
-  return paths.length > SHOWN_PATHS ? `${shown} (+${paths.length - SHOWN_PATHS} more)` : shown;
-}
-
 /** How long the crash classification waits for one git read before calling the
  *  tree unreadable. Generous for a healthy tree (a big monorepo `git status`
  *  is seconds) and short enough that a hung git cannot stall the develop step. */
@@ -164,8 +159,9 @@ const TREE_READ_TIMEOUT_MS = 30_000;
 /** The classifier's own status reader: same argv, same `-z` parse as
  *  `worktreeStatus`, plus an explicit bound — a hung `git status` (a stale
  *  worktree, a lock left by the child that just died) must degrade to
- *  `unreadable`, not block the develop fan-out. */
-function treeReader(execFn: ExecFn): (cwd: string) => Promise<ReturnType<typeof parseStatus>> {
+ *  `unreadable`, not block the develop fan-out. Shared with #1768's own-commit
+ *  check (`work-develop-own-commit`), so the two reads can never disagree. */
+export function treeReader(execFn: ExecFn): (cwd: string) => Promise<ReturnType<typeof parseStatus>> {
   return async (cwd) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

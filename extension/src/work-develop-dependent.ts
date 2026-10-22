@@ -26,9 +26,9 @@ import { requireOwnCommit } from "./work-develop-own-commit.ts";
 import {
   type BranchCompletedExtra,
   type DependentRunState,
-  dispatchUnfinishedCorrective,
   parkDeferredLeftover,
 } from "./work-develop-run.ts";
+import { dispatchUnfinishedCorrective } from "./work-develop-own-commit-dispatch.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
   type DeferredCreationResult,
@@ -97,7 +97,12 @@ export async function runDependentWorkstreams(
   const unfinished = run.unfinished ?? new Map<string, string[]>();
   const dispatchCorrective = (wid: string, cwd: string, paths: string[]) =>
     run.ownCommit
-      ? dispatchUnfinishedCorrective(run.ownCommit, wid, cwd, paths)
+      ? dispatchUnfinishedCorrective(
+          { ...run.ownCommit, dispatch: run.correctiveDispatch ?? run.ownCommit.dispatch },
+          wid,
+          cwd,
+          paths,
+        )
       : Promise.resolve(undefined);
   // #799 F2 — the dependent phase's wall-clock span (fire-once, above healthy band).
   const cancelPhaseNotice = armStepNotice({

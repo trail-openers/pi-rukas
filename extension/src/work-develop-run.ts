@@ -34,7 +34,7 @@ import {
   reviewLoopActive,
 } from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { dispatchUnfinishedCorrective as dcf, unfinishedPromptSuffix } from "./work-develop-own-commit-dispatch.ts";
+import { unfinishedPromptSuffix } from "./work-develop-paths.ts";
 import {
   inlineDevelopPrompt,
   inlineSpeculativeExplorePrompt,
@@ -115,7 +115,8 @@ export interface DevelopRunState {
   emitBranchCompleted: (ev: WorkEvent) => void;
   /** The current state (mutated by appendEvent for memory-inject events). */
   stateRef: { current: WorkState };
-  lastPrompt?: (paths: string[]) => string; correctiveDispatch?: DevelopRunState["dispatch"]; // #1768
+  lastPrompt?: (paths: string[]) => string; // #1768 corrective brief builder
+  correctiveDispatch?: DevelopRunState["dispatch"]; // #1768 test seam
 }
 
 /** #753 — per-run state threaded into the dependent phase (always passed together). */
@@ -156,7 +157,10 @@ export interface DependentRunState {
   ) => Promise<{ attempt: number; patch?: string }>;
   /** #1016 — driver notes (saved patches), surfaced in the handoff. */
   notes?: string[];
-  ownCommit?: DevelopRunState; unfinished?: Map<string, string[]>; // #1768
+  // #1768 — the dependent phase's corrective run state, unfinished map, seam.
+  ownCommit?: DevelopRunState;
+  unfinished?: Map<string, string[]>;
+  correctiveDispatch?: DevelopRunState["dispatch"];
 }
 
 /** #753 — the optional `extra` fields added to a failed dependent's
@@ -496,8 +500,5 @@ export function makeRunOneWorkstream(
   };
 }
 
-/** #799 — the dependent phase moved to work-develop-dependent.ts (verbatim,
- * for 500-line headroom); re-exported so existing imports keep their path. */
-export { runDependentWorkstreams } from "./work-develop-dependent.ts";
-export const dispatchUnfinishedCorrective = (s: DevelopRunState, id: string, cwd: string, paths: string[]) => // #1768
-  dcf({ ...s, dispatch: s.correctiveDispatch ?? s.dispatch }, id, cwd, paths);
+export { runDependentWorkstreams } from "./work-develop-dependent.ts"; // #799 moved verbatim
+
