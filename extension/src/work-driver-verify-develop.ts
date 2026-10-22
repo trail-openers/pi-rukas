@@ -32,7 +32,7 @@ import {
 } from "./work-driver-protected-paths-read.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { baselineRedForCmd } from "./work-driver-verify-base-health.ts";
+import { reportBaselineLeg } from "./work-driver-verify-aggregate.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
 import {
   declaredPathsHaveSource,
@@ -76,6 +76,7 @@ export async function verifyDevelopOutcome(
     onConsolidatedLogPath,
     commentEvidence = [],
     onBaselineRedOnly,
+    onBaselineRedEstablished,
     onConsolidatedVerifySkipped,
     onBuildResidueOnly,
     walkProcessTree,
@@ -394,8 +395,8 @@ export async function verifyDevelopOutcome(
   // failure was a cross-worktree artifact.
   const plan = await planDevelopVerify(ctx, touchedPaths, worktrees, baseSha, execFn, notes);
   const cmd = plan.cmd;
-  // #1765 — the probe established the base red for this command (the cap rule).
-  const baselineLeg = { red: false };
+  // #1765 — the base probe's two claims about this command.
+  const baselineLeg = { red: false, established: false };
   if (!cmd) {
     notes.push(
       "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
@@ -458,6 +459,10 @@ export async function verifyDevelopOutcome(
         onBaselineAttributed: () => {
           baselineLeg.red = true;
         },
+        // #1765 — the CAP's claim, reported by `reportBaselineLeg`.
+        onBaselineRedEstablished: (established) => {
+          baselineLeg.established = established;
+        },
         ...(onConsolidatedVerifySkipped !== undefined ? { onConsolidatedVerifySkipped } : {}),
         ...(onBuildResidueOnly !== undefined ? { onBuildResidueOnly } : {}),
         // #1427 — the walker reaches both legs; `hangSink` (round 3) is the
@@ -488,11 +493,8 @@ export async function verifyDevelopOutcome(
   }
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
   await runContinuePrGate(execFn, state, worktrees, failures);
-  // #1765 — the mixed-set rule: the probe's finding for THIS command wins the cap
-  // whatever sits beside it; other entries stay failures, and `verifyCapFor`
-  // still routes the no-verdict families ahead of this one.
-  if (baselineLeg.red && cmd !== undefined && baselineRedForCmd(failures, cmd)) {
-    onBaselineRedOnly?.();
-  }
+  // #1765 — the two claims the base probe makes about this command; both are
+  // re-checked against the command by `reportBaselineLeg` at the gate's tail.
+  reportBaselineLeg(baselineLeg, failures, cmd, { onBaselineRedOnly, onBaselineRedEstablished });
   return undefined;
 }

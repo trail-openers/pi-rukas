@@ -31,6 +31,12 @@ const CONSOLIDATION_CREATED_FAILURE = /\[consolidation-created\]/;
 export function plainVerifyFailure(gate: {
   failures: readonly string[];
   baselineRedOnly?: boolean;
+  /**
+   * #1765 — the probe established a red base for the command the gate ran: the
+   * claim the develop CAP reads, weaker than `baselineRedOnly` (which also asks
+   * that every failure be the base's). See `verifyCapFor`.
+   */
+  baselineRedEstablished?: boolean;
   buildResidueOnly?: boolean;
 }): boolean {
   if (gate.failures.some((f) => CONFLICT_FAILURE.test(f) || CONSOLIDATION_CREATED_FAILURE.test(f)))
@@ -39,7 +45,7 @@ export function plainVerifyFailure(gate: {
     verifyCapFor(
       "develop",
       gate.failures,
-      gate.baselineRedOnly === true,
+      gate.baselineRedOnly === true || gate.baselineRedEstablished === true,
       gate.buildResidueOnly === true,
     ) === "verify-failed:develop"
   );
@@ -84,7 +90,9 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
       : verifyCapFor(
           "develop",
           gate.failures,
-          gate.baselineRedOnly,
+          // #1765 — an established red base raises the cap too; the two claims
+          // the gate keeps apart are documented in work-driver-verify-aggregate.
+          gate.baselineRedOnly || gate.baselineRedEstablished,
           // #1421 fix round — the structured decline from the consolidated
           // gate, not a `[build-residue]` substring of the failure prose.
           gate.buildResidueOnly === true,
