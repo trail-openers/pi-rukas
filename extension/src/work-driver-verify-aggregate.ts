@@ -22,7 +22,6 @@
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
-import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import {
   BASELINE_RED_MARKER,
   baselineExplainsChange,
@@ -30,6 +29,7 @@ import {
 } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
+import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 
 /**
  * Reconcile and attribute. Returns whether the baseline probe ATTRIBUTED the
@@ -127,8 +127,7 @@ export async function aggregateVerifyOutcome(args: {
     // to `verify-failed` and orchard burned three develop rounds on a base nothing
     // could pass. A reused verdict states the base's colour only: no stream, so
     // nothing to match the change's failures against, so never an excuse.
-    const attributed =
-      verdict.reused !== true && baselineExplainsChange(verdict, changeFailures);
+    const attributed = verdict.reused !== true && baselineExplainsChange(verdict, changeFailures);
     if (attributed) onBaselineAttributed?.();
     return attributed;
   }
