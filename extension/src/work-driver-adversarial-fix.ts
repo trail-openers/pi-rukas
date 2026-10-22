@@ -28,6 +28,7 @@ import { runDevelopTopological } from "./work-develop-topological.ts";
 import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
 import {
   type FixRequest,
+  correctiveEvidenceFrom,
   overlayWorkstreams,
   planFixPass,
   postPassFault,
@@ -411,7 +412,14 @@ export async function runAdversarialFixPass(
     return parkFixPass(restored, pending, "a develop gate failed on the fix pass", now);
   }
 
-  const post = await postPassFault(execFn, plans, ps.baseSha ?? "");
+  const post = await postPassFault(
+    execFn,
+    plans,
+    ps.baseSha ?? "",
+    // #1698(b) — the corrective round dispatched inside this pass edits the
+    // files its own evidence named; those are driver-ordered, not strays.
+    correctiveEvidenceFrom(restored.eventLog.slice(startLen)),
+  );
   if (post.reason) {
     // #1137 — a no-change fix pass whose workstream carried a plumb report
     // (a structural question, e.g. scope-ambiguity) is a question to answer,

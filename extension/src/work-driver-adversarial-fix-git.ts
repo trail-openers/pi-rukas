@@ -48,6 +48,28 @@ export async function trackedPaths(
   return r.ok ? { ok: true, value: lines(r.value) } : r;
 }
 
+/**
+ * What this cycle already committed between its base and `headSha`: the files
+ * its earlier develop rounds changed, INCLUDING files a commit created. Unlike
+ * `trackedPaths` (the tree AT base) this sees a file the cycle itself made —
+ * #1698: a file the cycle created is never tracked at base, so without this
+ * read no finding could ever authorise a fix pass touching it.
+ */
+export async function committedChanges(
+  execFn: FixExec,
+  cwd: string,
+  baseSha: string,
+  headSha: string,
+): Promise<GitRead<string[]>> {
+  if (!SHA_RE.test(baseSha) || !SHA_RE.test(headSha)) {
+    return { ok: false, reason: "the comparison commits are not SHAs" };
+  }
+  // --no-renames for the same reason `treeChanges` gives: a rename must not
+  // hide the source side of a move.
+  const r = await run(execFn, `git diff --name-only --no-renames ${baseSha}..${headSha}`, cwd);
+  return r.ok ? { ok: true, value: lines(r.value) } : r;
+}
+
 /** The commit a worktree's HEAD points at. */
 export async function headOf(execFn: FixExec, cwd: string): Promise<GitRead<string>> {
   const r = await run(execFn, "git rev-parse HEAD", cwd);
