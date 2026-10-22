@@ -56,6 +56,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-develop-git-argv-1016.ts",
   "smoke-tests/test-develop-git-strict-1016.ts",
   "smoke-tests/test-develop-greens-1016.ts",
+  "smoke-tests/test-develop-own-commit.ts",
   "smoke-tests/test-develop-pathspec-1016.ts",
   "smoke-tests/test-develop-resume-1016.ts",
   "smoke-tests/test-develop-safety-net-1016.ts",

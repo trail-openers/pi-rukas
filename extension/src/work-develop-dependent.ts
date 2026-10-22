@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import { assertInsideWorktrees, errText, isValidBaseSha } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
-import { correctiveFor } from "./work-develop-own-commit-dispatch.ts";
+import { correctiveFor, correctivePassCount } from "./work-develop-own-commit-dispatch.ts";
 import { requireOwnCommit } from "./work-develop-own-commit.ts";
 import {
   greenCountsAsWork,
@@ -95,15 +95,19 @@ export async function runDependentWorkstreams(
   // #1768 — dependents whose pass ended with dirt and no commit of its own, even
   // after the one corrective pass. The develop step parks on this map.
   const unfinished = run.unfinished ?? new Map<string, string[]>();
-  const dispatchCorrective = (wid: string, cwd: string, paths: string[]) =>
-    run.ownCommit
-      ? correctiveFor(
-          { ...run.ownCommit, dispatch: run.correctiveDispatch ?? run.ownCommit.dispatch },
-          wid,
-          cwd,
-          paths,
-        )
-      : Promise.resolve(undefined);
+  // #1768 — the corrective pass for one workstream: SAME worktree (the dirt IS
+  // the work — no reset, no clean), the captured brief plus the finish-and-commit
+  // paragraph, and the same dispatch seam and write fence as the first pass.
+  const correctiveForId = (id: string, cwd: string, paths: string[]) => {
+    if (run.ownCommit?.lastPrompt?.(paths) === undefined) return Promise.resolve(undefined);
+    correctivePassCount.n++;
+    return correctiveFor(
+      { ...run.ownCommit, dispatch: run.correctiveDispatch ?? run.ownCommit.dispatch },
+      id,
+      cwd,
+      paths,
+    );
+  };
   // #799 F2 — the dependent phase's wall-clock span (fire-once, above healthy band).
   const cancelPhaseNotice = armStepNotice({
     state: stateRef.current,
@@ -378,7 +382,7 @@ export async function runDependentWorkstreams(
           cwd: createdPath,
           base: ownBase,
           execFn,
-          corrective: (paths) => dispatchCorrective(id, createdPath, paths),
+          corrective: (paths) => correctiveForId(id, createdPath, paths),
         });
         if (own.kind === "unfinished") {
           unfinished.set(id, own.uncommitted);

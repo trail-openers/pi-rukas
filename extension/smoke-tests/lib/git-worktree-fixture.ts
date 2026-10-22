@@ -43,9 +43,20 @@ export function gitIn(cwd: string, args: string[]): string {
 }
 
 /** #1016 — the mock developer's work: task-c leaves its edit UNCOMMITTED (the
- *  case the #622 safety net commits); every other developer commits. */
+ *  case the #622 safety net commits); every other developer commits.
+ *
+ *  #1768 — a develop pass that exits 0 with dirt and NO commit of its own is
+ *  UNFINISHED, not green, so a mock that reports success must commit the way a
+ *  real developer does. task-c is the single deliberate exception: its dirt is
+ *  the safety net's subject, which is a different rule. The corrective pass
+ *  #1768 sends for it (`developer[task-c:unfinished]`) does its job and
+ *  commits — a mock that re-left the same dirt would be testing the wrong
+ *  thing, and never weaken this branch to make a test pass.
+ */
 export function mockDeveloperWork(cwd: string, label: string | undefined): void {
   if (label === "developer[task-c]") writeFileSync(path.join(cwd, "edit.txt"), "uncommitted");
+  else if (label !== undefined && label.endsWith(":unfinished]"))
+    gitIn(cwd, ["commit", "-qm", `finish ${label}`]);
   else gitIn(cwd, ["commit", "--allow-empty", "-qm", `work ${label}`]);
 }
 
