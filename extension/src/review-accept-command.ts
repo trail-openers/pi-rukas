@@ -216,41 +216,9 @@ export function namesStore(
   ].some((text) => tokensOf(text).some(asked));
 }
 
-/** An option value ATTACHED to its flag, with the flag removed: `-G<name>`, `-S<name>`,
- * `--grep=<name>`, `-o<name>`, `--output=<name>`, `-f<name>`, `-t<name>` (git's
- * `--template`), `-e<code>` (a runtime's inline program). Returns the value, or `null`
- * for a word that is not an attached value. */
-function attachedValue(word: string): string | null {
-  const bare = word.replace(/^["']+|["']+$/g, "");
-  for (const flag of ["--grep", "--output", "-grep", "--pickaxe", "--template"] as const) {
-    if (bare.startsWith(`${flag}=`)) return bare.slice(flag.length + 1);
-  }
-  // `t` is git's `--template` (a FILE whose contents become the commit message) and `e` a
-  // runtime's inline-program flag, so `-treview-findings.json` and `-ereview-accept.ts`
-  // are exactly the attached spellings no tokeniser hands out bare.
-  if (/^-[gsotfe]/i.test(bare) && bare.length > 2) return bare.slice(2);
-  return null;
-}
-
-/**
- * Clause (a), part (vi): does an ATTACHED option value name the store? The shapes are
- * `git log -Greview-findings-store` (a pickaxe regex), `git log -S<name>` / `--grep=<name>`
- * and `git show HEAD:x -oreview-findings.json` (an output path). None of them ever hands
- * a tokeniser the bare name — the option prefix glues it to the flag — so the token match
- * in `namesStore` cannot see them, and the arms cannot either (`-o<name>` is one word,
- * not the `-o <name>` pair their operand test reads). They are asked case-insensitively:
- * the guard evaluates this over its LOWERCASED view while git matches such a value
- * exactly, so a folded name still counts as naming it.
- */
-export function namesAttachedValue(text: string): boolean {
-  return tokensOf(text).some((token) => {
-    const value = attachedValue(token);
-    if (value === null) return false;
-    return tokensOf(value).some(
-      (t) => isProtectedToken(t.toLowerCase()) || isAcceptScriptToken(t.toLowerCase()),
-    );
-  });
-}
+/** An option value ATTACHED to its flag lives in `review-accept-names.ts` (#1764, §12's
+ * file-size limit): it is the one protected-name route the tokeniser cannot see, and the
+ * question it answers is not the question this module answers. */
 
 /** Collapse whitespace and newlines to a single space. */
 export function squeeze(text: string): string {
@@ -267,10 +235,23 @@ export function squeeze(text: string): string {
 export function skipHeredoc(command: string, start: number): number | "PARSE_FAIL" {
   let i = start + 2;
   while (command[i] === "-" || command[i] === "~") i++;
+  // A QUOTED delimiter is the common spelling of a non-expanding heredoc (`<<'EOF'`,
+  // `<<"PY"`). It used to be unreadable here — the tag class below accepts only word
+  // characters, so the `'` ended the tag before it began, every quoted heredoc parsed
+  // as PARSE_FAIL, and the guard adjudicated the whole command on its raw text (#1764).
+  // The quote is stripped, exactly as the shell strips it: the DELIMITER that closes the
+  // body is the bare word either way.
+  const quote = command[i] === "'" || command[i] === '"' ? command[i] : undefined;
+  if (quote) i++;
   const from = i;
   while (i < command.length && /[A-Za-z0-9_]/.test(command[i] as string)) i++;
   if (i === from) return "PARSE_FAIL";
-  const tag = command.slice(from, i).replace(/^['"]|['"]$/g, "");
+  const tag = command.slice(from, i);
+  if (quote) {
+    // `<<'PY` with no closing quote is not a delimiter the guard can read.
+    if (command[i] !== quote) return "PARSE_FAIL";
+    i++;
+  }
   const lineEnd = command.indexOf("\n", i);
   if (lineEnd < 0) return "PARSE_FAIL";
   let cursor = lineEnd + 1;
@@ -335,7 +316,7 @@ export function normalise(command: string): NormaliseResult {
   while (i < command.length) {
     const ch = command[i] as string;
     if (ch === "'" || ch === '"') {
-      const end = command.indexOf(ch, i + 1);
+      const end = closingQuote(command, i);
       if (end < 0) return fail(ch === "'" ? "unbalanced single quote" : "unbalanced double quote");
       out += " ";
       i = end + 1;
@@ -358,6 +339,29 @@ export function normalise(command: string): NormaliseResult {
 }
 
 /**
+ * The index of the quote that CLOSES the span opening at `i`, or -1 when it never
+ * closes. Single quotes have no escapes — the first `'` ends the span. Inside double
+ * quotes a backslash escapes the next character (`\"` is a literal quote the shell
+ * removes the escape from), so `--jq ".title + \"|\" + .body"` is ONE word and the `|`
+ * inside it never opens a segment (#1764: a quoted `--jq` filter's pipe used to split a
+ * `gh pr view` read into two segments, the second of which matched no arm). Every
+ * scanner in this module asks this one function, so the segmenter, the tokeniser and the
+ * normaliser cannot disagree about where a quoted span ends.
+ */
+export function closingQuote(text: string, i: number): number {
+  const quote = text[i] as string;
+  if (quote !== "'" && quote !== '"') return -1;
+  for (let j = i + 1; j < text.length; j++) {
+    if (quote === '"' && text[j] === "\\") {
+      j++;
+      continue;
+    }
+    if (text[j] === quote) return j;
+  }
+  return -1;
+}
+
+/**
  * Split a command into shell segments. An operator inside a quoted span is LITERAL —
  * `echo "a && b"` is one command — but a quoted span may still be glued to an operator
  * (`x.ts;rm`), so the span is stepped over and the operator outside it still cuts. The
@@ -375,7 +379,7 @@ export function armsOf(text: string): string[] {
   while (i < text.length) {
     const c = text[i] as string;
     if (c === "'" || c === '"') {
-      const end = text.indexOf(c, i + 1);
+      const end = closingQuote(text, i);
       const stop = end < 0 ? text.length : end + 1;
       cur += text.slice(i, stop);
       // A quote with no partner leaves `stop` equal to `i`, which would re-enter this
@@ -438,7 +442,7 @@ export function shellWords(text: string): string[] {
         break;
       }
       if (c === "'" || c === '"') {
-        const end = text.indexOf(c, i + 1);
+        const end = closingQuote(text, i);
         if (end >= 0) {
           word += text.slice(i, end + 1);
           i = end + 1;
@@ -464,9 +468,11 @@ export function unquote(word: string): string {
   while (i < word.length) {
     const c = word[i] as string;
     if (c === "'" || c === '"') {
-      const end = word.indexOf(c, i + 1);
+      const end = closingQuote(word, i);
       if (end >= 0) {
-        out += word.slice(i + 1, end);
+        // The escapes a double-quoted span carries are removed by the shell before the
+        // program sees the word, so the word the tool receives is the span without them.
+        out += word.slice(i + 1, end).replace(/\\(["\\])/g, "$1");
         i = end + 1;
         continue;
       }

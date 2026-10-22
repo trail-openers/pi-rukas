@@ -131,6 +131,29 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
     c: `cat > /tmp/notes.md <<EOF${NL}run git rm build before deploying${NL}EOF`,
     why: "a heredoc body whose prose mentions git rm mid-sentence",
   },
+  // #1764 criterion 7 — the eight forms the narrowed clause (5) must let through, and the
+  // variable the command resolves itself (criterion 6). Each has its store-naming twin in
+  // STORE_REACHING_REFUSALS below: the pair is what makes the eight a scope test rather
+  // than a weakening. At 52a81946 every one of these was refused — the read-tool arm of
+  // clause (5) asked only "any read tool, and a `$` anywhere in the command".
+  { c: `echo "${D}HOME"`, why: "an expansion in the argument of a tool that reads no file" },
+  { c: `grep -n ${Q}a${D}${Q} src/x.ts`, why: "a `$` in a search PATTERN, which is prose" },
+  { c: `printf "count: %s\\n" "${D}n"`, why: "printf printing a variable" },
+  { c: `ls -la ${D}PWD`, why: "a listing whose argument is an expansion" },
+  { c: `cd extension && echo ${D}PWD`, why: "the chained form that brickwalled plan cycles" },
+  { c: `grep -rn foo src && echo ${D}?`, why: "a search followed by an exit code" },
+  {
+    c: `cat > tmp/issue-7/spec.md <<'EOF'${NL}## Spec ${D}HOME${NL}EOF`,
+    why: "a QUOTED heredoc whose body carries an expansion — the tag parsed, the body is data",
+  },
+  {
+    c: `python3 - <<'PY'${NL}print("${D}x")${NL}PY`,
+    why: "a quoted heredoc into an interpreter that is no runtime the guard enumerates",
+  },
+  {
+    c: `f=notes.md; cat ${D}f`,
+    why: "an expansion the SAME command assigned — the guard reads it as the shell does",
+  },
 ];
 
 /**
@@ -305,5 +328,45 @@ export const STORE_REACHING_REFUSALS: Case[] = [
   {
     c: `git hash-object --stdin && git apply <<EOF${NL}--- a/x${NL}EOF`,
     why: "ACCEPTANCE: a hash-object decoy beside a git write verb",
+  },
+  // #1764 criterion 7's twins: each allowed form above, WITH the store in its sight line.
+  // The narrowing is of the unreadable-word test alone — the name test still fires on
+  // every one of these, and a heredoc BODY that names the store is still the store.
+  {
+    c: `echo "${D}HOME" > .git/${DATA}`,
+    why: "an expansion beside a redirection into the data file",
+  },
+  {
+    c: `grep -n ${Q}a${D}${Q} .git/${DATA}`,
+    why: "ACCEPTANCE: a harmless search pattern on the data file itself",
+  },
+  {
+    c: `printf "%s\\n" "${D}n" > .git/${DATA}`,
+    why: "a printf redirecting an expanded variable into the data file",
+  },
+  { c: `ls -la .git/${DATA}`, why: "a listing of the data file by name" },
+  {
+    c: `cd .git && cat ${DATA}`,
+    why: "ACCEPTANCE: the navigate-then-read chain, with the store as the read target",
+  },
+  {
+    c: `grep -rn ${DATA} src`,
+    why: "the store's name in the PATTERN position still counts as a name: clause (1) asks every word",
+  },
+  {
+    c: `cat > tmp/issue-7/spec.md <<'EOF'${NL}see .git/${DATA}${NL}EOF`,
+    why: "ACCEPTANCE: a quoted heredoc whose BODY names the data file",
+  },
+  {
+    c: `python3 - <<'PY'${NL}open(".git/${DATA}","w")${NL}PY`,
+    why: "ACCEPTANCE: a quoted heredoc body that writes the data file",
+  },
+  {
+    c: `F=.git/${DATA}; cat > ${D}F`,
+    why: "ACCEPTANCE: the store behind a variable the command itself resolves (criterion 6)",
+  },
+  {
+    c: `git commit -m "adds ${D}HOME to the path"`,
+    why: "ACCEPTANCE: an expansion inside a commit message — prose masking is for LITERAL values only (criterion 3)",
   },
 ];

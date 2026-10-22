@@ -20,17 +20,18 @@ import {
   namesGit,
   namesGitWriteVerb,
   namesInterpreter,
-  namesReadTool,
   namesVcsOrRuntime,
 } from "./review-accept-arms.ts";
 import {
   armsOf,
   isAcceptScriptToken,
-  namesAttachedValue,
   namesStore,
   shellVisible,
   shellWords,
 } from "./review-accept-command.ts";
+import { namesAttachedValue } from "./review-accept-names.ts";
+import { readToolCarriesUnresolvedOperand } from "./review-accept-readtools.ts";
+import { storeNameSubject, withoutHeredocBodies } from "./review-accept-views.ts";
 
 /** A word carrying a substitution — `$` or a backtick. Braces are DELIBERATELY absent:
  * they are ordinary punctuation in prose and in `awk '{print 1}'`, and a store name
@@ -39,7 +40,9 @@ import {
  * 'x\n'`, a `grep` BRE carrying `\|` and a `gh --jq` filter carrying `"\n"` are ordinary
  * agent text (#1665), and an ESCAPED spelling of the store's name is caught by the
  * backslash-erased view of `namesStore` instead — which is what an unreadable word could
- * otherwise hide. Asked of the RAW text, so the `$` inside a quoted message still counts. */
+ * otherwise hide. Asked of the RAW text (minus any heredoc BODY, which is data), so the
+ * `$` inside a quoted message still counts and the `$` inside a heredoc body does not
+ * (#1764 criterion 4). */
 const EXPANSION_WORD = /[$`]/;
 /** The write-capable arguments clause (b) refuses and names (`-o`, `--output`, `-c`,
  * `--ext-diff`), in the ATTACHED spelling where the value is glued to the flag. The
@@ -65,7 +68,12 @@ const ATTACHED_WRITE = /(?:^|\s)(?:--output=\S|-o\S|--ext-diff=\S|-c\S)/;
  *      / commas erased, so `rev{iew-findings}.json` and `'rev''iew-findings.json'`
  *      count, and a heredoc body counts (the body is part of the raw text); the
  *      operator script's basename counts too, since running it is the act the whole
- *      guard exists to refuse;
+ *      guard exists to refuse. The ONE exception is a literal value of a known PROSE
+ *      option — `git commit -m` / `--message`, `gh` / `glab` `--title` / `--body` / `-m`
+ *      (#1764 criterion 12): a commit message ABOUT the guard is a sentence about it, not
+ *      a route to it, and refusing those was ~285 halo commands. A prose value carrying
+ *      `$` or a backtick is not prose, and an expansion the SAME command assigned is
+ *      resolved first, so `F=<store>; cat > $F` is still named (criterion 6);
  *  (2) the name ATTACHED to an option (`git log -G<name>`, `-S<name>`, `--grep=<name>`,
  *      `git show HEAD:x -o<name>`): the option prefix glues the name to the flag, so
  *      no tokeniser ever hands `isProtectedToken` the bare name and no arm's operand
@@ -90,14 +98,22 @@ const ATTACHED_WRITE = /(?:^|\s)(?:--output=\S|-o\S|--ext-diff=\S|-c\S)/;
  *      hands git as its verb — is not hidden by the quote fold. A `git commit -F- <<EOF`
  *      is neither — its heredoc is a message, read as text and written nowhere, which is
  *      why it stays allowed (#1643);
- *  (5) an UNREADABLE WORD carried by a command that can READ THE STORE — a runtime,
- *      git / a forge CLI, or one of the read tools the arms enumerate. A word with `$`
- *      or a backtick has no determinable final text, so on one of those programs the arms
- *      must get the chance to refuse it (`cat {payload.js} | bun -`). A BACKSLASH is not
- *      such a word (#1665): the shell removes it, and the backslash-erased view of
+ *  (5) an UNREADABLE WORD carried by a command that can READ THE STORE. Two program sets
+ *      qualify, and they are asked DIFFERENT questions (#1764 criterion 1): a runtime, git
+ *      or a forge CLI is asked about ANY unreadable word — on those, a `$` can assemble a
+ *      store name and no arm can vouch for the result (`cat {payload.js} | bun -`); a READ
+ *      TOOL is asked only about the FILE operand it was handed, per tool kind — a content
+ *      reader's (`cat`, `head`, `tail`) operands, and a search tool's (`grep`, `rg`)
+ *      operands MINUS its pattern. `echo "FMT_EXIT=$?"`, `cd $WT`, `tail -8` and `grep -n
+ *      'a$' f` name no unreadable file and bring nothing in: the command-wide "any read
+ *      tool + `$` anywhere" shape of this test refused ~6,400 ordinary commands on one live
+ *      run, which is the whole of #1764. A word with `$` or a backtick has no determinable
+ *      final text; an expansion the SAME command assigned a literal to is resolved first
+ *      (criterion 6) and a heredoc BODY is never an operand (criterion 4). A BACKSLASH is
+ *      not such a word (#1665): the shell removes it, and the backslash-erased view of
  *      `namesStore` catches an escaped spelling of the store's name. On a program that is
- *      none of those — `awk`, `echo` — a store name can never reach the guard's protected
- *      bytes, and clause (a) leaves the command alone: braces alone are ordinary
+ *      none of these — `awk`, `python3` — a store name can never reach the guard's
+ *      protected bytes, and clause (a) leaves the command alone: braces alone are ordinary
  *      punctuation (`echo {a,b}`, `awk '{print 1}'` pass), and a name assembled from them
  *      is caught by (1)'s erased view.
  *  (6) a WRITE-CAPABLE ARGUMENT on a VCS/forge command: `-o<name>` / `--output=<name>`
@@ -114,19 +130,45 @@ const ATTACHED_WRITE = /(?:^|\s)(?:--output=\S|-o\S|--ext-diff=\S|-c\S)/;
  * `raw` is the command lowercased with its newlines kept, `norm` the folded, quote-folded
  * text normalise() produced (or the squeezed raw text when it did not — see the guard),
  * and `words` the words of `raw` as the shell hands them out.
+ *
+ * The return value is the CLAUSE THAT FIRED, not a boolean (#1764 criterion 10): a refusal
+ * that says only "findings store" cannot be triaged, and the accept-CLI remedy the guard
+ * prints is the remedy for test (1) ALONE, so the guard has to know which test spoke.
+ * `undefined` is the only answer that means "ordinary agent command".
  */
-export function inScope(raw: string, norm: string, words: string[]): boolean {
-  return (
-    namesStore(raw, norm, isAcceptScriptToken) ||
-    namesAttachedValue(norm) ||
-    namesAttachedValue(raw) ||
+export type ScopeClause =
+  | "store-name"
+  | "attached-value"
+  | "repo-selector"
+  | "executing-operand"
+  | "unreadable-word"
+  | "write-argument";
+
+export function inScope(raw: string, norm: string, words: string[]): ScopeClause | undefined {
+  if (namesStore(storeNameSubject(raw), storeNameSubject(norm), isAcceptScriptToken))
+    return "store-name";
+  if (namesAttachedValue(norm) || namesAttachedValue(raw)) return "attached-value";
+  if (
     armsOf(raw).some(
       (segment) => namesGit(segment) && hasUnresolvedRepoSelector(shellWords(segment)),
-    ) ||
-    ((norm.includes("<<") || hasStdinDash(words)) &&
-      (namesInterpreter(norm) || namesGitWriteVerb(raw))) ||
-    ((namesVcsOrRuntime(norm) || namesReadTool(norm)) && EXPANSION_WORD.test(raw)) ||
-    (namesVcsOrRuntime(norm) &&
-      (ATTACHED_WRITE.test(`${shellVisible(raw)} `) || hasFlag(words, ...OUTPUT_FLAGS)))
-  );
+    )
+  )
+    return "repo-selector";
+  if (
+    (norm.includes("<<") || hasStdinDash(words)) &&
+    (namesInterpreter(norm) || namesGitWriteVerb(raw))
+  )
+    return "executing-operand";
+  // The two halves of test (5) ask DIFFERENT texts: the runtime / VCS half asks the whole
+  // command (minus any heredoc body — data, never an argument), the read-tool half asks
+  // its own file operands only.
+  const readable = withoutHeredocBodies(raw);
+  if (namesVcsOrRuntime(norm) && EXPANSION_WORD.test(readable)) return "unreadable-word";
+  if (readToolCarriesUnresolvedOperand(readable)) return "unreadable-word";
+  if (
+    namesVcsOrRuntime(norm) &&
+    (ATTACHED_WRITE.test(`${shellVisible(raw)} `) || hasFlag(words, ...OUTPUT_FLAGS))
+  )
+    return "write-argument";
+  return undefined;
 }
