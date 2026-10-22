@@ -241,21 +241,30 @@ for (const c of [
   assert(runsReviewAccept(c) === undefined, `guard: leaves unrelated commands alone — ${c}`);
 }
 // #1125 clause (b) — POLARITY. Both are documented over-refusals, the accepted cost of
-// failing closed: a write-capable flag is refused wherever it sits, and a forge write
-// subcommand naming the script is refused even in prose. The pre-adjudication draft
-// asserted the opposite polarity for these two; the canonical list is OVER_REFUSALS in
-// test-review-accept-guard-hardened.ts.
+// failing closed: a write-capable flag is refused wherever it sits. The pre-adjudication
+// draft asserted the opposite polarity for these two; the canonical list is OVER_REFUSALS
+// in test-review-accept-guard-hardened.ts.
+//
+// #1764 criterion 12 moved ONE row out of this list: `gh pr create --body "Adds the
+// review-accept acceptance path"` named the operator script inside a KNOWN PROSE OPTION,
+// which is documentation handed to a program that writes it as text, not a read of the
+// store. Its twin below — the same forge write taking the store as a FILE — stays refused,
+// and that pair is the polarity test now.
 for (const c of [
   "git show HEAD:README.md --output=/tmp/readme.txt",
-  'gh pr create --body "Adds the review-accept acceptance path"',
+  "gh pr create --body-file .git/review-findings.json",
   // #1125 fix round: the stem match is a PREFIX, so a word that merely STARTS with the
   // operator script's stem is refused rather than guessed at (canonical: OVER_REFUSALS).
   "echo review-acceptance-notes",
 ]) {
   assert(runsReviewAccept(c) !== undefined, `guard: over-refuses rather than guesses — ${c}`);
 }
-for (const c of ["gh pr view 1105", "glab mr view 12"]) {
-  assert(runsReviewAccept(c) === undefined, `guard: leaves the exact forge read arms alone — ${c}`);
+for (const c of [
+  "gh pr view 1105",
+  "glab mr view 12",
+  'gh pr create --body "Adds the review-accept acceptance path"',
+]) {
+  assert(runsReviewAccept(c) === undefined, `guard: leaves unrelated commands alone — ${c}`);
 }
 
 const handlers: Record<string, (e: unknown, c: unknown) => Promise<unknown>> = {};

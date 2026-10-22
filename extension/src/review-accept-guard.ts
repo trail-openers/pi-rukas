@@ -108,6 +108,7 @@ import {
   UNREADABLE,
   armsOf,
   baseName,
+  closingQuote,
   isProtectedToken,
   namesProtected,
   normalise,
@@ -115,7 +116,7 @@ import {
   squeeze,
   unquote,
 } from "./review-accept-command.ts";
-import { inScope } from "./review-accept-scope.ts";
+import { type ScopeClause, inScope } from "./review-accept-scope.ts";
 import { trace, traceWarn } from "./trace.ts";
 /** The one source of truth for the CLI the refusal tells the operator to use. */
 const ACCEPT_CLI = "extension/scripts/review-accept.ts";
@@ -148,13 +149,40 @@ function segmentAdmitted(words: string[]): boolean {
   );
 }
 
-/** The refusal reasons (clause (b)): one base, plus the sentence naming the remedy. */
+/** The refusal reasons (clause (b)): one base, the clause that fired, and the sentence
+ * naming the remedy. #1764 criterion 10: the accept-CLI sentence is the remedy for the
+ * NAME test alone — a command refused by the selector, heredoc, unreadable-word or
+ * write-flag test is not an acceptance attempt, and telling its author to go run the
+ * accept script in a terminal explained nothing about why their `git -C` was refused. */
+const BASE =
+  "Accepting a review finding is an operator act: agents may not reach the review findings store.";
+/** The forms the allowlist does admit — the same list the arms implement, in the order
+ * the guard dispatches them. */
+const ALLOWED_READS =
+  ' Allowed reads: git status/log/diff/show/blame, gh|glab pr|mr view|diff, gh repo view, gh issue view|list, bun|bunx test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, bun run build, bun run check, bunx tsc --noEmit, git commit -m "<message>", or a read tool (cat, grep, rg, ...) on a path that is not the findings store.';
+/** What each of the six scope tests refused, and what to do about it. `store-name` is the
+ * ONLY one whose remedy is the accept CLI; the others name the flag or operand to drop. */
+const CLAUSE_SENTENCE: Record<ScopeClause, string> = {
+  "store-name": ` Run ${ACCEPT_CLI} from a terminal for an acceptance. Triggered by clause (1): the command names the review findings store.`,
+  "attached-value":
+    " Triggered by clause (2): a protected name is ATTACHED to an option value (`-G<name>`, `-S<name>`, `--grep=<name>`, `-o<name>`) — drop that flag or its value.",
+  "repo-selector":
+    " Triggered by clause (3): a git repo-location / config selector (`-C`, `--git-dir`, `--work-tree`, `--exec-path`, `-c k=v`) points inside `.git` or cannot be resolved — point `-C` at the worktree, not at the git directory.",
+  "executing-operand":
+    " Triggered by clause (4): a heredoc body or a stdin `-` is handed to a program that EXECUTES or WRITES it — name the file instead of piping unreadable text in.",
+  "unreadable-word":
+    " Triggered by clause (5): a word carries a shell expansion the guard cannot read, on a program that can read the store — pass the literal path rather than `$(…)`, `${V}` or a backtick.",
+  "write-argument":
+    " Triggered by clause (6): an argument that can WRITE a file (`-o`, `--output`, `-c`, `--ext-diff`, a spaced write flag) stands on a VCS or runtime command — drop the flag.",
+};
+
 function refusalReason(
+  clause: ScopeClause = "store-name",
   opts: { vcsWrite?: boolean; dataOperand?: boolean; target?: string } = {},
 ): string {
   if (opts.target)
     return `The review findings file (${opts.target}) is written only by ${ACCEPT_CLI}. Agents may not edit it.`;
-  const base = `Accepting a review finding is an operator act: agents may not reach the review findings store. Run ${ACCEPT_CLI} from a terminal for an acceptance. Allowed reads: git status/log/diff/show/blame, gh|glab pr|mr view|diff, gh repo view, gh issue view|list, bun|bunx test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, bun run build, bun run check, bunx tsc --noEmit, git commit -m "<message>", or a read tool (cat, grep, rg, ...) on a path that is not the findings store.`;
+  const base = BASE + CLAUSE_SENTENCE[clause] + ALLOWED_READS;
   // `false` means "this route is not a write-flag one" and must add nothing; only
   // `true` speaks of flags. `opts.vcsWrite` is a three-state value here — undefined
   // when the command names nothing protected — so a truthiness test read as a route.
@@ -170,11 +198,19 @@ function refusalReason(
 }
 
 /**
- * THE DECISION — clause (a) in code: parse first (a failure refuses), then the
- * pre-checks, then the allowlist, and a segment with no matching arm refuses. Returns
- * the refusal reason, or undefined for "allowed": the DEFAULT is ALLOW, so a shape this
- * module simply does not think about passes — only the routes enumerated above block.
+ * THE DECISION — clause (a) in code: parse first (a failure is adjudicated by the same
+ * scope predicate a readable command faces), then the pre-checks, then the allowlist, and
+ * a segment with no matching arm refuses. Returns the refusal reason AND the scope clause
+ * that fired (#1764 criterion 10: a refusal that cannot say which of the six tests spoke
+ * cannot be triaged, and the accept-CLI remedy belongs to test (1) alone), or undefined
+ * for "allowed": the DEFAULT is ALLOW, so a shape this module simply does not think about
+ * passes — only the routes enumerated above block.
  */
+export interface GuardVerdict {
+  readonly reason: string;
+  readonly clause: ScopeClause;
+}
+
 /** Is any NON-QUOTED word the store? A quoted word is prose, not an argument. */
 const opensProtected = (words: string[]): boolean =>
   words.some((w) => !/["']/.test(w) && isProtectedToken(unquote(w)));
@@ -190,7 +226,7 @@ function unquoteKeepQuotes(segment: string): string {
   while (i < segment.length) {
     const c = segment[i] as string;
     if (c === "'" || c === '"') {
-      const end = segment.indexOf(c, i + 1);
+      const end = closingQuote(segment, i);
       const stop = end < 0 ? segment.length : end + 1;
       out += segment.slice(i, stop).replace(/\s/g, "_");
       // An unpaired quote leaves `stop` at `i`: the walk has to move forward anyway or
@@ -217,7 +253,7 @@ function traceCommand(command: string): string {
   return flat.length <= 160 ? flat : `${flat.slice(0, 157)}…`;
 }
 
-function scanCommand(command: string): string | undefined {
+function scanCommand(command: string): GuardVerdict | undefined {
   // The newline is kept here: it is a segment separator, and the SEGMENTS are taken from
   // this view. `flat` (the folded text) decides only the pre-checks and the remedy
   // sentences, where a newline is just whitespace. Keeping both views derived from one
@@ -256,12 +292,15 @@ function scanCommand(command: string): string | undefined {
     }: ${traceCommand(command)}`;
     if (blocked) traceWarn(line);
     else trace(line);
-    return blocked ? refusalReason({ dataOperand: true }) : undefined;
+    return blocked
+      ? { reason: refusalReason(blocked, { dataOperand: true }), clause: blocked }
+      : undefined;
   }
   // Does the folded command name a protected file? Both remedy computations below ask
   // the same question, so it is asked ONCE here and reused rather than re-derived.
   const namesTheStore = namesProtected(norm);
-  if (!inScope(raw, norm, words)) return undefined;
+  const clause = inScope(raw, norm, words);
+  if (!clause) return undefined;
 
   // From here the command is IN SCOPE, so everything the guard knows how to refuse
   // applies — the segment-wide gates (expansion, braces, a redirection) and the arms,
@@ -297,13 +336,24 @@ function scanCommand(command: string): string | undefined {
     // its message was quoted at all. The normalised text is lowercase, so lowercasing
     // the raw segment keeps the two views comparable.
     const words = shellWords(unquoteKeepQuotes(rawSegment));
-    if (!segmentAdmitted(words)) return refusalReason({ vcsWrite, dataOperand });
+    if (!segmentAdmitted(words))
+      return { reason: refusalReason(clause, { vcsWrite, dataOperand }), clause };
   }
   return undefined;
 }
 
 /** The refusal text when a bash command could reach the findings store, else undefined. */
 export function runsReviewAccept(command: string): string | undefined {
+  return scanCommand(command)?.reason;
+}
+
+/**
+ * The guard's full verdict: the refusal text AND which of the six scope tests produced it.
+ * The hook consumes `runsReviewAccept`; the #1764 suites consume this, because "every
+ * refusal names its clause" and "only a clause-(1) refusal names the accept CLI" are the
+ * assertions that keep the remedy from silently vanishing from the other five routes.
+ */
+export function reviewAcceptVerdict(command: string): GuardVerdict | undefined {
   return scanCommand(command);
 }
 
@@ -367,20 +417,20 @@ export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
       // A `command` that is PRESENT but not a string cannot be scanned, and a scan that
       // cannot run is not a pass: refused fail-closed, like every other unreadable input.
       if (raw !== undefined && raw !== null && typeof raw !== "string")
-        return { block: true, reason: refusalReason() };
+        return { block: true, reason: refusalReason("store-name") };
       const command = typeof raw === "string" ? raw : "";
       // A scan that throws must not read as "nothing to block": a guard that fails
       // open on its own bug stops being a guard (clause (a) again).
       let reason: string | undefined;
       try {
-        reason = scanCommand(command);
+        reason = scanCommand(command)?.reason;
       } catch (err) {
         traceWarn(
           `review-accept-guard: scan threw, refusing fail-open (${
             err instanceof Error ? err.message : String(err)
           })`,
         );
-        reason = refusalReason();
+        reason = refusalReason("store-name");
       }
       if (!reason) return;
       trace("review-accept-guard: BLOCKED agent-run finding acceptance (mode-independent)");
@@ -389,6 +439,6 @@ export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
     const target = editsFindingsFile(event.toolName, event.input);
     if (!target) return;
     trace(`review-accept-guard: BLOCKED ${event.toolName} of the review findings file`);
-    return { block: true, reason: refusalReason({ target }) };
+    return { block: true, reason: refusalReason("store-name", { target }) };
   });
 }

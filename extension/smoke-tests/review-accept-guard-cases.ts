@@ -135,6 +135,13 @@ export const OUT_OF_SCOPE_ALLOWED: Case[] = [
     why: "a runtime running one suite that names no store file",
   },
   { c: "git status > /tmp/out.txt", why: "a redirection whose target is no store file" },
+  // #1764 criterion 12 moved this row out of DENY_BY_DEFAULT_REFUSALS: the store name sat
+  // in the VALUE of `gh --body`, a prose option, and clause (1) no longer fires on a
+  // literal prose value. The write-capable flags (`--output=` above) still refuse.
+  {
+    c: `gh pr create --body "Adds the review-accept acceptance path"`,
+    why: "a gh write subcommand naming the script only in its --body prose: clause (1)'s prose-option exception",
+  },
   { c: "cat payload.js | wc -", why: "a stdin pipe whose reader counts bytes and names nothing" },
   {
     // The write-capable flags are OUT OF SCOPE only for a program that writes nothing.
@@ -333,10 +340,6 @@ export const DENY_BY_DEFAULT_REFUSALS: Case[] = [
   { c: `git config alias.dump ${Q}!cat ${DATA}${Q}`, why: "git config alias." },
   { c: `gh api /repos/o/r/contents/f --output=${DATA}`, why: "gh --output naming the data file" },
   { c: `glab api /projects/1 --output=${DATA}`, why: "glab --output naming the data file" },
-  {
-    c: `gh pr create --body "Adds the review-accept acceptance path"`,
-    why: "a gh write subcommand naming the script in prose",
-  },
   // A test arm whose argv says something other than a suite.
   {
     c: `bun test smoke-tests/test-review-*.ts ${Q}bun ./src/${STORE}.ts${Q}`,

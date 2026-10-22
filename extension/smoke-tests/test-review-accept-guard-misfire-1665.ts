@@ -14,7 +14,7 @@
  * The refusal text is asserted too: every refusal this guard issues must name the
  * findings store, because that is the only thing it is allowed to refuse.
  */
-import { runsReviewAccept } from "../src/review-accept-guard.ts";
+import { reviewAcceptVerdict, runsReviewAccept } from "../src/review-accept-guard.ts";
 import {
   MEASURED_MISFIRES_ALLOWED,
   STORE_REACHING_REFUSALS,
@@ -40,14 +40,23 @@ for (const t of MEASURED_MISFIRES_ALLOWED) {
 }
 
 for (const t of STORE_REACHING_REFUSALS) {
-  const reason = verdict(t.c);
-  assert(reason !== undefined, `store-reaching shape refused — ${t.why}`);
+  const v = reviewAcceptVerdict(t.c);
+  assert(v !== undefined, `store-reaching shape refused — ${t.why}`);
   // #1665: the findings-store sentence is the guard's whole vocabulary, so it must
-  // appear ONLY where the store is genuinely in the sight line.
+  // appear on EVERY refusal — it is the only thing the guard is allowed to refuse.
+  assert((v?.reason ?? "").includes("review findings store"), `refusal names the store — ${t.why}`);
+  // #1764 criterion 10: the refusal also says WHICH of the six scope tests spoke, so a
+  // refusal can be triaged without reading the guard. The accept-CLI sentence is the
+  // remedy for the NAME test alone; on any other clause it would be advice about an
+  // acceptance nobody was attempting.
   assert(
-    (reason ?? "").includes("review findings store") &&
-      (reason ?? "").includes("extension/scripts/review-accept.ts"),
-    `refusal names the store and the sanctioned CLI — ${t.why}`,
+    /Triggered by clause \(\d\)/.test(v?.reason ?? ""),
+    `refusal names the clause that fired — ${t.why}`,
+  );
+  assert(
+    (v?.reason ?? "").includes("extension/scripts/review-accept.ts") ===
+      (v?.clause === "store-name"),
+    `the sanctioned accept CLI prints for the name clause and nowhere else — ${t.why}`,
   );
 }
 

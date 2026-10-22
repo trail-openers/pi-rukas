@@ -21,6 +21,7 @@ import {
   tokensOf,
   unquote,
 } from "./review-accept-command.ts";
+import { READ_TOOLS } from "./review-accept-readtools.ts";
 import { gitVerbOfSegment } from "./review-accept-verb.ts";
 /** A JS runtime: its invocation executes a program, so it is never a read tool.
  * Exported because the guard's pre-checks ask the same question of the whole command. */
@@ -47,8 +48,8 @@ export const VCS = /^(?:git|gh|glab)$/;
 // The scope tests in `review-accept-guard.ts` ask these of the whole command before any
 // arm is consulted: clause (a) leaves a program that cannot reach the store's bytes
 // alone, so deciding WHICH program a command runs is the gate in front of the allowlist.
-// They sit beside `RUNTIME` and `READ_TOOLS` — the sets they test against — so the two
-// cannot drift.
+// They sit beside the program sets they test against — `RUNTIME` and `VCS` here, the
+// read-tool kinds in `review-accept-readtools.ts` — so the two cannot drift.
 
 /** Does the command run GIT? A repo-location selector only matters for git — the same
  * `-c` on `python3` is its inline-code flag and moves no repository. */
@@ -105,14 +106,6 @@ export function namesGitWriteVerb(text: string): boolean {
       return verb === "hash-object" ? words.some((w) => unquote(w) === "-w") : true;
     }),
   );
-}
-/** Does the command run one of the READ TOOLS the arms admit (`cat`, `grep`, `rg`,
- * `head`, `wc`, …)? Together with `namesVcsOrRuntime` this is the set of programs through
- * which a store name can reach the guarded bytes at all: the scope test asks the
- * unreadable-word question of them, and of nobody else — `awk 'BEGIN{system("id")}'` runs
- * no store-capable program the guard recognises, and clause (a) leaves it alone. */
-export function namesReadTool(text: string): boolean {
-  return shellWords(text).some((w) => READ_TOOLS.has(baseName(unquote(w))));
 }
 /** Does some word of the ORIGINAL command (quotes intact) read as `-`? A runtime with a
  * bare `-` takes its PROGRAM from stdin, and a program the guard cannot read is the
@@ -248,31 +241,6 @@ export function hasUnresolvedRepoSelector(words: string[]): boolean {
 const EXEC_FLAGS = ["--pre", "--pre-glob", "--exec", "-exec", "--command"];
 /** The verbs arm A1 admits: reads that print to stdout and take no output argument. */
 const GIT_READ_VERBS = ["status", "log", "diff", "show", "blame"];
-/** Read tools arm A8 admits, each for arguments naming nothing protected. `bash` is
- * deliberately absent: it EXECUTES its operand, so it appears only in arm A5, which
- * judges every argument. A read arm that admitted `bash` would admit any script — and
- * `sed` and `awk` went the same way in the #1125 fix round, for the same reason: a tool
- * that can run a shell (`awk BEGIN{system("id")}`, GNU `sed -n '1e id'`) or write a file
- * (`sed -n 'w /tmp/x'`) is not a read, whatever its flags are checked for. */
-export const READ_TOOLS = new Set([
-  "ls",
-  "cat",
-  "head",
-  "tail",
-  "wc",
-  "grep",
-  "rg",
-  "file",
-  "stat",
-  "which",
-  "basename",
-  "dirname",
-  "echo",
-  "printf",
-  "cd",
-  "pwd",
-  "true",
-]);
 
 /** Does any word carry one of `flags`, whole, `=`-attached, or ATTACHED to the flag? Each
  * word is asked as written and with its backslashes gone — `git -\o out.txt` is `-o` by the
@@ -344,14 +312,39 @@ function namesStoreOperand(a: string, index: number, all: string[]): boolean {
 }
 
 /**
- * A1: `git (--no-pager )?status|log|diff|show|blame`, pure read, no write flag.
- * The verb is matched WITHOUT stepping over quotes — `'status'` is text handed to git,
- * not the verb this arm vouches for.
+ * A1: `git (--no-pager)?(repo selector)*status|log|diff|show|blame`, pure read, no write
+ * flag. The verb is matched WITHOUT stepping over quotes — `'status'` is text handed to
+ * git, not the verb this arm vouches for. It IS matched after stepping over the
+ * repo-location / config selectors: `git -C <worktree> log` is the form AGENTS.md
+ * mandates, and anchoring the verb on the word immediately after `git` refused every one
+ * of them that came into scope for any other reason (219 fieldbox refusals, #1764). The step
+ * is safe because `hasUnresolvedRepoSelector` below has already read each selector WITH
+ * its value and refused the arm unless the target clears — so what is stepped over is a
+ * selector this arm has vouched for, never an unexamined path.
  */
-export function armGitRead(w: string[]): boolean {
-  const head = ["", "git", "--no-pager"];
+const LEADING_SELECTOR = /^-c|^--(?:git-dir|work-tree|exec-path)/i;
+/** A selector spelled as its own word takes its value from the NEXT word; an attached one
+ * (`-C/tmp/x`, `--git-dir=/x`) carries its own. Mirrors `hasUnresolvedRepoSelector`.
+ * The arms read the command lowercased, so `-C` and `-c` are one spelling here. */
+const SPACED_SELECTOR = /^(?:-c|--git-dir|--work-tree|--exec-path)$/i;
+
+function gitVerbPosition(w: string[]): number {
   let i = 0;
-  while (i < w.length && head.includes(unquote(w[i] ?? ""))) i++;
+  while (i < w.length) {
+    const a = unquote(w[i] ?? "");
+    if (a === "" || a === "git" || a === "--no-pager") {
+      i++;
+      continue;
+    }
+    if (!LEADING_SELECTOR.test(a)) break;
+    i++;
+    if (SPACED_SELECTOR.test(a)) i++;
+  }
+  return i;
+}
+
+export function armGitRead(w: string[]): boolean {
+  const i = gitVerbPosition(w);
   const verb = w[i];
   if (i === 0 || verb === undefined || !GIT_READ_VERBS.includes(verb)) return false;
   const rest = w.slice(i);
