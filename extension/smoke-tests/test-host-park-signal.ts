@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Forge } from "../src/forge.ts";
+import { projectIssue } from "../src/headless/result.ts";
 import { runHeadless } from "../src/headless/run.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -446,6 +447,36 @@ async function driverPark(w: World): Promise<void> {
     assert(
       !existsSync(hostParkSignalPath(w.repo, ISSUE)),
       "the merge path's clear forgets it too: landed work is not a reason to refuse a later start",
+    );
+  } finally {
+    rmSync(w.repo, { recursive: true, force: true });
+  }
+}
+
+// ── 6. The host channel's label state says DECLINED, not FAILED: pi-rukas
+//        applies no `needs-human-attention` label there by contract, and a host
+//        reading only `labelApplied: false` cannot tell a decline from an outage.
+{
+  const w = world("label-declined");
+  try {
+    const s = await park(w, { host: true });
+    const ev = s.eventLog.find((e) => e.kind === "handoff-emitted");
+    assert(
+      ev?.kind === "handoff-emitted" &&
+        ev.labelApplied === false &&
+        ev.labelSkipped === "host-channel",
+      "host: the handoff event records the decline beside its false label",
+    );
+    const r = projectIssue(s, "state.json");
+    assert(
+      r.handoff?.channel === "host" && r.handoff.labelSkipped === "host-channel",
+      "…and the result carries it, so the host can print declined rather than failed",
+    );
+    const forgeState = await park(world("forge-label"), { host: false });
+    const forgeEv = forgeState.eventLog.find((e) => e.kind === "handoff-emitted");
+    assert(
+      forgeEv?.kind === "handoff-emitted" && forgeEv.labelSkipped === undefined,
+      "forge: nothing is claimed as skipped — a false label there stays a failure",
     );
   } finally {
     rmSync(w.repo, { recursive: true, force: true });

@@ -30,6 +30,10 @@ import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
+// #1696 — the host channel's park signal is that module's file to own; the
+// sweep asks it rather than learning the name, the same way it asks
+// work-driver-park-record.ts for `park-<cap>.json`.
+import { holdsLiveHostParkSignal } from "./work-driver-park-memory-host.ts";
 import {
   COVERED_PARK_CAPS,
   PARK_RECORD_MAX_AGE_MS,
@@ -200,5 +204,9 @@ async function holdsLiveParkRecord(
     const rec = await readParkRecord(repoRoot, Number(name), cap);
     if (rec && !parkRecordExpired(rec, now())) return true;
   }
+  // #1696 — the host channel's signal lives in this same directory and arms the
+  // same kind of refusal, so the same rule keeps it alive. Asked of its own
+  // module, which owns the file's name and its plausibility rules.
+  if (await holdsLiveHostParkSignal(repoRoot, Number(name), now())) return true;
   return false;
 }
