@@ -13,7 +13,11 @@ import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
 } from "./work-driver-consolidation-classify.ts";
-import { classifyFailureLine, harnessInnerLine, isHarnessWrapper } from "./work-driver-verify-failures.ts";
+import {
+  classifyFailureLine,
+  harnessInnerLine,
+  isHarnessWrapper,
+} from "./work-driver-verify-failures.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** One verify run the gate actually made. */

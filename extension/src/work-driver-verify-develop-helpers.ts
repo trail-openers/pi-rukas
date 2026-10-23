@@ -301,11 +301,7 @@ export function formatExecError(
   // driver diagnostic it never wrote (see the constant's note on full matching).
   if (!attributed && tail && !tail.includes(UNATTRIBUTED_NOTE))
     trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
-  const suffix = tail
-    ? attributed
-      ? tail
-      : `${tail} ${UNATTRIBUTED_NOTE}`
-    : undefined;
+  const suffix = tail ? (attributed ? tail : `${tail} ${UNATTRIBUTED_NOTE}`) : undefined;
   if (e.killed) return timeoutMsg;
   const detail = suffix ?? e.message?.slice(0, 300) ?? "";
   // A command the host could not fork never ran: say so, rather than
