@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.8](https://github.com/trail-openers/pi-rukas/compare/v0.14.7...v0.14.8) (2026-10-23)
+
+
+### Bug Fixes
+
+* **work:** a host-channel park arms the repeat guard for every cap ([#1779](https://github.com/trail-openers/pi-rukas/issues/1779)) ([da6f374](https://github.com/trail-openers/pi-rukas/commit/da6f374b34fb6d9fd13b28f1e4c8839c12e9f438))
+
 ## [0.14.7](https://github.com/trail-openers/pi-rukas/compare/v0.14.6...v0.14.7) (2026-10-23)
 
 
