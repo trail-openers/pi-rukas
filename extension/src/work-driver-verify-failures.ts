@@ -220,7 +220,7 @@ const PASSING_TALLY = /(?<![\w.])[1-9]\d*\s+passed\b|\b0\s+passed\b|\b0\s+(?:fai
  * item.
  */
 const NONZERO_FAILURE_COUNT =
-  /^[^\r\n]*?:[^\r\n]*?\s[1-9]\d*\s+(?:failed|errors?|failures?)\b|^[\s,;.]*[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])[^\r\n]*\b\d+\s+passed|(?<=[,;\s])[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])[^\r\n]*\b\d+\s+passed/i;
+  /^[^\r\n]*?:[^\r\n]*?\s[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])|^[\s,;.]*[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])|(?<=[,;]\s)[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])/i;
 
 /**
  * #1762 lens round — the longest line the classifier inspects.
@@ -236,6 +236,16 @@ const NONZERO_FAILURE_COUNT =
 export const FAILURE_LINE_SCAN_MAX = 8 * 1024;
 
 /** The classifier's view of one line: trimmed, and bounded by {@link FAILURE_LINE_SCAN_MAX}. */
+/**
+ * A stateless boolean match. The regexes here are module-level and SHARED, so a
+ * `g` flag on any of them would make a bare `test()` advance `lastIndex` and
+ * answer wrongly for every line after the first. Taking `test()` through this
+ * one call keeps that whole class of bug to one line.
+ */
+function matches(re: RegExp, text: string): boolean {
+  return re.test(text);
+}
+
 function scanWindow(line: string): string {
   const t = line.trim();
   return t.length > FAILURE_LINE_SCAN_MAX ? t.slice(0, FAILURE_LINE_SCAN_MAX) : t;
@@ -265,8 +275,13 @@ export function splitLines(text: string): string[] {
 export function isSuccessLine(line: string): boolean {
   const t = scanWindow(line);
   if (t.length === 0) return false;
-  if (NONZERO_FAILURE_COUNT.test(t)) return false;
-  return SUCCESS_LINE.test(t) || PASSING_TALLY.test(t);
+  // ONE call each, in the order the contract requires, and the tally arm is
+  // asked LAST. The arms are also called through a helper rather than inlined:
+  // a `test()` on a module-level regex is stateless only while the regex has no
+  // `g` flag, and a reader cannot see the flag from the call site — routing all
+  // three through one place means a flag change is fixed in one place too.
+  if (matches(NONZERO_FAILURE_COUNT, t)) return false;
+  return matches(SUCCESS_LINE, t) || matches(PASSING_TALLY, t);
 }
 
 /**
