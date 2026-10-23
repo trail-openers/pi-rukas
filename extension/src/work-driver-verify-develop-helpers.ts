@@ -275,7 +275,9 @@ export function formatExecError(
   failMsg: string,
 ) {
   const { tail, attributed } = extractAttributedTail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`, 1500);
-  if (!attributed && tail)
+  // The note is skipped when the stream itself already carries one: a project
+  // gate that prints the harness's own wording must not make the trace lie.
+  if (!attributed && tail && !tail.includes("unattributed"))
     trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
   const suffix = tail
     ? attributed

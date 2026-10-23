@@ -14,67 +14,121 @@
  * at a fixed byte offset from the end, so the reported evidence begins at the
  * actual failure, not wherever the fixed-size window happens to land.
  *
- * Accepted limitation: the anchor is `^FAILED: .+$`, matched anywhere in the
+ * Accepted limitation: the anchor is any line the shared failure-line table
+ * (#1762, work-driver-verify-failures.ts) recognises, matched anywhere in the
  * combined stream and resolved to the LAST occurrence. A test whose own
- * verbose output happens to print a line of that exact shape (e.g. a test
+ * verbose output happens to print a line of one of those shapes (e.g. a test
  * asserting on marker-parsing text elsewhere in this codebase) could shift
  * the anchor away from the real verify-cmd marker and lose attribution for
  * that run. This is deliberately not special-cased — disambiguating "which
- * FAILED: line is the real one" would require either a distinguishing
+ * failure line is the real one" would require either a distinguishing
  * prefix `.pi/verify-cmd` doesn't provide (it's project-supplied, not owned
  * by this repo) or brittle heuristics over test output shapes. The fallback
  * path (`attributed: false`) is the safety net when the anchor is wrong or
  * absent; test-exec-error-attribution.ts pins the last-marker behaviour so
  * this tradeoff stays deliberate and visible.
+ *
+ * #1762 — the anchor used to be only `^FAILED: .+$`, so a project gate that
+ * prints `test.sh: failed checks (1)` instead of this repo's loop dialect
+ * anchored nowhere and the window was the last N chars, which is how a tehas
+ * handoff quoted a PASSING `pack_release_test.sh: 36 cases, 0 failed` stage.
+ * The anchor is now the last failure-looking line the table recognises, and a
+ * line that reports success is never an anchor.
+ *
+ * Which line, when the stream holds several (#1762): the LAST plain `FAILED:`
+ * marker when the stream has one — the smoke loop's own verdict line, which is
+ * the region the loop's `exit 1` follows and what
+ * test-exec-error-attribution.ts pins — otherwise the last recognised line,
+ * preferring one that NAMES a specific assertion. Widening the shape set must
+ * not move an anchor that was already sound.
  */
 
 import { readFileSync } from "node:fs";
+import { classifyFailureLine, splitLines } from "./work-driver-verify-failures.ts";
 
 /** The exact marker `.pi/verify-cmd`'s smoke-test loop emits on failure. */
-const FAILED_MARKER_RE = /^FAILED: .+$/gm;
+const FAILED_MARKER_RE = /^FAILED: .+$/;
+
+/**
+ * A line that reports a failing stage, from the shared failure-line table
+ * (#1762). A stream that prints its own `exec error tail is unattributed`
+ * diagnostic contains that phrase, and must not be mistaken for the harness
+ * saying it could not attribute anything.
+ */
+const UNATTRIBUTED_NOTE = "unattributed";
 
 /** Result of tail extraction: the text, and whether it's anchored evidence. */
 export interface AttributedTail {
   /** The extracted, bounded evidence tail. */
   tail: string;
-  /** True when `tail` starts at a `FAILED:` marker (attribution is sound). */
+  /** True when `tail` starts at a recognised failure line (attribution is sound). */
   attributed: boolean;
 }
 
 /**
- * Extract an evidence tail from combined command output, anchored on the
- * failure marker when present so a passing sub-command's output is never
+ * Extract an evidence tail from combined command output, anchored on the last
+ * failure line when one is present so a passing sub-command's output is never
  * misattributed as the cause. Falls back to the last `maxLen` chars when no
- * marker is found (a single-command failure, or a shape this doesn't know
- * about) — the pre-#723 behaviour, preserved as the fallback rather than the
+ * failure line is found (a single-command failure, or a shape the table doesn't
+ * know about) — the pre-#723 behaviour, preserved as the fallback rather than the
  * default, but now flagged via `attributed: false` rather than silently.
+ *
+ * The bound is maxLen-agnostic (#1762 PM decision 5): an anchor near the end of
+ * a long stream keeps its own line under both the 800- and the 1500-char cap,
+ * because the elision cuts the anchored region's head, not the anchor.
  */
 export function extractAttributedTail(combined: string, maxLen: number): AttributedTail {
   const trimmed = combined.trim();
   if (!trimmed) return { tail: "", attributed: false };
-  // Anchor on the LAST marker — a chain can only fail once (the loop
+  // Anchor on the LAST failure line — a chain can only fail once (the loop
   // `exit 1`s right after), but staying on the last occurrence keeps this
   // correct if a future verify-cmd shape prints more than one.
-  const matches = [...trimmed.matchAll(FAILED_MARKER_RE)];
-  const last = matches[matches.length - 1];
-  if (last?.index !== undefined) {
-    const fromMarker = trimmed.slice(last.index);
+  const anchorIndex = lastFailureIndex(trimmed);
+  if (anchorIndex !== undefined) {
+    const fromMarker = trimmed.slice(anchorIndex);
     if (fromMarker.length <= maxLen) return { tail: fromMarker, attributed: true };
     // Still bound the size — the verbose re-run after the marker can itself
     // be long — but preserve BOTH ends: the marker line (attribution) and
     // the tail of the anchored region (where the real assertion failure /
     // diff / stack trace lives), not just the head.
     const newline = fromMarker.indexOf("\n");
-    const markerLine = newline === -1 ? fromMarker : fromMarker.slice(0, newline);
+    const anchorLine = newline === -1 ? fromMarker : fromMarker.slice(0, newline);
     const elision = "\n...\n";
-    const remaining = maxLen - markerLine.length - elision.length;
+    const remaining = maxLen - anchorLine.length - elision.length;
     const tail =
       remaining > 0
-        ? markerLine + elision + fromMarker.slice(-remaining)
+        ? anchorLine + elision + fromMarker.slice(-remaining)
         : fromMarker.slice(0, maxLen);
     return { tail, attributed: true };
   }
   return { tail: trimmed.slice(-maxLen), attributed: false };
+}
+
+/**
+ * Byte offset in `text` of the line to anchor on. The last `FAILED:` marker when
+ * the stream has one (the loop's own verdict line, and the pre-#1762 anchor, so
+ * an already-sound attribution never moves); otherwise the last line the failure
+ * table recognises, preferring among the recognised lines one that names a
+ * specific assertion — a trailing `FAIL` tally is weaker evidence than the
+ * assertion beneath it. Undefined when the stream has no failure line.
+ */
+function lastFailureIndex(text: string): number | undefined {
+  let offset = 0;
+  let marker: number | undefined;
+  let lastAny: number | undefined;
+  let lastNamed: number | undefined;
+  for (const raw of splitLines(text)) {
+    const line = raw.trim();
+    const at = offset + (raw.length - raw.trimStart().length);
+    if (FAILED_MARKER_RE.test(line)) marker = at;
+    const kind = classifyFailureLine(line);
+    if (kind !== undefined) {
+      lastAny = at;
+      if (kind.namesTest) lastNamed = at;
+    }
+    offset += raw.length + 1;
+  }
+  return marker ?? lastNamed ?? lastAny;
 }
 
 /**

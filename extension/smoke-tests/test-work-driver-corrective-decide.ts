@@ -71,8 +71,17 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
 
 // ── no-round exemptions, each beside the control above ──
 {
+  // A line that reports no failure is still not an assertion, even when the
+  // sentence around it contains the word "failed": the whole stream below is
+  // the harness's own "verify command failed in <cwd>: something went wrong"
+  // echo with nothing behind it, and #1667's exemption is that a developer
+  // dispatched to it has no line to act on. The shared table's job (#1762) is
+  // to tell that echo from `test.sh: failed checks (1)`, which does name one.
   const plain = ctx(perWorktreeGate(WT_A, PLAIN_TEXT));
-  assert(plain.round === false, "no-assertion: a failure with no ✗ / error line gets no round");
+  assert(
+    plain.round === false,
+    "no-assertion: a failure whose only line is the harness echo gets no round",
+  );
 
   const timeout = `[verify-timeout] verify command \`${CMD}\` exceeded its 10-min timeout in ${WT_A}`;
   assert(

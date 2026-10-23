@@ -55,6 +55,7 @@
  */
 
 import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
+import { classifyFailureLine } from "./work-driver-verify-failures.ts";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -130,8 +131,12 @@ const IS_MARKER_LINE = /^FAILED:/;
 /** #807 — an ECHOED shell command (the verify-cmd chain's `$ …` output, #746). */
 const IS_ECHOED_COMMAND = /^\$ /;
 /** #807 — a line that carries ACTUAL failure content (priority: `✗` first). */
-const IS_ASSERTION_LINE =
-  /^✗\s|^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b|exit 0 \(got 1\)|zero findings \(got 1\)/;
+// #1762 — this used to be a second hardwired shape list (`/^✗\s|^error:?\s|
+// \bTS\d{4,}\b|exit 0 \(got 1\)|.../`), which recognised only this repo's own
+// smoke/biome/tsc dialect: every other runner answered
+// `NO_SPECIFIC_ASSERTION`. It now asks the shared failure-line table, which
+// keeps every shape it matched before and adds the runners this repo does not
+// own (TAP/bats, pytest, go, a script's own `failed checks (N)` block).
 
 /**
  * #807 — a token-shape secret guard: the extracted assertion reaches a
@@ -157,8 +162,10 @@ function isNonAssertionLine(line: string): boolean {
  *
  * #807 — the assertion is the FIRST line of the tail that carries actual
  * failure content, preferring a `✗` assertion (smoke loop / biome /
- * scaffold), then a compiler/linter error (tsc `error TS…`, biome
- * diagnostic, `error:`/`Error:`/`error[E…]:`). Marker lines (`FAILED: …`,
+ * scaffold), then any other line the shared failure-line table recognises as
+ * naming a failure — a compiler/linter error, a TAP `not ok`, a pytest
+ * `FAILED path::name`, a go `--- FAIL:`, or a script's `failed checks (N)`
+ * block. Marker lines (`FAILED: …`,
  * including the `FAILED: <n> test(s) — …` summary), echoed shell command
  * lines (`$ …`), and secret-shaped lines are NEVER selected. When no line
  * qualifies, `NO_SPECIFIC_ASSERTION` is returned instead of the first
@@ -181,7 +188,8 @@ export function extractSpecificAssertion(failureTail: string): string {
   }
   for (const line of lines) {
     if (isNonAssertionLine(line)) continue;
-    if (IS_ASSERTION_LINE.test(line)) return line;
+    if (IS_MARKER_LINE.test(line)) continue;
+    if (classifyFailureLine(line) !== undefined) return line;
   }
   return NO_SPECIFIC_ASSERTION;
 }
@@ -333,8 +341,8 @@ export function classifyConsolidatedVerifyFailure(
  * The classifier's view of the shared named-failure reader: which of the lines
  * `namedFailureLines` matches count as evidence HERE.
  *
- * The shared reader accepts every `FAILED:` / `✗` line, because at the cap site a
- * per-file marker still tells the operator which file went red. The classifier is
+ * The shared reader accepts every line its failure table recognises, because at
+ * the cap site a per-file marker still tells the operator which file went red. The classifier is
  * stricter — `consolidatedFailureMessage` joins what it recovers into the field
  * labelled "specific assertion", and a bare `FAILED: smoke-tests/test-x.ts` names a
  * FILE, not an assertion. That is the #798 defect (an operator sent to a filename)
