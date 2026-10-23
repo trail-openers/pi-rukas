@@ -48,7 +48,7 @@ const SHAPES: Array<[string, string, boolean]> = [
   ["error: cannot compile", "diagnostic", true],
   ["error[E0308]: mismatched types", "diagnostic", true],
   ["scripts/pack_release_test.sh: failed checks (1)", "script-tally", true],
-  ["scripts/pack_release_test.sh: 36 cases, 1 failed", "named-file", true],
+  ["scripts/test.sh: 3 failed", "named-file", true],
   ["not ok 3 - the console's tests", "tap-not-ok", true],
   ["FAILED tests/test_auth.py::test_login", "pytest-failed", true],
   ["ERROR tests/test_auth.py::test_login", "pytest-error", true],
@@ -84,8 +84,135 @@ for (const line of SUCCESS) {
 }
 assert(failureLines(SUCCESS.join("\n")).length === 0, "negative: a passing stream yields nothing");
 
-// ── 3. the orchard-shaped stream ───────────────────────────────────────────────
+// ── 2b. prose that merely contains a failure VERB is not a named-file line ───
+// Shared by 2b and 2c: the command and cwd the harness builder composes with
+// (same shape as test-work-driver-corrective-decide.ts's fixtures), and the
+// orchard summary block section 3 uses for the stream tests.
+const CMD = "sh check.sh";
+const WT = "/repo/.worktrees/issue-1-a";
 const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
+
+// The rule these three killed: the table matched `error`, `cannot` and
+// `not found` ANYWHERE after an extension-bearing token, with no separator, so
+// ordinary prose classified, became the anchor with `attributed: true`, and
+// could earn the cycle a corrective round over a sentence that names no check.
+// The three lines the reviewer reproduced, plus neighbours of the same shape.
+// `fatal` is not in the accepted status list, and the counted form needs a
+// token in the `N failed` idiom rather than the verb loose in the sentence —
+// which is what keeps `36 cases, 1 failed` out too (it does not classify;
+// section 1 pins that, and its own tally is not this table's job).
+{
+  const PROSE = [
+    "index.ts: fatal error",
+    "index.ts: cannot parse",
+    "src/a.ts: consider this error case",
+    "index.ts: this error is expected in prose",
+    "index.ts: not found in the fixture, which is fine",
+    "a.ts: the parser cannot handle this and that is intentional",
+    "scripts/pack_release_test.sh: 36 cases, 1 failed",
+  ];
+  for (const line of PROSE) {
+    assert(
+      classifyFailureLine(line) === undefined,
+      `prose: ${JSON.stringify(line)} is not a named-file failure`,
+    );
+  }
+  assert(
+    failureLines(PROSE.join("\n")).length === 0,
+    "prose: a stream of such lines yields no failure line",
+  );
+  assert(
+    extractAttributedTail(`build output\n${PROSE.join("\n")}`, 800).attributed === false,
+    "prose: such a stream is never attributed, so it cannot anchor the evidence",
+  );
+
+  // The four accepted shapes, each spelled out (the brief's list, and the
+  // orchard summary the #1762 park depends on).
+  const NAMED: Array<[string, string]> = [
+    ["a.ts: failed", "named-file"],
+    ["a.ts: FAILED", "named-file"],
+    ["a.ts: FAIL", "named-file"],
+    ["a.ts: ERROR", "named-file"],
+    ["a.ts   FAILED", "named-file"],
+    ["a.ts: 3 failed", "named-file"],
+    ["a.ts: 2 errors", "named-file"],
+    ["a.ts: 1 failure", "named-file"],
+    ["FAIL a.ts", "named-file"],
+    [CHECKS_BLOCK, "script-tally"],
+  ];
+  for (const [line, shape] of NAMED) {
+    const got = classifyFailureLine(line);
+    assert(
+      got !== undefined && got.shape === shape && got.namesTest,
+      `named-file: ${JSON.stringify(line)} classifies as ${shape}, got ${JSON.stringify(got)}`,
+    );
+  }
+  assert(
+    classifyFailureLine("a.ts: 0 failed") === undefined,
+    "named-file: a zero count reports success, not failure",
+  );
+}
+
+// ── 2c. a line the harness wrapped is classified on its inner stream ─────────
+// The harness composes `verify command \`cmd\` failed in <cwd>: <stream>`; the
+// first version of this used the stream only as an existence veto and then
+// matched the WHOLE wrapped line, so every anchored shape (`^✗\s`,
+// `^ERROR \S+::`, `^--- FAIL:`) fell through while the same line unwrapped
+// classified. The wrapper itself must stay unclassified when nothing behind it
+// reports a failure — that is #1667's no-assertion exemption.
+{
+  const WRAPPED: Array<[string, string]> = [
+    ["not ok 3 - x", "tap-not-ok"],
+    ["--- FAIL: TestX (0.31s)", "go-fail"],
+    ["ERROR t.py::t", "pytest-error"],
+    ["FAILED t.py::t", "pytest-failed"],
+    ["\u2717 x", "assertion-mark"],
+    [CHECKS_BLOCK, "script-tally"],
+  ];
+  for (const [inner, shape] of WRAPPED) {
+    const line = `verify command \`${CMD}\` failed in ${WT}: ${inner}`;
+    const got = classifyFailureLine(line);
+    assert(
+      got !== undefined && got.shape === shape,
+      `wrapped: ${JSON.stringify(inner)} behind the harness reports ${shape}, got ${JSON.stringify(got)}`,
+    );
+    // A cwd that contains a colon must not change the answer — the cut is the
+    // builder's `: `, not the first colon in the line.
+    const colonCwd = `verify command \`${CMD}\` failed in /wt/a:b/c: ${inner}`;
+    assert(
+      classifyFailureLine(colonCwd)?.shape === shape,
+      `wrapped: a cwd containing a colon still classifies as ${shape}, got ${JSON.stringify(classifyFailureLine(colonCwd))}`,
+    );
+  }
+
+  // A wrapped stream with no failure shape stays undefined: the harness saying
+  // a run exited non-zero is not evidence, and this is the case the whole
+  // no-assertion suite of #1667 rests on.
+  for (const inner of ["something went wrong", "expected 1, got 2", "12 passed"]) {
+    assert(
+      classifyFailureLine(`verify command \`${CMD}\` failed in ${WT}: ${inner}`) === undefined,
+      `wrapped: ${JSON.stringify(inner)} behind the harness is not a failure line`,
+    );
+  }
+  // And a deps hint that carries its own `: ` (the hook-failed shape) must not
+  // hide the gate's own failure line behind it.
+  const hinted =
+    `verify command \`${CMD}\` failed in ${WT} — the \`.pi/worktree-setup\` hook failed ` +
+    `during provisioning: src/gate.sh exited 1\n${CHECKS_BLOCK}`;
+  assert(
+    classifyFailureLine(hinted) !== undefined,
+    "wrapped: a deps hint carrying its own colon does not hide the gate's failure line",
+  );
+  const hintedClean =
+    `verify command \`${CMD}\` failed in ${WT} — the \`.pi/worktree-setup\` hook failed ` +
+    "during provisioning: src/gate.sh exited 1\nnothing to see here";
+  assert(
+    classifyFailureLine(hintedClean) === undefined,
+    "wrapped: a hint-only tail with no failure shape stays unclassified",
+  );
+}
+
+// ── 3. the orchard-shaped stream ───────────────────────────────────────────────
 const CHECK_DETAIL = "scripts/test.sh   pack_release_test.sh";
 const PASSING = [
   "pack_release_test.sh: 36 cases, 0 failed",
