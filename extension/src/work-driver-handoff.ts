@@ -12,6 +12,8 @@ import {
   lastConsolidatedEvent,
 } from "./work-driver-handoff-consolidate-step.ts";
 import {
+  HOST_PARK_RECORD_BOUND_MS,
+  boundedBestEffort,
   deliverHandoff,
   handoffDispatchFailed,
   parseHandoffCommentUrl,
@@ -54,6 +56,10 @@ let handoffThrowForTest: (() => void) | undefined;
 export function setHandoffThrowForTestForTest(fn: (() => void) | undefined): void {
   handoffThrowForTest = fn;
 }
+
+// §12 split — the bounded best-effort await and its bound moved to
+// `work-driver-handoff-deliver.ts`; re-exported so no consumer's path changes.
+export { HOST_PARK_RECORD_BOUND_MS, boundedBestEffort } from "./work-driver-handoff-deliver.ts";
 
 // #775 prep — captureWorktreeSnapshot moved to work-driver-handoff-snapshot.ts
 // (§12 file-size split); re-exported so no consumer's import path changes.
@@ -362,7 +368,18 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // so without this a park outside the three covered caps left no trace anywhere
   // and a factory's `--restart` re-ran it indefinitely. ONE call, one rule
   // shared with the line above: a park is published when a body reached the host.
-  await recordHostPark(ctx, next, parkReported);
+  // Bounded, because this is the terminal path: a write that never settles must
+  // cost the refusal-memory it carries, never the handoff that already delivered
+  // the report the memory is about.
+  if (
+    await boundedBestEffort("host park signal write", HOST_PARK_RECORD_BOUND_MS, () =>
+      recordHostPark(ctx, next, parkReported),
+    )
+  ) {
+    trace(
+      `work-driver: host park signal write exceeded ${HOST_PARK_RECORD_BOUND_MS}ms — the handoff continues without it`,
+    );
+  }
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,

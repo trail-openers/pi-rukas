@@ -10,6 +10,7 @@
  * group, and the state file is never read.
  */
 
+import { redactClip } from "../decision-log.ts";
 import { trace } from "../trace.ts";
 import type { DriverOutcome } from "../work-driver-outcome.ts";
 import { repeatParkVerdictReason } from "../work-driver-park-memory.ts";
@@ -19,7 +20,29 @@ import { EXIT } from "./exit-code.ts";
 import type { IssueResult } from "./result.ts";
 import { repeatParkRefusalResult } from "./result.ts";
 
-/** The guard's refusal reason, when this outcome is one. */
+/**
+ * The bound and the redaction for a file-sourced park reason on the JSON path.
+ *
+ * `outcome.repeatPark.reason` is read straight out of `host-parks.json` / a
+ * covered `park-<cap>.json` — free text (`cap-hit.parkReason`, `evidence`) in a
+ * directory the operator and any other writer can edit — and `detail` below is
+ * what the host prints. `refuseHostPublishedPark` already puts the SAME verdict
+ * through `hostParkText` (redact, then clip, then one line) for the message beside
+ * it; without it the operator's terminal and the machine-readable result carried an
+ * unredacted copy of a file-sourced string while the chat message for the same
+ * refusal was redacted. Same bound as the host row's `HOST_PARK_REASON_MAX`, and
+ * the same shape: `redactClip` redacts FIRST and clips second, so a cut can never
+ * leave a credential fragment the patterns no longer recognise.
+ */
+const REFUSAL_REASON_MAX = 300;
+
+/** File-sourced text headed for the host's JSON: redacted, then clipped. */
+function refusalText(text: string): string {
+  return redactClip(text, REFUSAL_REASON_MAX);
+}
+
+/**
+ * The guard's refusal reason, when this outcome is one. */
 export function repeatParkRefusalReason(
   outcome: DriverOutcome | "expired" | { crashed: string },
 ): string | undefined {
@@ -53,7 +76,7 @@ export function projectRepeatParkRefusal(
       ? outcome.repeatPark
       : undefined;
   const detail = verdict
-    ? repeatParkVerdictReason(verdict)
+    ? repeatParkVerdictReason({ ...verdict, reason: refusalText(verdict.reason) })
     : reason.slice(REPEAT_PARK_REFUSAL_PREFIX.length);
   // The guard checked every issue in the group and stopped on the first that
   // armed it. Only THAT issue carries the `repeat-park` cap and the count; a

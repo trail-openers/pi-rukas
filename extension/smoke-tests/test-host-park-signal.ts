@@ -30,14 +30,21 @@ import { createHash } from "node:crypto";
  * Offline: no Pi session, no network (`PI_ENSEMBLE_FORGE=none`, both fetches
  * stubbed).
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { projectIssue } from "../src/headless/result.ts";
 import {
+  HOST_PARK_FILE_MAX_BYTES,
   HOST_PARK_MAX_ROWS,
+  HOST_PARK_REASON_MAX,
   clearHostParkSignals,
+  holdsLiveHostParkSignal,
+  isProtectedArtifactPathForTest,
   readHostParkSignalsImpl as readHostParkSignals,
 } from "../src/work-driver-park-memory-host.ts";
+import { hostParkBounds } from "./lib/host-park-bounds.ts";
+import { hostParkClears } from "./lib/host-park-clears.ts";
+import { hostParkDedupeReader } from "./lib/host-park-dedupe-reader.ts";
 import {
   CAP,
   ISSUE,
@@ -51,9 +58,9 @@ import {
   tamperSignal,
   world,
 } from "./lib/host-park-harness.ts";
-import { lostParkCount } from "./lib/lost-park-count.ts";
 import { hostParkPrune } from "./lib/host-park-prune.ts";
 import { sharedKnobs } from "./lib/host-park-shared-knobs.ts";
+import { lostParkCount } from "./lib/lost-park-count.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -164,91 +171,13 @@ async function twice(w: World) {
   }
 }
 
-// ── 2. What clears it, and what must never refuse on nothing.
-{
-  const w = world("edited");
-  await twice(w);
-  w.body = `title:\tmock #${ISSUE}\n\nREVISED: the sandbox has no network`;
-  assert(
-    !refused(await start(w, true)),
-    "an edited issue body: the third start proceeds — the fingerprint is the comparison",
-  );
-  rmSync(w.repo, { recursive: true, force: true });
-}
-{
-  const w = world("disabled");
-  await twice(w);
-  process.env.PI_ENSEMBLE_REPEAT_PARK = "0";
-  try {
-    assert(
-      !refused(await start(w, true)),
-      "PI_ENSEMBLE_REPEAT_PARK=0: the handoff is delivered regardless",
-    );
-    assert(signalOf(w)[0]?.deliveredCount === 2, "…and the signal survives the disable");
-  } finally {
-    delete process.env.PI_ENSEMBLE_REPEAT_PARK;
-    rmSync(w.repo, { recursive: true, force: true });
-  }
-}
-{
-  const w = world("unreadable-body");
-  await twice(w);
-  w.bodyReadable = false;
-  assert(
-    !refused(await start(w, true)),
-    "issue body unreadable: fails OPEN — no refusal on a comparison it could not make",
-  );
-  rmSync(w.repo, { recursive: true, force: true });
-}
-{
-  const w = world("malformed-signal");
-  await twice(w);
-  writeFileSync(signalPath(w), "{not json", "utf8");
-  assert(
-    !refused(await start(w, true)),
-    "a malformed signal file is ABSENT, never trusted: the start proceeds",
-  );
-  rmSync(w.repo, { recursive: true, force: true });
-}
-{
-  const w = world("implausible-count");
-  await twice(w);
-  tamperSignal(w, (r) => {
-    r.deliveredCount = "lots";
-  });
-  assert(
-    !refused(await start(w, true)),
-    "a `deliveredCount` that is not an integer arms nothing — the refusal is a hard stop",
-  );
-  rmSync(w.repo, { recursive: true, force: true });
-}
-{
-  const w = world("absurd-count");
-  await twice(w);
-  tamperSignal(w, (r) => {
-    // An integer to `Number.isInteger`, but not one any writer could produce.
-    r.deliveredCount = 1e18;
-  });
-  assert(
-    !refused(await start(w, true)),
-    "a `deliveredCount` of 1e18 reads as NO protection — a safe-integer bar, so a hand-edited file cannot arm the hard stop",
-  );
-  rmSync(w.repo, { recursive: true, force: true });
-}
-{
-  const w = world("expired");
-  await twice(w);
-  const old = Date.now() - 15 * 24 * 60 * 60 * 1000;
-  tamperSignal(w, (r) => {
-    r.firstAt = old;
-    r.lastAt = old;
-  });
-  assert(
-    !refused(await start(w, true)),
-    "a row past the 14-day floor the sweep deletes under arms nothing",
-  );
-  rmSync(w.repo, { recursive: true, force: true });
-}
+// ── 2. What CLEARS the signal, and what must never refuse on nothing — an edited
+//        body, the switch, an unreadable body, a malformed file, an implausible
+//        count, an expired row. The case lives in `lib/host-park-clears.ts` (the
+//        §12 file-size cap), which states why every one of them is the negative of
+//        a refusal: the guard runs before any step is dispatched, so a false
+//        positive is a cycle that should have run and did not.
+await hostParkClears(assert);
 
 // ── 3. An EMPTY handoff body published nothing, so it counts nothing: the
 //        threshold is a count of reports the host actually received.
@@ -454,6 +383,18 @@ await lostParkCount(assert);
 //        one publish from arming survives too, and two rows of one identity are
 //        one park that one publish increments by one.
 await hostParkPrune(assert);
+
+// ── 5c-4. The reader's dedupe with NO writer in the room: one identity collapses
+//        to max count / oldest firstAt / newest lastAt, a different fingerprint
+//        stays two parks, and the key cannot be shifted by a NUL inside a field.
+//        Split to `lib/host-park-dedupe-reader.ts` (the §12 file-size cap).
+await hostParkDedupeReader(assert);
+
+// ── 5c-3. The BOUNDS on what the signal file may be: its bytes, a row's reason,
+//        and an artifact path's spelling. The case lives in
+//        `lib/host-park-bounds.ts` (the §12 file-size cap), which states the three
+//        bounds and why each reader's doubt falls the way it does.
+await hostParkBounds(assert);
 
 // ── 5d. The two memories share their TWO knobs. #1696 review round 1 — the host
 //        signal carried its own copies of the refusal threshold and the

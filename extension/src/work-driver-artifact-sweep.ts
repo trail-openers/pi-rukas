@@ -32,8 +32,13 @@ import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 // #1696 — the host channel's park signal is that module's file to own; the
 // sweep asks it rather than learning the name, the same way it asks
-// work-driver-park-record.ts for `park-<cap>.json`.
-import { holdsLiveHostParkSignal } from "./work-driver-park-memory-host.ts";
+// work-driver-park-record.ts for `park-<cap>.json`. Asked of the READ half and
+// never of `work-driver-park-memory-host.ts`: that module is the writer and the
+// guard, and it imports `fetchIssueBodyViaGh` — a fingerprint is a `gh` call, and
+// the sweep pays for one read per orphan directory. `test-work-driver-artifact-
+// sweep.ts` (k2) walks this file's import graph and fails if a fetcher is ever
+// reachable from it again.
+import { holdsLiveHostParkSignal } from "./work-driver-park-memory-host-read.ts";
 import {
   COVERED_PARK_CAPS,
   PARK_RECORD_MAX_AGE_MS,
@@ -57,16 +62,6 @@ const defaultExecFn: ExecFn = execp;
 export interface ArtifactSweepOpts {
   /** Absolute repo root; `.pi/work-state/` is resolved under it. */
   repoRoot: string;
-  /**
-   * #1696 — a TEST seam, spelled in the shape of the driver's own
-   * `DriverContext.issueBodyFetcherFn`. The sweep is NOT allowed to fetch an
-   * issue body (that is a `gh` subprocess per orphan directory, in a sweep that
-   * runs at every cycle start), so the only legitimate use is to INJECT A
-   * COUNTING OR THROWING fetcher and assert the sweep never calls it — which is
-   * what `test-work-driver-artifact-sweep.ts` (k) does. Nothing in the sweep
-   * path reads this field, so passing it can only ever observe a leak.
-   */
-  issueBodyFetcherFn?: (issue: number, cwd: string) => Promise<{ stdout: string }>;
   /** Executor for `rm -rf` (injected so tests can assert the command). */
   execFn?: ExecFn;
   /** Set to false to disable the sweep (testing). */

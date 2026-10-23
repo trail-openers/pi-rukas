@@ -1,25 +1,35 @@
 /**
- * work-driver-park-memory-host-read — the READ-ONLY half of the host park
- * signal (#1696): the file's path and name, its row shape, its plausibility
- * rules, and the one function that decides whether a directory still holds a
- * signal someone would act on.
+ * work-driver-park-memory-host-read — the READ half of the host park signal
+ * (#1696): the file's path and name, the bounds on what it is allowed to hold,
+ * and the one function that decides whether a directory still holds a signal
+ * someone would act on.
  *
  * It is a separate module for one reason beyond size: **the sweep must never
  * resolve a fingerprint.** `holdsLiveHostParkSignal` is called once per orphan
  * directory by `work-driver-artifact-sweep.ts`, and a fingerprint is a
  * `gh issue view` — about four subprocesses per directory in a sweep that runs
- * at every cycle start and is chartered to cost nothing. Keeping the parser
- * and the sweep's question here, with the fetchers in
- * `work-driver-park-memory-host.ts`, means the sweep's import graph cannot
- * reach a fetch even by accident; `test-work-driver-artifact-sweep.ts` pins
- * that with an injected fetcher that throws.
+ * at every cycle start and is chartered to cost nothing. Keeping the parser and
+ * the sweep's question here, with the fetchers in
+ * `work-driver-park-memory-host.ts`, means the sweep's import graph cannot reach
+ * a fetch even by accident; `test-work-driver-artifact-sweep.ts` pins that with
+ * an injected fetcher that throws. The row policy it applies — shape, bounds,
+ * identity, eviction — is the pure sibling `work-driver-park-memory-host-rows.ts`
+ * (a §12 file-size seam), and this module re-exports it so the writer and the
+ * tests keep ONE name to import.
  *
  * What lives here deliberately:
- *  - `parseHostParkRows` — pure, no I/O, one clock passed IN;
- *  - `sweepHostParkSignal` — the sweep's three answers, including the one that
- *    is NOT fail-open: a non-ENOENT read error HOLDS the directory;
+ *  - `parseHostParkRows` — pure, no I/O, one clock passed IN, and the ONE place
+ *    the two ceilings (`HOST_PARK_MAX_ROWS`, `HOST_PARK_REASON_MAX`) are applied;
+ *  - `sweepHostParkSignal` — the sweep's three answers, including the one that is
+ *    NOT fail-open: a non-ENOENT read error HOLDS the directory;
  *  - `readHostParkSignalsImpl` — the guard's and the writer's read of the same
  *    rows through the same rules.
+ *
+ * Both reads of the file go through `readHostParkText`, which refuses anything
+ * past `HOST_PARK_FILE_MAX_BYTES` before its bytes are buffered — the same shape
+ * `readCachedIssueBody` uses for the cached artifact in the sibling module. An
+ * oversized file is reported exactly as an unreadable one is, so each reader's
+ * EXISTING rule for one decides it: the guard fails open, the sweep holds.
  *
  * What must NOT: anything that calls `signalFingerprint`, `rawIssueBody`,
  * `fetchIssueBodyViaGh` or `ctx.issueBodyFetcherFn`. That is the writer's and
@@ -29,7 +39,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
-import { PARK_RECORD_MAX_AGE_MS, REPEAT_PARK_REFUSAL_COUNT } from "./work-driver-park-record.ts";
+import {
+  HOST_PARK_FILE_MAX_BYTES,
+  HOST_PARK_MAX_ROWS,
+  HOST_PARK_REASON_MAX,
+  clipHostParkReason,
+  dedupeHostRows,
+  newestFirstHostRows,
+  prunedHostRows,
+} from "./work-driver-park-memory-host-rows.ts";
+import type { HostParkRow } from "./work-driver-park-memory-host-rows.ts";
+import { PARK_RECORD_MAX_AGE_MS } from "./work-driver-park-record.ts";
 import { isKnownCap } from "./workflow-state-validate-caps.ts";
 import { workStateDir } from "./workflow-state.ts";
 
@@ -43,37 +63,21 @@ export const HOST_PARK_SIGNAL_FILE = "host-parks.json";
  */
 const HOST_PARK_FINGERPRINT = /^[0-9a-f]{64}$/;
 
-/**
- * How many rows the signal keeps. One row is one (cap, cause, fingerprint), and
- * an issue's causes and edits are bounded in practice — 50 is far past any real
- * cycle's history — so the ceiling exists to stop a file in a repository's
- * working tree growing without bound. Pruning drops the OLDEST first WITHIN
- * each priority band of `prunedHostRows` (armed rows, then everything else),
- * and every remaining row still arms a refusal on its own. The row a publish
- * writes is exempt from the cut on BOTH sides: the writer prunes the OTHER
- * identities to `HOST_PARK_MAX_ROWS - 1` so its own row always fits, and
- * `prunedHostRows` pins the newest-written row so the reader cannot disagree
- * with the writer about which rows the file is allowed to hold.
- */
-export const HOST_PARK_MAX_ROWS = 50;
+export {
+  type HostParkRow,
+  HOST_PARK_FILE_MAX_BYTES,
+  HOST_PARK_MAX_ROWS,
+  HOST_PARK_REASON_MAX,
+  clipHostParkReason,
+  dedupeHostRows,
+  dedupeHostRowsForWrite,
+  newestFirstHostRows,
+  prunedHostRows,
+} from "./work-driver-park-memory-host-rows.ts";
 
 /** The signal's path — the sweep's exemption and the tests both ask for it. */
 export function hostParkSignalPath(repoRoot: string, issue: number): string {
   return path.join(workStateDir(repoRoot), String(issue), HOST_PARK_SIGNAL_FILE);
-}
-
-/** One published park: what fired, why, against which issue text, how often. */
-export interface HostParkRow {
-  cap: string;
-  reason: string;
-  /** sha256 of the raw issue title + body this park was published against. */
-  fingerprint: string;
-  /** Host handoffs that PUBLISHED this (cap, reason, fingerprint). */
-  deliveredCount: number;
-  firstAt: number;
-  lastAt: number;
-  /** The cycle that last wrote it (`state.startedAt`) — the idempotency key. */
-  lastCycleId: number;
 }
 
 /**
@@ -103,225 +107,55 @@ function plausibleCycleId(v: unknown): v is number {
 }
 
 /**
- * Rows the refusal reads, newest first. The ceiling is enforced in this ONE
- * place, so a file an older writer (or a hand edit) left longer than
- * `HOST_PARK_MAX_ROWS` cannot arm the guard on rows no writer would have kept —
- * and the writer reads it back, so its own write cannot grow past it either.
- * Exported for the writer in the sibling module, which prunes before it inserts
- * its own row: two implementations of "newest first" is how the writer and the
- * reader start disagreeing about which rows the file is allowed to hold.
- *
- * `lastAt` decides, because it is the clock every age test in this module uses
- * (the guard's and the sweep's both compare `now - lastAt`). Sorting on the cycle
- * id instead would prune by a number that is not a clock: a resumed cycle carries
- * its original `startedAt`, so a row it published — one the reader still believes
- * — would be the first one pruned.
- *
- * The one row this order must not lose is the row a publish just wrote, and
- * `prunedHostRows` pins it; this function is the plain order with no pinning.
+ * What one read of the signal file produced: its `text`, its absence (ENOENT or
+ * ENOTDIR), or a read that failed for some other reason. Three cases because the
+ * two readers answer them differently, and a boolean would flatten the pair the
+ * sweep's keep-on-doubt rule turns on.
  */
-export function newestFirstHostRows(rows: HostParkRow[]): HostParkRow[] {
-  return rows
-    .map((row, i) => ({ row, i }))
-    .sort(
-      (a, b) => b.row.lastAt - a.row.lastAt || b.row.lastCycleId - a.row.lastCycleId || a.i - b.i,
-    )
-    .map((x) => x.row);
-}
+type HostParkRead =
+  | { kind: "text"; text: string }
+  | { kind: "absent" }
+  | { kind: "error"; code: string; message: string };
 
 /**
- * Is this row one the guard is about to act on?
+ * The file's text, or why there is none.
  *
- * The bar is the guard's OWN: `hostParkVerdict` refuses on
- * `deliveredCount >= REPEAT_PARK_REFUSAL_COUNT`, and the prune must keep exactly
- * the rows that predicate can fire on. Rows at `COUNT - 1` are deliberately NOT
- * in the keep band — they are fresh history, and putting them there made the
- * band every row (a cycle publishes at count 1 and only climbs from there), so
- * the priority was silently lost and the prune degenerated to pure recency: the
- * oldest row went, armed or not, which is the behaviour this function exists to
- * remove. A count-1 row is protected by being the row a publish INCREMENTS, not
- * by the ceiling's arithmetic — the writer's re-read keeps it and stamps it with
- * the newest `lastAt` in the file.
+ * `open` then `stat` then read, so an oversized file is refused before its bytes
+ * are allocated — a size test after `readFile` bounds the decision, not the
+ * memory. An oversized file is reported as an ERROR, not as absence, so the
+ * sweep's existing rule for a read error (hold) applies to it; the guard's
+ * existing rule for one (fail open) does the same for that reader.
  */
-function keepWorthy(row: HostParkRow): boolean {
-  return row.deliveredCount >= REPEAT_PARK_REFUSAL_COUNT;
-}
-
-/**
- * The row a prune must NEVER evict: the one with the newest `lastAt` in the
- * file, the row a publish has just stamped.
- *
- * It needs pinning because a fresh publish lands at count 1 — below
- * `keepWorthy` — so a plain band sort hands the tail of the list to exactly the
- * row the writer has just promised to keep, and the guard silently loses the
- * refusal it will need one publish later. Pinning by identity instead would
- * need the writer to hand the reader its (cap, reason, fingerprint); pinning by
- * `lastAt` needs no argument at all: a row is protected the moment a writer
- * stamps it, and the stamp is the same clock every age test in this module uses
- * — so the writer and the reader cannot fall out over which rows the file holds.
- * The newest row is unique whatever ties it shares with its neighbours (two rows
- * of one timestamp still have one maximum), and it stays at the FRONT of its
- * band, so the cut can never reach it.
- */
-function newestHostRow(rows: HostParkRow[]): HostParkRow | undefined {
-  let newest: HostParkRow | undefined;
-  for (const row of rows) {
-    if (newest === undefined || row.lastAt > newest.lastAt) newest = row;
-  }
-  return newest;
-}
-
-/**
- * The identity that decides whether two rows are ONE park. `JSON.stringify` of
- * the triple, not a `\0`-joined string: a NUL inside `reason` — which is
- * free-text `parkReason` that has no character filter by design — made
- * `"a\0b\0c"` and `"a\0b\u0000c\u0000\u0000c"` one key, and two genuinely
- * different parks collapsed into a row whose count belonged to neither. JSON
- * quotes and escapes each field, so a field's own delimiters cannot shift a
- * boundary between fields.
- */
-function hostRowKey(row: { cap: string; reason: string; fingerprint: string }): string {
-  return JSON.stringify([row.cap, row.reason, row.fingerprint]);
-}
-
-/**
- * The rows a prune KEEPS, in the order a prune keeps them: the newest-written
- * row, then ARMED rows (the ones `hostParkVerdict` can refuse on) newest first,
- * then everything else newest first, capped at `max` (default
- * `HOST_PARK_MAX_ROWS`).
- *
- * This is the whole answer to "which 50 rows is this file allowed to hold", and
- * it lives here because BOTH sides must give it: the writer in the sibling
- * module prunes before it inserts its own row, and `parseHostParkRows` below
- * caps what it will believe. Two policies — the writer pruning on recency while
- * the reader keeps armed rows, or vice versa — is how a row the writer promised
- * to keep is invisible to the guard that was supposed to honour it. Recency
- * alone was the first rule and it lost armedness: on a file at the ceiling, the
- * oldest row went even when it was the one armed row, so a park the operator
- * had already been handed twice stopped being refused for the unrelated reason
- * that fifty other parks had been published since.
- */
-export function prunedHostRows(
-  rows: HostParkRow[],
-  max: number = HOST_PARK_MAX_ROWS,
-): HostParkRow[] {
-  // ONE priority sort, then one cut. Filling the armed band first and topping it
-  // up from the fresh band was the obvious shape and it is wrong under a cap:
-  // with `max` below the number of fresh rows, every fresh row is kept, the
-  // armed rows are the leftovers, and the final cut drops them — so the single
-  // row the guard refuses on was the FIRST thing a capped prune evicted. Sorting
-  // by (band, recency) makes eviction go the other way round by construction:
-  // the tail of the list is always the least keep-worthy thing in the file.
-  const pinned = newestHostRow(rows);
-  const band = (row: HostParkRow) => (row === pinned ? -1 : keepWorthy(row) ? 0 : 1);
-  return rows
-    .map((row, i) => ({ row, i }))
-    .sort(
-      (a, b) =>
-        band(a.row) - band(b.row) ||
-        b.row.lastAt - a.row.lastAt ||
-        b.row.lastCycleId - a.row.lastCycleId ||
-        a.i - b.i,
-    )
-    .slice(0, max)
-    .map((x) => x.row);
-}
-
-/**
- * Collapse rows that share ONE identity — (cap, reason, fingerprint) — to a
- * single row, keeping the largest count, the oldest `firstAt` and the newest
- * `lastAt`.
- *
- * The writer never produces two such rows, but the file is not only the
- * writer's: a hand edit, a crash between the tmp write and the rename, or a row
- * copied between issues can leave duplicates. Left alone, one publish then
- * increments one row by one while the armed twin sits there, and the guard's
- * answer depends on which of the two it happened to read first — a count the
- * operator is quoting stops being the number of publishes. Deduplicating at
- * parse time means every reader, the sweep and the writer all see one row per
- * identity, and the identity stays exactly as unique as the guard's key.
- */
-export function dedupeHostRows(rows: HostParkRow[]): HostParkRow[] {
-  const byKey = new Map<string, HostParkRow[]>();
-  for (const row of rows) {
-    const key = hostRowKey(row);
-    const seen = byKey.get(key);
-    if (seen) seen.push(row);
-    else byKey.set(key, [row]);
-  }
-  const merged: HostParkRow[] = [];
-  for (const group of byKey.values()) {
-    const head = group[0];
-    if (head === undefined) continue;
-    if (group.length === 1) {
-      merged.push(head);
-      continue;
+async function readHostParkText(file: string): Promise<HostParkRead> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(file, "r");
+    const { size } = await handle.stat();
+    if (size > HOST_PARK_FILE_MAX_BYTES) {
+      return {
+        kind: "error",
+        code: "ETOOBIG",
+        message: `${size} bytes is past the ${HOST_PARK_FILE_MAX_BYTES} ceiling`,
+      };
     }
-    // One park, one row: largest count, oldest `firstAt`, newest `lastAt`.
-    // Mutable accumulation rather than a spread-reduce: the accumulating spread
-    // copies the whole row on every step, and biome flags it.
-    const one: HostParkRow = { ...head };
-    for (const r of group) {
-      one.deliveredCount = Math.max(one.deliveredCount, r.deliveredCount);
-      one.firstAt = Math.min(one.firstAt, r.firstAt);
-      one.lastAt = Math.max(one.lastAt, r.lastAt);
-      one.lastCycleId = Math.max(one.lastCycleId, r.lastCycleId);
+    const buf = await handle.readFile({ encoding: null });
+    // The bound is on the BYTES read, not on the text after the read: a file
+    // that grew between the `stat` and the read is still not unbounded.
+    if (buf.byteLength > HOST_PARK_FILE_MAX_BYTES) {
+      return {
+        kind: "error",
+        code: "ETOOBIG",
+        message: `${buf.byteLength} bytes read is past the ${HOST_PARK_FILE_MAX_BYTES} ceiling`,
+      };
     }
-    merged.push(one);
+    return { kind: "text", text: buf.toString("utf8") };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { kind: "absent" };
+    return { kind: "error", code: code ?? "error", message: (err as Error).message };
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
-  return newestFirstHostRows(merged);
-}
-
-/**
- * Collapse rows of one identity for a WRITE, where the identity being written
- * (`mine`) is known and one of the duplicates is the row about to be counted.
- *
- * `dedupeHostRows` is the read-side answer and it is right for a reader; a
- * writer cannot use it as-is, because collapsing a count-3 row and the row this
- * cycle is publishing into one row whose `lastCycleId` is the MAXIMUM would
- * stamp the merged row with a cycle that never published the count-3 half — and
- * a merged row that carries this cycle's id makes the write below think it has
- * already published, silently dropping the increment. So the group this cycle
- * belongs to is collapsed into the row the cycle owns (its own id wins), and
- * every other identity is left to the plain rule. Keeps max count, oldest
- * `firstAt`, newest `lastAt` either way.
- */
-export function dedupeHostRowsForWrite(
-  rows: HostParkRow[],
-  mine: { cap: string; reason: string; fingerprint: string },
-  cycleId: number,
-): HostParkRow[] {
-  const byKey = new Map<string, HostParkRow[]>();
-  for (const row of rows) {
-    const key = hostRowKey(row);
-    const seen = byKey.get(key);
-    if (seen) seen.push(row);
-    else byKey.set(key, [row]);
-  }
-  const merged: HostParkRow[] = [];
-  for (const group of byKey.values()) {
-    const first = group[0];
-    if (first === undefined) continue;
-    if (group.length === 1) {
-      merged.push(first);
-      continue;
-    }
-    // Mutable accumulation rather than a spread-reduce (see `dedupeHostRows`).
-    const head: HostParkRow = { ...first };
-    for (const r of group) {
-      head.deliveredCount = Math.max(head.deliveredCount, r.deliveredCount);
-      head.firstAt = Math.min(head.firstAt, r.firstAt);
-      head.lastAt = Math.max(head.lastAt, r.lastAt);
-      head.lastCycleId = Math.max(head.lastCycleId, r.lastCycleId);
-    }
-    // The cycle owns the row when its id is on one of the duplicates, or when
-    // this is the identity it is publishing.
-    const owned = group.some((r) => r.lastCycleId === cycleId);
-    const publishing =
-      head.cap === mine.cap && head.reason === mine.reason && head.fingerprint === mine.fingerprint;
-    merged.push(owned || publishing ? { ...head, lastCycleId: cycleId } : head);
-  }
-  return newestFirstHostRows(merged);
 }
 
 /**
@@ -334,20 +168,23 @@ export function dedupeHostRowsForWrite(
  * literal, strings where strings belong), its counters are safe integers the
  * writer could have produced, its timestamps are dates, and — with `now`, the
  * ONE clock this call uses for every row — it is inside the age the covered
- * record shares. A cap outside the published vocabulary (`isKnownCap`) is
- * dropped rather than kept: the cap is echoed into a refusal message, so a
- * fabricated one is untrusted text with no legitimate use, and a writer can
- * only ever have emitted a known literal.
+ * record shares. A cap outside the published vocabulary (`isKnownCap`) is dropped
+ * rather than kept: the cap is echoed into a refusal message, so a fabricated one
+ * is untrusted text with no legitimate use, and a writer can only ever have
+ * emitted a known literal. A `reason` longer than `HOST_PARK_REASON_MAX` is not
+ * dropped but CLIPPED, with the constant the writer itself clips with, so the
+ * stored value and the read value are one value and dedupe cannot split a park in
+ * two.
  *
  * The fingerprint must be what `signalFingerprint` produces — a lowercase hex
- * sha256 — and a row whose fingerprint is anything else is dropped: it can
- * never match the hash the guard computes, so it arms nothing, and letting it
- * through would count it against the ceiling while it sits there believed.
+ * sha256 — and a row whose fingerprint is anything else is dropped: it can never
+ * match the hash the guard computes, so it arms nothing, and letting it through
+ * would count it against the ceiling while it sits there believed.
  *
- * Rows come back deduplicated by identity, then pruned by `prunedHostRows` —
- * the newest-written row, then armed rows, then recency — so every reader (the
- * guard, the sweep) and the writer's own prune agree on the window the file is
- * allowed to have.
+ * Rows come back deduplicated by identity, then pruned by `prunedHostRows` — the
+ * newest-written row, then armed rows, then recency — so every reader (the guard,
+ * the sweep) and the writer's own prune agree on the window the file is allowed to
+ * have.
  */
 export function parseHostParkRows(text: string, reader: string, now: number): HostParkRow[] {
   const file = `host park signal read by the ${reader}`;
@@ -389,7 +226,11 @@ export function parseHostParkRows(text: string, reader: string, now: number): Ho
     ) {
       rows.push({
         cap: r.cap,
-        reason: r.reason,
+        // Clipped here rather than only on the way out: the value that goes
+        // into the row's identity has to be the value the writer stored, or a
+        // row whose reason was longer than the ceiling dedupes against a
+        // different key than the one the next publish writes for the same park.
+        reason: clipHostParkReason(r.reason),
         fingerprint: r.fingerprint,
         deliveredCount: r.deliveredCount,
         firstAt: r.firstAt,
@@ -406,16 +247,37 @@ export function parseHostParkRows(text: string, reader: string, now: number): Ho
 }
 
 /**
+ * Does this issue's artifact directory carry a host park signal a reader would
+ * still act on? The artifact sweep's question, and the reason this module exists
+ * separately from the writer: answering it costs ONE bounded file read and ZERO
+ * forge calls. Asking it of `work-driver-park-memory-host.ts` instead would make
+ * the sweep's import graph reach `fetchIssueBodyViaGh` — the writer's fetcher —
+ * and `test-work-driver-artifact-sweep.ts` (k2) walks the graph to refuse that.
+ *
+ * It does NOT re-check the covered record: the caller in
+ * `work-driver-artifact-sweep.ts` reads those itself, through the module that
+ * owns them, and asking twice for one directory is how two readers drift.
+ */
+export async function holdsLiveHostParkSignal(
+  repoRoot: string,
+  issue: number,
+  now = Date.now(),
+): Promise<boolean> {
+  return sweepHostParkSignal(repoRoot, issue, now);
+}
+
+/**
  * What the sweep asked, answered from ONE read of ONE file on ONE clock.
  *
  * Three answers, and the middle one is the point:
  *   - ENOENT / ENOTDIR — the file is not there, so it holds nothing;
  *   - any other read error — HELD. The sweep keeps on doubt, because deleting a
  *     live signal destroys the evidence behind a refusal the operator was given,
- *     and keeping a stale directory costs a few bytes;
- *   - content that parses to no believable row — not held. `parseHostParkRows`
- *     is pure and never fetches, so "the rows are gone" is a judgement the sweep
- *     can make without paying for `gh` per directory.
+ *     and keeping a stale directory costs a few bytes. A file past the byte
+ *     ceiling is reported as one of these, so it holds too;
+ *   - content that parses to no believable row — not held. `parseHostParkRows` is
+ *     pure and never fetches, so "the rows are gone" is a judgement the sweep can
+ *     make without paying for `gh` per directory.
  *
  * The age test is the caller's `now`, passed through to the parser so one call
  * uses one clock rather than a new `Date.now()` per row.
@@ -426,26 +288,25 @@ export async function sweepHostParkSignal(
   now: number,
 ): Promise<boolean> {
   const file = hostParkSignalPath(repoRoot, issue);
-  let text: string;
-  try {
-    text = await fs.readFile(file, "utf8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "ENOENT" || code === "ENOTDIR") return false;
+  const read = await readHostParkText(file);
+  if (read.kind === "absent") return false;
+  if (read.kind === "error") {
     trace(
-      `work-driver: host park signal ${file} unreadable by the sweep (${code ?? "error"}): held — ${(err as Error).message}`,
+      `work-driver: host park signal ${file} unreadable by the sweep (${read.code}): held — ${read.message}`,
     );
     return true;
   }
+  const text = read.text;
   if (text.trim().length === 0) return false;
   return parseHostParkRows(text, "sweep", now).length > 0;
 }
 
 /**
  * Read the signal rows. A missing file is silent and empty (the normal case);
- * anything else a reader could not believe is EMPTY, never trusted, with a
- * trace — the refusal this feeds is a hard stop, so a `deliveredCount` that is
- * not a plausible integer or a `lastAt` from 1970 must not arm it.
+ * anything else a reader could not believe is EMPTY, never trusted, with a trace
+ * — the refusal this feeds is a hard stop, so a `deliveredCount` that is not a
+ * plausible integer, a `lastAt` from 1970, or a file past the byte ceiling must
+ * not arm it.
  *
  * `now` is the one clock this pass uses; callers that judge several files (the
  * sweep) or several issues (the guard) pass one value so the whole pass agrees
@@ -459,17 +320,13 @@ export async function readHostParkSignalsImpl(
   now = Date.now(),
 ): Promise<HostParkRow[]> {
   const file = hostParkSignalPath(repoRoot, issue);
-  let text: string;
-  try {
-    text = await fs.readFile(file, "utf8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code !== "ENOENT" && code !== "ENOTDIR") {
-      trace(
-        `work-driver: host park signal ${file} unreadable by the ${reader} (${code ?? "error"}): ${(err as Error).message}`,
-      );
-    }
+  const read = await readHostParkText(file);
+  if (read.kind === "absent") return [];
+  if (read.kind === "error") {
+    trace(
+      `work-driver: host park signal ${file} unreadable by the ${reader} (${read.code}): ${read.message}`,
+    );
     return [];
   }
-  return parseHostParkRows(text, reader, now);
+  return parseHostParkRows(read.text, reader, now);
 }
