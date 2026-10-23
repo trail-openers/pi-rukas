@@ -29,7 +29,7 @@
  * Offline: no Pi session, no network (`PI_ENSEMBLE_FORGE=none`, both fetches
  * stubbed).
  */
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { projectIssue } from "../src/headless/result.ts";
@@ -55,6 +55,35 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+/**
+ * The module is a LEAF, and that is load-bearing rather than stylistic:
+ * `work-driver-state-guards.ts` imports it for its pre-loop check, so importing
+ * back into the judgement half (`work-driver-park-memory.ts`) is an import cycle
+ * — and under bun the cycle is not merely untidy: that module's
+ * `export const REPEAT_PARK_REFUSAL_COUNT` is evaluated only after this file's
+ * top level has already read it, which is a `ReferenceError` at load time, i.e.
+ * every cycle dies at import. This canary fails when the shape returns, with a
+ * message naming the symptom, because the fix (read the two values locally) does
+ * not look like a fix for a crash you have not seen yet.
+ */
+{
+  const src = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "work-driver-park-memory-host.ts"),
+    "utf8",
+  );
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+  // A value import of the judgement half is the cycle; `import type` is erased at
+  // compile time, so it cannot participate in one. Checked per import statement,
+  // because the type-only import and a value import could otherwise share a name.
+  const valueImport = [
+    ...code.matchAll(/import\s+([^;]*?)\s+from\s+["']\.\/work-driver-park-memory\.ts["']/g),
+  ].some((m) => !/^type\b/.test((m[1] ?? "").trim()));
+  assert(
+    !valueImport,
+    "the host module imports the judgement half for TYPES only — a value import is an import cycle that kills every cycle at load",
+  );
 }
 
 /** Three parked cycles' worth of the same park: two publications, then a start. */
