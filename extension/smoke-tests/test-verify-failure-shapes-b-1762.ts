@@ -22,7 +22,13 @@ import { decideCorrectiveRound } from "../src/work-driver-corrective-decide.ts";
 import type { CorrectiveGateView } from "../src/work-driver-corrective-decide.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import { formatExecError } from "../src/work-driver-verify-develop-helpers.ts";
-import { failureLines, isSuccessLine, splitLines } from "../src/work-driver-verify-failures.ts";
+import {
+  failureLines,
+  harnessInnerLine,
+  isSuccessLine,
+  splitLines,
+} from "../src/work-driver-verify-failures.ts";
+import { assertionLines } from "../src/work-driver-verify-record.ts";
 import { runVerifyFull } from "../src/work-driver-verify-full.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import {
@@ -200,6 +206,91 @@ const LABEL = "[host-resource-exhaustion]";
       `corrective: the developer is given the failed-checks block (got ${JSON.stringify(d.targets[0]?.lines)})`,
     );
   }
+}
+
+// ── 9. what the reader RETURNS is the gate's line, not harness text ─────────
+// `harnessInnerLine` returns the first cut whose stream classifies, so two
+// kinds of the harness's own writing can ride along into the field labelled
+// "the specific assertion": the separator padding a command or cwd containing
+// `: ` leaves in front of the gate's output, and the deps hint's diagnosis when
+// the cut lands on the colon inside the hint. Classification is unchanged by
+// either — these assert only what a developer is shown.
+{
+  // (a) Separator padding. `host:8080` and `host:9090` put `: ` in the command
+  // and the run's cwd, so the first candidate the builder's scan accepts is
+  // one of those and the returned stream opened with `: : : …`.
+  const PADDED =
+    `verify command \`${CMD} run host:8080 and host:9090\` failed in ${WT}` +
+    `${": ".repeat(12)}a.ts: 3 failed`;
+  assert(
+    harnessInnerLine(PADDED) === "a.ts: 3 failed",
+    `padding: harnessInnerLine strips the leading separators (got ${JSON.stringify(harnessInnerLine(PADDED))})`,
+  );
+  assert(
+    extractSpecificAssertion(PADDED) === "a.ts: 3 failed",
+    `padding: extractSpecificAssertion returns the gate line, unpadded (got ${JSON.stringify(extractSpecificAssertion(PADDED))})`,
+  );
+  {
+    const gate: CorrectiveGateView = {
+      ok: false,
+      failures: [PADDED],
+      verifyRun: {
+        status: "ran",
+        command: `${CMD} run host:8080 and host:9090`,
+        failures: [PADDED],
+        perWorktree: [{ cwd: WT, text: PADDED }],
+      },
+    };
+    const d = decideCorrectiveRound(gate, { eventLog: [], worktrees: { a: WT } });
+    assert(d.round === true, `padding: the padded line still earns the round (${JSON.stringify(d)})`);
+    if (d.round) {
+      assert(
+        (d.targets[0]?.lines ?? []).join("|") === "a.ts: 3 failed",
+        `padding: the developer is given the bare gate line (got ${JSON.stringify(d.targets[0]?.lines)})`,
+      );
+    }
+  }
+
+  // (b) The deps hint's own prose. Both shapes that carry a `: ` of their own
+  // reach the gate's tail through that colon, so the returned stream opened
+  // with the harness's diagnosis: `node_modules is empty: scripts/gate.sh: …`.
+  const GATE_LINE = "scripts/gate.sh: failed checks (1)";
+  const HINTED: Array<[string, string]> = [
+    [
+      "hook-failed",
+      `verify command \`${CMD}\` failed in ${WT} — the \`.pi/worktree-setup\` hook failed ` +
+        `during provisioning: node_modules is empty: ${GATE_LINE}`,
+    ],
+    [
+      "generic",
+      `verify command \`${CMD}\` failed in ${WT} — this looks like missing dependencies ` +
+        `in the worktree: node_modules is empty: ${GATE_LINE}`,
+    ],
+  ];
+  for (const [shape, line] of HINTED) {
+    assert(
+      harnessInnerLine(line) === GATE_LINE,
+      `hint prose (${shape}): the returned line is the gate's, with no hint text (got ${JSON.stringify(harnessInnerLine(line))})`,
+    );
+    assert(
+      extractSpecificAssertion(line) === GATE_LINE,
+      `hint prose (${shape}): the specific assertion names no hint prose (got ${JSON.stringify(extractSpecificAssertion(line))})`,
+    );
+    assert(
+      assertionLines(line).join("|") === GATE_LINE,
+      `hint prose (${shape}): the corrective round is given only the gate line (got ${JSON.stringify(assertionLines(line))})`,
+    );
+  }
+
+  // And the two removals are only removals: a wrapper with nothing assertable
+  // behind it still reports absence, and still keeps its deps hint.
+  const hintOnly =
+    `verify command \`${CMD}\` failed in ${WT} — the \`.pi/worktree-setup\` hook failed ` +
+    "during provisioning: node_modules is empty\nnothing to see here";
+  assert(
+    extractSpecificAssertion(hintOnly) === NO_SPECIFIC_ASSERTION,
+    `hint prose: a hint with no gate failure still reports absence (got ${JSON.stringify(extractSpecificAssertion(hintOnly))})`,
+  );
 }
 
 console.log(failed() ? "\nFAILED" : "\nAll #1762/#1770 stream-reader checks passed.");
