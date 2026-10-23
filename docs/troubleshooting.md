@@ -1725,6 +1725,26 @@ and the develop event log keeps its `verifyEvidence` / duration recording untouc
 
 **Escape hatch:** `PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP` set to `0`, `false`, `off` or `no` (trimmed, case-insensitive) restores the always-run behaviour (for example, to reproduce a gate failure that only appears in the probe's checkout).
 
+### A single-workstream cycle said the verify failed "on the CONSOLIDATED tree" (#1064)
+
+**Symptom:** a cycle with one `default` workstream parks as `verify-failed:develop` and its first evidence line (and the handoff comment rendered from it) reads
+
+```
+[needs-human-decision] verify command `…` failed on the CONSOLIDATED tree — specific assertion: …
+```
+
+for a cycle that has exactly one workstream. Five of nine `verify-failed:develop` cycles on the host this was filed from read that way.
+
+**Why it was wrong:** with one workstream the consolidated probe cherry-picks that workstream's own commits onto the base, so its tree is that workstream's tree — nothing was combined. The sentence described a combination that did not happen, which sends the operator looking for an interaction between workstreams where there is no second workstream to be between. (The same probe is genuinely a second tree at N>1, and genuinely ran at N=1 — see the #1240 section above for why it now usually skips. The label was the bug, not the run.)
+
+**What it says now:** one rule, applied at every consolidated label in the driver — the CONSOLIDATED wording appears only when there is more than one workstream; with one, the line names that workstream's own tree in the same words the per-worktree leg uses:
+
+```
+[needs-human-decision] verify command `…` failed in the single workstream's own tree at <worktree> — specific assertion: …
+```
+
+Only the location clause moved. The `[classification]` tag the cap router reads, the specific assertion, the workstream attribution and the reason are the classifier's own words at both counts, the consolidated run still executes, and the gate's `ok` / notes outcome is unchanged — so nothing about which checks ran, what they decided, the flake retry's precondition, or any timeout moved with the label. `test-consolidated-label.ts` pins the switch in both directions, and the `#669 case 1` assertion in `test-work-driver-verify-consolidated.ts` keeps the N>1 wording green.
+
 ### `develop` is silent for many minutes after the developer finished (#1415)
 
 **Symptom:** the developer child reports done, then nothing reaches the console or the headless stream until `develop` completes 10–25 minutes later.

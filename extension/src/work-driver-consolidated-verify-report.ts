@@ -20,11 +20,9 @@
  */
 
 import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
+import { consolidatedFailureLabel } from "./work-driver-consolidated-verify-label.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify.ts";
-import {
-  classifyConsolidatedVerifyFailure,
-  consolidatedFailureMessage,
-} from "./work-driver-consolidation-classify.ts";
+import { classifyConsolidatedVerifyFailure } from "./work-driver-consolidation-classify.ts";
 import {
   extractAttributedTail,
   hostExhaustionFailure,
@@ -65,6 +63,22 @@ export interface ConsolidatedVerifyReporting {
   perWorktreeFailuresByWs: Record<string, string>;
   singlePerWs: string | undefined;
   singlePerAssertion: string | null | undefined;
+  /**
+   * #1064 — the single workstream's own tree, read only when the cycle has ONE
+   * workstream and the consolidated run went red: the label then names that
+   * tree in the per-worktree words instead of claiming a CONSOLIDATED tree that
+   * combined nothing. Absent → the N>1 wording (a caller with no worktree to
+   * name has no N=1 claim to make either).
+   */
+  singleWorktree?: string;
+  /**
+   * #1064 / #1324 — the command the single workstream's own run actually
+   * executed (its fast tier, when that tier is what failed), supplied by the
+   * develop caller alongside `singleWorktree`. The N=1 consolidated line names
+   * it, so the two lines one gate call pushes cannot disagree about which
+   * command fell over. Absent → `cmd`, the configured command.
+   */
+  reportCmd?: string;
   /** The develop fence's records — #814 attributes a conflict to a sibling. */
   fenceViolations?: FenceViolationRecord[];
   onConsolidatedLogPath?: (logPath: string) => void;
@@ -114,6 +128,8 @@ export function reportConsolidatedVerifyOutcome(
     perWorktreeFailuresByWs,
     singlePerWs,
     singlePerAssertion,
+    singleWorktree,
+    reportCmd,
     fenceViolations,
     onConsolidatedLogPath,
     onVerifyFlakeRecovered,
@@ -278,25 +294,26 @@ export function reportConsolidatedVerifyOutcome(
     // the same bounded evidence the classifier saw, not the whole stream — a
     // passing stage that merely prints the phrase must not relabel a real
     // failure further down.
+    // #1064 — the tree and command this run's labels name, decided ONCE so the
+    // three branches below cannot disagree about what the same run was.
+    const label = consolidatedFailureLabel({
+      verdict,
+      cmd,
+      workstreamCount: wsIds.length,
+      at: ctx.repoRoot,
+      ...(singleWorktree !== undefined ? { singleWorktree } : {}),
+      ...(reportCmd !== undefined ? { reportCmd } : {}),
+    });
     failures.push(
       (cons.timedOut === true
         ? // #1427 — the hang report carries the test names, the process tree and
           // the output tail, so the headline stays the plain timeout sentence and
           // the report is pointed at structurally (`hangLogPath` below, thence to
           // the cap event and the handoff).
-          `${verifyTimeoutFailure(
-            cmd,
-            `on the CONSOLIDATED tree at ${ctx.repoRoot}`,
-            timeoutMs,
-            timeoutKnob ?? TIER_KNOB.suite,
-          )}.`
+          `${verifyTimeoutFailure(cmd, label.timeoutWhere, timeoutMs, timeoutKnob ?? TIER_KNOB.suite)}.`
         : isHostForkExhaustion(classifierInput)
-          ? hostExhaustionFailure(
-              `verify command \`${cmd}\` on the CONSOLIDATED tree`,
-              classifierInput,
-              pidLimitSnapshot(),
-            )
-          : consolidatedFailureMessage(verdict, cmd)) + logClause,
+          ? hostExhaustionFailure(label.execSubject, classifierInput, pidLimitSnapshot())
+          : label.verdictLine) + logClause,
     );
     // #841 — thread the ACTUAL written log path back (the write's own
     // return — undefined when the write failed, in which case there is

@@ -150,10 +150,19 @@ try {
     // The #1240 duplicate-run skip must be OFF for this case: the fixture is
     // N=1 with a green per-worktree verify, so the consolidated probe is
     // provably the tree that just passed and its run would be skipped — which
-    // would leave the `CONSOLIDATED tree` assertion below unassertable (the
+    // would leave the consolidated host-failure branch below unassertable (the
     // smoke command alone still fails the gate, so without this pin the case
     // silently stops exercising the consolidated host-failure branch it exists
     // to pin). `0` is the only value that disables the skip.
+    //
+    // #1064 — the assertion used to pin the words `CONSOLIDATED tree` here. At
+    // N=1 that wording is exactly what the rule removes (the probe combined
+    // nothing), so what is pinned is the STRUCTURAL fact that this failure
+    // belongs to the CONSOLIDATED run rather than to the per-worktree leg: the
+    // probe's tree is the repoRoot checkout, which this stub starves only at
+    // `f.repo` while the worktree run of the same command succeeds — so the one
+    // host-exhaustion line that is neither the smoke command's (`smoke:` below)
+    // nor a worktree's is this run's, and it must name the tree it ran in.
     const prevSkip = process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP;
     process.env.PI_ENSEMBLE_CONSOLIDATED_VERIFY_SKIP = "0";
     const exec = starvedExec(
@@ -169,8 +178,24 @@ try {
       `verify cannot fork: no classifier verdict about the change (got: ${all.slice(0, 300)})`,
     );
     assert(
-      gate.failures.some((x) => x.includes(LABEL) && x.includes("CONSOLIDATED tree")),
-      "verify cannot fork: the consolidated run is labelled a host failure",
+      gate.failures.some(
+        (x) =>
+          x.includes(LABEL) &&
+          x.includes("verify command") &&
+          x.includes("could not run") &&
+          x.includes(f.repo),
+      ),
+      // #1064: the consolidated host failure names the tree it ran in (repoRoot,
+      // where the probe checked the combination out) in the per-worktree words,
+      // not the CONSOLIDATED words — which is what the substring this replaces
+      // was standing in for. The run is distinguished from the smoke command's
+      // host failure below by `smoke:`, and from the per-worktree leg by the
+      // tree: the worktree's own run of this command succeeded.
+      `verify cannot fork: the consolidated run is labelled a host failure in the tree it ran in (got: ${all.slice(0, 300)})`,
+    );
+    assert(
+      !all.includes("CONSOLIDATED tree"),
+      `#1064: a single-workstream cycle is not told the CONSOLIDATED tree failed (got: ${all.slice(0, 300)})`,
     );
     assert(
       gate.failures.some((x) => x.includes(LABEL) && x.includes("smoke:")),

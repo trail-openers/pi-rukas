@@ -26,10 +26,7 @@ import {
   verifyCapFor,
 } from "../src/work-driver-verify-develop-helpers.ts";
 import { FAST_TIER_LABEL, fastVerifyCmdFor, withFastTier } from "../src/work-driver-verify-fast.ts";
-import {
-  VERIFY_SUITE_TIMEOUT_ENV,
-  suiteTierTimeoutMs,
-} from "../src/work-driver-verify-budget.ts";
+import { VERIFY_SUITE_TIMEOUT_ENV, suiteTierTimeoutMs } from "../src/work-driver-verify-budget.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
@@ -323,7 +320,7 @@ await pinDefaultVerifyTimeout(async () => {
 
 // 6 — commit-pr: the fast tier runs first and a kill is a timeout, not a classification.
 {
-  const { repo } = await makeRepo("commit-pr", FAST);
+  const { repo, wt } = await makeRepo("commit-pr", FAST);
   const calls: Calls = [];
   const red = await runCommitPrConsolidatedVerify(
     stubExec(calls, (c) => (c === FAST ? { ok: false, stdout: TSC } : { ok: true })),
@@ -336,6 +333,9 @@ await pinDefaultVerifyTimeout(async () => {
     },
   );
   assert(red.ok === false && !red.timedOut, "commit-pr fast red: a failure, not a timeout");
+  // #1064 — the commit-pr label switch (N=1 names the workstream's own tree, N>1 keeps
+  // the CONSOLIDATED wording) is pinned in test-consolidated-label.ts, which owns that
+  // rule for both seams; what this file keeps pinning is the fast-tier fact above.
   assert(
     !calls.some((c) => c.cmd === FULL),
     "commit-pr fast red: the full verify is short-circuited",

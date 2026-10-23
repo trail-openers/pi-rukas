@@ -24,6 +24,14 @@ export interface CommitPrVerifyOpts {
   repoRoot: string;
   workstreamCount: number;
   workstreamIds: string[];
+  /**
+   * #1064 — the single workstream's own tree, supplied by the caller when the
+   * cycle has ONE workstream. The consolidated probe's tree is then that tree,
+   * so the failure label names it (the per-worktree wording) instead of claiming
+   * a CONSOLIDATED tree that combined nothing. Absent, or N>1 → the CONSOLIDATED
+   * wording, byte for byte as before.
+   */
+  singleWorktree?: string;
   perWorktreeFailuresByWs?: Record<string, string>;
   timeoutMs?: number;
   /**

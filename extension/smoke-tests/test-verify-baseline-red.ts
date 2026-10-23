@@ -225,8 +225,22 @@ await pinDefaultVerifyTimeout(async () => {
     "timeout: no failure claims an assertion about the code",
   );
   assert(
-    r.failures.some((f) => f.includes(`${BOUND} timeout on the CONSOLIDATED tree`)),
-    "timeout: the consolidated run is reported as exceeding its bound",
+    // #1064 — this fixture is ONE workstream, so the consolidated run's label
+    // names that workstream's own tree; the CONSOLIDATED wording belongs to a
+    // run that combined more than one (pinned N>1 by the #669 case in
+    // test-work-driver-verify-consolidated.ts). What is unchanged is the
+    // sentence's shape: the `[verify-timeout]` lead and the bound it names —
+    // that the run was killed, which is the whole content of a killed run.
+    r.failures.some(
+      (f) =>
+        f.includes(`${BOUND} timeout in the single workstream's own tree`) &&
+        f.includes(r.state.pipelineState.worktrees?.default ?? ""),
+    ),
+    "timeout: the consolidated run of a single-workstream cycle is reported as exceeding its bound, in its own tree",
+  );
+  assert(
+    !all.includes("CONSOLIDATED tree"),
+    `#1064: a single-workstream cycle never says CONSOLIDATED tree (got: ${all.slice(0, 300)})`,
   );
   assert(
     (r.failures[0] ?? "").startsWith(BASELINE_RED_MARKER) &&

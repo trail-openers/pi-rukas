@@ -51,6 +51,7 @@
     "smoke-tests/test-backlog-reminder.ts",
     "smoke-tests/lib/lens-fix-budget-share-fixture.ts",
     "smoke-tests/test-lens-fix-budget-share.ts",
-    "smoke-tests/test-lens-fix-budget-owed-route.ts"
+    "smoke-tests/test-lens-fix-budget-owed-route.ts",
+    "smoke-tests/test-consolidated-label.ts"
   ]
 }

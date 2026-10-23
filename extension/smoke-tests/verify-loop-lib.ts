@@ -62,6 +62,9 @@ export function runPipeline(files: string[]): {
   const assertion = extractSpecificAssertion(tail);
   // N>1 with no per-worktree failures — the consolidated-failure consumer
   // shape, so the size-cap trivial-fix branch is reachable in case 6.
+  // #1064 — the tree clause is the caller's: this harness asserts the N>1
+  // CONSOLIDATED wording, so it names the clause rather than relying on a
+  // default the single-workstream rule now overrides.
   const verdict = classifyConsolidatedVerifyFailure(2, ["a", "b"], tail, {});
   return {
     stdout,
@@ -69,6 +72,6 @@ export function runPipeline(files: string[]): {
     attributed,
     assertion,
     verdict,
-    message: consolidatedFailureMessage(verdict, "bun run check"),
+    message: consolidatedFailureMessage(verdict, "bun run check", "on the CONSOLIDATED tree"),
   };
 }

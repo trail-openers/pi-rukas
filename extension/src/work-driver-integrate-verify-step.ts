@@ -44,6 +44,13 @@ export interface IntegrationVerifyOpts {
   mode: "create" | "followup";
   /** The worktree the caller claims it integrated (N=1 create-mode only). */
   verifiedWorktree: string | undefined;
+  /**
+   * #1064 — the single workstream's own tree, for the failure LABEL. Supplied
+   * when the cycle has one workstream; the commit-pr verify then says the verify
+   * command failed in that tree rather than on a CONSOLIDATED tree that combined
+   * nothing. Absent (or N>1) → the CONSOLIDATED wording, unchanged.
+   */
+  singleWorktree?: string;
   verifyCmd?: string;
   verifyExecFn?: ExecFn;
   verifyTimeoutMs?: number;
@@ -136,6 +143,7 @@ export async function verifyIntegration(
     repoRoot: opts.repoRoot,
     workstreamCount: opts.ids.length,
     workstreamIds: opts.ids,
+    ...(opts.singleWorktree !== undefined ? { singleWorktree: opts.singleWorktree } : {}),
     timeoutMs: opts.verifyTimeoutMs,
     // #1404 — the cycle's base commit, so a consolidated failure can be
     // attributed per failing test instead of parking on the combination alone.
