@@ -30,6 +30,7 @@
  */
 
 import { DEPS_HINT_STARTS } from "./work-driver-deps-hint.ts";
+import { stripHarnessResidue } from "./work-driver-verify-inner-line.ts";
 
 /** The shape a line was recognised as. Stable strings: tests pin them. */
 export type FailureShape =
@@ -312,12 +313,30 @@ function streamSeparators(line: string, from: number): number[] {
 }
 
 /**
+ * A cut {@link harnessVerifyStream} accepted: the gate's stream and the offset
+ * in the (already trimmed) line at which it was cut. Returned only for the
+ * reader that must know where the stream began — {@link harnessInnerLine} — so
+ * the classifier's own path keeps its old `string | undefined` answer.
+ */
+interface HarnessStream {
+  stream: string;
+  /** -1 when no separator reported a failure (the #1667 exemption). */
+  cut: number;
+  /** Where `stream` begins in `line`, after the separator the cut landed on. */
+  streamStart: number;
+}
+
+/**
  * Where the gate's own output begins inside a harness line, or `undefined`
  * when the line is not the harness's wrapper. `""` means the wrapper carries
  * no stream that reports a failure — it asserts only that a run exited
  * non-zero, which is not a line of the gate's output naming anything.
+ *
+ * INTERNAL: the text this returns is what the table classifies and must stay
+ * verbatim. The exported {@link harnessInnerLine} is the same cut with the
+ * harness's own residue removed for a human-facing field.
  */
-function harnessVerifyStream(line: string): string | undefined {
+function harnessVerifyStream(line: string, withCut = false): HarnessStream | string | undefined {
   const matched = HARNESS_PROSE.exec(line);
   if (matched === null) return undefined;
 
@@ -352,9 +371,10 @@ function harnessVerifyStream(line: string): string | undefined {
     const stream = line
       .slice(at + width, Math.min(at + width + FAILURE_LINE_SCAN_MAX, line.length))
       .trim();
-    if (stream.length > 0 && classifyStream(stream) !== undefined) return stream;
+    if (stream.length > 0 && classifyStream(stream) !== undefined)
+      return withCut ? { stream, cut: at, streamStart: at + width } : stream;
   }
-  return "";
+  return withCut ? { stream: "", cut: -1, streamStart: -1 } : "";
 }
 
 /** The first classified line of a stream, whole-line first, then line by line. */
@@ -371,8 +391,8 @@ export function classifyFailureLine(line: string): FailureLine | undefined {
   if (t.length === 0 || isSuccessLine(t)) return undefined;
   // Ask about the gate's own output, not the wrapper around it: the wrapper is
   // never a failure line, and the first classified line behind it is the answer.
-  const stream = harnessVerifyStream(t);
-  if (stream !== undefined) return stream.length === 0 ? undefined : classifyStream(stream);
+  const stream = harnessVerifyStream(line);
+  if (typeof stream === "string") return stream.length === 0 ? undefined : classifyStream(stream);
   for (const entry of SHAPES) {
     if (entry.re.test(t)) return { shape: entry.shape, namesTest: entry.namesTest };
   }
@@ -394,7 +414,6 @@ function firstInnerFailure(stream: string): FailureLine | undefined {
   return undefined;
 }
 
-/** The lines of `text` that report a failure, in stream order, trimmed. */
 /**
  * The gate's own output behind a harness wrapper, or `undefined` when `line`
  * is not a wrapper. `""` means the wrapper carries no stream that reports a
@@ -407,9 +426,20 @@ function firstInnerFailure(stream: string): FailureLine | undefined {
  * specific assertion" and spend the cycle's one corrective round (#798's
  * shape, revived through the wrapper). Same rule `classifyFailureLine` follows;
  * one owner for both.
+ *
+ * On the way out, two pieces of the HARNESS's own writing are removed from the
+ * returned text (see {@link stripHarnessResidue}): the separator padding a
+ * command or cwd containing `: ` leaves in front of the gate's output, and the
+ * deps hint's diagnosis in front of it when the cut landed on the hint's own
+ * colon. Classification never sees either removal — `classifyFailureLine` reads
+ * the stream through {@link harnessVerifyStream} directly.
  */
 export function harnessInnerLine(line: string): string | undefined {
-  return harnessVerifyStream(line.trim());
+  const trimmed = line.trim();
+  const found = harnessVerifyStream(trimmed, true);
+  if (found === undefined) return undefined;
+  if (typeof found === "string") return stripHarnessResidue(found, trimmed, -1, 0);
+  return stripHarnessResidue(found.stream, trimmed, found.cut, found.streamStart);
 }
 
 /** The lines of `text` that report a failure, in stream order, trimmed. */
