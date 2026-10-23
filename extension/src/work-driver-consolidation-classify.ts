@@ -55,7 +55,7 @@
  */
 
 import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
-import { classifyFailureLine } from "./work-driver-verify-failures.ts";
+import { classifyFailureLine, harnessInnerLine } from "./work-driver-verify-failures.ts";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -152,6 +152,35 @@ function isNonAssertionLine(line: string): boolean {
 }
 
 /**
+ * #1762 — the line whose CONTENT decides whether `line` is an assertion, and
+ * the line returned when it is. For a harness-wrapped failure
+ * (`verify command `cmd` failed in <cwd>: <stream>`) that is the gate's own
+ * line behind the wrapper, not the wrapper: a `FAILED:` marker is never a
+ * specific assertion whether bare or wrapped, and the wrapper is prose the
+ * harness wrote, so judging (or returning) it is exactly the #798 defect — an
+ * operator sent to the harness sentence, and the cycle's one corrective round
+ * spent on it. `undefined` when the wrapper carries no stream that reports a
+ * failure, which is #1667's no-assertion exemption.
+ *
+ * Only a SINGLE-LINE stream is substituted. A multi-line stream is not one
+ * line, and the caller is scanning line by line: substituting the whole stream
+ * here would return harness wrapper text plus gate output as one "assertion".
+ * `assertionLines` / `failureLines` reach every inner line separately. A
+ * multi-line stream therefore yields `undefined` rather than the wrapper: the
+ * wrapper is harness prose and can never be the answer, whether or not a line
+ * beneath it is.
+ */
+function assertionCandidate(line: string): string | undefined {
+  if (IS_MARKER_LINE.test(line)) return undefined;
+  const inner = harnessInnerLine(line);
+  // Not a wrapper, or a wrapper carrying no stream that reports a failure
+  // (#1667's exemption, which `classifyFailureLine` also answers undefined for).
+  if (inner === undefined || inner.length === 0) return line;
+  if (inner.includes("\n")) return undefined;
+  return inner;
+}
+
+/**
  * Extract the specific failing assertion from a consolidated-verify failure
  * tail. The tail comes from `extractAttributedTail` — when `attributed:
  * true` it starts at a `FAILED:` marker (post-#804 the LAST one, the
@@ -183,13 +212,15 @@ export function extractSpecificAssertion(failureTail: string): string {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
   for (const line of lines) {
-    if (isNonAssertionLine(line)) continue;
-    if (/^✗\s/.test(line)) return line;
+    const candidate = assertionCandidate(line);
+    if (candidate === undefined || isNonAssertionLine(candidate)) continue;
+    if (/^✗\s/.test(candidate)) return candidate;
   }
   for (const line of lines) {
-    if (isNonAssertionLine(line)) continue;
-    if (IS_MARKER_LINE.test(line)) continue;
-    if (classifyFailureLine(line) !== undefined) return line;
+    const candidate = assertionCandidate(line);
+    if (candidate === undefined || isNonAssertionLine(candidate)) continue;
+    if (IS_MARKER_LINE.test(candidate)) continue;
+    if (classifyFailureLine(candidate) !== undefined) return candidate;
   }
   return NO_SPECIFIC_ASSERTION;
 }
