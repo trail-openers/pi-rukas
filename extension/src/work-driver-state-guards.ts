@@ -14,6 +14,7 @@
  * `needs-human-attention` label → the #1743 repeat-park guard.
  */
 import { notifyAgent } from "./agent-message.ts";
+import { redactClip } from "./decision-log.ts";
 import { trace } from "./trace.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -88,6 +89,37 @@ export function refuseInvalidState(ctx: CycleContext, state: WorkState): string 
 export const REPEAT_PARK_REFUSAL_PREFIX = "repeat-park: ";
 
 /**
+ * The bounds for the two pieces of a host park refusal that came OUT OF A FILE
+ * — `cap-hit.evidence` and a hand-edited `cap` are free text in a directory the
+ * operator (and any other writer) can edit, and they are about to be rendered
+ * into a message the host prints. `redactClip` is what every other guard in
+ * this driver does with untrusted text (`headless/failure.ts`,
+ * `work-driver-provider-park.ts`): redact first, then clip, so the clip can
+ * never cut a credential into a fragment the patterns no longer recognise.
+ */
+const HOST_PARK_CAP_MAX = 80;
+const HOST_PARK_REASON_MAX = 300;
+
+/** Untrusted file-sourced text, rendered safely: redacted, clipped, one line. */
+function hostParkText(text: string, max: number): string {
+  return redactClip(text, max).replace(/[\r\n]+/g, " ");
+}
+
+/**
+ * An ISO stamp for a message, from a number the reader already vetted as finite
+ * — but `Date#toISOString` still throws on a value out of the representable
+ * range, and a refusal renderer must not be the thing that takes the guard down
+ * mid-start. Anything it cannot print is reported as an unknown date.
+ */
+function hostParkStamp(at: number): string {
+  try {
+    return new Date(at).toISOString();
+  } catch {
+    return "(unknown)";
+  }
+}
+
+/**
  * The pre-loop refusals, in the order they are asked. Kept as one call so the
  * driver's start sequence stays one screen: the label gate is the human's own
  * signal and is read first, the park gate last, and both run BEFORE either
@@ -105,7 +137,7 @@ export async function refuseUnproductiveStart(
     reportFinalState(ctx, state);
     return { reason: labelled };
   }
-  return (await refuseRepeatPark(ctx)) ?? refuseHostPublishedPark(ctx);
+  return (await refuseRepeatPark(ctx)) ?? refuseHostPublishedPark(ctx, state);
 }
 
 /** Did this driver refuse because the issue has already parked twice? */
@@ -139,14 +171,21 @@ export function isRepeatParkRefusal(reason: string): boolean {
  */
 export async function refuseHostPublishedPark(
   ctx: CycleContext,
+  /** The snapshot the guards were asked about — its cached issue body, when it
+   * has one, is what the fingerprint compares (no `gh` call at all). */
+  state: WorkState,
 ): Promise<StartRefusal | undefined> {
-  const verdict = await hostParkVerdict(ctx, ctx.issues);
+  const verdict = await hostParkVerdict(ctx, ctx.issues, state.pipelineState.issueBodyArtifact);
   if (!verdict) return undefined;
-  const first = new Date(verdict.firstAt).toISOString();
+  // Both pieces of identity below are read out of a file in the repository's
+  // working tree, so neither is interpolated raw: see `hostParkText`.
+  const cap = hostParkText(verdict.cap, HOST_PARK_CAP_MAX);
+  const reason = hostParkText(verdict.reason, HOST_PARK_REASON_MAX);
+  const first = hostParkStamp(verdict.firstAt);
   const grouped = verdict.issue !== ctx.issue;
-  const message = `pi-rukas /work refused to start on issue #${ctx.issue}${grouped ? ` (group member #${verdict.issue})` : ""}: the host channel has already been handed this cycle's handoff ${verdict.deliveredCount} times as \`${verdict.cap}\`${verdict.reason ? ` (${verdict.reason})` : ""}, first published ${first}, against the same issue text. No comment or label was posted for it because the host owns that channel — this signal is pi-rukas' own memory of what it handed over, not a label.\nA third identical handoff reports nothing new, so no step was dispatched, no worktree was touched and no state file was written.\nTwo ways forward: revise the body of #${verdict.issue} (any substantive edit clears the guard and the next handoff is delivered in full), or run once with PI_ENSEMBLE_REPEAT_PARK=0 to hand it over regardless.`;
+  const message = `pi-rukas /work refused to start on issue #${ctx.issue}${grouped ? ` (group member #${verdict.issue})` : ""}: the host channel has already been handed this cycle's handoff ${verdict.deliveredCount} times as \`${cap}\`${reason ? ` (${reason})` : ""}, first published ${first}, against the same issue text. No comment or label was posted for it because the host owns that channel — this signal is pi-rukas' own memory of what it handed over, not a label.\nA third identical handoff reports nothing new, so no step was dispatched, no worktree was touched and no state file was written.\nTwo ways forward: revise the body of #${verdict.issue} (any substantive edit clears the guard and the next handoff is delivered in full), or run once with PI_ENSEMBLE_REPEAT_PARK=0 to hand it over regardless.`;
   trace(
-    `work-driver: host park refusal for #${verdict.issue} (cycle #${ctx.issue}): ${verdict.cap}${verdict.reason ? ` (${verdict.reason})` : ""} published x${verdict.deliveredCount}`,
+    `work-driver: host park refusal for #${verdict.issue} (cycle #${ctx.issue}): ${cap}${reason ? ` (${reason})` : ""} published x${verdict.deliveredCount}`,
   );
   notifyAgent(ctx.host, message);
   return {

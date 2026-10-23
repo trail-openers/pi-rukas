@@ -40,8 +40,12 @@
  * reason, against an edited issue body, or on a build with the feature off
  * posts and reports exactly as before. An unreadable issue body is never
  * treated as "unchanged" — the guard fails open, the record is left alone.
+ *
+ * The refusal threshold (`REPEAT_PARK_REFUSAL_COUNT`) and the enable switch
+ * (`repeatParkEnabled`) are DECLARED in `work-driver-park-record.ts` — the leaf
+ * this module and the host memory beside it both import — so the two memories
+ * cannot disagree about either. Both are re-exported below.
  */
-
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -55,8 +59,10 @@ import {
   COVERED_PARK_CAPS,
   type CoveredParkCap,
   type ParkRecord,
+  REPEAT_PARK_REFUSAL_COUNT,
   parkRecordExpired,
   readParkRecord,
+  repeatParkEnabled,
   writeParkRecord,
 } from "./work-driver-park-record.ts";
 import { type ExistingPr, findOpenPrForIssue } from "./work-driver-pr-preflight.ts";
@@ -75,10 +81,13 @@ export {
   parkRecordFileName,
   parkRecordPath,
   readParkRecord,
+  // DECLARED in the record leaf — the same leaf the HOST memory
+  // (`work-driver-park-memory-host.ts`) imports them from, so the two memories
+  // cannot disagree about how many publishes arm a refusal, or about whether the
+  // guard is on at all.
+  REPEAT_PARK_REFUSAL_COUNT,
+  repeatParkEnabled,
 } from "./work-driver-park-record.ts";
-
-/** How many identical parks are tolerated before the next start is refused. */
-export const REPEAT_PARK_REFUSAL_COUNT = 2;
 
 /**
  * The parks the guard may REFUSE a start on. `plan-spec-mismatch` is
@@ -108,11 +117,6 @@ export function isRefusableParkCap(cap: string | undefined): boolean {
  */
 export function repeatParkVerdictReason(verdict: RepeatParkVerdict): string {
   return `#${verdict.issue} ${verdict.cap} (${verdict.reason}) already parked ${verdict.count} times for this issue body`;
-}
-
-/** `PI_ENSEMBLE_REPEAT_PARK=0` — the guard stops consulting records; the records themselves stay. */
-export function repeatParkEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_REPEAT_PARK !== "0";
 }
 
 /** The earlier park this cycle's handoff repeats: when it first fired, and its comment. */
