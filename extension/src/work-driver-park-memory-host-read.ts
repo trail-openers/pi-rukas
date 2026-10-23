@@ -37,12 +37,23 @@ import { workStateDir } from "./workflow-state.ts";
 export const HOST_PARK_SIGNAL_FILE = "host-parks.json";
 
 /**
+ * The fingerprint's shape: what `createHash("sha256").digest("hex")` writes in
+ * `signalFingerprint`. A row that does not look like it can never be the row the
+ * guard matches, so `parseHostParkRows` drops it rather than believing it.
+ */
+const HOST_PARK_FINGERPRINT = /^[0-9a-f]{64}$/;
+
+/**
  * How many rows the signal keeps. One row is one (cap, cause, fingerprint), and
  * an issue's causes and edits are bounded in practice — 50 is far past any real
  * cycle's history — so the ceiling exists to stop a file in a repository's
  * working tree growing without bound. Pruning drops the OLDEST first WITHIN
- * each priority band of `armedFirstHostRows`, and every remaining row still
- * arms a refusal on its own.
+ * each priority band of `prunedHostRows` (armed rows, then everything else),
+ * and every remaining row still arms a refusal on its own. The row a publish
+ * writes is exempt from the cut on BOTH sides: the writer prunes the OTHER
+ * identities to `HOST_PARK_MAX_ROWS - 1` so its own row always fits, and
+ * `prunedHostRows` pins the newest-written row so the reader cannot disagree
+ * with the writer about which rows the file is allowed to hold.
  */
 export const HOST_PARK_MAX_ROWS = 50;
 
@@ -105,6 +116,9 @@ function plausibleCycleId(v: unknown): v is number {
  * id instead would prune by a number that is not a clock: a resumed cycle carries
  * its original `startedAt`, so a row it published — one the reader still believes
  * — would be the first one pruned.
+ *
+ * The one row this order must not lose is the row a publish just wrote, and
+ * `prunedHostRows` pins it; this function is the plain order with no pinning.
  */
 export function newestFirstHostRows(rows: HostParkRow[]): HostParkRow[] {
   return rows
@@ -134,9 +148,47 @@ function keepWorthy(row: HostParkRow): boolean {
 }
 
 /**
- * The rows a prune KEEPS, in the order a prune keeps them: ARMED rows (the ones
- * `hostParkVerdict` can refuse on) newest first, then everything else newest
- * first, capped at `max` (default `HOST_PARK_MAX_ROWS`).
+ * The row a prune must NEVER evict: the one with the newest `lastAt` in the
+ * file, the row a publish has just stamped.
+ *
+ * It needs pinning because a fresh publish lands at count 1 — below
+ * `keepWorthy` — so a plain band sort hands the tail of the list to exactly the
+ * row the writer has just promised to keep, and the guard silently loses the
+ * refusal it will need one publish later. Pinning by identity instead would
+ * need the writer to hand the reader its (cap, reason, fingerprint); pinning by
+ * `lastAt` needs no argument at all: a row is protected the moment a writer
+ * stamps it, and the stamp is the same clock every age test in this module uses
+ * — so the writer and the reader cannot fall out over which rows the file holds.
+ * The newest row is unique whatever ties it shares with its neighbours (two rows
+ * of one timestamp still have one maximum), and it stays at the FRONT of its
+ * band, so the cut can never reach it.
+ */
+function newestHostRow(rows: HostParkRow[]): HostParkRow | undefined {
+  let newest: HostParkRow | undefined;
+  for (const row of rows) {
+    if (newest === undefined || row.lastAt > newest.lastAt) newest = row;
+  }
+  return newest;
+}
+
+/**
+ * The identity that decides whether two rows are ONE park. `JSON.stringify` of
+ * the triple, not a `\0`-joined string: a NUL inside `reason` — which is
+ * free-text `parkReason` that has no character filter by design — made
+ * `"a\0b\0c"` and `"a\0b\u0000c\u0000\u0000c"` one key, and two genuinely
+ * different parks collapsed into a row whose count belonged to neither. JSON
+ * quotes and escapes each field, so a field's own delimiters cannot shift a
+ * boundary between fields.
+ */
+function hostRowKey(row: { cap: string; reason: string; fingerprint: string }): string {
+  return JSON.stringify([row.cap, row.reason, row.fingerprint]);
+}
+
+/**
+ * The rows a prune KEEPS, in the order a prune keeps them: the newest-written
+ * row, then ARMED rows (the ones `hostParkVerdict` can refuse on) newest first,
+ * then everything else newest first, capped at `max` (default
+ * `HOST_PARK_MAX_ROWS`).
  *
  * This is the whole answer to "which 50 rows is this file allowed to hold", and
  * it lives here because BOTH sides must give it: the writer in the sibling
@@ -160,7 +212,8 @@ export function prunedHostRows(
   // row the guard refuses on was the FIRST thing a capped prune evicted. Sorting
   // by (band, recency) makes eviction go the other way round by construction:
   // the tail of the list is always the least keep-worthy thing in the file.
-  const band = (row: HostParkRow) => (keepWorthy(row) ? 0 : 1);
+  const pinned = newestHostRow(rows);
+  const band = (row: HostParkRow) => (row === pinned ? -1 : keepWorthy(row) ? 0 : 1);
   return rows
     .map((row, i) => ({ row, i }))
     .sort(
@@ -191,7 +244,7 @@ export function prunedHostRows(
 export function dedupeHostRows(rows: HostParkRow[]): HostParkRow[] {
   const byKey = new Map<string, HostParkRow[]>();
   for (const row of rows) {
-    const key = `${row.cap}\u0000${row.reason}\u0000${row.fingerprint}`;
+    const key = hostRowKey(row);
     const seen = byKey.get(key);
     if (seen) seen.push(row);
     else byKey.set(key, [row]);
@@ -240,7 +293,7 @@ export function dedupeHostRowsForWrite(
 ): HostParkRow[] {
   const byKey = new Map<string, HostParkRow[]>();
   for (const row of rows) {
-    const key = `${row.cap}\u0000${row.reason}\u0000${row.fingerprint}`;
+    const key = hostRowKey(row);
     const seen = byKey.get(key);
     if (seen) seen.push(row);
     else byKey.set(key, [row]);
@@ -286,9 +339,15 @@ export function dedupeHostRowsForWrite(
  * fabricated one is untrusted text with no legitimate use, and a writer can
  * only ever have emitted a known literal.
  *
+ * The fingerprint must be what `signalFingerprint` produces — a lowercase hex
+ * sha256 — and a row whose fingerprint is anything else is dropped: it can
+ * never match the hash the guard computes, so it arms nothing, and letting it
+ * through would count it against the ceiling while it sits there believed.
+ *
  * Rows come back deduplicated by identity, then pruned by `prunedHostRows` —
- * armed rows first, then recency — so every reader (the guard, the sweep) and
- * the writer's own prune agree on the window the file is allowed to have.
+ * the newest-written row, then armed rows, then recency — so every reader (the
+ * guard, the sweep) and the writer's own prune agree on the window the file is
+ * allowed to have.
  */
 export function parseHostParkRows(text: string, reader: string, now: number): HostParkRow[] {
   const file = `host park signal read by the ${reader}`;
@@ -315,6 +374,11 @@ export function parseHostParkRows(text: string, reader: string, now: number): Ho
       isKnownCap(r.cap) &&
       typeof r.reason === "string" &&
       typeof r.fingerprint === "string" &&
+      // Exactly the shape `createHash("sha256").digest("hex")` writes. A row
+      // outside it is no publish's fingerprint: the guard compares this field
+      // against a hash it computes itself, so a row failing this test can never
+      // refuse anything and only occupies the ceiling.
+      HOST_PARK_FINGERPRINT.test(r.fingerprint) &&
       plausibleCount(r.deliveredCount) &&
       plausibleTimestamp(r.firstAt, now) &&
       plausibleTimestamp(r.lastAt, now) &&
