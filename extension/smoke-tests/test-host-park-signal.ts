@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { createHash } from "node:crypto";
 /**
  * #1696 — a host-mode park arms a repeat guard even when no record covers it.
  *
@@ -29,14 +30,18 @@
  * Offline: no Pi session, no network (`PI_ENSEMBLE_FORGE=none`, both fetches
  * stubbed).
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { projectIssue } from "../src/headless/result.ts";
-import { clearHostParkSignals } from "../src/work-driver-park-memory-host.ts";
+import {
+  HOST_PARK_MAX_ROWS,
+  clearHostParkSignals,
+  readHostParkSignalsImpl as readHostParkSignals,
+} from "../src/work-driver-park-memory-host.ts";
 import {
   CAP,
   ISSUE,
+  type World,
   driverPark,
   park,
   refused,
@@ -45,8 +50,8 @@ import {
   start,
   tamperSignal,
   world,
-  type World,
 } from "./lib/host-park-harness.ts";
+import { lostParkCount } from "./lib/lost-park-count.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -115,7 +120,10 @@ async function twice(w: World) {
     assert(refused(run), "…with cap `repeat-park`");
     assert(r.status === "not-started", "…status not-started");
     assert(r.handoff === undefined, "…and no handoff: this start delivered nothing");
-    assert(w.dispatches === before, "…and zero dispatches ran: the refused start dispatched nothing");
+    assert(
+      w.dispatches === before,
+      "…and zero dispatches ran: the refused start dispatched nothing",
+    );
     assert(
       /already parked 2 times/.test(r.failure?.message ?? "") &&
         (r.failure?.message ?? "").includes(CAP),
@@ -136,13 +144,19 @@ async function twice(w: World) {
     await driverPark(w);
     const stateFile = path.join(w.repo, ".pi", "work-state", `${ISSUE}.json`);
     assert(existsSync(stateFile), "the cycles wrote their state file, as a real cycle does");
-    assert(existsSync(signalPath(w)), `…and the signal sits beside it under .pi/work-state/${ISSUE}/`);
+    assert(
+      existsSync(signalPath(w)),
+      `…and the signal sits beside it under .pi/work-state/${ISSUE}/`,
+    );
     assert(
       signalOf(w).some((r) => r.cap === CAP && r.deliveredCount === 2),
       "…counted by the driver's own handoff, not by a fixture's",
     );
     rmSync(stateFile, { force: true });
-    assert(refused(await start(w, true)), "a --restart that wipes the state file still gets refused");
+    assert(
+      refused(await start(w, true)),
+      "a --restart that wipes the state file still gets refused",
+    );
   } finally {
     rmSync(w.repo, { recursive: true, force: true });
   }
@@ -154,7 +168,7 @@ async function twice(w: World) {
   await twice(w);
   w.body = `title:\tmock #${ISSUE}\n\nREVISED: the sandbox has no network`;
   assert(
-    !(refused(await start(w, true))),
+    !refused(await start(w, true)),
     "an edited issue body: the third start proceeds — the fingerprint is the comparison",
   );
   rmSync(w.repo, { recursive: true, force: true });
@@ -164,7 +178,10 @@ async function twice(w: World) {
   await twice(w);
   process.env.PI_ENSEMBLE_REPEAT_PARK = "0";
   try {
-    assert(!(refused(await start(w, true))), "PI_ENSEMBLE_REPEAT_PARK=0: the handoff is delivered regardless");
+    assert(
+      !refused(await start(w, true)),
+      "PI_ENSEMBLE_REPEAT_PARK=0: the handoff is delivered regardless",
+    );
     assert(signalOf(w)[0]?.deliveredCount === 2, "…and the signal survives the disable");
   } finally {
     delete process.env.PI_ENSEMBLE_REPEAT_PARK;
@@ -176,7 +193,7 @@ async function twice(w: World) {
   await twice(w);
   w.bodyReadable = false;
   assert(
-    !(refused(await start(w, true))),
+    !refused(await start(w, true)),
     "issue body unreadable: fails OPEN — no refusal on a comparison it could not make",
   );
   rmSync(w.repo, { recursive: true, force: true });
@@ -185,7 +202,10 @@ async function twice(w: World) {
   const w = world("malformed-signal");
   await twice(w);
   writeFileSync(signalPath(w), "{not json", "utf8");
-  assert(!(refused(await start(w, true))), "a malformed signal file is ABSENT, never trusted: the start proceeds");
+  assert(
+    !refused(await start(w, true)),
+    "a malformed signal file is ABSENT, never trusted: the start proceeds",
+  );
   rmSync(w.repo, { recursive: true, force: true });
 }
 {
@@ -195,8 +215,21 @@ async function twice(w: World) {
     r.deliveredCount = "lots";
   });
   assert(
-    !(refused(await start(w, true))),
+    !refused(await start(w, true)),
     "a `deliveredCount` that is not an integer arms nothing — the refusal is a hard stop",
+  );
+  rmSync(w.repo, { recursive: true, force: true });
+}
+{
+  const w = world("absurd-count");
+  await twice(w);
+  tamperSignal(w, (r) => {
+    // An integer to `Number.isInteger`, but not one any writer could produce.
+    r.deliveredCount = 1e18;
+  });
+  assert(
+    !refused(await start(w, true)),
+    "a `deliveredCount` of 1e18 reads as NO protection — a safe-integer bar, so a hand-edited file cannot arm the hard stop",
   );
   rmSync(w.repo, { recursive: true, force: true });
 }
@@ -208,7 +241,10 @@ async function twice(w: World) {
     r.firstAt = old;
     r.lastAt = old;
   });
-  assert(!(refused(await start(w, true))), "a row past the 14-day floor the sweep deletes under arms nothing");
+  assert(
+    !refused(await start(w, true)),
+    "a row past the 14-day floor the sweep deletes under arms nothing",
+  );
   rmSync(w.repo, { recursive: true, force: true });
 }
 
@@ -219,8 +255,11 @@ async function twice(w: World) {
   try {
     await park(w, { host: true, body: "" });
     await park(w, { host: true, body: "" });
-    assert(!existsSync(signalPath(w)), "an empty handoff body wrote no signal — nobody received anything");
-    assert(!(refused(await start(w, true))), "…and the third start is not refused");
+    assert(
+      !existsSync(signalPath(w)),
+      "an empty handoff body wrote no signal — nobody received anything",
+    );
+    assert(!refused(await start(w, true)), "…and the third start is not refused");
   } finally {
     rmSync(w.repo, { recursive: true, force: true });
   }
@@ -240,7 +279,10 @@ async function twice(w: World) {
       rows.every((r) => r.deliveredCount === 1),
       `…each counted once, so neither arms a refusal on the other's count (${rows.map((r) => r.deliveredCount).join(", ")})`,
     );
-    assert(!(refused(await start(w, true))), "…and the next start still runs: two causes, one report each");
+    assert(
+      !refused(await start(w, true)),
+      "…and the next start still runs: two causes, one report each",
+    );
     // The key is (cap, reason, fingerprint), not the cap: rows counted against
     // another issue body say nothing about this one.
     const other = createHash("sha256").update("a different issue body").digest("hex");
@@ -249,7 +291,10 @@ async function twice(w: World) {
       JSON.stringify(rows.map((r) => ({ ...r, fingerprint: other, deliveredCount: 5 }))),
       "utf8",
     );
-    assert(!(refused(await start(w, true))), "rows counted against a DIFFERENT issue body arm nothing");
+    assert(
+      !refused(await start(w, true)),
+      "rows counted against a DIFFERENT issue body arm nothing",
+    );
   } finally {
     rmSync(w.repo, { recursive: true, force: true });
   }
@@ -260,12 +305,18 @@ async function twice(w: World) {
   const w = world("forge");
   try {
     const s = await park(w, { host: false });
-    assert(s.eventLog.some((e) => e.kind === "handoff-emitted"), "forge: the handoff ran and posted");
-    assert(!existsSync(signalPath(w)), "forge: the host signal was NOT written — the host channel is its only producer");
+    assert(
+      s.eventLog.some((e) => e.kind === "handoff-emitted"),
+      "forge: the handoff ran and posted",
+    );
+    assert(
+      !existsSync(signalPath(w)),
+      "forge: the host signal was NOT written — the host channel is its only producer",
+    );
     await park(w, { host: false });
     await park(w, { host: false });
     assert(
-      !(refused(await start(w, false))),
+      !refused(await start(w, false)),
       "forge: three identical uncovered parks still start — that channel has a comment and a label",
     );
   } finally {
@@ -284,16 +335,114 @@ async function twice(w: World) {
       writes.length === 0,
       `host: still no forge comment or label call (saw: ${writes.join(",") || "none"})`,
     );
-    assert(existsSync(signalPath(w)), "…and the memory that stands in for them is pi-rukas' own file");
+    assert(
+      existsSync(signalPath(w)),
+      "…and the memory that stands in for them is pi-rukas' own file",
+    );
+    // The cycle's other artifacts live in the SAME directory, and one of them is
+    // a sibling issue's live covered record. A clear that took the directory
+    // would destroy evidence this call does not own (the sweep owns that dir's
+    // life), so the merge door is checked against a neighbour that must survive.
+    const dir = path.dirname(signalPath(w));
+    writeFileSync(path.join(dir, "explore-spec.md"), "## Spec\n", "utf8");
+    writeFileSync(path.join(dir, "park-intent-park.json"), "{}", "utf8");
     await clearHostParkSignals(w.repo, [ISSUE]);
     assert(
       !existsSync(signalPath(w)),
       "the merge path's clear forgets it too: landed work is not a reason to refuse a later start",
     );
+    assert(
+      existsSync(path.join(dir, "explore-spec.md")) &&
+        existsSync(path.join(dir, "park-intent-park.json")) &&
+        existsSync(dir),
+      "…by deleting ONLY its own file: the cached spec, the covered record and the dir survive",
+    );
   } finally {
     rmSync(w.repo, { recursive: true, force: true });
   }
 }
+
+// ── 5b. The file is BOUNDED. It lives in a repository's working tree, so it
+//        cannot grow with every cause and every edit an issue ever had: the
+//        writer keeps the newest rows and the reader refuses to believe more
+//        than the ceiling either way.
+{
+  const w = world("row-cap");
+  try {
+    const total = 60;
+    // Distinct CYCLES as well as causes: the ceiling prunes on recency, and
+    // 60 publishes from one cycle id are all equally new.
+    for (let i = 0; i < total; i++) {
+      w.cycle++;
+      await park(w, { host: true, parkReason: `cause-${String(i).padStart(3, "0")}` });
+    }
+    const rows = signalOf(w);
+    assert(
+      rows.length === HOST_PARK_MAX_ROWS,
+      `${total} distinct published parks leave ${HOST_PARK_MAX_ROWS} rows, not ${total}`,
+    );
+    const causes = new Set(rows.map((r) => r.reason));
+    assert(
+      causes.has("cause-059") && !causes.has("cause-000") && causes.has("cause-010"),
+      "…the NEWEST rows are the kept ones (the ten oldest pruned, the newest present)",
+    );
+    assert(
+      (await readHostParkSignals(w.repo, ISSUE, "test")).length === HOST_PARK_MAX_ROWS,
+      "…and the reader reads all of them, so the ceiling is a bound and not a blindfold",
+    );
+    // A write on top of a full file stays at the ceiling and keeps the newest —
+    // the bound is the writer's, not only a reader's filter.
+    w.cycle++;
+    await park(w, { host: true, parkReason: "cause-060" });
+    const after = signalOf(w);
+    assert(
+      after.length === HOST_PARK_MAX_ROWS &&
+        after.some((r) => r.reason === "cause-060") &&
+        !after.some((r) => r.reason === "cause-010"),
+      `…and the next write stays at ${HOST_PARK_MAX_ROWS}, admitting its own row (${after.length})`,
+    );
+    // The ceiling is enforced in the reader too: a file a hand edit (or an older
+    // writer) left longer than the cap must not arm the guard on rows no writer
+    // would have kept.
+    writeFileSync(
+      signalPath(w),
+      JSON.stringify(
+        Array.from({ length: 80 }, (_, i) => ({
+          cap: CAP,
+          reason: `stale-${String(i).padStart(3, "0")}`,
+          // A fingerprint no issue has: this case judges the ROW COUNT, not the
+          // comparison, and an unrelated one must never be the reason it passes.
+          fingerprint: createHash("sha256").update(`stale body ${i}`).digest("hex"),
+          deliveredCount: 9,
+          firstAt: Date.now() - 1000,
+          lastAt: Date.now() - 500,
+          lastCycleId: 1_700_000_000_000 + i,
+        })),
+      ),
+      "utf8",
+    );
+    assert(
+      (await readHostParkSignals(w.repo, ISSUE, "test")).length === HOST_PARK_MAX_ROWS,
+      "a hand-edited file with 80 rows is read as 50 — the ceiling is the reader's too",
+    );
+    // A clear deletes one file, never the directory: the sweep owns that dir's
+    // life, and the same door runs for every sibling issue in the group.
+    const neighbour = path.join(path.dirname(signalPath(w)), "park-intent-park.json");
+    writeFileSync(neighbour, "{}", "utf8");
+    await clearHostParkSignals(w.repo, [ISSUE]);
+    assert(
+      !existsSync(signalPath(w)) && existsSync(neighbour) && existsSync(path.dirname(neighbour)),
+      "the clear took only its own file — the covered record and the dir survive",
+    );
+  } finally {
+    rmSync(w.repo, { recursive: true, force: true });
+  }
+}
+
+// ── 5c. Two writers must not lose a count, and a re-entry must not move one.
+//        The case lives in `lib/lost-park-count.ts` (the §12 file-size cap) and
+//        stubs the signal's reader there to hand the writer a stale reading.
+await lostParkCount(assert);
 
 // ── 6. The host channel's label state says DECLINED, not FAILED: pi-rukas
 //        applies no `needs-human-attention` label there by contract, and a host
@@ -303,7 +452,9 @@ async function twice(w: World) {
   try {
     const ev = (await park(w, { host: true })).eventLog.find((e) => e.kind === "handoff-emitted");
     assert(
-      ev?.kind === "handoff-emitted" && ev.labelApplied === false && ev.labelSkipped === "host-channel",
+      ev?.kind === "handoff-emitted" &&
+        ev.labelApplied === false &&
+        ev.labelSkipped === "host-channel",
       "host: the handoff event records the decline beside its false label",
     );
     const r = projectIssue(await park(world("re-delivered"), { host: true }), "state.json");
