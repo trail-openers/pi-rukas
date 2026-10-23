@@ -57,6 +57,7 @@ import {
   dedupeHostRows,
   dedupeHostRowsForWrite,
   hostParkSignalPath,
+  parseHostParkRows,
   prunedHostRows,
   readHostParkSignalsImpl,
   sweepHostParkSignal,
@@ -294,31 +295,32 @@ export async function recordHostPark(
     if (prior?.lastCycleId === state.startedAt) return;
     // Re-read immediately before writing, like `recordPark`: two cycles of one
     // issue can be in flight (a fan-out, a re-run after a crash) and each read
-    // its own rows. The set WRITTEN is the FRESH reading, so a row a sibling
-    // added in between is not dropped, and the count is the larger of the two
-    // readings plus one — the cheap lost-update guard. Not a lock, and it does
-    // not need to be one. Sorted and capped before the new row goes in, so the
-    // row THIS cycle published is never the one pruned: the write below stamps it
-    // with `at`, the newest timestamp in the file by the reader's own clock, and
-    // the file never grows past the ceiling.
+    // their own rows, so the set WRITTEN is the FRESH reading — a row a sibling
+    // added in between is not dropped — and the count is the larger of the two
+    // readings plus one, the cheap lost-update guard. Not a lock, and it does not
+    // need to be one.
     const at = Date.now();
     const live = await readHostParkSignalsImpl(ctx.repoRoot, ctx.issue, "handoff");
-    // Pruning to one row under the ceiling, BEFORE the row THIS cycle published
-    // goes in — and the prune is ARMEDNESS over RECENCY, which is the order the
-    // reader applies too (`prunedHostRows`, one implementation both sides call).
-    // Recency alone dropped the oldest row whatever it was, so on a file at the
-    // ceiling an armed row — the one the guard refuses on — was the first
-    // candidate for eviction, and a park could stop being refused merely because
-    // fifty other parks had been published since.
-    // ONE prune, to the ceiling MINUS the row this cycle is about to add. The
-    // headroom is passed IN rather than sliced off afterwards: `prunedHostRows`
-    // fills the armed band first, so a second `.slice(ceiling - 1)` over its
-    // output caps the FRESH band twice and evicts every fresh row before it
-    // touches an armed one — the aged armed row at the front of the file was
-    // then the LAST thing dropped, once the fresh band had nothing left to give.
-    const kept = prunedHostRows(live, HOST_PARK_MAX_ROWS - 1);
-    const next: HostParkRow[] = kept.map((r: HostParkRow) =>
-      r.cap === park.cap && r.reason === park.reason && r.fingerprint === fingerprint
+    // A WRITE never prunes: every row already on disk stays, and THIS cycle's row
+    // goes in at the tail. What makes that safe is the ceiling living in ONE
+    // place — `parseHostParkRows` — as an ordering the WRITER then obeys. Every
+    // row `readHostParkSignalsImpl` returns is one the reader keeps (armed rows
+    // first, then the newest-written row, then the rest by recency) and
+    // `dedupeHostRowsForWrite` writes them back in that same order, so `live` is
+    // always the file's most-worthy `HOST_PARK_MAX_ROWS` and the appended row is
+    // the one row the reader's cut drops. Pruning here — the whole file, or the
+    // file minus this identity — was the first shape and it lost the publish: at
+    // the ceiling the cut reached the row this cycle had just written, its count
+    // stayed at 1, and the guard never armed. The row a publish writes is the row
+    // the NEXT start refuses on, so it is not a cut candidate on either side.
+    // Recency alone was the other first rule, and it lost armedness: on a full
+    // file the oldest row went even when it was the one armed row, so a park the
+    // operator had already been handed twice stopped being refused for the
+    // unrelated reason that fifty other parks had been published since.
+    const mineOf = (r: HostParkRow) =>
+      r.cap === park.cap && r.reason === park.reason && r.fingerprint === fingerprint;
+    const next: HostParkRow[] = live.map((r: HostParkRow) =>
+      mineOf(r)
         ? {
             ...r,
             deliveredCount: Math.max(r.deliveredCount, prior?.deliveredCount ?? 0) + 1,
@@ -338,20 +340,29 @@ export async function recordHostPark(
         lastCycleId: state.startedAt,
       });
     }
-    // The row THIS cycle published goes in last and is never a prune candidate:
-    // `at` is the newest timestamp in the file, so it leads the band it lands in.
-    // Dedupe runs here too (one row per (cap, reason, fingerprint), see
+    // The row THIS cycle published is at the tail and is never a cut candidate:
+    // `at` is the newest timestamp in the file, which is the row `prunedHostRows`
+    // pins on both sides of the read/write pair. Dedupe runs here too (one row
+    // per (cap, reason, fingerprint), see
     // `dedupeHostRows`) — the file on disk is what the next writer reads and what
     // an operator inspects, and two rows of one identity would make a single
     // publish count against whichever twin the increment happened to match.
     const bounded = dedupeHostRowsForWrite(next, { ...park, fingerprint }, state.startedAt);
+    // The ceiling is applied HERE, once, through the reader's own rule rather
+    // than a second copy of it: `parseHostParkRows` runs the same
+    // `prunedHostRows(dedupeHostRows(...))` the guard and the sweep will run on
+    // this file, so what the writer keeps is exactly what the reader would keep,
+    // and the tail row this cycle appended is the only one the cut can take
+    // (it is the newest-written row, which `prunedHostRows` pins). Sorting the
+    // whole set at every write is cheaper than a second policy that can drift.
+    const capped = parseHostParkRows(JSON.stringify(bounded), "writer", at);
     const file = hostParkSignalPath(ctx.repoRoot, ctx.issue);
     await fs.mkdir(path.dirname(file), { recursive: true });
     // Atomic, like the covered record: a crash leaves the PREVIOUS rows intact
     // rather than a half-written file the reader (correctly) reads as empty.
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
-      await fs.writeFile(tmp, JSON.stringify(bounded, null, 2), "utf8");
+      await fs.writeFile(tmp, JSON.stringify(capped, null, 2), "utf8");
       await fs.rename(tmp, file);
     } catch (err) {
       // A failed rename leaves the tmp file behind, and the signal directory is
