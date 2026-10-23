@@ -395,11 +395,11 @@ async function testAbortedClaimantReleasesAndPurges() {
       "the aborted claimant's entry is PRUNED from the registry, not just skipped",
     );
     // And a sibling is free to take those paths.
-    const sibling = await checkAndRegisterClaims(
-      makeCtx(dir, 1451),
-      makeState(1451, dir),
-      { "task-a": { paths: [claimPath] } },
-    );
+    const sibling = (
+      await checkAndRegisterClaims(makeCtx(dir, 1451), makeState(1451, dir), {
+        "task-a": { paths: [claimPath] },
+      })
+    ).state;
     assertTrue(
       sibling.pipelineState.status === "running",
       "a sibling is NOT parked by the aborted claimant's stale claim",

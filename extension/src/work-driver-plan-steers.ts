@@ -14,11 +14,16 @@
  */
 
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
-import type { RefusedWorkstreamCall } from "./work-driver-plan-calls.ts";
-import type { PathCollision } from "./work-driver-plan-paths.ts";
-import type { FenceContradiction } from "./work-driver-plan-paths.ts";
+import type { RefusedWorkstreamCall, WorkstreamReport } from "./work-driver-plan-calls.ts";
+import type { FenceContradiction, PathCollision } from "./work-driver-plan-paths.ts";
+import {
+  findFenceContradictions,
+  findPathCollisions,
+  findTestSubjectSplits,
+} from "./work-driver-plan-paths.ts";
 import { PLAN_WORKSTREAM_CALL_RULE } from "./work-driver-prompts-plan.ts";
 import type { PlanQualityReason } from "./workflow-state-schema.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
 
 export function correctivePlanSteer(
   reason: PlanQualityReason,
@@ -208,6 +213,37 @@ export function correctiveTestSubjectSplitSteer(
     "only test file(s) has no legitimate reading — move the test to its subject's workstream, or make",
     "the test file's subject part of the same workstream.",
   ].join("\n");
+}
+
+/**
+ * #1756 (size split) — the steer the corrective carries, moved from
+ * work-driver-plan-quality-pass.ts for the AGENTS.md §12 cap. Pure formatter
+ * over the primary plan: the tail decides WHETHER to re-dispatch, this decides
+ * what the re-dispatch is steered at. The `test-subject-split` reason has its
+ * own steer (a test/subject split is not fixed by re-splitting ownership), and
+ * a plan with no accepted call has its own (`noCalls`), because there the
+ * channel is the defect rather than the decomposition.
+ */
+export function correctiveSteerFor(
+  noCalls: boolean,
+  report: WorkstreamReport,
+  workstreams: Record<string, Workstream>,
+  reason: PlanQualityReason | undefined,
+  findingsCount: number,
+): string {
+  if (noCalls) return correctiveNoWorkstreamCallsSteer(report.refused);
+  if (reason === "test-subject-split") {
+    return correctiveTestSubjectSplitSteer(findTestSubjectSplits(workstreams));
+  }
+  return correctivePlanSteer(
+    reason ?? "plan-spec-mismatch",
+    findingsCount,
+    Object.keys(workstreams).length,
+    findPathCollisions(workstreams),
+    // #1167 — the new reason's details. Cheap and pure, so computed once here
+    // for whichever steer runs.
+    findFenceContradictions(workstreams),
+  );
 }
 
 /**

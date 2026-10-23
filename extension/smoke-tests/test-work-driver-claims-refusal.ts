@@ -114,16 +114,24 @@ console.log("\n#1454 r3 — the claims-lock refusal, as the operator reads it...
     const ctx = { repoRoot: dir, issue: 774 } as unknown as Parameters<
       typeof checkAndRegisterClaims
     >[0];
-    let state: Awaited<ReturnType<typeof checkAndRegisterClaims>> | null = null;
+    let outcome: Awaited<ReturnType<typeof checkAndRegisterClaims>> | null = null;
     let escaped: Error | null = null;
     try {
-      state = await checkAndRegisterClaims(ctx, makeState(774, dir), {
+      outcome = await checkAndRegisterClaims(ctx, makeState(774, dir), {
         default: { paths: ["src/locked.ts"], outOfScope: [] },
       });
     } catch (e) {
       escaped = e as Error;
     }
     chmodSync(lockDir, 0o700);
+    // #1756 — the gate now reports its own park, so this case reads BOTH halves
+    // of the contract: the event it appended, and the discriminant its caller
+    // branches on.
+    assert(
+      outcome?.parked === true,
+      `the gate reports its own park (got ${String(outcome?.parked)})`,
+    );
+    const state = outcome?.state ?? null;
     assert(
       escaped === null,
       `the refusal does not escape the step handler (${escaped?.message.slice(0, 80) ?? "no throw"})`,

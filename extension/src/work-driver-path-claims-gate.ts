@@ -38,6 +38,48 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 const PID = process.pid;
 
 /**
+ * ACCEPTED test seam (the shape `setClaimsLockWriteFaultForTests` is): replace
+ * the conflict list the gate judges with one the suite supplies. `undefined`
+ * — the value in production, and what the setter's own `undefined` restores —
+ * means "read the registry", which is every real call.
+ *
+ * It exists so the degenerate branch below is ASSERTABLE rather than merely
+ * present. That branch is a fail-closed guard against a truthy conflict list
+ * whose first slot is absent, and the empirical finding of this round is that
+ * NO production route reaches it: `readRawClaims` only yields rows
+ * `validClaimEntry` accepted, `checkCrossGroupClaimsSync` only pushes entries it
+ * was handed, and #1101's sibling filter drops rows from `fresh` BEFORE the
+ * conflict check runs — so it cannot produce a non-empty list missing its head
+ * either. A guard for an unreachable shape is still the right code (fail closed
+ * rather than crash), but an assertion that has to forge the registry to fire
+ * would be testing the forgery. This seam lets the suite hand the gate the list
+ * directly and pin what a park owes, which is the invariant that broke.
+ */
+let conflictsOverride: PathClaimEntry[] | undefined;
+
+/** Permanent test seam (accepted): set/clear the injected conflict list. */
+export function setClaimsConflictsForTests(conflicts?: PathClaimEntry[]): void {
+  conflictsOverride = conflicts;
+}
+
+/**
+ * What the plan step's claim gate decided, so its caller branches on the gate's
+ * OWN answer rather than sniffing the event tail (#1756).
+ *
+ * `parked` is true exactly when this call appended a `cap-hit` and moved the
+ * step to a plan handoff — the conflict park, the claims-lock refusal, and the
+ * conflict whose first entry was missing (#1756 r2: that branch used to report
+ * a park it had not made — no cap-hit, no handoff — and the caller halted on an
+ * un-parked state; it now appends the same cap and sets the same handoff fields
+ * as the conflict park above it, so the discriminant and the state agree). Reading
+ * `eventLog.at(-1)?.kind === "cap-hit"` instead asked the tail who had appended
+ * it, so any unrelated trailing event — a completion appended after a conflict
+ * park — became a park, and the gate's own park could be hidden under a tail
+ * that is not a cap-hit. One discriminant, no guessing.
+ */
+export type ClaimsGateOutcome = { state: WorkState; parked: boolean };
+
+/**
  * The plan step's claim gate: park on a sibling overlap, else register ours.
  *
  * `now` is injectable so the suite can age a claim without sleeping.
@@ -47,35 +89,43 @@ export async function checkAndRegisterClaims(
   state: WorkState,
   workstreams: Record<string, { paths?: string[]; outOfScope?: string[] }>,
   now: number = Date.now(),
-): Promise<WorkState> {
+): Promise<ClaimsGateOutcome> {
   const allPaths = Object.values(workstreams).flatMap((ws) => ws.paths ?? []);
-  if (allPaths.length === 0) return state; // nothing to claim
+  if (allPaths.length === 0) return { state, parked: false }; // nothing to claim
 
   const claims = await readClaims(ctx.repoRoot, now);
-  const conflicts = checkCrossGroupClaimsSync(ctx.issue, workstreams, claims);
+  const conflicts = conflictsOverride ?? checkCrossGroupClaimsSync(ctx.issue, workstreams, claims);
 
   if (conflicts.length > 0) {
     const sibling = conflicts[0];
-    if (!sibling) return state;
+    // Degenerate shape (a truthy list whose first slot is absent): there is no
+    // sibling to name, so nothing to register against and no claim to write.
+    // #1756 r2 — this parks HONESTLY, i.e. it does what `parked: true` claims:
+    // the same cap, the same handoff fields and an evidence line saying the
+    // conflicting claim could not be read. The old shape returned `parked: true`
+    // with an UNCHANGED state, so the caller halted on a cycle still sitting at
+    // `running`/`plan` with no cap-hit — the fail-open half of the bug this
+    // branch was written to close. A reachability note, measured this round:
+    // `checkCrossGroupClaimsSync` only ever pushes a `PathClaimEntry` it was
+    // handed and `readRawClaims` only yields rows `validClaimEntry` accepted, so
+    // no production read produces this list — it is a fail-closed guard, and the
+    // direct assertion in test-work-driver-claims-gate-parks.ts drives it through
+    // the accepted `setClaimsConflictsForTests` seam rather than by forging the
+    // registry file.
+    if (!sibling) {
+      return parkClaimsGate(state, {
+        cap: "cross-group-conflict" as const,
+        evidence:
+          "a conflicting path claim could not be read (the conflict list's first entry was absent), so no claim could be checked or registered — the cycle cannot develop paths it cannot reserve",
+      });
+    }
     const overlap = allPaths.map(normaliseDeclaredPath).filter((p) => sibling.paths.includes(p));
-    const park = appendEvent(state, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "cross-group-conflict" as const,
+    return parkClaimsGate(state, {
       // `claimant<N>` is the machine-readable carrier humanActionFor and
       // explainCap read — prose is not a stable interface.
+      cap: "cross-group-conflict" as const,
       evidence: `claimant${sibling.issue} issue #${sibling.issue} claims: ${sibling.paths.join(", ")}; overlapping: ${overlap.join(", ")}`,
-      reviewRound: state.pipelineState.reviewRound,
-      nextStep: "handoff" as const,
     });
-    return {
-      ...park,
-      pipelineState: {
-        ...park.pipelineState,
-        status: "handoff",
-        currentStep: "plan",
-      },
-    };
   }
   // No conflicts — register so siblings see our claim.
   try {
@@ -88,23 +138,39 @@ export async function checkAndRegisterClaims(
     trace(
       `work-driver-path-claims: the claims lock refused a registration for #${ctx.issue} — parking at plan`,
     );
-    return {
-      ...appendEvent(state, {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap: "claims-lock-unavailable" as const,
-        evidence: message.slice(0, 400),
-        reviewRound: state.pipelineState.reviewRound,
-        nextStep: "handoff" as const,
-      }),
-      pipelineState: {
-        ...state.pipelineState,
-        status: "handoff",
-        currentStep: "plan",
-      },
-    };
+    return parkClaimsGate(state, {
+      cap: "claims-lock-unavailable" as const,
+      evidence: message.slice(0, 400),
+    });
   }
-  return state;
+  return { state, parked: false };
+}
+
+/**
+ * The one shape every claim-gate park takes: append the named `cap-hit` and
+ * move the cycle to a plan handoff, so `parked: true` and the state the caller
+ * receives can never disagree (#1756 r2 — three parks, one writer, so a fourth
+ * cannot forget a field).
+ */
+function parkClaimsGate(
+  state: WorkState,
+  cap: { cap: "cross-group-conflict" | "claims-lock-unavailable"; evidence: string },
+): ClaimsGateOutcome {
+  const parked = appendEvent(state, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: cap.cap,
+    evidence: cap.evidence,
+    reviewRound: state.pipelineState.reviewRound,
+    nextStep: "handoff" as const,
+  });
+  return {
+    state: {
+      ...parked,
+      pipelineState: { ...parked.pipelineState, status: "handoff", currentStep: "plan" },
+    },
+    parked: true,
+  };
 }
 
 /**

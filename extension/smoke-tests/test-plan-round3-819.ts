@@ -43,6 +43,12 @@ import { findUncoveredDeliverables } from "../src/work-driver-plan-spec-coverage
 import { runPlan } from "../src/work-driver-plan.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import {
+  PLAN_819_ISSUE,
+  SPEC_819,
+  mkPlanCtx,
+  stubDispatchResult,
+} from "./lib/plan-819-fixtures.ts";
+import {
   type PlanResultShape,
   planResultFromCalls,
   planResultFromRawCalls,
@@ -68,28 +74,21 @@ process.env.PI_ENSEMBLE_PLAN_CONTRACT = "0";
 const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
 
 /** A dispatch result carrying a plan's report_workstream calls (#1652). */
-function mkResult(plan: PlanResultShape, patch: Partial<DispatchResult> = {}): DispatchResult {
-  return {
-    role: "explore",
-    ok: true,
-    ...plan,
-    ms: 10,
-    exitCode: 0,
-    transcriptPath: "/tmp/stub-plan-transcript.json",
-    ...patch,
-  };
-}
+const mkResult = stubDispatchResult;
+
+/** One workstream with paths: a clean plan the shape gate has no reason to
+ * reject — and one that misses the spec's src/required.ts deliverable. */
+const CLEAN_PLAN = planResultFromCalls([
+  { id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
+]);
+
+const KILL_CAUSES = ["timeout", "loop", "token-budget", "abort", "inactivity"] as const;
 
 /** Two workstreams, the second with NO paths → `planQualityReason` returns
  * `empty-paths`: the trigger that dispatches the quality-gate corrective. */
 const TRIGGER_PLAN = planResultFromCalls([
   { id: "task-a", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
   { id: "task-b", scope: "the stub", paths: [], outOfScope: ["docs/"] },
-]);
-
-/** One workstream with paths: a clean plan the gates have no reason to reject. */
-const CLEAN_PLAN = planResultFromCalls([
-  { id: "default", scope: "the fix", paths: ["src/a.ts"], outOfScope: [] },
 ]);
 
 /** A spec whose single deliverable neither plan above covers, so the
@@ -99,45 +98,24 @@ function stateWithSpec(state: WorkState): WorkState {
     ...state,
     pipelineState: {
       ...state.pipelineState,
-      normalisedSpec: {
-        intent: "fix the thing",
-        deliverables: [{ id: "d1", description: "d", paths: ["src/required.ts"] }],
-        acceptanceCriteria: ["it works"],
-        outOfScope: [],
-        assumptions: [],
-        openQuestions: [],
-        evidence: [],
-        verdict: "proceed",
-        rationale: "",
-      },
+      normalisedSpec: SPEC_819,
     },
   };
 }
 
 function mkCtx(dir: string, dispatchFn?: DriverContext["dispatchFn"]): DriverContext {
-  return {
-    host: fakePi,
-    repoRoot: dir,
-    issue: 819,
-    dispatchFn,
-    verifyExecFn: (async () => ({
-      stdout: "",
-      code: 0,
-    })) as unknown as DriverContext["verifyExecFn"],
-  };
+  return mkPlanCtx(dir, dispatchFn);
 }
 
-const KILL_CAUSES = ["timeout", "loop", "token-budget", "abort", "inactivity"] as const;
-
 /** A primary that misses the spec (src/other.ts) and carries a duplicate-id
- * refusal; no shape defect, so no corrective is spent on it. */
-const REFUSED_PRIMARY_PLAN = planResultFromRawCalls([
-  {
-    id: "task-a",
-    args: { id: "task-a", scope: "the fix", paths: ["src/other.ts"], outOfScope: [] },
-  },
-  { id: "task-a", args: { id: "task-a", scope: "dup", paths: ["src/other.ts"], outOfScope: [] } },
-]);
+ * refusal; no shape defect, so no corrective is spent on it. */ const REFUSED_PRIMARY_PLAN =
+  planResultFromRawCalls([
+    {
+      id: "task-a",
+      args: { id: "task-a", scope: "the fix", paths: ["src/other.ts"], outOfScope: [] },
+    },
+    { id: "task-a", args: { id: "task-a", scope: "dup", paths: ["src/other.ts"], outOfScope: [] } },
+  ]);
 
 /** A corrective that declares the spec's deliverable, so `correctiveMismatch`
  * stays silent and the flow reaches the tail with the PRIMARY's refusal. */
@@ -387,6 +365,39 @@ for (const mode of ["killed", "threw"] as const) {
   }
 }
 
+{
+  // #1756: the SAME refused primary, but this time the corrective DECLARES the
+  // spec deliverable. Pre-fix this parked too — the halt predicate was a const
+  // read before the corrective dispatch, so a clean corrective could never clear
+  // the primary. It is the assertion commit e404d7fe deleted.
+  const dir = mkdtempSync(path.join(tmpdir(), "plan-r3-covering-corrective-"));
+  try {
+    const seen: string[] = [];
+    const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
+      seen.push((opts as { label?: string })?.label ?? "");
+      return mkResult(seen.length === 1 ? REFUSED_PRIMARY_PLAN : COVERING_PLAN);
+    });
+    const next = await runPlan(ctx, stateWithSpec(initialState(819, 1_000_000)), 1_000_000);
+    assert(
+      !next.eventLog.some((e) => e.kind === "cap-hit"),
+      "a refused primary whose corrective covers the spec does NOT park",
+    );
+    assert(
+      next.pipelineState.workstreams?.default?.paths?.join(",") === "src/required.ts",
+      `the corrective plan is the one recorded for develop (got ${JSON.stringify(
+        next.pipelineState.workstreams,
+      )})`,
+    );
+    assert(
+      next.pipelineState.planQuality?.redispatched === true,
+      `and the persisted verdict records the corrective (${next.pipelineState.planQuality?.redispatched})`,
+    );
+    assert(seen.length === 2, `with exactly two dispatches (${seen.join(",")})`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ------------------- 5. measurable() has no unreachable branch, and no lies
 
 {
@@ -398,26 +409,38 @@ for (const mode of ["killed", "threw"] as const) {
       string,
       { paths: string[] }
     >;
-  const honoured = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
-    deliverables: [
-      { id: "d1", paths: ["src/a.ts"] },
-      { id: "d2", paths: [], noDiff: true, noDiffEvidence: "settings toggle" },
-    ],
-  }, []);
+  const honoured = findUncoveredDeliverables(
+    ws({ a: ["src/a.ts"] }),
+    {
+      deliverables: [
+        { id: "d1", paths: ["src/a.ts"] },
+        { id: "d2", paths: [], noDiff: true, noDiffEvidence: "settings toggle" },
+      ],
+    },
+    [],
+  );
   assert(
     honoured.checkedCount === 1 && honoured.uncovered.length === 0,
     "an honoured no-diff deliverable stays excluded (clause 1 covers it — the deleted clause was dead)",
   );
-  const contradictory = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
-    deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "because" }],
-  }, []);
+  const contradictory = findUncoveredDeliverables(
+    ws({ a: ["src/a.ts"] }),
+    {
+      deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "because" }],
+    },
+    [],
+  );
   assert(
     contradictory.checkedCount === 1 && contradictory.uncovered.length === 1,
     "noDiff + real paths + real evidence is still MEASURABLE — the paths win (what the dead clause pretended to do)",
   );
-  const emptyEvidence = findUncoveredDeliverables(ws({ a: ["src/a.ts"] }), {
-    deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "   " }],
-  }, []);
+  const emptyEvidence = findUncoveredDeliverables(
+    ws({ a: ["src/a.ts"] }),
+    {
+      deliverables: [{ id: "d1", paths: ["src/z.ts"], noDiff: true, noDiffEvidence: "   " }],
+    },
+    [],
+  );
   assert(
     emptyEvidence.checkedCount === 1 && emptyEvidence.uncovered.length === 1,
     "a marker with no evidence judges by paths too",
