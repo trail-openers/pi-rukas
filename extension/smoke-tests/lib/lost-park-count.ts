@@ -27,6 +27,7 @@
  * re-read is FOR: rows another cycle wrote while this one was in flight survive
  * the write instead of being overwritten by the one row this cycle cares about.
  */
+import { createHash } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { park, signalOf, signalPath, world } from "./host-park-harness.ts";
 
@@ -48,11 +49,23 @@ export async function lostParkCount(assert: Assert): Promise<void> {
     );
     // A sibling's row for a cause no case below uses, counted 1 and stamped with
     // the FIRST cycle's id, so nothing in this cycle's own history explains it.
+    // The fingerprints DIFFER, as two sibling rows must: the row identity is
+    // (cap, reason, fingerprint) and the writer now dedupes on it, so two rows
+    // that shared one fingerprint would be collapsed to one and this case would
+    // be asserting a survival the file cannot hold. Distinct fingerprints are two
+    // parks (two issue texts), which is the shape this write models.
     const rolled: Row = { ...signalOf(w)[0]!, reason: LOST, deliveredCount: 1 };
+    const sib = (n: number): Row => ({
+      ...rolled,
+      fingerprint: createHash("sha256").update(`sibling body ${n}`).digest("hex"),
+    });
     writeFileSync(
       signalPath(w),
       JSON.stringify(
-        [{ ...rolled, lastCycleId: first.startedAt }, { ...rolled, lastCycleId: second.startedAt }],
+        [
+          { ...sib(1), lastCycleId: first.startedAt },
+          { ...sib(2), lastCycleId: second.startedAt },
+        ],
         null,
         2,
       ),
@@ -61,7 +74,7 @@ export async function lostParkCount(assert: Assert): Promise<void> {
     assert(
       signalOf(w).length === 2 &&
         signalOf(w).every((r) => r.reason === LOST && r.deliveredCount === 1),
-      `the file holds two stale rows and no row of this cycle (${JSON.stringify(signalOf(w))})`,
+      `the file holds two stale rows of two DISTINCT issue texts and no row of this cycle (${JSON.stringify(signalOf(w))})`,
     );
     // The handoff re-runs for a NEW cycle while that stale file is in place. Its
     // own row must carry the count ITS delivery produced — 1, this cycle having

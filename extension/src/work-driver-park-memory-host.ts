@@ -49,16 +49,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { fetchIssueBodyViaGh } from "./work-driver-explore.ts";
 import { handoffChannel } from "./work-driver-handoff-channel.ts";
 import {
   HOST_PARK_MAX_ROWS,
-  type HostParkRow,
+  dedupeHostRows,
+  dedupeHostRowsForWrite,
   hostParkSignalPath,
-  newestFirstHostRows,
+  prunedHostRows,
   readHostParkSignalsImpl,
   sweepHostParkSignal,
 } from "./work-driver-park-memory-host-read.ts";
+import type { HostParkRow } from "./work-driver-park-memory-host-read.ts";
 import type { RepeatParkVerdict } from "./work-driver-park-memory.ts";
 import {
   COVERED_PARK_CAPS,
@@ -82,9 +85,12 @@ export {
   type HostParkRow,
   HOST_PARK_MAX_ROWS,
   HOST_PARK_SIGNAL_FILE,
+  dedupeHostRows,
+  dedupeHostRowsForWrite,
   hostParkSignalPath,
   newestFirstHostRows,
   parseHostParkRows,
+  prunedHostRows,
   readHostParkSignalsImpl,
   sweepHostParkSignal,
 } from "./work-driver-park-memory-host-read.ts";
@@ -137,24 +143,50 @@ async function readCachedIssueBody(
     trace(`work-driver: host park artifact ${file} is outside ${stateDir}; refused`);
     return undefined;
   }
+  // A persisted artifact path must not point the fingerprint at a file whose
+  // contents gate the cycle: `.pi/`, `.github/` and `CODEOWNERS`/`agents.json`
+  // are the driver's own capability files, and hashing one would make this
+  // guard read (and echo a hash of) whatever protected file a state file names.
+  // Refused, not trusted — the fetch path below still answers, so this fails
+  // open the same way the containment check does.
+  if (isProtectedPath(localArtifact) || isProtectedPath(rel)) {
+    trace(`work-driver: host park artifact ${file} is a protected path; refused`);
+    return undefined;
+  }
+  let text: string;
   try {
-    const buf = await fs.readFile(file);
-    // The bound is on the BYTES read, not on the text after the read: an
-    // unbounded read of a path that came out of a state file is not a bound.
-    if (buf.byteLength > HOST_PARK_ARTIFACT_MAX_BYTES) {
-      trace(
-        `work-driver: host park artifact ${file} is ${buf.byteLength} bytes, past the ${HOST_PARK_ARTIFACT_MAX_BYTES} ceiling; falling back to the fetch`,
-      );
-      return undefined;
+    // Bound the read BEFORE buffering it: `stat` first, so an oversized file is
+    // refused without its bytes ever being allocated. A size test after
+    // `readFile` bounds the decision, not the memory.
+    const handle = await fs.open(file, "r");
+    try {
+      const { size } = await handle.stat();
+      if (size > HOST_PARK_ARTIFACT_MAX_BYTES) {
+        trace(
+          `work-driver: host park artifact ${file} is ${size} bytes, past the ${HOST_PARK_ARTIFACT_MAX_BYTES} ceiling; falling back to the fetch`,
+        );
+        return undefined;
+      }
+      const buf = await handle.readFile({ encoding: null });
+      // The bound is on the BYTES read, not on the text after the read: a file
+      // that grew between the `stat` and the read is still not unbounded.
+      if (buf.byteLength > HOST_PARK_ARTIFACT_MAX_BYTES) {
+        trace(
+          `work-driver: host park artifact ${file} is ${buf.byteLength} bytes, past the ${HOST_PARK_ARTIFACT_MAX_BYTES} ceiling; falling back to the fetch`,
+        );
+        return undefined;
+      }
+      text = buf.toString("utf8");
+    } finally {
+      await handle.close();
     }
-    const text = buf.toString("utf8");
-    return text.trim() ? text : undefined;
   } catch (err) {
     trace(
       `work-driver: host park artifact ${file} unreadable, falling back to the fetch: ${(err as Error).message}`,
     );
     return undefined;
   }
+  return text.trim() ? text : undefined;
 }
 
 /**
@@ -271,24 +303,30 @@ export async function recordHostPark(
     // the file never grows past the ceiling.
     const at = Date.now();
     const live = await readHostParkSignalsImpl(ctx.repoRoot, ctx.issue, "handoff");
-    // Pruning to one row under the ceiling keeps RECENCY over ARMEDNESS on
-    // purpose: an armed row (count >= 2) is never special-cased, so the oldest
-    // row goes even if a younger one armed nothing. A real cycle cannot lose its
-    // own row this way — the write below stamps its row with `at`, the newest
-    // timestamp in the file, so it is the last candidate for the prune, not the
-    // first.
-    const next: HostParkRow[] = newestFirstHostRows(live)
-      .slice(0, HOST_PARK_MAX_ROWS - 1)
-      .map((r: HostParkRow) =>
-        r.cap === park.cap && r.reason === park.reason && r.fingerprint === fingerprint
-          ? {
-              ...r,
-              deliveredCount: Math.max(r.deliveredCount, prior?.deliveredCount ?? 0) + 1,
-              lastAt: at,
-              lastCycleId: state.startedAt,
-            }
-          : r,
-      );
+    // Pruning to one row under the ceiling, BEFORE the row THIS cycle published
+    // goes in — and the prune is ARMEDNESS over RECENCY, which is the order the
+    // reader applies too (`prunedHostRows`, one implementation both sides call).
+    // Recency alone dropped the oldest row whatever it was, so on a file at the
+    // ceiling an armed row — the one the guard refuses on — was the first
+    // candidate for eviction, and a park could stop being refused merely because
+    // fifty other parks had been published since.
+    // ONE prune, to the ceiling MINUS the row this cycle is about to add. The
+    // headroom is passed IN rather than sliced off afterwards: `prunedHostRows`
+    // fills the armed band first, so a second `.slice(ceiling - 1)` over its
+    // output caps the FRESH band twice and evicts every fresh row before it
+    // touches an armed one — the aged armed row at the front of the file was
+    // then the LAST thing dropped, once the fresh band had nothing left to give.
+    const kept = prunedHostRows(live, HOST_PARK_MAX_ROWS - 1);
+    const next: HostParkRow[] = kept.map((r: HostParkRow) =>
+      r.cap === park.cap && r.reason === park.reason && r.fingerprint === fingerprint
+        ? {
+            ...r,
+            deliveredCount: Math.max(r.deliveredCount, prior?.deliveredCount ?? 0) + 1,
+            lastAt: at,
+            lastCycleId: state.startedAt,
+          }
+        : r,
+    );
     if (!next.some((r) => r.lastCycleId === state.startedAt)) {
       next.push({
         cap: park.cap,
@@ -300,7 +338,13 @@ export async function recordHostPark(
         lastCycleId: state.startedAt,
       });
     }
-    const bounded = next;
+    // The row THIS cycle published goes in last and is never a prune candidate:
+    // `at` is the newest timestamp in the file, so it leads the band it lands in.
+    // Dedupe runs here too (one row per (cap, reason, fingerprint), see
+    // `dedupeHostRows`) — the file on disk is what the next writer reads and what
+    // an operator inspects, and two rows of one identity would make a single
+    // publish count against whichever twin the increment happened to match.
+    const bounded = dedupeHostRowsForWrite(next, { ...park, fingerprint }, state.startedAt);
     const file = hostParkSignalPath(ctx.repoRoot, ctx.issue);
     await fs.mkdir(path.dirname(file), { recursive: true });
     // Atomic, like the covered record: a crash leaves the PREVIOUS rows intact

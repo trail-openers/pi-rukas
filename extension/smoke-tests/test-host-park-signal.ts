@@ -52,6 +52,7 @@ import {
   world,
 } from "./lib/host-park-harness.ts";
 import { lostParkCount } from "./lib/lost-park-count.ts";
+import { hostParkPrune } from "./lib/host-park-prune.ts";
 import { sharedKnobs } from "./lib/host-park-shared-knobs.ts";
 
 let exit = 0;
@@ -445,6 +446,14 @@ async function twice(w: World) {
 //        (the §12 file-size cap); that file states which branch of the writer it
 //        cannot reach through the handoff step, and therefore does not claim.
 await lostParkCount(assert);
+
+// ── 5c-2. When the file is FULL the ceiling itself becomes the judgement: which
+//        rows a prune keeps is which refusals the next start can honour. The
+//        case lives in `lib/host-park-prune.ts` (the §12 file-size cap), which
+//        states the three rules: an armed row survives whatever its age, a row
+//        one publish from arming survives too, and two rows of one identity are
+//        one park that one publish increments by one.
+await hostParkPrune(assert);
 
 // ── 5d. The two memories share their TWO knobs. #1696 review round 1 — the host
 //        signal carried its own copies of the refusal threshold and the

@@ -24,7 +24,8 @@
  * It also pins the fingerprint SOURCE preference the guard owes the writer:
  * with a cached artifact present the guard hashes the artifact and never the
  * fetched body, so a refusal compares the text this cycle actually published
- * (and an artifact outside the work-state dir is refused, not trusted).
+ * (and an artifact outside the work-state dir, or one that is a protected
+ * path, is refused rather than trusted — both fall back to the fetch).
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,7 +42,7 @@ function hash(body: string): string {
 }
 
 /** A row the writer itself could have produced, armed to `count`. */
-function armedRow(count: number, body: string): string {
+function armedRow(count: number, body: string, fingerprint = hash(body)): string {
   return JSON.stringify([
     {
       // The cap is OUTSIDE the covered three — the whole point of the host
@@ -50,7 +51,7 @@ function armedRow(count: number, body: string): string {
       // the writer actually writes, not one a fixture invented.
       cap: CAP,
       reason: "",
-      fingerprint: hash(body),
+      fingerprint,
       deliveredCount: count,
       firstAt: Date.now() - 2000,
       lastAt: Date.now() - 1000,
@@ -140,24 +141,60 @@ export async function sharedKnobs(assert: Assert): Promise<void> {
     // fetched body — so it compares the text this cycle published. An artifact
     // whose bytes match no row keeps the guard silent while the same rows arm
     // without it (the case above), which is the only reading under which both
-    // assertions are about the artifact rather than about luck.
+    // assertions are about the artifact rather than about luck. The row is
+    // re-stamped with the artifact's own hash: the row identity is (cap, reason,
+    // fingerprint) and the writer now dedupes on it, so a second row that shared
+    // the first one's fingerprint would be collapsed rather than kept, and this
+    // case would be judging whichever twin the reader happened to land on.
     const artifact = path.join(path.dirname(signalPath(w)), "issue-body.txt");
-    writeFileSync(artifact, "a body this cycle never fetched", "utf8");
+    const artifactBody = "a body this cycle never fetched";
+    writeFileSync(artifact, artifactBody, "utf8");
+    writeFileSync(
+      signalPath(w),
+      armedRow(record.REPEAT_PARK_REFUSAL_COUNT, w.body, hash(artifactBody)),
+      "utf8",
+    );
     assert(
       (await ask(w, artifact)) === undefined,
       "…and it reads the cycle's cached artifact in preference to the fetch — a different text is not the same park",
     );
     // Containment: an artifact outside `.pi/work-state/` is refused (the same
     // rule `readCachedBody` in work-develop-scope-fence-seam.ts applies), so a
-    // state file cannot point the fingerprint at an arbitrary file. Refused
-    // means "fall back to the fetch", and the fetch still matches — so the
-    // guard arms again, which is the observable difference from trusting it.
-    const outside = path.join(w.repo, "elsewhere.txt");
-    writeFileSync(outside, "a body this cycle never fetched", "utf8");
+    // state file cannot point the fingerprint at an arbitrary file — nor at a
+    // PROTECTED one (`.pi/`, `.github/`, `CODEOWNERS`, `agents.json`: the
+    // driver's own capability files), which is the other half of the same
+    // refusal and is pinned next to this one. Refused means "fall back to the
+    // fetch", and the fetch still matches — so the guard arms again, which is
+    // the observable difference from trusting it.
+    // Containment and protectedness are judged on the path the STATE file
+    // carries, which is repo-relative — so these two pass the relative form, as
+    // the driver does (`path.resolve(repoRoot, localArtifact)` inside). The rows
+    // go back to being armed against the FETCHED body: what is under test here
+    // is which text the guard hashes, and an armed row is the only answer that
+    // distinguishes "fell back to the fetch" from "trusted the file" (or from
+    // "found no matching row", which is what an un-armed file answers either way).
+    writeFileSync(signalPath(w), armedRow(record.REPEAT_PARK_REFUSAL_COUNT, w.body), "utf8");
+    const outside = path.relative(w.repo, path.join(w.repo, "elsewhere.txt"));
+    writeFileSync(path.join(w.repo, "elsewhere.txt"), w.body, "utf8");
     const escaped = await ask(w, outside);
     assert(
       escaped !== undefined && escaped.deliveredCount === record.REPEAT_PARK_REFUSAL_COUNT,
       "…an artifact OUTSIDE the work-state dir is refused, not trusted — the guard falls back to the fetched body rather than comparing a file it cannot vouch for",
+    );
+    // A protected path under the work-state dir passes containment but is still
+    // refused: the row on disk is armed against the FETCHED body, so a guard
+    // that hashed a protected file would report no verdict at all where the
+    // fetch arms — the same observable difference as the case above.
+    const protectedArtifact = path.join(
+      path.relative(w.repo, path.dirname(signalPath(w))),
+      "agents.json",
+    );
+    writeFileSync(path.join(w.repo, protectedArtifact), '{"roles":{}}', "utf8");
+    const protectedAsk = await ask(w, protectedArtifact);
+    assert(
+      protectedAsk !== undefined &&
+        protectedAsk.deliveredCount === record.REPEAT_PARK_REFUSAL_COUNT,
+      "…and an artifact that is a PROTECTED path is refused too, inside the work-state dir — the guard cannot be pointed at a file that gates the cycle",
     );
     process.env.PI_ENSEMBLE_REPEAT_PARK = "0";
     try {
