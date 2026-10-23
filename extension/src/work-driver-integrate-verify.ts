@@ -59,6 +59,7 @@ import {
 export function baselineProbeEnabled(): boolean {
   return process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_BASELINE_PROBE !== "0";
 }
+import { consolidatedTreeClause } from "./work-driver-consolidated-verify-label.ts";
 import { commitPrHangResult } from "./work-driver-integrate-verify-hang.ts";
 import { createCommitPrVerifyLogSink } from "./work-driver-integrate-verify-log.ts";
 import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
@@ -337,6 +338,13 @@ export async function runCommitPrConsolidatedVerify(
         commitPrHangResult({
           ranCmd,
           repoRoot: opts.repoRoot,
+          // #1064 — at N=1 the tree clause names the single workstream's own
+          // tree rather than a CONSOLIDATED tree that combined nothing.
+          treeClause: consolidatedTreeClause({
+            workstreamCount: opts.workstreamCount,
+            cwd: opts.singleWorktree ?? opts.repoRoot,
+            at: opts.repoRoot,
+          }),
           bound: opts.timeoutMs ?? 30 * 60_000,
           output: killedOutput,
           ...(killedTree === undefined ? {} : { tree: killedTree }),
@@ -347,7 +355,17 @@ export async function runCommitPrConsolidatedVerify(
         }),
       );
     }
-    const classifiedMessage = consolidatedFailureMessage(verdict, ranCmd);
+    const classifiedMessage = consolidatedFailureMessage(
+      verdict,
+      ranCmd,
+      // #1064 — same rule as the hang path above and the develop gate: the
+      // CONSOLIDATED wording only when the probe combined something.
+      consolidatedTreeClause({
+        workstreamCount: opts.workstreamCount,
+        cwd: opts.singleWorktree ?? opts.repoRoot,
+        at: opts.repoRoot,
+      }),
+    );
 
     // #1404 — before this parks, ask the question the commit-pr seam never
     // asked: does the SAME command fail WITHOUT the change? The probe runs

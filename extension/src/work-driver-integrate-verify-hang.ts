@@ -34,6 +34,12 @@ const TIMEOUT_KNOB = "PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS";
 export function commitPrHangResult(opts: {
   ranCmd: string;
   repoRoot: string;
+  /**
+   * #1064 — the tree clause, owned by the caller (it knows the workstream
+   * count). N>1: `on the CONSOLIDATED tree at <repoRoot>`; N=1: the single
+   * workstream's own tree. `repoRoot` still names the cwd the run executed in.
+   */
+  treeClause: string;
   bound: number;
   /** The killed run's combined stream, as captured at the kill. */
   output: string;
@@ -47,7 +53,7 @@ export function commitPrHangResult(opts: {
 }): CommitPrConsolidatedVerifyResult {
   const classifiedMessage = verifyHangFailure(
     opts.ranCmd,
-    `on the CONSOLIDATED tree at ${opts.repoRoot}`,
+    opts.treeClause,
     opts.bound,
     {
       output: opts.output,

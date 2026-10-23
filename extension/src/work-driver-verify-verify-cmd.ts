@@ -39,6 +39,10 @@ import {
   type VerifyRecordSlot,
   gatePerAssertion,
 } from "./work-driver-verify-record.ts";
+import {
+  consolidatedReportArgs,
+  consolidationNeeded,
+} from "./work-driver-verify-reporting-args.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
@@ -278,21 +282,12 @@ async function runVerifyCommandGateBody(
   // inside runConsolidatedVerify. #794 threads `workstreamBaseShas` into
   // the consolidated run so a stacked workstream's OWN range is picked
   // against its dependency's tip (no ancestor replay — the #775 shape).
-  // #750 — the develop gate reads the CONSOLIDATED tree, not the isolated
-  // worktrees: a per-worktree verify cannot see a file a sibling's commit
-  // supplies (or deletes), and the #750 regression proves the combined
-  // state is the only state worth testing. The combined tree is built from
-  // every worktree that has commits ahead of baseSha, so the gate runs
-  // when any committed worktree is non-trivial to consolidate — i.e. any
-  // worktree with committed work exists and the root itself is not the
-  // only worktree (N=1 with the root as the worktree is the combined tree).
-  const consolidationNeeded = changedWorktrees.length > 0;
   // #750 — the consolidated run (which owns the dirty-root refusal at its
-  // preflight) must run whenever there is ANY committed worktree: the
-  // refusal fires even for the N=1 case where the only worktree is the
-  // root itself, because operator residue on the root must not be swept
-  // into the PR just because the combined tree is trivially the root.
-  if (!consolidationNeeded || !isValidSha(baseSha)) {
+  // preflight) must run whenever there is ANY committed worktree: the refusal
+  // fires even for the N=1 case where the only worktree is the root itself,
+  // because operator residue on the root must not be swept into the PR just
+  // because the combined tree is trivially the root.
+  if (!consolidationNeeded(changedWorktrees) || !isValidSha(baseSha)) {
     // No consolidation possible: the per-worktree results are the verdict.
     // The only reachable skip is "changed work exists but no valid baseSha"
     // (without it the combined tree cannot be built); with no changed
@@ -303,7 +298,7 @@ async function runVerifyCommandGateBody(
     if (greensRecorded.length > 0 || greensRefuted.length > 0) {
       onGateRecorded?.(undefined, greensRecorded, greensRefuted);
     }
-    if (consolidationNeeded && !isValidSha(baseSha)) {
+    if (consolidationNeeded(changedWorktrees) && !isValidSha(baseSha)) {
       notes.push(
         "consolidated verify skipped — no valid baseSha to build the combined tree against, so the per-worktree evidence is the verdict",
       );
@@ -311,7 +306,6 @@ async function runVerifyCommandGateBody(
     return;
   }
   const scratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
-  // #807 — the retry gate and the Case-2 root-cause match below must read
   // the SAME per-worktree failure map: if the retry fires on one view of
   // the failures and the classifier later compares a different, filtered
   // view, a "shared assertion" decision can diverge between the gate and
@@ -452,6 +446,9 @@ async function runVerifyCommandGateBody(
     perWorktreeFailuresByWs,
     singlePerWs,
     singlePerAssertion,
+    // #1064 / #1324 — the tree and command the consolidated lines name, decided
+    // by `consolidatedReportArgs` (one seam, both rules documented there).
+    ...consolidatedReportArgs({ worktrees, perWorktreeVerifyFailures, cmd }),
     fenceViolations,
     onConsolidatedLogPath: opts.onConsolidatedLogPath,
     onVerifyFlakeRecovered: opts.onVerifyFlakeRecovered,

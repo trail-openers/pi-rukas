@@ -29,6 +29,22 @@ import {
 import { VERIFY_SUITE_TIMEOUT_ENV, verifyTimeoutMs } from "./work-driver-verify-budget.ts";
 
 /**
+ * #1064 — the command the per-worktree leg of the develop gate reported, read
+ * back out of the line it produced (`verify command \`<cmd>\` failed in …`).
+ *
+ * The consolidated line for a single workstream has to name the same command
+ * that leg named — both ran the same content with the same gate — and the only
+ * record of which tier fell over is that line: the fast tier's identity lives on
+ * the thrown error (`failedVerifyCmd`), which the per-worktree seam consumes
+ * when it composes the text and does not keep. `fallback` is the configured
+ * command, for a line this shape did not produce.
+ */
+export function ranVerifyCmdOf(perWorktreeFailure: string, fallback: string): string {
+  const m = /^verify command `([^`]+)` failed in /.exec(perWorktreeFailure);
+  return m?.[1] ?? fallback;
+}
+
+/**
  * PR17 — bounded wall-clock for the verify command.
  *
  * #1509 moved the resolution into `work-driver-verify-budget.ts`; this is a

@@ -391,10 +391,18 @@ export function buildPerWorktreeFailuresByWs(
  * assertion, (b) BOTH workstream ids (for consolidation-created), and
  * (c) the classification label. This replaces the generic "consolidated
  * tree fails verify" / "each workstream passed alone" text.
+ *
+ * #1064 — `treeClause` is the one place the tree is named, and the CALLER owns
+ * it, because only the caller knows how many workstreams the run combined. With
+ * more than one the clause stays `on the CONSOLIDATED tree`; with one it names
+ * that workstream's own tree, so the sentence stops describing a combination
+ * that was never made. Nothing else about a verdict's message moves — same
+ * classification tag, same assertion, same attribution, same reason.
  */
 export function consolidatedFailureMessage(
   verdict: ConsolidationFailureVerdict,
   cmd: string,
+  treeClause = "on the CONSOLIDATED tree",
 ): string {
   const ids = verdict.workstreamIds.join(" + ");
   const which =
@@ -411,7 +419,7 @@ export function consolidatedFailureMessage(
       ? verdict.assertion
       : (verdict.namedFailures ?? []).join(" | ") || NO_SPECIFIC_ASSERTION;
   return (
-    `[${verdict.classification}] verify command \`${cmd}\` failed on the CONSOLIDATED tree — ` +
+    `[${verdict.classification}] verify command \`${cmd}\` failed ${treeClause} — ` +
     `specific assertion: ${assertion || "(no assertion parsed)"} — ` +
     `${which}. ${verdict.reason}`
   );

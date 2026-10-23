@@ -356,6 +356,12 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     const integrationVerify = await verifyIntegration(execFn, {
       repoRoot,
       ids,
+      // #1064 — with ONE workstream the tree this step verifies IS that
+      // workstream's own tree (only its commits are on the integration branch),
+      // so the failure label names it. The caller's `verifiedWorktree` is the
+      // same tree by the #1240 contract (one workstream, create mode, a
+      // cherry-pick), and its absence simply keeps the CONSOLIDATED wording.
+      singleWorktree: opts.verifiedWorktree,
       cherryApplied,
       patchApplied,
       noDiff,
