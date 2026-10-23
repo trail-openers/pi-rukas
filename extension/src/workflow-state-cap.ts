@@ -1,48 +1,23 @@
 /**
- * workflow-state-cap — the #543 dispatch-cap types: the evidence a cap
- * kill fired (`CapEvidence`, F4(j)) and the driver-owned checkpoint
- * record (`CapedPartialState`, F5), plus the shared `lastCapHit()`
- * event-log scan (#830). Split from workflow-state-schema.ts for AGENTS.md
- * §12 file-size hygiene.
+ * workflow-state-cap — the #543 dispatch-cap TYPES: the evidence a cap kill
+ * fired (`CapEvidence`, F4(j)) and the driver-owned checkpoint record
+ * (`CapedPartialState`, F5). Split from workflow-state-schema.ts for AGENTS.md
+ * §12 file-size hygiene; #1696 moved the event-log scans and the two verbatim
+ * string markers to `workflow-state-cap-helpers.ts` (whose header explains why
+ * a VALUE export does not belong in this module), and they are re-exported
+ * below so every existing importer keeps its path.
  */
 
 import type { RoleName } from "./roles.ts";
-import type { WorkEvent } from "./workflow-state-events.ts";
-import type { WorkState } from "./workflow-state-schema.ts";
 
-/**
- * #1137 — the `evidence` prefix a fix-pass park writes on its cap-hit
- * (`fix-pass-park`; `verify-failed:develop` before #1349). The explain
- * renderer keys on it to prefer that evidence over the gate's failure
- * bullets; the fix pass writes it. One constant, both sides.
- */
-export const FIX_PASS_EVIDENCE_PREFIX = "adversarial fix pass: ";
-
-/**
- * #1543 — the `evidence` prefix of an `integration-worktree-violation` cap the
- * commit-pr fallback raises when it could not CREATE the integrate worktree.
- * The same cap also reports the post-dispatch branch-holder audit (#861), and
- * the renderers told the audit's story — an ops child in the wrong tree — for a
- * `git worktree add` that failed before any ops child existed. One constant,
- * both sides.
- */
-export const INTEGRATE_CREATE_FAILED_PREFIX = "integrate worktree could not be created: ";
-
-/** Leads the failure string of a commit-pr re-entry refused on a PR that is not open. */
-export const PR_NOT_OPEN_MARKER = "[pr-not-open]";
-
-export type CapHitEvent = Extract<WorkEvent, { kind: "cap-hit" }>;
-
-/**
- * The most recent `cap-hit` event with the given `cap`, or `undefined`.
- * #830 — the handoff surfaces used to each write their own
- * `[...state.eventLog].reverse().find(…)` scan; this is the shared one.
- */
-export function lastCapHit(state: WorkState, cap: string): CapHitEvent | undefined {
-  return [...state.eventLog]
-    .reverse()
-    .find((e): e is CapHitEvent => e.kind === "cap-hit" && e.cap === cap);
-}
+export {
+  type CapHitEvent,
+  FIX_PASS_EVIDENCE_PREFIX,
+  INTEGRATE_CREATE_FAILED_PREFIX,
+  lastCapHit,
+  lastCapHitAny,
+  PR_NOT_OPEN_MARKER,
+} from "./workflow-state-cap-helpers.ts";
 
 /**
  * #543 F4 — the evidence that a dispatch-cap kill fired, rendered by the

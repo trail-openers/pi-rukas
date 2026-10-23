@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
  * Offline: no Pi session, no network (`PI_ENSEMBLE_FORGE=none`, both fetches
  * stubbed).
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { projectIssue } from "../src/headless/result.ts";
 import {
@@ -52,6 +52,7 @@ import {
   world,
 } from "./lib/host-park-harness.ts";
 import { lostParkCount } from "./lib/lost-park-count.ts";
+import { sharedKnobs } from "./lib/host-park-shared-knobs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -444,6 +445,15 @@ async function twice(w: World) {
 //        (the §12 file-size cap); that file states which branch of the writer it
 //        cannot reach through the handoff step, and therefore does not claim.
 await lostParkCount(assert);
+
+// ── 5d. The two memories share their TWO knobs. #1696 review round 1 — the host
+//        signal carried its own copies of the refusal threshold and the
+//        `PI_ENSEMBLE_REPEAT_PARK` switch, so raising one guard's bar left the
+//        other silently refusing on the old number. Both now read the pair from
+//        the record leaf. The case lives in `lib/host-park-shared-knobs.ts`
+//        (the §12 file-size cap), which states the three ways the claim is
+//        checked and why each one is needed.
+await sharedKnobs(assert);
 
 // ── 6. The host channel's label state says DECLINED, not FAILED: pi-rukas
 //        applies no `needs-human-attention` label there by contract, and a host

@@ -57,6 +57,16 @@ const defaultExecFn: ExecFn = execp;
 export interface ArtifactSweepOpts {
   /** Absolute repo root; `.pi/work-state/` is resolved under it. */
   repoRoot: string;
+  /**
+   * #1696 — a TEST seam, spelled in the shape of the driver's own
+   * `DriverContext.issueBodyFetcherFn`. The sweep is NOT allowed to fetch an
+   * issue body (that is a `gh` subprocess per orphan directory, in a sweep that
+   * runs at every cycle start), so the only legitimate use is to INJECT A
+   * COUNTING OR THROWING fetcher and assert the sweep never calls it — which is
+   * what `test-work-driver-artifact-sweep.ts` (k) does. Nothing in the sweep
+   * path reads this field, so passing it can only ever observe a leak.
+   */
+  issueBodyFetcherFn?: (issue: number, cwd: string) => Promise<{ stdout: string }>;
   /** Executor for `rm -rf` (injected so tests can assert the command). */
   execFn?: ExecFn;
   /** Set to false to disable the sweep (testing). */
@@ -206,7 +216,10 @@ async function holdsLiveParkRecord(
   }
   // #1696 — the host channel's signal lives in this same directory and arms the
   // same kind of refusal, so the same rule keeps it alive. Asked of its own
-  // module, which owns the file's name and its plausibility rules.
+  // module, which owns the file's name and its plausibility rules — and, load-
+  // bearing, answers from a read-only row parse: resolving a fingerprint here
+  // would fetch the issue body through `gh`, roughly four subprocesses per
+  // orphan directory in a sweep that runs at every cycle start.
   if (await holdsLiveHostParkSignal(repoRoot, Number(name), now())) return true;
   return false;
 }
