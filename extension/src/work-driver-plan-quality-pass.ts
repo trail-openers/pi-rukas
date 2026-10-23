@@ -50,11 +50,6 @@ import {
   planSpecMismatchCap,
 } from "./work-driver-plan-helpers.ts";
 import {
-  findFenceContradictions,
-  findPathCollisions,
-  findTestSubjectSplits,
-} from "./work-driver-plan-paths.ts";
-import {
   repairOmittedDeliverablePaths,
   withOmittedPathAssumption,
 } from "./work-driver-plan-repair.ts";
@@ -65,11 +60,7 @@ import {
   protectedDeferralsOf,
   undeclarableSlotsOf,
 } from "./work-driver-plan-spec-coverage.ts";
-import {
-  correctiveNoWorkstreamCallsSteer,
-  correctivePlanSteer,
-  correctiveTestSubjectSplitSteer,
-} from "./work-driver-plan-steers.ts";
+import { correctiveSteerFor } from "./work-driver-plan-steers.ts";
 import { planCorrectiveFailureEvent, planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
 import type { PlanQualityReason } from "./workflow-state-schema.ts";
 import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
@@ -158,6 +149,13 @@ export async function runPlanQualityTail(
   // dropped-edge check reads it against the first plan's raw map).
   let correctiveRaw: Record<string, Workstream> | undefined;
   let droppedEdges: { from: string; to: string }[] | undefined;
+  // #1756 — the two notions `redispatched` used to carry in one flag. The INPUT
+  // flag is kill-recovery (#754: a killed primary already spent the one-shot
+  // budget, so the tail must not spend it twice); THIS one is "this tail
+  // dispatched a corrective and kept its plan". The halt predicate reads the
+  // live value at the halt site — reading the input flag before the `await` is
+  // what made a clean corrective unable to clear the primary's refusal.
+  let correctiveRan = false;
   let unfence = input.unfence;
   // The paths the repair appended to the primary plan. Disclosed at the end only
   // when that plan is the one that reaches develop: a corrective replaces it.
@@ -215,11 +213,17 @@ export async function runPlanQualityTail(
       ? planSpecMismatchReason(workstreams, input.spec, grant)
       : undefined;
   // #819 round-3 — a primary refusal is never silently outlived: the tail
-  // halts on any unresolved refusal, and "unresolved" means no corrective ran
-  // for it (a corrective that was itself refused caps at its own site below).
-  const primaryGateRefused = input.planGateEnabled && specMismatch !== undefined && !redispatched;
-  const halt = (state: WorkState): PlanQualityOutput => ({
-    state,
+  // halts on any UNRESOLVED refusal, and "unresolved" is decided at the halt
+  // site from the live `correctiveRan` (#1756). A corrective whose own gate
+  // passed cleared the primary's verdict; a corrective that was itself refused
+  // capped at its own site above.
+  const halt = (state: WorkState, correctiveDispatched = false): PlanQualityOutput => ({
+    // A park that follows a corrective records that the corrective ran (#1756).
+    // The halt predicate itself is evaluated at the halt site below, from the
+    // live `correctiveRan`, never from a const captured before the dispatch.
+    state: correctiveDispatched
+      ? withCorrectiveDispatch(state, input, redispatched, droppedEdges, unfence)
+      : state,
     workstreams,
     halted: true,
   });
@@ -314,11 +318,13 @@ export async function runPlanQualityTail(
     next = appendPlanDispatchOutcome(next, label, retryReport, retryCompletion);
     // A corrective that failed without a kill (provider error, non-zero exit) is
     // a failed dispatch: its completion event is the tail, not a zero-call verdict.
-    if (!retry.ok) return halt(next);
+    if (!retry.ok) return halt(next, true);
     redispatched = true;
+    // #1756 — the corrective the TAIL dispatched, judged by the halt predicate.
+    correctiveRan = true;
     repairedAdded = undefined;
     if (retryReport.unreadable > 0) {
-      return halt(planResultsUnreadableCap(next, retryReport));
+      return halt(planResultsUnreadableCap(next, retryReport), true);
     }
     // #1652 — one corrective per cycle, and a corrective with no accepted call
     // leaves the cycle with no plan. The first set is discarded: it already
@@ -333,6 +339,7 @@ export async function runPlanQualityTail(
           retryReport,
           "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
         ),
+        true,
       );
     }
     workstreams = retryReport.workstreams;
@@ -367,6 +374,7 @@ export async function runPlanQualityTail(
           correctiveMismatch,
           "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
         ),
+        true,
       );
     }
   }
@@ -404,26 +412,18 @@ export async function runPlanQualityTail(
     }
     workstreams = withDeferredProtectedFence(workstreams, deferredProtected);
   }
-  // #571 — cross-group claim check: detect sibling overlaps BEFORE registering.
-  // Parking early costs one plan dispatch, not a full develop-to-commit burn.
-  if (crossGroupConflictsEnabled()) {
-    next = await checkAndRegisterClaims(ctx, next, workstreams);
-  }
-  // #819 round-3 — a reason a halt path already persisted survives this write
-  // (it is the fallback of `finalReason` below) and trips the assertion under
-  // it: the field's purpose is that `lastCapHit` is not the only reader of the
-  // verdict, so a halted cycle never loses it to the tail's object.
   const haltReason = next.pipelineState.planQuality?.reason;
   if (haltReason === "plan-spec-mismatch") {
     throw new Error(
       "work-driver: runPlan reached its final return with planQuality.reason = plan-spec-mismatch — the plan-to-spec halt must return before the gates, the claims and the synthetic default workstream",
     );
   }
-  if (primaryGateRefused) {
-    // The primary's refusal has no earlier `return` when the corrective ran
-    // and was judged on its OWN text (a corrective whose paths cover the spec
-    // leaves `correctiveMismatch` silent). Whatever the shape gate concluded,
-    // the cycle must not reach develop on a plan the spec gate refused.
+  // #1756 — the predicate is evaluated HERE, from the live `correctiveRan`, and
+  // ABOVE the claim registration: whatever the shape gate concluded, a cycle must
+  // neither develop a plan the spec gate refused nor reserve paths for a plan it
+  // never develops. `specMismatch` is still the PRIMARY's verdict — a corrective
+  // that reached this point passed its own gate, so its verdict cleared this one.
+  if (input.planGateEnabled && specMismatch !== undefined && !correctiveRan) {
     return halt(
       planSpecMismatchCap(
         next,
@@ -431,6 +431,18 @@ export async function runPlanQualityTail(
         "the primary plan carried a shape the plan-to-spec gate refuses, and no corrective plan replaced it",
       ),
     );
+  }
+  // #571 — cross-group claim check: detect sibling overlaps BEFORE registering,
+  // so a cycle whose plan is refused or whose paths a live sibling holds never
+  // leaves claims behind (#1756 moves this below the halt decision). Parking
+  // early costs one plan dispatch, not a full develop-to-commit burn.
+  if (crossGroupConflictsEnabled()) {
+    next = await checkAndRegisterClaims(ctx, next, workstreams);
+    // The claim gate's own parks (a live sibling holds a path, or the claims
+    // lock refused a registration) are the last halt, and each leaves its cap-hit
+    // as the tail event (#1756 moves this block below the spec-gate halt).
+    const lastEvent = next.eventLog[next.eventLog.length - 1];
+    if (lastEvent?.kind === "cap-hit") return halt(next, correctiveRan);
   }
   const finalReason =
     droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : (reason ?? haltReason);
@@ -442,25 +454,76 @@ export async function runPlanQualityTail(
     ? withProtectedDeferralAssumptions(repaired, input.spec, grant)
     : repaired;
   return {
-    state:
-      deferredProtected === undefined
-        ? disclosed
-        : {
-            ...disclosed,
-            pipelineState: { ...disclosed.pipelineState, deferredProtected },
-          },
+    state: declaredState(disclosed, deferredProtected),
     workstreams,
     halted: false,
-    planQuality: {
-      findingsCount: input.findingsCount,
-      redispatched,
-      ...(finalReason ? { reason: finalReason } : {}),
-      ...(droppedEdges ? { droppedEdges } : {}),
-      // #1167 round-3 — the unfence's own record, so the four silences (no
-      // fences, unreadable issue body, identifier cap, git failure) are
-      // distinguishable in the state file rather than only in `trace()`.
-      ...(unfence ? { unfence } : {}),
+    planQuality: planQualityRecord(input, redispatched, finalReason, droppedEdges, unfence),
+  };
+}
+
+/**
+ * #1756 — a halt that follows a corrective dispatch must not persist
+ * `planQuality.redispatched: false` and deny the dispatch the cycle paid for.
+ * The parks below all follow a corrective whose calls were accepted, so the
+ * record is written from this tail's own live values (the same builder the
+ * success return uses) rather than read back from a park that never recorded
+ * one. `plan-spec-mismatch` is what each of those caps parks on; the claims
+ * gate's own caps carry their own verdict and keep their reason untouched.
+ * No-op when the state already says a corrective ran.
+ */
+function withCorrectiveDispatch(
+  state: WorkState,
+  input: PlanQualityInput,
+  redispatched: boolean,
+  droppedEdges: { from: string; to: string }[] | undefined,
+  unfence: PlanUnfenceSummary | undefined,
+): WorkState {
+  if (state.pipelineState.planQuality?.redispatched) return state;
+  const prior = state.pipelineState.planQuality;
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      planQuality: {
+        ...planQualityRecord(input, redispatched, prior?.reason, droppedEdges, unfence),
+        ...(prior?.reason ? {} : { reason: "plan-spec-mismatch" as const }),
+      },
     },
+  };
+}
+
+/** The state the success return carries: the disclosures, plus any deferred fence. */
+function declaredState(disclosed: WorkState, deferredProtected: string[] | undefined): WorkState {
+  return deferredProtected === undefined
+    ? disclosed
+    : {
+        ...disclosed,
+        pipelineState: { ...disclosed.pipelineState, deferredProtected },
+      };
+}
+
+/**
+ * The single `planQuality` record the caller persists. `redispatched` is the
+ * LIVE flag: true whenever this cycle ran a corrective, whether the tail's own
+ * (#1756 — a halt must not persist a verdict that denies the corrective
+ * happened) or the kill-recovery one.
+ */
+function planQualityRecord(
+  input: PlanQualityInput,
+  redispatched: boolean,
+  finalReason: PlanQualityReason | undefined,
+  droppedEdges: { from: string; to: string }[] | undefined,
+  unfence: PlanUnfenceSummary | undefined,
+): NonNullable<WorkState["pipelineState"]["planQuality"]> {
+  return {
+    findingsCount: input.findingsCount,
+    redispatched,
+    ...(finalReason ? { reason: finalReason } : {}),
+    ...(droppedEdges ? { droppedEdges } : {}),
+    // #1167 round-3 — the unfence's own record, so the four silences (no
+    // fences, unreadable issue body, identifier cap, git failure) are
+    // distinguishable in the state file rather than only in `trace()`.
+    ...(unfence ? { unfence } : {}),
   };
 }
 
@@ -474,27 +537,4 @@ function correctiveTraceMessage(
     return "work-driver: plan made no accepted report_workstream call — re-dispatching once";
   const also = reason && mismatchKind ? ` (also plan-spec-mismatch: ${mismatchKind})` : "";
   return `work-driver: plan quality — ${reason ?? mismatchKind}, re-dispatching once${also}`;
-}
-
-/** The steer the corrective carries: zero calls, the test-subject split, or the general plan steer. */
-function correctiveSteerFor(
-  noCalls: boolean,
-  report: WorkstreamReport,
-  workstreams: Record<string, Workstream>,
-  reason: PlanQualityReason | undefined,
-  findingsCount: number,
-): string {
-  if (noCalls) return correctiveNoWorkstreamCallsSteer(report.refused);
-  if (reason === "test-subject-split") {
-    return correctiveTestSubjectSplitSteer(findTestSubjectSplits(workstreams));
-  }
-  return correctivePlanSteer(
-    reason ?? "plan-spec-mismatch",
-    findingsCount,
-    Object.keys(workstreams).length,
-    findPathCollisions(workstreams),
-    // #1167 — the new reason's details. Cheap and pure, so computed once here
-    // for whichever steer runs.
-    findFenceContradictions(workstreams),
-  );
 }
