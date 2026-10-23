@@ -28,18 +28,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../src/types.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import type { SpecCoverageSpec } from "../src/work-driver-plan-spec-coverage.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { seedClaims, spawnLivePid } from "./lib/claims-test-helpers.ts";
-import {
-  type PlanResultShape,
-  planResultFromCalls,
-  planResultFromRawCalls,
-} from "./lib/plan-workstream-calls.ts";
+import { SPEC_819, mkPlanCtx, stubDispatchResult } from "./lib/plan-819-fixtures.ts";
+import { planResultFromCalls, planResultFromRawCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -56,51 +51,14 @@ process.env.PI_ENSEMBLE_RESUME = "0";
 // The fixtures declare no depends-on edges, and the contract pass would fold ids.
 process.env.PI_ENSEMBLE_PLAN_CONTRACT = "0";
 
-const fakePi = { sendUserMessage: () => undefined } as unknown as ExtensionAPI;
-
-function mkResult(plan: PlanResultShape, patch: Partial<DispatchResult> = {}): DispatchResult {
-  return {
-    role: "explore",
-    ok: true,
-    ...plan,
-    ms: 10,
-    exitCode: 0,
-    transcriptPath: "/tmp/stub-plan-transcript.json",
-    ...patch,
-  };
-}
+const mkResult = stubDispatchResult;
+const mkCtx = mkPlanCtx;
 
 /** The spec whose single deliverable lives at src/required.ts (or the override). */
 function stateWithSpec(state: WorkState, specOverride?: SpecCoverageSpec): WorkState {
   return {
     ...state,
-    pipelineState: {
-      ...state.pipelineState,
-      normalisedSpec: specOverride ?? {
-        intent: "fix the thing",
-        deliverables: [{ id: "d1", description: "d", paths: ["src/required.ts"] }],
-        acceptanceCriteria: ["it works"],
-        outOfScope: [],
-        assumptions: [],
-        openQuestions: [],
-        evidence: [],
-        verdict: "proceed",
-        rationale: "",
-      },
-    },
-  };
-}
-
-function mkCtx(dir: string, dispatchFn?: DriverContext["dispatchFn"]): DriverContext {
-  return {
-    host: fakePi,
-    repoRoot: dir,
-    issue: 1756,
-    dispatchFn,
-    verifyExecFn: (async () => ({
-      stdout: "",
-      code: 0,
-    })) as unknown as DriverContext["verifyExecFn"],
+    pipelineState: { ...state.pipelineState, normalisedSpec: specOverride ?? SPEC_819 },
   };
 }
 
@@ -118,36 +76,34 @@ const COVERING_CORRECTIVE = planResultFromCalls([
   { id: "default", scope: "the fix", paths: ["src/required.ts"], outOfScope: [] },
 ]);
 
-/** A corrective that still misses the spec. */
+/**
+ * A corrective that still misses `SPEC_819`'s deliverable.
+ */
 const STILL_WRONG_CORRECTIVE = planResultFromCalls([
   { id: "default", scope: "the fix", paths: ["src/other.ts"], outOfScope: [] },
 ]);
 
 /**
- * A corrective that covers deliverable d2 but still declares `src/held.ts`, the
- * file a live sibling holds, so its OWN gate is silent and only the claim gate
- * can stop the cycle (#1756 moves that gate below the halt decision).
+ * A corrective for the claim-conflict case: it still declares `src/held.ts`, the
+ * file a live sibling holds, so only the claim gate can stop the cycle (#1756
+ * moved that gate below the halt decision). Its own gate stays silent because the
+ * case reads it against `coveredSpec()`, which names both of its files.
  */
 const HELD_PATH_CORRECTIVE = planResultFromCalls([
   { id: "task-a", scope: "the fix", paths: ["src/held.ts"], outOfScope: [] },
   { id: "default", scope: "the rest", paths: ["src/required.ts"], outOfScope: [] },
 ]);
 
-/** A two-deliverable spec: d1 at the sibling-held path, d2 at src/required.ts. */
-const TWO_DELIVERABLE_SPEC: SpecCoverageSpec = {
-  intent: "fix the thing",
-  deliverables: [
-    { id: "d1", description: "d1", paths: ["src/held.ts"] },
-    { id: "d2", description: "d2", paths: ["src/required.ts"] },
-  ],
-  acceptanceCriteria: ["it works"],
-  outOfScope: [],
-  assumptions: [],
-  openQuestions: [],
-  evidence: [],
-  verdict: "proceed",
-  rationale: "",
-};
+/** A spec covering both files the corrective above declares, so its own gate stays silent. */
+function coveredSpec(): SpecCoverageSpec {
+  return {
+    ...SPEC_819,
+    deliverables: [
+      { id: "d1", description: "d1", paths: ["src/held.ts"] },
+      { id: "d2", description: "d2", paths: ["src/required.ts"] },
+    ],
+  };
+}
 
 /** Kill-recovery shape for case 5: a primary killed at the step's own bound. */
 function killedPrimary(): DispatchResult {
@@ -193,11 +149,11 @@ async function readClaimsFile(dir: string): Promise<unknown[]> {
       `the corrective's workstream is recorded in pipelineState (got ${Object.keys(
         next.pipelineState.workstreams ?? {},
       ).join(",")})`,
-    ),
-      assert(
-        next.pipelineState.workstreams?.default?.paths?.join(",") === "src/required.ts",
-        "and it is the CORRECTIVE's paths, not the primary's",
-      );
+    );
+    assert(
+      next.pipelineState.workstreams?.default?.paths?.join(",") === "src/required.ts",
+      "and it is the CORRECTIVE's paths, not the primary's",
+    );
     assert(
       next.pipelineState.planQuality?.redispatched === true,
       `the persisted verdict records the corrective (got ${next.pipelineState.planQuality?.redispatched})`,
@@ -260,62 +216,59 @@ async function readClaimsFile(dir: string): Promise<unknown[]> {
 
 // ---- 3. a halting tail registers no claims; ---- 4. a live sibling still parks
 
-{
-  for (const sibling of [false, true] as const) {
-    const dir = mkdtempSync(path.join(tmpdir(), `plan-1756-claims-${sibling}-`));
-    // A live sibling holding the file this plan declares. The pid stays alive
-    // for the whole case: `readClaims` calls a dead owner stale, and a stale
-    // claim parks nobody. `registerClaim` stamps OUR pid, so the row is seeded
-    // raw in the shape it produces.
-    const live = sibling ? await spawnLivePid() : undefined;
-    try {
-      if (live) {
-        // The sibling holds src/held.ts, which this cycle's corrective still
-        // declares, so only the claim gate can stop the cycle.
-        seedClaims(dir, [
-          { issue: 999, pid: live.pid, startedAt: Date.now(), paths: ["src/held.ts"] },
-        ]);
-      }
-      const seen: string[] = [];
-      const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
-        seen.push((opts as { label?: string })?.label ?? "");
-        return mkResult(
-          seen.length === 1
-            ? REFUSED_PRIMARY
-            : sibling
-              ? HELD_PATH_CORRECTIVE
-              : STILL_WRONG_CORRECTIVE,
-        );
-      });
-      const next = await runPlan(
-        ctx,
-        stateWithSpec(initialState(1756, 1_000_000), sibling ? TWO_DELIVERABLE_SPEC : undefined),
-        1_000_000,
-      );
-      const hits = next.eventLog.filter((e) => e.kind === "cap-hit");
-      const hit = hits[hits.length - 1];
-      assert(
-        hits.some(
-          (h) =>
-            h.kind === "cap-hit" &&
-            h.cap === (sibling ? "cross-group-conflict" : "plan-spec-mismatch"),
-        ),
-        sibling
-          ? "a live sibling's claim still parks the tail with cross-group-conflict"
-          : "with no sibling the halt is the plan-spec-mismatch cap",
-      );
-      assert(
-        next.pipelineState.status === "handoff" || hit !== undefined,
-        `the halting tail leaves the step parked (status ${next.pipelineState.status})`,
-      );
-      assert(
-        (await readClaimsFile(dir)).every((c) => (c as { issue?: number }).issue !== 1756),
-        `a halting tail registers no path claims for #1756${sibling ? " (sibling present)" : ""}`,
-      );
-    } finally {
-      await live?.stop();
-      rmSync(dir, { recursive: true, force: true });
+for (const sibling of [false, true] as const) {
+  const dir = mkdtempSync(path.join(tmpdir(), `plan-1756-claims-${sibling}-`));
+  // A live sibling holding the file this plan declares. The pid stays alive for
+  // the whole case: `readClaims` calls a dead owner stale, and a stale claim
+  // parks nobody. `registerClaim` stamps OUR pid, so the row is seeded raw.
+  const live = sibling ? await spawnLivePid() : undefined;
+  try {
+    if (live) {
+      // The sibling holds src/held.ts, which this cycle's corrective still
+      // declares, so only the claim gate can stop the cycle.
+      seedClaims(dir, [
+        { issue: 999, pid: live.pid, startedAt: Date.now(), paths: ["src/held.ts"] },
+      ]);
     }
+    const seen: string[] = [];
+    const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
+      seen.push((opts as { label?: string })?.label ?? "");
+      return mkResult(
+        seen.length === 1
+          ? REFUSED_PRIMARY
+          : sibling
+            ? HELD_PATH_CORRECTIVE
+            : STILL_WRONG_CORRECTIVE,
+      );
+    });
+    const next = await runPlan(
+      ctx,
+      stateWithSpec(initialState(1756, 1_000_000), sibling ? coveredSpec() : undefined),
+      1_000_000,
+    );
+    const hits = next.eventLog.filter((e) => e.kind === "cap-hit");
+    const hit = hits[hits.length - 1];
+    assert(
+      hits.some(
+        (h) =>
+          h.kind === "cap-hit" &&
+          h.cap === (sibling ? "cross-group-conflict" : "plan-spec-mismatch"),
+      ),
+      sibling
+        ? "a live sibling's claim still parks the tail with cross-group-conflict"
+        : "with no sibling the halt is the plan-spec-mismatch cap",
+    );
+    assert(
+      next.pipelineState.status === "handoff" || hit !== undefined,
+      `the halting tail leaves the step parked (status ${next.pipelineState.status})`,
+    );
+    assert(
+      (await readClaimsFile(dir)).every((c) => (c as { issue?: number }).issue !== 1756),
+      `a halting tail registers no path claims for #1756${sibling ? " (sibling present)" : ""}`,
+    );
+  } finally {
+    await live?.stop();
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

@@ -50,6 +50,11 @@ import {
   planSpecMismatchCap,
 } from "./work-driver-plan-helpers.ts";
 import {
+  planQualityRecord,
+  withCorrectiveDispatch,
+  withDeferredProtectedDeclared,
+} from "./work-driver-plan-quality-record.ts";
+import {
   repairOmittedDeliverablePaths,
   withOmittedPathAssumption,
 } from "./work-driver-plan-repair.ts";
@@ -454,76 +459,10 @@ export async function runPlanQualityTail(
     ? withProtectedDeferralAssumptions(repaired, input.spec, grant)
     : repaired;
   return {
-    state: declaredState(disclosed, deferredProtected),
+    state: withDeferredProtectedDeclared(disclosed, deferredProtected),
     workstreams,
     halted: false,
     planQuality: planQualityRecord(input, redispatched, finalReason, droppedEdges, unfence),
-  };
-}
-
-/**
- * #1756 — a halt that follows a corrective dispatch must not persist
- * `planQuality.redispatched: false` and deny the dispatch the cycle paid for.
- * The parks below all follow a corrective whose calls were accepted, so the
- * record is written from this tail's own live values (the same builder the
- * success return uses) rather than read back from a park that never recorded
- * one. `plan-spec-mismatch` is what each of those caps parks on; the claims
- * gate's own caps carry their own verdict and keep their reason untouched.
- * No-op when the state already says a corrective ran.
- */
-function withCorrectiveDispatch(
-  state: WorkState,
-  input: PlanQualityInput,
-  redispatched: boolean,
-  droppedEdges: { from: string; to: string }[] | undefined,
-  unfence: PlanUnfenceSummary | undefined,
-): WorkState {
-  if (state.pipelineState.planQuality?.redispatched) return state;
-  const prior = state.pipelineState.planQuality;
-  return {
-    ...state,
-    pipelineState: {
-      ...state.pipelineState,
-      planQuality: {
-        ...planQualityRecord(input, redispatched, prior?.reason, droppedEdges, unfence),
-        ...(prior?.reason ? {} : { reason: "plan-spec-mismatch" as const }),
-      },
-    },
-  };
-}
-
-/** The state the success return carries: the disclosures, plus any deferred fence. */
-function declaredState(disclosed: WorkState, deferredProtected: string[] | undefined): WorkState {
-  return deferredProtected === undefined
-    ? disclosed
-    : {
-        ...disclosed,
-        pipelineState: { ...disclosed.pipelineState, deferredProtected },
-      };
-}
-
-/**
- * The single `planQuality` record the caller persists. `redispatched` is the
- * LIVE flag: true whenever this cycle ran a corrective, whether the tail's own
- * (#1756 — a halt must not persist a verdict that denies the corrective
- * happened) or the kill-recovery one.
- */
-function planQualityRecord(
-  input: PlanQualityInput,
-  redispatched: boolean,
-  finalReason: PlanQualityReason | undefined,
-  droppedEdges: { from: string; to: string }[] | undefined,
-  unfence: PlanUnfenceSummary | undefined,
-): NonNullable<WorkState["pipelineState"]["planQuality"]> {
-  return {
-    findingsCount: input.findingsCount,
-    redispatched,
-    ...(finalReason ? { reason: finalReason } : {}),
-    ...(droppedEdges ? { droppedEdges } : {}),
-    // #1167 round-3 — the unfence's own record, so the four silences (no
-    // fences, unreadable issue body, identifier cap, git failure) are
-    // distinguishable in the state file rather than only in `trace()`.
-    ...(unfence ? { unfence } : {}),
   };
 }
 
