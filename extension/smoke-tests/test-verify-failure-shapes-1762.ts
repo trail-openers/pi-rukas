@@ -20,14 +20,18 @@ import {
   extractSpecificAssertion,
 } from "../src/work-driver-consolidation-classify.ts";
 import { decideCorrectiveRound } from "../src/work-driver-corrective-decide.ts";
+import type { CorrectiveGateView } from "../src/work-driver-corrective-decide.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import { formatExecError } from "../src/work-driver-verify-develop-helpers.ts";
 import {
+  FAILURE_LINE_SCAN_MAX,
   classifyFailureLine,
+  depsHintStartFor,
   failureLines,
   isSuccessLine,
   splitLines,
 } from "../src/work-driver-verify-failures.ts";
+import { depsHintApplies } from "../src/work-driver-verify-record.ts";
 import { runVerifyFull } from "../src/work-driver-verify-full.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
@@ -181,7 +185,150 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
   }
 }
 
-// ── 2c. a line the harness wrapped is classified on its inner stream ─────────
+// ── 2d. the success veto survives prose that mentions a failure count ──────
+// The unanchored third branch of `NONZERO_FAILURE_COUNT` reported a non-zero
+// count ANYWHERE in the line, so it defeated every passing veto: a line whose
+// passing half the runner printed and whose failure word sits in prose became a
+// failure line, an evidence anchor, and (through `attributed: true`) a candidate
+// for the cycle's one corrective round. The rule is now: a count in a STATUS
+// position counts, a count in a sentence does not.
+{
+  const STATUS_TALLY: Array<[string, string]> = [
+    // cargo's own summary line — the count follows the label's colon through
+    // the passing half, which is what a comma-only anchor missed.
+    ["test result: 23 passed, 1 failed", "named-file"],
+    ["test result: FAILED. 0 passed; 1 failed", "named-file"],
+    ["1 failed, 3 passed", "named-file"],
+    ["2 failed, 10 passed", "named-file"],
+  ];
+  for (const [line, shape] of STATUS_TALLY) {
+    const got = classifyFailureLine(line);
+    assert(
+      got !== undefined && got.shape === shape,
+      `tally: ${JSON.stringify(line)} classifies as ${shape}, got ${JSON.stringify(got)}`,
+    );
+    assert(
+      isSuccessLine(line) === false,
+      `tally: ${JSON.stringify(line)} is not a success line`,
+    );
+  }
+  const PROSE_COUNT = [
+    // The three the reviewer named, plus the neighbours of the same shape.
+    "test result: 23 passed, 0 failed",
+    "12 passed (retried 1 failed attempt)",
+    "attempt 1 failed to start the worker, the second one worked",
+    "suite reports 12 passed and nobody said 1 failed",
+    "pack_release_test.sh: 36 cases, 0 failed",
+    "12 passed",
+  ];
+  for (const line of PROSE_COUNT) {
+    assert(
+      classifyFailureLine(line) === undefined,
+      `prose count: ${JSON.stringify(line)} stays a success`,
+    );
+    assert(
+      isSuccessLine(line) === true,
+      `prose count: ${JSON.stringify(line)} reports success`,
+    );
+  }
+}
+
+// ── 2e. the deps hint is never chosen as the gate's stream ─────────────────
+// `provisionDepsHint` is appended to the harness's own sentence, BEFORE
+// `formatExecError` appends the gate's tail, and the `hook-failed` shape
+// contains a `: ` of its own (`… during provisioning: <problem>`). Cutting at
+// that colon quotes the harness's own diagnosis as the gate's output — the
+// #1667 suppression, backwards: a line the driver wrote becomes evidence and
+// `depsHintApplies` then keeps a hint it exists to suppress.
+{
+  const HINT_PROBLEM = "Cannot find module 'react' in node_modules";
+  const hinted = (tail: string): string =>
+    `verify command \`${CMD}\` failed in ${WT} — the \`.pi/worktree-setup\` hook failed during provisioning: ${HINT_PROBLEM}${tail}`;
+  assert(
+    depsHintStartFor(hinted("")) !== undefined,
+    "deps hint: the hint's start is found in the composed wrapper",
+  );
+  assert(
+    classifyFailureLine(hinted("\nnothing to see here")) === undefined,
+    `deps hint: a hint whose problem text looks like a failure is not classified as one (got ${JSON.stringify(classifyFailureLine(hinted("\nnothing to see here")))})`,
+  );
+  assert(
+    depsHintApplies(hinted("\nnothing to see here")) === true,
+    "deps hint: the hint still applies when the gate printed nothing assertable",
+  );
+  // …and the real gate line beneath the hint is still reached — excluding the
+  // hint must not swallow the builder's own separator, which sits right after
+  // the hint's colon.
+  assert(
+    classifyFailureLine(hinted(`\n${CHECKS_BLOCK}`))?.shape === "script-tally",
+    `deps hint: the gate's own line beneath the hint still classifies (got ${JSON.stringify(classifyFailureLine(hinted(`\n${CHECKS_BLOCK}`)))})`,
+  );
+}
+
+// ── 2f. a pathological single line costs a constant, not the square ────────
+// The classifier is quadratic in line length: the wrapper prefix's lazy `.+?`
+// backtracks once per `: ` it finds and the tally branches' `[^\r\n]*` does the
+// same. A gate that prints a serialized fixture on one line used to cost
+// seconds per line, and a whole suite of them stops the gate. The scan window
+// makes the cost of one line constant.
+{
+  const huge = `${"x".repeat(1200)}: `.repeat(1500); // 200 KB, 1500 `: ` candidates
+  const started = Date.now();
+  const got = classifyFailureLine(huge);
+  const ms = Date.now() - started;
+  assert(got === undefined, `bound: a 200 KB line of separators classifies as nothing`);
+  assert(
+    ms < 500,
+    `bound: a 200 KB single line classifies in under 500 ms (took ${ms} ms; window ${FAILURE_LINE_SCAN_MAX})`,
+  );
+  assert(
+    FAILURE_LINE_SCAN_MAX === 8 * 1024,
+    `bound: the scan window is the exported 8 KiB (got ${FAILURE_LINE_SCAN_MAX})`,
+  );
+  // The window must not lose a real shape: a status keyword in the first 8 KiB
+  // is still the line the table recognises.
+  assert(
+    classifyFailureLine(`${CHECKS_BLOCK}${"y".repeat(200000)}`)?.shape === "script-tally",
+    "bound: a real failure shape at the head of a huge line still classifies",
+  );
+}
+
+// ── 2g. isSuccessLine asserted directly, not only through the classifier ───
+// The classifier asks this first and every passing veto in the table depends on
+// it, so a change that keeps `classifyFailureLine` green while breaking the
+// predicate (an inverted count guard, say) must still fail here.
+{
+  const YES: string[] = [
+    "✓ 3 other checks",
+    "ok 24 - the console's tests",
+    "PASS  Test Suite (1000 ms)",
+    "test result: 23 passed, 0 failed",
+    "pack_release_test.sh: 36 cases, 0 failed",
+    "scripts/test.sh: failed checks (0)",
+    "0 errors",
+    "12 passed",
+    "12 passed (retried 1 failed attempt)",
+  ];
+  const NO: string[] = [
+    "scripts/test.sh: failed checks (1)",
+    "test result: 23 passed, 1 failed",
+    "1 failed, 3 passed",
+    "a.ts: 3 failed",
+    "✗ expected 5 got 6",
+    "not ok 3 - the console's tests",
+    "",
+    "   ",
+    "index.ts: fatal error",
+  ];
+  for (const line of YES) {
+    assert(isSuccessLine(line) === true, `isSuccessLine: ${JSON.stringify(line)} is a success`);
+  }
+  for (const line of NO) {
+    assert(isSuccessLine(line) === false, `isSuccessLine: ${JSON.stringify(line)} is not a success`);
+  }
+}
+
+// ── 2c. a line the harness wrapped is classified on its inner stream ───────
 // The harness composes `verify command \`cmd\` failed in <cwd>: <stream>`; the
 // first version of this used the stream only as an existence veto and then
 // matched the WHOLE wrapped line, so every anchored shape (`^✗\s`,
@@ -257,11 +404,16 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
   );
   {
     const text = wrappedMarker;
-    const gate = {
+    const gate: CorrectiveGateView = {
       ok: false,
       failures: [text],
-      verifyRun: { status: "ran", command: CMD, failures: [text], perWorktree: [{ cwd: WT, text }] },
-    } as const;
+      verifyRun: {
+        status: "ran",
+        command: CMD,
+        failures: [text],
+        perWorktree: [{ cwd: WT, text }],
+      },
+    };
     const d = decideCorrectiveRound(gate, { eventLog: [], worktrees: { a: WT } });
     assert(
       d.round === false,
@@ -277,11 +429,16 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
   );
   {
     const text = wrappedAssertion;
-    const gate = {
+    const gate: CorrectiveGateView = {
       ok: false,
       failures: [text],
-      verifyRun: { status: "ran", command: CMD, failures: [text], perWorktree: [{ cwd: WT, text }] },
-    } as const;
+      verifyRun: {
+        status: "ran",
+        command: CMD,
+        failures: [text],
+        perWorktree: [{ cwd: WT, text }],
+      },
+    };
     const d = decideCorrectiveRound(gate, { eventLog: [], worktrees: { a: WT } });
     assert(
       d.round === true,
@@ -456,7 +613,7 @@ const LABEL = "[host-resource-exhaustion]";
   const CMD = "bash scripts/verify.sh";
   const WT = "/repo/.worktrees/issue-1-a";
   const text = `verify command \`${CMD}\` failed in ${WT}: ${CHECKS_BLOCK}\n${CHECK_DETAIL}`;
-  const gate = {
+  const gate: CorrectiveGateView = {
     ok: false,
     failures: [text],
     verifyRun: {
@@ -465,7 +622,7 @@ const LABEL = "[host-resource-exhaustion]";
       failures: [text],
       perWorktree: [{ cwd: WT, text }],
     },
-  } as const;
+  };
   const d = decideCorrectiveRound(gate, {
     eventLog: [],
     worktrees: { a: WT },

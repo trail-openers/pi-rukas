@@ -27,7 +27,7 @@ import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
-import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
+import { UNATTRIBUTED_NOTE, isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import {
   combinedExecFailureStream,
   rawOutputClause,
@@ -382,7 +382,7 @@ export async function runConsolidatedVerifyUnlocked(
       const detail = tail
         ? attributed
           ? tail
-          : `${tail} (unattributed — best-effort tail)`
+          : `${tail} ${UNATTRIBUTED_NOTE}`
         : "verify command exited non-zero";
       // #841 — the log that matters for THIS failure is run2 when a retry
       // fired (run2 is the run the classifier reads), run1 otherwise.

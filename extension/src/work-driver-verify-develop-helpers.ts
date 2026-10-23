@@ -62,13 +62,22 @@ export function verifyPassTimeoutMs(): number {
 export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
 
 /**
- * The note #1762's callers append when the window was not anchored. Matched in
- * FULL, not on the bare word `unattributed`: that word also occurs in prose
- * that says nothing about attribution (a gate output discussing an
+ * The note every caller appends when the evidence window was not anchored, and
+ * the trace below skips when the window already carries one of its own.
+ *
+ * Exported `as const` and used at EVERY site that composes it
+ * (`work-driver-integrate-verify.ts`, `work-driver-consolidated-verify.ts` and
+ * here): the trace-suppression check matches this string FULLY, and a site that
+ * re-typed it slightly differently would silence the trace for a run that was
+ * never declared unattributed — or fail to silence it twice over. One literal is
+ * the only way the writer and the reader cannot disagree.
+ *
+ * Matched in FULL, not on the bare word `unattributed`: that word also occurs in
+ * prose that says nothing about attribution (a gate output discussing an
  * unattributed failure), and a match there would silence the trace for a run
  * that was never declared unattributed.
  */
-const UNATTRIBUTED_NOTE = "(unattributed — best-effort tail)";
+export const UNATTRIBUTED_NOTE = "(unattributed — best-effort tail)" as const;
 
 /** The bound as a person reads it: whole minutes, else seconds. */
 export function boundText(ms: number): string {
@@ -286,13 +295,16 @@ export function formatExecError(
   const { tail, attributed } = extractAttributedTail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`, 1500);
   // The trace is skipped when the window already carries the note of its own
   // (another caller built it): a project gate that echoes the harness's wording
-  // must not make the trace lie, and one run must not trace twice.
+  // must not make the trace lie, and one run must not trace twice. The check
+  // reads the note this module exports, so it is a check on the harness's own
+  // composition and not on gate output: an untrusted stream cannot silence a
+  // driver diagnostic it never wrote (see the constant's note on full matching).
   if (!attributed && tail && !tail.includes(UNATTRIBUTED_NOTE))
     trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
   const suffix = tail
     ? attributed
       ? tail
-      : `${tail} (unattributed — best-effort tail)`
+      : `${tail} ${UNATTRIBUTED_NOTE}`
     : undefined;
   if (e.killed) return timeoutMsg;
   const detail = suffix ?? e.message?.slice(0, 300) ?? "";
