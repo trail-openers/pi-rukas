@@ -22,9 +22,33 @@
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
-import { BASELINE_RED_MARKER, compareWithBaseline } from "./work-driver-verify-baseline.ts";
+import { baselineExplainsChange, compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
+import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
+
+/** #1765 — reports whether the probe established the base red for the gate's command. */
+export type BaselineRedEstablished = (established: boolean) => void;
+
+/**
+ * #1765 — the develop gate's tail rule, in one call so the two claims travel
+ * from the one place that decides them. Both are read off the ONE verdict the
+ * baseline probe returned (`aggregateVerifyOutcome` is its only producer):
+ * `established` is that verdict's colour — the CAP — and `red` is #1349's
+ * excuse question about it. Neither is re-derived from the failure prose: the
+ * `red-timed-out` arm leads its entry with `[verify-timeout]`, so matching the
+ * `[baseline-red]` marker in the list cannot tell a base the probe proved red
+ * from a killed run, and only the structured verdict knows which it judged.
+ * `verifyCapFor` still routes a no-verdict entry the gates after the verify
+ * command append (a killed run, residue) ahead of both claims.
+ */
+export function reportBaselineLeg(
+  leg: { red: boolean; established: boolean },
+  callbacks: { onBaselineRedOnly?: () => void; onBaselineRedEstablished?: () => void },
+): void {
+  if (leg.established) callbacks.onBaselineRedEstablished?.();
+  if (leg.red) callbacks.onBaselineRedOnly?.();
+}
 
 /**
  * Reconcile and attribute. Returns whether the baseline probe ATTRIBUTED the
@@ -43,8 +67,20 @@ export async function aggregateVerifyOutcome(args: {
   perWorktreeVerifyFailures: string[];
   failures: string[];
   notes: string[];
-  /** #1349 — fired when the base run fails the way the change's run does. */
+  /** #1349 — the base run fails the way the change's run does (the excuse). */
   onBaselineAttributed?: () => void;
+  /**
+   * #1765 — the probe ESTABLISHED a red base for `cmd`, whatever the excuse
+   * question answered: the excuse ("every failure is the base's") is voided by
+   * one foreign entry, and pricing the CAP on it spent three develop rounds on a
+   * base nothing could pass (tehas, work 439). Position decides nothing — the
+   * timed-out arm leads with `[verify-timeout]` — so the rule is attribution to
+   * the command the probe re-ran. The no-verdict families keep their precedence
+   * inside `verifyCapFor`, so a killed run is still the actionable timeout.
+   */
+  onBaselineRedEstablished?: BaselineRedEstablished;
+  /** #1765 — the branch step's in-cycle verdict, when the cycle holds one. */
+  baseHealthProbe?: BaseHealthVerdict;
 }): Promise<boolean> {
   const {
     execFn,
@@ -57,6 +93,8 @@ export async function aggregateVerifyOutcome(args: {
     failures,
     notes,
     onBaselineAttributed,
+    onBaselineRedEstablished,
+    baseHealthProbe,
   } = args;
 
   // Aggregation: a consolidated FAILURE keeps per-worktree failures as
@@ -86,7 +124,16 @@ export async function aggregateVerifyOutcome(args: {
     (cons.status === "failed" || perWorktreeVerifyFailures.length > 0) &&
     !failures.some(isHostExhaustionFailure)
   ) {
-    const attributed = await compareWithBaseline(execFn, {
+    const changeFailures = [
+      ...(cons.status === "failed"
+        ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]
+        : []),
+      ...perWorktreeVerifyFailures.map((f) => ({
+        text: f,
+        timedOut: isVerifyTimeoutFailure(f),
+      })),
+    ];
+    const verdict = await compareWithBaseline(execFn, {
       repoRoot: ctx.repoRoot,
       baseSha: baseSha as string,
       issue: ctx.issue,
@@ -95,23 +142,34 @@ export async function aggregateVerifyOutcome(args: {
       // The base probe runs the project's own command, so it gets the same
       // scrubbed env the change run got (#1642).
       env: verifyChildEnv(),
-      changeFailures: [
-        ...(cons.status === "failed"
-          ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]
-          : []),
-        ...perWorktreeVerifyFailures.map((f) => ({ text: f, timedOut: isVerifyTimeoutFailure(f) })),
-      ],
+      changeFailures,
       failures,
       notes,
+      // #1765 — the branch step's verdict for this key: no second suite run pays
+      // for a verdict this cycle already holds.
+      ...(baseHealthProbe !== undefined ? { cachedVerdict: baseHealthProbe } : {}),
     });
+    if (verdict === undefined) {
+      onBaselineRedEstablished?.(false);
+      return false;
+    }
+    // #1765 — the CAP's claim is the verdict's own colour, not a re-derivation
+    // from the entry `compareWithBaseline` appended: the returned arm says whether
+    // the probe established a red base for the command THIS gate ran (it is built
+    // from the same `cmd`), and the `red-timed-out` arm leads its failure entry
+    // with `[verify-timeout]`, so prose could never have told it from a killed
+    // run. A reused verdict is still the base's colour, so it still raises the cap.
+    onBaselineRedEstablished?.(true);
+    // #1765 — the excuse question is #1349's and stays its answer; what changed is
+    // how the develop gate RAISES the cap on it. It used to require the probe's
+    // entry to be the gate's ONLY failure at its own position, so one foreign
+    // failure beside it (the work-439 scope fence) dropped `verify-baseline-red`
+    // to `verify-failed` and tehas burned three develop rounds on a base nothing
+    // could pass. A reused verdict states the base's colour only: no stream, so
+    // nothing to match the change's failures against, so never an excuse.
+    const attributed = verdict.reused !== true && baselineExplainsChange(verdict, changeFailures);
     if (attributed) onBaselineAttributed?.();
     return attributed;
   }
   return false;
-}
-
-/** The probe's marker leads the list (it is unshifted); no check before or
- *  after the verify command added a failure of its own. */
-export function baselineRedOnly(failures: readonly string[]): boolean {
-  return failures.length > 0 && failures[0]?.startsWith(BASELINE_RED_MARKER) === true;
 }

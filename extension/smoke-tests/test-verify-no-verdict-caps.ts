@@ -145,8 +145,23 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
   const state = initialState(9);
   state.pipelineState.worktrees = wts;
   state.pipelineState.baseSha = baseSha;
+  // The #1765 mixed set: a scope/fanout fence violation pushed by the gate
+  // BEFORE the verify chain (the work-439 shape, where `before !== 0` defeated
+  // the old length rule), plus an uncommitted workstream whose own tree fails.
+  if (name === "fence-first") {
+    state.pipelineState.workstreams = {
+      a: { id: "a", paths: [], description: "a" },
+      b: { id: "b", paths: ["extension/src/owned-by-a.ts"], description: "b" },
+    } as never;
+  }
   const failures: string[] = [];
   let baselineRedOnly = false;
+  // #1765 — the CAP's claim travels through `reportBaselineLeg`, not through
+  // `onBaselineRedOnly`: the excuse claim (above) is voided by one foreign
+  // entry, and pricing the cap on it is what spent three develop rounds on a
+  // base nothing could pass. So this counts the ESTABLISHED callback, which is
+  // what the three cap call sites read.
+  let baselineRedEstablished = false;
   await verifyDevelopOutcome(
     { host: {} as unknown as DriverContext["host"], repoRoot: repo, issue: 9 } as DriverContext,
     state,
@@ -157,9 +172,12 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
       onBaselineRedOnly: () => {
         baselineRedOnly = true;
       },
+      onBaselineRedEstablished: () => {
+        baselineRedEstablished = true;
+      },
     },
   );
-  return { failures, baselineRedOnly };
+  return { failures, baselineRedOnly, baselineRedEstablished };
 }
 
 {
@@ -169,15 +187,58 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
     "red at base: the probe finding leads",
   );
   assert(red.baselineRedOnly, "red at base, verify failures only → baseline-red-only reported");
+  // #1765 — the established claim reaches the caller through the gate's own
+  // tail (`reportBaselineLeg`), not just the excuse claim beside it.
+  assert(
+    red.baselineRedEstablished,
+    "red at base: onBaselineRedEstablished fired through reportBaselineLeg",
+  );
   const green = await develop("green", false, false);
   assert(
     green.failures.length > 0 && !green.baselineRedOnly,
     "green at base → not baseline-red-only",
   );
-  const mixed = await develop("mixed", true, true);
   assert(
-    mixed.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)) && !mixed.baselineRedOnly,
-    `red at base plus another check's failure → not baseline-red-only (${mixed.failures.length} failures)`,
+    !green.baselineRedEstablished,
+    "green at base: no established claim — the gate did not blame the base",
+  );
+  const mixed = await develop("mixed", true, true);
+  // #1765 — the inverted pin. The old rule required the `[baseline-red]` entry
+  // to be the gate's ONLY failure, so a workstream's own failure beside it
+  // produced `verify-failed:develop` — the one cap a corrective round may earn
+  // — and tehas paid three develop rounds on a base nothing could pass. The
+  // rule is now attribution: the entry names the command the probe re-ran, so
+  // it wins the cap and the other entry travels as secondary evidence.
+  assert(
+    mixed.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)) && mixed.baselineRedOnly,
+    `red at base plus another check's failure → the baseline-red entry still wins the cap (${mixed.failures.length} failures)`,
+  );
+  assert(
+    mixed.failures.length > 1,
+    "red at base plus another failure → the other failure is kept as evidence, not excused",
+  );
+  assert(
+    verifyCapFor("develop", mixed.failures, mixed.baselineRedOnly) ===
+      "verify-baseline-red:develop",
+    "the mixed set caps verify-baseline-red:develop, not verify-failed:develop",
+  );
+  assert(
+    mixed.baselineRedEstablished,
+    "mixed set: onBaselineRedEstablished still fired — the foreign entry voids the excuse, not the base claim",
+  );
+  // The work-439 shape: the foreign failure is pushed BEFORE the verify chain,
+  // so the old `before === 0` half of the rule failed as well as the length
+  // half. Attribution by command does not care about either.
+  const fenceFirst = await develop("fence-first", true, true);
+  assert(
+    fenceFirst.baselineRedOnly &&
+      fenceFirst.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)) &&
+      fenceFirst.failures.length > 1,
+    `a fence failure pushed before the verify chain still lets the probe win the cap (${fenceFirst.failures.length} failures)`,
+  );
+  assert(
+    fenceFirst.baselineRedEstablished,
+    "fence-first: onBaselineRedEstablished fired for the gate's whole failure list, not just the verify leg",
   );
 }
 

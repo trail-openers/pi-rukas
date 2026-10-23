@@ -395,7 +395,12 @@ async function runCase8() {
   const capHit = [...result.eventLog].reverse().find((e) => e.kind === "cap-hit");
   assert(capHit !== undefined, "case 8: cap-hit emitted");
   if (capHit?.kind === "cap-hit") {
-    assert(capHit.cap === "verify-failed:develop", `case 8: cap is verify-failed:develop (got: ${capHit.cap})`);
+    // #1765: this stub returns the SAME `x: assertion failed` line for every
+    // non-git command, so the base probe reads a red base and the failure it
+    // shares with the change's run is attributed to the base. That is the
+    // ticket: the gate's whole verdict comes from the base, so the cycle parks
+    // at verify-baseline-red:develop rather than earning a corrective round.
+    assert(capHit.cap === "verify-baseline-red:develop", `case 8: cap is verify-baseline-red:develop (got: ${capHit.cap})`);
     assert(capHit.evidence !== undefined && capHit.evidence.length > 0, "case 8: cap-hit evidence field is non-empty");
   }
   const ve = result.pipelineState.verifyEvidence;

@@ -49,6 +49,8 @@ import {
 } from "./work-driver-net-git.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 import { inlineBranchPrompt } from "./work-driver-prompts-branch.ts";
+// #1765 — the pre-develop base-health probe, shared with the mechanized path.
+import { probeBaseAtBranch } from "./work-driver-verify-base-health.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -363,5 +365,8 @@ export async function runBranchViaOpsDispatch(
     };
     stateWithProvisions = appendEvent(stateWithProvisions, provEvent);
   }
-  return stateWithProvisions;
+  // #1765 — the same pre-develop base probe the mechanized path pays, once
+  // `baseSha` and the worktrees are on the state. Without it the ops fallback
+  // would keep the old cost model: a red base discovered only after develop.
+  return await probeBaseAtBranch(execFn, ctx, stateWithProvisions);
 }
