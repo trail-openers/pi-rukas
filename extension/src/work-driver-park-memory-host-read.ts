@@ -29,7 +29,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
-import { PARK_RECORD_MAX_AGE_MS } from "./work-driver-park-record.ts";
+import { PARK_RECORD_MAX_AGE_MS, REPEAT_PARK_REFUSAL_COUNT } from "./work-driver-park-record.ts";
 import { isKnownCap } from "./workflow-state-validate-caps.ts";
 import { workStateDir } from "./workflow-state.ts";
 
@@ -40,8 +40,9 @@ export const HOST_PARK_SIGNAL_FILE = "host-parks.json";
  * How many rows the signal keeps. One row is one (cap, cause, fingerprint), and
  * an issue's causes and edits are bounded in practice — 50 is far past any real
  * cycle's history — so the ceiling exists to stop a file in a repository's
- * working tree growing without bound. Pruning drops the OLDEST first, and every
- * remaining row still arms a refusal on its own.
+ * working tree growing without bound. Pruning drops the OLDEST first WITHIN
+ * each priority band of `armedFirstHostRows`, and every remaining row still
+ * arms a refusal on its own.
  */
 export const HOST_PARK_MAX_ROWS = 50;
 
@@ -115,6 +116,162 @@ export function newestFirstHostRows(rows: HostParkRow[]): HostParkRow[] {
 }
 
 /**
+ * Is this row one the guard is about to act on?
+ *
+ * The bar is the guard's OWN: `hostParkVerdict` refuses on
+ * `deliveredCount >= REPEAT_PARK_REFUSAL_COUNT`, and the prune must keep exactly
+ * the rows that predicate can fire on. Rows at `COUNT - 1` are deliberately NOT
+ * in the keep band — they are fresh history, and putting them there made the
+ * band every row (a cycle publishes at count 1 and only climbs from there), so
+ * the priority was silently lost and the prune degenerated to pure recency: the
+ * oldest row went, armed or not, which is the behaviour this function exists to
+ * remove. A count-1 row is protected by being the row a publish INCREMENTS, not
+ * by the ceiling's arithmetic — the writer's re-read keeps it and stamps it with
+ * the newest `lastAt` in the file.
+ */
+function keepWorthy(row: HostParkRow): boolean {
+  return row.deliveredCount >= REPEAT_PARK_REFUSAL_COUNT;
+}
+
+/**
+ * The rows a prune KEEPS, in the order a prune keeps them: ARMED rows (the ones
+ * `hostParkVerdict` can refuse on) newest first, then everything else newest
+ * first, capped at `max` (default `HOST_PARK_MAX_ROWS`).
+ *
+ * This is the whole answer to "which 50 rows is this file allowed to hold", and
+ * it lives here because BOTH sides must give it: the writer in the sibling
+ * module prunes before it inserts its own row, and `parseHostParkRows` below
+ * caps what it will believe. Two policies — the writer pruning on recency while
+ * the reader keeps armed rows, or vice versa — is how a row the writer promised
+ * to keep is invisible to the guard that was supposed to honour it. Recency
+ * alone was the first rule and it lost armedness: on a file at the ceiling, the
+ * oldest row went even when it was the one armed row, so a park the operator
+ * had already been handed twice stopped being refused for the unrelated reason
+ * that fifty other parks had been published since.
+ */
+export function prunedHostRows(
+  rows: HostParkRow[],
+  max: number = HOST_PARK_MAX_ROWS,
+): HostParkRow[] {
+  // ONE priority sort, then one cut. Filling the armed band first and topping it
+  // up from the fresh band was the obvious shape and it is wrong under a cap:
+  // with `max` below the number of fresh rows, every fresh row is kept, the
+  // armed rows are the leftovers, and the final cut drops them — so the single
+  // row the guard refuses on was the FIRST thing a capped prune evicted. Sorting
+  // by (band, recency) makes eviction go the other way round by construction:
+  // the tail of the list is always the least keep-worthy thing in the file.
+  const band = (row: HostParkRow) => (keepWorthy(row) ? 0 : 1);
+  return rows
+    .map((row, i) => ({ row, i }))
+    .sort(
+      (a, b) =>
+        band(a.row) - band(b.row) ||
+        b.row.lastAt - a.row.lastAt ||
+        b.row.lastCycleId - a.row.lastCycleId ||
+        a.i - b.i,
+    )
+    .slice(0, max)
+    .map((x) => x.row);
+}
+
+/**
+ * Collapse rows that share ONE identity — (cap, reason, fingerprint) — to a
+ * single row, keeping the largest count, the oldest `firstAt` and the newest
+ * `lastAt`.
+ *
+ * The writer never produces two such rows, but the file is not only the
+ * writer's: a hand edit, a crash between the tmp write and the rename, or a row
+ * copied between issues can leave duplicates. Left alone, one publish then
+ * increments one row by one while the armed twin sits there, and the guard's
+ * answer depends on which of the two it happened to read first — a count the
+ * operator is quoting stops being the number of publishes. Deduplicating at
+ * parse time means every reader, the sweep and the writer all see one row per
+ * identity, and the identity stays exactly as unique as the guard's key.
+ */
+export function dedupeHostRows(rows: HostParkRow[]): HostParkRow[] {
+  const byKey = new Map<string, HostParkRow[]>();
+  for (const row of rows) {
+    const key = `${row.cap}\u0000${row.reason}\u0000${row.fingerprint}`;
+    const seen = byKey.get(key);
+    if (seen) seen.push(row);
+    else byKey.set(key, [row]);
+  }
+  const merged: HostParkRow[] = [];
+  for (const group of byKey.values()) {
+    const head = group[0];
+    if (head === undefined) continue;
+    if (group.length === 1) {
+      merged.push(head);
+      continue;
+    }
+    // One park, one row: largest count, oldest `firstAt`, newest `lastAt`.
+    // Mutable accumulation rather than a spread-reduce: the accumulating spread
+    // copies the whole row on every step, and biome flags it.
+    const one: HostParkRow = { ...head };
+    for (const r of group) {
+      one.deliveredCount = Math.max(one.deliveredCount, r.deliveredCount);
+      one.firstAt = Math.min(one.firstAt, r.firstAt);
+      one.lastAt = Math.max(one.lastAt, r.lastAt);
+      one.lastCycleId = Math.max(one.lastCycleId, r.lastCycleId);
+    }
+    merged.push(one);
+  }
+  return newestFirstHostRows(merged);
+}
+
+/**
+ * Collapse rows of one identity for a WRITE, where the identity being written
+ * (`mine`) is known and one of the duplicates is the row about to be counted.
+ *
+ * `dedupeHostRows` is the read-side answer and it is right for a reader; a
+ * writer cannot use it as-is, because collapsing a count-3 row and the row this
+ * cycle is publishing into one row whose `lastCycleId` is the MAXIMUM would
+ * stamp the merged row with a cycle that never published the count-3 half — and
+ * a merged row that carries this cycle's id makes the write below think it has
+ * already published, silently dropping the increment. So the group this cycle
+ * belongs to is collapsed into the row the cycle owns (its own id wins), and
+ * every other identity is left to the plain rule. Keeps max count, oldest
+ * `firstAt`, newest `lastAt` either way.
+ */
+export function dedupeHostRowsForWrite(
+  rows: HostParkRow[],
+  mine: { cap: string; reason: string; fingerprint: string },
+  cycleId: number,
+): HostParkRow[] {
+  const byKey = new Map<string, HostParkRow[]>();
+  for (const row of rows) {
+    const key = `${row.cap}\u0000${row.reason}\u0000${row.fingerprint}`;
+    const seen = byKey.get(key);
+    if (seen) seen.push(row);
+    else byKey.set(key, [row]);
+  }
+  const merged: HostParkRow[] = [];
+  for (const group of byKey.values()) {
+    const first = group[0];
+    if (first === undefined) continue;
+    if (group.length === 1) {
+      merged.push(first);
+      continue;
+    }
+    // Mutable accumulation rather than a spread-reduce (see `dedupeHostRows`).
+    const head: HostParkRow = { ...first };
+    for (const r of group) {
+      head.deliveredCount = Math.max(head.deliveredCount, r.deliveredCount);
+      head.firstAt = Math.min(head.firstAt, r.firstAt);
+      head.lastAt = Math.max(head.lastAt, r.lastAt);
+      head.lastCycleId = Math.max(head.lastCycleId, r.lastCycleId);
+    }
+    // The cycle owns the row when its id is on one of the duplicates, or when
+    // this is the identity it is publishing.
+    const owned = group.some((r) => r.lastCycleId === cycleId);
+    const publishing =
+      head.cap === mine.cap && head.reason === mine.reason && head.fingerprint === mine.fingerprint;
+    merged.push(owned || publishing ? { ...head, lastCycleId: cycleId } : head);
+  }
+  return newestFirstHostRows(merged);
+}
+
+/**
  * The READ-ONLY half of the read: parse the file's text and keep the rows this
  * build could believe. NO fetch, NO fingerprint, NO forge — this is what makes
  * the sweep's question cheap, and it is the reason `sweepHostParkSignal` below
@@ -129,9 +286,9 @@ export function newestFirstHostRows(rows: HostParkRow[]): HostParkRow[] {
  * fabricated one is untrusted text with no legitimate use, and a writer can
  * only ever have emitted a known literal.
  *
- * Rows come back newest first and capped at `HOST_PARK_MAX_ROWS`, so every
- * reader — the guard, the sweep, and the writer's own max-before-increment —
- * agrees on the window the file is allowed to have.
+ * Rows come back deduplicated by identity, then pruned by `prunedHostRows` —
+ * armed rows first, then recency — so every reader (the guard, the sweep) and
+ * the writer's own prune agree on the window the file is allowed to have.
  */
 export function parseHostParkRows(text: string, reader: string, now: number): HostParkRow[] {
   const file = `host park signal read by the ${reader}`;
@@ -179,7 +336,9 @@ export function parseHostParkRows(text: string, reader: string, now: number): Ho
       trace(`work-driver: ${file} carries an implausible row — dropped`);
     }
   }
-  return newestFirstHostRows(rows).slice(0, HOST_PARK_MAX_ROWS);
+  // Dedupe BEFORE the prune: two rows of one identity are one park, and the
+  // ceiling counts parks, not rows a hand edit happened to leave behind.
+  return prunedHostRows(dedupeHostRows(rows));
 }
 
 /**

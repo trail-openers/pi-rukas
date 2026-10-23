@@ -21,6 +21,7 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
 import type { StartRefusal } from "./work-driver-outcome.ts";
 import { hostParkVerdict } from "./work-driver-park-memory-host.ts";
+import type { RepeatParkVerdict } from "./work-driver-park-memory.ts";
 import { repeatParkVerdict, repeatParkVerdictReason } from "./work-driver-park-memory.ts";
 import { validateDiscriminants } from "./workflow-state-validate.ts";
 import { type WorkState, detectInconsistencies, workStateDir } from "./workflow-state.ts";
@@ -146,6 +147,25 @@ export function isRepeatParkRefusal(reason: string): boolean {
 }
 
 /**
+ * The `reason` a host refusal returns, rendered through the SAME redaction the
+ * notify message beside it uses. `repeatParkVerdictReason` interpolates `cap`
+ * and `reason` straight out of `host-parks.json`, and a host park's reason is
+ * `cap-hit.evidence` / `parkReason` — free text in a directory the operator and
+ * any other writer can edit. The covered guard's reason comes from a cap the
+ * driver itself emitted, so it never needed this; the host half does, or the
+ * operator's terminal and the headless result carry an unredacted copy of a
+ * file-sourced string while the chat message beside it is redacted. The
+ * `#N ` prefix `refusalIssue` parses stays intact — `cap` is an `isKnownCap`
+ * literal and `issue` a number, so only the parenthesised cause is clipped.
+ */
+function hostParkRefusalReason(verdict: RepeatParkVerdict): string {
+  return repeatParkVerdictReason({
+    ...verdict,
+    reason: hostParkText(verdict.reason, HOST_PARK_REASON_MAX),
+  });
+}
+
+/**
  * #1696 — the same refusal for a park the covered records never covered, on the
  * HOST channel only.
  *
@@ -189,7 +209,7 @@ export async function refuseHostPublishedPark(
   );
   notifyAgent(ctx.host, message);
   return {
-    reason: `${REPEAT_PARK_REFUSAL_PREFIX}${repeatParkVerdictReason(verdict)}`,
+    reason: `${REPEAT_PARK_REFUSAL_PREFIX}${hostParkRefusalReason(verdict)}`,
     repeatPark: verdict,
   };
 }
