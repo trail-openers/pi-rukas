@@ -117,22 +117,9 @@ function plausibleCycleId(v: unknown): v is number {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 }
 
-/**
- * One read of the signal, and the reading a test queued for this call. The queue
- * is passed IN rather than installed globally, so a simulated second writer
- * cannot be seen by any other cycle in the process; with nothing queued — every
- * production call, and every test that does not ask — it is the plain reader.
- */
+/** The host that asked, so an empty result says WHO found nothing. */
 function read(ctx: DriverContext, reader: string): Promise<HostParkRow[]> {
   return readHostParkSignalsImpl(ctx.repoRoot, ctx.issue, reader);
-}
-
-function readNext(
-  queue: HostParkRow[][] | undefined,
-  real: () => Promise<HostParkRow[]>,
-): Promise<HostParkRow[]> {
-  const queued = queue?.shift();
-  return queued === undefined ? real() : Promise.resolve(queued);
 }
 
 /**
@@ -316,8 +303,6 @@ export async function recordHostPark(
   ctx: DriverContext,
   state: WorkState,
   published: boolean,
-  /** Test-only: one reading per read of THIS write, in call order. */
-  observed?: HostParkRow[][],
 ): Promise<void> {
   if (!published || !hostParkEnabled()) return;
   // A host channel that posts nothing is the only one that needs this memory.
@@ -335,7 +320,7 @@ export async function recordHostPark(
     // written below: has THIS cycle already published (a resume re-entering its
     // own handoff must not move the number the guard refuses on), and what did
     // THIS writer read — the count a sibling may have moved since.
-    const prior = (await readNext(observed, () => read(ctx, "handoff"))).find(
+    const prior = (await read(ctx, "handoff")).find(
       (r) => r.cap === park.cap && r.reason === park.reason && r.fingerprint === fingerprint,
     );
     if (prior?.lastCycleId === state.startedAt) return;
@@ -345,10 +330,17 @@ export async function recordHostPark(
     // added in between is not dropped, and the count is the larger of the two
     // readings plus one — the cheap lost-update guard. Not a lock, and it does
     // not need to be one. Sorted and capped before the new row goes in, so the
-    // row THIS cycle published is never the one pruned: it is the newest in the
-    // file by the reader's own clock, and the file never grows past the ceiling.
+    // row THIS cycle published is never the one pruned: the write below stamps it
+    // with `at`, the newest timestamp in the file by the reader's own clock, and
+    // the file never grows past the ceiling.
     const at = Date.now();
-    const live = await readNext(observed, () => read(ctx, "handoff"));
+    const live = await read(ctx, "handoff");
+    // Pruning to one row under the ceiling keeps RECENCY over ARMEDNESS on
+    // purpose: an armed row (count >= 2) is never special-cased, so the oldest
+    // row goes even if a younger one armed nothing. A real cycle cannot lose its
+    // own row this way — the write below stamps its row with `at`, the newest
+    // timestamp in the file, so it is the last candidate for the prune, not the
+    // first.
     const next = newestFirst(live)
       .slice(0, HOST_PARK_MAX_ROWS - 1)
       .map((r) =>

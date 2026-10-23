@@ -18,19 +18,22 @@
  * `park()` drives `runHandoff`, which renders the body, consolidates worktrees
  * and terminalises the cycle BEFORE its one call to the writer, so any reading a
  * test queues at that point describes a world the step already changed. An
- * earlier version of this case queued a row stamped with the current time; the
- * step read the signal as LIVE, aborted, the write never ran, and the assertion
- * still reported whatever the disk happened to hold — a green that judged
- * nothing. A queue installed outside the step is no better: the write has
- * already happened by then. That branch is therefore left unverified by
- * simulation and the gap is stated here rather than papered over.
+ * earlier version of this case queued a row with the current time and a fake
+ * reader to hand the writer a stale reading; the step read the signal as LIVE,
+ * aborted, the write never ran, and the assertion still reported whatever the
+ * disk happened to hold — a green that judged nothing. A queue installed outside
+ * the step is no better: the write has already happened by then. That branch is
+ * therefore left unverified by simulation. What IS pinned here is what the
+ * re-read is FOR: rows another cycle wrote while this one was in flight survive
+ * the write instead of being overwritten by the one row this cycle cares about.
  */
 import { rmSync, writeFileSync } from "node:fs";
-import { type HostParkRow, park, signalOf, signalPath, world } from "./host-park-harness.ts";
+import { park, signalOf, signalPath, world } from "./host-park-harness.ts";
 
 type Assert = (cond: boolean, msg: string) => void;
 
 type Row = ReturnType<typeof signalOf>[number];
+type TestWorld = Parameters<typeof signalOf>[0];
 
 const LOST = "lost";
 
@@ -84,7 +87,7 @@ export async function lostParkCount(assert: Assert): Promise<void> {
   }
 }
 
-async function readRows(w: Parameters<typeof signalOf>[0]): Promise<HostParkRow[]> {
+async function readRows(w: TestWorld): Promise<Row[]> {
   const { readHostParkSignalsImpl } = await import("../../src/work-driver-park-memory-host.ts");
   return readHostParkSignalsImpl(w.repo, 930, "lost-update-test");
 }

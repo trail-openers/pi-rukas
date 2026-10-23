@@ -25,19 +25,22 @@ import type { Forge } from "../../src/forge.ts";
 import { runHeadless } from "../../src/headless/run.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
-import {
-  type HostParkWriter,
-  __setHostParkWriter,
-} from "../../src/work-driver-handoff-host-writer.ts";
 import { runHandoff } from "../../src/work-driver-handoff.ts";
 import type { DriverHost } from "../../src/work-driver-host.ts";
-import { type HostParkRow, hostParkSignalPath } from "../../src/work-driver-park-memory-host.ts";
+import { hostParkSignalPath } from "../../src/work-driver-park-memory-host.ts";
 import { runWorkDriver } from "../../src/work-driver.ts";
 import { type WorkState, appendEvent, initialState, writeState } from "../../src/workflow-state.ts";
 
 export const ISSUE = 930;
 /** A cap OUTSIDE COVERED_PARK_CAPS — the whole point: no park record for it. */
 export const CAP = "step-failed:explore";
+
+/**
+ * Where a world's cycle ids start. A fixed epoch, so the rows a test writes carry
+ * timestamps the module's plausibility rules believe (a 1970 row is read as
+ * absent) while staying far behind `Date.now()`.
+ */
+const CYCLE_EPOCH = 1_700_000_000_000;
 
 export interface World {
   repo: string;
@@ -47,6 +50,23 @@ export interface World {
   handoffBody: string;
   dispatches: number;
   forgeCalls: string[];
+  /**
+   * The cycle id the next `park()` publishes with — `startedAt` on the state it
+   * builds, which is the signal's idempotency key. `park()` and `driverPark()`
+   * advance it themselves, so each call is a fresh cycle; a test that replays an
+   * EARLIER cycle passes that cycle's state and the number stands still. Starts
+   * on a fixed epoch so two worlds of one run never share a cycle id.
+   */
+  cycle: number;
+}
+
+/**
+ * One more cycle for this world: the next publish is a NEW cycle. `park()` and
+ * `driverPark()` do it themselves; nothing else needs to.
+ */
+function advance(w: World): World {
+  w.cycle++;
+  return w;
 }
 
 export function world(label: string): World {
@@ -59,6 +79,7 @@ export function world(label: string): World {
     handoffBody: "The cycle stopped: the explore dispatch failed twice.",
     dispatches: 0,
     forgeCalls: [],
+    cycle: CYCLE_EPOCH,
   };
 }
 
@@ -94,10 +115,7 @@ export function seams(w: World) {
   };
 }
 
-/** Distinct per cycle: the signal's idempotency key is the cycle's start time. */
-let clock = 1_700_000_000_000;
-
-export function driverCtx(w: World): DriverContext {
+function driverCtx(w: World): DriverContext {
   return {
     host: { sendUserMessage: () => undefined } as unknown as DriverHost,
     repoRoot: w.repo,
@@ -108,8 +126,8 @@ export function driverCtx(w: World): DriverContext {
   } as unknown as DriverContext;
 }
 
-function cappedState(opts: { parkReason?: string }): WorkState {
-  return appendEvent(initialState(ISSUE, ++clock), {
+function cappedState(w: World, opts: { parkReason?: string }): WorkState {
+  return appendEvent(initialState(ISSUE, w.cycle), {
     kind: "cap-hit",
     at: Date.now(),
     cap: CAP,
@@ -135,12 +153,13 @@ async function withChannel<T>(host: boolean, fn: () => Promise<T>): Promise<T> {
  * handed the host. An empty body publishes nothing: the state comes back with no
  * handoff event, and the signal counts no delivery.
  *
- * `priorRows` is the reading a writer holds when it reaches the signal's write —
- * what a sibling wrote in between is invisible to it, which is the whole shape
- * `recordHostPark`'s max-before-increment exists for. `replayOf` runs the handoff
- * of an EARLIER cycle (a crash between the record write and the state write, then
- * a resume): the signal already carries that cycle's `lastCycleId`, so the write
- * must be refused rather than moving the number the guard refuses on.
+ * Every call is a NEW cycle unless `state` is passed: the signal's idempotency
+ * key is `state.startedAt`, so two writes that share one cycle id read as one
+ * cycle re-entering its own handoff, and the second write is correctly refused.
+ * Passing `state` is how a test replays the handoff of an EARLIER cycle (a crash
+ * between the record write and the state write, then a resume): the signal
+ * already carries that cycle's `lastCycleId`, so the write must be refused rather
+ * than moving the number the guard refuses on.
  */
 export async function park(
   w: World,
@@ -148,32 +167,13 @@ export async function park(
     host: boolean;
     body?: string;
     parkReason?: string;
-    /** One reading per `recordHostPark` read, in call order. */
-    priorRows?: HostParkRow[][];
-    /** A cycle to replay the handoff of (a resume re-entering its own step). */
-    replayOf?: WorkState;
+    /** Re-run the handoff of THIS cycle (a resume) instead of starting a new one. */
+    state?: WorkState;
   },
 ): Promise<WorkState> {
-  const state = opts.replayOf ?? cappedState(opts);
+  const state = opts.state ?? cappedState(advance(w), opts);
   const body = opts.body === undefined ? w.handoffBody : opts.body;
   if (!body) return state;
-  // A test that simulates a second writer supplies the two readings this one
-  // write should see. `runHandoff` installs them around its OWN call to the
-  // writer, because it is the caller: installing them here, outside the step, is
-  // the shape that made the writer read the disk instead — the step's write has
-  // already happened by the time anything below it runs.
-  if (opts.priorRows) {
-    const host = await import("../../src/work-driver-park-memory-host.ts");
-    // The queue is copied UP FRONT: `recordHostPark` consumes it by shifting, so a
-    // copy made inside the writer would hand both reads the same unshifted queue
-    // and the two readings the test asks for would never differ.
-    const queue = [...opts.priorRows];
-    return withChannel(opts.host, () =>
-      runHandoff(driverCtx(w), state, Date.now(), {
-        writer: (ctx, s, published) => host.recordHostPark(ctx, s, published, queue),
-      }),
-    );
-  }
   return withChannel(opts.host, () => runHandoff(driverCtx(w), state, Date.now()));
 }
 
@@ -184,7 +184,7 @@ export async function park(
  * wipes — the shape the factory leaves behind.
  */
 export async function driverPark(w: World): Promise<void> {
-  await writeState(w.repo, cappedState({}));
+  await writeState(w.repo, cappedState(advance(w), {}));
   await withChannel(true, () =>
     runWorkDriver({
       host: { sendUserMessage: () => undefined } as unknown as DriverHost,

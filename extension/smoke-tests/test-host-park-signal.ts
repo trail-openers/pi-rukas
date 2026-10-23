@@ -370,10 +370,11 @@ async function twice(w: World) {
   const w = world("row-cap");
   try {
     const total = 60;
-    // Distinct CYCLES as well as causes: the ceiling prunes on recency, and
-    // 60 publishes from one cycle id are all equally new.
+    // Distinct CYCLES as well as causes: the ceiling prunes on recency, and 60
+    // publishes from one cycle id are all equally new. `park()` advances the
+    // world's cycle itself — the idempotency key is the cycle's `startedAt`, so
+    // the loop's 60 calls really are 60 cycles, as the assertion below claims.
     for (let i = 0; i < total; i++) {
-      w.cycle++;
       await park(w, { host: true, parkReason: `cause-${String(i).padStart(3, "0")}` });
     }
     const rows = signalOf(w);
@@ -392,7 +393,6 @@ async function twice(w: World) {
     );
     // A write on top of a full file stays at the ceiling and keeps the newest —
     // the bound is the writer's, not only a reader's filter.
-    w.cycle++;
     await park(w, { host: true, parkReason: "cause-060" });
     const after = signalOf(w);
     assert(
@@ -439,9 +439,10 @@ async function twice(w: World) {
   }
 }
 
-// ── 5c. Two writers must not lose a count, and a re-entry must not move one.
-//        The case lives in `lib/lost-park-count.ts` (the §12 file-size cap) and
-//        stubs the signal's reader there to hand the writer a stale reading.
+// ── 5c. A fresh cycle must not inherit a stale sibling's count, and the rows it
+//        read must survive its write. The case lives in `lib/lost-park-count.ts`
+//        (the §12 file-size cap); that file states which branch of the writer it
+//        cannot reach through the handoff step, and therefore does not claim.
 await lostParkCount(assert);
 
 // ── 6. The host channel's label state says DECLINED, not FAILED: pi-rukas
