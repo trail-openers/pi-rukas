@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
+import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 
 /** Read the first non-empty, non-comment line from a config file. */
 function readFirstConfigLine(content: string): string | undefined {
@@ -97,7 +98,12 @@ async function execVerifyOnce(
     return { ms, ok: true, output };
   } catch (err) {
     const ms = Date.now() - startedAt;
-    const output = ((err as Error).message || (err as { stderr?: string }).stderr || "").trim();
+    // #1770 — the same concatenation every other verify tier uses. Reading
+    // `err.message` first meant a gate that fails with its report on stdout
+    // recorded an evidenceTail of nothing but `Command failed: <cmd>`, which
+    // is what orchard cycles 433 and 518 showed: a 21-minute full gate whose
+    // failure said nothing, and a developer dispatched to fix it blind.
+    const output = combinedExecFailureStream(err as Error & { stdout?: string; stderr?: string });
     return { ms, ok: false, output };
   }
 }

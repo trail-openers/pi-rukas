@@ -63,6 +63,7 @@ import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { UNGRANTED_PROTECTED_MARK } from "./work-driver-doctrine.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
+import { failureLines } from "./work-driver-verify-failures.ts";
 import { INTEGRATE_CREATE_FAILED_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -83,8 +84,23 @@ export const EVIDENCE_MAX_LINES = 6;
 const LINE_MAX = 300;
 /** How many trailing lines of an error tail are considered. */
 const TAIL_LINES = 3;
-/** The words that mark an error tail line as the one that names the failure. */
+/**
+ * The words that mark an error tail line as the one that names the failure.
+ * #1762 — this is the LAST-RESORT mark: `tailLines` first asks the shared
+ * failure-line table, and only when the tail names no failure line at all does
+ * it fall back to the trailing lines carrying these words. That ordering is the
+ * whole fix: `pack_release_test.sh: 36 cases, 0 failed` matches this pattern
+ * (it contains `fail`) and was quoted as the top evidence of a orchard handoff,
+ * while the runner's real `failed checks (1)` block sat above it.
+ */
 const ERROR_MARK = /error|fail|✗|cannot|exception|not found|refused/i;
+/**
+ * The harness's own echo, never evidence about the project. `Command failed:`
+ * and `Exit code: N` are what the executor prints when a command died; on a
+ * stream that says nothing else they are all there is, so they survive as the
+ * last resort — but a real failure line always outranks them.
+ */
+const HARNESS_ECHO = /^\s*(Command failed:|Exit code:|killed|\$\s)/i;
 /** The mark a verify command puts before a check it names. */
 const CHECK_MARK = "\u2717";
 /** The `question:` line of a plumb block, bold or plain. */
@@ -108,14 +124,23 @@ function evidenceLines(texts: readonly (string | undefined)[]): string[] {
   return out;
 }
 
-/** The last few non-empty lines of an error tail; the ones that name an error when any do. */
+/**
+ * The lines of an error tail to show as evidence: the failure lines the shared
+ * table recognises (last `TAIL_LINES` of them), so a stream of passing tallies
+ * plus a harness echo cannot return the echo. When the tail holds no recognised
+ * failure line, the trailing lines that merely carry an error-ish word, and
+ * failing even those, the last line — the pre-#1762 behaviour, kept for the
+ * shapes no table covers.
+ */
 function tailLines(tail: string | undefined): string[] {
+  const named = failureLines(tail ?? "").slice(-TAIL_LINES);
+  if (named.length > 0) return named;
   const last = (tail ?? "")
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
     .slice(-TAIL_LINES);
-  const marked = last.filter((l) => ERROR_MARK.test(l));
+  const marked = last.filter((l) => ERROR_MARK.test(l) && !HARNESS_ECHO.test(l));
   return marked.length > 0 ? marked : last.slice(-1);
 }
 

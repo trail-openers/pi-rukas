@@ -2285,6 +2285,14 @@ One real failure next to any of these is a code failure, so the cap stays `verif
 
 **Fix:** Fix the gate on the mainline (or the host it runs on), then re-run the cycle. Do not inspect the diff first, and do not set `PI_ENSEMBLE_VERIFY=0`.
 
+#### The evidence says `(unattributed — best-effort tail)`: the gate failed and the driver could not name the failure
+
+**Symptom:** A `verify-failed:<step>` handoff quotes a tail that ends with `(unattributed — best-effort tail)`, and the trace line `work-driver: exec error tail is unattributed (no FAILED: marker found)` appears in the cycle log. Before #1762 the quoted tail could be a stage that had **passed** — the orchard runs quoted `pack_release_test.sh: 36 cases, 0 failed` as the top evidence while the runner's real `test.sh: failed checks (1)` block sat earlier in the same window and was dropped — and the same stream cost the cycle its one corrective developer round, because that gate requires a named failing line.
+
+**Cause:** The driver's failure-line table knew the shapes it had been written against. It recognises, in priority order: `FAILED: <x>` (this repo's smoke loop) · a `✗` assertion · a compiler diagnostic (`error:` / `Error:` / `error[E…]` / `TS\d{4}`) · a script tally (`<file>.sh: failed checks (N)`) · a line naming a failing script or file · TAP/bats `not ok N` · pytest `FAILED path::name` / `ERROR path::name` · go `--- FAIL: TestX`. A line that reports a **pass** is never a failure line: `0 failed`, `0 failures`, `0 errors`, `N passed`, `^ok `, `✓` and `^PASS` are excluded before the table is tried — which is exactly why a naive "contains `fail`" rule cannot be used, since the misquoted line contains it. If your gate prints none of the shapes above its own output stays unattributed; the cheapest fix is to have it print one (a `<file>: failed checks (N)` block names the file and costs one line of shell).
+
+**Fix:** None needed for the cycle — the tail is still the bounded raw output and the cap still means the gate judged the change. Read the raw verify log the handoff points at for the stage that broke, and if the gate's failing lines use a shape this list does not carry, that is a driver gap: open an issue quoting one such line.
+
 #### `verify-timeout:<step>`: the gate did not finish
 
 **Symptom:** The cycle parks as `verify-timeout:develop` or `verify-timeout:commit-pr`. The evidence lines start with `[verify-timeout]` and say the verify command *exceeded its <N>-min timeout*, and the handoff says the command TIMED OUT. Since #1509 the bound is per tier, so the number and the variable named tell you **which** gate did not finish — read them, they are the diagnosis:
