@@ -83,18 +83,28 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
     namesTest: true,
     re: /[\w./-]+\.(?:sh|bash|py|js|ts|go|rs)\s*:\s*(?:failed|failing)\s+checks?\s*\(\s*[1-9]\d*\s*\)/i,
   },
-  // A script/file line that says it failed, in one of the four shapes a runner
-  // actually prints: `<file>: failed|FAILED|FAIL|ERROR`, `<file> … FAILED`,
-  // `<file>: N failed|N errors` with N >= 1, and a leading `FAIL <file>`.
+  // A script/file line that says it failed, in the shapes a runner actually
+  // prints: `<file>: failed|FAILED|FAIL|ERROR`, `<file> … FAILED`, `<file>: N
+  // failed` / a comma tally `<cases>, N failed` with N >= 1, and a leading
+  // `FAIL <file>`.
+  //
   // Prose that merely contains the word error, `cannot` or `not found`
   // (`index.ts: fatal error`, `index.ts: cannot parse`,
   // `src/a.ts: consider this error case`) is NOT one of them — it names no
   // failed check, and classifying it would make that prose the anchor. The
-  // The status must sit DIRECTLY after the file's colon (`:\s*`, never a lazy
-  // `.*?`): `index.ts: fatal error` puts a word between them, so `error` there
-  // is prose, not the status the line reports. The `(?<=\s)FAILED(?=\W|$)`
-  // branch is the `<file> … FAILED` shape (go's `foo_test.go  FAILED`), and
-  // `:\s*[1-9]…` the counted tally, whose zero case `isSuccessLine` settles.
+  // status must sit DIRECTLY after the file's colon (`:\s*`, never a lazy
+  // `.*?`), or after a comma inside a tally (`,\s*`): `index.ts: fatal error`
+  // puts a word between them, so `error` there is prose, not the status the
+  // line reports. The `(?<=\s)FAILED(?=\W|$)`
+  // branch is the `<file> … FAILED` shape (go's `foo_test.go  FAILED`), and the
+  // two `[1-9]` branches are the counted tallies — one directly after the
+  // file's colon (`test.sh: 2 errors`) and one as the failing half of a
+  // comma-separated tally that starts at that colon
+  // (`pack_release_test.sh: 36 cases, 1 failed`, whose colon is taken by the
+  // passing half, so the count is reached through `[^\r\n]*,` rather than by
+  // matching a bare comma — a bare comma would let prose like
+  // `index.ts: not found in the fixture, which is fine` in). `isSuccessLine`
+  // settles the zero case of both.
   {
     shape: "named-file",
     namesTest: true,
@@ -103,7 +113,7 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
   {
     shape: "named-file",
     namesTest: true,
-    re: /[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b\s*(?::\s*(?:failed|failing|fail|error)\b|(?<=\s)FAILED(?=\W|$)|:\s*[1-9]\d*\s+(?:failed|errors?|failures?\b))/i,
+    re: /[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b\s*(?::\s*(?:failed|failing|fail|error)\b|(?<=\s)FAILED(?=\W|$)|:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b)/i,
   },
   // TAP / bats. Anchored with a number so `book`, `token` and `lookup` never match.
   { shape: "tap-not-ok", namesTest: true, re: /^\s*not\s+ok\b/i },
@@ -117,10 +127,25 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
 /**
  * Lines that report SUCCESS. Checked before the table: a passing tally is not a
  * failure line, whatever substring it contains. Every key is anchored or counted,
- * because a bare `/ok/` also matches book, token, lookup and OK.
+ * because a bare `/ok/` also matches book, token, lookup and OK — and every
+ * passing-tally veto is conditional on the line carrying no NON-ZERO failure
+ * count (`NONZERO_FAILURE_COUNT`), because a tally that reports both halves
+ * (`1 failed, 3 passed`) is a failure.
  */
 const SUCCESS_LINE =
-  /^\s*✓|^\s*ok\s|\b0\s+(?:failed|failures|errors|fail)\b|\b\d+\s+(?:passed|passed,)\b|^\s*PASS\b|^\s*PASS\s|:?\s*\d+\s+cases,\s*0\s+failed/i;
+  /^\s*✓|^\s*ok\s|\b0\s+(?:failed|failures|errors|fail)\b|\b\d+\s+(?:passed|passed,)\b|^\s*PASS\b|^\s*PASS\s|:?\s*\d+\s+cases,\s*0\s+failed|\bfailed\s+checks?\s*\(\s*0\s*\)|\b0\s+(?:failed|failing)\s+checks?\b/i;
+
+/**
+ * A NON-ZERO failure count in a status position: right after the file's colon
+ * (`test.sh: 1 failed`), as the failing half of a comma-separated tally that
+ * starts at that colon (`pack_release_test.sh: 36 cases, 1 failed`), or bare
+ * after whitespace (`1 failed, 3 passed` at the head of a summary). `isSuccessLine` applies its
+ * passing vetoes only when a line carries none of these — the passing half of a
+ * tally does not cancel the failing half — and prose that merely uses the words
+ * (`index.ts: not found, which is fine`) matches none of the three positions.
+ */
+const NONZERO_FAILURE_COUNT =
+  /:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|(?<![\d.])[1-9]\d*\s+(?:failed|errors?|failures?)\b/i;
 
 /** Split a combined stream into lines: `\r\n`, `\r` and `\n` are all breaks. */
 export function splitLines(text: string): string[] {
@@ -134,6 +159,7 @@ export function splitLines(text: string): string[] {
 export function isSuccessLine(line: string): boolean {
   const t = line.trim();
   if (t.length === 0) return false;
+  if (NONZERO_FAILURE_COUNT.test(t)) return false;
   return SUCCESS_LINE.test(t);
 }
 
@@ -185,6 +211,7 @@ const STREAM_SEPARATOR = ": ";
 function harnessVerifyStream(line: string): string | undefined {
   const matched = HARNESS_VERIFY_PREFIX.exec(line);
   if (matched === null) return undefined;
+
   // The prefix is anchored and matched against the same trimmed line, so
   // `failed in ` sits at a fixed offset from the start: everything before it is
   // the wrapper's own wording, never the gate's.
@@ -239,6 +266,24 @@ function firstInnerFailure(stream: string): FailureLine | undefined {
     if (inner !== undefined) return inner;
   }
   return undefined;
+}
+
+/** The lines of `text` that report a failure, in stream order, trimmed. */
+/**
+ * The gate's own output behind a harness wrapper, or `undefined` when `line`
+ * is not a wrapper. `""` means the wrapper carries no stream that reports a
+ * failure.
+ *
+ * Exported for the readers that must judge WHAT the line says, not merely
+ * whether it reports a failure: `extractSpecificAssertion` asks whether a line
+ * is a `FAILED:` marker, and a marker wrapped by the harness is still a marker
+ * — judging the wrapper instead lets the harness sentence be returned as "the
+ * specific assertion" and spend the cycle's one corrective round (#798's
+ * shape, revived through the wrapper). Same rule `classifyFailureLine` follows;
+ * one owner for both.
+ */
+export function harnessInnerLine(line: string): string | undefined {
+  return harnessVerifyStream(line.trim());
 }
 
 /** The lines of `text` that report a failure, in stream order, trimmed. */

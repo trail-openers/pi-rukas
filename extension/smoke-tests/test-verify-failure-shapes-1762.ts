@@ -99,8 +99,9 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
 // The three lines the reviewer reproduced, plus neighbours of the same shape.
 // `fatal` is not in the accepted status list, and the counted form needs a
 // token in the `N failed` idiom rather than the verb loose in the sentence —
-// which is what keeps `36 cases, 1 failed` out too (it does not classify;
-// section 1 pins that, and its own tally is not this table's job).
+// which is what keeps the space-separated `36 cases 1 failed` out of the table —
+// the comma form `36 cases, 1 failed` is a runner's tally and classifies, pinned
+// alongside `1 failed, 3 passed` in the mixed-tally block below.
 {
   const PROSE = [
     "index.ts: fatal error",
@@ -109,7 +110,6 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
     "index.ts: this error is expected in prose",
     "index.ts: not found in the fixture, which is fine",
     "a.ts: the parser cannot handle this and that is intentional",
-    "scripts/pack_release_test.sh: 36 cases, 1 failed",
   ];
   for (const line of PROSE) {
     assert(
@@ -127,7 +127,10 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
   );
 
   // The four accepted shapes, each spelled out (the brief's list, and the
-  // orchard summary the #1762 park depends on).
+  // orchard summary the #1762 park depends on). The two counted-tally cases carry
+  // no `passed` half, so they do not depend on the mixed-tally rule pinned
+  // below; the comma-tally form `36 cases, 1 failed` IS a failure and lives in
+  // that block, not in the prose list.
   const NAMED: Array<[string, string]> = [
     ["a.ts: failed", "named-file"],
     ["a.ts: FAILED", "named-file"],
@@ -151,6 +154,31 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
     classifyFailureLine("a.ts: 0 failed") === undefined,
     "named-file: a zero count reports success, not failure",
   );
+  assert(
+    classifyFailureLine("a.ts: failed checks (0)") === undefined,
+    "named-file: a zero-count failed-checks tally reports success, not failure",
+  );
+
+  // The pass veto must not swallow a tally that also reports a NON-ZERO failure
+  // count: the passing half of `1 failed, 3 passed` does not cancel the
+  // failing half. What stays excluded is a line with no such count.
+  for (const [line, shape] of [
+    ["test.sh: 1 failed, 3 passed", "named-file"],
+    ["pack_release_test.sh: 36 cases, 1 failed", "named-file"],
+    ["x.sh: 2 errors, 10 passed", "named-file"],
+  ] as Array<[string, string]>) {
+    const got = classifyFailureLine(line);
+    assert(
+      got !== undefined && got.shape === shape,
+      `mixed tally: ${JSON.stringify(line)} classifies as ${shape}, got ${JSON.stringify(got)}`,
+    );
+  }
+  for (const line of ["x.sh: 36 cases, 0 failed", "12 passed"]) {
+    assert(
+      classifyFailureLine(line) === undefined,
+      `mixed tally: ${JSON.stringify(line)} still reports success`,
+    );
+  }
 }
 
 // ── 2c. a line the harness wrapped is classified on its inner stream ─────────
@@ -210,6 +238,62 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
     classifyFailureLine(hintedClean) === undefined,
     "wrapped: a hint-only tail with no failure shape stays unclassified",
   );
+
+  // A wrapped `FAILED:` MARKER is the one case where classification and
+  // assertion-hood disagree, and the disagreement is the #798 defect arriving
+  // through the wrapper: the marker is a valid ANCHOR for the evidence tail,
+  // but never an ASSERTION. Judging the WRAPPER text (which is what the first
+  // version did — `IS_MARKER_LINE` was tested against the wrapper, not the
+  // inner line) reported the harness sentence as "the specific assertion" and
+  // spent the cycle's one corrective round on it.
+  const wrappedMarker = `verify command \`${CMD}\` failed in ${WT}: FAILED: b.ts\nsomething went wrong`;
+  assert(
+    classifyFailureLine(wrappedMarker) !== undefined,
+    "wrapped marker: the stream behind the harness still reports a failure, so the tail anchors",
+  );
+  assert(
+    extractSpecificAssertion(wrappedMarker) === NO_SPECIFIC_ASSERTION,
+    `wrapped marker: a wrapped FAILED: marker is never the specific assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedMarker))})`,
+  );
+  {
+    const text = wrappedMarker;
+    const gate = {
+      ok: false,
+      failures: [text],
+      verifyRun: { status: "ran", command: CMD, failures: [text], perWorktree: [{ cwd: WT, text }] },
+    } as const;
+    const d = decideCorrectiveRound(gate, { eventLog: [], worktrees: { a: WT } });
+    assert(
+      d.round === false,
+      `wrapped marker: no corrective round is spent on a wrapped FAILED: marker (${JSON.stringify(d)})`,
+    );
+  }
+  // The same wrapper with a real assertion beneath it still earns the round,
+  // and the developer is given the ✗ line — not the harness sentence.
+  const wrappedAssertion = `verify command \`${CMD}\` failed in ${WT}: FAILED: b.ts\n\u2717 b.ts: expected x`;
+  assert(
+    extractSpecificAssertion(wrappedAssertion) === "\u2717 b.ts: expected x",
+    `wrapped marker: the ✗ line beneath the wrapped marker is the assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedAssertion))})`,
+  );
+  {
+    const text = wrappedAssertion;
+    const gate = {
+      ok: false,
+      failures: [text],
+      verifyRun: { status: "ran", command: CMD, failures: [text], perWorktree: [{ cwd: WT, text }] },
+    } as const;
+    const d = decideCorrectiveRound(gate, { eventLog: [], worktrees: { a: WT } });
+    assert(
+      d.round === true,
+      `wrapped marker: a real assertion beneath the wrapped marker still earns the round (${JSON.stringify(d)})`,
+    );
+    if (d.round) {
+      assert(
+        (d.targets[0]?.lines ?? []).join("|") === "\u2717 b.ts: expected x",
+        `wrapped marker: the developer is given the ✗ line, not the wrapper (got ${JSON.stringify(d.targets[0]?.lines)})`,
+      );
+    }
+  }
 }
 
 // ── 3. the orchard-shaped stream ───────────────────────────────────────────────

@@ -13,6 +13,7 @@ import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
 } from "./work-driver-consolidation-classify.ts";
+import { harnessInnerLine } from "./work-driver-verify-failures.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** One verify run the gate actually made. */
@@ -43,6 +44,9 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
   return { current: { status: "not-run" } };
 }
 
+/** The harness's own wrapper sentence — never itself an assertion (see `assertionLines`). */
+const IS_HARNESS_WRAPPER = /^verify command\s.+?\sfailed in\s/i;
+
 /**
  * Every line of `text` a developer can act on: the lines the extractor accepts
  * as an assertion (a `✗` line, a compiler or linter error). Uncapped — the
@@ -51,12 +55,23 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
 export function assertionLines(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (line.length === 0 || seen.has(line)) continue;
-    if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) continue;
+  const push = (line: string): void => {
+    if (line.length === 0 || seen.has(line)) return;
+    if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) return;
     seen.add(line);
     out.push(line);
+  };
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    // The wrapper is not by itself an assertion candidate —
+    // `extractSpecificAssertion` refuses it, and this reader must agree with
+    // it — but the gate's own lines sit inside it as `\n`-separated text, and
+    // each of those is offered below.
+    if (!IS_HARNESS_WRAPPER.test(line)) push(line);
+    const inner = harnessInnerLine(line);
+    if (inner === undefined) continue;
+    for (const raw2 of inner.split("\n")) push(raw2.trim());
   }
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis.
