@@ -228,6 +228,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-work-develop-scope-fence-seam.ts",
   "smoke-tests/test-work-driver-1093-abort-untracked-start-ref.ts",
   "smoke-tests/test-work-driver-1093-untracked-claim.ts",
+  "smoke-tests/test-work-driver-artifact-sweep.ts",
   "smoke-tests/test-work-driver-cap-checkpoint-typecheck.ts",
   "smoke-tests/test-work-driver-cap-checkpoint.ts",
   "smoke-tests/test-work-driver-claims-concurrent-writers.ts",

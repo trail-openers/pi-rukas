@@ -19,16 +19,14 @@
  *
  * The last one is checked through the writer AND through the reader, because the
  * file on disk is what the next writer reads and what an operator inspects, and
- * a reader-only dedupe would leave a file that says two while meaning one.
+ * a reader-only dedupe would leave a file that says two while meaning one. The
+ * reader half of that pair — the pure function, with no writer in the room — is
+ * `lib/host-park-dedupe-reader.ts`.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import {
-  HOST_PARK_MAX_ROWS,
-  dedupeHostRows,
-  hostParkVerdict,
-} from "../../src/work-driver-park-memory-host.ts";
+import { HOST_PARK_MAX_ROWS, hostParkVerdict } from "../../src/work-driver-park-memory-host.ts";
 import {
   CAP,
   ISSUE,
@@ -137,21 +135,6 @@ function armAgainstBody(w: World) {
   writeFileSync(signalPath(w), JSON.stringify(rows, null, 2), "utf8");
 }
 
-/**
- * Arm every row in place — same rows, same `lastAt`, only the fingerprint made
- * this world's — for a case that keeps PUBLISHING after arming. `armAgainstBody`
- * stamps every row with one fresh `lastAt` and a cycle id of its own, which
- * would both hand the ceiling's protected row to a filler and let the next
- * `park()` read as a cycle re-entering its own handoff. This keeps the fixture's
- * own clock and its unreachable cycle ids, so the only new row is the one a real
- * publish writes.
- */
-function armAgainstBodyInPlace(w: World) {
-  const rows = JSON.parse(readFileSync(signalPath(w), "utf8")) as Array<Record<string, unknown>>;
-  for (const r of rows) r.fingerprint = hash(w.body);
-  writeFileSync(signalPath(w), JSON.stringify(rows), "utf8");
-}
-
 /** The guard asked directly, on the host channel — a `start()` rebuilds state. */
 async function guardArms(w: World): Promise<boolean> {
   process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
@@ -187,7 +170,7 @@ export async function hostParkPrune(assert: Assert): Promise<void> {
     // armed row that started the file. Any row the ceiling evicts is evicted by
     // the writer's own rule, not by a fixture's arithmetic.
     // (The single publish below is the case that also checks the OTHER direction
-    // — that a fresh count-1 row is not evicted by the same cut — and case 6
+    // — that a fresh count-1 row is not evicted by the same cut — and case 5
     // pins that for a file whose every row is armed.)
     // An unrelated publish: a different cause, so it cannot touch the armed row.
     // Filler rows carry a fingerprint no issue has, which is fine for a prune
@@ -231,10 +214,27 @@ export async function hostParkPrune(assert: Assert): Promise<void> {
         [
           // The duplicate pair is the OLDEST thing in the file, so the ceiling
           // would evict it first under a recency-only prune.
-          { ...pair, deliveredCount: 1, firstAt: ago(AGED_MIN), lastAt: ago(AGED_MIN), lastCycleId: fixtureId(1) },
-          { ...pair, deliveredCount: 1, firstAt: ago(AGED_MIN - 1), lastAt: ago(AGED_MIN - 1), lastCycleId: fixtureId(2) },
+          {
+            ...pair,
+            deliveredCount: 1,
+            firstAt: ago(AGED_MIN),
+            lastAt: ago(AGED_MIN),
+            lastCycleId: fixtureId(1),
+          },
+          {
+            ...pair,
+            deliveredCount: 1,
+            firstAt: ago(AGED_MIN - 1),
+            lastAt: ago(AGED_MIN - 1),
+            lastCycleId: fixtureId(2),
+          },
           ...Array.from({ length: HOST_PARK_MAX_ROWS - 2 }, (_, i) =>
-            row(`filler-${String(i).padStart(3, "0")}`, 1, AGED_MIN - 2 - (i * FILL_SPREAD_MIN) / HOST_PARK_MAX_ROWS, fixtureId(300 + i)),
+            row(
+              `filler-${String(i).padStart(3, "0")}`,
+              1,
+              AGED_MIN - 2 - (i * FILL_SPREAD_MIN) / HOST_PARK_MAX_ROWS,
+              fixtureId(300 + i),
+            ),
           ),
         ],
         null,
@@ -280,8 +280,20 @@ export async function hostParkPrune(assert: Assert): Promise<void> {
       signalPath(dup),
       JSON.stringify(
         [
-          { ...twin, deliveredCount: 1, firstAt: ago(9), lastAt: ago(3), lastCycleId: fixtureId(1) },
-          { ...twin, deliveredCount: 1, firstAt: ago(3), lastAt: ago(1), lastCycleId: fixtureId(2) },
+          {
+            ...twin,
+            deliveredCount: 1,
+            firstAt: ago(9),
+            lastAt: ago(3),
+            lastCycleId: fixtureId(1),
+          },
+          {
+            ...twin,
+            deliveredCount: 1,
+            firstAt: ago(3),
+            lastAt: ago(1),
+            lastCycleId: fixtureId(2),
+          },
         ],
         null,
         2,
@@ -303,7 +315,7 @@ export async function hostParkPrune(assert: Assert): Promise<void> {
     rmSync(dup.repo, { recursive: true, force: true });
   }
 
-  // ── 5. The row ONE publish from arming survives a file that is OVER the
+  // ── 4. The row ONE publish from arming survives a file that is OVER the
   //     ceiling, so the publish that arms it lands on its own history rather
   //     than a blank slate. This is the header's second rule: the row one
   //     publish from arming sits at count 1, BELOW the armed band, and a cut that
@@ -354,7 +366,7 @@ export async function hostParkPrune(assert: Assert): Promise<void> {
     rmSync(near.repo, { recursive: true, force: true });
   }
 
-  // ── 6. The row a publish writes ALWAYS survives, even when every row already
+  // ── 5. The row a publish writes ALWAYS survives, even when every row already
   //     in the file is armed and the file sits AT the ceiling. Three publishes of
   //     one brand-new park: the row is there after each, and the third start is
   //     refused. Pruning the WHOLE file to `ceiling - 1` before inserting the new
@@ -397,9 +409,7 @@ export async function hostParkPrune(assert: Assert): Promise<void> {
       const rows = signalOf(mine);
       const own = ownRows();
       assert(
-        rows.length <= HOST_PARK_MAX_ROWS &&
-          own.length === 1 &&
-          own[0]?.deliveredCount === publish,
+        rows.length <= HOST_PARK_MAX_ROWS && own.length === 1 && own[0]?.deliveredCount === publish,
         `publish ${publish} of a brand-new park onto a FULL file of armed rows keeps its own row at count ${publish} (${JSON.stringify(own)}, ${rows.length} rows)`,
       );
       if (publish === 2) {
@@ -416,52 +426,4 @@ export async function hostParkPrune(assert: Assert): Promise<void> {
   } finally {
     rmSync(mine.repo, { recursive: true, force: true });
   }
-
-  // ── 4. The reader agrees, without any writer: the pure function collapses one
-  //        identity to max count / oldest firstAt / newest lastAt, and leaves a
-  //        genuinely different park alone.
-  const base = ago(10);
-  const merged = dedupeHostRows([
-    { cap: CAP, reason: "same", fingerprint: "f", deliveredCount: 1, firstAt: base, lastAt: base + 9_000, lastCycleId: 1 },
-    { cap: CAP, reason: "same", fingerprint: "f", deliveredCount: 3, firstAt: base - 40_000, lastAt: base + 8_000, lastCycleId: 2 },
-    { cap: CAP, reason: "same", fingerprint: "f", deliveredCount: 2, firstAt: base - 50_000, lastAt: base + 12_000, lastCycleId: 3 },
-    { cap: CAP, reason: "other", fingerprint: "f", deliveredCount: 1, firstAt: base, lastAt: base + 1_000, lastCycleId: 4 },
-  ]);
-  const same = merged.filter((r) => r.reason === "same");
-  assert(
-    merged.length === 2 &&
-      same.length === 1 &&
-      same[0]?.deliveredCount === 3 &&
-      same[0]?.firstAt === base - 50_000 &&
-      same[0]?.lastAt === base + 12_000,
-    `the reader collapses one identity to max count / oldest firstAt / newest lastAt (${JSON.stringify(same)})`,
-  );
-  assert(
-    dedupeHostRows([
-      { cap: CAP, reason: "k", fingerprint: "a", deliveredCount: 1, firstAt: base, lastAt: base, lastCycleId: 1 },
-      { cap: CAP, reason: "k", fingerprint: "b", deliveredCount: 1, firstAt: base, lastAt: base, lastCycleId: 2 },
-    ]).length === 2,
-    "…and two rows with one reason but different fingerprints stay TWO parks — the identity is the key",
-  );
-
-  // ── 5. …and the key cannot be shifted by a NUL inside a field. `reason` is
-  //     free-text `parkReason` with no character filter by design, and a
-  //     NUL-joined key let `reason:"a\u0000b"` with one fingerprint and
-  //     `reason:"a"` with a fingerprint starting with that same tail hash to ONE
-  //     identity: two genuinely different parks collapsing into a row whose count
-  //     belonged to neither, which is the exact defect the dedupe exists to stop.
-  //     The key is `JSON.stringify` of the triple, which quotes and escapes each
-  //     field so the boundary between them is not a character a field can hold.
-  const nulFp = (t: string) => hash(`nul ${t}`);
-  const nul = dedupeHostRows([
-    { cap: CAP, reason: "a\u0000b", fingerprint: nulFp("x"), deliveredCount: 1, firstAt: base, lastAt: base, lastCycleId: 1 },
-    { cap: CAP, reason: "a", fingerprint: nulFp("b\u0000\u0000x"), deliveredCount: 1, firstAt: base, lastAt: base, lastCycleId: 2 },
-    // The control: a genuine duplicate of the first row, which must still fold.
-    { cap: CAP, reason: "a\u0000b", fingerprint: nulFp("x"), deliveredCount: 3, firstAt: base - 5_000, lastAt: base + 5_000, lastCycleId: 3 },
-  ]);
-  const nulFirst = nul.filter((r) => r.reason === "a\u0000b");
-  assert(
-    nul.length === 2 && nulFirst.length === 1 && nulFirst[0]?.deliveredCount === 3,
-    `a NUL inside a field keeps two different parks apart, while a real duplicate still folds (${JSON.stringify(nul.map((r) => [r.reason, r.deliveredCount]))})`,
-  );
 }

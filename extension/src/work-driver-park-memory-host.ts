@@ -53,7 +53,10 @@ import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { fetchIssueBodyViaGh } from "./work-driver-explore.ts";
 import { handoffChannel } from "./work-driver-handoff-channel.ts";
 import {
+  HOST_PARK_FILE_MAX_BYTES,
   HOST_PARK_MAX_ROWS,
+  HOST_PARK_REASON_MAX,
+  clipHostParkReason,
   dedupeHostRows,
   dedupeHostRowsForWrite,
   hostParkSignalPath,
@@ -84,10 +87,14 @@ const HOST_PARK_ARTIFACT_MAX_BYTES = 4 * 1024 * 1024;
 
 export {
   type HostParkRow,
+  HOST_PARK_FILE_MAX_BYTES,
   HOST_PARK_MAX_ROWS,
+  HOST_PARK_REASON_MAX,
   HOST_PARK_SIGNAL_FILE,
+  clipHostParkReason,
   dedupeHostRows,
   dedupeHostRowsForWrite,
+  holdsLiveHostParkSignal,
   hostParkSignalPath,
   newestFirstHostRows,
   parseHostParkRows,
@@ -113,6 +120,12 @@ export {
  * it would put untrusted prose into the row identity that decides a refusal —
  * and two parks of one cap with two different failure logs would read as two
  * parks. A cap that states no cause gets the single empty-reason row.
+ *
+ * The reason is clipped to `HOST_PARK_REASON_MAX` HERE, with the constant the
+ * reader applies in `parseHostParkRows`: the row identity is (cap, reason,
+ * fingerprint) and the stored value is what the next publish compares against,
+ * so writer and reader must agree on it or a long reason becomes two parks where
+ * the operator sees one.
  */
 export function hostParkOf(state: WorkState): { cap: string; reason: string } | undefined {
   // The shared scan (`workflow-state-cap.ts`), not a hand-rolled reverse-find:
@@ -121,7 +134,15 @@ export function hostParkOf(state: WorkState): { cap: string; reason: string } | 
   const hit = lastCapHitAny(state);
   if (!hit) return undefined;
   if ((COVERED_PARK_CAPS as readonly string[]).includes(hit.cap)) return undefined;
-  return { cap: hit.cap, reason: hit.parkReason ?? hit.planVerdict ?? "" };
+  return { cap: hit.cap, reason: clipHostParkReason(hit.parkReason ?? hit.planVerdict ?? "") };
+}
+
+/**
+ * Is a cached artifact path one of the driver's own capability files, however it
+ * is spelled? See the call site below for why both spellings are asked.
+ */
+export function isProtectedArtifactPathForTest(p: string): boolean {
+  return isProtectedPath(p) || isProtectedPath(p.replace(/\\/g, "/").toLowerCase());
 }
 
 /**
@@ -150,7 +171,16 @@ async function readCachedIssueBody(
   // guard read (and echo a hash of) whatever protected file a state file names.
   // Refused, not trusted — the fetch path below still answers, so this fails
   // open the same way the containment check does.
-  if (isProtectedPath(localArtifact) || isProtectedPath(rel)) {
+  //
+  // Case-folded, not raw: `isProtectedPath` compares segments exactly, so on a
+  // case-insensitive checkout — the common macOS/Windows default — a dotted
+  // capitalisation of `.pi` IS this cycle's verify-command directory and of
+  // `.github` IS the workflow that gates it, while a raw check waves both
+  // through. The same bar the planner's own path gate applies
+  // (`isProtectedRepairPath` in `work-driver-plan-repair.ts`); it folds INTO the
+  // raw check rather than replacing it, because `isProtectedPath` also matches
+  // bare filenames (`CODEOWNERS`, `agents.json`) that only the raw spelling names.
+  if (isProtectedArtifactPathForTest(localArtifact) || isProtectedArtifactPathForTest(rel)) {
     trace(`work-driver: host park artifact ${file} is a protected path; refused`);
     return undefined;
   }
@@ -374,26 +404,6 @@ export async function recordHostPark(
   } catch (err) {
     trace(`work-driver: could not update the host park signal: ${(err as Error).message}`);
   }
-}
-
-/**
- * Does this issue's artifact directory carry a host park signal a reader would
- * still act on? The artifact sweep's question, answered through THIS module so
- * the sweep never has to learn the host signal's name the way it learns the
- * record's from `work-driver-park-record.ts`, and so answering it costs ONE
- * file read and ZERO forge calls (`sweepHostParkSignal` parses; it never
- * resolves a fingerprint, which is a `gh` subprocess per directory).
- *
- * It does NOT re-check the covered record: the caller in
- * `work-driver-artifact-sweep.ts` reads those itself, through the module that
- * owns them, and asking twice for one directory is how two readers drift.
- */
-export async function holdsLiveHostParkSignal(
-  repoRoot: string,
-  issue: number,
-  now = Date.now(),
-): Promise<boolean> {
-  return sweepHostParkSignal(repoRoot, issue, now);
 }
 
 /**
