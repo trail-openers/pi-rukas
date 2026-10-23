@@ -103,12 +103,13 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "produces the workstream decomposition; the worktrees it describes do not exist until the branch step",
   },
   {
-    // #754 / #1167 (size split) — the site now lives in
-    // work-driver-plan-quality-pass.ts, which owns the whole plan-quality tail
-    // including the one-shot corrective. The allowlist reads the file that
-    // holds the dispatch, so this row points at the moved code; the decision it
-    // records is unchanged — same step, same reason, no worktree exists yet.
-    file: "work-driver-plan-quality-pass.ts",
+    // #754 / #1167 (size split) — the site moved with the one-shot corrective
+    // into work-driver-plan-quality-pass.ts, and #1756 r2 split the corrective
+    // again into work-driver-plan-quality-corrective.ts (§12 line cap). The
+    // allowlist reads the file that HOLDS the dispatch, so this row follows the
+    // code; the decision it records is unchanged — same step, same reason, no
+    // worktree exists yet.
+    file: "work-driver-plan-quality-corrective.ts",
     site: /\{\s*role:\s*"explore",\s*prompt:\s*correctivePrompt\s*\}/,
     label: "plan:corrective (label: plan:corrective)",
     why: "the one-shot plan re-dispatch — same step, same reason",
@@ -306,6 +307,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "plan-driver-gate.ts": 1, // the gap gate's bounded reviewer dispatch — cwd: args.repoRoot (the plan run has no worktree)
     "research-angle.ts": 1, // one retrieval angle — cwd: ctx.repoRoot, threaded by research-driver.ts
     "work-driver-corrective-round.ts": 1, // #1667 — the corrective developer, pinned to the failing workstream's own worktree (cwd: t.cwd)
+    "work-driver-plan-quality-corrective.ts": 1, // #1756 r2 — the one-shot plan corrective, moved out of the plan-quality tail for the §12 cap (repoRoot-intentional; see the allowlist row above)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).

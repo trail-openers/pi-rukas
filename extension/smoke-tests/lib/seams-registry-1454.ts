@@ -30,7 +30,16 @@ export const SEAMS_1454: Seam[] = [
         "the pure overlap core; pinned by the overlap / normalisation / same-issue cases",
       registerClaim: "the atomic writer; pinned by the register / re-register / prune cases",
     },
-    canary: { symbol: "checkAndRegisterClaims", importer: "work-driver-plan.ts" },
+    canary: {
+      symbol: "checkAndRegisterClaims",
+      // #1756 — the plan step's CLAIMS ENTRY. work-driver-plan.ts used to be
+      // named here and did import the gate — but only to re-export what the
+      // registry already re-exported, so the canary was satisfied by an import
+      // that was never a call and a deleted call site stayed green. Name the
+      // module that actually calls it: the registry re-exports it from the gate
+      // at the top of this file, so this stays a call assertion either way.
+      importer: "work-driver-plan-quality-pass.ts",
+    },
     selfCall: { symbol: "claimStaleReason", by: "readClaims" },
   },
   {
@@ -102,8 +111,22 @@ export const SEAMS_1454: Seam[] = [
     testOnly: {
       releaseClaim:
         "the group-aware teardown writer; pinned by the release / release-group cases in the claims suites — its production callers reach it through the registry re-export",
+      // #1756 r2 — the accepted seam that makes the gate's degenerate-conflict
+      // guard ASSERTABLE (no production read can produce that list, so a forged
+      // registry would only test the forgery). `undefined` in production; never
+      // set from `src/`. Pinned by test-work-driver-claims-gate-parks.ts.
+      setClaimsConflictsForTests:
+        "#1756 r2 — inject the conflict list the gate judges, so the fail-closed guard for an unreadable conflict is asserted rather than merely present (test-work-driver-claims-gate-parks.ts)",
     },
-    canary: { symbol: "checkAndRegisterClaims", importer: "work-driver-plan-quality-pass.ts" },
+    canary: {
+      symbol: "checkAndRegisterClaims",
+      // #1756 — the call moved with the plan-quality tail into
+      // work-driver-plan-quality-pass.ts. work-driver-plan.ts used to be named
+      // here and to import the gate only to re-export what the registry already
+      // re-exported: the canary passed on an import that was never a call, so
+      // deleting that call site would have stayed green. Name the caller.
+      importer: "work-driver-plan-quality-pass.ts",
+    },
   },
   {
     // #1454 r3 — the operator sentence for a refused claims registration,
