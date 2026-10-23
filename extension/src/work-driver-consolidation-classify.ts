@@ -372,14 +372,25 @@ export function classifyConsolidatedVerifyFailure(
  * The classifier's view of the shared named-failure reader: which of the lines
  * `namedFailureLines` matches count as evidence HERE.
  *
+ * #1762 lens round — this used to carry its own shape test (`/^✗\s/` plus an
+ * explicit summary branch), a fifth hardwired dialect list. `tailLines` and
+ * `namedFailureLines` now both answer from the shared table, so a predicate
+ * that did not would disagree with the readers it feeds: a TAP `not ok`, a
+ * pytest `FAILED path::name` or a script's `failed checks (1)` block would be
+ * accepted by the shared reader and then dropped here, so the #1064 recovery
+ * silently returned nothing for a runner this repo does not own. It is now
+ * DERIVED from the table: the line must be one the table recognises and that
+ * NAMES a check, and must not be one of the three kinds of non-evidence below.
+ *
  * The shared reader accepts every line its failure table recognises, because at
  * the cap site a per-file marker still tells the operator which file went red. The classifier is
  * stricter — `consolidatedFailureMessage` joins what it recovers into the field
  * labelled "specific assertion", and a bare `FAILED: smoke-tests/test-x.ts` names a
  * FILE, not an assertion. That is the #798 defect (an operator sent to a filename)
  * and `extractSpecificAssertion` refuses such lines, so the recovery must not put
- * them back through the side door. A `✗` line, or the `FAILED: <n> test(s) — a, b`
- * summary that carries the names, is what counts.
+ * them back through the side door. `namesTest` is what encodes that rule now: a
+ * bare tally does not name a check and stays out, a `✗` line or a named script
+ * tally does.
  *
  * #1702 — the #807 secret guard the deleted `namedFailureLinesFrom` carried is composed
  * in here, so merging the two readers did not quietly drop it. The shared reader REDACTS
@@ -391,13 +402,14 @@ export function classifyConsolidatedVerifyFailure(
  * `LOOKS_LIKE_SECRET`) is DROPPED here, not masked.
  *
  * The count summary is the one marker-shaped line this predicate must still keep —
- * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the deleted reader matched
- * the summary explicitly. It is matched explicitly here too, and carries the same secret
- * guard.
+ * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the summary is
+ * matched explicitly before the marker rule can drop it. It carries the same
+ * secret guard.
  */
 function isNamedFailureLine(line: string): boolean {
   if (/^FAILED:\s*\d+\s+test\(s\)/.test(line)) return !LOOKS_LIKE_SECRET.test(line);
-  return !isNonAssertionLine(line) && /^✗\s/.test(line);
+  if (isNonAssertionLine(line)) return false;
+  return classifyFailureLine(line)?.namesTest === true;
 }
 
 /**

@@ -371,4 +371,22 @@ export const SEAMS: Seam[] = [
     },
     canary: { symbol: "backlogReminderSection", importer: "commands.ts" },
   },
+  {
+    // #1762 — the ONE table of failure-line shapes, read by every verify-evidence
+    // reader in the driver (`exec-error`, `cause-class`,
+    // `consolidation-classify`, `commit-verify-evidence`, `verify-record`).
+    // Registered because the seam gained exports whose reader is a test rather
+    // than another module: the scan bound is a cost contract, and the deps-hint
+    // offset is what keeps the harness's own diagnosis out of the cut — both
+    // are asserted directly, and a bound no test measures is a bound that drifts.
+    file: "work-driver-verify-failures.ts",
+    pending: {},
+    testOnly: {
+      FAILURE_LINE_SCAN_MAX:
+        "the per-line scan bound; test-verify-failure-shapes-1762.ts times a 200 KB line against it",
+      depsHintStartFor:
+        "where the harness's deps hint begins; test-verify-failure-shapes-1762.ts pins that a hint is never chosen as the stream",
+    },
+    canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
+  },
 ];

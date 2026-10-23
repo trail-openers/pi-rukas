@@ -8,6 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
+import { redactThenBound } from "./text-flatten.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 
@@ -71,6 +72,43 @@ interface VerifyRun {
  */
 export const VERIFY_FULL_MAX_BUFFER = 8 * 1024 * 1024;
 
+/**
+ * #1770 — how much of a tier's output the driver STORES.
+ *
+ * The ci tier's `VerifyRun.output` is not a transient: it becomes the
+ * `verify-full-status` event's `evidenceTail`, which is appended to the event
+ * log, written to the state file, and rendered into the handoff comment the
+ * driver posts to the forge. The tier reads 8 MiB per stream because the RUN
+ * must survive a chatty suite; nothing downstream reads more than a tail. The
+ * bound is where the producer stops, so the unbounded stream never reaches a
+ * stored field at all.
+ */
+export const VERIFY_FULL_OUTPUT_MAX = 4000;
+
+/**
+ * The one normaliser for tier output before the driver keeps it: redact, THEN
+ * bound (#1770). The order is the whole point — a clip that cuts a credential in
+ * half leaves a fragment no pattern recognises, and this is the project's own
+ * gate output, which prints whatever the suite prints (a connection string, a
+ * token echoed by an assertion). Every other store-side reader of verify output
+ * goes through `redactThenBound` for exactly this reason; this tier was the one
+ * that stored it raw.
+ */
+function storeTierOutput(text: string): string {
+  return redactThenBound(text, VERIFY_FULL_OUTPUT_MAX).text;
+}
+
+/**
+ * #1770 — narrow a caught value before it is read as an exec error. `catch`
+ * hands back `unknown`; the gate's rejection is a Node exec error carrying
+ * `stdout`/`stderr`, but anything else the executor throws (a string, a
+ * validation object) has no such fields, and reading them off it would report
+ * an empty evidence tail for a run whose only information was the thrown value.
+ */
+function asExecError(err: unknown): Error & { stdout?: string; stderr?: string } {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 async function execVerifyOnce(
   cmd: string,
   cwd: string,
@@ -95,7 +133,7 @@ async function execVerifyOnce(
     );
     const ms = Date.now() - startedAt;
     const output = (stdout || stderr || "").trim();
-    return { ms, ok: true, output };
+    return { ms, ok: true, output: storeTierOutput(output) };
   } catch (err) {
     const ms = Date.now() - startedAt;
     // #1770 — the same concatenation every other verify tier uses. Reading
@@ -103,8 +141,8 @@ async function execVerifyOnce(
     // recorded an evidenceTail of nothing but `Command failed: <cmd>`, which
     // is what tehas cycles 433 and 518 showed: a 21-minute full gate whose
     // failure said nothing, and a developer dispatched to fix it blind.
-    const output = combinedExecFailureStream(err as Error & { stdout?: string; stderr?: string });
-    return { ms, ok: false, output };
+    const output = combinedExecFailureStream(asExecError(err));
+    return { ms, ok: false, output: storeTierOutput(output) };
   }
 }
 

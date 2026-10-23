@@ -13,7 +13,7 @@ import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
 } from "./work-driver-consolidation-classify.ts";
-import { harnessInnerLine } from "./work-driver-verify-failures.ts";
+import { classifyFailureLine, harnessInnerLine, isHarnessWrapper } from "./work-driver-verify-failures.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** One verify run the gate actually made. */
@@ -44,9 +44,6 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
   return { current: { status: "not-run" } };
 }
 
-/** The harness's own wrapper sentence — never itself an assertion (see `assertionLines`). */
-const IS_HARNESS_WRAPPER = /^verify command\s.+?\sfailed in\s/i;
-
 /**
  * Every line of `text` a developer can act on: the lines the extractor accepts
  * as an assertion (a `✗` line, a compiler or linter error). Uncapped — the
@@ -68,7 +65,7 @@ export function assertionLines(text: string): string[] {
     // `extractSpecificAssertion` refuses it, and this reader must agree with
     // it — but the gate's own lines sit inside it as `\n`-separated text, and
     // each of those is offered below.
-    if (!IS_HARNESS_WRAPPER.test(line)) push(line);
+    if (!isHarnessWrapper(line)) push(line);
     const inner = harnessInnerLine(line);
     if (inner === undefined) continue;
     for (const raw2 of inner.split("\n")) push(raw2.trim());

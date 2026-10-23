@@ -29,6 +29,8 @@
  * and stays false so an honest absence still reports absence.
  */
 
+import { DEPS_HINT_STARTS } from "./work-driver-deps-hint.ts";
+
 /** The shape a line was recognised as. Stable strings: tests pin them. */
 export type FailureShape =
   | "failed-marker"
@@ -47,6 +49,33 @@ export interface FailureLine {
   /** True when the line carries a specific assertion or named check. */
   namesTest: boolean;
 }
+
+/**
+ * The separator a tally item may open after. A comma, a semicolon, or the
+ * sentence-ending period a runner writes between tallies — cargo prints
+ * `test result: FAILED. 0 passed; 1 failed`, and a comma-only rule misses it.
+ * The prose `12 passed (retried 1 failed attempt)` is excluded not by this set
+ * but by the word {@link TALLY_ITEM} demands after the count: an item is a bare
+ * `N failed`, and `1 failed attempt` is a noun phrase about a past attempt.
+ */
+const TALLY_SEP = String.raw`[,:;.]`;
+
+/** One tally item: a non-zero count, its failure word, and nothing but a word boundary after it. */
+function tallyItem(after: string): string {
+  return String.raw`(?:^|${after}\s*)[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])`;
+}
+
+/**
+ * A tally that reports a non-zero failure count WITHOUT naming a file, so no
+ * file-bearing arm above can reach it: cargo's `test result: 23 passed, 1
+ * failed`, and a bare summary `1 failed, 3 passed`. `isSuccessLine` lets these
+ * through its failure arm (the count is a status the runner printed), and this
+ * is the table arm that then reports them.
+ */
+const PASSING_TALLY_WITH_FAILURE = new RegExp(
+  `${tallyItem(TALLY_SEP)}[^\r\n]*\b\d+\s+passed|\b\d+\s+passed[^\r\n]*${TALLY_SEP}\s*${tallyItem(TALLY_SEP)}`,
+  "i",
+);
 
 /**
  * The table, in priority order. Each entry is tried against the whole line and
@@ -122,6 +151,15 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
   { shape: "pytest-error", namesTest: true, re: /^ERROR\s+\S+::/ },
   // go test.
   { shape: "go-fail", namesTest: true, re: /^\s*---\s+FAIL:\s+\S+/ },
+  // A runner's own summary tally, reached only when the line carries a NON-ZERO
+  // failure count: `isSuccessLine` has already vetoed every line that reports a
+  // failure in a status position, so what is left here is a passing tally that
+  // also counts failures — cargo's `test result: 23 passed, 1 failed` and a bare
+  // `1 failed, 3 passed`, neither of which names a FILE and so matches none of
+  // the arms above. Asked LAST for the reason `isSuccessLine` asks the failure
+  // arm first: as an early success veto this arm swallows the very tally it
+  // exists to report.
+  { shape: "named-file", namesTest: true, re: PASSING_TALLY_WITH_FAILURE },
 ];
 
 /**
@@ -133,19 +171,75 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
  * (`1 failed, 3 passed`) is a failure.
  */
 const SUCCESS_LINE =
-  /^\s*✓|^\s*ok\s|\b0\s+(?:failed|failures|errors|fail)\b|\b\d+\s+(?:passed|passed,)\b|^\s*PASS\b|^\s*PASS\s|:?\s*\d+\s+cases,\s*0\s+failed|\bfailed\s+checks?\s*\(\s*0\s*\)|\b0\s+(?:failed|failing)\s+checks?\b/i;
+  /^\s*✓|^\s*ok\s|^\s*PASS\b|^\s*PASS\s|\bfailed\s+checks?\s*\(\s*0\s*\)|\b0\s+(?:failed|failing)\s+checks?\b/i;
 
 /**
- * A NON-ZERO failure count in a status position: right after the file's colon
- * (`test.sh: 1 failed`), as the failing half of a comma-separated tally that
- * starts at that colon (`pack_release_test.sh: 36 cases, 1 failed`), or bare
- * after whitespace (`1 failed, 3 passed` at the head of a summary). `isSuccessLine` applies its
- * passing vetoes only when a line carries none of these — the passing half of a
- * tally does not cancel the failing half — and prose that merely uses the words
- * (`index.ts: not found, which is fine`) matches none of the three positions.
+ * The PASSING half of a runner's tally: a count followed by a passing word.
+ *
+ * Kept separate from {@link SUCCESS_LINE} rather than folded into it. Folded in,
+ * this arm is the one that classifies first — `\b\d+\s+passed\b` matches the
+ * `23 passed` of `test result: 23 passed, 1 failed` before the non-zero failure
+ * arm is reached, so a tally that reports BOTH halves was reported as passing,
+ * and the driver had no failure line for the one shape cargo prints. Read as
+ * data, the same arm can be asked AFTER the failure arm, which is the only order
+ * that answers "does this line report a failure, and does it also report a
+ * pass" correctly. `isSuccessLine` asks the failure arm first (below); the table
+ * asks this one after it.
+ */
+const PASSING_TALLY = /(?<![\w.])[1-9]\d*\s+passed\b|\b0\s+passed\b|\b0\s+(?:failed|failures|errors|fail)\b/i;
+
+/**
+ * A NON-ZERO failure count in a STATUS position — a count a runner PRINTED, never
+ * one that prose happens to contain. Three shapes, each anchored at the token
+ * that introduces it:
+ *
+ *   - a colon on the line, then a non-zero count and a failure word. Both the
+ *     cargo form (`test result: 23 passed, 1 failed` — the count follows the
+ *     label's colon through the passing half) and the file form
+ *     (`test.sh: 1 failed`) are this shape; `index.ts: fatal error` inserts a
+ *     word and does not match. The branch is ANCHORED at the start of the line
+ *     and its two spans are lazy: an unanchored lazy span restarts anywhere, so
+ *     it read the colon of a passing tally and the count of a later phrase as
+ *     one tally, and a greedy span did the same across the whole line.
+ *   - as the failing half of a comma-separated tally (`36 cases, 1 failed`);
+ *   - as a bare tally ITEM — a comma/semicolon-separated count in a line that
+ *     also reports a passing count (`3 passed, 1 failed`, `0 passed; 1 failed`).
+ *     A count at the HEAD of the summary (`1 failed, 3 passed`) is the same
+ *     item, recognised by the second branch reading forward instead: it opens
+ *     at the start of the line and requires a passing count after it.
+ *
+ * `isSuccessLine` applies its passing vetoes only when a line carries none of
+ * these — the passing half of a tally does not cancel the failing half.
+ *
+ * The third branch's requirements are the whole difference between a tally and
+ * prose. Its count must open a comma/semicolon item AND the line must report a
+ * passing count, so `12 passed (retried 1 failed attempt)` carries no itemised
+ * failure and stays a success. The versions that got this wrong: one with no
+ * guard at all, which let a count anywhere defeat every passing veto; and one
+ * guarded by the separator lookbehind alone, which read that parenthetical as an
+ * item.
  */
 const NONZERO_FAILURE_COUNT =
-  /:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|(?<![\d.])[1-9]\d*\s+(?:failed|errors?|failures?)\b/i;
+  /^[^\r\n]*?:[^\r\n]*?\s[1-9]\d*\s+(?:failed|errors?|failures?)\b|^[\s,;.]*[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])[^\r\n]*\b\d+\s+passed|(?<=[,;\s])[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])[^\r\n]*\b\d+\s+passed/i;
+
+/**
+ * #1762 lens round — the longest line the classifier inspects.
+ *
+ * A verify gate can print a whole document on one line (a serialized fixture
+ * diff, a JSON dump), and the classifier is quadratic in line length: the
+ * wrapper prefix's lazy `.+?` backtracks over the line once per `: ` it finds,
+ * and the tally branches' `[^\r\n]*` does the same. A 200 KB line cost seconds
+ * and would eventually stop the gate. Classifying on the first 8 KiB keeps
+ * every real failure shape (no runner prints a status keyword 8 KiB into one
+ * line) and makes the cost of a pathological line constant.
+ */
+export const FAILURE_LINE_SCAN_MAX = 8 * 1024;
+
+/** The classifier's view of one line: trimmed, and bounded by {@link FAILURE_LINE_SCAN_MAX}. */
+function scanWindow(line: string): string {
+  const t = line.trim();
+  return t.length > FAILURE_LINE_SCAN_MAX ? t.slice(0, FAILURE_LINE_SCAN_MAX) : t;
+}
 
 /** Split a combined stream into lines: `\r\n`, `\r` and `\n` are all breaks. */
 export function splitLines(text: string): string[] {
@@ -156,11 +250,23 @@ export function splitLines(text: string): string[] {
  * True when `line` reports a stage passing. Leading/trailing whitespace ignored;
  * a line that is only whitespace is not a success line (it is nothing).
  */
+/**
+ * True when `line` reports a stage passing. Leading/trailing whitespace ignored;
+ * a line that is only whitespace is not a success line (it is nothing).
+ *
+ * THE ORDER IS THE CONTRACT, not an optimisation: a tally that reports both
+ * halves (`test result: 23 passed, 1 failed`) matches the passing arm AND the
+ * failing arm, so asking the passing arm first — which is what folding
+ * {@link PASSING_TALLY} into `SUCCESS_LINE` does, since it is the cheaper test —
+ * reports a genuinely-failing line as passing. Measured on the cargo shape. The
+ * failure arm goes first, always, and `test-verify-failure-shapes-1762.ts` pins
+ * both halves of every mixed tally so neither arm can be reordered quietly.
+ */
 export function isSuccessLine(line: string): boolean {
-  const t = line.trim();
+  const t = scanWindow(line);
   if (t.length === 0) return false;
   if (NONZERO_FAILURE_COUNT.test(t)) return false;
-  return SUCCESS_LINE.test(t);
+  return SUCCESS_LINE.test(t) || PASSING_TALLY.test(t);
 }
 
 /**
@@ -184,23 +290,95 @@ export function isSuccessLine(line: string): boolean {
  * What the builder actually emits, read from the call site that composes it
  * (`work-driver-verify-per-worktree.ts`, which calls `formatExecError` with
  * `failMsg = "verify command \`<cmd>\` failed in <cwd>" + depsHint`, and the
- * helper then appends the extracted tail after `: `). Two things vary and both
- * break a naive prefix strip: the command is a shell line that can itself
- * contain `&&` and colons, and `depsHint` (`provisionDepsHint`) is prose that
- * can contain `: ` — the `hook-failed` shape ends `… during provisioning: <problem>`.
- * So the cut is made at the FIRST `: ` at or after a `: ` whose tail reports a
- * failure: with a clean gate output the candidate set is empty and the wrapper
- * stays unclassified (#1667's exemption), and with a hint that carries its own
- * `: ` the earlier cut yields a stream whose first lines carry no failure, so
- * the scan moves to the real separator. Cutting at the LAST `: ` instead would
- * make such a line report no failure at all, because the tail after the hint's
- * colon is a single line. tehas's
+ * helper then appends the extracted tail after `: ` — and a stream that spans
+ * several lines may carry no `: ` at all. So a candidate is the builder's `: `
+ * OR the first line break after `failed in`, and one is chosen as soon as what
+ * follows it reports a failure — EXCEPT the separators that sit inside the deps
+ * hint, which is why {@link depsHintStartFor} exists rather than a bare scan: a
+ * hint whose problem text reads `hook failed during provisioning: Cannot find
+ * module 'x'` is the harness's own diagnosis, and cutting inside it promotes
+ * that diagnosis to "the gate's output", which is the #1667 suppression made
+ * backwards. The ONE separator inside the hint that stays a candidate is the
+ * hint's own `: ` — `formatExecError` appends the gate's tail after the whole
+ * `failMsg` including the hint, so that is where the builder's separator sits. With a clean gate output no candidate reports a failure and the
+ * wrapper stays unclassified (#1667's exemption), and with a hint that carries
+ * its own `: ` the earlier cut yields a stream whose first lines carry no
+ * failure, so the scan moves on. Cutting at the LAST `: ` instead would make a
+ * hinted line report no failure at all, because the tail after the hint's colon
+ * is a single line. tehas's
  * `…failed in /w: test.sh: failed checks (1)` still names its file.
  */
-const HARNESS_VERIFY_PREFIX = /^verify command\s.+?\sfailed in\s/i;
-
-/** The builder's stream separator. */
+/** The harness sentence's own words, up to and including `failed in `. */
+const HARNESS_PROSE = /^verify command\s.+?\sfailed in\s/i;
+/** The builder's stream separator, and its width — the offset a cut skips. */
 const STREAM_SEPARATOR = ": ";
+const STREAM_SEPARATOR_LEN = STREAM_SEPARATOR.length;
+
+/**
+ * Where this line's deps hint begins, or `undefined` when it carries none.
+ *
+ * The hint is what `provisionDepsHint` appends to the harness's own sentence
+ * before `formatExecError` appends the gate's tail, and each of its shapes
+ * opens with one of `DEPS_HINT_STARTS` — the same phrase list
+ * `work-driver-cause-scrub.ts` strips, so the cut and the scrub agree on what
+ * the hint is instead of each guessing.
+ *
+ * EXPORTED because the reader that must not mistake the harness's diagnosis for
+ * the gate's output is a different function from the one that cuts: a wrapper
+ * whose hint says `hook failed during provisioning: Cannot find module 'x'`
+ * would otherwise answer "the stream is `Cannot find module 'x'`" — the hint's
+ * own problem text presented as a failure the gate printed, which is what makes
+ * `depsHintApplies` keep a hint that #1667 exists to suppress.
+ */
+export function depsHintStartFor(line: string): number | undefined {
+  let start: number | undefined;
+  for (const opener of DEPS_HINT_STARTS) {
+    const at = line.indexOf(opener);
+    if (at !== -1 && (start === undefined || at < start)) start = at;
+  }
+  return start;
+}
+
+/**
+ * The harness's own wrapper sentence, recognised. Exported so every reader
+ * agrees on what a wrapper IS: `work-driver-verify-record.ts` used to keep its
+ * own copy of this regex, and a reader that disagrees about the wrapper
+ * disagrees about which lines a developer can act on.
+ */
+export function isHarnessWrapper(line: string): boolean {
+  return HARNESS_PROSE.test(line);
+}
+
+/**
+ * How many candidate separators one wrapper line is scanned for. The builder
+ * appends exactly ONE stream separator and at most one line break, and the deps
+ * hint can add a couple of its own, so the real candidate set is tiny; the cap
+ * is what makes a pathological 8 KiB of `: ` inside a command string cost a
+ * constant.
+ */
+const STREAM_CANDIDATES_MAX = 16;
+
+/**
+ * Every offset in `line` at or after `from` where the builder could have put
+ * the stream, in order: the `: ` it appends, and the newline that separates the
+ * harness sentence from a multi-line tail.
+ */
+function streamSeparators(line: string, from: number): number[] {
+  const candidates: number[] = [];
+  const push = (at: number): void => {
+    if (at !== -1 && (candidates.length === 0 || candidates[candidates.length - 1] !== at)) {
+      candidates.push(at);
+    }
+  };
+  for (let at = line.indexOf(STREAM_SEPARATOR, from); at !== -1; ) {
+    push(at);
+    if (candidates.length >= STREAM_CANDIDATES_MAX) break;
+    at = line.indexOf(STREAM_SEPARATOR, at + STREAM_SEPARATOR.length);
+  }
+  const brk = /\r\n|\r|\n/.exec(line.slice(from));
+  if (brk !== null) push(from + brk.index);
+  return candidates;
+}
 
 /**
  * Where the gate's own output begins inside a harness line, or `undefined`
@@ -209,23 +387,43 @@ const STREAM_SEPARATOR = ": ";
  * non-zero, which is not a line of the gate's output naming anything.
  */
 function harnessVerifyStream(line: string): string | undefined {
-  const matched = HARNESS_VERIFY_PREFIX.exec(line);
+  const matched = HARNESS_PROSE.exec(line);
   if (matched === null) return undefined;
 
   // The prefix is anchored and matched against the same trimmed line, so
   // `failed in ` sits at a fixed offset from the start: everything before it is
   // the wrapper's own wording, never the gate's.
   const afterFailedIn = matched[0].length;
-  // Each candidate is a `: ` that follows `failed in`. Everything before the
-  // chosen one belongs to the command, the cwd or the deps hint — all three may
-  // legitimately contain a colon.
-  const candidates: number[] = [];
-  for (let at = line.indexOf(STREAM_SEPARATOR, afterFailedIn); at !== -1; ) {
-    candidates.push(at);
-    at = line.indexOf(STREAM_SEPARATOR, at + STREAM_SEPARATOR.length);
-  }
-  for (const at of candidates) {
-    const stream = line.slice(at + STREAM_SEPARATOR.length).trim();
+  // Where the harness's own diagnostic begins, when the run carried one. Every
+  // separator from there on belongs to the hint — EXCEPT the hint's own `: `, on
+  // which `formatExecError` appended the gate's tail: that is the builder's
+  // separator and the only cut that reaches a multi-line tail sitting behind a
+  // hint. Treating it as hint text too would make a hinted wrapper report no
+  // failure at all, which is the opposite defect from the one it prevents.
+  const hintAt = depsHintStartFor(line);
+  const hintColon =
+    hintAt === undefined ? -1 : line.indexOf(STREAM_SEPARATOR, hintAt + STREAM_SEPARATOR_LEN);
+  // Each candidate is a separator the builder could have appended. Everything
+  // before the chosen one belongs to the command, the cwd or the deps hint — all
+  // three may legitimately contain a colon or a newline.
+  for (const at of streamSeparators(line, afterFailedIn)) {
+    if (hintAt !== undefined && at >= hintAt && at !== hintColon) continue;
+    // The separator is a `: ` or a line break, so its width is either two or
+    // three — measure it rather than assume, or a newline cut leaks an `r`.
+    const width = line.startsWith(STREAM_SEPARATOR, at)
+      ? STREAM_SEPARATOR_LEN
+      : line[at] === "\r" && line[at + 1] === "\n"
+        ? 2
+        : 1;
+    // Bounded before it is classified: the candidates run to the end of the
+    // line, so without this the "one line, one scan window" guarantee would
+    // hold for the line and not for what sits after a late separator.
+    const stream = line
+      .slice(
+        at + width,
+        Math.min(at + width + FAILURE_LINE_SCAN_MAX, line.length),
+      )
+      .trim();
     if (stream.length > 0 && classifyStream(stream) !== undefined) return stream;
   }
   return "";
@@ -241,7 +439,7 @@ function classifyStream(stream: string): FailureLine | undefined {
  * names one, and ALWAYS `undefined` for a line that reports success.
  */
 export function classifyFailureLine(line: string): FailureLine | undefined {
-  const t = line.trim();
+  const t = scanWindow(line);
   if (t.length === 0 || isSuccessLine(t)) return undefined;
   // Ask about the gate's own output, not the wrapper around it: the wrapper is
   // never a failure line, and the first classified line behind it is the answer.

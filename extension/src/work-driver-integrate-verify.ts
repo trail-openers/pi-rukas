@@ -42,6 +42,7 @@ import type { CommitPrConsolidatedVerifyResult } from "./work-driver-integrate-v
 import type { CommitPrVerifyOpts } from "./work-driver-integrate-verify-result.ts";
 import { commitPrSkipDecision } from "./work-driver-integrate-verify-skip.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
+import { UNATTRIBUTED_NOTE } from "./work-driver-verify-develop-helpers.ts";
 import {
   VERIFY_REPORT_FILE_ENV,
   createVerifyReportDir,
@@ -323,7 +324,7 @@ export async function runCommitPrConsolidatedVerify(
     const verdict = classifyConsolidatedVerifyFailure(
       opts.workstreamCount,
       opts.workstreamIds,
-      failureTail + (attributed ? "" : " (unattributed — best-effort tail)"),
+      failureTail + (attributed ? "" : ` ${UNATTRIBUTED_NOTE}`),
       opts.perWorktreeFailuresByWs ?? {},
       // #1064 — the unclipped stream, so the test names the 800-char window elided are
       // recovered into `namedFailures` instead of the message printing the sentinel over
