@@ -24,7 +24,15 @@
  *   6. a claims-lock refusal AFTER a covering corrective still halts the step
  *      with `claims-lock-unavailable` — the halt is decided by the gate's own
  *      return, not by the shape of the event tail — and still records that the
- *      corrective ran.
+ *      corrective ran;
+ *   7. a corrective dispatch that returns `ok: false` still records
+ *      `planQuality.redispatched: true` and invents NO reason (r2: the record
+ *      is set at the dispatch, not at the return — the three failure returns
+ *      all happen before the old assignment could run).
+ *
+ * Case 8 — the claim gate's OWN parks (including the unreadable-conflict branch
+ * this round fixed) — lives in `test-work-driver-claims-gate-parks.ts`, which
+ * drives `checkAndRegisterClaims` directly (split for the 500-line cap).
  *
  * PI_ENSEMBLE_PLAN_QUALITY is deliberately left UNSET — with the gate off the
  * bug is unreachable, so a run that set it would prove nothing.
@@ -35,11 +43,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { checkAndRegisterClaims } from "../src/work-driver-path-claims.ts";
 import type { SpecCoverageSpec } from "../src/work-driver-plan-spec-coverage.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
 import { type WorkState, initialState, workStateDir } from "../src/workflow-state.ts";
 import {
   type PathClaimEntry,
+  makeState,
   rawClaims,
   seedClaims,
   spawnLivePid,
@@ -88,6 +98,13 @@ function stateWithSpec(state: WorkState, specOverride?: SpecCoverageSpec): WorkS
 const STILL_WRONG_CORRECTIVE = planResultFromCalls([
   { id: "default", scope: "the fix", paths: ["src/other.ts"], outOfScope: [] },
 ]);
+
+/** A corrective whose dispatch came back not-ok (a provider error, a non-zero exit). */
+const FAILED_CORRECTIVE = mkResult(STILL_WRONG_CORRECTIVE, {
+  ok: false,
+  exitCode: 1,
+  errorTail: "provider request error",
+});
 
 /**
  * A corrective for the claim-conflict case: it still declares `src/held.ts`, the
@@ -357,6 +374,20 @@ for (const sibling of [false, true] as const) {
       next.pipelineState.planQuality?.reason === undefined,
       `and invents no reason for a filesystem fault (got ${next.pipelineState.planQuality?.reason})`,
     );
+    // #1756 r2 — the gate's OWN report is what the caller branches on, so the
+    // case reads it too: a handoff state whose gate said `parked: false` would
+    // be halted by the tail shape by luck, not by contract.
+    const gate = await checkAndRegisterClaims(
+      { repoRoot: dir, issue: CYCLE_ISSUE } as unknown as Parameters<
+        typeof checkAndRegisterClaims
+      >[0],
+      makeState(CYCLE_ISSUE, dir),
+      { default: { paths: ["src/required.ts"], outOfScope: [] } },
+    );
+    assert(
+      gate.parked === true,
+      `the claim gate REPORTS the refused registration as a park (got ${String(gate.parked)})`,
+    );
   } finally {
     try {
       chmodSync(lockDir, 0o700);
@@ -366,6 +397,50 @@ for (const sibling of [false, true] as const) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// ---- 7. a corrective that returns not-ok still records that it ran
+
+{
+  // r2 — `correctiveRan` was set only AFTER the `!retry` / killCause /
+  // `!retry.ok` returns, so each of those three halted with
+  // `planQuality.redispatched: false` — the record denied the dispatch the
+  // cycle paid for. The record is now `correctiveAttempted`, set at the
+  // dispatch. The halt PREDICATE is untouched: this cycle still parks (the
+  // primary's verdict stands, because a corrective that never produced a plan
+  // clears nothing), still on its `dispatch-failed` tail, and still invents no
+  // reason for a provider error.
+  const dir = mkdtempSync(path.join(tmpdir(), "plan-1756-failed-corrective-"));
+  try {
+    const seen: string[] = [];
+    const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
+      seen.push((opts as { label?: string })?.label ?? "");
+      return mkResult(seen.length === 1 ? REFUSED_PRIMARY : FAILED_CORRECTIVE);
+    });
+    const next = await runPlan(ctx, stateWithSpec(initialState(1756, 1_000_000)), 1_000_000);
+    assert(seen.length === 2, `the corrective was dispatched once (got ${seen.length})`);
+    assert(
+      next.eventLog.at(-1)?.kind === "dispatch-failed",
+      `the failed corrective still ends on its own dispatch-failed tail (got ${next.eventLog.at(-1)?.kind})`,
+    );
+    assert(
+      next.pipelineState.planQuality?.redispatched === true,
+      `the halt records the corrective the cycle paid for (got ${next.pipelineState.planQuality?.redispatched})`,
+    );
+    assert(
+      next.pipelineState.planQuality?.reason === undefined,
+      `and invents no plan-quality reason for a provider error (got ${next.pipelineState.planQuality?.reason})`,
+    );
+    assert(
+      !next.eventLog.some((e) => e.kind === "cap-hit"),
+      "and the halt is the dispatch failure, not an invented cap",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---- 8 lives in test-work-driver-claims-gate-parks.ts: the gate's OWN parks
+// are asserted at the gate, not only through runPlan (500-line cap, §12).
 
 console.log(
   exit === 0 ? "\nAll #1756 corrective-clears-primary assertions passed." : "\nFAILURES above.",
