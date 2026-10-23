@@ -62,11 +62,13 @@ export function verifyPassTimeoutMs(): number {
 export const VERIFY_TIMEOUT_LABEL = "[verify-timeout]";
 
 /**
- * The word the tail-extraction note carries (#1762). A stream that already
- * contains it has already been declared unattributed, so the trace is not
- * emitted twice for one run.
+ * The note #1762's callers append when the window was not anchored. Matched in
+ * FULL, not on the bare word `unattributed`: that word also occurs in prose
+ * that says nothing about attribution (a gate output discussing an
+ * unattributed failure), and a match there would silence the trace for a run
+ * that was never declared unattributed.
  */
-const UNATTRIBUTED_NOTE = "unattributed";
+const UNATTRIBUTED_NOTE = "(unattributed — best-effort tail)";
 
 /** The bound as a person reads it: whole minutes, else seconds. */
 export function boundText(ms: number): string {
@@ -282,10 +284,9 @@ export function formatExecError(
   failMsg: string,
 ) {
   const { tail, attributed } = extractAttributedTail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`, 1500);
-  // The note is skipped when the stream itself already carries one: a project
-  // gate that prints the harness's own wording must not make the trace lie.
-  // The note is skipped when the window already carries one of its own: a
-  // project gate that echoes the harness's wording must not make the trace lie.
+  // The trace is skipped when the window already carries the note of its own
+  // (another caller built it): a project gate that echoes the harness's wording
+  // must not make the trace lie, and one run must not trace twice.
   if (!attributed && tail && !tail.includes(UNATTRIBUTED_NOTE))
     trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
   const suffix = tail

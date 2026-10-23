@@ -51,7 +51,20 @@ export interface FailureLine {
 /**
  * The table, in priority order. Each entry is tried against the whole line and
  * the first match wins, so the two pi-rukas literals (which a generic rule also
- * contains) sit ahead of `diagnostic`, and every success-adjacent key is anchored.
+ * contains) sit ahead of `diagnostic`, and every success-adjacent key is
+ * anchored. Three rules every key obeys:
+ *
+ *   - A FAILURE TOKEN in its own position, not a substring. A word that also
+ *     occurs inside ordinary prose (`error`, `cannot`, `not found`) is matched
+ *     only where a runner prints it as a status — `a.ts: error`, never
+ *     `index.ts: fatal error` — because a line that classifies becomes the
+ *     evidence anchor with `attributed: true` and can earn a corrective round.
+ *   - One line, one shape: the table stops at the first match, so `not ok 3 - x`
+ *     reports `not-ok` and never `ok`.
+ *   - A count, where the shape has one, is a NON-ZERO count. `isSuccessLine`
+ *     already settles the `0 failed` tally before the table is asked; the
+ *     `[1-9]` keeps that true for a shape `isSuccessLine`'s patterns do not
+ *     cover.
  */
 const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegExp }> = [
   // `.pi/verify-cmd`'s smoke loop: the per-file marker and its count summary.
@@ -70,12 +83,27 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
     namesTest: true,
     re: /[\w./-]+\.(?:sh|bash|py|js|ts|go|rs)\s*:\s*(?:failed|failing)\s+checks?\s*\(\s*[1-9]\d*\s*\)/i,
   },
-  // A script/file line that says it failed. `isSuccessLine` is what keeps the
-  // passing tally (`36 cases, 0 failed`) out of this rule.
+  // A script/file line that says it failed, in one of the four shapes a runner
+  // actually prints: `<file>: failed|FAILED|FAIL|ERROR`, `<file> … FAILED`,
+  // `<file>: N failed|N errors` with N >= 1, and a leading `FAIL <file>`.
+  // Prose that merely contains the word error, `cannot` or `not found`
+  // (`index.ts: fatal error`, `index.ts: cannot parse`,
+  // `src/a.ts: consider this error case`) is NOT one of them — it names no
+  // failed check, and classifying it would make that prose the anchor. The
+  // The status must sit DIRECTLY after the file's colon (`:\s*`, never a lazy
+  // `.*?`): `index.ts: fatal error` puts a word between them, so `error` there
+  // is prose, not the status the line reports. The `(?<=\s)FAILED(?=\W|$)`
+  // branch is the `<file> … FAILED` shape (go's `foo_test.go  FAILED`), and
+  // `:\s*[1-9]…` the counted tally, whose zero case `isSuccessLine` settles.
   {
     shape: "named-file",
     namesTest: true,
-    re: /[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b.*\b(?:failed|failing|FAIL\b|error\b|cannot|not found)/i,
+    re: /^\s*FAIL\s+[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b/i,
+  },
+  {
+    shape: "named-file",
+    namesTest: true,
+    re: /[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b\s*(?::\s*(?:failed|failing|fail|error)\b|(?<=\s)FAILED(?=\W|$)|:\s*[1-9]\d*\s+(?:failed|errors?|failures?\b))/i,
   },
   // TAP / bats. Anchored with a number so `book`, `token` and `lookup` never match.
   { shape: "tap-not-ok", namesTest: true, re: /^\s*not\s+ok\b/i },
@@ -110,20 +138,75 @@ export function isSuccessLine(line: string): boolean {
 }
 
 /**
- * The harness's own wrapper around a failing verify run —
- * `verify command `cmd` failed in <cwd>: <stream>` (#1667's corrective-round
- * exemption depends on this line staying UNclassified when nothing behind it
- * does: the harness saying a run exited non-zero is not a line of the gate's
- * output naming a failure, and pre-#1767 the whole suite of no-assertion cases
- * rests on that). The stream is what follows the first `: `; a stream that
- * itself carries a failure line is still classified, so tehas's
- * `…failed in /w: test.sh: failed checks (1)` names its file (#1762).
+ * The harness's wrapper around a failing verify run —
+ * `verify command `cmd` failed in <cwd>[: <stream>]`.
+ *
+ * Two rules, both from #1762:
+ *
+ *   - The wrapper itself is never a failure line. #1667's corrective-round
+ *     exemption depends on this staying UNclassified when nothing behind it
+ *     does: the harness saying a run exited non-zero is not a line of the
+ *     gate's output naming a failure, and the whole no-assertion suite
+ *     (`… failed in <cwd>: something went wrong` earns no round) rests on that.
+ *   - What sits BEHIND the wrapper is classified normally, so a TAP, pytest or
+ *     `✗` line wrapped by the harness reports what it reports unwrapped. The
+ *     first version of this used the inner stream only as an existence veto and
+ *     then matched the WHOLE wrapped line against the table, which silently
+ *     dropped every anchored shape (`^✗\s`, `^ERROR \S+::`, `^--- FAIL:`) and
+ *     let the loose `named-file` rule classify the wrapper's own prose.
+ *
+ * What the builder actually emits, read from the call site that composes it
+ * (`work-driver-verify-per-worktree.ts`, which calls `formatExecError` with
+ * `failMsg = "verify command \`<cmd>\` failed in <cwd>" + depsHint`, and the
+ * helper then appends the extracted tail after `: `). Two things vary and both
+ * break a naive prefix strip: the command is a shell line that can itself
+ * contain `&&` and colons, and `depsHint` (`provisionDepsHint`) is prose that
+ * can contain `: ` — the `hook-failed` shape ends `… during provisioning: <problem>`.
+ * So the cut is made at the FIRST `: ` at or after a `: ` whose tail reports a
+ * failure: with a clean gate output the candidate set is empty and the wrapper
+ * stays unclassified (#1667's exemption), and with a hint that carries its own
+ * `: ` the earlier cut yields a stream whose first lines carry no failure, so
+ * the scan moves to the real separator. Cutting at the LAST `: ` instead would
+ * make such a line report no failure at all, because the tail after the hint's
+ * colon is a single line. tehas's
+ * `…failed in /w: test.sh: failed checks (1)` still names its file.
  */
-const HARNESS_VERIFY_PREFIX = /^verify command\s.*?\sfailed in\s[^:]+:\s*/i;
+const HARNESS_VERIFY_PREFIX = /^verify command\s.+?\sfailed in\s/i;
 
-/** True when the line is the harness's wrapper around the gate's own output. */
-function isHarnessVerifyLine(line: string): boolean {
-  return HARNESS_VERIFY_PREFIX.test(line);
+/** The builder's stream separator. */
+const STREAM_SEPARATOR = ": ";
+
+/**
+ * Where the gate's own output begins inside a harness line, or `undefined`
+ * when the line is not the harness's wrapper. `""` means the wrapper carries
+ * no stream that reports a failure — it asserts only that a run exited
+ * non-zero, which is not a line of the gate's output naming anything.
+ */
+function harnessVerifyStream(line: string): string | undefined {
+  const matched = HARNESS_VERIFY_PREFIX.exec(line);
+  if (matched === null) return undefined;
+  // The prefix is anchored and matched against the same trimmed line, so
+  // `failed in ` sits at a fixed offset from the start: everything before it is
+  // the wrapper's own wording, never the gate's.
+  const afterFailedIn = matched[0].length;
+  // Each candidate is a `: ` that follows `failed in`. Everything before the
+  // chosen one belongs to the command, the cwd or the deps hint — all three may
+  // legitimately contain a colon.
+  const candidates: number[] = [];
+  for (let at = line.indexOf(STREAM_SEPARATOR, afterFailedIn); at !== -1; ) {
+    candidates.push(at);
+    at = line.indexOf(STREAM_SEPARATOR, at + STREAM_SEPARATOR.length);
+  }
+  for (const at of candidates) {
+    const stream = line.slice(at + STREAM_SEPARATOR.length).trim();
+    if (stream.length > 0 && classifyStream(stream) !== undefined) return stream;
+  }
+  return "";
+}
+
+/** The first classified line of a stream, whole-line first, then line by line. */
+function classifyStream(stream: string): FailureLine | undefined {
+  return classifyFailureLine(stream) ?? firstInnerFailure(stream);
 }
 
 /**
@@ -133,23 +216,27 @@ function isHarnessVerifyLine(line: string): boolean {
 export function classifyFailureLine(line: string): FailureLine | undefined {
   const t = line.trim();
   if (t.length === 0 || isSuccessLine(t)) return undefined;
-  // Ask about the gate's own output, not the wrapper around it. A line that is
-  // ONLY the wrapper says nothing beyond "a run exited non-zero".
-  if (isHarnessVerifyLine(t)) {
-    const stream = t.replace(HARNESS_VERIFY_PREFIX, "").trim();
-    if (stream.length === 0) return undefined;
-    // A stream may itself be several lines the wrapper swallowed (a per-worktree
-    // failure string is one line of `… failed in <cwd>: <output>` where the
-    // output was newline-flattened): ask if the whole tail or any single line of
-    // it reports a failure, so a passing tally cannot be rescued by a neighbour.
-    if (
-      classifyFailureLine(stream) === undefined &&
-      splitLines(stream).every((l) => classifyFailureLine(l) === undefined)
-    )
-      return undefined;
-  }
+  // Ask about the gate's own output, not the wrapper around it: the wrapper is
+  // never a failure line, and the first classified line behind it is the answer.
+  const stream = harnessVerifyStream(t);
+  if (stream !== undefined) return stream.length === 0 ? undefined : classifyStream(stream);
   for (const entry of SHAPES) {
     if (entry.re.test(t)) return { shape: entry.shape, namesTest: entry.namesTest };
+  }
+  return undefined;
+}
+
+/**
+ * The first line of a wrapper-swallowed stream that reports a failure. The
+ * stream may be several lines the wrapper swallowed (a per-worktree failure
+ * string is one line of `… failed in <cwd>: <output>` where the output was
+ * newline-flattened), so the first one that reports a failure is the answer,
+ * and a passing tally cannot be rescued by a neighbour.
+ */
+function firstInnerFailure(stream: string): FailureLine | undefined {
+  for (const raw of splitLines(stream)) {
+    const inner = classifyFailureLine(raw);
+    if (inner !== undefined) return inner;
   }
   return undefined;
 }
