@@ -31,6 +31,7 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
+import { clearHostParkSignals } from "./work-driver-park-memory-host.ts";
 import { clearParkRecords } from "./work-driver-park-record.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import {
@@ -475,6 +476,14 @@ export async function runMerged(
   // best-effort discipline.
   try {
     await clearParkRecords(ctx.repoRoot, activeIssuesOf(state));
+  } catch {
+    /* best-effort; merge must always succeed regardless */
+  }
+  // #1696 — and the host channel's signal beside it, from the same door: a
+  // cycle that forgot one memory and kept the other would have the survivor
+  // refuse a later start over work the operator can see is done.
+  try {
+    await clearHostParkSignals(ctx.repoRoot, activeIssuesOf(state));
   } catch {
     /* best-effort; merge must always succeed regardless */
   }

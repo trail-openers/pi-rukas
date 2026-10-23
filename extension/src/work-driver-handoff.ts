@@ -30,6 +30,7 @@ import {
 } from "./work-driver-handoff-post.ts";
 import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
+import { recordHostPark } from "./work-driver-park-memory-host.ts";
 import {
   REPEAT_PARK_REFUSAL_COUNT,
   readParkMemory,
@@ -352,6 +353,12 @@ export async function runHandoff(
     ? handoffMd.trim().length > 0
     : commentUrl !== undefined || labelApplied === true;
   const parkRecord = await recordPark(ctx, park, commentUrl, parkReported);
+  // #1696 — and the host channel's own signal, which covers every cap the
+  // covered records do NOT: a host cycle posts no comment and applies no label,
+  // so without this a park outside the three covered caps left no trace anywhere
+  // and a factory's `--restart` re-ran it indefinitely. ONE call, one rule
+  // shared with the line above: a park is published when a body reached the host.
+  await recordHostPark(ctx, next, parkReported);
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,

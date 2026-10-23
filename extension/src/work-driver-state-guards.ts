@@ -19,6 +19,7 @@ import { checkAttentionLabel } from "./work-driver-attention.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { reportFinalState } from "./work-driver-final-state.ts";
 import type { StartRefusal } from "./work-driver-outcome.ts";
+import { hostParkVerdict } from "./work-driver-park-memory-host.ts";
 import { repeatParkVerdict, repeatParkVerdictReason } from "./work-driver-park-memory.ts";
 import { validateDiscriminants } from "./workflow-state-validate.ts";
 import { type WorkState, detectInconsistencies, workStateDir } from "./workflow-state.ts";
@@ -104,12 +105,54 @@ export async function refuseUnproductiveStart(
     reportFinalState(ctx, state);
     return { reason: labelled };
   }
-  return refuseRepeatPark(ctx);
+  return (await refuseRepeatPark(ctx)) ?? refuseHostPublishedPark(ctx);
 }
 
 /** Did this driver refuse because the issue has already parked twice? */
 export function isRepeatParkRefusal(reason: string): boolean {
   return reason.startsWith(REPEAT_PARK_REFUSAL_PREFIX);
+}
+
+/**
+ * #1696 — the same refusal for a park the covered records never covered, on the
+ * HOST channel only.
+ *
+ * `refuseRepeatPark` reads `park-<cap>.json`, which exists only for the three
+ * covered caps. A lens round cap, a `verify-failed:develop` or a
+ * `step-failed:explore` leaves no record, and on the host channel it leaves no
+ * forge artefact either: pi-rukas posts no comment and applies no
+ * `needs-human-attention` label there BY CONTRACT, so the attention gate above
+ * has nothing to read, and a factory that passes `--restart` every cycle wipes
+ * the state file. The result, measured in the orchard batch behind this issue: the
+ * same park re-run three to nine times on an unchanged issue body.
+ *
+ * So the guard consults the host's own signal (`work-driver-park-memory-host.ts`)
+ * — how many host handoffs actually handed this identical park's body to the
+ * host. Nothing else is added to the host channel: still no comment, still no
+ * label, still the same exit code. It shares the covered guard's discipline
+ * exactly: `--restart` does NOT bypass it, an edited issue body does (the
+ * fingerprint), `PI_ENSEMBLE_REPEAT_PARK=0` does, and anything the signal could
+ * not be read against fails OPEN with a trace rather than refusing.
+ *
+ * `--continue-pr` waives nothing here: the covered guard's waiver is specific to
+ * the open-PR park, which is a covered cap and never reaches this function.
+ */
+export async function refuseHostPublishedPark(
+  ctx: CycleContext,
+): Promise<StartRefusal | undefined> {
+  const verdict = await hostParkVerdict(ctx, ctx.issues);
+  if (!verdict) return undefined;
+  const first = new Date(verdict.firstAt).toISOString();
+  const grouped = verdict.issue !== ctx.issue;
+  const message = `pi-rukas /work refused to start on issue #${ctx.issue}${grouped ? ` (group member #${verdict.issue})` : ""}: the host channel has already been handed this cycle's handoff ${verdict.deliveredCount} times as \`${verdict.cap}\`${verdict.reason ? ` (${verdict.reason})` : ""}, first published ${first}, against the same issue text. No comment or label was posted for it because the host owns that channel — this signal is pi-rukas' own memory of what it handed over, not a label.\nA third identical handoff reports nothing new, so no step was dispatched, no worktree was touched and no state file was written.\nTwo ways forward: revise the body of #${verdict.issue} (any substantive edit clears the guard and the next handoff is delivered in full), or run once with PI_ENSEMBLE_REPEAT_PARK=0 to hand it over regardless.`;
+  trace(
+    `work-driver: host park refusal for #${verdict.issue} (cycle #${ctx.issue}): ${verdict.cap}${verdict.reason ? ` (${verdict.reason})` : ""} published x${verdict.deliveredCount}`,
+  );
+  notifyAgent(ctx.host, message);
+  return {
+    reason: `${REPEAT_PARK_REFUSAL_PREFIX}${repeatParkVerdictReason(verdict)}`,
+    repeatPark: verdict,
+  };
 }
 
 /**
