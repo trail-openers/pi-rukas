@@ -12,7 +12,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../../src/work-driver-context.ts";
-import type { PathClaimEntry } from "../../src/work-driver-path-claims.ts";
+import { type PathClaimEntry, readClaims, registerClaim } from "../../src/work-driver-path-claims.ts";
+import { setSiblingClaimWait } from "../../src/work-driver-path-claims-siblings.ts";
 import { initialState } from "../../src/workflow-state-update.ts";
 import type { WorkState } from "../../src/workflow-state.ts";
 
@@ -47,6 +48,44 @@ export function rawClaims(dir: string): PathClaimEntry[] {
   const f = path.join(dir, ".pi", "work-state", "path-claims.json");
   if (!existsSync(f)) return [];
   return JSON.parse(readFileSync(f, "utf8")) as PathClaimEntry[];
+}
+
+/**
+ * Register a claim through the PRODUCTION writer under a foreign issue number,
+ * so a suite can plant a live sibling's reservation without duplicating the
+ * writer's normalisation. `registerClaim` stamps this process's pid, which is
+ * what makes the entry live for `readClaims`.
+ */
+export function registerClaimForTest(
+  dir: string,
+  issue: number,
+  paths: string[],
+): Promise<PathClaimEntry[]> {
+  return registerClaim(dir, issue, paths);
+}
+
+/** The claim registry's own key: `registerClaim` stamps the WRITER's pid. */
+const SELF_PID = process.pid;
+
+/**
+ * Drop a claim from the plan-time gate's view the way production does: #1101's
+ * sibling filter, which `readClaims` applies BEFORE the gate sees anything. A
+ * same-pid entry whose issue the queue declared a sibling is removed from both
+ * the fresh and the stale list, so `checkCrossGroupClaimsSync` can end up with a
+ * list whose triggering entry is gone — the only route to the degenerate
+ * conflict list that does not forge the registry file.
+ *
+ * Returns whether the filter actually dropped the row. A case that silently
+ * measured nothing (a foreign pid, which the pid gate makes inert) fails here
+ * instead of asserting the wrong park.
+ */
+export async function hideSiblingClaimFromGate(dir: string, issue: number): Promise<boolean> {
+  const rows = rawClaims(dir);
+  const target = rows.find((r) => r.issue === issue);
+  setSiblingClaimWait([issue]);
+  const seen = await readClaims(dir);
+  if (target === undefined) return false;
+  return !seen.some((c) => c.issue === target.issue && c.pid === target.pid);
 }
 
 /**

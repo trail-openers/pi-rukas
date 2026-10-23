@@ -111,6 +111,12 @@ export const SEAMS_1454: Seam[] = [
     testOnly: {
       releaseClaim:
         "the group-aware teardown writer; pinned by the release / release-group cases in the claims suites — its production callers reach it through the registry re-export",
+      // #1756 r2 — the accepted seam that makes the gate's degenerate-conflict
+      // guard ASSERTABLE (no production read can produce that list, so a forged
+      // registry would only test the forgery). `undefined` in production; never
+      // set from `src/`. Pinned by test-work-driver-claims-gate-parks.ts.
+      setClaimsConflictsForTests:
+        "#1756 r2 — inject the conflict list the gate judges, so the fail-closed guard for an unreadable conflict is asserted rather than merely present (test-work-driver-claims-gate-parks.ts)",
     },
     canary: {
       symbol: "checkAndRegisterClaims",
