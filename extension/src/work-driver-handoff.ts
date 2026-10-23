@@ -18,11 +18,6 @@ import {
   priorHandoffCommentUrl,
 } from "./work-driver-handoff-deliver.ts";
 import { handoffForge } from "./work-driver-handoff-forge.ts";
-import {
-  type HostParkWriteOverride,
-  callHostParkWriter,
-  withHostParkWrite,
-} from "./work-driver-handoff-host-writer.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import {
@@ -35,6 +30,7 @@ import {
 } from "./work-driver-handoff-post.ts";
 import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
+import { recordHostPark } from "./work-driver-park-memory-host.ts";
 import {
   REPEAT_PARK_REFUSAL_COUNT,
   readParkMemory,
@@ -80,10 +76,8 @@ export async function runHandoff(
   ctx: CycleContext,
   stateIn: WorkState,
   now: number,
-  /** Test-only: the host signal's writer and the readings that one write sees. */
-  hostPark?: HostParkWriteOverride,
 ): Promise<WorkState> {
-  return withHostParkWrite(hostPark, () => handoff(ctx, stateIn, now));
+  return handoff(ctx, stateIn, now);
 }
 
 async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Promise<WorkState> {
@@ -368,7 +362,7 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // so without this a park outside the three covered caps left no trace anywhere
   // and a factory's `--restart` re-ran it indefinitely. ONE call, one rule
   // shared with the line above: a park is published when a body reached the host.
-  await callHostParkWriter(ctx, next, parkReported);
+  await recordHostPark(ctx, next, parkReported);
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,
