@@ -23,6 +23,37 @@ const CONFLICT_FAILURE = /cherry-pick \/ apply conflict|could not combine the wo
 const CONSOLIDATION_CREATED_FAILURE = /\[consolidation-created\]/;
 
 /**
+ * #1765 — THE develop cap for a failed verify gate, in one place.
+ *
+ * Three sites compute it: this file's failure appender, `plainVerifyFailure`
+ * (what a corrective round may answer), and the converge gate's corrective
+ * re-run in `work-driver-converge-gate.ts`. Each used to spread the two red
+ * claims by hand, and the converge spread dropped `baselineRedEstablished` —
+ * so the same gate result capped `verify-failed:develop` (the one cap a
+ * corrective round earns) on the re-run and
+ * `verify-baseline-red:develop` on the first pass. One helper, one spread.
+ *
+ * The two claims are not synonyms: `baselineRedOnly` also asks that every
+ * failure be the base's (#1349's excuse), `baselineRedEstablished` only that
+ * the probe proved the base red for the command the gate ran. Either raises
+ * the cap; `verifyCapFor` still routes a timeout, host-exhaustion or residue
+ * entry ahead of them both.
+ */
+export function developVerifyCap(gate: {
+  failures: readonly string[];
+  baselineRedOnly?: boolean;
+  baselineRedEstablished?: boolean;
+  buildResidueOnly?: boolean;
+}): ReturnType<typeof verifyCapFor<"develop">> {
+  return verifyCapFor(
+    "develop",
+    gate.failures,
+    gate.baselineRedOnly === true || gate.baselineRedEstablished === true,
+    gate.buildResidueOnly === true,
+  );
+}
+
+/**
  * #1667 — true when the develop gate's failures land on the plain
  * `verify-failed:develop` cap. That is the only cap a corrective round may
  * answer: conflict and consolidation-created are distinct caps, and a run that
@@ -31,18 +62,17 @@ const CONSOLIDATION_CREATED_FAILURE = /\[consolidation-created\]/;
 export function plainVerifyFailure(gate: {
   failures: readonly string[];
   baselineRedOnly?: boolean;
+  /**
+   * #1765 — the probe established a red base for the command the gate ran: the
+   * claim the develop CAP reads, weaker than `baselineRedOnly` (which also asks
+   * that every failure be the base's). See `developVerifyCap`.
+   */
+  baselineRedEstablished?: boolean;
   buildResidueOnly?: boolean;
 }): boolean {
   if (gate.failures.some((f) => CONFLICT_FAILURE.test(f) || CONSOLIDATION_CREATED_FAILURE.test(f)))
     return false;
-  return (
-    verifyCapFor(
-      "develop",
-      gate.failures,
-      gate.baselineRedOnly === true,
-      gate.buildResidueOnly === true,
-    ) === "verify-failed:develop"
-  );
+  return developVerifyCap(gate) === "verify-failed:develop";
 }
 
 /** Append the develop verify-failure cap-hit (and its verifyEvidence) to `next`. */
@@ -81,14 +111,9 @@ export function appendDevelopVerifyFailure(state: WorkState, gate: DevelopVerify
     ? "consolidated-verify-conflict"
     : consolidationCreatedFailure
       ? "consolidated-verify-consolidation-created"
-      : verifyCapFor(
-          "develop",
-          gate.failures,
-          gate.baselineRedOnly,
-          // #1421 fix round — the structured decline from the consolidated
-          // gate, not a `[build-residue]` substring of the failure prose.
-          gate.buildResidueOnly === true,
-        ); // #1324 — a run killed at its bound is not a code failure
+      : // #1765 — the one helper all three develop cap sites share, so the
+        // claims it reads cannot drift between them.
+        developVerifyCap(gate);
   trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
   // #782 — when the consolidated verify recovered from a flake but the
   // converge gate then parks, record the retry so the handoff shows

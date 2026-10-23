@@ -471,6 +471,11 @@ export interface PipelineState extends IssueClosedState {
    */
   verifyAttribution?: VerifyAttributionRecord;
   /**
+   * #1765 — the branch step's pre-develop base probe (shape and rule:
+   * `workflow-state-schema-base-health.ts`). Absent = never probed.
+   */
+  baseHealthProbe?: import("./workflow-state-schema-base-health.ts").BaseHealthVerdict;
+  /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.
    * S4a (#1162) — "interrupted" is written by `markInterrupted` (SIGTERM /
    * SIGINT). It is not terminal: re-entry resumes it as "running".

@@ -73,9 +73,28 @@ const execp: VerifyExecFn = (cmd, opts) =>
  * if git cannot give it, the commit evidence is unverifiable, which is a failure.
  */
 /** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
-function verifyGateEnabled(): boolean {
+export function verifyGateEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_VERIFY;
   return v !== "0" && v !== "false";
+}
+
+/**
+ * #1765 — the pre-develop base-health probe's opt-out. Two switches, with
+ * different reach, and both of them skip the probe:
+ *
+ *   - `PI_ENSEMBLE_DEVELOP_BASELINE_PROBE=0` suppresses ONLY the pre-develop
+ *     probe. The develop gate's post-failure `compareWithBaseline` — the
+ *     pre-#1765 behaviour — keeps running, so the operator gets the old cost
+ *     model back, not a stricter gate.
+ *   - `PI_ENSEMBLE_VERIFY=0` is the gate's own switch and skips the probe too:
+ *     one gate, one switch. A probe that parks the cycle while the gate it
+ *     belongs to is switched off would be a second gate wearing the first's
+ *     name.
+ */
+export function baseHealthProbeEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_DEVELOP_BASELINE_PROBE;
+  if (v === "0" || v === "false") return false;
+  return verifyGateEnabled();
 }
 
 /**
@@ -175,6 +194,14 @@ export async function verifyStepOutcome(
   /** #1349 — the verify command is red at base and its failures are the only ones. */
   baselineRedOnly?: boolean;
   /**
+   * #1765 — the probe ESTABLISHED the base red for the command the gate ran: the
+   * claim the develop CAP reads. Weaker than `baselineRedOnly` above, which also
+   * requires every failure to be the base's — one foreign entry used to drop a
+   * red base to `verify-failed:develop` and earn a corrective round for a base
+   * nothing can pass. Both stay reported so the excuse keeps its own answer.
+   */
+  baselineRedEstablished?: boolean;
+  /**
    * #1421 fix round — the consolidated gate DECLINED to consolidate because
    * the root held nothing but untracked, git-ignored build output. Carried
    * STRUCTURALLY from the result's `kind`/`buildResidueOnly`, so the cap
@@ -233,6 +260,11 @@ export async function verifyStepOutcome(
     const fenceLifts: FenceLift[] = [];
     const commentEvidence: CommentEvidence[] = [];
     let baselineRedOnly = false;
+    // #1765 — the probe established a red base for the command the gate ran. A
+    // separate flag from the one above, which also demands every failure be the
+    // base's: the CAP reads THIS one, so a foreign entry beside a red base parks
+    // the cycle instead of spending a corrective round on it.
+    let baselineRedEstablished = false;
     // #1240 — the identity that justified skipping the consolidated run.
     // Captured here and returned structurally: the caller appends the event,
     // which is where the event log lives.
@@ -279,6 +311,11 @@ export async function verifyStepOutcome(
       onBaselineRedOnly: () => {
         baselineRedOnly = true;
       },
+      // #1765 — the cap claim, weaker than the excuse claim above: an
+      // established red base, whatever the excuse question answered.
+      onBaselineRedEstablished: () => {
+        baselineRedEstablished = true;
+      },
       // #1240 review r2 — without this callback the identity the probe
       // recorded is DROPPED: `verifyDevelopOutcome` threads the out-parameter
       // to the report layer, which calls it, and `consolidatedVerifySkipped`
@@ -319,6 +356,7 @@ export async function verifyStepOutcome(
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
       ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
       ...(baselineRedOnly ? { baselineRedOnly: true } : {}),
+      ...(baselineRedEstablished ? { baselineRedEstablished: true } : {}),
       ...(consolidatedVerifySkipped !== undefined ? { consolidatedVerifySkipped } : {}),
       ...(verifyEvents.length > 0 ? { verifyEvents } : {}),
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),

@@ -39,7 +39,13 @@ type DevelopGate = Awaited<ReturnType<typeof verifyStepOutcome>>;
 /** The develop gate fields the decision reads: a view of the real gate type, never a copy. */
 export type CorrectiveGateView = Pick<
   DevelopGate,
-  "ok" | "failures" | "baselineRedOnly" | "buildResidueOnly" | "flakeRecovered" | "verifyRun"
+  | "ok"
+  | "failures"
+  | "baselineRedOnly"
+  | "baselineRedEstablished"
+  | "buildResidueOnly"
+  | "flakeRecovered"
+  | "verifyRun"
 >;
 
 /** One workstream the round dispatches, with the only lines its developer gets. */

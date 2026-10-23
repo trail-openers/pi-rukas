@@ -45,6 +45,8 @@ import { runDevelopTopological } from "./work-develop-topological.ts";
 import { pendingFixes, runAdversarialFixPass } from "./work-driver-adversarial-fix.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
+// #1765 — the pre-develop base-health probe, called from BOTH branch paths.
+import { probeBaseAtBranch } from "./work-driver-verify-base-health.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -253,7 +255,7 @@ export async function runBranch(
           );
         }
       }
-      return {
+      const recorded = {
         ...withProvisions,
         pipelineState: {
           ...withProvisions.pipelineState,
@@ -270,6 +272,8 @@ export async function runBranch(
           workstreamBaseShas: setup.workstreamBaseShas,
         },
       };
+      // #1765 — probe the base before a developer is paid for.
+      return await probeBaseAtBranch(execFnPre, ctx, recorded);
     } catch (err) {
       // #545 — a NON-dirty mechanized failure used to fall back to the
       // ops dispatch with only a trace line and a bare `step-failed:branch`

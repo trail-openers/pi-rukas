@@ -1,16 +1,14 @@
 /**
  * work-driver-verify-verify-cmd — the verify-command gate of the develop
  * verify (per-worktree run + consolidated run + classification), extracted
- * from work-driver-verify-develop.ts by #794 (500-line gate).
- *
- * #669/#750/#782 semantics live here, with one #1005 change: per-worktree
- * failures are UNCONDITIONALLY kept as failures (the pre-#1005 downgrade of
- * per-worktree failures to notes on a consolidated pass is gone). #782's
- * single bounded flake re-run is caller-gated (every per-worktree verify
- * passed + a genuine N>1 consolidation) and happens inside
- * runConsolidatedVerify. #794 threads `workstreamBaseShas` into the
- * consolidated run so a stacked workstream's OWN range is picked against
- * its dependency's tip (no ancestor replay — the #775 shape).
+ * from work-driver-verify-develop.ts by #794 (500-line gate). #669/#750/#782
+ * semantics live here: per-worktree failures are UNCONDITIONALLY kept as
+ * failures (the pre-#1005 downgrade to notes on a consolidated pass is gone).
+ * #782's single bounded flake re-run is caller-gated, every per-worktree verify passing plus a genuine N>1
+ * consolidation, and it happens inside runConsolidatedVerify. #794 threads
+ * `workstreamBaseShas` into the consolidated run so a stacked workstream's OWN
+ * range is picked against its dependency's tip (no ancestor replay — #775).
+ * #1765 adds one callback per base-probe claim, reported by `reportBaselineLeg`.
  */
 import path from "node:path";
 import { reportConsolidatedVerifyOutcome } from "./work-driver-consolidated-verify-report.ts";
@@ -20,6 +18,7 @@ import { buildPerWorktreeFailuresByWs } from "./work-driver-consolidation-classi
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
+import type { BaselineRedEstablished } from "./work-driver-verify-aggregate.ts";
 import {
   buildConsolidatedRetry,
   buildConsolidatedVerifyOpts,
@@ -113,12 +112,13 @@ export type VerifyCommandGateOpts = {
    * sibling) and the "incoherent" claim is not asserted.
    */
   fenceViolations?: FenceViolationRecord[];
-  /** #1349 — the base run demonstrably fails the way the change's run does. */
+  /** #1349 — the base run fails the way the change's run does (the excuse). */
   onBaselineAttributed?: () => void;
+  /** #1765 — the probe established a red base (the CAP's claim). */
+  onBaselineRedEstablished?: BaselineRedEstablished;
   /**
    * #1427 — injectable process-tree walker, so a smoke test can assert the
-   * report's shape without forking `ps`. Production omits it and the real
-   * walker runs.
+   * report's shape without forking `ps`. Production omits it.
    */
   walkProcessTree?: (leaderPid: number) => {
     processes: import("./work-driver-gate-hang.ts").HangProcess[];
@@ -490,6 +490,11 @@ async function runVerifyCommandGateBody(
     perWorktreeVerifyFailures,
     failures,
     notes,
-    onBaselineAttributed: () => opts.onBaselineAttributed?.(),
+    // #1765 — reuse the branch step's verdict for this key; see verify-baseline.
+    ...(state.pipelineState.baseHealthProbe !== undefined
+      ? { baseHealthProbe: state.pipelineState.baseHealthProbe }
+      : {}),
+    onBaselineAttributed: opts.onBaselineAttributed,
+    onBaselineRedEstablished: opts.onBaselineRedEstablished,
   });
 }

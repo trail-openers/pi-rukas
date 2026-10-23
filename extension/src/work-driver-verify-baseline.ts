@@ -33,8 +33,11 @@ import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
 import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
+import { baseStreamIsHarnessOnly } from "./work-driver-verify-echo.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
+import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
+import { matchingVerdict } from "./workflow-state-schema-base-health.ts";
 import { looksLikeMissingDeps, provisionWorktree } from "./worktree-provision.ts";
 import { type ExecFn, worktreePath } from "./worktree.ts";
 
@@ -76,7 +79,7 @@ export type BaselineVerdict =
    * legitimately so, because the develop step compares one extracted assertion
    * and treats a red base as park-with-context either way.
    */
-  | {
+  | ({
       status: "red";
       /** The base run's combined stream — required, never defaulted to "". */
       rawStream: string;
@@ -85,7 +88,7 @@ export type BaselineVerdict =
       /** The child's exit code; `null` when the executor did not report one. */
       exitCode: number | null;
       assertion: string | null;
-    }
+    } & RedBaselineExtra)
   /**
    * The base run was killed at its bound. It judged nothing, so it has no
    * stream, no tally and no exit code to reason from — which is exactly why it
@@ -96,7 +99,7 @@ export type BaselineVerdict =
    * bound whatever the diff contains" (`baselineExplainsChange` / `baselineRedMessage`),
    * and the commit-pr seam refuses to excuse anything on it.
    */
-  | { status: "red-timed-out"; assertion: null }
+  | ({ status: "red-timed-out"; assertion: null } & RedBaselineExtra)
   | { status: "unknown"; reason: string };
 
 /**
@@ -105,6 +108,16 @@ export type BaselineVerdict =
  * not an exception to it — while the commit-pr seam's continue path takes only
  * the fully-evidenced `red` arm.
  */
+/** #1765 — the reuse flag both red arms carry (see `compareWithBaseline`). */
+interface RedBaselineExtra {
+  /**
+   * The colour came from the branch step's cached probe rather than a run this
+   * seam made: still the base's colour, but no stream to evidence an excuse with,
+   * so #1349's `baselineExplainsChange` is not owed it.
+   */
+  reused?: boolean;
+}
+
 export type RedBaselineVerdict =
   | Extract<BaselineVerdict, { status: "red" }>
   | Extract<BaselineVerdict, { status: "red-timed-out" }>;
@@ -112,6 +125,37 @@ export type RedBaselineVerdict =
 /** True for either red arm. Lets callers test the status without duplicating it. */
 export function isRedBaseline(verdict: BaselineVerdict): verdict is RedBaselineVerdict {
   return verdict.status === "red" || verdict.status === "red-timed-out";
+}
+
+/**
+ * #1765 — the compact record the branch step's pre-develop probe kept, read
+ * back as the verdict arm the post-failure comparison reasons over. A cycle
+ * that probed its base before develop and then watched the same command fail
+ * on the change holds its verdict already; re-running the suite in a second
+ * throwaway tree proves nothing new. Both red arms rebuild as the arm their
+ * record says it was — and both are the UNEVIDENCED shape, because the record
+ * carries a colour and not a stream: the caller has refused this park already,
+ * so there is no excuse left to grant, and `assertion: null` keeps
+ * `baselineExplainsChange` from excusing anything on evidence this record never
+ * held. Only a RED is reused — a cached GREEN cannot survive a develop failure
+ * and must re-probe.
+ *
+ * The `timedOut` distinction is not decoration: a plain `red` renders as
+ * "ALSO FAILS … assertion at base: …", which tells an operator to go fix a
+ * test the record never saw. The timed-out arm renders the bound instead.
+ */
+function reuseCachedVerdict(
+  cached: BaseHealthVerdict,
+  notes: string[],
+  cmd: string,
+  baseSha: string,
+): BaselineVerdict {
+  notes.push(
+    `baseline verify reused the branch step's RED probe of base ${baseSha.slice(0, 12)} for \`${cmd}\` — no second suite run paid for`,
+  );
+  return cached.timedOut === true
+    ? { status: "red-timed-out", assertion: null }
+    : { status: "red", assertion: null, rawStream: "", probed: false, exitCode: null };
 }
 
 export async function probeBaselineVerify(
@@ -202,6 +246,22 @@ export async function probeBaselineVerify(
           reason: "the base checkout failed for want of dependencies, not on the gate itself",
         };
       }
+      // #1765 — a stream the gate never printed is no evidence about the base
+      // commit. When the executor captured nothing, `combinedExecFailureStream`
+      // falls back to the Error's own message, which node always leads with
+      // `Command failed: <cmd>` — so that fallback text, with nothing real
+      // beneath it, is the harness speaking and not the gate. It used to reach
+      // the red arm, where the pre-develop probe turns it straight into a
+      // `verify-baseline-red` PARK (and the develop gate into its excuse): a
+      // broken harness would park a cycle for a base that may be perfectly
+      // green. `probeBaselineVerify` can only ADD evidence, so here there is
+      // none: unknown, with the reason naming what came back.
+      if (baseStreamIsHarnessOnly(raw, cmd)) {
+        return {
+          status: "unknown",
+          reason: "the base run returned no output from the gate itself, only the executor error",
+        };
+      }
       // #1404 — the raw stream rides back on a red verdict. The develop step's
       // consumers read only the extracted assertion, so this was discarded;
       // the commit-pr seam's per-test attribution needs the whole stream
@@ -254,8 +314,7 @@ export function baselineRedMessage(
   return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. Fix the gate at the base commit (or the host it runs on), then re-run`;
 }
 
-/** One failure of the change's own verify run, for the baseline comparison. */
-export interface ChangeFailure {
+/** One failure of the change's own verify run, for the baseline comparison. */ export interface ChangeFailure {
   text: string;
   timedOut: boolean;
 }
@@ -298,19 +357,39 @@ export async function compareWithBaseline(
     changeFailures: readonly ChangeFailure[];
     failures: string[];
     notes: string[];
+    /**
+     * #1765 — the cycle's own base verdict, when the branch step's pre-develop
+     * probe already established one for the SAME (baseSha, command, bound).
+     * Reusing it is the whole cost argument for that probe: the post-failure
+     * comparison pays for a second throwaway worktree and a second full suite
+     * run for a verdict this cycle already holds. Absent, or for a different
+     * key, the probe runs as it always did.
+     */
+    cachedVerdict?: BaseHealthVerdict | undefined;
   },
-): Promise<boolean> {
+): Promise<RedBaselineVerdict | undefined> {
   const { cmd, baseSha, timeoutMs } = opts;
-  const verdict = await probeBaselineVerify(execFn, opts);
+  const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: timeoutMs };
+  const cached =
+    opts.cachedVerdict?.status === "red" ? matchingVerdict(opts.cachedVerdict, key) : undefined;
+  const verdict: BaselineVerdict =
+    cached === undefined
+      ? await probeBaselineVerify(execFn, opts)
+      : reuseCachedVerdict(cached, opts.notes, cmd, baseSha);
   if (!isRedBaseline(verdict)) {
     opts.notes.push(
       verdict.status === "green"
         ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${baseSha.slice(0, 12)}, so the gate was green before this change`
         : `baseline verify not established — ${verdict.reason}`,
     );
-    return false;
+    return undefined;
   }
   const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
   opts.failures.unshift(baselineRedMessage(verdict, { cmd, baseSha, timeoutMs, changeFailure }));
-  return baselineExplainsChange(verdict, opts.changeFailures);
+  // #1765 — the verdict is RETURNED, not re-derived by the caller from the entry
+  // this wrote: the `red-timed-out` arm leads its entry with `[verify-timeout]`,
+  // so prose matching cannot tell a red base from a killed run. #1349's excuse is
+  // `baselineExplainsChange(verdict, ...)`, which the caller now computes — and a
+  // verdict reused from the branch step has no stream to excuse anything with.
+  return cached === undefined ? verdict : { ...verdict, reused: true };
 }
