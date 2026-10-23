@@ -1,7 +1,12 @@
 #!/usr/bin/env bun
 /**
- * #1762 — one failure-line table for every verify reader, and #1770 — the ci
- * tier keeps stdout.
+ * #1762 — the failure-line table read DIRECTLY: one case per runner dialect,
+ * the prose that must never classify, the counted tallies, and the wrapper.
+ *
+ * This is the first half of the suite that #1762 grew (the tehas-stream,
+ * `\r`-stream, host-exhaustion, ci-tier and corrective-round cases are in
+ * `test-verify-failure-shapes-b-1762.ts`); the fixtures both halves read are
+ * in `lib/verify-failure-shapes-fixtures.ts` (AGENTS.md §12 file-size limit).
  *
  * The measured defect: four recognisers each admitted only `FAILED: <x>` and
  * `✗ <x>`, so a project gate that speaks another runner's dialect anchored
@@ -10,11 +15,9 @@
  * stage — as the evidence, while the runner's own `test.sh: failed checks (1)`
  * block sat earlier in the same window.
  *
- * Every fixture here is synthetic output the driver was fed in production; the
- * tehas stream is the shape from work-413 / work-518.
+ * Every fixture here is synthetic output the driver was fed in production.
  */
 
-import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
@@ -22,27 +25,17 @@ import {
 import { decideCorrectiveRound } from "../src/work-driver-corrective-decide.ts";
 import type { CorrectiveGateView } from "../src/work-driver-corrective-decide.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
-import { formatExecError } from "../src/work-driver-verify-develop-helpers.ts";
 import {
   FAILURE_LINE_SCAN_MAX,
   classifyFailureLine,
   depsHintStartFor,
   failureLines,
   isSuccessLine,
-  splitLines,
 } from "../src/work-driver-verify-failures.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
-import { runVerifyFull } from "../src/work-driver-verify-full.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import { CHECKS_BLOCK, CMD, WT, makeAssert } from "./lib/verify-failure-shapes-fixtures.ts";
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
+const { assert, failed } = makeAssert();
 
 // ── 1. one case per shape ────────────────────────────────────────────────────
 const SHAPES: Array<[string, string, boolean]> = [
@@ -89,23 +82,10 @@ for (const line of SUCCESS) {
 assert(failureLines(SUCCESS.join("\n")).length === 0, "negative: a passing stream yields nothing");
 
 // ── 2b. prose that merely contains a failure VERB is not a named-file line ───
-// Shared by 2b and 2c: the command and cwd the harness builder composes with
-// (same shape as test-work-driver-corrective-decide.ts's fixtures), and the
-// tehas summary block section 3 uses for the stream tests.
-const CMD = "sh check.sh";
-const WT = "/repo/.worktrees/issue-1-a";
-const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
-
-// The rule these three killed: the table matched `error`, `cannot` and
+// The rule these killed: the table matched `error`, `cannot` and
 // `not found` ANYWHERE after an extension-bearing token, with no separator, so
 // ordinary prose classified, became the anchor with `attributed: true`, and
 // could earn the cycle a corrective round over a sentence that names no check.
-// The three lines the reviewer reproduced, plus neighbours of the same shape.
-// `fatal` is not in the accepted status list, and the counted form needs a
-// token in the `N failed` idiom rather than the verb loose in the sentence —
-// which is what keeps the space-separated `36 cases 1 failed` out of the table —
-// the comma form `36 cases, 1 failed` is a runner's tally and classifies, pinned
-// alongside `1 failed, 3 passed` in the mixed-tally block below.
 {
   const PROSE = [
     "index.ts: fatal error",
@@ -130,11 +110,11 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
     "prose: such a stream is never attributed, so it cannot anchor the evidence",
   );
 
-  // The four accepted shapes, each spelled out (the brief's list, and the
-  // tehas summary the #1762 park depends on). The two counted-tally cases carry
-  // no `passed` half, so they do not depend on the mixed-tally rule pinned
-  // below; the comma-tally form `36 cases, 1 failed` IS a failure and lives in
-  // that block, not in the prose list.
+  // The accepted shapes, each spelled out (the brief's list, and the tehas
+  // summary the #1762 park depends on). The counted-tally cases carry no
+  // `passed` half, so they do not depend on the mixed-tally rule pinned below;
+  // the comma-tally form `36 cases, 1 failed` IS a failure and lives in that
+  // block, not in the prose list.
   const NAMED: Array<[string, string]> = [
     ["a.ts: failed", "named-file"],
     ["a.ts: FAILED", "named-file"],
@@ -181,54 +161,6 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
     assert(
       classifyFailureLine(line) === undefined,
       `mixed tally: ${JSON.stringify(line)} still reports success`,
-    );
-  }
-}
-
-// ── 2d. the success veto survives prose that mentions a failure count ──────
-// The unanchored third branch of `NONZERO_FAILURE_COUNT` reported a non-zero
-// count ANYWHERE in the line, so it defeated every passing veto: a line whose
-// passing half the runner printed and whose failure word sits in prose became a
-// failure line, an evidence anchor, and (through `attributed: true`) a candidate
-// for the cycle's one corrective round. The rule is now: a count in a STATUS
-// position counts, a count in a sentence does not.
-{
-  const STATUS_TALLY: Array<[string, string]> = [
-    // cargo's own summary line — the count follows the label's colon through
-    // the passing half, which is what a comma-only anchor missed.
-    ["test result: 23 passed, 1 failed", "named-file"],
-    ["test result: FAILED. 0 passed; 1 failed", "named-file"],
-    ["1 failed, 3 passed", "named-file"],
-    ["2 failed, 10 passed", "named-file"],
-  ];
-  for (const [line, shape] of STATUS_TALLY) {
-    const got = classifyFailureLine(line);
-    assert(
-      got !== undefined && got.shape === shape,
-      `tally: ${JSON.stringify(line)} classifies as ${shape}, got ${JSON.stringify(got)}`,
-    );
-    assert(
-      isSuccessLine(line) === false,
-      `tally: ${JSON.stringify(line)} is not a success line`,
-    );
-  }
-  const PROSE_COUNT = [
-    // The three the reviewer named, plus the neighbours of the same shape.
-    "test result: 23 passed, 0 failed",
-    "12 passed (retried 1 failed attempt)",
-    "attempt 1 failed to start the worker, the second one worked",
-    "suite reports 12 passed and nobody said 1 failed",
-    "pack_release_test.sh: 36 cases, 0 failed",
-    "12 passed",
-  ];
-  for (const line of PROSE_COUNT) {
-    assert(
-      classifyFailureLine(line) === undefined,
-      `prose count: ${JSON.stringify(line)} stays a success`,
-    );
-    assert(
-      isSuccessLine(line) === true,
-      `prose count: ${JSON.stringify(line)} reports success`,
     );
   }
 }
@@ -307,12 +239,9 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
     "scripts/test.sh: failed checks (0)",
     "0 errors",
     "12 passed",
-    "12 passed (retried 1 failed attempt)",
   ];
   const NO: string[] = [
     "scripts/test.sh: failed checks (1)",
-    "test result: 23 passed, 1 failed",
-    "1 failed, 3 passed",
     "a.ts: 3 failed",
     "✗ expected 5 got 6",
     "not ok 3 - the console's tests",
@@ -324,7 +253,10 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
     assert(isSuccessLine(line) === true, `isSuccessLine: ${JSON.stringify(line)} is a success`);
   }
   for (const line of NO) {
-    assert(isSuccessLine(line) === false, `isSuccessLine: ${JSON.stringify(line)} is not a success`);
+    assert(
+      isSuccessLine(line) === false,
+      `isSuccessLine: ${JSON.stringify(line)} is not a success`,
+    );
   }
 }
 
@@ -453,95 +385,6 @@ const CHECKS_BLOCK = "scripts/test.sh: failed checks (1)";
   }
 }
 
-// ── 3. the tehas-shaped stream ───────────────────────────────────────────────
-const CHECK_DETAIL = "scripts/test.sh   pack_release_test.sh";
-const PASSING = [
-  "pack_release_test.sh: 36 cases, 0 failed",
-  "sandbox_test.sh: 36 cases, 0 failed",
-  "console_test.sh: 36 cases, 0 failed",
-];
-const TIMING = [
-  "slowest checks:",
-  "  pack_release_test.sh   21.4s",
-  "  sandbox_test.sh        18.9s",
-  "total 1314s",
-];
-const TEHAS = [
-  "build_test.sh: 12 cases, 0 failed",
-  CHECKS_BLOCK,
-  CHECK_DETAIL,
-  ...PASSING,
-  ...TIMING,
-].join("\n");
-const PAD = "build stage output\n".repeat(200);
-
-for (const maxLen of [800, 1500]) {
-  const { tail, attributed } = extractAttributedTail(`${PAD}\n${TEHAS}`, maxLen);
-  assert(attributed, `tehas @${maxLen}: the tail is attributed`);
-  assert(tail.length <= maxLen, `tehas @${maxLen}: the tail respects maxLen`);
-  assert(
-    tail.startsWith(CHECKS_BLOCK),
-    `tehas @${maxLen}: the anchor is the failed-checks block, got ${JSON.stringify(tail.slice(0, 60))}`,
-  );
-  assert(
-    extractSpecificAssertion(tail) === CHECKS_BLOCK,
-    `tehas @${maxLen}: the specific assertion names the failing file`,
-  );
-  assert(
-    PASSING.every((p) => !failureLines(tail).includes(p)),
-    `tehas @${maxLen}: no passing tally appears among the tail's failure lines`,
-  );
-  assert(
-    failureLines(tail).every((l) => !isSuccessLine(l)),
-    `tehas @${maxLen}: no success line in the tail is a failure line`,
-  );
-}
-
-// A bare passing tally names no assertion, and never surfaces as evidence.
-{
-  const passing = "pack_release_test.sh: 36 cases, 0 failed";
-  assert(
-    extractSpecificAssertion(passing) === NO_SPECIFIC_ASSERTION,
-    "tehas: a lone passing tally reports absence, never the tally itself",
-  );
-  assert(failureLines(passing).length === 0, "tehas: a lone passing tally yields no failure line");
-}
-
-// The cause verdict must not quote the passing stage either (work-413).
-{
-  const state = {
-    eventLog: [
-      { kind: "cap-hit", at: 1, cap: "verify-failed:develop", nextStep: "handoff" },
-      {
-        kind: "verify-completed",
-        at: 1,
-        step: "develop",
-        command: "bash scripts/verify.sh",
-        status: "failed",
-      },
-    ],
-    pipelineState: {
-      issue: 413,
-      verifyEvidence: {
-        step: "develop",
-        failures: [TEHAS],
-        at: 1,
-        origin: "outcome-gate",
-      },
-    },
-  } as unknown as WorkState;
-  const v = causeVerdictOf(state, "verify-failed:develop", undefined);
-  const joined = (v?.causeEvidence ?? []).join("\n");
-  assert(
-    PASSING.every((p) => !joined.includes(p)),
-    `tehas: the cause verdict quotes no passing stage (got ${JSON.stringify(joined.slice(0, 200))})`,
-  );
-  assert(
-    joined.includes("failed checks"),
-    `tehas: the cause verdict names the failed-checks block (got ${JSON.stringify(joined.slice(0, 200))})`,
-  );
-}
-
 // ── 4. `not ok` beats `ok` ───────────────────────────────────────────────────
 {
   const tap = "ok 1 - first\nnot ok 2 - second\nok 3 - third";
@@ -553,91 +396,5 @@ for (const maxLen of [800, 1500]) {
   assert(classifyFailureLine("not ok 1 - x")?.shape === "tap-not-ok", "tap: shape is tap-not-ok");
 }
 
-// ── 5. a \r-separated stream attributes correctly (#1762 PM decision 4) ─────
-{
-  const cr = `build ok\r${CHECKS_BLOCK}\r${CHECK_DETAIL}\r${PASSING[0]}`;
-  assert(splitLines(cr).length === 4, "cr: splitLines treats \\r as a line break");
-  const { tail, attributed } = extractAttributedTail(cr, 800);
-  assert(attributed, "cr: a carriage-return stream is attributed");
-  assert(tail.startsWith(CHECKS_BLOCK), "cr: the anchor is the failed-checks block");
-}
-
-// ── 6. host-exhaustion labelling, both directions ────────────────────────────
-const LABEL = "[host-resource-exhaustion]";
-{
-  const fork = Object.assign(new Error("Command failed: bash scripts/verify.sh"), {
-    stdout: "fork: retry: Resource temporarily unavailable",
-    stderr: "",
-  });
-  const msg = formatExecError(fork, "timeout", "verify command failed in /w");
-  assert(msg.startsWith(LABEL), `exhaustion: a fork-failure stream is labelled (got ${msg.slice(0, 60)})`);
-
-  const clean = Object.assign(new Error("Command failed: bash scripts/verify.sh"), {
-    stdout: `${CHECKS_BLOCK}\npack_release_test.sh: 36 cases, 0 failed\nall checks ok, nothing to fork here`,
-    stderr: "",
-  });
-  const plain = formatExecError(clean, "timeout", "verify command failed in /w");
-  assert(
-    !plain.includes(LABEL),
-    `exhaustion: a failing stage that merely prints the phrase is not labelled (got ${plain.slice(0, 80)})`,
-  );
-  assert(
-    plain.includes(CHECKS_BLOCK),
-    "exhaustion: the failing stage is still the evidence when the label does not apply",
-  );
-}
-
-// ── 7. #1770 — the ci tier keeps stdout ──────────────────────────────────────
-{
-  const failing = Object.assign(new Error("Command failed: bash scripts/verify.sh --full"), {
-    stdout: `${CHECKS_BLOCK}\n${CHECK_DETAIL}`,
-    stderr: "",
-  });
-  const exec = async (): Promise<{ stdout: string; stderr?: string }> => {
-    throw failing;
-  };
-  const run = await runVerifyFull("bash scripts/verify.sh --full", "/w", 5000, exec);
-  assert(run.outcome === "failure", "1770: a rejected run is a failure");
-  assert(
-    run.output.includes(CHECKS_BLOCK),
-    `1770: the evidence carries the failing line, not just the command (got ${JSON.stringify(run.output.slice(0, 120))})`,
-  );
-  assert(
-    run.output !== "Command failed: bash scripts/verify.sh --full",
-    "1770: Command failed alone is no longer a valid evidence tail",
-  );
-}
-
-// ── 8. a tehas-shaped per-worktree failure earns the corrective round ───────
-{
-  const CMD = "bash scripts/verify.sh";
-  const WT = "/repo/.worktrees/issue-1-a";
-  const text = `verify command \`${CMD}\` failed in ${WT}: ${CHECKS_BLOCK}\n${CHECK_DETAIL}`;
-  const gate: CorrectiveGateView = {
-    ok: false,
-    failures: [text],
-    verifyRun: {
-      status: "ran",
-      command: CMD,
-      failures: [text],
-      perWorktree: [{ cwd: WT, text }],
-    },
-  };
-  const d = decideCorrectiveRound(gate, {
-    eventLog: [],
-    worktrees: { a: WT },
-  });
-  assert(
-    d.round === true,
-    `corrective: a tehas-shaped per-worktree failure earns the round (${JSON.stringify(d)})`,
-  );
-  if (d.round) {
-    assert(
-      (d.targets[0]?.lines ?? []).some((l) => l.includes(CHECKS_BLOCK)),
-      `corrective: the developer is given the failed-checks block (got ${JSON.stringify(d.targets[0]?.lines)})`,
-    );
-  }
-}
-
-console.log(exit === 0 ? "\nAll #1762/#1770 failure-shape checks passed." : "\nFAILED");
-process.exit(exit);
+console.log(failed() ? "\nFAILED" : "\nAll #1762 failure-table checks passed.");
+process.exit(failed() ? 1 : 0);

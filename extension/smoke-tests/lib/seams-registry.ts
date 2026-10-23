@@ -386,6 +386,8 @@ export const SEAMS: Seam[] = [
         "the per-line scan bound; test-verify-failure-shapes-1762.ts times a 200 KB line against it",
       depsHintStartFor:
         "where the harness's deps hint begins; test-verify-failure-shapes-1762.ts pins that a hint is never chosen as the stream",
+      isSuccessLine:
+        "the passing arm of the classifier, asserted directly by test-verify-failure-shapes-1762.ts: the classifier asks it first and every passing veto in the table rests on it, so a change that keeps classifyFailureLine green while inverting the count guard must still fail here",
     },
     canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
   },

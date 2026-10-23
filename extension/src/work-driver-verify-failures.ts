@@ -51,33 +51,6 @@ export interface FailureLine {
 }
 
 /**
- * The separator a tally item may open after. A comma, a semicolon, or the
- * sentence-ending period a runner writes between tallies — cargo prints
- * `test result: FAILED. 0 passed; 1 failed`, and a comma-only rule misses it.
- * The prose `12 passed (retried 1 failed attempt)` is excluded not by this set
- * but by the word {@link TALLY_ITEM} demands after the count: an item is a bare
- * `N failed`, and `1 failed attempt` is a noun phrase about a past attempt.
- */
-const TALLY_SEP = String.raw`[,:;.]`;
-
-/** One tally item: a non-zero count, its failure word, and nothing but a word boundary after it. */
-function tallyItem(after: string): string {
-  return String.raw`(?:^|${after}\s*)[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])`;
-}
-
-/**
- * A tally that reports a non-zero failure count WITHOUT naming a file, so no
- * file-bearing arm above can reach it: cargo's `test result: 23 passed, 1
- * failed`, and a bare summary `1 failed, 3 passed`. `isSuccessLine` lets these
- * through its failure arm (the count is a status the runner printed), and this
- * is the table arm that then reports them.
- */
-const PASSING_TALLY_WITH_FAILURE = new RegExp(
-  `${tallyItem(TALLY_SEP)}[^\r\n]*\b\d+\s+passed|\b\d+\s+passed[^\r\n]*${TALLY_SEP}\s*${tallyItem(TALLY_SEP)}`,
-  "i",
-);
-
-/**
  * The table, in priority order. Each entry is tried against the whole line and
  * the first match wins, so the two pi-rukas literals (which a generic rule also
  * contains) sit ahead of `diagnostic`, and every success-adjacent key is
@@ -151,15 +124,6 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
   { shape: "pytest-error", namesTest: true, re: /^ERROR\s+\S+::/ },
   // go test.
   { shape: "go-fail", namesTest: true, re: /^\s*---\s+FAIL:\s+\S+/ },
-  // A runner's own summary tally, reached only when the line carries a NON-ZERO
-  // failure count: `isSuccessLine` has already vetoed every line that reports a
-  // failure in a status position, so what is left here is a passing tally that
-  // also counts failures — cargo's `test result: 23 passed, 1 failed` and a bare
-  // `1 failed, 3 passed`, neither of which names a FILE and so matches none of
-  // the arms above. Asked LAST for the reason `isSuccessLine` asks the failure
-  // arm first: as an early success veto this arm swallows the very tally it
-  // exists to report.
-  { shape: "named-file", namesTest: true, re: PASSING_TALLY_WITH_FAILURE },
 ];
 
 /**
@@ -171,56 +135,19 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
  * (`1 failed, 3 passed`) is a failure.
  */
 const SUCCESS_LINE =
-  /^\s*✓|^\s*ok\s|^\s*PASS\b|^\s*PASS\s|\bfailed\s+checks?\s*\(\s*0\s*\)|\b0\s+(?:failed|failing)\s+checks?\b/i;
+  /^\s*✓|^\s*ok\s|\b0\s+(?:failed|failures|errors|fail)\b|\b\d+\s+(?:passed|passed,)\b|^\s*PASS\b|^\s*PASS\s|:?\s*\d+\s+cases,\s*0\s+failed|\bfailed\s+checks?\s*\(\s*0\s*\)|\b0\s+(?:failed|failing)\s+checks?\b/i;
 
 /**
- * The PASSING half of a runner's tally: a count followed by a passing word.
- *
- * Kept separate from {@link SUCCESS_LINE} rather than folded into it. Folded in,
- * this arm is the one that classifies first — `\b\d+\s+passed\b` matches the
- * `23 passed` of `test result: 23 passed, 1 failed` before the non-zero failure
- * arm is reached, so a tally that reports BOTH halves was reported as passing,
- * and the driver had no failure line for the one shape cargo prints. Read as
- * data, the same arm can be asked AFTER the failure arm, which is the only order
- * that answers "does this line report a failure, and does it also report a
- * pass" correctly. `isSuccessLine` asks the failure arm first (below); the table
- * asks this one after it.
- */
-const PASSING_TALLY = /(?<![\w.])[1-9]\d*\s+passed\b|\b0\s+passed\b|\b0\s+(?:failed|failures|errors|fail)\b/i;
-
-/**
- * A NON-ZERO failure count in a STATUS position — a count a runner PRINTED, never
- * one that prose happens to contain. Three shapes, each anchored at the token
- * that introduces it:
- *
- *   - a colon on the line, then a non-zero count and a failure word. Both the
- *     cargo form (`test result: 23 passed, 1 failed` — the count follows the
- *     label's colon through the passing half) and the file form
- *     (`test.sh: 1 failed`) are this shape; `index.ts: fatal error` inserts a
- *     word and does not match. The branch is ANCHORED at the start of the line
- *     and its two spans are lazy: an unanchored lazy span restarts anywhere, so
- *     it read the colon of a passing tally and the count of a later phrase as
- *     one tally, and a greedy span did the same across the whole line.
- *   - as the failing half of a comma-separated tally (`36 cases, 1 failed`);
- *   - as a bare tally ITEM — a comma/semicolon-separated count in a line that
- *     also reports a passing count (`3 passed, 1 failed`, `0 passed; 1 failed`).
- *     A count at the HEAD of the summary (`1 failed, 3 passed`) is the same
- *     item, recognised by the second branch reading forward instead: it opens
- *     at the start of the line and requires a passing count after it.
- *
- * `isSuccessLine` applies its passing vetoes only when a line carries none of
- * these — the passing half of a tally does not cancel the failing half.
- *
- * The third branch's requirements are the whole difference between a tally and
- * prose. Its count must open a comma/semicolon item AND the line must report a
- * passing count, so `12 passed (retried 1 failed attempt)` carries no itemised
- * failure and stays a success. The versions that got this wrong: one with no
- * guard at all, which let a count anywhere defeat every passing veto; and one
- * guarded by the separator lookbehind alone, which read that parenthetical as an
- * item.
+ * A NON-ZERO failure count in a status position: right after the file's colon
+ * (`test.sh: 1 failed`), as the failing half of a comma-separated tally that
+ * starts at that colon (`pack_release_test.sh: 36 cases, 1 failed`), or bare
+ * after whitespace (`1 failed, 3 passed` at the head of a summary). `isSuccessLine` applies its
+ * passing vetoes only when a line carries none of these — the passing half of a
+ * tally does not cancel the failing half — and prose that merely uses the words
+ * (`index.ts: not found, which is fine`) matches none of the three positions.
  */
 const NONZERO_FAILURE_COUNT =
-  /^[^\r\n]*?:[^\r\n]*?\s[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])|^[\s,;.]*[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])|(?<=[,;]\s)[1-9]\d*\s+(?:failed|errors?|failures?)(?![\w-])/i;
+  /:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|(?<![\d.])[1-9]\d*\s+(?:failed|errors?|failures?)\b/i;
 
 /**
  * #1762 lens round — the longest line the classifier inspects.
@@ -235,7 +162,6 @@ const NONZERO_FAILURE_COUNT =
  */
 export const FAILURE_LINE_SCAN_MAX = 8 * 1024;
 
-/** The classifier's view of one line: trimmed, and bounded by {@link FAILURE_LINE_SCAN_MAX}. */
 /**
  * A stateless boolean match. The regexes here are module-level and SHARED, so a
  * `g` flag on any of them would make a bare `test()` advance `lastIndex` and
@@ -246,6 +172,7 @@ function matches(re: RegExp, text: string): boolean {
   return re.test(text);
 }
 
+/** The classifier's view of one line: trimmed, and bounded by {@link FAILURE_LINE_SCAN_MAX}. */
 function scanWindow(line: string): string {
   const t = line.trim();
   return t.length > FAILURE_LINE_SCAN_MAX ? t.slice(0, FAILURE_LINE_SCAN_MAX) : t;
@@ -259,29 +186,18 @@ export function splitLines(text: string): string[] {
 /**
  * True when `line` reports a stage passing. Leading/trailing whitespace ignored;
  * a line that is only whitespace is not a success line (it is nothing).
- */
-/**
- * True when `line` reports a stage passing. Leading/trailing whitespace ignored;
- * a line that is only whitespace is not a success line (it is nothing).
  *
- * THE ORDER IS THE CONTRACT, not an optimisation: a tally that reports both
- * halves (`test result: 23 passed, 1 failed`) matches the passing arm AND the
- * failing arm, so asking the passing arm first — which is what folding
- * {@link PASSING_TALLY} into `SUCCESS_LINE` does, since it is the cheaper test —
- * reports a genuinely-failing line as passing. Measured on the cargo shape. The
- * failure arm goes first, always, and `test-verify-failure-shapes-1762.ts` pins
- * both halves of every mixed tally so neither arm can be reordered quietly.
+ * The failure arm is asked FIRST and both arms go through {@link matches}: a
+ * `test()` on a module-level regex is stateless only while that regex has no `g`
+ * flag, and a reader cannot see the flag from the call site, so routing every
+ * boolean match in this module through one place means a flag change is fixed in
+ * one place too.
  */
 export function isSuccessLine(line: string): boolean {
   const t = scanWindow(line);
   if (t.length === 0) return false;
-  // ONE call each, in the order the contract requires, and the tally arm is
-  // asked LAST. The arms are also called through a helper rather than inlined:
-  // a `test()` on a module-level regex is stateless only while the regex has no
-  // `g` flag, and a reader cannot see the flag from the call site — routing all
-  // three through one place means a flag change is fixed in one place too.
   if (matches(NONZERO_FAILURE_COUNT, t)) return false;
-  return matches(SUCCESS_LINE, t) || matches(PASSING_TALLY, t);
+  return matches(SUCCESS_LINE, t);
 }
 
 /**
@@ -434,10 +350,7 @@ function harnessVerifyStream(line: string): string | undefined {
     // line, so without this the "one line, one scan window" guarantee would
     // hold for the line and not for what sits after a late separator.
     const stream = line
-      .slice(
-        at + width,
-        Math.min(at + width + FAILURE_LINE_SCAN_MAX, line.length),
-      )
+      .slice(at + width, Math.min(at + width + FAILURE_LINE_SCAN_MAX, line.length))
       .trim();
     if (stream.length > 0 && classifyStream(stream) !== undefined) return stream;
   }
