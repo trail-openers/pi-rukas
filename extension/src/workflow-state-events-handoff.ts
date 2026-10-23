@@ -37,6 +37,15 @@ export type HandoffEmittedEvent = {
    */
   delivery?: "dispatch" | "fallback" | "host";
   /**
+   * #1696 — the host channel DECLINED the label rather than failing to apply it.
+   * `needs-human-attention` is the host's to apply on that channel, so
+   * `labelApplied: false` there is a contract, not an outage — and a host that
+   * reads only `labelApplied` cannot tell the two apart. Set on a host handoff
+   * and on nothing else; the covered caps' `delivery: "host"` remains the
+   * channel marker.
+   */
+  labelSkipped?: "host-channel";
+  /**
    * Set when a freshly re-resolved park matched the one a previous cycle
    * already reported (same cap, same reason, same issue text): no new comment
    * was posted, and `commentUrl` is the earlier park's. `at` is when that

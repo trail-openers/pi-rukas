@@ -79,6 +79,13 @@ export interface HandoffResult {
   /** Forge channel: `needs-human-attention` was verified on the issue (and PR). */
   labelApplied: boolean;
   /**
+   * #1696 — present on the `host` channel instead of a failure: pi-rukas applies
+   * no `needs-human-attention` label there BY CONTRACT (the host owns that
+   * channel, docs/headless.md), so `labelApplied: false` is a decline, not an
+   * outage. A host that wants re-runs refused applies the label itself.
+   */
+  labelSkipped?: "host-channel";
+  /**
    * #1743 — present when this park repeats one already recorded: how many
    * cycles have parked this (cap, reason, issue text), when the first did, and
    * the marker the last one published. A host uses it to tell a re-report from
@@ -386,6 +393,9 @@ export function handoffOf(state: WorkState, cap: string | undefined): HandoffRes
     marker: markerOf(e.body) ?? handoffMarker(state.issue, cap),
     labelApplied: e.labelApplied,
   };
+  // #1696 — on the host channel a false label is the contract, not a failure;
+  // say which, so a host does not report a decline as an outage.
+  if (e.labelSkipped) h.labelSkipped = e.labelSkipped;
   if (e.body !== undefined) h.body = e.body;
   else h.bodyError = "not-recorded";
   if (e.handoffBodyPath) h.bodyFile = e.handoffBodyPath;

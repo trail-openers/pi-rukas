@@ -12,6 +12,8 @@ import {
   lastConsolidatedEvent,
 } from "./work-driver-handoff-consolidate-step.ts";
 import {
+  HOST_PARK_RECORD_BOUND_MS,
+  boundedBestEffort,
   deliverHandoff,
   handoffDispatchFailed,
   parseHandoffCommentUrl,
@@ -30,6 +32,7 @@ import {
 } from "./work-driver-handoff-post.ts";
 import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
+import { recordHostPark } from "./work-driver-park-memory-host.ts";
 import {
   REPEAT_PARK_REFUSAL_COUNT,
   readParkMemory,
@@ -54,6 +57,10 @@ export function setHandoffThrowForTestForTest(fn: (() => void) | undefined): voi
   handoffThrowForTest = fn;
 }
 
+// §12 split — the bounded best-effort await and its bound moved to
+// `work-driver-handoff-deliver.ts`; re-exported so no consumer's path changes.
+export { HOST_PARK_RECORD_BOUND_MS, boundedBestEffort } from "./work-driver-handoff-deliver.ts";
+
 // #775 prep — captureWorktreeSnapshot moved to work-driver-handoff-snapshot.ts
 // (§12 file-size split); re-exported so no consumer's import path changes.
 export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
@@ -76,6 +83,10 @@ export async function runHandoff(
   stateIn: WorkState,
   now: number,
 ): Promise<WorkState> {
+  return handoff(ctx, stateIn, now);
+}
+
+async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Promise<WorkState> {
   // #1655 — the handoff body reports the refusal total. This step is not routed
   // through routeStepOutcome, so the total is folded here, before the body is rendered.
   const state = await foldWriteFenceCount(ctx, stateIn);
@@ -352,6 +363,23 @@ export async function runHandoff(
     ? handoffMd.trim().length > 0
     : commentUrl !== undefined || labelApplied === true;
   const parkRecord = await recordPark(ctx, park, commentUrl, parkReported);
+  // #1696 — and the host channel's own signal, which covers every cap the
+  // covered records do NOT: a host cycle posts no comment and applies no label,
+  // so without this a park outside the three covered caps left no trace anywhere
+  // and a factory's `--restart` re-ran it indefinitely. ONE call, one rule
+  // shared with the line above: a park is published when a body reached the host.
+  // Bounded, because this is the terminal path: a write that never settles must
+  // cost the refusal-memory it carries, never the handoff that already delivered
+  // the report the memory is about.
+  if (
+    await boundedBestEffort("host park signal write", HOST_PARK_RECORD_BOUND_MS, () =>
+      recordHostPark(ctx, next, parkReported),
+    )
+  ) {
+    trace(
+      `work-driver: host park signal write exceeded ${HOST_PARK_RECORD_BOUND_MS}ms — the handoff continues without it`,
+    );
+  }
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,
@@ -369,6 +397,9 @@ export async function runHandoff(
       : {}),
     // A repeat delivered nothing this cycle — no provenance to assert.
     delivery: host ? "host" : reusedComment ? undefined : delivery,
+    // #1696 — on the host channel the label is the host's to apply, so record
+    // the decline: `labelApplied: false` there must never read as an outage.
+    ...(host ? { labelSkipped: "host-channel" as const } : {}),
     repeatOf: park.repeatOf,
     ...(parkRecord && parkRecord.count >= REPEAT_PARK_REFUSAL_COUNT
       ? {

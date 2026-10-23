@@ -12,6 +12,51 @@ import { verifyHandoffLabel } from "./work-driver-handoff-post.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
+ * How long the handoff step waits for the host park signal write (#1696).
+ *
+ * `recordHostPark` is best-effort by contract — it never throws and no record
+ * problem may cost a handoff — but "never throws" is not "returns". It opens and
+ * renames a file, and on the terminal path of the one step whose dispatch already
+ * cost #626 26 minutes, a wedged `fs` call is exactly the shape that leaves the
+ * DRIVER waiting. This is the bound the race at the call site uses: the write is
+ * attempted, waited for up to this many ms, then abandoned with a trace.
+ * Abandoning costs little — the signal remembers a report the host has ALREADY
+ * been handed, and the next publish writes it again.
+ */
+export const HOST_PARK_RECORD_BOUND_MS = 3_000;
+
+/**
+ * Await a best-effort write, but not forever. Resolves `true` when the bound
+ * expired with the work still pending, `false` when it settled first (the normal
+ * case, including a rejection — a best-effort callee swallows its own errors).
+ *
+ * `unref` so a callee that never settles cannot hold the event loop open past the
+ * handoff: the timer is what we are waiting on, and once the driver has stopped
+ * waiting it must stop being a reason the process stays alive.
+ */
+export async function boundedBestEffort(
+  label: string,
+  ms: number,
+  work: () => Promise<unknown>,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const expired = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), ms);
+      timer.unref?.();
+    });
+    return (await Promise.race([work().then(() => false), expired])) === true;
+  } catch {
+    // The callee is contracted never to throw; if it does anyway, the caller's
+    // best-effort contract says the step still must not care.
+    trace(`work-driver: ${label} threw — ignored`);
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Outcome of the delivery leg: what the comment/label ended up as, and where
  * the driver's record of each came from.
  */

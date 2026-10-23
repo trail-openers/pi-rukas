@@ -8,14 +8,91 @@
  *   (c) a numeric dir, no sibling, fresh mtime → must survive
  *   (d) a non-numeric dir → must survive
  *   (e) queue-summary.json (a file) → untouched
+ *   (f/g) #1743 — a dir holding a LIVE / expired park record
+ *   (h/i/j/k/l) #1696 — the HOST park signal: a live row holds the dir, an
+ *        expired or unparseable one does not, the sweep path never asks the
+ *        forge for an issue body (witnessed by a counting `gh` shim AND by an
+ *        import-graph walk), and a file that exists but cannot be read — or is
+ *        past the byte ceiling — is answered by the reader (ENOENT-shaped miss =
+ *        not held, any other read error = held on doubt)
  */
 
 import assert from "node:assert";
-import { mkdirSync, utimesSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runArtifactSweep } from "../src/work-driver-artifact-sweep.ts";
+import { holdsLiveHostParkSignal } from "../src/work-driver-park-memory-host-read.ts";
+import { HOST_PARK_SIGNAL_FILE } from "../src/work-driver-park-memory-host.ts";
+
+/**
+ * The `gh` the (k1) witness puts on PATH: a shell script that appends its
+ * arguments to `tallyFile` and exits 0. It must exit 0 rather than fail — a fetch
+ * that reached it would otherwise be traced away as an unreadable body and the
+ * case would report "no fingerprint resolved" instead of the leak it witnessed.
+ */
+function ghShim(tallyFile: string): string {
+  return `#!/bin/sh\necho "$@" >> ${JSON.stringify(tallyFile)}\nexit 0\n`;
+}
+
+/**
+ * (k2) Walk the sweep's transitive LOCAL import graph and return a description of
+ * the first module that CALLS an issue-body fetcher, or `undefined` when none
+ * does.
+ *
+ * The test is on the CALL, not on the word: `work-driver-context.ts` sits in this
+ * graph and declares `issueBodyFetcherFn?:` as part of `DriverContext` — a seam
+ * declaration, not a fetch. What must never appear is a reference to the
+ * production fetcher or a call through the seam (`fetchIssueBodyViaGh(`,
+ * `ctx.issueBodyFetcherFn`, `fetchBody(`), which is what a leak looks like.
+ *
+ * Comments are stripped first: this family of modules NAMES `fetchIssueBodyViaGh`
+ * in its headers precisely in order to forbid it, and a prose mention is not a
+ * call. `import type` is stripped too — it is erased at compile time and cannot
+ * participate in a runtime fetch.
+ *
+ * Resolution is `./x` / `../x` with a `.ts` extension, which is every form this
+ * tree of modules uses; an import that does not resolve is REPORTED rather than
+ * skipped, so a rename cannot quietly truncate the walk and turn a leak into a
+ * pass.
+ */
+function sweepImportGraphLeak(): string | undefined {
+  const srcRoot = join(import.meta.dirname, "..", "src");
+  const banned = /fetchIssueBodyViaGh\s*\(|ctx\.issueBodyFetcherFn|fetchBody\s*\(/;
+  const strip = (raw: string) =>
+    raw
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/^[ \t]*\/\/.*$/gm, " ")
+      .replace(/^[ \t]*import\s+type\b[^;]*;/gm, " ");
+  const seen = new Set<string>();
+  const queue = [join(srcRoot, "work-driver-artifact-sweep.ts")];
+  while (queue.length > 0) {
+    const file = queue.shift() as string;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    let text: string;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch (err) {
+      return `${file} is unreadable — the walk stopped (${(err as Error).message})`;
+    }
+    for (const line of strip(text).split("\n")) {
+      const spec = line.match(/from\s+["']([^"']+)["']/)?.[1];
+      if (spec === undefined || !spec.startsWith(".")) continue;
+      const target = join(file, "..", spec.endsWith(".ts") ? spec : `${spec}.ts`);
+      if (!existsSync(target)) {
+        return `${file} imports ${spec}, which does not resolve — the walk cannot prove the graph`;
+      }
+      const hit = strip(readFileSync(target, "utf8"))
+        .split("\n")
+        .find((l) => banned.test(l));
+      if (hit !== undefined) return `${target}: ${hit.trim().slice(0, 120)}`;
+      queue.push(target);
+    }
+  }
+  return undefined;
+}
 
 let exitCode = 0;
 function assertTrue(cond: boolean, msg: string) {
@@ -181,6 +258,176 @@ async function runTests() {
     // Disabled flag → no work.
     const res4 = await runArtifactSweep({ repoRoot: root, enabled: false });
     assertTrue(res4.ran === false, "enabled:false short-circuits");
+
+    // ── (h/i/j) #1696 — the HOST channel's park signal lives in this same
+    //        directory and arms the same kind of refusal, so the covered
+    //        record's rules apply to it: a live row holds the directory, an
+    //        expired row and unparseable content do not. Each dir is its own
+    //        orphan (no sibling state file) and backdated past the 14-day floor,
+    //        so the ONLY thing deciding its fate is the signal inside it.
+    const hostRow = (over: Record<string, unknown>) => ({
+      cap: "step-failed:explore",
+      reason: "explore dispatch failed twice",
+      fingerprint: "a".repeat(64),
+      deliveredCount: 2,
+      firstAt: Date.now() - 3600_000,
+      lastAt: Date.now() - 1800_000,
+      lastCycleId: 1,
+      ...over,
+    });
+
+    // (h) a LIVE host row → the directory is held.
+    const hDir = join(ws, "700");
+    mkdirSync(hDir, { recursive: true });
+    writeFileSync(join(hDir, HOST_PARK_SIGNAL_FILE), JSON.stringify([hostRow({})]));
+    backdate(hDir, 30);
+
+    // (i) an EXPIRED host row → swept. Past the age the guard itself ignores,
+    // keeping the directory alive preserves dead state for nothing.
+    const iDir = join(ws, "800");
+    mkdirSync(iDir, { recursive: true });
+    const stale = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    writeFileSync(
+      join(iDir, HOST_PARK_SIGNAL_FILE),
+      JSON.stringify([hostRow({ firstAt: stale, lastAt: stale })]),
+    );
+    backdate(iDir, 30);
+
+    // (j) content that parses to NO believable row → swept. `not-a-cap` is not a
+    // cap the driver can emit (`isKnownCap`), so no writer produced this file and
+    // no reader would refuse on it; an unreadable FILE holds the dir, unreadable
+    // CONTENT does not.
+    const jDir = join(ws, "900");
+    mkdirSync(jDir, { recursive: true });
+    writeFileSync(
+      join(jDir, HOST_PARK_SIGNAL_FILE),
+      JSON.stringify([hostRow({ cap: "not-a-cap" })]),
+    );
+    backdate(jDir, 30);
+
+    const hostSweep = await runArtifactSweep({
+      repoRoot: root,
+      execFn: async () => ({ stdout: "" }),
+    });
+    assertTrue(
+      hostSweep.swept.includes("800"),
+      `(i) an old orphan whose host park row is past the 14-day life is swept, got [${hostSweep.swept}]`,
+    );
+    assertTrue(
+      hostSweep.swept.includes("900"),
+      `(j) an old orphan whose host signal parses to no believable row is swept, got [${hostSweep.swept}]`,
+    );
+    assertTrue(
+      existsSync(hDir) &&
+        hostSweep.skipped.some((s) => s.name === "700" && s.reason === "park-record-held"),
+      "(h) an old orphan holding a LIVE host park signal survives, and the skip names it",
+    );
+
+    // ── (k) #1696 — THE EXPENSIVE ONE. The sweep runs at every cycle start and
+    //        is chartered to cost nothing, but a host park row's identity
+    //        includes a fingerprint of the issue text and a fingerprint is a
+    //        `gh issue view`. Resolving one per orphan directory would make the
+    //        sweep subprocess-bound (~4 subprocesses per dir, measured). So the
+    //        sweep's answer must come from a read-only row parse, and this asserts
+    //        it TWO ways — because the seam it used to be asserted through was a
+    //        lie. `ArtifactSweepOpts` carried an `issueBodyFetcherFn` that NOTHING
+    //        in the sweep read, so a counting fetcher passed as that field could
+    //        only ever have reported zero: the case was green whatever the sweep
+    //        did. The field is gone, and what replaces it is (k1) a real subprocess
+    //        witness and (k2) the structural argument that makes the witness a
+    //        belt-and-braces check rather than the only one.
+    //
+    // (k1) THE RUNTIME WITNESS. While the directory being judged holds a
+    //        fully-formed ARMED host signal — an armed row is exactly what a guard
+    //        would want a fingerprint for, so a leak would be exercised, not
+    //        skipped — the sweep runs with `gh` resolved through a shim that
+    //        tallies every call it receives. The fetch path ends in
+    //        `fetchIssueBodyViaGh`, which runs `gh`, so a leak lands in the tally
+    //        whether or not this machine has a real `gh` on PATH.
+    const ws3 = join(root, "pi3", ".pi", "work-state");
+    mkdirSync(ws3, { recursive: true });
+    const kDir = join(ws3, "1200");
+    mkdirSync(kDir, { recursive: true });
+    writeFileSync(
+      join(kDir, HOST_PARK_SIGNAL_FILE),
+      JSON.stringify([hostRow({ deliveredCount: 9, lastAt: Date.now() })]),
+    );
+    backdate(kDir, 30);
+    const binDir = join(root, "pi3", "shim-bin");
+    const tallyFile = join(root, "pi3", "gh-calls");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, "gh"), ghShim(tallyFile), { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${savedPath ?? ""}`;
+    try {
+      await runArtifactSweep({
+        repoRoot: join(root, "pi3"),
+        execFn: async () => ({ stdout: "" }),
+      });
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    const bodyFetches = existsSync(tallyFile)
+      ? readFileSync(tallyFile, "utf8")
+          .split("\n")
+          .filter((l) => l.trim() !== "").length
+      : 0;
+    assertTrue(
+      bodyFetches === 0,
+      `(k1) the sweep resolved a fingerprint ${bodyFetches} time(s) — it must answer from the rows alone and never fetch an issue body`,
+    );
+    assertTrue(existsSync(kDir), "(k1) …and the armed row still held the directory while it did");
+
+    // (k2) THE STRUCTURAL GUARANTEE. The witness above can only say "no `gh` ran
+    //        on this machine just now"; what makes a leak impossible is that the
+    //        sweep's transitive imports reach no fetcher at all. So walk them. One
+    //        false line anywhere in the graph — an innocuous
+    //        `import { fetchIssueBodyViaGh }` added to the reader half for an
+    //        unrelated reason — and the sweep becomes subprocess-bound again,
+    //        silently, at every cycle start, with (k1) the only thing that would
+    //        have said so being a machine that happens to have no `gh`.
+    const graphProblem = sweepImportGraphLeak();
+    assertTrue(
+      graphProblem === undefined,
+      `(k2) the sweep's import graph reaches an issue-body fetcher: ${graphProblem ?? "clean"}`,
+    );
+
+    // (l) #1696 — the ANSWER the sweep gets, not only the cost of getting it.
+    // "The file exists but I could not read it" is a question the sweep used to
+    // answer by reading the file a SECOND time. That read is folded into the
+    // reader now, and the rule is a three-way one the sweep must not restate:
+    // an ENOENT-shaped miss is "not held", any OTHER read error is HELD (keep
+    // on doubt — a stale row costs bytes, a wrong delete costs the evidence a
+    // refusal quotes), and content with no believable row is "not held".
+    const ws4 = join(root, "pi4", ".pi", "work-state");
+    mkdirSync(ws4, { recursive: true });
+    const realDir = join(ws4, "1500");
+    mkdirSync(realDir, { recursive: true });
+    writeFileSync(
+      join(realDir, HOST_PARK_SIGNAL_FILE),
+      JSON.stringify([hostRow({ deliveredCount: 9 })]),
+      "utf8",
+    );
+    assertTrue(
+      await holdsLiveHostParkSignal(join(root, "pi4"), 1500, Date.now()),
+      "(l) a believable row holds the signal",
+    );
+    assertTrue(
+      (await holdsLiveHostParkSignal(join(root, "pi4"), 1501, Date.now())) === false,
+      "(l) no signal file at all is NOT held — the sweep's own age rule decides",
+    );
+    // Something non-directory where the issue's directory should be: the read
+    // fails ENOTDIR, which is the absent case, not the doubt case.
+    writeFileSync(join(ws4, "1502"), "not a directory", "utf8");
+    assertTrue(
+      (await holdsLiveHostParkSignal(join(root, "pi4"), 1502, Date.now())) === false,
+      "(l) ENOTDIR reads as ABSENT, not as doubt — an ENOENT-shaped miss is no reason to keep a directory",
+    );
+    writeFileSync(join(realDir, HOST_PARK_SIGNAL_FILE), "   ", "utf8");
+    assertTrue(
+      (await holdsLiveHostParkSignal(join(root, "pi4"), 1500, Date.now())) === false,
+      "(l) whitespace-only content parses to no believable row, so it is not held either",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
