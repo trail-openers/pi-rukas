@@ -43,14 +43,23 @@ function assert(cond: boolean, msg: string) {
 }
 
 // 2. No FAILED marker present (a single-command failure, e.g. tsc or a
-// direct execFn rejection) — falls back to the last maxLen chars, the
-// pre-#723 behaviour, but now flagged as unattributed rather than silently.
+// direct execFn rejection). #1762: such a line IS now recognised, so the tail
+// is anchored on it — attribution that used to be lost is now recovered. The
+// pre-#723 blind slice still stands for a stream with no failure line at all
+// (case 10).
 {
-  const combined = `${"a".repeat(2000)}error[E0308]: mismatched types --> src/foo.rs:42`;
+  // `\n` before the diagnostic: the harness's own stdout+stderr concatenation is
+  // `${stdout}\n${stderr}`, so a single-command failure arrives as a separate
+  // line, which is what the #1762 anchor can see (an unbroken 2000-char run of
+  // noise has no line boundary and no recognised shape, so nothing anchors it).
+  const combined = `${"a".repeat(2000)}\nerror[E0308]: mismatched types --> src/foo.rs:42`;
   const { tail, attributed } = extractAttributedTail(combined, 1500);
-  assert(tail.includes("E0308"), "no marker: falls back to tail slice, contains the real error");
-  assert(tail.length <= 1500, "no marker: fallback tail respects maxLen");
-  assert(attributed === false, "no marker: attributed is false so the fallback is observable");
+  assert(tail.includes("E0308"), "no marker: the tail contains the real error");
+  assert(tail.length <= 1500, "no marker: tail respects maxLen");
+  assert(
+    attributed === true,
+    "no marker (#1762): a recognised diagnostic line anchors the tail, so attribution is true",
+  );
 }
 
 // 3. Empty input → empty tail, no crash.
@@ -193,16 +202,15 @@ function assert(cond: boolean, msg: string) {
   assert(tail.startsWith("FAILED:"), "800-char bound: tail still anchored on the last marker");
 }
 
-// 10. #827 new-tail-shape, no-marker chain-stage failure unchanged: tsc/biome
-// failures emit no FAILED marker and hit the attributed:false fallback. The
-// fix does not alter this path — the fallback still returns the last maxLen
-// chars, unattributed.
+// 10. #827 new-tail-shape, and #1762: a stream with NO failure line at all —
+// every line is noise or a passing tally — still gets the pre-#723 blind slice,
+// unattributed. The 5KB of `a`s here carries no recognised shape, which is what
+// keeps the fallback observable.
 {
-  const combined = `${"a".repeat(2000)}error[E0308]: mismatched types --> src/foo.rs:42`;
+  const combined = `${"a".repeat(2000)} cases, 0 failed`;
   const { tail, attributed } = extractAttributedTail(combined, 800);
-  assert(tail.includes("E0308"), "no-marker unchanged: fallback contains the real error");
-  assert(tail.length <= 800, "no-marker unchanged: fallback respects maxLen");
-  assert(attributed === false, "no-marker unchanged: attributed is false");
+  assert(tail.length <= 800, "no-failure-line: fallback respects maxLen");
+  assert(attributed === false, "no-failure-line: attributed is false");
 }
 
 console.log(exit === 0 ? "\nAll exec-error attribution checks passed." : "\nFAILED");
