@@ -49,14 +49,6 @@ import { classifyFailureLine, splitLines } from "./work-driver-verify-failures.t
 /** The exact marker `.pi/verify-cmd`'s smoke-test loop emits on failure. */
 const FAILED_MARKER_RE = /^FAILED: .+$/;
 
-/**
- * A line that reports a failing stage, from the shared failure-line table
- * (#1762). A stream that prints its own `exec error tail is unattributed`
- * diagnostic contains that phrase, and must not be mistaken for the harness
- * saying it could not attribute anything.
- */
-const UNATTRIBUTED_NOTE = "unattributed";
-
 /** Result of tail extraction: the text, and whether it's anchored evidence. */
 export interface AttributedTail {
   /** The extracted, bounded evidence tail. */
