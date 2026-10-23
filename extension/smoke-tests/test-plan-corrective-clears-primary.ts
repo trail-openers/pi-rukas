@@ -16,25 +16,42 @@
  *   2. primary mismatch + a corrective that still mismatches -> halts on the
  *      corrective's OWN verdict with the corrective's own why-clause, and the
  *      persisted verdict records that the corrective ran;
- *   3. a halting tail registers no path claims;
+ *   3. a halting tail registers no path claims, asserted against the raw
+ *      registry (an unreadable file is reported, never read as "no claims");
  *   4. a live sibling's claim still parks the tail (`cross-group-conflict`);
  *   5. a kill-recovered primary with a mismatch parks and dispatches NO second
- *      corrective (#754 one-corrective-per-cycle).
+ *      corrective (#754 one-corrective-per-cycle);
+ *   6. a claims-lock refusal AFTER a covering corrective still halts the step
+ *      with `claims-lock-unavailable` — the halt is decided by the gate's own
+ *      return, not by the shape of the event tail — and still records that the
+ *      corrective ran.
  *
  * PI_ENSEMBLE_PLAN_QUALITY is deliberately left UNSET — with the gate off the
  * bug is unreachable, so a run that set it would prove nothing.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import type { SpecCoverageSpec } from "../src/work-driver-plan-spec-coverage.ts";
 import { runPlan } from "../src/work-driver-plan.ts";
-import { type WorkState, initialState } from "../src/workflow-state.ts";
-import { seedClaims, spawnLivePid } from "./lib/claims-test-helpers.ts";
-import { SPEC_819, mkPlanCtx, stubDispatchResult } from "./lib/plan-819-fixtures.ts";
-import { planResultFromCalls, planResultFromRawCalls } from "./lib/plan-workstream-calls.ts";
+import { type WorkState, initialState, workStateDir } from "../src/workflow-state.ts";
+import {
+  type PathClaimEntry,
+  rawClaims,
+  seedClaims,
+  spawnLivePid,
+} from "./lib/claims-test-helpers.ts";
+import {
+  COVERING_CORRECTIVE,
+  REFUSED_PRIMARY,
+  SPEC_819,
+  mkPlanCtx,
+  stubDispatchResult,
+} from "./lib/plan-819-fixtures.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -46,13 +63,18 @@ function assert(cond: boolean, msg: string) {
 }
 
 process.env.PI_ENSEMBLE_RESUME = "0";
-// The claim registry is ON for this file: cases 1, 3 and 4 are about who owns
-// the paths, and case 4 needs the real conflict check.
+// The claim registry is ON for this file: cases 1, 3, 4 and 6 are about who owns
+// the paths, case 4 needs the real conflict check, and case 6 the real lock.
 // The fixtures declare no depends-on edges, and the contract pass would fold ids.
 process.env.PI_ENSEMBLE_PLAN_CONTRACT = "0";
 
 const mkResult = stubDispatchResult;
-const mkCtx = mkPlanCtx;
+/** Every case in this file runs the cycle AS #1756 — the claim registry keys its
+ * entry by `ctx.issue`, so a context left at the shared fixture's 819 would make
+ * every "did #1756 register?" assertion below vacuously true. */
+const CYCLE_ISSUE = 1756;
+const mkCtx = (dir: string, dispatchFn?: DriverContext["dispatchFn"]) =>
+  mkPlanCtx(dir, dispatchFn, CYCLE_ISSUE);
 
 /** The spec whose single deliverable lives at src/required.ts (or the override). */
 function stateWithSpec(state: WorkState, specOverride?: SpecCoverageSpec): WorkState {
@@ -62,23 +84,7 @@ function stateWithSpec(state: WorkState, specOverride?: SpecCoverageSpec): WorkS
   };
 }
 
-/** A primary that misses the spec AND carries a duplicate-id refusal. */
-const REFUSED_PRIMARY = planResultFromRawCalls([
-  {
-    id: "task-a",
-    args: { id: "task-a", scope: "the fix", paths: ["src/other.ts"], outOfScope: [] },
-  },
-  { id: "task-a", args: { id: "task-a", scope: "dup", paths: ["src/other.ts"], outOfScope: [] } },
-]);
-
-/** A corrective that declares the spec's deliverable: its own gate stays silent. */
-const COVERING_CORRECTIVE = planResultFromCalls([
-  { id: "default", scope: "the fix", paths: ["src/required.ts"], outOfScope: [] },
-]);
-
-/**
- * A corrective that still misses `SPEC_819`'s deliverable.
- */
+/** A corrective that still misses `SPEC_819`'s deliverable. */
 const STILL_WRONG_CORRECTIVE = planResultFromCalls([
   { id: "default", scope: "the fix", paths: ["src/other.ts"], outOfScope: [] },
 ]);
@@ -116,15 +122,19 @@ function killedPrimary(): DispatchResult {
   });
 }
 
-/** Read the claim registry raw — the driver's own liveness rules are not what
- * these cases assert, so the file is what answers "did we register?". */
-async function readClaimsFile(dir: string): Promise<unknown[]> {
+/**
+ * Read the claim registry raw — the driver's own liveness rules are not what
+ * these cases assert, so the file is what answers "did we register?". An
+ * unreadable file is reported as `null` rather than as "no claims": a case that
+ * asserts NOTHING was registered must be able to tell an empty registry from a
+ * file it could not read, which is exactly what the old swallow-everything
+ * reader could not.
+ */
+function claimsOrNull(dir: string): PathClaimEntry[] | null {
   try {
-    return JSON.parse(
-      await Bun.file(path.join(dir, ".pi", "work-state", "path-claims.json")).text(),
-    );
+    return rawClaims(dir);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -163,10 +173,16 @@ async function readClaimsFile(dir: string): Promise<unknown[]> {
       seen[1] === "plan:corrective",
       `the second dispatch is the one-shot corrective (got ${seen[1]})`,
     );
+    const ours = (claimsOrNull(dir) ?? []).filter((c) => c.issue === 1756);
     assert(
-      JSON.stringify(await readClaimsFile(dir)) === JSON.stringify(["src/required.ts"]) ||
-        (await readClaimsFile(dir)).length > 0,
-      "a cycle that develops the corrective owns its paths in the claim registry",
+      ours.length === 1 && ours[0]?.paths?.includes("src/required.ts") === true,
+      `a cycle that develops the corrective owns the CORRECTIVE's paths in the registry (got ${
+        ours[0]?.paths?.join(",") ?? "no entry for #1756"
+      })`,
+    );
+    assert(
+      (ours[0]?.paths ?? []).every((p) => !p.includes("||")),
+      `and no registered path is an either/or disjunct (${ours[0]?.paths?.join(",")})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -247,7 +263,6 @@ for (const sibling of [false, true] as const) {
       1_000_000,
     );
     const hits = next.eventLog.filter((e) => e.kind === "cap-hit");
-    const hit = hits[hits.length - 1];
     assert(
       hits.some(
         (h) =>
@@ -258,13 +273,12 @@ for (const sibling of [false, true] as const) {
         ? "a live sibling's claim still parks the tail with cross-group-conflict"
         : "with no sibling the halt is the plan-spec-mismatch cap",
     );
+    const claims = claimsOrNull(dir);
     assert(
-      next.pipelineState.status === "handoff" || hit !== undefined,
-      `the halting tail leaves the step parked (status ${next.pipelineState.status})`,
-    );
-    assert(
-      (await readClaimsFile(dir)).every((c) => (c as { issue?: number }).issue !== 1756),
-      `a halting tail registers no path claims for #1756${sibling ? " (sibling present)" : ""}`,
+      claims === null ? false : !claims.some((c) => c.issue === 1756),
+      `a halting tail registers no path claims for #1756${sibling ? " (sibling present)" : ""} — ${
+        claims === null ? "the registry file could not be read (UNREADABLE)" : "no entry for #1756"
+      }`,
     );
   } finally {
     await live?.stop();
@@ -285,7 +299,6 @@ for (const sibling of [false, true] as const) {
     });
     const next = await runPlan(ctx, stateWithSpec(initialState(1756, 1_000_000)), 1_000_000);
     const hits = next.eventLog.filter((e) => e.kind === "cap-hit");
-    const hit = hits[hits.length - 1];
     assert(
       hits.some((h) => h.kind === "cap-hit" && h.cap === "plan-spec-mismatch"),
       "a kill-recovered plan that misses the spec parks on the gate",
@@ -297,6 +310,59 @@ for (const sibling of [false, true] as const) {
       "and the refused recovered plan is not handed to develop",
     );
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---- 6. a claims-lock refusal after a COVERING corrective still halts, and
+//         still records the corrective
+
+{
+  // The tail-sniffing bug this case pins: the claim gate's parks used to be
+  // detected by reading `eventLog.at(-1)?.kind === "cap-hit"`, which asks the
+  // tail who appended it rather than asking the gate. The gate now returns
+  // `parked`. `.pi/work-state` is made unwritable (the field shape
+  // test-work-driver-claims-refusal.ts reproduces), so `registerClaim` fails
+  // closed AFTER the corrective covered the spec: the state must be a handoff
+  // with the named cap and `planQuality.redispatched: true`, not a clean plan.
+  const dir = mkdtempSync(path.join(tmpdir(), "plan-1756-claimslock-"));
+  mkdirSync(path.join(dir, ".git"), { recursive: true });
+  const lockDir = workStateDir(dir);
+  mkdirSync(lockDir, { recursive: true });
+  try {
+    chmodSync(lockDir, 0o500); // r-x: no write bit — EACCES creating the lock
+    const seen: string[] = [];
+    const ctx = mkCtx(dir, async (_pi, _spec, opts) => {
+      seen.push((opts as { label?: string })?.label ?? "");
+      return mkResult(seen.length === 1 ? REFUSED_PRIMARY : COVERING_CORRECTIVE);
+    });
+    const next = await runPlan(ctx, stateWithSpec(initialState(1756, 1_000_000)), 1_000_000);
+    const last = next.eventLog[next.eventLog.length - 1];
+    assert(
+      last?.kind === "cap-hit" && last.cap === "claims-lock-unavailable",
+      `a refused registration halts the step with the named cap (got ${
+        last?.kind === "cap-hit" ? last.cap : last?.kind
+      })`,
+    );
+    assert(
+      next.pipelineState.status === "handoff" && next.pipelineState.currentStep === "plan",
+      `and the cycle parks at plan as a handoff (got ${next.pipelineState.status}/${next.pipelineState.currentStep})`,
+    );
+    assert(seen.length === 2, `the corrective ran before the refusal (${seen.length})`);
+    assert(
+      next.pipelineState.planQuality?.redispatched === true,
+      `the park records the corrective that ran (got ${next.pipelineState.planQuality?.redispatched})`,
+    );
+    assert(
+      next.pipelineState.planQuality?.reason === undefined,
+      `and invents no reason for a filesystem fault (got ${next.pipelineState.planQuality?.reason})`,
+    );
+  } finally {
+    try {
+      chmodSync(lockDir, 0o700);
+    } catch {
+      /* already restored, or never created */
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 }

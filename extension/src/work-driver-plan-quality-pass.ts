@@ -154,13 +154,22 @@ export async function runPlanQualityTail(
   // dropped-edge check reads it against the first plan's raw map).
   let correctiveRaw: Record<string, Workstream> | undefined;
   let droppedEdges: { from: string; to: string }[] | undefined;
-  // #1756 — the two notions `redispatched` used to carry in one flag. The INPUT
-  // flag is kill-recovery (#754: a killed primary already spent the one-shot
-  // budget, so the tail must not spend it twice); THIS one is "this tail
-  // dispatched a corrective and kept its plan". The halt predicate reads the
-  // live value at the halt site — reading the input flag before the `await` is
-  // what made a clean corrective unable to clear the primary's refusal.
+  // #1756 — the two notions `redispatched` used to carry in one flag, now two
+  // names derived in one place. Both mean "THIS tail dispatched a corrective"
+  // (the INPUT `redispatched` is the other thing: kill-recovery, which already
+  // spent the one-shot budget). They differ by exactly one step of the flow.
+  //
+  //   - `correctiveRan` is set the moment the dispatch RETURNS a result. It
+  //     feeds the halt's RECORD: a park after that dispatch must record it.
+  //   - `correctiveReplacedPlan` is set only after the corrective passed every
+  //     one of its own checks. It feeds the halt PREDICATE below, so a
+  //     corrective that threw, was killed, or failed its own gate never clears
+  //     the primary's refusal.
+  //
+  // Reading the input flag before the `await` is what made a clean corrective
+  // unable to clear the primary's refusal.
   let correctiveRan = false;
+  let correctiveReplacedPlan = false;
   let unfence = input.unfence;
   // The paths the repair appended to the primary plan. Disclosed at the end only
   // when that plan is the one that reaches develop: a corrective replaces it.
@@ -219,16 +228,18 @@ export async function runPlanQualityTail(
       : undefined;
   // #819 round-3 — a primary refusal is never silently outlived: the tail
   // halts on any UNRESOLVED refusal, and "unresolved" is decided at the halt
-  // site from the live `correctiveRan` (#1756). A corrective whose own gate
-  // passed cleared the primary's verdict; a corrective that was itself refused
-  // capped at its own site above.
-  const halt = (state: WorkState, correctiveDispatched = false): PlanQualityOutput => ({
-    // A park that follows a corrective records that the corrective ran (#1756).
-    // The halt predicate itself is evaluated at the halt site below, from the
-    // live `correctiveRan`, never from a const captured before the dispatch.
-    state: correctiveDispatched
-      ? withCorrectiveDispatch(state, input, redispatched, droppedEdges, unfence)
-      : state,
+  // site from the live `correctiveReplacedPlan` (#1756). A corrective whose own
+  // gate passed cleared the primary's verdict; a corrective that was itself
+  // refused capped at its own site above.
+  const halt = (state: WorkState): PlanQualityOutput => ({
+    // #1756 — one place decides what a corrective means for a park. The RECORD
+    // flag is the LIVE `correctiveRan`: this tail dispatched a corrective that
+    // returned a result, so a park must not persist `redispatched: false` and
+    // deny the dispatch the cycle paid for. The PREDICATE that decides whether
+    // the primary's refusal still stands is evaluated at its own site from
+    // `correctiveReplacedPlan` — a corrective that threw, was killed, or failed
+    // its own gate never replaced the plan, so it clears nothing.
+    state: correctiveRan ? withCorrectiveDispatch(state, input, droppedEdges, unfence) : state,
     workstreams,
     halted: true,
   });
@@ -323,13 +334,14 @@ export async function runPlanQualityTail(
     next = appendPlanDispatchOutcome(next, label, retryReport, retryCompletion);
     // A corrective that failed without a kill (provider error, non-zero exit) is
     // a failed dispatch: its completion event is the tail, not a zero-call verdict.
-    if (!retry.ok) return halt(next, true);
+    if (!retry.ok) return halt(next);
+    // #1756 — the corrective the TAIL dispatched, recorded from here on: it
+    // returned a result, so every park below records that it ran.
     redispatched = true;
-    // #1756 — the corrective the TAIL dispatched, judged by the halt predicate.
     correctiveRan = true;
     repairedAdded = undefined;
     if (retryReport.unreadable > 0) {
-      return halt(planResultsUnreadableCap(next, retryReport), true);
+      return halt(planResultsUnreadableCap(next, retryReport));
     }
     // #1652 — one corrective per cycle, and a corrective with no accepted call
     // leaves the cycle with no plan. The first set is discarded: it already
@@ -344,7 +356,6 @@ export async function runPlanQualityTail(
           retryReport,
           "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
         ),
-        true,
       );
     }
     workstreams = retryReport.workstreams;
@@ -379,9 +390,12 @@ export async function runPlanQualityTail(
           correctiveMismatch,
           "this is the one-shot corrective plan — it was not re-dispatched and develop never ran",
         ),
-        true,
       );
     }
+    // #1756 — the corrective is now the plan the cycle develops: it returned,
+    // was not killed, made accepted calls and passed its OWN gate. Only this
+    // clears the primary's refusal at the halt site below.
+    correctiveReplacedPlan = true;
   }
 
   // #849 — the one-shot corrective re-plan is free to MERGE the colliding
@@ -423,12 +437,13 @@ export async function runPlanQualityTail(
       "work-driver: runPlan reached its final return with planQuality.reason = plan-spec-mismatch — the plan-to-spec halt must return before the gates, the claims and the synthetic default workstream",
     );
   }
-  // #1756 — the predicate is evaluated HERE, from the live `correctiveRan`, and
-  // ABOVE the claim registration: whatever the shape gate concluded, a cycle must
+  // #1756 — the predicate is evaluated HERE, from the live
+  // `correctiveReplacedPlan`, and ABOVE the claim registration: whatever the
+  // shape gate concluded, a cycle must
   // neither develop a plan the spec gate refused nor reserve paths for a plan it
   // never develops. `specMismatch` is still the PRIMARY's verdict — a corrective
   // that reached this point passed its own gate, so its verdict cleared this one.
-  if (input.planGateEnabled && specMismatch !== undefined && !correctiveRan) {
+  if (input.planGateEnabled && specMismatch !== undefined && !correctiveReplacedPlan) {
     return halt(
       planSpecMismatchCap(
         next,
@@ -442,12 +457,12 @@ export async function runPlanQualityTail(
   // leaves claims behind (#1756 moves this below the halt decision). Parking
   // early costs one plan dispatch, not a full develop-to-commit burn.
   if (crossGroupConflictsEnabled()) {
-    next = await checkAndRegisterClaims(ctx, next, workstreams);
+    const claims = await checkAndRegisterClaims(ctx, next, workstreams);
+    next = claims.state;
     // The claim gate's own parks (a live sibling holds a path, or the claims
-    // lock refused a registration) are the last halt, and each leaves its cap-hit
-    // as the tail event (#1756 moves this block below the spec-gate halt).
-    const lastEvent = next.eventLog[next.eventLog.length - 1];
-    if (lastEvent?.kind === "cap-hit") return halt(next, correctiveRan);
+    // lock refused a registration) are the last halt, and each is decided by the
+    // gate's own return rather than by who appended the tail event (#1756).
+    if (claims.parked) return halt(next);
   }
   const finalReason =
     droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : (reason ?? haltReason);

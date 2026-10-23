@@ -38,6 +38,21 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 const PID = process.pid;
 
 /**
+ * What the plan step's claim gate decided, so its caller branches on the gate's
+ * OWN answer rather than sniffing the event tail (#1756).
+ *
+ * `parked` is true exactly when this call appended a `cap-hit` and moved the
+ * step to a plan handoff — the conflict park, the claims-lock refusal, or a
+ * conflict whose first entry was missing (the degenerate branch below, which
+ * still leaves the state parked by construction). Reading
+ * `eventLog.at(-1)?.kind === "cap-hit"` instead asked the tail who had appended
+ * it, so any unrelated trailing event — a completion appended after a conflict
+ * park — became a park, and the gate's own park could be hidden under a tail
+ * that is not a cap-hit. One discriminant, no guessing.
+ */
+export type ClaimsGateOutcome = { state: WorkState; parked: boolean };
+
+/**
  * The plan step's claim gate: park on a sibling overlap, else register ours.
  *
  * `now` is injectable so the suite can age a claim without sleeping.
@@ -47,16 +62,20 @@ export async function checkAndRegisterClaims(
   state: WorkState,
   workstreams: Record<string, { paths?: string[]; outOfScope?: string[] }>,
   now: number = Date.now(),
-): Promise<WorkState> {
+): Promise<ClaimsGateOutcome> {
   const allPaths = Object.values(workstreams).flatMap((ws) => ws.paths ?? []);
-  if (allPaths.length === 0) return state; // nothing to claim
+  if (allPaths.length === 0) return { state, parked: false }; // nothing to claim
 
   const claims = await readClaims(ctx.repoRoot, now);
   const conflicts = checkCrossGroupClaimsSync(ctx.issue, workstreams, claims);
 
   if (conflicts.length > 0) {
     const sibling = conflicts[0];
-    if (!sibling) return state;
+    // Degenerate shape (a truthy list whose first slot is absent): there is no
+    // sibling to name, so nothing to register against and no claim to write.
+    // Reported as a park — the gate stopped the step either way, and a caller
+    // that read `false` here would develop a plan whose paths nobody reserved.
+    if (!sibling) return { state, parked: true };
     const overlap = allPaths.map(normaliseDeclaredPath).filter((p) => sibling.paths.includes(p));
     const park = appendEvent(state, {
       kind: "cap-hit",
@@ -69,12 +88,15 @@ export async function checkAndRegisterClaims(
       nextStep: "handoff" as const,
     });
     return {
-      ...park,
-      pipelineState: {
-        ...park.pipelineState,
-        status: "handoff",
-        currentStep: "plan",
+      state: {
+        ...park,
+        pipelineState: {
+          ...park.pipelineState,
+          status: "handoff",
+          currentStep: "plan",
+        },
       },
+      parked: true,
     };
   }
   // No conflicts — register so siblings see our claim.
@@ -89,22 +111,25 @@ export async function checkAndRegisterClaims(
       `work-driver-path-claims: the claims lock refused a registration for #${ctx.issue} — parking at plan`,
     );
     return {
-      ...appendEvent(state, {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap: "claims-lock-unavailable" as const,
-        evidence: message.slice(0, 400),
-        reviewRound: state.pipelineState.reviewRound,
-        nextStep: "handoff" as const,
-      }),
-      pipelineState: {
-        ...state.pipelineState,
-        status: "handoff",
-        currentStep: "plan",
+      state: {
+        ...appendEvent(state, {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "claims-lock-unavailable" as const,
+          evidence: message.slice(0, 400),
+          reviewRound: state.pipelineState.reviewRound,
+          nextStep: "handoff" as const,
+        }),
+        pipelineState: {
+          ...state.pipelineState,
+          status: "handoff",
+          currentStep: "plan",
+        },
       },
+      parked: true,
     };
   }
-  return state;
+  return { state, parked: false };
 }
 
 /**
