@@ -197,6 +197,11 @@ export function makeHandoffEmittedEvent(opts: {
   degradedReason?: string;
   /** #775 — provenance of the recorded comment/label state. */
   delivery?: HandoffDelivery;
+  /**
+   * #1696 — the label was DECLINED by the host channel's contract rather than
+   * failing to apply. Set only on a host handoff (see HandoffEmittedEvent).
+   */
+  labelSkipped?: "host-channel";
   /** #798 — explicit target object type (where the comment was posted). */
   targetType?: "issue" | "pr";
   /** #798 — the number of the target object. */
@@ -224,6 +229,7 @@ export function makeHandoffEmittedEvent(opts: {
   };
   if (opts.body !== undefined) ev.body = opts.body;
   if (delivery) ev.delivery = delivery;
+  if (opts.labelSkipped) ev.labelSkipped = opts.labelSkipped;
   if (opts.targetType) ev.targetType = opts.targetType;
   if (opts.targetNumber !== undefined) ev.targetNumber = opts.targetNumber;
   if (opts.issueLabelApplied !== undefined) ev.issueLabelApplied = opts.issueLabelApplied;

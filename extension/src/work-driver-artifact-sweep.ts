@@ -30,6 +30,15 @@ import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
+// #1696 — the host channel's park signal is that module's file to own; the
+// sweep asks it rather than learning the name, the same way it asks
+// work-driver-park-record.ts for `park-<cap>.json`. Asked of the READ half and
+// never of `work-driver-park-memory-host.ts`: that module is the writer and the
+// guard, and it imports `fetchIssueBodyViaGh` — a fingerprint is a `gh` call, and
+// the sweep pays for one read per orphan directory. `test-work-driver-artifact-
+// sweep.ts` (k2) walks this file's import graph and fails if a fetcher is ever
+// reachable from it again.
+import { holdsLiveHostParkSignal } from "./work-driver-park-memory-host-read.ts";
 import {
   COVERED_PARK_CAPS,
   PARK_RECORD_MAX_AGE_MS,
@@ -200,5 +209,12 @@ async function holdsLiveParkRecord(
     const rec = await readParkRecord(repoRoot, Number(name), cap);
     if (rec && !parkRecordExpired(rec, now())) return true;
   }
+  // #1696 — the host channel's signal lives in this same directory and arms the
+  // same kind of refusal, so the same rule keeps it alive. Asked of its own
+  // module, which owns the file's name and its plausibility rules — and, load-
+  // bearing, answers from a read-only row parse: resolving a fingerprint here
+  // would fetch the issue body through `gh`, roughly four subprocesses per
+  // orphan directory in a sweep that runs at every cycle start.
+  if (await holdsLiveHostParkSignal(repoRoot, Number(name), now())) return true;
   return false;
 }

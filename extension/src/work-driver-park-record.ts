@@ -50,6 +50,26 @@ export const COVERED_PARK_CAPS = [
 export type CoveredParkCap = (typeof COVERED_PARK_CAPS)[number];
 
 /**
+ * How many identical parks (or, on the host channel, identical published
+ * handoffs) are tolerated before the next start is refused. ONE number for
+ * both memories: the covered guard in `work-driver-park-memory.ts` and the
+ * host signal in `work-driver-park-memory-host.ts` refuse on the same bar, and
+ * two constants with the same job is two chances for one guard to move alone.
+ */
+export const REPEAT_PARK_REFUSAL_COUNT = 2;
+
+/**
+ * Does this build consult either park memory? `PI_ENSEMBLE_REPEAT_PARK=0`
+ * turns the whole repeat guard off, records and the host signal included.
+ * Declared here — the leaf BOTH memories import — so the switch cannot be set
+ * in one and missed in the other. Read from the environment at call time, not
+ * captured at module load, so a test that flips it mid-run still works.
+ */
+export function repeatParkEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_REPEAT_PARK !== "0";
+}
+
+/**
  * One (issue, cap) park record. `reason` is what the park fired for — the
  * intent park's `parkReason`, the plan verdict, or the PR number — so a park
  * for a different cause is a NEW record rather than an increment.
