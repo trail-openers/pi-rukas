@@ -51,6 +51,15 @@ export const HOST_PARK_SIGNAL_FILE = "host-parks.json";
 export const HOST_PARK_REFUSAL_COUNT = 2;
 
 /**
+ * How many rows the signal keeps. One row is one (cap, cause, fingerprint), and
+ * an issue's causes and edits are bounded in practice — 50 is far past any real
+ * cycle's history — so the ceiling exists to stop a file in a repository's
+ * working tree growing without bound. Pruning drops the OLDEST first, and every
+ * remaining row still arms a refusal on its own.
+ */
+export const HOST_PARK_MAX_ROWS = 50;
+
+/**
  * Does this build consult the host park signal? The SAME switch as the covered
  * guard: `PI_ENSEMBLE_REPEAT_PARK=0` turns the whole repeat guard off, records
  * included. Read from the environment here rather than imported, for the import
@@ -79,9 +88,14 @@ export interface HostParkRow {
   lastCycleId: number;
 }
 
-/** A counter the writer could have produced: a non-negative safe integer. */
+/**
+ * A counter the writer could have produced: a non-negative SAFE integer. `1e18`
+ * is an integer to `Number.isInteger`, and a `deliveredCount` that large would
+ * arm the refusal on a file no writer produced — the refusal is a hard stop, so
+ * a counter the driver could not have written reads as no protection at all.
+ */
 function plausibleCount(v: unknown): v is number {
-  return typeof v === "number" && Number.isInteger(v) && v >= 0;
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 }
 
 /** A timestamp the writer could have produced: finite, after 2020, not ahead of us. */
@@ -94,9 +108,52 @@ function plausibleTimestamp(v: unknown): v is number {
   );
 }
 
-/** A cycle id (`state.startedAt`): a finite non-negative number. */
+/**
+ * A cycle id (`state.startedAt`, a ms epoch): a non-negative SAFE integer, the
+ * same bar as the counters — an id the writer could not have produced must not
+ * be trusted with the idempotency check that decides whether a handoff counts.
+ */
 function plausibleCycleId(v: unknown): v is number {
-  return typeof v === "number" && Number.isFinite(v) && v >= 0;
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+}
+
+/**
+ * One read of the signal, and the reading a test queued for this call. The queue
+ * is passed IN rather than installed globally, so a simulated second writer
+ * cannot be seen by any other cycle in the process; with nothing queued — every
+ * production call, and every test that does not ask — it is the plain reader.
+ */
+function read(ctx: DriverContext, reader: string): Promise<HostParkRow[]> {
+  return readHostParkSignalsImpl(ctx.repoRoot, ctx.issue, reader);
+}
+
+function readNext(
+  queue: HostParkRow[][] | undefined,
+  real: () => Promise<HostParkRow[]>,
+): Promise<HostParkRow[]> {
+  const queued = queue?.shift();
+  return queued === undefined ? real() : Promise.resolve(queued);
+}
+
+/**
+ * Rows the refusal reads, newest first. The ceiling is enforced in this ONE
+ * place, so a file an older writer (or a hand edit) left longer than
+ * `HOST_PARK_MAX_ROWS` cannot arm the guard on rows no writer would have kept —
+ * and the writer reads it back, so its own write cannot grow past it either.
+ *
+ * `lastAt` decides, because it is the clock every age test in this module uses
+ * (the guard's and the sweep's both compare `now - lastAt`). Sorting on the cycle
+ * id instead would prune by a number that is not a clock: a resumed cycle carries
+ * its original `startedAt`, so a row it published — one the reader still believes
+ * — would be the first one pruned.
+ */
+function newestFirst(rows: HostParkRow[]): HostParkRow[] {
+  return rows
+    .map((row, i) => ({ row, i }))
+    .sort(
+      (a, b) => b.row.lastAt - a.row.lastAt || b.row.lastCycleId - a.row.lastCycleId || a.i - b.i,
+    )
+    .map((x) => x.row);
 }
 
 /**
@@ -104,8 +161,12 @@ function plausibleCycleId(v: unknown): v is number {
  * anything else a reader could not believe is EMPTY, never trusted, with a
  * trace — the refusal this feeds is a hard stop, so a `deliveredCount` that is
  * not a plausible integer or a `lastAt` from 1970 must not arm it.
+ *
+ * The rows come back newest first and capped at `HOST_PARK_MAX_ROWS`, so every
+ * reader — the guard, the sweep, and the writer's own max-before-increment —
+ * agrees on the window the file is allowed to have.
  */
-export async function readHostParkSignals(
+export async function readHostParkSignalsImpl(
   repoRoot: string,
   issue: number,
   /** The host that asked, so an empty result says WHO found nothing. */
@@ -173,7 +234,7 @@ export async function readHostParkSignals(
       );
     }
   }
-  return rows;
+  return newestFirst(rows).slice(0, HOST_PARK_MAX_ROWS);
 }
 
 /**
@@ -255,6 +316,8 @@ export async function recordHostPark(
   ctx: DriverContext,
   state: WorkState,
   published: boolean,
+  /** Test-only: one reading per read of THIS write, in call order. */
+  observed?: HostParkRow[][],
 ): Promise<void> {
   if (!published || !hostParkEnabled()) return;
   // A host channel that posts nothing is the only one that needs this memory.
@@ -268,43 +331,54 @@ export async function recordHostPark(
       state.pipelineState.issueBodyArtifact,
     );
     if (!fingerprint) return; // An unreadable body is not a park we can identify.
-    const rows = await readHostParkSignals(ctx.repoRoot, ctx.issue, "handoff");
-    const at = Date.now();
-    const prior = rows.find(
+    // The first read answers TWO questions, and it is deliberately NOT the set
+    // written below: has THIS cycle already published (a resume re-entering its
+    // own handoff must not move the number the guard refuses on), and what did
+    // THIS writer read — the count a sibling may have moved since.
+    const prior = (await readNext(observed, () => read(ctx, "handoff"))).find(
       (r) => r.cap === park.cap && r.reason === park.reason && r.fingerprint === fingerprint,
     );
-    // A resumed cycle re-entering its own handoff already counted; the number
-    // the guard refuses on must not move on a re-entry.
     if (prior?.lastCycleId === state.startedAt) return;
-    const next = prior
-      ? rows.map((r) =>
-          r === prior
-            ? {
-                ...r,
-                deliveredCount: r.deliveredCount + 1,
-                lastAt: at,
-                lastCycleId: state.startedAt,
-              }
-            : r,
-        )
-      : [
-          ...rows,
-          {
-            cap: park.cap,
-            reason: park.reason,
-            fingerprint,
-            deliveredCount: 1,
-            firstAt: at,
-            lastAt: at,
-            lastCycleId: state.startedAt,
-          },
-        ];
+    // Re-read immediately before writing, like `recordPark`: two cycles of one
+    // issue can be in flight (a fan-out, a re-run after a crash) and each read
+    // its own rows. The set WRITTEN is the FRESH reading, so a row a sibling
+    // added in between is not dropped, and the count is the larger of the two
+    // readings plus one — the cheap lost-update guard. Not a lock, and it does
+    // not need to be one. Sorted and capped before the new row goes in, so the
+    // row THIS cycle published is never the one pruned: it is the newest in the
+    // file by the reader's own clock, and the file never grows past the ceiling.
+    const at = Date.now();
+    const live = await readNext(observed, () => read(ctx, "handoff"));
+    const next = newestFirst(live)
+      .slice(0, HOST_PARK_MAX_ROWS - 1)
+      .map((r) =>
+        r.cap === park.cap && r.reason === park.reason && r.fingerprint === fingerprint
+          ? {
+              ...r,
+              deliveredCount: Math.max(r.deliveredCount, prior?.deliveredCount ?? 0) + 1,
+              lastAt: at,
+              lastCycleId: state.startedAt,
+            }
+          : r,
+      );
+    if (!next.some((r) => r.lastCycleId === state.startedAt)) {
+      next.push({
+        cap: park.cap,
+        reason: park.reason,
+        fingerprint,
+        deliveredCount: 1,
+        firstAt: at,
+        lastAt: at,
+        lastCycleId: state.startedAt,
+      });
+    }
+    const bounded = next;
     const file = hostParkSignalPath(ctx.repoRoot, ctx.issue);
     await fs.mkdir(path.dirname(file), { recursive: true });
     // Atomic, like the covered record: a crash leaves the PREVIOUS rows intact
     // rather than a half-written file the reader (correctly) reads as empty.
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(next, null, 2), "utf8");
+    await fs.writeFile(tmp, JSON.stringify(bounded, null, 2), "utf8");
     await fs.rename(tmp, file);
   } catch (err) {
     trace(`work-driver: could not update the host park signal: ${(err as Error).message}`);
@@ -330,7 +404,12 @@ export async function holdsLiveHostParkSignal(
   now = Date.now(),
 ): Promise<boolean> {
   const file = hostParkSignalPath(repoRoot, issue);
-  const rows = await readHostParkSignals(repoRoot, issue, "sweep");
+  // The module's own reader is the only thing that decides whether a row is
+  // believed: it already drops the malformed and the expired, so "at least one
+  // row survived" and "this directory still arms a refusal" are the same
+  // question. The age test is this caller's own `now`, so a sweep can ask about
+  // a clock other than its own.
+  const rows = await readHostParkSignalsImpl(repoRoot, issue, "sweep");
   if (rows.some((r) => now - r.lastAt <= PARK_RECORD_MAX_AGE_MS)) return true;
   try {
     // The file exists but nothing in it could be believed (a `count` that is
@@ -350,14 +429,20 @@ export async function holdsLiveHostParkSignal(
  * has landed. The two live in the same directory and expire on one clock, so
  * they are forgotten together, with the same best-effort discipline as the
  * claim release beside them — a failure is traced and never costs a merge.
+ *
+ * Each call deletes ONLY its own file, never the directory that holds them:
+ * the artifact sweep owns that directory's life, and the same door also runs
+ * for every sibling issue in the group, so a recursive delete would take a
+ * sibling's live record or the cycle's own cached spec with it.
  */
 export async function clearHostParkSignals(repoRoot: string, issues: number[]): Promise<void> {
   for (const issue of [...new Set(issues)]) {
     try {
-      await fs.rm(path.dirname(hostParkSignalPath(repoRoot, issue)), {
-        recursive: true,
-        force: true,
-      });
+      // ONLY the signal file: the artifact sweep already prunes that directory by
+      // age, and the cycle's other artifacts (`<N>.json`, `explore-spec.md`, a
+      // covered `park-<cap>.json` belonging to a sibling issue in the group) are
+      // not this call's to destroy. `force` keeps a missing file silent.
+      await fs.rm(hostParkSignalPath(repoRoot, issue), { force: true });
     } catch (err) {
       trace(
         `work-driver: could not clear the park memory for #${issue}: ${(err as Error).message}`,
@@ -367,8 +452,8 @@ export async function clearHostParkSignals(repoRoot: string, issues: number[]): 
 }
 
 /**
- * Record that a HOST handoff published this cycle's park.
- * park — this cap, this reason, against this exact issue text — twice?
+ * Has this issue's host signal already PUBLISHED this park — this cap, this
+ * reason, against this exact issue text — twice?
  *
  * PURE: it reads and never writes. Fails open the way `repeatParkVerdict` does:
  * `PI_ENSEMBLE_REPEAT_PARK=0` short-circuits, the forge channel has nothing to
@@ -385,7 +470,7 @@ export async function hostParkVerdict(
   if (!hostParkEnabled() || handoffChannel() !== "host") return undefined;
   const now = Date.now();
   for (const issue of [...new Set([ctx.issue, ...issues])]) {
-    const rows = await readHostParkSignals(ctx.repoRoot, issue);
+    const rows = await readHostParkSignalsImpl(ctx.repoRoot, issue);
     const armed = rows.filter(
       (r) =>
         r.deliveredCount >= HOST_PARK_REFUSAL_COUNT && now - r.lastAt <= PARK_RECORD_MAX_AGE_MS,

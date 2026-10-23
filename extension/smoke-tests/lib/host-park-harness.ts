@@ -25,9 +25,13 @@ import type { Forge } from "../../src/forge.ts";
 import { runHeadless } from "../../src/headless/run.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
+import {
+  type HostParkWriter,
+  __setHostParkWriter,
+} from "../../src/work-driver-handoff-host-writer.ts";
 import { runHandoff } from "../../src/work-driver-handoff.ts";
 import type { DriverHost } from "../../src/work-driver-host.ts";
-import { hostParkSignalPath } from "../../src/work-driver-park-memory-host.ts";
+import { type HostParkRow, hostParkSignalPath } from "../../src/work-driver-park-memory-host.ts";
 import { runWorkDriver } from "../../src/work-driver.ts";
 import { type WorkState, appendEvent, initialState, writeState } from "../../src/workflow-state.ts";
 
@@ -93,7 +97,7 @@ export function seams(w: World) {
 /** Distinct per cycle: the signal's idempotency key is the cycle's start time. */
 let clock = 1_700_000_000_000;
 
-function driverCtx(w: World): DriverContext {
+export function driverCtx(w: World): DriverContext {
   return {
     host: { sendUserMessage: () => undefined } as unknown as DriverHost,
     repoRoot: w.repo,
@@ -130,14 +134,46 @@ async function withChannel<T>(host: boolean, fn: () => Promise<T>): Promise<T> {
  * Publish one park through the handoff step, with the body the cycle would have
  * handed the host. An empty body publishes nothing: the state comes back with no
  * handoff event, and the signal counts no delivery.
+ *
+ * `priorRows` is the reading a writer holds when it reaches the signal's write —
+ * what a sibling wrote in between is invisible to it, which is the whole shape
+ * `recordHostPark`'s max-before-increment exists for. `replayOf` runs the handoff
+ * of an EARLIER cycle (a crash between the record write and the state write, then
+ * a resume): the signal already carries that cycle's `lastCycleId`, so the write
+ * must be refused rather than moving the number the guard refuses on.
  */
 export async function park(
   w: World,
-  opts: { host: boolean; body?: string; parkReason?: string },
+  opts: {
+    host: boolean;
+    body?: string;
+    parkReason?: string;
+    /** One reading per `recordHostPark` read, in call order. */
+    priorRows?: HostParkRow[][];
+    /** A cycle to replay the handoff of (a resume re-entering its own step). */
+    replayOf?: WorkState;
+  },
 ): Promise<WorkState> {
-  const state = cappedState(opts);
+  const state = opts.replayOf ?? cappedState(opts);
   const body = opts.body === undefined ? w.handoffBody : opts.body;
   if (!body) return state;
+  // A test that simulates a second writer supplies the two readings this one
+  // write should see. `runHandoff` installs them around its OWN call to the
+  // writer, because it is the caller: installing them here, outside the step, is
+  // the shape that made the writer read the disk instead — the step's write has
+  // already happened by the time anything below it runs.
+  if (opts.priorRows) {
+    const host = await import("../../src/work-driver-park-memory-host.ts");
+    // The queue is copied UP FRONT: `recordHostPark` consumes it by shifting, so a
+    // copy made inside the writer would hand both reads the same unshifted queue
+    // and the two readings the test asks for would never differ.
+    const queue = [...opts.priorRows];
+    return withChannel(opts.host, () =>
+      runHandoff(driverCtx(w), state, Date.now(), {
+        writer: (ctx, s, published) => host.recordHostPark(ctx, s, published, queue),
+      }),
+    );
+  }
   return withChannel(opts.host, () => runHandoff(driverCtx(w), state, Date.now()));
 }
 
@@ -189,10 +225,7 @@ export const signalOf = (w: World) =>
  * reader's job is to treat each as ABSENT rather than trusted, because the
  * refusal it feeds is a hard stop.
  */
-export function tamperSignal(
-  w: World,
-  patch: (row: Record<string, unknown>) => void,
-): void {
+export function tamperSignal(w: World, patch: (row: Record<string, unknown>) => void): void {
   const rows = JSON.parse(readFileSync(signalPath(w), "utf8")) as Array<Record<string, unknown>>;
   for (const r of rows) patch(r);
   writeFileSync(signalPath(w), JSON.stringify(rows), "utf8");
