@@ -376,6 +376,9 @@ export async function runHandoff(
       : {}),
     // A repeat delivered nothing this cycle — no provenance to assert.
     delivery: host ? "host" : reusedComment ? undefined : delivery,
+    // #1696 — on the host channel the label is the host's to apply, so record
+    // the decline: `labelApplied: false` there must never read as an outage.
+    ...(host ? { labelSkipped: "host-channel" as const } : {}),
     repeatOf: park.repeatOf,
     ...(parkRecord && parkRecord.count >= REPEAT_PARK_REFUSAL_COUNT
       ? {

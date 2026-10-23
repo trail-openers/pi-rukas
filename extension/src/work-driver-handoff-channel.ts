@@ -71,6 +71,9 @@ export function recordHostHandoffOnCrash(state: WorkState, err: unknown): WorkSt
     at: Date.now(),
     labelApplied: false,
     delivery: "host",
+    // #1696 — the same decline the normal host handoff records: nothing was
+    // posted and no label applied because the host owns that channel.
+    labelSkipped: "host-channel",
     body: withHandoffMarker(`${reason}\n\n${rendered}`, state),
   });
 }

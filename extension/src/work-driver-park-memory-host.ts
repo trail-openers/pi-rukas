@@ -33,31 +33,32 @@
  * the signal wrongly refuses is a start nothing can get back.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { fetchIssueBodyViaGh } from "./work-driver-explore.ts";
 import { handoffChannel } from "./work-driver-handoff-channel.ts";
-import {
-  REPEAT_PARK_REFUSAL_COUNT,
-  type RepeatParkVerdict,
-  parkFingerprint,
-  repeatParkEnabled,
-} from "./work-driver-park-memory.ts";
-import {
-  COVERED_PARK_CAPS,
-  PARK_RECORD_MAX_AGE_MS,
-  parkRecordExpired,
-  readParkRecord,
-} from "./work-driver-park-record.ts";
+import type { RepeatParkVerdict } from "./work-driver-park-memory.ts";
+import { COVERED_PARK_CAPS, PARK_RECORD_MAX_AGE_MS } from "./work-driver-park-record.ts";
 import { type WorkState, workStateDir } from "./workflow-state.ts";
 
 /** The signal file's NAME — the one place that spells it. */
 export const HOST_PARK_SIGNAL_FILE = "host-parks.json";
 
 /** How many published parks of one identical shape arm the next refusal. */
-export const HOST_PARK_REFUSAL_COUNT = REPEAT_PARK_REFUSAL_COUNT;
+export const HOST_PARK_REFUSAL_COUNT = 2;
+
+/**
+ * Does this build consult the host park signal? The SAME switch as the covered
+ * guard: `PI_ENSEMBLE_REPEAT_PARK=0` turns the whole repeat guard off, records
+ * included. Read from the environment here rather than imported, for the import
+ * -cycle reason in this file's header.
+ */
+export function hostParkEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_REPEAT_PARK !== "0";
+}
 
 /** The signal's path — the sweep's exemption and the tests both ask for it. */
 export function hostParkSignalPath(repoRoot: string, issue: number): string {
@@ -198,6 +199,47 @@ export function hostParkOf(state: WorkState): { cap: string; reason: string } | 
 }
 
 /**
+ * The issue text a park is identified by: this cycle's cached artifact when it
+ * has one (immune to an edit landing between explore and handoff), else the
+ * forge fetch. Same text, same hash as `parkFingerprint` on the covered path.
+ */
+async function rawIssueBody(
+  ctx: DriverContext,
+  issue: number,
+  localArtifact?: string,
+): Promise<string | undefined> {
+  if (localArtifact) {
+    const file = path.resolve(ctx.repoRoot, localArtifact);
+    try {
+      const text = await fs.readFile(file, "utf8");
+      if (text.trim()) return text;
+    } catch (err) {
+      trace(
+        `work-driver: host park artifact ${file} unreadable, falling back to the fetch: ${(err as Error).message}`,
+      );
+    }
+  }
+  const fetchBody = ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh;
+  try {
+    const { stdout } = await fetchBody(issue, ctx.repoRoot);
+    return stdout.trim() ? stdout : undefined;
+  } catch (err) {
+    trace(`work-driver: host park fingerprint for #${issue} unreadable: ${(err as Error).message}`);
+    return undefined;
+  }
+}
+
+/** sha256 of the issue text, or `undefined` when it could not be read. */
+async function signalFingerprint(
+  ctx: DriverContext,
+  issue: number,
+  localArtifact?: string,
+): Promise<string | undefined> {
+  const raw = await rawIssueBody(ctx, issue, localArtifact);
+  return raw === undefined ? undefined : createHash("sha256").update(raw).digest("hex");
+}
+
+/**
  * Record that a HOST handoff published this cycle's park. Called from the
  * handoff step, which owns the one rule that matters: a park is published when
  * a non-empty body was rendered for the host. `published` is that rule's answer
@@ -214,13 +256,13 @@ export async function recordHostPark(
   state: WorkState,
   published: boolean,
 ): Promise<void> {
-  if (!published || !repeatParkEnabled()) return;
+  if (!published || !hostParkEnabled()) return;
   // A host channel that posts nothing is the only one that needs this memory.
   if (handoffChannel() !== "host") return;
   const park = hostParkOf(state);
   if (!park) return;
   try {
-    const fingerprint = await parkFingerprint(
+    const fingerprint = await signalFingerprint(
       ctx,
       ctx.issue,
       state.pipelineState.issueBodyArtifact,
@@ -340,7 +382,7 @@ export async function hostParkVerdict(
   ctx: DriverContext,
   issues: number[] = [ctx.issue],
 ): Promise<RepeatParkVerdict | undefined> {
-  if (!repeatParkEnabled() || handoffChannel() !== "host") return undefined;
+  if (!hostParkEnabled() || handoffChannel() !== "host") return undefined;
   const now = Date.now();
   for (const issue of [...new Set([ctx.issue, ...issues])]) {
     const rows = await readHostParkSignals(ctx.repoRoot, issue);
@@ -350,7 +392,7 @@ export async function hostParkVerdict(
     );
     // Cheap path first: nothing earned a refusal, so no `gh` call is paid for.
     if (armed.length === 0) continue;
-    const fingerprint = await parkFingerprint(ctx, issue);
+    const fingerprint = await signalFingerprint(ctx, issue);
     if (!fingerprint) {
       trace(`work-driver: host park guard did not run for #${issue} — issue body unreadable`);
       continue;
