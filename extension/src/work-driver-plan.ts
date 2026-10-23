@@ -22,7 +22,6 @@ import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { issueImagesFor } from "./work-driver-issue-images.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
 import {
   foldPortPlan,
   portPlanSection,

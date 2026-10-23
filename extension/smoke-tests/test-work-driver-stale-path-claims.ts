@@ -73,9 +73,11 @@ function assert(cond: boolean, msg: string) {
       },
     ]);
     const state = makeState(1427, dir);
-    const result = await checkAndRegisterClaims(makeCtx(dir, 1427), state, {
-      "task-a": { paths: OVERLAPPING_PATHS },
-    });
+    const result = (
+      await checkAndRegisterClaims(makeCtx(dir, 1427), state, {
+        "task-a": { paths: OVERLAPPING_PATHS },
+      })
+    ).state;
     assert(result === state, "dead claimant: state returned UNCHANGED (no cap-hit)");
     assert(
       !result.eventLog.some((e) => e.kind === "cap-hit"),
@@ -101,9 +103,11 @@ function assert(cond: boolean, msg: string) {
         { issue: 1421, pid: live.pid, paths: CLAIMED_PATHS, startedAt: Date.now() - 5_000 },
       ]);
       const state = makeState(1427, dir);
-      const result = await checkAndRegisterClaims(makeCtx(dir, 1427), state, {
-        "task-a": { paths: OVERLAPPING_PATHS },
-      });
+      const result = (
+        await checkAndRegisterClaims(makeCtx(dir, 1427), state, {
+          "task-a": { paths: OVERLAPPING_PATHS },
+        })
+      ).state;
       const capHit = result.eventLog.find((e) => e.kind === "cap-hit");
       assert(capHit !== undefined, "live claimant: cap-hit still emitted");
       assert(capHit?.cap === "cross-group-conflict", "live claimant: cap is cross-group-conflict");
@@ -140,9 +144,11 @@ function assert(cond: boolean, msg: string) {
         repoRoot: dir,
       });
       writeFileSync(path.join(wd, "1421.json"), JSON.stringify(claimant));
-      const result = await checkAndRegisterClaims(makeCtx(dir, 1427), makeState(1427, dir), {
-        "task-a": { paths: OVERLAPPING_PATHS },
-      });
+      const result = (
+        await checkAndRegisterClaims(makeCtx(dir, 1427), makeState(1427, dir), {
+          "task-a": { paths: OVERLAPPING_PATHS },
+        })
+      ).state;
       assert(
         result.pipelineState.status === "running",
         "terminal claimant does not park the sibling",
@@ -223,9 +229,11 @@ function assert(cond: boolean, msg: string) {
       "whole group cleared, sibling kept",
     );
     const state = makeState(1423, dir);
-    const result = await checkAndRegisterClaims(makeCtx(dir, 1423), state, {
-      "task-a": { paths: ["src/a.ts", "src/b.ts"] },
-    });
+    const result = (
+      await checkAndRegisterClaims(makeCtx(dir, 1423), state, {
+        "task-a": { paths: ["src/a.ts", "src/b.ts"] },
+      })
+    ).state;
     assert(
       result.pipelineState.status === "running",
       "grouped cycle releases BOTH entries on clear",
@@ -333,12 +341,14 @@ function assert(cond: boolean, msg: string) {
     seedClaims(dir, [
       { issue: 1504, pid: process.pid, paths: CLAIMED_PATHS, startedAt: now - CLAIM_STALE_MS - 1 },
     ]);
-    const parked = await checkAndRegisterClaims(
-      makeCtx(dir, 1505),
-      makeState(1505, dir),
-      { "task-a": { paths: OVERLAPPING_PATHS } },
-      now,
-    );
+    const parked = (
+      await checkAndRegisterClaims(
+        makeCtx(dir, 1505),
+        makeState(1505, dir),
+        { "task-a": { paths: OVERLAPPING_PATHS } },
+        now,
+      )
+    ).state;
     assert(
       parked.pipelineState.status === "running",
       "a corrupt-claimant claim past the bound does NOT park the sibling",

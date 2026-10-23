@@ -46,25 +46,27 @@ export function planQualityRecord(
 /**
  * #1756 — a halt that follows a corrective dispatch must not persist
  * `planQuality.redispatched: false` and deny the dispatch the cycle paid for.
- * Only a state that already carries a verdict is corrected: a `dispatch-failed`
- * tail has none, and inventing `plan-spec-mismatch` there would blame the
- * planner for a provider error (the shape test-plan-workstream-tool.ts pins).
- * No-op when the state already says a corrective ran.
+ * When the state carries no verdict at all — a `dispatch-failed` tail, or a
+ * park whose only record was the cap-hit — a record is WRITTEN with
+ * `redispatched: true` and NO `reason`: inventing `plan-spec-mismatch` there
+ * would blame the planner for a provider error, which is the shape
+ * test-plan-workstream-tool.ts pins (a failed corrective ends on its
+ * `dispatch-failed`, never on the zero-call verdict). An existing `reason` is
+ * always preserved verbatim. No-op when the state already says a corrective ran.
  */
 export function withCorrectiveDispatch(
   state: WorkState,
   input: PlanQualityInput,
-  redispatched: boolean,
   droppedEdges: DroppedEdges | undefined,
   unfence: PlanUnfenceSummary | undefined,
 ): WorkState {
   const prior = state.pipelineState.planQuality;
-  if (prior === undefined || prior.redispatched) return state;
+  if (prior?.redispatched) return state;
   return {
     ...state,
     pipelineState: {
       ...state.pipelineState,
-      planQuality: planQualityRecord(input, true, prior.reason, droppedEdges, unfence),
+      planQuality: planQualityRecord(input, true, prior?.reason, droppedEdges, unfence),
     },
   };
 }

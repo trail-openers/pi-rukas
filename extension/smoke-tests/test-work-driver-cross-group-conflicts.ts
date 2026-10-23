@@ -205,7 +205,7 @@ function assert(cond: boolean, msg: string) {
     const ctx = { repoRoot: dir, issue: 701 } satisfies Partial<
       import("../src/work-driver-context.ts").DriverContext
     > as import("../src/work-driver-context.ts").DriverContext;
-    const result = await checkAndRegisterClaims(ctx, state, workstreams);
+    const result = (await checkAndRegisterClaims(ctx, state, workstreams)).state;
     assert(result.pipelineState.status === "running", "no conflict → state unchanged");
     const claims = await readClaims(dir);
     assert(claims.length === 1, "claim was registered");
@@ -225,7 +225,11 @@ function assert(cond: boolean, msg: string) {
     const ctx = { repoRoot: dir, issue: 802 } satisfies Partial<
       import("../src/work-driver-context.ts").DriverContext
     > as import("../src/work-driver-context.ts").DriverContext;
-    const result = await checkAndRegisterClaims(ctx, state, workstreams);
+    const outcome = await checkAndRegisterClaims(ctx, state, workstreams);
+    const result = outcome.state;
+    // #1756 — the gate's own report is the contract its caller branches on, so
+    // this case pins it alongside the event it derives from.
+    assert(outcome.parked, "the gate REPORTS the conflict park (parked: true)");
     const capHit = result.eventLog.find((e) => e.kind === "cap-hit");
     assert(capHit !== undefined, "cap-hit event emitted on conflict");
     assert(capHit?.cap === "cross-group-conflict", "cap type is cross-group-conflict");
