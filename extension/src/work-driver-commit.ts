@@ -245,6 +245,9 @@ export async function mechanizedCommitPr(
       dirtyRootExempt: ctx.dirtyRootExempt,
       commitTitle: title,
       commitBody,
+      // #1788 — the fast-forward path re-checks the message on its own; the
+      // issue number is only what its refusal names.
+      issue: ctx.issue,
       mode: followupBase ? "followup" : "create",
       fastForward: ps.continuedPr !== undefined,
       // Only the workstream that fixed something has a diff on a second round.

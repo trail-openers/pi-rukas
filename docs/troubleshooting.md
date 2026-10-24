@@ -632,6 +632,23 @@ out-of-root check runs **before** the file is opened, so a file outside the root
 path alone and its content is neither read nor quoted. The repository is a root because the /work
 driver and its agents write PR and handoff bodies under `<repo>/tmp/issue-<N>/`.
 
+**A wrapper prefix does not put a publish out of reach.** The scan strips the process wrappers
+before it looks for a publish verb — `sudo`, `env` (including `env -S`), `timeout`, `nohup`,
+`watch`, `xargs`, `exec`, `nice`, `command`, `doas` — together with their option operands (`sudo -u
+user`, `nice -n 5`, `watch -n 1`, `xargs -I@`) and any `NAME=value`/`oo` prefix, so `sudo gh pr
+comment 3 --body …` is checked exactly as `gh pr comment 3 --body …` is, and the same stripping runs
+for the `--body-file` and substitution refusals and for resolving which repository the publish
+targets. A publish the stripped view still cannot see — `python3 -c "gh pr comment 3 --body …"`, an
+interpreter, or a wrapper the table does not list — is not passed: when the raw command text matches
+a publish shape (`gh pr|issue|release create|comment|edit|review`, a `gh api` carrying a field flag,
+or a `git` … `commit` with a message flag) and the scan found no surface, the command is refused as a
+publish the guard could not see, and the remedy is to run `gh` or `git` directly.
+
+**The guard scans GitHub, not every forge.** The publish shapes and the verb tables name `gh` and
+`git`; a `glab` publish is not scanned, and non-github.com remotes are not push-scanned (issue
+decision 3 puts the forge boundary at github.com). `merge-guard.ts` is the guard that refuses a
+`glab mr merge`; nothing else in this area knows glab.
+
 **Escape hatch:** `PI_ENSEMBLE_PUBLIC_HYGIENE=0` disables the guard (only `0`; `false` and `off` are
 not off switches). Set it for one command (`PI_ENSEMBLE_PUBLIC_HYGIENE=0 gh pr create …`) rather than
 in the shell rc — the guard's value is that it runs on every publish, and an rc-level disable is

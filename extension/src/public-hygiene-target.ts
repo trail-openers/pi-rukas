@@ -149,7 +149,7 @@ function isAssignment(w: string): boolean {
  */
 function gitWords(argv: readonly string[]): string[] | undefined {
   const words = unwrap(argv).argv;
-  let i = commandPrefixLength(words);
+  const i = commandPrefixLength(words);
   if (i >= words.length || (words[i] ?? "").replace(/^.*\//, "") !== "git") return undefined;
   return words.slice(i);
 }

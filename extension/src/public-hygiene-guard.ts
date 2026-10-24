@@ -107,6 +107,7 @@ import { type DenylistRead, readPublicDenylist } from "./public-denylist.ts";
 import { hygieneGuardDisabled } from "./public-hygiene-config.ts";
 import { pushGitCwd } from "./public-hygiene-cwd.ts";
 import { firstHit } from "./public-hygiene-hit.ts";
+import { looksLikePublish, unseenPublishReason } from "./public-hygiene-publish-shapes.ts";
 import { scanPushRange } from "./public-hygiene-push.ts";
 import {
   type DenylistHitLocation,
@@ -120,7 +121,6 @@ import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import type { PushScanResult } from "./public-hygiene-types.ts";
 import type { Verdict } from "./public-hygiene-verdict.ts";
 import { traceVerdict } from "./public-hygiene-verdict.ts";
-import { looksLikePublish, unseenPublishReason } from "./public-hygiene-publish-shapes.ts";
 import {
   type VisibilityFn,
   ghVisibility,
