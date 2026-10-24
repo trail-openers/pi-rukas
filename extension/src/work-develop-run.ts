@@ -1,17 +1,13 @@
 /**
  * work-develop-run — #679: the per-workstream dispatch closure for runDevelop.
  *
- * Extracted from work-driver-branch-develop.ts (500-line gate). Owns the
- * shared dispatch logic for one workstream (memory-brief retrieval, the
- * developer + speculative-explore race, the completion and `branch-completed`
- * events, the case-1 sibling-injection). The dependent phase
- * (`runDependentWorkstreams`) moved VERBATIM to work-develop-dependent.ts for
- * the size gate; `parkDeferredLeftover` stays here. The closure captures
- * per-run state via `DevelopRunState` so the caller shares it across phases.
- *
- * `runDevelopTopological` (#679: the topological-dispatch core — independent
- * fan-out, failed/skipped detection, the safety net + verify gate) lives in
- * work-develop-topological.ts.
+ * Extracted from work-driver-branch-develop.ts (500-line gate). Owns the shared
+ * dispatch logic for one workstream (memory-brief retrieval, the developer +
+ * speculative-explore race, the completion and `branch-completed` events, the
+ * case-1 sibling-injection); `parkDeferredLeftover` stays here and the
+ * dependent phase is re-exported from work-develop-dependent.ts below. The
+ * closure captures per-run state via `DevelopRunState`. `runDevelopTopological`
+ * (#679) lives in work-develop-topological.ts.
  */ import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
@@ -498,3 +494,7 @@ export function makeRunOneWorkstream(
     }
   };
 }
+
+/** #799 — the dependent phase lives in work-develop-dependent.ts (moved for the
+ * size gate); re-exported so its historical import path keeps working. */
+export { runDependentWorkstreams } from "./work-develop-dependent.ts";
