@@ -21,6 +21,7 @@ import {
   isHarnessWrapper,
 } from "./work-driver-verify-failures.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
+import { harvestConsolidatedTallies } from "./work-driver-verify-tally.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** One verify run the gate actually made. */
@@ -108,11 +109,30 @@ export function assertionLines(text: string): string[] {
     // `extractSpecificAssertion` refuses it, and this reader must agree with
     // it — but the gate's own lines sit inside it as line-separated text, and
     // each of those is offered below.
+    //
+    // #1762 - the walk is POSITION-PRESERVING. The outer pass walks
+    // `splitLines(text)` and pushes each non-wrapper line in place; a wrapper's
+    // inner stream then gets its OWN `splitLines` walk immediately after it, every
+    // line judged on its own and keeping its position in the stream. Inner lines
+    // are never rejoined with the wrapper sentence and never re-anchored to it:
+    // re-joining would put a gate line inside harness prose, which is the #798
+    // defect through this door. Only the `formatExecError` wrapper is covered -
+    // the smoke-tier wrapper is a different sentence, out of scope here.
     if (!isHarnessWrapper(line)) push(line);
     const inner = harnessInnerLine(line);
     if (inner === undefined) continue;
     for (const raw2 of splitLines(inner)) push(raw2.trim());
   }
+  // #1762 - a consolidated tally block (`test.sh: failed checks (2)` with the names
+  // indented beneath it) joins into ONE evidence line. Appended AFTER the stream's
+  // own lines, so an assertion the gate printed outranks a tally; and
+  // CONSOLIDATED-ONLY for the reason stated in `work-driver-verify-tally.ts`: a
+  // per-worktree record's text is the harness's ONE-LINE wrapper, in which the
+  // indentation the harvest reads cannot exist - so the per-worktree path never
+  // produces a joined tally line. One joined line per tally, so it costs ONE
+  // `CORRECTIVE_MAX_LINES` slot and is cut at `CORRECTIVE_LINE_MAX` like any other
+  // evidence line. Names are never emitted on their own.
+  for (const joined of harvestConsolidatedTallies(text)) push(joined);
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis.
   const marked = out.filter((l) => l.startsWith("\u2717"));

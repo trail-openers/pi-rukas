@@ -62,7 +62,11 @@ import {
   looksLikeCredential,
   sharesAssertion,
 } from "./work-driver-verify-assertion.ts";
-import { FAILED_MARKER_RE, classifyFailureLine } from "./work-driver-verify-failures.ts";
+import {
+  FAILED_MARKER_RE,
+  classifyFailureLine,
+  isBareFailedMarker,
+} from "./work-driver-verify-failures.ts";
 
 // The assertion-extraction seam lives in `work-driver-verify-assertion.ts` (the
 // file-size split, AGENTS.md §12) and is re-exported here so every existing reader
@@ -293,14 +297,17 @@ export function classifyConsolidatedVerifyFailure(
  * `LOOKS_LIKE_SECRET`) is DROPPED here, not masked.
  *
  * The count summary is the one marker-shaped line this predicate must still keep —
- * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the summary is
- * matched explicitly before the marker rule can drop it. It carries the same
- * secret guard.
+ * the marker veto below would otherwise drop it, and it carries the count. It is
+ * matched explicitly BEFORE the bare-marker rule can drop it. #1762: that veto used
+ * to be a blanket `/^FAILED:/`, which also refused the payload-bearing marker this
+ * predicate wants (it classifies as a shape that NAMES a check); it now asks
+ * `isBareFailedMarker`, so the only marker-shaped lines it can still drop are the
+ * ones that name nothing. Same secret guard on both arms.
  */
 function isNamedFailureLine(line: string): boolean {
   if (/^FAILED:\s*\d+\s+test\(s\)/.test(line))
     return FAILED_MARKER_RE.test(line) && !looksLikeCredential(line);
-  if (isNonAssertionLine(line)) return false;
+  if (isBareFailedMarker(line) || isNonAssertionLine(line)) return false;
   return classifyFailureLine(line)?.namesTest === true;
 }
 

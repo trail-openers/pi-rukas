@@ -48,6 +48,7 @@ import { splitLines } from "./work-driver-verify-support.ts";
 /** The shape a line was recognised as. Stable strings: tests pin them. */
 export type FailureShape =
   | "failed-marker"
+  | "failed-marker-payload"
   | "assertion-mark"
   | "diagnostic"
   | "script-tally"
@@ -70,9 +71,44 @@ export interface FailureLine {
  * three readers that must agree on what a marker IS — this table, the evidence-tail
  * anchor in `work-driver-exec-error.ts`, and the assertion veto in
  * `work-driver-consolidation-classify.ts` — share one regex rather than each
- * keeping a copy that can drift.
+ * keeping a copy that can drift. The marker's INTERNAL grammar (bare vs
+ * payload-bearing, the count summary, the tally count) lives in
+ * `work-driver-verify-marker.ts`, the #1762 size split, and is re-exported through
+ * this module so every reader keeps importing the failure-line vocabulary from ONE
+ * place instead of keeping a private copy of it.
  */
-export const FAILED_MARKER_RE = /^FAILED: .+$/;
+export { FAILED_MARKER_RE } from "./work-driver-verify-marker.ts";
+
+import {
+  FAILED_MARKER_RE,
+  isBareFailedMarker,
+  payloadDetail,
+} from "./work-driver-verify-marker.ts";
+
+/**
+ * The table's regex form of the payload shape, derived from the ONE judge
+ * ({@link payloadDetail}) instead of a second pattern: the table wants an
+ * `entry.re` to test, and a regex spelled out here would be a second definition of
+ * "which marker names an assertion" — precisely the drift this layer exists to
+ * forbid. It agrees with {@link ASSERTION_MARKER_SHAPE}'s `matches` by
+ * construction, since both wrap the same function over the same line.
+ */
+const MARKER_PAYLOAD_RE: RegExp = {
+  test: (line: unknown) => payloadDetail(String(line)) !== undefined,
+} as unknown as RegExp;
+
+/**
+ * The `failed-marker` entry, hoisted so the ONE definition serves the table and,
+ * through {@link isBareFailedMarker}, every veto site that used to keep its own
+ * blanket `/^FAILED:/`. Two copies of that regex (one the table answers from, one
+ * the veto asks) is a pair that drifts silently: exempt one and forget the other
+ * and a payload marker either loses its shape or loses its exemption.
+ */
+const FAILED_MARKER_SHAPE: { shape: FailureShape; namesTest: boolean; re: RegExp } = {
+  shape: "failed-marker",
+  namesTest: false,
+  re: FAILED_MARKER_RE,
+};
 
 /**
  * The harness's OWN kill/echo lines — `Command failed: …`, `Exit code: N`, the
@@ -94,15 +130,26 @@ export function isHarnessEchoLine(line: string): boolean {
 }
 
 /**
- * The table, in priority order. Each entry is tried against the whole line and
- * the first match wins, so the two pi-rukas literals (which a generic rule also
- * contains) sit ahead of `diagnostic`, and every success-adjacent key is
- * anchored. Three rules every key obeys:
+ * #1762 — the marker predicates, re-exported so every veto site asks them through
+ * the failure-line module it already imports. `work-driver-verify-assertion.ts` and
+ * `work-driver-consolidation-classify.ts` replace their old blanket `/^FAILED:/`
+ * with `isBareFailedMarker`, and the consolidated tally harvest asks
+ * `scriptTallyCount`; a reader that imported them from a third module would be a
+ * reader that could import a private copy instead.
+ */
+export { isBareFailedMarker, scriptTallyCount } from "./work-driver-verify-marker.ts";
+
+/**
+ * The table, in priority order: the bare `failed-marker` and its count summary
+ * first, then the assertion mark, the driver's own tsc/cargo dialect, the project
+ * runner's tally and the rest. The FIRST match wins, so the two pi-rukas literals
+ * (which a generic rule also contains) sit ahead of `diagnostic`, and every
+ * success-adjacent key is anchored. Three rules every key obeys:
  *
  *   - A FAILURE TOKEN in its own position, not a substring. A word that also
  *     occurs inside ordinary prose (`error`, `cannot`, `not found`) is matched
- *     only where a runner prints it as a status — `a.ts: error`, never
- *     `index.ts: fatal error` — because a line that classifies becomes the
+ *     only where a runner prints it as a status - `a.ts: error`, never
+ *     `index.ts: fatal error` - because a line that classifies becomes the
  *     evidence anchor with `attributed: true` and can earn a corrective round.
  *   - One line, one shape: the table stops at the first match, so `not ok 3 - x`
  *     reports `not-ok` and never `ok`.
@@ -110,6 +157,11 @@ export function isHarnessEchoLine(line: string): boolean {
  *     already settles the `0 failed` tally before the table is asked; the
  *     `[1-9]` keeps that true for a shape `isSuccessLine`'s patterns do not
  *     cover.
+ *
+ * The payload-bearing marker is NOT an entry here: matchShape answers it ahead of
+ * the success veto (a failing marker printed with the counts it compared is vetoed
+ * as a passing tally otherwise), which is the position it needs and cannot get from
+ * table order alone.
  */
 /**
  * The assertion-mark shape, hoisted so the ONE definition serves both the table
@@ -129,9 +181,43 @@ const ASSERTION_MARK_SHAPE: { shape: FailureShape; namesTest: boolean; re: RegEx
   re: /^\s*✗\s/,
 };
 
+/**
+ * The payload-bearing marker shape — the #1762 half of the marker dialect the
+ * table used to answer for only as a bare filename. A validated form rather than
+ * a bare regex: {@link payloadDetail} is the single judge of what it is, and it is
+ * what {@link matchShape}'s pre-veto exemption asks, so the shape and the veto
+ * cannot drift apart. Its table entry sits ahead of the bare `failed-marker` one —
+ * first match wins, and this one names a check.
+ */
+const ASSERTION_MARKER_SHAPE: {
+  shape: FailureShape;
+  namesTest: boolean;
+  matches: (line: string) => boolean;
+} = {
+  shape: "failed-marker-payload",
+  namesTest: true,
+  matches: (line: string) => payloadDetail(line) !== undefined,
+};
+
+/**
+ * The table's own marker pair: the payload-bearing form FIRST (the first match
+ * wins, and it is the one that names a check), then the bare marker and its count
+ * summary. `matchShape` answers the payload form before the success veto as well,
+ * which is the position it actually needs - table order alone would let
+ * `isSuccessLine` veto `FAILED: a_test.sh: expected 0 failures, got 3`.
+ */
+const MARKER_SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegExp }> = [
+  {
+    shape: ASSERTION_MARKER_SHAPE.shape,
+    namesTest: ASSERTION_MARKER_SHAPE.namesTest,
+    re: MARKER_PAYLOAD_RE,
+  },
+  FAILED_MARKER_SHAPE,
+];
+
 const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegExp }> = [
-  // `.pi/verify-cmd`'s smoke loop: the per-file marker and its count summary.
-  { shape: "failed-marker", namesTest: false, re: FAILED_MARKER_RE },
+  // `.pi/verify-cmd`'s smoke loop: payload marker, then bare marker / count summary.
+  ...MARKER_SHAPES,
   ASSERTION_MARK_SHAPE,
   // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
   {
@@ -378,9 +464,24 @@ export function classifyFailureLine(line: string): FailureLine | undefined {
  */
 export function matchShape(line: string): FailureLine | undefined {
   if (line.length === 0) return undefined;
-  // BEFORE the success veto, for the reason in the docblock above.
+  // BEFORE the success veto, for the reason in the docblock above. The payload
+  // marker joins the exemption because it has the SAME property, not because it
+  // happens to sit first in the table: a gate prints a failing per-file marker
+  // with the counts it compared (`FAILED: a_test.sh: expected 0 failures, got 3`),
+  // and `isSuccessLine`'s `\b0\s+failed` / `N passed` arms would veto the one
+  // line that names the defect — the #1762 symptom, arriving through the veto
+  // step rather than the table. The exemption stays sound because the shape
+  // requires a marker prefix AND an assertion token in the detail PAST the path:
+  // a passing tally (`36 cases, 0 failed`, `0 failed`, `12 passed`) prints
+  // neither, so no success line reaches the table through it. Both exemptions are
+  // keyed to the shape object itself, so re-ordering SHAPES cannot re-veto one.
   if (ASSERTION_MARK_SHAPE.re.test(line))
     return { shape: ASSERTION_MARK_SHAPE.shape, namesTest: ASSERTION_MARK_SHAPE.namesTest };
+  if (ASSERTION_MARKER_SHAPE.matches(line))
+    return {
+      shape: ASSERTION_MARKER_SHAPE.shape,
+      namesTest: ASSERTION_MARKER_SHAPE.namesTest,
+    };
   if (isSuccessLine(line)) return undefined;
   for (const entry of SHAPES) {
     if (entry.re.test(line)) return { shape: entry.shape, namesTest: entry.namesTest };
