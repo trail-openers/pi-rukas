@@ -104,6 +104,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { execp } from "./exec.ts";
 import { type DenylistRead, readPublicDenylist } from "./public-denylist.ts";
+import { boundedScan, boundedTarget } from "./public-hygiene-bounds.ts";
 import { hygieneGuardDisabled } from "./public-hygiene-config.ts";
 import { pushGitCwd } from "./public-hygiene-cwd.ts";
 import { firstHit } from "./public-hygiene-hit.ts";
@@ -115,10 +116,9 @@ import {
   refusalFor,
 } from "./public-hygiene-refusals.ts";
 import { PUSH_SCAN_TIMEOUT_MS, commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
-import { type Target, isRepoTarget, resolveCommandTarget } from "./public-hygiene-target.ts";
+import { type Target, isRepoTarget } from "./public-hygiene-target.ts";
 import { publicTextRefusal } from "./public-hygiene-text.ts";
 import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
-import type { PushScanResult } from "./public-hygiene-types.ts";
 import type { Verdict } from "./public-hygiene-verdict.ts";
 import { traceVerdict } from "./public-hygiene-verdict.ts";
 import {
@@ -362,10 +362,20 @@ export async function inspectCommand(
     const remoteUrl = opts.remoteUrl;
     const viaRemote: ((name: string, dir: string) => Promise<string>) | undefined =
       remoteUrl === undefined ? undefined : async (name: string) => await remoteUrl(name);
-    target = await resolveCommandTarget(command, cwd, exec, {
-      pushVerb: opts.pushVerb,
-      remoteUrl: viaRemote,
-    });
+    // THE SAME WALL CLOCK AS EVERY OTHER READ IN THIS GUARD. The resolver asks
+    // `git remote get-url` through a CALLER-SUPPLIED executor and awaits an
+    // injected `remoteUrl` seam, and neither is obliged to answer: an `exec` that
+    // ignores the timeout it is handed, or a fixture seam that never settles, used
+    // to hold the `tool_call` hook open forever while every other read here
+    // (`boundedScan` over the push scan, `isPrivateTarget`'s own bound) was
+    // bounded. A guard that hangs a session is a guard an operator disables.
+    //
+    // A target this guard could not name in the budget is UNKNOWN, which the code
+    // below already treats as "check": no name means no positive private answer,
+    // so the text IS judged. That is the fail-closed direction the module header
+    // states as this guard's standing rule, and it is why timing out costs a
+    // checked private repository rather than a leak.
+    target = await boundedTarget(command, cwd, exec, viaRemote, opts.pushVerb);
   }
   if (target !== undefined && isRepoTarget(target)) {
     const privateRepo = await isPrivateTarget(target, {
@@ -464,25 +474,11 @@ function pushVerbWord(): string {
 }
 
 /**
- * Run the push scan under the guard's own wall clock. Resolves to `undefined`
- * ("the scan did not finish") rather than throwing, because the caller's
- * decision for a scan that never finished is the same as for one that failed:
- * an unreadable range is never a clean one.
+ * The wall clocks over the guard's own reads — `boundedScan` (the push scan) and
+ * `boundedTarget` (the repository-name lookup) — live in
+ * `public-hygiene-bounds.ts`, the module that owns how long the guard waits for
+ * answers it did not produce itself.
  */
-async function boundedScan(
-  ms: number,
-  work: () => Promise<PushScanResult>,
-): Promise<PushScanResult | undefined> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), ms);
-  });
-  try {
-    return await Promise.race([work(), deadline]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
 
 /**
  * The first dirty surface across every text this command would publish lives in
