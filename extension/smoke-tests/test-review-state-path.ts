@@ -100,7 +100,8 @@ try {
     const main = await findingsStateDir(execp, repo);
     const work = await findingsStateDir(execp, wt);
     assert(main !== undefined && work !== undefined, "both checkouts resolve a store");
-    assert(main?.dir === work?.dir, "a linked worktree shares the main checkout's store dir");
+    if (!main || !work) throw new Error("the fixture clone resolved no findings store");
+    assert(main.dir === work.dir, "a linked worktree shares the main checkout's store dir");
     assert(main?.file === work?.file, "…and the same findings file");
     assert(!main.fellBack, "the store is relocated, not left beside the ledger");
     assert(
@@ -148,6 +149,7 @@ try {
 
     const loc = await findingsStateDir(execp, repo);
     assert(loc !== undefined && !loc.fellBack, "the relocated store was created");
+    if (!loc) throw new Error("the migration fixture resolved no store");
     assert(!existsSync(oldFile), "the old file under the git common dir is gone");
     assert(existsSync(path.join(loc.dir, "MIGRATED")), "MIGRATED is written");
     assert(
@@ -161,6 +163,7 @@ try {
     const before = readFileSync(loc.file, "utf8");
     writeFileSync(oldFile, '{"rows":[{"id":"cafe0000","title":"a second round"}]}\n', "utf8");
     const again = await findingsStateDir(execp, repo);
+    if (!again) throw new Error("the second resolve returned nothing");
     assert(again.dir === loc.dir, "a second resolve returns the same directory");
     assert(existsSync(oldFile), "a second resolve does NOT migrate again (MIGRATED honoured)");
     assert(readFileSync(again.file, "utf8") === before, "…and does not touch the live store");
@@ -179,6 +182,7 @@ try {
     const oldFile = path.join(commonDir, FINDINGS_FILE);
     writeFileSync(oldFile, '{"rows":[{"id":"0dd1e5d1","title":"the old row"}]}\n', "utf8");
     const first = await findingsStateDir(execp, repo);
+    if (!first) throw new Error("the both-present fixture resolved no store");
     // The first resolve migrated; simulate a round having written the live store
     // and an old file reappearing (a restore from a stale worktree, a checkout).
     writeFileSync(first.file, JSON.stringify(ROWS, null, 2), "utf8");
@@ -186,6 +190,7 @@ try {
     rmSync(path.join(first.dir, "MIGRATED"));
     resetFindingsStateCache();
     const second = await findingsStateDir(execp, repo);
+    if (!second) throw new Error("the second resolve returned nothing");
     assert(
       JSON.parse(readFileSync(second.file, "utf8")).rows[0].title === "a stored finding",
       "the live store's rows are kept when both files exist",
@@ -220,6 +225,7 @@ try {
     chmodSync(agent, 0o700);
     assert(!threw, "an unwritable state root does not throw");
     assert(loc !== undefined, "…and still answers with a location");
+    if (!loc) throw new Error("the fallback probe returned nothing");
     assert(loc.fellBack, "…flagged as the fallback");
     assert(
       path.dirname(loc.file) === commonDir,

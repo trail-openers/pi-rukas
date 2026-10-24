@@ -10,8 +10,6 @@
  * arguments, which is why the two halves can be separate files.
  */
 
-import { partitionDecisions } from "../src/lens-residuals.ts";
-import type { Finding } from "../src/lens-review-types.ts";
 import {
   type FindingIdentity,
   type MatchableRow,

@@ -37,9 +37,10 @@
  * it; runtime isolation is the primary mechanism.
  */
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execp } from "../src/exec.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -338,6 +339,121 @@ assert(
     // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset"
     if (priorAdopt === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = priorAdopt;
+  }
+}
+
+// ── 5. #1764 — the findings store never resolves INSIDE a clone or a worktree ──
+//
+// The whole point of `review-state-path.ts` is that the findings file left the git
+// common dir. A regression that put it back would re-open the guard problem the
+// relocation closed, so the property is asserted here rather than trusted: for a
+// real clone and one of its linked worktrees, the resolved findings DIR must sit
+// under the agent dir, not under the clone, its git dir, or any worktree. The one
+// documented exception is the fallback (a store that could not be relocated stays
+// beside the ledger) — and that shape must be the one the resolver WARNS about, so
+// a test asserting it also proves the operator sees it.
+{
+  const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+  const { gitTestEnv } = await import("./lib/git-test-env.ts");
+  const statePath = await import("../src/review-state-path.ts");
+  const root = mkdtempSync(path.join(os.tmpdir(), "findings-outside-"));
+  const repo = path.join(root, "repo");
+  const wt = path.join(root, "wt");
+  mkdirSync(repo);
+  const env = gitTestEnv();
+  const git = (...args: string[]): string =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env }).trim();
+  const savedAgent = process.env.PI_AGENT_DIR;
+  const savedOverride = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  process.env.PI_AGENT_DIR = path.join(root, "agent");
+  delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  try {
+    statePath.resetFindingsStateCache();
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "dev@example.com");
+    git("config", "user.name", "dev");
+    writeFileSync(path.join(repo, "a.ts"), "export const a = 1;\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    git("worktree", "add", "-q", "-b", "feat/wt", wt, "HEAD");
+    const commonDir = path.resolve(repo, git("rev-parse", "--git-common-dir"));
+
+    for (const [label, cwd] of [
+      ["the main checkout", repo],
+      ["a linked worktree", wt],
+    ] as Array<[string, string]>) {
+      statePath.resetFindingsStateCache();
+      const loc = await statePath.findingsStateDir(execp, cwd);
+      assert(loc !== undefined, `#1764 ${label}: a findings location resolves`);
+      assert(
+        loc!.fellBack === false,
+        `#1764 ${label}: the store is relocated, so the invariant is not being proven by the fallback`,
+      );
+      // The property is about the CLONE and its worktrees, not the temp dir they
+      // were created in: a gate that points TMPDIR at one directory legitimately
+      // puts the agent dir beside the repo, and that is not the regression.
+      const insideAny = (candidate: string): boolean =>
+        candidate === repo ||
+        candidate.startsWith(`${repo}${path.sep}`) ||
+        candidate === wt ||
+        candidate.startsWith(`${wt}${path.sep}`) ||
+        candidate === commonDir ||
+        candidate.startsWith(`${commonDir}${path.sep}`);
+      assert(
+        !insideAny(loc!.dir),
+        `#1764 ${label}: the findings dir is not inside the clone, its git dir or a worktree`,
+      );
+      assert(
+        !loc!.dir.includes(`${path.sep}.git${path.sep}`) && !loc!.dir.endsWith(`${path.sep}.git`),
+        `#1764 ${label}: and no path segment of it is a git directory`,
+      );
+      assert(
+        loc!.dir.startsWith(path.join(process.env.PI_AGENT_DIR!, statePath.STATE_LEAF)),
+        `#1764 ${label}: it lives under <agentDir>/<state leaf> instead`,
+      );
+    }
+
+    // The documented exception: when the state dir cannot be created the store
+    // stays beside the ledger - inside the clone - and that is only allowed as the
+    // WARNED fallback. A fresh agent dir is used so the process cache from the two
+    // relocated resolves above cannot answer for it; an unwritable state root is
+    // the fault, and the resolver must both fall back and say so on stderr rather
+    // than relocate silently (or throw).
+    statePath.resetFindingsStateCache();
+    process.env.PI_AGENT_DIR = mkdtempSync(path.join(root, "agent-fallback-"));
+    const agentDirPath = process.env.PI_AGENT_DIR!;
+    mkdirSync(path.join(agentDirPath, statePath.STATE_LEAF), { mode: 0o700 });
+    chmodSync(path.join(agentDirPath, statePath.STATE_LEAF), 0o500);    statePath.resetFindingsStateCache();
+    const warned: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      warned.push(typeof chunk === "string" ? chunk : String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let fellBack;
+    try {
+      fellBack = await statePath.findingsStateDir(execp, repo);
+    } finally {
+      process.stderr.write = realWrite;
+      chmodSync(path.join(agentDirPath, statePath.STATE_LEAF), 0o700);
+    }
+    assert(fellBack?.fellBack === true, "#1764: an uncreatable state dir falls back beside the ledger");
+    assert(
+      fellBack!.dir === commonDir,
+      "#1764: the ONE documented in-clone location is the fallback, beside the ledger",
+    );
+    assert(
+      warned.some((w) => w.includes("WARN") && w.includes("review-state")),
+      "#1764: the fallback traces, so an in-clone store is never silent",
+    );
+    git("worktree", "prune");
+  } finally {
+    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = savedAgent;
+    if (savedOverride === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedOverride;
+    statePath.resetFindingsStateCache();
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

@@ -47,10 +47,12 @@
     "smoke-tests/test-adversarial-ledger-row-identity.ts",
     "smoke-tests/test-adversarial-ledger-nonce-roundtrip.ts",
     "smoke-tests/review-accept-guard-misfire-cases.ts",
-    "smoke-tests/test-review-accept-guard-misfire-1665.ts",
     "smoke-tests/test-backlog-reminder.ts",
     "smoke-tests/lib/lens-fix-budget-share-fixture.ts",
     "smoke-tests/test-lens-fix-budget-share.ts",
-    "smoke-tests/test-lens-fix-budget-owed-route.ts"
+    "smoke-tests/test-lens-fix-budget-owed-route.ts",
+    "smoke-tests/test-review-state-guard.ts",
+    "smoke-tests/test-review-state-mechanism.ts",
+    "smoke-tests/test-review-state-path.ts"
   ]
 }
