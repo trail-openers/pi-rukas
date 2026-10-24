@@ -24,6 +24,7 @@ import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import { assertionLines } from "./work-driver-verify-record.ts";
+import { consolidatedAssertionLines } from "./work-driver-verify-record.ts";
 import type { verifyStepOutcome } from "./work-driver-verify.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -136,7 +137,7 @@ export function decideCorrectiveRound(
   // same lines.
   if (Object.keys(worktrees).length > 1)
     return no("the consolidated failure cannot be attributed to one of several workstreams");
-  const lines = assertionLines(run.consolidatedRaw ?? "");
+  const lines = consolidatedAssertionLines(run.consolidatedRaw ?? "");
   if (lines.some(looksLikeMissingDeps))
     return no("an evidence line names a missing dependency; the deps hint stays");
   if (lines.length === 0) return no("the consolidated failure carries no specific failing line");
