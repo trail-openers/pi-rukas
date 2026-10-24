@@ -21,6 +21,7 @@ import {
   isHarnessWrapper,
 } from "./work-driver-verify-failures.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
+import { harvestConsolidatedTallies } from "./work-driver-verify-tally.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** One verify run the gate actually made. */
@@ -47,7 +48,7 @@ export type VerifyCommandRecord = { status: "not-run" } | RanVerifyRecord;
  * scan window is 8 KiB, so an evidence line longer than this is a serialized
  * payload rather than an assertion, and the handoff does not need it whole.
  */
-const ASSERTION_LINE_MAX = 500;
+export const ASSERTION_LINE_MAX = 500;
 
 /** The out-parameter the gate fills in place. Starts as "not-run". */
 export interface VerifyRecordSlot {
@@ -78,6 +79,28 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  *     breaks leaves `\r` behind here, and an unsplit `\r` makes the trimmed
  *     line differ from what the extractor and the classifier both saw.
  *
+ *   - **The tally harvest is an OPTION on this reader, not a second reader.**
+ *     {@link AssertionLinesOptions}'s `harvestTallies` is the ONLY difference
+ *     between the two routes; everything else — dedupe, redact, rank — is one
+ *     pipeline. See {@link consolidatedAssertionLines}. The harvest defaults OFF
+ *     because a per-worktree record's text is `formatExecError`'s wrapper, and when
+ *     the tail fits the window that wrapper KEEPS its newlines and indentation — so
+ *     an unconditional harvest here read the tally block out of a per-worktree
+ *     stream, joined the harness's own sentence into a SECOND evidence line
+ *     (`verify command … failed in <cwd>: test.sh: failed checks (2), not run (0): lint,
+ *     test/b_test.sh`) and spent a `CORRECTIVE_MAX_LINES` slot on harness prose.
+ *
+ *   - **The harvest reads the READER'S VIEW, never the raw text.** The
+ *     `harvestTallies` option feeds {@link harvestConsolidatedTallies} the stream
+ *     THIS function just walked — every wrapper line replaced by what
+ *     {@link harnessInnerLine} reports behind it — not `text`. A wrapper line that
+ *     carried a tally block (`… failed in <cwd>: test.sh: failed checks (2)` above
+ *     two indented names) is itself the tally line the harvest anchors on, so
+ *     harvesting the raw text joined the harness's own sentence into the evidence
+ *     line and spent a `CORRECTIVE_MAX_LINES` slot on it (#1810's adversarial
+ *     reproduction). The unwrap is the same one the per-line walk above applies, so
+ *     harvest and reader can no longer disagree about what a line IS.
+ *
  *   - **What comes back is REDACTED.** These lines are the evidence of a park:
  *     they reach the corrective-round prompt, the handoff and the forge comment.
  *     A failing assertion routinely ECHOES the value it compared, so every line is
@@ -85,7 +108,19 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  *     ({@link namedFailureLines}) uses — one ordering rule for every stored verify
  *     line, so a bound cannot be applied in one reader and forgotten in another.
  */
-export function assertionLines(text: string): string[] {
+/**
+ * Options distinguishing the two routes into this reader. `harvestTallies` is the
+ * ONLY route difference: the consolidated route holds the gate's raw stream and so
+ * can read a script's tally block; every other route holds harness prose and must
+ * not. Dedupe, redaction and ranking are shared — a second reader that copies them
+ * is a reader that forgets one of them (the #1808 round found exactly that).
+ */
+export interface AssertionLinesOptions {
+  /** Harvest indented tally name blocks and append them as joined lines. */
+  harvestTallies?: boolean;
+}
+
+export function assertionLines(text: string, opts: AssertionLinesOptions = {}): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const push = (line: string): void => {
@@ -108,15 +143,56 @@ export function assertionLines(text: string): string[] {
     // `extractSpecificAssertion` refuses it, and this reader must agree with
     // it — but the gate's own lines sit inside it as line-separated text, and
     // each of those is offered below.
+    //
+    // #1762 - the walk is POSITION-PRESERVING. The outer pass walks
+    // `splitLines(text)` and pushes each non-wrapper line in place; a wrapper's
+    // inner stream then gets its OWN `splitLines` walk immediately after it, every
+    // line judged on its own and keeping its position in the stream. Inner lines
+    // are never rejoined with the wrapper sentence and never re-anchored to it:
+    // re-joining would put a gate line inside harness prose, which is the #798
+    // defect through this door. Only the `formatExecError` wrapper is covered -
+    // the smoke-tier wrapper is a different sentence, out of scope here.
     if (!isHarnessWrapper(line)) push(line);
     const inner = harnessInnerLine(line);
     if (inner === undefined) continue;
     for (const raw2 of splitLines(inner)) push(raw2.trim());
   }
+  // The tally harvest is gathered HERE so it goes through the same `push` as every
+  // other line: same dedupe (`seen`), same redact-then-bound, same `✗` preference.
+  if (opts.harvestTallies === true) {
+    // The reader's own view of the stream, not `text`: a wrapper line is replaced
+    // by what sits behind it (empty when the wrapper carries no gate stream), so
+    // the harness sentence can never be the tally the harvest anchors its join on.
+    const view = splitLines(text)
+      .map((l) => (isHarnessWrapper(l) ? (harnessInnerLine(l) ?? "") : l))
+      .join("\n");
+    for (const joined of harvestConsolidatedTallies(view)) push(joined);
+  }
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis.
   const marked = out.filter((l) => l.startsWith("\u2717"));
   return marked.length > 0 ? marked : out;
+}
+
+/**
+ * The evidence lines of a CONSOLIDATED verify run: {@link assertionLines} with
+ * `harvestTallies` on — one joined line per tally block (`test.sh: failed checks
+ * (2)` with the names indented beneath it) appended AFTER the assertions, so an
+ * assertion the gate printed outranks a tally and the joined tally costs ONE
+ * `CORRECTIVE_MAX_LINES` slot and is cut at `CORRECTIVE_LINE_MAX` like any other
+ * evidence line. Names are never emitted on their own.
+ *
+ * A one-line wrapper over the SAME reader, kept under this name because
+ * `work-driver-corrective-decide.ts` and the shape suite call it. It exists so the
+ * caller that knows it holds a RAW consolidated stream says so, rather than the
+ * reader guessing from text that looks like a stream. The guess is what was wrong:
+ * `formatExecError` keeps the tail's newlines and indentation whenever the tail
+ * fits its window, so a per-worktree record can carry an indented tally block, and
+ * a harvest inside {@link assertionLines} emitted a second line opening with the
+ * wrapper sentence from harness prose.
+ */
+export function consolidatedAssertionLines(raw: string): string[] {
+  return assertionLines(raw, { harvestTallies: true });
 }
 
 /**

@@ -129,6 +129,22 @@ export const SEAMS_1454: Seam[] = [
     },
   },
   {
+    // #1762 — the CONSOLIDATED-only tally harvest (a script's `failed checks (N)`
+    // block with its names indented beneath it). `consolidatedAssertionLines` in
+    // `work-driver-verify-record.ts` is its production caller — the ONLY one, since
+    // the #1808 fix round moved the harvest out of `assertionLines`, which every
+    // per-worktree route reads.
+    //
+    // #1808 round — the entry lives in this split file, not beside the other two
+    // verify layers in `seams-registry.ts`: that file reached 501 lines with the
+    // `SHAPE_NAMES_A_CHECK` declaration added, so the 500-line gate (AGENTS.md §12)
+    // is what moved it, not a different classification. Nothing about the seam
+    // changed.
+    file: "work-driver-verify-tally.ts",
+    pending: {},
+    canary: { symbol: "harvestConsolidatedTallies", importer: "work-driver-verify-record.ts" },
+  },
+  {
     // #1454 r3 — the operator sentence for a refused claims registration,
     // split from work-driver-explain.ts for the 500-line gate (the same seam
     // -other/-lens/-verify use). Dispatched by explainCap's exhaustive switch;
