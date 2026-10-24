@@ -17,17 +17,7 @@
  * - glued SHORT (`-btext`, `-Fbody=x`, `-mtext`) — getopt accepts it, so anything
  *   after the two-character flag is the value, and treating only the bare flag as
  *   a flag is how `-Fbody=@notes.md` stopped counting as a publish.
- *
- * `unpairedQuote` is here too because it is the same question — how a word is
- * delimited — asked of the whole line rather than one word. An unmatched quote
- * makes the word splitter absorb every later word into one operand, so the text
- * the scan reads is not the text bash publishes; that is an unreadable publish,
- * and this guard's rule for one has never changed. It is a PARITY COUNT, not a
- * quote model: modelling shell quoting is itself the defect class that #1788's
- * first shape carried, and a count is the most a caller may trust.
  */
-
-import { TEXT_FLAG_LOCATIONS } from "./public-hygiene-unreadable.ts";
 
 /** What `--flag value` / `--flag=value` / a glued short form resolve to. */
 export function valueAfter(
@@ -90,60 +80,5 @@ export function textFlagValue(
   return valueAfter(words, i);
 }
 
-/** Glued short form: `-bfoo` is `-b` with value `foo` (getopt accepts it). */
-export function glued(w: string, flag: string): string | undefined {
-  if (flag.length !== 2 || !flag.startsWith("-")) return undefined;
-  if (!w.startsWith(flag) || w.length <= flag.length) return undefined;
-  return w.slice(flag.length);
-}
-
 /** A `KEY=value` word, as bash accepts before a command name. */
 export { isAssignment } from "./public-hygiene-prefix.ts";
-
-/**
- * Does some simple command of this split name an inline publish-text flag whose
- * operand the word splitter never produced? `simpleCommands` carries an open
- * quote to the end of the line, so an unmatched quote swallows every word after
- * it and the flag arrives with nothing to read — which no text check can judge.
- * Only the SEPARATE form counts (`--body`, `-m`), and only a flag that ends at a
- * delimiter, so a glued value (`-btext`), a `--body=x` and `--body-file` all
- * have operands and stay out of here.
- */
-export function operandlessTextFlag(words: readonly (readonly string[])[]): boolean {
-  for (const argv of words) {
-    for (let i = 0; i < argv.length; i++) {
-      const w = argv[i] ?? "";
-      for (const [flag] of TEXT_FLAG_LOCATIONS) {
-        if (w !== flag) continue;
-        if (argv[i + 1] === undefined) return true;
-      }
-    }
-  }
-  return false;
-}
-
-/**
- * Does this command text leave a quote unpaired? A parity count over each quote
- * character, honouring a backslash only where bash does (inside double quotes,
- * which is where `\"` does not close anything). Deliberately NOT a word model —
- * modelling shell quoting is the defect class #1788's first shape carried — just
- * the one question the absorption case needs.
- */
-export function unpairedQuote(raw: string): boolean {
-  const counts: Record<string, number> = { "'": 0, '"': 0 };
-  let inDouble = false;
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i] ?? "";
-    if (ch === "\\" && inDouble) {
-      i++;
-      continue;
-    }
-    if (ch === '"') {
-      counts['"'] = (counts['"'] ?? 0) + 1;
-      inDouble = (counts['"'] ?? 0) % 2 === 1;
-      continue;
-    }
-    if (ch === "'" && !inDouble) counts["'"] = (counts["'"] ?? 0) + 1;
-  }
-  return Object.values(counts).some((n) => n % 2 !== 0);
-}

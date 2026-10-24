@@ -5,6 +5,7 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
+import { cherryPickCommitGate } from "./work-driver-integrate-commit-gate.ts";
 import { isCommitOnBranch } from "./work-driver-integrate-commit.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
 import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.ts";
@@ -346,6 +347,8 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       maxBuffer: 64 * 1024,
     });
     if (hasStaged.trim()) {
+      const refused = await cherryPickCommitGate(execFn, opts, repoRoot, restoreRoot, claimFor);
+      if (refused !== undefined) return refused;
       await execFn(
         `git commit -m ${JSON.stringify(opts.commitTitle)} -m ${JSON.stringify(opts.commitBody)}`,
         { cwd: repoRoot, maxBuffer: 256 * 1024 },

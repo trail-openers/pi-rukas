@@ -78,7 +78,7 @@ import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
 import { publishArgv, publishCommandLines } from "./public-hygiene-command.ts";
 import { codeOf } from "./public-hygiene-files.ts";
-import { isAssignment, operandlessTextFlag, unpairedQuote } from "./public-hygiene-operands.ts";
+import { isAssignment } from "./public-hygiene-operands.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
 import { containsShellExpansion, shellExpansionProblem } from "./public-hygiene-substitution.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
@@ -99,13 +99,12 @@ const SHELL_BUILT_REASON =
   "is built by the shell, so its text cannot be read from the command; pass the text with --body-file (or, for gh api, -F field=@file)";
 
 /**
- * The reason an operand that never survived the word split is refused. Kept
- * separate from `SHELL_BUILT_REASON` because it names a different cause: there
- * the shell assembles the text, here the guard's own reader could not finish
- * reading it.
+ * The reason for the fail-closed invariant: this command was recognised as a
+ * publish, yet the scan read no text and hit no problem, so whatever the forge
+ * is about to receive is text this guard never saw.
  */
-const UNSPLIT_OPERAND_REASON =
-  "could not be read (an unmatched quote leaves the operand's text unknown); pass the text with --body-file (or, for gh api, -F field=@file)";
+const UNREADABLE_PUBLISH_REASON =
+  "could not be read (this command was recognised as a publish, but no title, body, comment, field or commit message was reachable to check); pass the text with --body-file (or, for gh api, -F field=@file)";
 
 /**
  * Does this argv carry a publish verb whose text flags matter? The scan's own
@@ -213,19 +212,28 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
   if (expansion !== undefined) {
     scan.problems.push(expansion);
   }
-  // An UNMATCHED QUOTE is the other shape of "the guard could not read it".
-  // `simpleCommands` closes an unterminated quote at end of input, so the quote
-  // does not drop the operand — it ABSORBS every word after it, flags included:
-  // in `--body 'oops --title "x $(cat f)"` the reader saw one operand and lost the
-  // title and its substituted value, while bash publishes both. That is an
-  // unreadable publish and this guard's rule for one has never changed — a
-  // refusal, never a pass. It is a parity count over the quotes, not a word
-  // model (`unpairedQuote`), and a closed quoted body (`--body 'cost 100
-  // dollars'`) pairs up and is judged as prose.
-  if (scan.publishes && (operandlessTextFlag(words) || unpairedQuote(command))) {
+  // THE FAIL-CLOSED INVARIANT (#1792 follow-up, item 2). A command the scan
+  // RECOGNISED as a publish and whose text flags it owns produced NEITHER a text
+  // NOR a problem is a publish whose text nobody looked at — the same refusal the
+  // raw-shape backstop exists for, which the backstop itself cannot make (it is
+  // gated on `!scan.publishes`). Recognition without evidence is a refusal.
+  //
+  // What does NOT fire: a publish that names no text surface at all. `git commit`
+  // with no `-m`/`-F` (and `git commit --amend --no-edit`) take the message from
+  // the editor or the amended commit, so the guard never had a surface and the
+  // command is ordinary. Each verb reader sets `textSurfaceNamed` when it sees a
+  // flag that carries text or names a file; only then is an empty result a
+  // refusal. What DOES fire is a text flag present and nothing read — a flag name
+  // the tables do not know, or a word split gone wrong.
+  if (
+    scan.publishes &&
+    scan.textSurfaceNamed === true &&
+    scan.texts.length === 0 &&
+    scan.problems.length === 0
+  ) {
     scan.problems.push({
       location: scan.publishKind ?? "publish",
-      reason: UNSPLIT_OPERAND_REASON,
+      reason: UNREADABLE_PUBLISH_REASON,
     });
   }
   return scan;

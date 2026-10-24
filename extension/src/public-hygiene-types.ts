@@ -38,6 +38,15 @@ export interface PublishScan {
    * at risk in its refusal when no operand survived to carry a location.
    */
   publishKind?: string;
+  /**
+   * True when a recognised publish named a flag that carries text or names a
+   * file (`--body`, `-m`, `-F`, `--input`, …) — set by the verb readers. The scan
+   * turns a publish that named such a surface and produced neither a text nor a
+   * problem into a refusal: recognition without evidence is an unchecked publish
+   * (#1792 follow-up, item 2). A publish that named no text surface at all
+   * (`git commit` with no `-m`, which opens an editor) is not refused.
+   */
+  textSurfaceNamed?: boolean;
   texts: PublishText[];
   problems: ScanProblem[];
 }

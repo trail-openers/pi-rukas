@@ -11,6 +11,12 @@
  *
  * ## What it is for, and what it is not
  *
+ * Its commit arm over-matches on purpose: a bare `-m`/`-F` with no value at all,
+ * a cluster whose tail swallows the delimiter (`-amSECRET`), and the `-c`/`-C`
+ * reuse forms the reader refuses outright are all shapes here, because this is
+ * the view that survives a word split gone wrong — and a cluster the reader did
+ * read has already set `scan.publishes`, which short-circuits the backstop.
+ *
  * It is a backstop trigger, never a verdict: it decides whether the guard owes
  * the operator an explanation, never whether a piece of text is clean. A shape
  * match with a readable surface is ordinary prose and nothing here fires; a
@@ -40,8 +46,15 @@ export const GH_API_SHAPE = /\bgh\s+api\b/;
 /** `git … commit` — the verb that records a message. */
 export const GIT_COMMIT_SHAPE = /\bgit\b[\s\S]*\bcommit\b/;
 
-/** A `git commit` message flag: the form that carries the message text. */
-export const GIT_COMMIT_MESSAGE_SHAPE = /(?:^|\s)(?:-m|--message|-F|--file)(?:=|\s)/;
+/**
+ * A `git commit` message flag: the form that carries the message text. The
+ * delimited forms (`-m x`, `-m=x`) plus any bundled short cluster containing
+ * `m`/`F` (`-am`, `-qmx`, `-aF`), which carries its message with NO delimiter —
+ * getopt treats `m` as the last option of the cluster, so `git commit -amSECRET`
+ * is a publish and a delimiter-after-`-m` rule never saw it (#1792 follow-up).
+ */
+export const GIT_COMMIT_MESSAGE_SHAPE =
+  /(?:^|\s)(?:-[A-Za-z]*[mF][A-Za-z]*|--message|--file)(?:=|\s|$)/;
 
 /**
  * Does the RAW command text look like one of the three publish families?

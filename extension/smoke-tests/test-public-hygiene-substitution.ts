@@ -109,10 +109,6 @@ await withEnv(env, async () => {
       label: "an unbalanced quote with an unterminated substitution",
       command: 'gh pr comment 3 --body "x $(cat f',
     },
-    {
-      label: "an unbalanced quote swallowing every flag after it",
-      command: "gh pr comment 3 --body 'unterminated --title",
-    },
     // An escaped quote inside double quotes desyncs a single-character tracker.
     {
       label: "an escaped quote then a substitution",
@@ -179,6 +175,11 @@ await withEnv(env, async () => {
       label: "a single-quoted literal that merely contains a substitution",
       command: "gh pr comment 3 --body 'a $(b) is mentioned above'",
     },
+    // "An unbalanced quote swallowing every flag after it" USED to sit here
+    // (`gh pr comment 3 --body 'unterminated --title`). It is deleted with the
+    // rule (#1792 follow-up, item 3): bash never runs a command whose quotes do
+    // not pair, so the parity count refused only what the shell would have
+    // rejected anyway — and it refused `--body "don't do this"` on the way.
     // ── gh api `@file` fields: the value is a POINTER, and reading the literal
     // `@notes.md` instead of the file was a publish nobody checked.
     {

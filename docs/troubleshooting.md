@@ -642,7 +642,19 @@ targets. A publish the stripped view still cannot see — `python3 -c "gh pr com
 interpreter, or a wrapper the table does not list — is not passed: when the raw command text matches
 a publish shape (`gh pr|issue|release create|comment|edit|review`, a `gh api` carrying a field flag,
 or a `git` … `commit` with a message flag) and the scan found no surface, the command is refused as a
-publish the guard could not see, and the remedy is to run `gh` or `git` directly.
+publish the guard could not see, and the remedy is to run `gh` or `git` directly. A bundled short
+cluster is read as getopt parses it — `git commit -am…`, `-qm…` and `-aF…` carry their message in the
+rest of the cluster (so `-amq SECRET` commits `q SECRET`), and a `-c`/`-C`/`--reuse-message` commit
+whose message comes from another commit is refused as unreadable rather than passed. A `gh`/`git`
+invoked by path (`/usr/local/bin/gh`, `./gh`) is normalised to the bare program and scanned; a
+symlink installed under a different name is a known residual the guard does not resolve. A glued
+FILE flag is read as a file and not as prose — `gh pr comment 3 -Fnotes.md`, `--body-file=notes.md`,
+`gh api … -Fbody=@notes.md`, `gh api … --input=@f.json` / `-i@f.json` and `git commit -Fnotes.md`
+all go through the same roots test, 1 MiB bound and fail-closed unreadable refusal as their
+separate forms, so no glued shape publishes a file's contents unchecked. Finally, a command the
+scan recognises as a publish but from which it read neither a text nor a problem is refused
+(recognition without evidence), while a publish that names no text flag at all — a bare `git
+commit`, `git commit --amend --no-edit` — is left alone, because the guard was never given a text.
 
 **The guard scans GitHub, not every forge.** The publish shapes and the verb tables name `gh` and
 `git`; a `glab` publish is not scanned, and non-github.com remotes are not push-scanned (issue

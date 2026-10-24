@@ -10,9 +10,16 @@
  * collected texts would report no surface for a publish that plainly carries one.
  */
 
+import {
+  REUSED_MESSAGE_REASON,
+  STDIN_MESSAGE_REASON,
+  commitCluster,
+  commitMessageReuse,
+  namesCommitMessageFlag,
+} from "./public-hygiene-commit-flags.ts";
 import { apiFileOperand, readPublishFile } from "./public-hygiene-files.ts";
 import { isAssignment, textFlagValue, valueAfter } from "./public-hygiene-operands.ts";
-import { commandPrefixLength } from "./public-hygiene-prefix.ts";
+import { commandPrefixLength, commandWord } from "./public-hygiene-prefix.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
 /** Flags whose value is prose the forge publishes, and what to call it. */
@@ -72,7 +79,9 @@ const COMMIT_MESSAGE_FILE_FLAGS = new Set(["-F", "--file"]);
  */
 function ghPublishNoun(argv: string[]): string | undefined {
   const i = commandPrefixLength(argv);
-  if (argv[i] !== "gh") return undefined;
+  // The program word is path-stripped (`/usr/local/bin/gh` IS `gh`) so a
+  // path-prefixed gh is SCANNED rather than falling to the backstop unreadable.
+  if (commandWord(argv) !== "gh") return undefined;
   let k = i + 1;
   // `oo`/`KEY=value` are a runner prefix and already skipped above, so they can
   // never be consumed as a gh flag here.
@@ -153,9 +162,43 @@ export function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): v
           ),
         );
   const fileFlags = GH_BODY_FILE_FLAGS[noun] ?? {};
+  // `-n` means two things to `gh release`: the NOTES text for
+  // `release create`, and the NOTES FILE for `release edit`. Which one it is
+  // decides who reads the word, so it is settled here from the verb — a word
+  // claimed by neither reader would publish its notes unchecked, and one claimed
+  // by both would read a PATH as prose and never open the file.
+  const verb = argv[commandPrefixLength(argv) + 2] ?? "";
+  const notesIsFile = noun === "release" && verb === "edit";
+  const readFileFlags = notesIsFile
+    ? fileFlags
+    : Object.fromEntries(Object.entries(fileFlags).filter(([flag]) => flag !== "-n"));
+  const readTextFlags = notesIsFile
+    ? Object.fromEntries(
+        Object.entries(textFlags).filter(([flag]) => flag !== "-n" && flag !== "--notes-file"),
+      )
+    : textFlags;
+  // A FILE flag's word is claimed FIRST and read as a FILE. The text reader
+  // below consumes a glued short word (`-Fsecret`) as inline prose, and letting it
+  // do that for a FILE flag (`-Fnotes.md`, `--body-file=notes.md`) published the
+  // file's contents unchecked — the roots test, the 1 MiB bound and the
+  // fail-closed unreadable refusal all belong to `readPublishFile`, and none of
+  // them ran while the PATH was matched as text (#1792 follow-up, item 1).
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i] ?? "";
-    for (const [flag, location] of Object.entries(textFlags)) {
+    const fileFlag = fileFlagOf(w, readFileFlags);
+    if (fileFlag !== undefined) {
+      scan.textSurfaceNamed = true;
+      const v = flagValueOf(w, fileFlag, argv, i);
+      if (!v) continue;
+      const label = fileFlags[fileFlag] ?? "body";
+      const read = readPublishFile(v.value, cwd, label);
+      if (read.problem) scan.problems.push(read.problem);
+      else if (read.text !== undefined)
+        scan.texts.push({ location: label, text: read.text, generic: true });
+      i += v.used;
+      continue;
+    }
+    for (const [flag, location] of Object.entries(readTextFlags)) {
       // A text flag must END at a delimiter. Without this, `--body` matched
       // `--body-file` as a prefix (a `-` is not a delimiter), the path was
       // collected as inline body text, and `--body-file` never reached the
@@ -172,26 +215,55 @@ export function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): v
       const v = textFlagValue(argv, i, flag);
       if (v !== undefined) {
         scan.texts.push({ location, text: v.value, generic: true });
+        scan.textSurfaceNamed = true;
         i += v.used;
       }
     }
-    for (const [flag, label] of Object.entries(fileFlags)) {
-      if (w !== flag && !w.startsWith(`${flag}=`)) continue;
-      const v = valueAfter(argv, i);
-      if (!v) continue;
-      const read = readPublishFile(v.value, cwd, label);
-      if (read.problem) scan.problems.push(read.problem);
-      else if (read.text !== undefined)
-        scan.texts.push({ location: label, text: read.text, generic: true });
-      i += v.used;
-    }
   }
+}
+
+/**
+ * Which file flag (if any) this word uses: the bare flag, the glued LONG form
+ * (`--body-file=x`), or the glued SHORT form (`-Fnotes.md`). A glued LONG form is
+ * recognised only by its own name, so `--body-file` never matches `--body`.
+ */
+function fileFlagOf(w: string, fileFlags: Record<string, string>): string | undefined {
+  for (const flag of Object.keys(fileFlags)) {
+    if (w === flag || w.startsWith(`${flag}=`)) return flag;
+    if (flag.length === 2 && w.startsWith(flag) && w.length > flag.length) return flag;
+  }
+  return undefined;
+}
+
+/**
+ * The value a flag word carries, in all three shapes: glued LONG (`--flag=x`,
+ * `=`-delimited so a longer flag name is never mistaken for a prefix), glued
+ * SHORT (`-Fnotes.md`, `-am<msg>` — everything after the flag characters) and
+ * separate (the next word). One reader for every flag whose operand may name a
+ * file, so no form reaches a matcher as prose.
+ */
+function flagValueOf(
+  w: string,
+  flag: string,
+  words: string[],
+  i: number,
+): { value: string; used: number } | undefined {
+  if (w === flag) return valueAfter(words, i);
+  // A `=`-delimited long form (`--body-file=x`, `--input=@f`) is read by name;
+  // a word that merely starts with the flag's name is a DIFFERENT flag, so the
+  // `=`-cut is taken only when the prefix really is this flag.
+  const eq = w.indexOf("=");
+  if (eq > 0 && w.startsWith(`${flag}=`)) return { value: w.slice(eq + 1), used: 0 };
+  // Glued SHORT (getopt): everything after the two flag characters is the value.
+  if (flag.length === 2 && w.startsWith(flag) && w.length > flag.length)
+    return { value: w.slice(flag.length), used: 0 };
+  return undefined;
 }
 
 /** `gh api` writing to a public path: the field values are the published text. */
 export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void {
   const i = commandPrefixLength(argv);
-  if (argv[i] !== "gh" || argv[i + 1] !== "api") return;
+  if (commandWord(argv) !== "gh" || argv[i + 1] !== "api") return;
   const rest = argv.slice(i + 2);
   let method: string | undefined;
   let endpoint = "";
@@ -216,13 +288,13 @@ export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void 
       const v = apiFieldValue(w, rest, k);
       if (v) {
         fields++;
-        // `@path` is a POINTER to text, in either position gh accepts it —
-        // `-F @notes.md` and `-F body=@notes.md` both make gh read the file — so
-        // the pointer is tested on the whole value and on its `=`-half. A field
-        // whose text lives in a file therefore gets the same roots test, size
-        // bound and unreadable refusal `--body-file` applies; checking the
-        // literal `@notes.md` instead checked prose and let the file's contents
-        // publish unchecked.
+        scan.textSurfaceNamed = true;
+        // A FILE field is read by `readPublishFile` and nothing else — not the
+        // `@`-pointer test alone, which checked the literal `@path` as prose for
+        // the glued `-Fbody=@notes.md` form and published the file unchecked
+        // (#1792 follow-up, item 1). `-F`/`--raw-field` are the file-taking
+        // field flags; a `-f`/`--field` whose value is `@path` is a POINTER too
+        // (gh reads the file for both positions), so it gets the same reading.
         const half = fieldValueHalf(v.value);
         const file = apiFileOperand(v.value) ?? apiFileOperand(half);
         const fieldFile = API_FIELD_FILE_FLAGS.has(apiFlagOf(w));
@@ -240,8 +312,18 @@ export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void 
       }
       continue;
     }
-    if (w === "--input" || w === "-i") {
-      const v = valueAfter(rest, k);
+    if (
+      w === "--input" ||
+      w === "-i" ||
+      w.startsWith("--input=") ||
+      (w.startsWith("-i") && w.length > 2)
+    ) {
+      // All three shapes of `--input`: separate, glued LONG (`--input=@f.json`)
+      // and glued SHORT (`-i@f.json`). Each is a WRITE whose body is a file, so
+      // each is read by `readPublishFile` — a glued form that matched no flag was
+      // a POST whose body nobody read (#1792 follow-up, item 1).
+      const v =
+        flagValueOf(w, w.startsWith("--input") ? "--input" : "-i", rest, k) ?? valueAfter(rest, k);
       if (v) {
         // `--input` IS a write. `gh api` with `--input` sends the file as the
         // request body, so it POSTs exactly as a `-f`/`-F` does — counting it
@@ -250,6 +332,7 @@ export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void 
         // fell through the `writes` gate below and published the file's
         // contents unchecked, including the fail-closed unreadable refusal.
         inputs++;
+        scan.textSurfaceNamed = true;
         const read = readPublishFile(inputValue(v.value), cwd, "body");
         if (read.problem) problems.push(read.problem);
         else if (read.text !== undefined)
@@ -278,8 +361,50 @@ export function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): v
   if (!argv.includes("commit")) return;
   scan.publishes = true;
   scan.publishKind ??= "commit message";
+  // `--amend` alone and a plain `git commit` take their message from the editor
+  // or from the commit being amended: the guard was never given a text, so there
+  // is no surface to refuse and the command stays ordinary. The scan's
+  // fail-closed invariant reads this flag (#1792 follow-up, item 2).
+  scan.textSurfaceNamed = scan.textSurfaceNamed === true || namesCommitMessageFlag(argv);
+  // A message lifted from another commit is a publish this reader cannot read at
+  // all, and it is asked BEFORE the flags below: an `-am` cluster and a `-c`
+  // ref in the same command both describe one commit whose text nobody has seen.
+  if (commitMessageReuse(argv)) {
+    scan.problems.push({ location: "commit message", reason: REUSED_MESSAGE_REASON });
+    return;
+  }
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i] ?? "";
+    const cluster = commitCluster(w);
+    if (cluster !== undefined) {
+      scan.textSurfaceNamed = true;
+      // A bundled cluster (`-am`, `-qmx`, `-aF<file>`) carries its value in the
+      // rest of the word after the last `m`/`F`, or in the next word when that
+      // tail is empty. Letters after the `m`/`F` belong to the VALUE, exactly as
+      // getopt parses them, which is why `-amq SECRET` publishes `q SECRET`.
+      if (cluster.kind === "commit message file") {
+        const file = cluster.tail === "" ? (argv[i + 1] ?? "") : cluster.tail;
+        if (cluster.tail === "") i++;
+        if (file === "-") {
+          scan.problems.push({ location: "commit message", reason: STDIN_MESSAGE_REASON });
+          continue;
+        }
+        const read = readPublishFile(file, cwd, "commit message");
+        if (read.problem) scan.problems.push(read.problem);
+        else if (read.text !== undefined)
+          scan.texts.push({ location: "commit message", text: read.text, generic: true });
+        continue;
+      }
+      if (cluster.tail !== "") {
+        scan.texts.push({ location: "commit message", text: cluster.tail, generic: true });
+        continue;
+      }
+      const next = argv[i + 1];
+      if (next !== undefined)
+        scan.texts.push({ location: "commit message", text: next, generic: true });
+      i++;
+      continue;
+    }
     for (const flag of COMMIT_MESSAGE_FLAGS) {
       // Same reader as the gh text flags: `-msecret` carries the message in the
       // flag word, and reading the NEXT word instead scanned a one-word commit
@@ -287,11 +412,13 @@ export function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): v
       const v = textFlagValue(argv, i, flag);
       if (v !== undefined) {
         scan.texts.push({ location: "commit message", text: v.value, generic: true });
+        scan.textSurfaceNamed = true;
         i += v.used;
       }
     }
     for (const flag of COMMIT_MESSAGE_FILE_FLAGS) {
       if (w !== flag && !w.startsWith(`${flag}=`)) continue;
+      scan.textSurfaceNamed = true;
       const v = valueAfter(argv, i);
       if (!v) continue;
       const read = readPublishFile(v.value, cwd, "commit message");
