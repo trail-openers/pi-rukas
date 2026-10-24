@@ -25,33 +25,43 @@
  * cap (that file was sitting at it). Case 13 needs no fixture at all; case 14
  * reuses the probe harness's own repo builder.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type HostBudget, __setHostBudget } from "../src/host-resources.ts";
-import {
-  baselineRedForCmd,
-  baselineRedForCommand,
-} from "../src/work-driver-verify-base-health.ts";
+import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
+import { baselineRedForCmd, baselineRedForCommand } from "../src/work-driver-verify-base-health.ts";
 import {
   applyBaseHealthProbe,
   baseHealthCacheFile,
   probeBaseAtBranch,
   readBaseHealthCache,
+  startBaseHealthProbeAtBranch,
 } from "../src/work-driver-verify-base-health.ts";
 import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
-import { VERIFY_TIMEOUT_LABEL } from "../src/work-driver-verify-develop-helpers.ts";
 import { developTierTimeouts } from "../src/work-driver-verify-budget.ts";
-import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
+import { VERIFY_TIMEOUT_LABEL } from "../src/work-driver-verify-develop-helpers.ts";
 import {
   PROBE_CMD as CMD,
   GREEN_GATE,
   RED_GATE,
   branchState,
   capsOf,
+  consultedEvent,
+  keyFor,
   notesOf,
   probe,
+  settled,
 } from "./lib/base-health-probe-fixture.ts";
+import type { ProbeRun } from "./lib/base-health-probe-fixture.ts";
 import {
   commitAll,
   probeFailureExecutor,
@@ -156,8 +166,11 @@ assert(
     streams.push({ f, stdout, stderr });
     return f;
   };
-  const streams: Array<{ f: Awaited<ReturnType<typeof redGateFixture>>; stdout: string; stderr: string }> =
-    [];
+  const streams: Array<{
+    f: Awaited<ReturnType<typeof redGateFixture>>;
+    stdout: string;
+    stderr: string;
+  }> = [];
   const fixtures = [
     // The echo alone, in each of its spellings: nothing beneath it.
     { name: "echo alone", stdout: `Command failed: ${CMD}`, want: "unknown" },
@@ -217,14 +230,15 @@ assert(
       { host: {}, repoRoot: f.repo, issue: 1765 } as never,
       branchState(f.baseSha),
       CMD,
+      await keyFor(f.repo, f.baseSha),
     );
     assert(
       out.verdict?.status === c.want,
       `harness echo (${c.name}): ${c.want} (got ${out.verdict?.status} — ${out.verdict?.reason ?? "no reason"})`,
     );
     assert(
-      c.want === "red" ? out.park !== undefined : out.park === undefined,
-      `harness echo (${c.name}): ${c.want === "red" ? "real output still parks" : "the harness alone never parks"}`,
+      c.want === "red" ? out.red !== undefined : out.red === undefined,
+      `harness echo (${c.name}): ${c.want === "red" ? "real output still carries evidence for the develop gate" : "the harness alone carries no evidence"}`,
     );
   }
   rmSync(streamRoot, { recursive: true, force: true });
@@ -249,7 +263,9 @@ for (const timedOut of [false, true]) {
     if (line.startsWith("git worktree add")) worktreeAdds += 1;
     return await realExec(command, o);
   };
-  const failures: string[] = ["verify command `sh gate.sh` failed in worktree a: expected 1, got 2"];
+  const failures: string[] = [
+    "verify command `sh gate.sh` failed in worktree a: expected 1, got 2",
+  ];
   const notes: string[] = [];
   const established: boolean[] = [];
   const attributed = await aggregateVerifyOutcome({
@@ -267,7 +283,14 @@ for (const timedOut of [false, true]) {
     perWorktreeVerifyFailures: [],
     failures,
     notes,
-    baseHealthProbe: held.pipelineState.baseHealthProbe,
+    // #1809 — the arm under test is the reuse of a RED this gate pass collected
+    // from the background probe, which is the ONLY channel a red reuses through.
+    // The same verdict sitting in `pipelineState` alone is NOT reusable (an
+    // in-state red must re-probe, so one flaky red cannot speak for rounds it did
+    // not run in); that rule is pinned in
+    // `test-verify-base-health-channels.ts`, and by `compareWithBaseline`'s
+    // `fromInFlightProbe` flag in the type.
+    baseHealthProbe: { ...held.pipelineState.baseHealthProbe, fromInFlightProbe: true },
     onBaselineRedEstablished: (est) => established.push(est),
   });
   assert(
@@ -317,11 +340,19 @@ for (const timedOut of [false, true]) {
   // as a directory and the case would test nothing.
   writeFileSync(path.dirname(baseHealthCacheFile(f.repo)), "not a directory");
   const before = branchState(f.baseSha);
-  const after = await probeBaseAtBranch(
+  const seam = await startBaseHealthProbeAtBranch(
     probeFailureExecutor({ shape: "pass" }),
     { host: {}, repoRoot: f.repo, issue: 1765 } as never,
     before,
   );
+  // The step returns its state WITHOUT the probe: that is the whole change. What
+  // the probe answers arrives later, on the promise the step dropped.
+  const after = probeBaseAtBranch(
+    probeFailureExecutor({ shape: "pass" }),
+    { host: {}, repoRoot: f.repo, issue: 1765 } as never,
+    before,
+  );
+  const out = await (seam ?? Promise.resolve({ ran: false, notes: [] }));
   assert(
     capsOf(after).length === 0,
     `unrecordable probe: the branch step parks nothing (got ${JSON.stringify(capsOf(after).map((c) => c.cap))})`,
@@ -339,14 +370,25 @@ for (const timedOut of [false, true]) {
     f.repo,
   ).catch(() => undefined);
   assert(
-    after.pipelineState.baseHealthProbe?.status === "green"
-      ? recorded?.status === "green"
-      : after.pipelineState.baseHealthProbe?.status === "unknown",
-    `unrecordable probe: a green never stands without the cache file behind it (state ${after.pipelineState.baseHealthProbe?.status ?? "absent"}, cache ${recorded?.status ?? "absent"})`,
+    out.verdict?.status !== "green" || recorded?.status === "green",
+    `unrecordable probe: a green never stands without the cache file behind it (verdict ${out.verdict?.status ?? "absent"}, cache ${recorded?.status ?? "absent"})`,
   );
   assert(
-    notesOf(after).length === 1,
-    `unrecordable probe: exactly one note reached the event log (got ${JSON.stringify(notesOf(after))})`,
+    out.verdict === undefined || out.verdict.status === "unknown",
+    `unrecordable probe: a probe whose cache path faults answers unknown, never a green nobody wrote (got ${out.verdict?.status ?? "absent"})`,
+  );
+  // The gate's own rule is that an unknown verdict is never a consultation — it
+  // hands the base back to develop's own evidence and records nothing. What the
+  // recorder does when handed one anyway is the question here: it must still say
+  // what was read, so a log reader can tell a consultation from a silence.
+  const logged = consultedEvent(after, out, "unknown");
+  assert(
+    notesOf(logged).length === 1 && notesOf(logged)[0].includes("UNKNOWN"),
+    `unrecordable probe: a consultation the recorder is given is recorded truthfully, colour and all (got ${JSON.stringify(notesOf(logged))})`,
+  );
+  assert(
+    out.notes.length >= 1,
+    `unrecordable probe: the probe still says what happened (got ${JSON.stringify(out.notes)})`,
   );
   // #1765 lens round 3 — the event's `ms` is the probe's REAL wall clock. It used
   // to be synthesised from `startedAt: Date.now()` at the append, so a probe that
@@ -377,7 +419,8 @@ for (const timedOut of [false, true]) {
   const timedBase = (
     await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: timed.repo })
   ).stdout.trim();
-  const after17 = await probeBaseAtBranch(
+  const after17 = branchState(timedBase);
+  const out17 = await startBaseHealthProbeAtBranch(
     async (command, o) => {
       // The driver's `synthesizeDriverCompletion` reads `process.env.RUN_ID` via
       // `makeRunId()`, which throws without it — and a smoke test that runs this
@@ -391,9 +434,24 @@ for (const timedOut of [false, true]) {
       return await realExec(command, { ...o, env: { ...o.env, RUN_ID: "smoke-probe" } });
     },
     { host: {}, repoRoot: timed.repo, issue: 1765 } as never,
-    branchState(timedBase),
+    after17,
   );
-  const probeEvent = after17.eventLog.find(
+  // The promise the branch step itself drops, read through the shared `settled`
+  // reader rather than a local `?? { ran: false }` fallback (which would let a
+  // consultation record be built for a probe that did not exist).
+  const settled17 = await settled({
+    state: after17,
+    gateRuns: [],
+    worktreeAdds: 0,
+    cacheRaw: undefined,
+    outcome: out17,
+  } as ProbeRun);
+  assert(
+    out17 !== undefined && settled17 !== undefined,
+    "probe duration: a probe WAS registered for this base, so the ms below is a real probe's",
+  );
+  const logged17 = consultedEvent(after17, settled17, "green");
+  const probeEvent = logged17.eventLog.find(
     (e) => e.kind === "dispatch-completed" && e.label === "driver:base-health",
   ) as { ms?: number; summary?: string } | undefined;
   assert(
@@ -401,12 +459,12 @@ for (const timedOut of [false, true]) {
     `probe duration: the step-completed event carries the probe's measured ms (got ${probeEvent?.ms}) — not 0 as though nothing ran`,
   );
   assert(
-    (probeEvent?.summary ?? "").includes("is GREEN"),
+    (probeEvent?.summary ?? "").includes("GREEN"),
     `probe duration: the timed run still reached its verdict, so the ms is a real probe's (${JSON.stringify(probeEvent?.summary)})`,
   );
   assert(
-    after17.pipelineState.baseHealthProbe?.status === "green",
-    `probe duration: the timed probe recorded the green it earned (got ${after17.pipelineState.baseHealthProbe?.status ?? "absent"})`,
+    settled17.verdict?.status === "green",
+    `probe duration: the timed probe reached the green it earned (got ${settled17.verdict?.status ?? "absent"})`,
   );
   rmSync(seamRoot, { recursive: true, force: true });
 }

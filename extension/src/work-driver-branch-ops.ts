@@ -365,8 +365,9 @@ export async function runBranchViaOpsDispatch(
     };
     stateWithProvisions = appendEvent(stateWithProvisions, provEvent);
   }
-  // #1765 — the same pre-develop base probe the mechanized path pays, once
-  // `baseSha` and the worktrees are on the state. Without it the ops fallback
-  // would keep the old cost model: a red base discovered only after develop.
-  return await probeBaseAtBranch(execFn, ctx, stateWithProvisions);
+  // The same background base probe the mechanized path starts, once `baseSha`
+  // and the worktrees are on the state — started, never awaited, so this path
+  // pays none of its cost and the develop gate collects the verdict if it needs
+  // one. Two paths, one policy, one entry point.
+  return probeBaseAtBranch(execFn, ctx, stateWithProvisions);
 }

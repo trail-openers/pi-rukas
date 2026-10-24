@@ -146,13 +146,25 @@ export function isRedBaseline(verdict: BaselineVerdict): verdict is RedBaselineV
  */
 function reuseCachedVerdict(
   cached: BaseHealthVerdict,
+  inFlight: boolean,
   notes: string[],
   cmd: string,
   baseSha: string,
 ): BaselineVerdict {
+  // Which CHANNEL the colour came from is an operator fact, read off the flag
+  // `compareWithBaseline` computed it from — NOT off a field of the verdict, which
+  // `matchingVerdict`'s reader rebuilds and therefore cannot carry. A red this gate
+  // pass just collected from the background probe and a red the cycle recorded in an
+  // earlier round are two different runs, and the note has to say which one the
+  // operator is being asked to trust.
   notes.push(
-    `baseline verify reused the branch step's RED probe of base ${baseSha.slice(0, 12)} for \`${cmd}\` — no second suite run paid for`,
+    inFlight
+      ? `baseline verify reused the background base probe's RED of base ${baseSha.slice(0, 12)} for \`${cmd}\` — no second suite run paid for`
+      : `baseline verify reused the cycle's RED base verdict for base ${baseSha.slice(0, 12)} \`${cmd}\` — no second suite run paid for`,
   );
+  // The in-state red arm is a COLOUR without a stream, exactly as the in-flight
+  // one is: whoever recorded it holds the run's evidence, and this call does not.
+  // It is a `BaseHealthVerdict`, so `timedOut` is the only arm signal it carries.
   return cached.timedOut === true
     ? { status: "red-timed-out", assertion: null }
     : { status: "red", assertion: null, rawStream: "", probed: false, exitCode: null };
@@ -339,6 +351,18 @@ export function baselineExplainsChange(
 }
 
 /**
+ * #1809 fix round — a verdict `compareWithBaseline` may reuse, and the one flag
+ * that says WHICH channel it came from. A verdict read out of `pipelineState` or
+ * the cache is a plain `BaseHealthVerdict` (no flag) and may only be reused when
+ * it is GREEN; the verdict of the probe this gate pass awaited out of the
+ * single-flight registry carries `fromInFlightProbe: true` and may be reused in
+ * either colour. Keeping the rule in the type, rather than in a caller's filter,
+ * is what makes "a RED is never cached across rounds" survive a cleanup of the
+ * collected/consulted split.
+ */
+export type ReusableVerdict = BaseHealthVerdict & { fromInFlightProbe?: true };
+
+/**
  * Runs the probe after the verify command has failed (moved out of
  * work-driver-verify-verify-cmd.ts for the 500-line cap). A red base leads
  * `failures` with its finding; anything else is a note. Returns whether the
@@ -358,24 +382,66 @@ export async function compareWithBaseline(
     failures: string[];
     notes: string[];
     /**
-     * #1765 — the cycle's own base verdict, when the branch step's pre-develop
-     * probe already established one for the SAME (baseSha, command, bound).
+     * The cycle's own base verdict, when the background probe (or an earlier
+     * round) already established one for the SAME (baseSha, command, bound).
      * Reusing it is the whole cost argument for that probe: the post-failure
-     * comparison pays for a second throwaway worktree and a second full suite
-     * run for a verdict this cycle already holds. Absent, or for a different
-     * key, the probe runs as it always did.
+     * comparison would otherwise pay for a second throwaway worktree and a second
+     * full suite run for a verdict this cycle already holds.
+     *
+     * #1809 fix round — the TYPE now states which colours may travel by which
+     * channel, which is what keeps "a RED is never cached across rounds" true:
+     *
+     *   - `fromInFlightProbe: true` — the verdict of the probe THIS gate pass
+     *     awaited out of the single-flight registry. Either colour is reusable:
+     *     the run happened in this cycle, minutes ago, and answers for this base.
+     *   - absent (the default) — a verdict read out of `pipelineState`
+     *     (`pipelineState.baseHealthProbe`, or the repo-level cache). A GREEN is
+     *     reusable this way, which is what an in-state verdict is FOR: the round
+     *     that collected it wrote it, and the next round reusing it is the whole
+     *     point of the field. A RED read out of the state is not reusable here —
+     *     it must re-probe, so that one flaky red cannot speak for rounds it did
+     *     not run in (the state channel's own producer, `recordDevelopGateEvents`,
+     *     is already kept free of consulted reds by `aggregateVerifyOutcome`; this
+     *     is the second lock, and the one that survives a cleanup of that one).
+     *
+     * `fromInFlightProbe` is OPTIONAL and only `true` counts, so the rule is
+     * enforced by the type rather than by a caller remembering to filter: an
+     * in-state verdict is a plain `BaseHealthVerdict` and carries no flag. A future
+     * change that merged the collected and consulted channels would fail to compile
+     * rather than quietly make a consulted red reusable.
+     *
+     * Absent, or for a different key, the probe runs as it always did.
      */
-    cachedVerdict?: BaseHealthVerdict | undefined;
+    cachedVerdict?: ReusableVerdict | undefined;
   },
 ): Promise<RedBaselineVerdict | undefined> {
   const { cmd, baseSha, timeoutMs } = opts;
   const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: timeoutMs };
-  const cached =
-    opts.cachedVerdict?.status === "red" ? matchingVerdict(opts.cachedVerdict, key) : undefined;
+  // A run already judged for exactly this key. An `unknown` judged nothing, so it
+  // never skips the probe. A GREEN is reusable from either channel; a RED only from
+  // this gate pass's own in-flight probe — an in-state red is a round's worth of
+  // evidence that may be stale, and re-probing is the rule this makes unreusable.
+  const reusable =
+    opts.cachedVerdict !== undefined &&
+    opts.cachedVerdict.status !== "unknown" &&
+    (opts.cachedVerdict.status === "green" || opts.cachedVerdict.fromInFlightProbe === true);
+  const cached = reusable ? matchingVerdict(opts.cachedVerdict, key) : undefined;
+  if (cached?.status === "green") {
+    opts.notes.push(
+      `baseline verify reused the cycle's cached GREEN for \`${cmd}\` at base ${baseSha.slice(0, 12)} — no second suite run paid for`,
+    );
+    return undefined;
+  }
   const verdict: BaselineVerdict =
     cached === undefined
       ? await probeBaselineVerify(execFn, opts)
-      : reuseCachedVerdict(cached, opts.notes, cmd, baseSha);
+      : reuseCachedVerdict(
+          cached,
+          opts.cachedVerdict?.fromInFlightProbe === true,
+          opts.notes,
+          cmd,
+          baseSha,
+        );
   if (!isRedBaseline(verdict)) {
     opts.notes.push(
       verdict.status === "green"
