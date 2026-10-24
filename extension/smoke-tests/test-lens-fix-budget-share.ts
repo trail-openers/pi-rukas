@@ -37,11 +37,11 @@ import { lensFixBoundMs } from "../src/review-budget.ts";
 import { renderResidualFindings } from "../src/work-driver-lens-cap.ts";
 import {
   developFixPassFits,
-  lensRoundReserveMs,
   MIN_FIX_DISPATCH_MS,
   parkLensRoundNoFit,
   reviewFixDispatchBoundMs,
 } from "../src/work-driver-lens-fix-budget.ts";
+import { lensRoundReserveMs } from "../src/work-driver-lens-round-budget.ts";
 import { runLensFix } from "../src/work-driver-lens-fix.ts";
 import { appendEvent } from "../src/workflow-state-update.ts";
 import { initialState } from "../src/workflow-state.ts";

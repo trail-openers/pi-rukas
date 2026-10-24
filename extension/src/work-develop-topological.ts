@@ -9,6 +9,7 @@
  */
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
 import { parkOnDevelopCrash } from "./work-develop-crash.ts";
+import { runDependentWorkstreams } from "./work-develop-dependent.ts";
 import { isValidBaseSha } from "./work-develop-git.ts";
 import { downgradeReason } from "./work-develop-greens.ts";
 import { refuseMissingWorktrees } from "./work-develop-missing-worktree.ts";
@@ -22,11 +23,7 @@ import {
   runIndependentFanout,
   withPersistNotes,
 } from "./work-develop-retry.ts";
-import {
-  type DevelopRunState,
-  makeRunOneWorkstream,
-  runDependentWorkstreams,
-} from "./work-develop-run.ts";
+import { type DevelopRunState, makeRunOneWorkstream } from "./work-develop-run.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { onDevelopVerifyFailed } from "./work-driver-corrective-round.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";

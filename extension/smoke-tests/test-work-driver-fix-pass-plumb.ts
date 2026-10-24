@@ -70,7 +70,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     ...base,
     pipelineState: {
       ...base.pipelineState,
-      plumbReports: [{ step: "develop", role: "driver", body, at: 1 }],
+      plumbReports: [{ step: "develop", role: "developer", body, at: 1 }],
     },
   };
   assert(

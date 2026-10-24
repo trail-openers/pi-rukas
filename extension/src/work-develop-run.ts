@@ -1,23 +1,14 @@
 /**
  * work-develop-run — #679: the per-workstream dispatch closure for runDevelop.
  *
- * Extracted from work-driver-branch-develop.ts (500-line gate). Owns the
- * shared dispatch logic for one workstream (memory-brief retrieval, the
- * developer + speculative-explore `Promise.allSettled` race, the completion
- * and `branch-completed` events, the case-1 sibling-injection) and
- * `runDependentWorkstreams` (the dependent-workstream phase: skip cascade,
- * deferred worktree creation from the dependency's post-commit SHA, base
- * resolution) — which since #799 lives in work-develop-dependent.ts (moved
- * VERBATIM for the 500-line gate headroom; the pointer below re-exports it,
- * and `parkDeferredLeftover` stays in this file). The closure captures per-run
- * state via `DevelopRunState` so the caller shares it across both dispatch
- * phases.
- *
- * `runDevelopTopological` — the #679 topological-dispatch core (independent
- * fan-out, failed/skipped detection, the safety net + verify gate) — lives
- * in work-develop-topological.ts.
- */
-import fs from "node:fs";
+ * Extracted from work-driver-branch-develop.ts (500-line gate). Owns the shared
+ * dispatch logic for one workstream (memory-brief retrieval, the developer +
+ * speculative-explore race, the completion and `branch-completed` events, the
+ * case-1 sibling-injection); `parkDeferredLeftover` stays here and the
+ * dependent phase is re-exported from work-develop-dependent.ts below. The
+ * closure captures per-run state via `DevelopRunState`. `runDevelopTopological`
+ * (#679) lives in work-develop-topological.ts.
+ */ import fs from "node:fs";
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { developChildBoundMs } from "./spawn-child-bound.ts";
@@ -33,9 +24,11 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continuePrNote } from "./work-driver-continue-pr-guard.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import {
+  FIXER_DEVELOP_PASS,
   developFixPassFits,
   reviewFixDispatchBoundMs,
   reviewLoopActive,
+  traceFixPassBoundKill,
 } from "./work-driver-lens-fix-budget.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
@@ -98,10 +91,10 @@ export interface DevelopRunState {
    *  time, so a dependent classified after its own entry landed is described
    *  against ITS base, not the global one). */
   baseFor: (id: string) => string | undefined;
-  /** #1403 — the classify seam. The topological step supplies the one shared
-   *  across both dispatch phases (its own base resolution + executor); a test
+  /** #1403 — the classify seam: the topological step supplies the one shared
+   *  across both dispatch phases (its base resolution + executor); a test
    *  injects a fake tree. Absent → the closure calls `classifyDevelopPass`
-   *  directly with `baseFor` and `execFn`. */
+   *  itself with `baseFor` and `execFn`. */
   classifyPass?: (args: {
     id: string;
     cwd: string;
@@ -197,7 +190,7 @@ export function parkDeferredLeftover(
   return true;
 }
 
-/** The develop note: the continue-PR note (#1468), then the interrupted-attempt note. */
+/** The develop note: continue-PR (#1468) then the interrupted-attempt note. */
 export function developNote(state: WorkState): string | undefined {
   const cp = state.pipelineState.continuedPr;
   const parts = [cp && continuePrNote(cp), interruptedDevelopNote(state)].filter(Boolean);
@@ -226,7 +219,13 @@ export function makeRunOneWorkstream(
       (s.stateRef.current.pipelineState.lastCompletedStep === "lens-fix" ||
         reviewLoopActive(s.stateRef.current));
     const reviewFixBoundMs = isReviewFixPass
-      ? reviewFixDispatchBoundMs(s.stateRef.current, "lens-fix", startedAt)
+      ? reviewFixDispatchBoundMs(
+          s.stateRef.current,
+          "lens-fix",
+          startedAt,
+          undefined,
+          FIXER_DEVELOP_PASS,
+        )
       : undefined;
     // #1644 — the fix pass was BOUND but never PARKED: with the budget spent
     // it dispatched anyway under the 60-second floor and was killed to produce
@@ -423,6 +422,7 @@ export function makeRunOneWorkstream(
         throw developerSettled.reason;
       }
       const res = developerSettled.value;
+      traceFixPassBoundKill(isReviewFixPass, res.killCause, reviewFixBoundMs);
       const completionEvent = await buildCompletionEvent(
         ctx,
         "develop",
@@ -495,6 +495,6 @@ export function makeRunOneWorkstream(
   };
 }
 
-/** #799 — the dependent phase moved to work-develop-dependent.ts (verbatim,
- * for 500-line headroom); re-exported so existing imports keep their path. */
+/** #799 — the dependent phase lives in work-develop-dependent.ts (moved for the
+ * size gate); re-exported so its historical import path keeps working. */
 export { runDependentWorkstreams } from "./work-develop-dependent.ts";

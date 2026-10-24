@@ -8,14 +8,10 @@
  */
 
 import { execp } from "./exec.ts";
-import { slowRecorder } from "./slow-events.ts";
 import { trace, traceWarn } from "./trace.ts";
-import type { DispatchResult, WriteFenceOpt } from "./types.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { cycleDispatch } from "./work-driver-cycle-entry.ts";
-import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
@@ -41,12 +37,15 @@ import {
   judgePolicy,
 } from "./work-driver-policy.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
-import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
+import { beginDispatch, clearDispatch, mintJobId } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
 export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
+import { runSingleDispatch } from "./work-driver-dispatch-seam.ts";
+
+export { runSingleDispatch };
 
 /**
  * Step 6 — Parse `pr: <N>` from an ops commit-pr reply. Lenient — accepts
@@ -73,90 +72,6 @@ export function parseMergeCommit(text: string | undefined): string | undefined {
   if (!text) return undefined;
   const m = text.match(/^[ \t]*[*_`]*\s*merge-commit\b[^0-9a-f\n]*([0-9a-f]{7,40})[^0-9a-f\n]*$/im);
   return m?.[1];
-}
-
-/**
- * Generic single-dispatch helper used by every step body whose shape is
- * "append step-started → dispatch one subagent → append completion event".
- * Steps that need to emit additional events (adversarial verdicts, lens
- * verdicts, CI status) implement their own runX and call dispatchCore
- * directly.
- */
-export async function runSingleDispatch(
-  ctx: CycleContext,
-  state: WorkState,
-  step: WorkStep,
-  role: string,
-  label: string,
-  now: number,
-  buildPrompt: () => string,
-  opts?: WriteFenceOpt & { timeoutMs?: number; cwd?: string },
-): Promise<WorkState> {
-  let next = appendEvent(
-    { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
-    { kind: "step-started", step, at: now },
-  );
-  const dispatch = cycleDispatch(ctx);
-  const startedAt = Date.now();
-  // #382 — WRITE-AHEAD. A dispatch can run for thirty minutes; before this,
-  // nothing hit disk until it returned, so a crash inside that window left
-  // the state file at the PREVIOUS step boundary still claiming `running`. A
-  // crashed cycle was indistinguishable from a live one, forever. Persisting
-  // the intent first is what makes the difference visible on resume.
-  const begun = await beginDispatch(ctx, next, step, role, label, startedAt);
-  next = begun.state;
-  const jobId = begun.jobId;
-  let result: DispatchResult;
-  try {
-    // PR15 — per-call timeout override (3-min default; runCi lifts it to 30).
-    // #799 — plain `await dispatch(...)`. The earlier periodic heartbeat
-    // wrapped this await in a loop that slept out its first interval and
-    // then awaited the (already settled) promise — so it never emitted.
-    // The slow-run watch now lives in the dispatch layer (slow-notice.ts,
-    // one watch per job at startJob) and records `dispatch-slow` through
-    // the `onSlow` callback; there is no driver-side polling loop here.
-    // The await itself is unchanged: same promise, same resolution.
-    result = await dispatch(
-      ctx.host,
-      // `cwd` matters when work lives elsewhere (lens-fix: worktree, not repoRoot).
-      { role, prompt: buildPrompt(), ...(opts?.cwd ? { cwd: opts.cwd } : {}) },
-      {
-        label,
-        timeoutMs: opts?.timeoutMs,
-        writeFence: opts?.writeFence,
-        // #799 — the slow recorder collects the crossings into the driver's
-        // pending buffer (keyed by this cycle's primary issue); the
-        // step-boundary drain (routeStepOutcome) persists them — this step
-        // folds nothing of its own any more.
-        onSlow: slowRecorder(ctx.issue, step),
-        // #838 — the shared single-dispatch seam: every step that routes
-        // through runSingleDispatch (branch ops fallback, ci, lens-fix,
-        // step-back, merged, ...) gets its deck row from here (label
-        // `#<issue> <step> · <label>`) — one seam for every step-dispatch
-        // shape.
-        deck: { ...driverDeckOpts(ctx.issue, step, label), label },
-      },
-    );
-  } catch (err) {
-    // #799 — a crossing recorded before the failure survives in the pending
-    // buffer and is drained at the step boundary; the failure append here
-    // needs no ref fold.
-    return appendEvent(clearDispatch(next, jobId), {
-      kind: "dispatch-failed",
-      step,
-      role,
-      jobId,
-      label,
-      ms: Date.now() - startedAt,
-      at: Date.now(),
-      errorTail: (err as Error).message?.slice(-200),
-    });
-  }
-  const event = await buildCompletionEvent(ctx, step, role, label, result);
-  // Clear the in-flight marker whichever way the dispatch settled — a
-  // completed dispatch that still looks in-flight would make the next
-  // invocation resume a step that already finished.
-  return appendEvent(clearDispatch(next, jobId), event);
 }
 
 /**

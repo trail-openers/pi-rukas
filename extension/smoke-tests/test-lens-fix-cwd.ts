@@ -43,7 +43,9 @@ const read = (f: string) =>
 // ------------------------------------------- the dispatch can carry a cwd
 
 {
-  const merged = read("work-driver-merged.ts");
+  // #1789 — `runSingleDispatch` moved to work-driver-dispatch-seam.ts (size
+  // gate); the canaries read the module that actually holds it.
+  const merged = read("work-driver-dispatch-seam.ts");
   assert(
     // #1655: the opts type may be an intersection (`WriteFenceOpt & {...}`).
     /opts\?:\s*(?:\w+\s*&\s*)?\{[^}]*cwd\?:\s*string/.test(merged),
