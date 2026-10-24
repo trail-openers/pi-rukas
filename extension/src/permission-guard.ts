@@ -59,6 +59,7 @@ import {
 } from "./permission-decision-cache.ts";
 import { registerSubagentGuard } from "./permission-subagent-guard.ts";
 import { registerPmBashGuard } from "./pm-bash-guard.ts";
+import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
 import { ROLE_NAMES } from "./roles.js";
 import { trace } from "./trace.js";
 
@@ -283,6 +284,15 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   // inside the hook; registered here (the parent path) only — subagent
   // processes go through registerSubagentGuard and never see it.
   registerPmBashGuard(pi);
+  // #1788 — the public hygiene guard on the PARENT path. The parent session is
+  // the PM, and the PM is the role that typed the three non-trivial issues
+  // #598 closed and is the role that writes PR bodies by hand, so a guard the
+  // parent never loaded would guard every child and nothing else. It is NOT
+  // added to the shared block's caller list here: `registerModeIndependentGuards`
+  // already registers it for children, and `registerPublicHygieneGuard` is
+  // idempotent per process, so a process that reaches both sites still holds
+  // exactly one hook (see its header).
+  registerPublicHygieneGuard(pi);
 
   // Sandbox-mode short-circuit (PR #197). Inside the Docker sandbox (set by
   // the `pi-rukas` wrapper / .devcontainer.json) the container fence IS

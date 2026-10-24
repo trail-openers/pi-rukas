@@ -12,6 +12,7 @@ import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
+import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
 
 export function registerModeIndependentGuards(pi: ExtensionAPI): void {
@@ -52,4 +53,12 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // Before this block it was refused only through the agents.json verdict, which
   // trust-mode children never consult, so a /work child could rewrite a memory row.
   registerMemoryWriteGuard(pi);
+  // #1788 — a publish whose text carries a private term is refused here. The
+  // repository is public and the check must run in the modes that are the
+  // default, so it sits with the others rather than after them. This is its
+  // ONLY registration: the block is reached by the companion (trust children),
+  // by registerSubagentGuard (strict/headless children) and by the parent
+  // through registerPermissionGuard, so one call here is one hook per process
+  // — a second one would run the push scan's git calls twice per push.
+  registerPublicHygieneGuard(pi);
 }

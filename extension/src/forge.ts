@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
+import { PublicHygieneError, publicTextRefusal } from "./public-hygiene-guard.ts";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
@@ -99,6 +100,24 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
    */
   const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
 
+  /**
+   * #1788 — the driver's own publishes are checked here, not by the tool_call
+   * hook: every issue and PR write below goes through `run`, which is an
+   * in-process exec, exactly like the #912 merge guard's mechanized merge, so
+   * it never reaches a `tool_call`. Passing the text check through the same
+   * pure matcher keeps the driver and the guard from disagreeing about what is
+   * publishable, and the throw lands in the driver's existing error handling
+   * (`plan-filing.ts`, `work-driver-commit.ts`), which already reports a failed
+   * forge write.
+   *
+   * Checked BEFORE the command runs, so nothing is posted and then noticed.
+   */
+  const checkPublicText = (label: string, text: string): void => {
+    if (process.env.PI_ENSEMBLE_PUBLIC_HYGIENE === "0") return;
+    const refusal = publicTextRefusal(label, text);
+    if (refusal !== undefined) throw new PublicHygieneError(refusal);
+  };
+
   const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
     const { stdout } = await execFn(cmd, {
       cwd,
@@ -150,8 +169,13 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         return mapGlIssue(asRecord(stdout));
       }),
 
-    issueCreate: (title, body, createOpts) =>
-      withBodyFile(`create-${title.slice(0, 16)}`, body, (file) =>
+    issueCreate: (title, body, createOpts) => {
+      // #1788 — title and body are checked before the temp file is even
+      // written, so a refused publish writes nothing anywhere. A throw here
+      // reaches the driver's existing forge-error handling.
+      checkPublicText("issue title", title);
+      checkPublicText("issue body", body);
+      return withBodyFile(`create-${title.slice(0, 16)}`, body, (file) =>
         run(cmds.issueCreateCmd(forge, title, file, createOpts?.labels ?? []), (stdout) => {
           if (forge === "github") {
             // `gh issue create` has no `--json` — it prints the created issue's URL
@@ -187,20 +211,25 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
             return makeMinimalIssue(parsedGl);
           }
         }),
-      ),
+      );
+    },
 
-    issueEdit: (number, body) =>
-      withBodyFile(`edit-${number}`, body, (file) =>
+    issueEdit: (number, body) => {
+      checkPublicText("issue body", body);
+      return withBodyFile(`edit-${number}`, body, (file) =>
         run(cmds.issueEditCmd(forge, number, file), (stdout) => {
           if (forge === "github") return mapGhIssue(asRecord(stdout));
           return mapGlIssue(asRecord(stdout));
         }),
-      ),
+      );
+    },
 
-    issueComment: (number, body) =>
-      withBodyFile(`comment-${number}`, body, (file) =>
+    issueComment: (number, body) => {
+      checkPublicText("issue comment", body);
+      return withBodyFile(`comment-${number}`, body, (file) =>
         run(cmds.issueCommentCmd(forge, number, file), (stdout) => stdout),
-      ),
+      );
+    },
 
     issueComments: (number) => listIssueComments({ forge, run, withBodyFile }, number),
 
@@ -267,8 +296,10 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         });
       }),
 
-    prCreate: (title, headBranch, body, opts) =>
-      withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
+    prCreate: (title, headBranch, body, opts) => {
+      checkPublicText("pull request title", title);
+      checkPublicText("pull request body", body);
+      return withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
         run(cmds.prCreateCmd(forge, title, headBranch, file, opts ?? {}), (stdout) => {
           // Tolerate both JSON (from --json flag) and plain-text URL responses.
           const parsed = parsePrNumberFromResponse(stdout);
@@ -290,7 +321,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
             return makeMinimalPr(parsed);
           }
         }),
-      ),
+      );
+    },
 
     prMerge: (number, method: "squash" | "merge" | "rebase" = "squash", subject?: string) =>
       run(cmds.prMergeCmd(forge, number, method, subject), (stdout) => stdout),
@@ -308,7 +340,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     prComments: (number) => listPrComments({ forge, run, withBodyFile }, number),
 
     // #775 — post a comment on a PR (the in-process handoff fallback seam).
-    prComment: (number, body) => postPrComment({ forge, run, withBodyFile }, number, body),
+    prComment: (number, body) =>
+      postPrComment({ forge, run, withBodyFile, checkPublicText }, number, body),
 
     prChecks: async (number) => {
       if (forge === "github") {
