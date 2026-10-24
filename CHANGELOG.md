@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.12](https://github.com/trail-openers/pi-rukas/compare/v0.14.11...v0.14.12) (2026-10-24)
+
+
+### Bug Fixes
+
+* **review:** move the findings store out of the repository and make the guard a path tripwire ([#1802](https://github.com/trail-openers/pi-rukas/issues/1802)) ([3764e2a](https://github.com/trail-openers/pi-rukas/commit/3764e2a27ec4c807324d211bb242aec2e3a4e832))
+
 ## [0.14.11](https://github.com/trail-openers/pi-rukas/compare/v0.14.10...v0.14.11) (2026-10-24)
 
 
