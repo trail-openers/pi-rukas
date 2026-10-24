@@ -57,35 +57,31 @@ import type { ExecFn } from "./worktree.ts";
  * A caller may lower it per call through {@link boundedTarget}'s `ms` parameter,
  * floored at {@link TARGET_RESOLVE_TIMEOUT_FLOOR_MS}, which is what lets the
  * offline suite pin the timeout-is-a-verdict path in milliseconds rather than ten
- * seconds of wall clock. Nothing in production sets it; the floor is what stops a
- * typo from making the bound a no-op AND from turning the guard into a gate that
- * skips its own checks under a name an operator would not recognise.
- *
- * Read ONCE at module load, like every other constant here — the per-call `ms`
- * parameter is the supported way to vary it.
+ * seconds of wall clock. It is deliberately NOT read from the environment: an
+ * operator-facing knob that shortens a guard's own wall clock is a knob that can
+ * turn the guard into a gate that skips its checks, and the per-call parameter
+ * gives a test everything it needs without that surface — and without adding a
+ * `PI_ENSEMBLE_*` variable the headless inventory (`test-headless-inputs.ts`) has
+ * to carry for something production never reads.
  */
-/**
- * The env override's name, in one place so the test and this file agree.
- *
- * DECLARED BEFORE {@link TARGET_RESOLVE_TIMEOUT_MS} on purpose: the const below
- * evaluates that reader at module load, and a `const` declared after it is in
- * the temporal dead zone at that moment — which made every importer of this
- * module throw `Cannot access ... before initialization`. A module whose bound
- * is computed at load must declare its inputs first.
- */
-export const TARGET_RESOLVE_TIMEOUT_ENV = "PI_ENSEMBLE_PUBLIC_TARGET_TIMEOUT_MS";
+export const TARGET_RESOLVE_TIMEOUT_MS = VISIBILITY_TIMEOUT_MS;
 
-/** The floor on the test override, so a mis-set bound cannot quietly disable it. */
+/** The floor on a caller-supplied bound, so a mis-set one cannot disable it. */
 const TARGET_RESOLVE_TIMEOUT_FLOOR_MS = 1_000;
 
-function targetResolveTimeoutMs(): number {
-  const raw = Number(process.env[TARGET_RESOLVE_TIMEOUT_ENV]);
-  return Number.isFinite(raw) && raw >= TARGET_RESOLVE_TIMEOUT_FLOOR_MS
-    ? Math.floor(raw)
-    : VISIBILITY_TIMEOUT_MS;
+/**
+ * The bound a caller asked for, or the production default.
+ *
+ * The floor is applied here rather than at each call site so a caller cannot pass
+ * `0` and turn the guard's own wall clock into an immediate "could not resolve",
+ * which would trace a claim about a hung resolver while quietly making every
+ * publish look as though it had one.
+ */
+function targetBoundFor(ms: number | undefined): number {
+  return ms === undefined
+    ? TARGET_RESOLVE_TIMEOUT_MS
+    : Math.max(TARGET_RESOLVE_TIMEOUT_FLOOR_MS, Math.floor(ms));
 }
-
-export const TARGET_RESOLVE_TIMEOUT_MS = targetResolveTimeoutMs();
 
 /**
  * Run the push scan under the guard's own wall clock. Resolves to `undefined`
@@ -124,9 +120,10 @@ export async function boundedTarget(
   exec: ExecFn | undefined,
   remoteUrl: ((name: string, dir: string) => Promise<string>) | undefined,
   pushVerb: string | undefined,
-  ms: number = TARGET_RESOLVE_TIMEOUT_MS,
+  ms?: number,
 ): Promise<Target | undefined> {
-  const resolved = await underDeadline(ms, () =>
+  const bound = targetBoundFor(ms);
+  const resolved = await underDeadline(bound, () =>
     resolveCommandTarget(command, cwd, exec, { pushVerb, remoteUrl }).catch(() => undefined),
   );
   if (resolved === undefined) {
@@ -134,7 +131,7 @@ export async function boundedTarget(
     // repository, so it is checking the text rather than skipping it. The reason
     // is a category (timeout or failure), never the error, which may carry a path.
     trace(
-      `public-hygiene: the target repository could not be resolved within ${ms} ms — treating the target as unknown and checking`,
+      `public-hygiene: the target repository could not be resolved within ${bound} ms — treating the target as unknown and checking`,
     );
   }
   return resolved;
