@@ -21,7 +21,8 @@ import {
   isHarnessEchoLine,
 } from "../src/work-driver-verify-failures.ts";
 import { assertionLines } from "../src/work-driver-verify-record.ts";
-import { VERIFY_FULL_OUTPUT_MAX, runVerifyFull } from "../src/work-driver-verify-full.ts";
+import { VERIFY_FULL_OUTPUT_MAX, keepEvidenceHead, runVerifyFull } from "../src/work-driver-verify-full.ts";
+import { VERIFY_FULL_EVIDENCE_MAX } from "../src/work-driver-verify-full.ts";
 import { CHECKS_BLOCK, CMD, WT, makeAssert } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -187,6 +188,96 @@ const { assert, failed } = makeAssert();
   );
 }
 
+
+// ── 5b. #1762 round 2 (C3) — the DISCRIMINATING case for the anchored store ─
+// The last recognised failure line sits more than one excerpt-width from the end
+// of the stream, followed by passing output. A positional tail of the stored width
+// starts 4000 characters from the end — inside that passing output — so it keeps
+// the summary and drops the failure; the anchored excerpt must not. Both halves
+// are asserted (starts at the failure, AND differs from the blind tail) because an
+// implementation that merely got lucky about the stream length passes a
+// one-sided assertion. The gap is deliberately WIDER than one excerpt: at that
+// distance the failure is reachable only by starting the window at it, which is
+// what is pinned here.
+{
+  const FAIL_LINE = "✗ the release manifest disagrees with the fixture";
+  const BEFORE_GAP = "noise: nothing to see here\n".repeat(80);
+  // The gap after the failure must EXCEED the excerpt budget: that is what makes
+  // the positional tail lose the failure and the anchor keep it. A stream no wider
+  // than one excerpt fits the failure either way and would not discriminate.
+  const AFTER = "passing summary line 42 ok\n".repeat(200); // ~5400 chars, > 4000
+  const stream = `${BEFORE_GAP}${FAIL_LINE}\n${AFTER}`;
+  const gap = stream.length - stream.indexOf(FAIL_LINE) - FAIL_LINE.length;
+  assert(
+    gap > 2000 && gap > VERIFY_FULL_OUTPUT_MAX,
+    `c3: the failure sits more than one excerpt from the end (${gap})`,
+  );
+  const failing = Object.assign(new Error("Command failed: bash scripts/verify.sh --full"), {
+    stdout: stream,
+    stderr: "",
+  });
+  const run = await runVerifyFull("bash scripts/verify.sh --full", "/w", 5000, async () => {
+    throw failing;
+  });
+  assert(
+    run.output.length <= VERIFY_FULL_OUTPUT_MAX,
+    `c3: the stored excerpt is bounded (${run.output.length})`,
+  );
+  // (a) The excerpt STARTS with the failure line (within 200 characters, allowing
+  // for the redaction marker a credential-shaped payload could leave behind).
+  const at = run.output.indexOf(FAIL_LINE);
+  assert(
+    at >= 0 && at <= 200,
+    `c3: the stored excerpt starts at the failure line (found at ${at} of ${JSON.stringify(run.output.slice(0, 60))})`,
+  );
+  // (b) It DIFFERS from the positional tail of the same width — the tail is all
+  // passing output and contains no failure at all.
+  const positional = Array.from(stream).slice(-VERIFY_FULL_OUTPUT_MAX).join("");
+  assert(
+    run.output !== positional,
+    "c3: the anchored excerpt is not the positional tail",
+  );
+  assert(
+    !positional.includes(FAIL_LINE),
+    "c3: the positional tail really does omit the failure (the fixture is discriminating)",
+  );
+  // (c) The stepback's 500-character evidence contains the failure line. This is
+  // the cut that used to be `slice(-500)` on an excerpt that starts at the failure,
+  // i.e. the reader undoing what the producer had just fixed.
+  const evidence = keepEvidenceHead(run.output, run.anchored === true);
+  assert(
+    evidence.length <= VERIFY_FULL_EVIDENCE_MAX,
+    `c3: the evidence is bounded to the handoff budget (${evidence.length})`,
+  );
+  assert(
+    evidence.includes(FAIL_LINE),
+    `c3: the 500-char evidence contains the failure line (got ${JSON.stringify(evidence.slice(0, 80))})`,
+  );
+  // The negative control: with no anchor anywhere in the scanned tail the producer
+  // stores the positional tail and says so, and the evidence keeps its tail. The
+  // stream is built to be WIDER than one excerpt, which is the only case where
+  // "positional tail" is a claim at all — a shorter stream is stored whole.
+  const quietStream = ("passing summary line 42 ok\n".repeat(600) + "the last word").trim();
+  assert(
+    quietStream.length > VERIFY_FULL_OUTPUT_MAX,
+    `c3: the unanchored fixture is wider than one excerpt (${quietStream.length})`,
+  );
+  const quiet = Object.assign(new Error("Command failed: bash scripts/verify.sh --full"), {
+    stdout: quietStream,
+    stderr: "",
+  });
+  const quietRun = await runVerifyFull("bash scripts/verify.sh --full", "/w", 5000, async () => {
+    throw quiet;
+  });
+  assert(
+    quietRun.anchored === false,
+    `c3: a stream with no recognised failure reports no anchor (got ${JSON.stringify(quietRun.anchored)})`,
+  );
+  assert(
+    quietRun.output === Array.from(quietStream).slice(-VERIFY_FULL_OUTPUT_MAX).join(""),
+    "c3: an unanchored excerpt is the positional tail",
+  );
+}
 
 console.log(failed() ? "\nFAILED" : "\nAll #1762/#1770 round-1 store and window checks passed.");
 process.exit(failed() ? 1 : 0);

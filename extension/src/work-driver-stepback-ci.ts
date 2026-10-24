@@ -27,6 +27,7 @@ import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { keepEvidenceHead } from "./work-driver-verify-full.ts";
 
 // Tree-killing: the ci step runs `.pi/verify-cmd-full`, the longest gate. The
 // shell executor scrubs driver knobs from its env.
@@ -232,10 +233,23 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
         // failing tail (what the flake looked like); the re-run passed so its
         // output has no diagnostic value. For a genuine failure, carry the
         // most recent tail (the re-run's, if we ran one).
-        evidenceTail: (result.outcome === "success" && result.recovered
-          ? (result.firstRunOutput ?? result.output)
-          : result.output
-        ).slice(-500), // Last 500 chars for handoff
+        //
+        // #1762 round 2 (C2) — the cut keeps the ANCHORED head. The producer
+        // already chose which end of the stream to store and says so with
+        // `anchored`: an excerpt that opens AT the recognised failure line must
+        // keep its HEAD, because a blind `slice(-500)` of a 4 KB excerpt that
+        // starts at the failure keeps the 500 characters of PASSING output that
+        // follow it and throws the failure away — #1762's symptom re-created by
+        // the reader after the producer fixed it. A positional tail (no anchor)
+        // still keeps its tail, which is where its last words are.
+        evidenceTail: keepEvidenceHead(
+          result.outcome === "success" && result.recovered
+            ? (result.firstRunOutput ?? result.output)
+            : result.output,
+          result.outcome === "success" && result.recovered
+            ? true
+            : (result.anchored ?? false),
+        ),
       });
 
       if (result.outcome === "failure") {

@@ -394,6 +394,14 @@ export const SEAMS: Seam[] = [
         "the per-line scan bound; test-verify-failure-shapes-1762.ts times a 200 KB line against it",
       isSuccessLine:
         "the passing arm of the classifier, called in-module by classifyFailureLine and asserted directly by test-verify-failure-shapes-1762.ts: every passing veto in the table rests on it, so a change that keeps classifyFailureLine green while inverting the count guard must still fail here",
+      // #1762 round 2 (D2) — `matchShape` is the table WITHOUT the wrapper read,
+      // so it is the half every wrapper path ends in and the half a caller can
+      // reach directly. It has production callers (the cut's judge, the inner-line
+      // pass, this module's own classifier), which the reachability gate cannot see
+      // through a re-export, and the round-2 assertion-mark exemption lives in it
+      // alone — so it is asserted directly, the way `isNonAssertionLine` is.
+      matchShape:
+        "the plain shape table, asked directly by test-verify-failure-shapes-1762.ts: the assertion-mark-before-the-success-veto exemption exists only in this function, so a change that keeps classifyFailureLine green while re-ordering the veto must still fail there",
     },
     canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
   },
@@ -410,10 +418,16 @@ export const SEAMS: Seam[] = [
     testOnly: {
       splitLines:
         "the one line-break split (\r\n, \r, \n) every verify reader shares; test-verify-failure-shapes-b-1762.ts pins the \r case that split(\"\\n\") used to miss",
+      // #1762 round 2 (B3) — the offsets variant, and the reason `splitLines`
+      // cannot serve a reader that keeps its own offset: it discards the separator,
+      // so the caller cannot see that `\r\n` is two characters and an advance of
+      // one drifts a character per line.
+      splitLinesWithOffsets:
+        "splitLines plus each piece's offset in the original text, asked by lastFailureIndex in work-driver-exec-error.ts and pinned directly by test-verify-failure-shapes-d-1762.ts (the \r\n drift case that anchored a tail one character early)",
       LEADING_SEPARATOR:
         "the stream-separator padding both the cut and the residue strip remove; pinned by test-verify-failure-shapes-b-1762.ts (the `: : : ` padding case)",
     },
-    canary: { symbol: "splitLines", importer: "work-driver-exec-error.ts" },
+    canary: { symbol: "splitLines", importer: "work-driver-verify-failures.ts" },
   },
   {
     // #1762 round 3 — the non-assertion predicate, now exported because the

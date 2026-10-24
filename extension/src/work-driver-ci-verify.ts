@@ -39,6 +39,12 @@ export interface CiVerifyRun {
   output: string;
   recovered?: boolean;
   firstRunOutput?: string;
+  /**
+   * #1762 round 2 — passed through from `runVerifyFull`: true when `output` opens
+   * at a recognised failure line, which is what tells the ci step's evidence cut
+   * whether to keep the excerpt's head or its tail.
+   */
+  anchored?: boolean;
   /** Tests this run let through without blocking; undefined when attribution did not run. */
   record?: SelectedVerifyRecord;
 }
