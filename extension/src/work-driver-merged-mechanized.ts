@@ -15,6 +15,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ShellExecFn } from "./exec.ts";
 import { prMergeSubjectFlag } from "./forge-commands.ts";
+import { PublicHygieneError, publicTextRefusal } from "./public-hygiene-guard.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -127,13 +128,25 @@ export async function executeAndVerifyMerge(
   execFn: VerifyExecFn,
   repoRoot: string,
   subject?: string,
+  // The forge-resolution seam. Production leaves it undefined and the adapter
+  // path is chosen by `forgeForCycle`, exactly as before; a test that exists to
+  // cover the DIRECT-exec fallback passes `() => undefined` rather than hoping a
+  // scratch directory has no forge above it — the probe asks `git remote`, so a
+  // fixture nested inside any clone resolves a forge and the merge silently
+  // takes the adapter path, which is the path that already had the check.
+  resolveForge?: typeof forgeForCycle,
 ): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
-  const forge = await forgeForCycle({ repoRoot }, execFn);
+  const forge = resolveForge
+    ? await resolveForge({ repoRoot }, execFn)
+    : await forgeForCycle({ repoRoot }, execFn);
   if (!forge) {
     // Forge undetermined — fall back to the direct `gh` exec seam so the
     // test fakes (which mock `gh pr view` / `gh pr merge` by substring)
-    // keep working unchanged.
-    return executeAndVerifyMergeDirect(prNumber, method, execFn, repoRoot);
+    // keep working unchanged. The subject travels as an argument to that
+    // fallback and is checked there, on the single path that builds the
+    // command — checking it here as well would state the same rule twice,
+    // in two places that can then disagree.
+    return executeAndVerifyMergeDirect(prNumber, method, execFn, repoRoot, subject);
   }
   // First check: is the PR already merged? (idempotent on resume)
   try {
@@ -233,6 +246,18 @@ async function executeAndVerifyMergeDirect(
     }
   } catch (err) {
     trace(`work-driver: pre-check gh pr view failed: ${(err as Error).message?.slice(0, 120)}`);
+  }
+
+  // The subject a squash merge writes to main is public text, and this is the
+  // one forge write a cycle cannot undo. The forge adapter's `prMerge` checks it
+  // through `checkPublicText`; this direct-exec fallback builds the same command
+  // itself and reaches no adapter, so the same pure checker from the same seam
+  // runs here — one rule, one owner, and a fallback that cannot become the way
+  // past it. Same failure shape as the adapter: `runMerged` already treats a
+  // `PublicHygieneError` as a merge that must not happen.
+  if (subject !== undefined) {
+    const refusal = publicTextRefusal("merge commit subject", subject);
+    if (refusal !== undefined) throw new PublicHygieneError(refusal);
   }
 
   // Execute the merge.

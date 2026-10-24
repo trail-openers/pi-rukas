@@ -592,16 +592,22 @@ and personal home paths, are refused whether or not the denylist exists — so a
 denylist file is not an unguarded install. `192.0.2.0/24`, `127.0.0.1`, `::1` and `/home/dev/` are
 exempt, because docs and tests name those.
 
-**Two tiers, on purpose.** A publish (a title, a body, a comment, a commit message) is checked against
-**both** the private denylist and the generic set. A `git push`'s **added diff lines** are checked
-against the **private denylist only** — diff bodies legitimately contain IPs and home paths in test
-fixtures, and a guard that refused those gets switched off, which is the worse failure.
+**Two tiers, on purpose.** A publish (a title, a body, a comment, an inline commit
+message) is checked against **both** the private denylist and the generic set. What a
+`git push` reads **out of git** — its outgoing commit messages and its **added diff
+lines** — is checked against the **private denylist only**: diff bodies legitimately
+contain IPs and home paths in test fixtures, and so does a commit message that
+describes one ("point the build at 10.1.2.3"), and a guard that refused those gets
+switched off, which is the worse failure. The distinction is where the text came from,
+not whether it is a message: a `git commit -m` you typed is a publish surface, the
+messages an outgoing range already carries are git content.
 
 **A surface the guard cannot read is refused, never assumed clean.** An unreadable denylist, a
-`--body-file` outside the working-directory tree and the OS temp dir, a body file over 1 MiB, a git
-range that fails or hangs: each is a refusal naming what it could not read. The out-of-root check runs
-**before** the file is opened, so a file outside the roots is refused on its path alone and its content
-is neither read nor quoted.
+`--body-file` outside the working-directory tree, the OS temp dir and the repository, a body file
+over 1 MiB, a git range that fails or hangs: each is a refusal naming what it could not read. The
+out-of-root check runs **before** the file is opened, so a file outside the roots is refused on its
+path alone and its content is neither read nor quoted. The repository is a root because the /work
+driver and its agents write PR and handoff bodies under `<repo>/tmp/issue-<N>/`.
 
 **Escape hatch:** `PI_ENSEMBLE_PUBLIC_HYGIENE=0` disables the guard (only `0`; `false` and `off` are
 not off switches). Set it for one command (`PI_ENSEMBLE_PUBLIC_HYGIENE=0 gh pr create …`) rather than

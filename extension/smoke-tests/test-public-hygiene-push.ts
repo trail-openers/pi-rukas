@@ -264,8 +264,16 @@ async function reset(): Promise<void> {
   await reset();
 }
 
-// ── 4. The two-tier rule, other direction: a PRIVATE IPv4 in an added line
-// PASSES on push, while the same address in a commit message does not.
+// ── 4. The two-tier rule, other direction: the generic set is applied to
+// NOTHING this module reads out of git. A private IPv4 in an added line passes,
+// and so does the same address in an outgoing commit message — the two halves of
+// a push scan on the private denylist alone, because a commit message is as
+// likely as a fixture to describe an address it is not leaking ("point the build
+// at 10.1.2.3"), and a guard that refused either gets switched off. The inline
+// text a COMMAND carries (a `-m`, a `--body`) stays on both tiers — there the
+// agent typed what it is about to publish. `public-hygiene-push.ts`'s header and
+// the troubleshooting entry state the same rule; this is the assertion that keeps
+// the three from drifting apart.
 {
   await reset();
   await commit(
@@ -279,11 +287,17 @@ async function reset(): Promise<void> {
   );
   await reset();
   await commit("ip2.txt", "public\n", "chore: point the build at 10.1.2.3");
-  const hit = await inspect(pushCommand());
-  assert(hit?.verdict.kind === "generic", "the generic set DOES apply to a commit message");
+  const genericInMessage = await inspect(pushCommand());
   assert(
-    hit?.verdict.kind === "generic" && hit.verdict.category === "private-ipv4",
-    "and names the category",
+    genericInMessage === undefined,
+    "the generic set is NOT applied to an outgoing commit message either — one rule for everything read out of git",
+  );
+  await reset();
+  await commit("ip3.txt", "public\n", `chore: point the build at ${TERM}`);
+  const denyHit = await inspect(pushCommand());
+  assert(
+    denyHit?.verdict.kind === "denylist",
+    "the PRIVATE denylist still refuses a commit message, so the tier split is not an off switch",
   );
   await reset();
 }

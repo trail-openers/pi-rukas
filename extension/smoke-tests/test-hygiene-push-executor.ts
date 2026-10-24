@@ -25,8 +25,8 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "../src/exec.ts";
 import { resetDenylistCacheForTests } from "../src/public-denylist.ts";
+import { pushGitCwd } from "../src/public-hygiene-cwd.ts";
 import {
-  pushGitCwd,
   registerPublicHygieneGuard,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";

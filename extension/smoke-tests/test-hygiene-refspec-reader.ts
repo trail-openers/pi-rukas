@@ -21,7 +21,8 @@ import {
   inspectCommand,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
-import { pushRefspecs, refspecSource, scanPushRange } from "../src/public-hygiene-push.ts";
+import { pushRefspecs, refspecSource } from "../src/public-hygiene-refspecs.ts";
+import { scanPushRange } from "../src/public-hygiene-push.ts";
 import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "../src/public-hygiene-scan.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
