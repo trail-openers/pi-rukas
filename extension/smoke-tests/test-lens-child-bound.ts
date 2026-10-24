@@ -104,7 +104,7 @@ await runLensChild({
 });
 assert(spawnCalls[1]?.childBoundMs === 5 * 60_000, "the round's lens bound reaches the spawn");
 {
-  const { lensRoundChildBoundMs } = await import("../src/work-driver-lens-fix-budget.ts");
+  const { lensRoundChildBoundMs } = await import("../src/work-driver-lens-round-budget.ts");
   delete process.env.PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS;
   delete process.env.PI_ENSEMBLE_CHILD_BOUND_GRACE_MS;
   const MIN = 60_000;
