@@ -48,7 +48,8 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const { FINDINGS_FILE, findingsStateDir, resetFindingsStateCache } = await import(
+const { FINDINGS_FILE, STATE_LEAF, agentDir, findingsStateDir, resetFindingsStateCache } =
+  await import(
   "../src/review-state-path.ts"
 );
 
@@ -104,8 +105,8 @@ try {
     assert(main?.file === work?.file, "…and the same findings file");
     assert(!main.fellBack, "the store is relocated, not left beside the ledger");
     assert(
-      main.dir.startsWith(path.join(agent, "review-state")),
-      "the store lives under <agentDir>/review-state",
+      main.dir.startsWith(path.join(agentDir(), STATE_LEAF)),
+      "the store lives under <agentDir>/review-state, as the exported pair spells it",
     );
     assert(
       !main.file.startsWith(repo) && !main.dir.includes(`${path.sep}.git`),
@@ -249,6 +250,159 @@ try {
     rmSync(ledgerDir, { recursive: true, force: true });
     rmSync(path.dirname(repo), { recursive: true, force: true });
     rmSync(agent, { recursive: true, force: true });
+  }
+
+  // ── 8: interrupted migrations converge, with no rows lost ─────────────────
+  //
+  // The marker is written LAST and the old file unlinked BEFORE it, so each
+  // crash point leaves a state the next resolve recognises and finishes. Each
+  // fixture below is the exact on-disk shape a kill leaves behind.
+  {
+    const agent = tempAgentDir("state-crash");
+    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    const { repo, git } = makeRepo("state-crash");
+    const commonDir = path.resolve(repo, git("rev-parse", "--git-common-dir"));
+    const oldFile = path.join(commonDir, FINDINGS_FILE);
+    const OLD = '{"rows":[{"id":"cafe0000","title":"the crashed row"}]}\n';
+
+    // (a) copy landed, process died before the marker: rows already live.
+    const a = await findingsStateDir(execp, repo);
+    writeFileSync(a!.file, OLD, "utf8");
+    rmSync(path.join(a!.dir, "MIGRATED"));
+    resetFindingsStateCache();
+    const a2 = await findingsStateDir(execp, repo);
+    const b_dir = a2!.dir;
+    assert(
+      existsSync(path.join(a2!.dir, "MIGRATED")),
+      "crash A (copy landed, no marker): the marker is written on the next resolve",
+    );
+    assert(
+      readFileSync(a2!.file, "utf8") === OLD,
+      "crash A: the live rows are untouched by finishing the migration",
+    );
+
+    // (b) old and live hold the SAME bytes: the copy landed, the unlink did not.
+    // The file is absent here, so this resolve takes the plain copy path and
+    // leaves exactly the crashed shape: old and live byte-identical, no marker.
+    rmSync(a!.file);
+    writeFileSync(oldFile, OLD, "utf8");
+    resetFindingsStateCache();
+    await findingsStateDir(execp, repo);
+    assert(existsSync(oldFile), "crash B: the fixture holds the old file beside an identical live file");
+    rmSync(path.join(b_dir!, "MIGRATED"));
+    resetFindingsStateCache();
+    const b = await findingsStateDir(execp, repo);
+    assert(readFileSync(b!.file, "utf8") === OLD, "crash B (identical bytes): the live file holds the rows");
+    assert(!existsSync(oldFile), "crash B: the old file is unlinked");
+    assert(existsSync(path.join(b!.dir, "MIGRATED")), "crash B: the marker follows the unlink");
+    assert(
+      !existsSync(`${b!.file}.pre-migration`),
+      "crash B: identical bytes are NOT set aside — nothing was distinct to keep",
+    );
+
+    // (c) old absent, live absent, no marker: nothing to move, marker anyway.
+    rmSync(b!.file);
+    resetFindingsStateCache();
+    const c = await findingsStateDir(execp, repo);
+    assert(
+      existsSync(path.join(c!.dir, "MIGRATED")),
+      "crash C (nothing at either path): the marker is written and resolve succeeds",
+    );
+
+    // (d) old and live hold DIFFERENT bytes: the set-aside path still fires.
+    writeFileSync(c!.file, JSON.stringify(ROWS, null, 2), "utf8");
+    writeFileSync(oldFile, '{"rows":[{"id":"0dd1e5d1","title":"a divergent row"}]}\n', "utf8");
+    rmSync(path.join(c!.dir, "MIGRATED"));
+    resetFindingsStateCache();
+    const d = await findingsStateDir(execp, repo);
+    assert(
+      JSON.parse(readFileSync(d!.file, "utf8")).rows[0].title === "a stored finding",
+      "crash D (divergent bytes): the live rows win",
+    );
+    assert(
+      JSON.parse(readFileSync(`${d!.file}.pre-migration`, "utf8")).rows[0].title ===
+        "a divergent row",
+      "crash D: the divergent old bytes are readable in the set-aside",
+    );
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+    rmSync(agent, { recursive: true, force: true });
+  }
+
+  // ── 9: an unreadable or malformed token falls back; never a private token ──
+  {
+    const agent = tempAgentDir("state-badtok");
+    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    const { repo, git } = makeRepo("state-badtok");
+    const commonDir = path.resolve(repo, git("rev-parse", "--git-common-dir"));
+    const loc = await findingsStateDir(execp, repo);
+    const root = path.dirname(loc!.dir);
+    const tokenFile = path.join(root, "token");
+
+    // A truncated write is a directory nobody can find again: 31 chars is not a
+    // token, and neither is 16 (the old, too-permissive acceptance).
+    for (const bad of ["deadbeefcafe0000", "0".repeat(31), "DEADBEEF".repeat(4), "not-a-token"]) {
+      writeFileSync(tokenFile, bad, "utf8");
+      resetFindingsStateCache();
+      const fell = await findingsStateDir(execp, repo);
+      assert(fell!.fellBack, `a malformed token (${bad.length} chars) falls back beside the ledger`);
+      assert(
+        path.dirname(fell!.file) === commonDir,
+        `…and the fallback is the ledger's own directory for a ${bad.length}-char token`,
+      );
+    }
+    // A token file that cannot be read at all (a directory in its place).
+    rmSync(tokenFile);
+    mkdirSync(tokenFile);
+    resetFindingsStateCache();
+    const unreadable = await findingsStateDir(execp, repo);
+    assert(unreadable!.fellBack, "an unreadable token file falls back beside the ledger");
+    assert(
+      !existsSync(path.join(root, "DEADBEEFDEADBEEFDEADBEEFDEADBEEF")),
+      "no private minted token is ever used as a directory",
+    );
+    rmSync(tokenFile, { recursive: true, force: true });
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+    rmSync(agent, { recursive: true, force: true });
+  }
+
+  // ── 10: a state dir that cannot be made 0700 is not a state dir ────────────
+  //
+  // `chmodSync` is masked by nothing, so a filesystem that will not carry the
+  // mode is induced here by making the directory immutable: the chmod fails with
+  // EPERM and the mode that reads back is 0755, not 0700. The resolver must then
+  // keep the store beside the ledger rather than in a group/world-readable dir.
+  {
+    let agent = tempAgentDir("state-mode");
+    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    const { repo, git } = makeRepo("state-mode");
+    const commonDir = path.resolve(repo, git("rev-parse", "--git-common-dir"));
+    const root = mkdtempSync(path.join(os.tmpdir(), "state-mode-agent-"));
+    const immutable = path.join(root, STATE_LEAF);
+    mkdirSync(immutable, { mode: 0o755 });
+    chmodSync(immutable, 0o755);
+    const { execFileSync, spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const chattr = spawnSync("chattr", ["+i", immutable], { encoding: "utf8" });
+    if (chattr.status !== 0) {
+      console.log(`- skipped: chattr +i unavailable (${chattr.stderr.trim() || chattr.status})`);
+    } else {
+      try {
+        process.env.PI_AGENT_DIR = root;
+        resetFindingsStateCache();
+        const stuck = await findingsStateDir(execp, repo);
+        assert(stuck!.fellBack, "a state root that will not take 0700 falls back beside the ledger");
+        assert(
+          path.dirname(stuck!.file) === commonDir,
+          "…and the fallback is the ledger's own directory, not a world-readable dir",
+        );
+      } finally {
+        execFileSync("chattr", ["-i", immutable], { encoding: "utf8" });
+        agent = root;
+      }
+    }
+    chmodSync(immutable, 0o700);
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+    rmSync(agent, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 
   // ── the store's own resolver agrees with these properties ──────────────────

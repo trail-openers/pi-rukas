@@ -2,9 +2,10 @@
  * review-findings-store — the per-branch memory of what six-lens review rounds
  * found (#1105).
  *
- * One JSON file, `review-findings.json`, sits next to `review-ledger.json` under
- * the git common dir, so every worktree of the clone shares it. It is written
- * under the ledger's lock (review-ledger-lock.ts); the ledger itself is untouched.
+ * One JSON file — FINDINGS_FILE, i.e. review-findings.json — is the store. Since
+ * #1764 it lives under the agent dir in a per-clone, randomly-keyed state dir
+ * (`review-state-path.ts`), not beside the ledger; it is written under the
+ * ledger's lock (review-ledger-lock.ts) and the ledger itself is untouched.
  *
  * Rows are `open` (reported, not resolved), `accepted` (an operator accepted it)
  * or `resolved`. An open row's fate is decided by `rowFate`
