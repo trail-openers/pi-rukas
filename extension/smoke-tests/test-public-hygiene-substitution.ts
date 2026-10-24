@@ -18,6 +18,20 @@
  * beyond the hole it closes, so it stays silent where round 1 already speaks,
  * and a `$`-free literal is the case that pins the single-quote half of the walk.
  *
+ * One case deliberately differs from the shape one would expect: the allowed
+ * single-quoted literal uses NO `$`. The brief asked for `--body 'a $(cat f) b'`
+ * to pass, and it does not — but not because of this module. Round 1's
+ * `unreadableOperands` refuses any publish operand whose WORDS contain `$(`,
+ * single-quoted or not, and `test-public-hygiene-unreadable.ts` pins that as
+ * intended behaviour (its backtick-in-single-quotes case sits in the REFUSED
+ * table there). A single-quoted substitution publishes only its own literal text,
+ * which this guard can read, so that refusal is arguably over-strict — but
+ * relaxing it is a round-1 decision with its own test contract, and this module
+ * closes the hole behind a space rather than widening what round 1 refuses. The
+ * `$`-free literal still pins the half of the walk that matters: a single-quoted
+ * segment never sets `hasSubstitution`, which is what keeps prose out of the
+ * refusals.
+ *
  * Offline, synthetic terms, a scratch denylist always.
  */
 
