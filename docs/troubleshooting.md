@@ -638,6 +638,27 @@ in the shell rc — the guard's value is that it runs on every publish, and an r
 permanent and silent. The hook logs one `WARN public-hygiene: BLOCKED …` line per refusal; that line
 carries a category, a line number and a length, never content.
 
+### A `--body` was refused for "built by the shell" when it contained no substitution
+
+**Symptom:** `gh pr comment 3 --body 'the design mentions $(foo) from the RFC'` is refused with
+`this publish could not be checked`, even though single quotes never expand and the guard could
+have read every character of it.
+
+**Cause:** deliberate, and the cheaper of two failures. The rule (`public-hygiene-substitution.ts`)
+is two independent observations over the WHOLE command — it carries a publish surface, and its raw
+text contains an expansion (`$(`, a backtick, `<(`, `>(`, `${`, `$NAME`) — and it looks at no
+quotes. An earlier shape modelled quoting instead: tracking quotes, substitution depth, backticks
+and where to cut a segment. Review returned nine defects, all of one class — an unquoted backslash,
+a `$` or a backtick honoured inside single quotes, a stray `)` driving the depth negative, only the
+head of a `&&` chain checked, newlines cut inside quotes. Every one was a publish walking out
+unchecked, and every fix was one more character bash treats specially.
+
+**Fix:** pass the text as a file — `--body-file notes.md` (or, for `gh api`, `-F field=@notes.md`),
+which the guard reads, bounds and checks properly. Single-quoted literals that merely *mention* a
+substitution are the accepted false positive: they are rare, the remedy is one file write, and the
+alternative is a quote model with the holes above. Refusing them also keeps the guard consistent
+with the shape it has always refused, a single-quoted `$(…)`.
+
 ### A push was refused but the commits look fine
 
 **Cause:** The scan reads the **outgoing range**, and the range comes from the
