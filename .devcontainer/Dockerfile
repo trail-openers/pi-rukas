@@ -280,6 +280,7 @@ RUN ln -sf ${PI_ENSEMBLE_DIR}/bin/pi-rukas-headless /usr/local/bin/pi-rukas-head
 USER vscode
 RUN mkdir -p /home/vscode/.pi/agent/sessions \
              /home/vscode/.pi/agent/ensemble-runs \
+             /home/vscode/.pi/agent/review-state \
              /home/vscode/.vipune \
              /home/vscode/.cache \
              /home/vscode/.bun \

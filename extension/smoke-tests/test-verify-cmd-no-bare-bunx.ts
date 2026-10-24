@@ -13,7 +13,7 @@
  *      ran one literal and the handoff named another.
  *
  * `EXEMPT_FILES` names where `bunx` stays legal and is deliberately NOT
- * scanned: `bash-command-parser.ts` / `review-accept-arms.ts` match
+ * scanned: `bash-command-parser.ts` matches
  * user-typed commands (where the alias is legitimate), `review-accept-guard.ts`
  * documents those arms, `ci.yml` runs on GitHub runners that always have it,
  * and smoke-test fixtures carry it as test DATA.
@@ -88,8 +88,6 @@ const PROSE_FILES: readonly string[] = [
  */
 const EXEMPT_FILES: readonly string[] = [
   "extension/src/bash-command-parser.ts",
-  "extension/src/review-accept-guard.ts",
-  "extension/src/review-accept-arms.ts",
   ".github/workflows/ci.yml",
   "extension/smoke-tests/fixtures/agents-md/rich-manifest-no-codestyle-agents-md.md",
   "extension/smoke-tests/fixtures/issues/341.json",

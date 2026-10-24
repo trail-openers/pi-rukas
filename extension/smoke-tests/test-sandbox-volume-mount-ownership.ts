@@ -51,6 +51,9 @@ function assert(cond: boolean, msg: string) {
 export const VOLUME_TARGETS = [
   "/home/vscode/.pi/agent/sessions",
   "/home/vscode/.pi/agent/ensemble-runs",
+  // #1764: the review findings store lives under the agent dir, so its state dir
+  // is a named-volume fallback like the two above and needs the same repair.
+  "/home/vscode/.pi/agent/review-state",
   "/home/vscode/.vipune",
   "/home/vscode/.cache",
   "/home/vscode/.bun",
@@ -129,13 +132,18 @@ if (process.env.PI_ENSEMBLE_VOLUME_OWNERSHIP === "0") {
 {
   const dockerfile = readFileSync(DOCKERFILE, "utf8");
 
-  // The three issue-mandated state dirs must be baked in as vscode.
+  // The issue-mandated state dirs must be baked in as vscode.
   assert(
     dockerfileMkdirLine(dockerfile) !== "",
-    "Dockerfile bakes the three state mount points in via a vscode `RUN mkdir -p …` line",
+    "Dockerfile bakes the state mount points in via a vscode `RUN mkdir -p …` line",
   );
   const mkdirLine = dockerfileMkdirLine(dockerfile);
-  for (const t of ["/home/vscode/.pi/agent/sessions", "/home/vscode/.pi/agent/ensemble-runs", "/home/vscode/.vipune"]) {
+  for (const t of [
+    "/home/vscode/.pi/agent/sessions",
+    "/home/vscode/.pi/agent/ensemble-runs",
+    "/home/vscode/.pi/agent/review-state",
+    "/home/vscode/.vipune",
+  ]) {
     assert(
       mkdirLine.includes(t),
       `Dockerfile vscode mkdir includes state target \`${t}\``,
@@ -196,10 +204,11 @@ if (process.env.PI_ENSEMBLE_VOLUME_OWNERSHIP === "0") {
 // ------------------------------------------------- the gate CAN fail (canaries)
 
 {
-  // Canary: Dockerfile mkdir helper finds all three state targets in a fixture,
-  // and misses a fixture that dropped one.
+  // Canary: Dockerfile mkdir helper finds every state target in a fixture, and
+  // misses a fixture that dropped one.
   const good = "RUN mkdir -p /home/vscode/.pi/agent/sessions \\\n" +
     "  /home/vscode/.pi/agent/ensemble-runs \\\n" +
+    "  /home/vscode/.pi/agent/review-state \\\n" +
     "  /home/vscode/.vipune \\\n" +
     "  /home/vscode/.cache \\\n" +
     "  /home/vscode/.bun \\\n" +

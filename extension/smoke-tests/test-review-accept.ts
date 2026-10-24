@@ -19,7 +19,8 @@ import {
   reasonProblem,
   runReviewAccept,
 } from "../scripts/review-accept.ts";
-import { registerReviewAcceptGuard, runsReviewAccept } from "../src/review-accept-guard.ts";
+import { registerReviewAcceptGuard, reviewStateRefusal } from "../src/review-accept-guard.ts";
+import { FINDINGS_FILE } from "../src/review-state-path.ts";
 import {
   type FindingRun,
   readBranchRows,
@@ -201,61 +202,53 @@ const registersAcceptance = srcFiles.filter((f) => {
 });
 assert(registersAcceptance.length === 0, "boundary: no Pi tool registers acceptance");
 
-const agentCommands = [
-  "bun extension/scripts/review-accept.ts feat/x deadbeef --reason 'a reason that is long enough'",
-  "oo bun extension/scripts/review-accept.ts feat/x deadbeef --reason x",
-  'bun "extension/scripts/review-accept.ts" feat/x deadbeef --reason x',
-  "cd extension && bunx tsx scripts/review-accept.ts main 0123abcd --reason y",
-  "bun run extension/scripts/review-accept.ts feat/x deadbeef --reason x",
-  "cd extension/scripts && bun review-accept.ts main 0123abcd --reason y",
-  "bun -e 'await (await import(\"./src/review-findings-store.ts\")).acceptRow({})'",
+// The guard's own contract (what it refuses, what it must leave alone) lives in
+// test-review-state-guard.ts. What this suite pins is that the guard is WIRED:
+// one tool_call hook, registered from the mode-independent block, that blocks the
+// store's location in every mode. The refusal rows here are the minimum needed to
+// prove the wiring reaches both branches (bash and the edit tools).
+const STATE_LEAF = "review-state";
+const D = String.fromCharCode(36);
+const bashRefused = (c: string): boolean =>
+  reviewStateRefusal("bash", { command: c }) !== undefined;
+
+const STORE_PATH = `~/.pi/agent/${STATE_LEAF}/deadbeef01234567/${FINDINGS_FILE}`;
+for (const c of [
+  `cat ${STORE_PATH}`,
+  `cp /tmp/x ${STORE_PATH}`,
+  `echo ${FINDINGS_FILE}`,
+  // A path built in a variable is still the store's path (#1764 criterion 6).
+  `F=${STORE_PATH}; cat $F`,
+  `export F=~/.pi/agent/${STATE_LEAF}; ls ${D}{F}`,
+  // A runtime writing the store by its basename names the store, so the path
+  // guard refuses it — the row the old shell-semantics guard refused for a
+  // SHAPE, this one refuses for the NAME.
   "node -e \"require('fs').writeFileSync('review-findings.json','{}')\"",
-  // #1125 — the routes the original scan missed. Plain git/gh was exempt as a
-  // block, so a git argument that writes a file (`--output`) or runs an alias
-  // (`-c alias.x='!…'`) reached the store; and the runtime match required the
-  // runtime and the store name on one line, so a here-doc body or a program
-  // piped into `bun -` did too. The full set is in
-  // test-review-accept-guard-hardened.ts.
-  "git show HEAD:blob --output=review-findings.json",
-  "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
-  'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
-  "printf 'import \"./src/review-findings-store.ts\"' | bun -",
-];
-for (const c of agentCommands) {
-  assert(
-    runsReviewAccept(c) !== undefined,
-    `guard: refuses an agent run of the script — ${c.slice(0, 48)}`,
-  );
+]) {
+  assert(bashRefused(c), `guard: refuses a command naming the store — ${c.slice(0, 48)}`);
 }
 for (const c of [
   "git status",
   "bun test smoke-tests/test-review-accept.ts",
   'git commit -m "feat: review-accept guard"',
   'git commit -m "docs: review-accept flow"',
-  // The plain git reads the exemption exists for. `git log -- extension/src/
-  // review-findings-store.ts` is NOT one of them any more: the #1125 fix round refuses a
-  // path operand whose last segment is a protected stem, and that over-refusal is
-  // asserted in test-review-accept-guard-hardened.ts's OVER_REFUSALS.
   "git diff HEAD -- extension/src/review-accept-guard.ts",
-]) {
-  assert(runsReviewAccept(c) === undefined, `guard: leaves unrelated commands alone — ${c}`);
-}
-// #1125 clause (b) — POLARITY. Both are documented over-refusals, the accepted cost of
-// failing closed: a write-capable flag is refused wherever it sits, and a forge write
-// subcommand naming the script is refused even in prose. The pre-adjudication draft
-// asserted the opposite polarity for these two; the canonical list is OVER_REFUSALS in
-// test-review-accept-guard-hardened.ts.
-for (const c of [
+  // #1764 — the operator CLI spelled by an agent is NOT this guard's business: the
+  // script lives in the repository, so refusing its name would refuse the prose that
+  // discusses it (criterion 12). The CLI's own agent-context check refuses it, and
+  // test-review-accept-layers.ts asserts that layer.
+  "bun extension/scripts/review-accept.ts feat/x deadbeef --reason 'a reason that is long enough'",
+  "cd extension && bunx tsx scripts/review-accept.ts main 0123abcd --reason y",
   "git show HEAD:README.md --output=/tmp/readme.txt",
   'gh pr create --body "Adds the review-accept acceptance path"',
-  // #1125 fix round: the stem match is a PREFIX, so a word that merely STARTS with the
-  // operator script's stem is refused rather than guessed at (canonical: OVER_REFUSALS).
   "echo review-acceptance-notes",
+  "gh pr view 1105",
+  "glab mr view 12",
 ]) {
-  assert(runsReviewAccept(c) !== undefined, `guard: over-refuses rather than guesses — ${c}`);
-}
-for (const c of ["gh pr view 1105", "glab mr view 12"]) {
-  assert(runsReviewAccept(c) === undefined, `guard: leaves the exact forge read arms alone — ${c}`);
+  assert(
+    !bashRefused(c),
+    `guard: an ordinary command is never refused — ${c.slice(0, 48)}`,
+  );
 }
 
 const handlers: Record<string, (e: unknown, c: unknown) => Promise<unknown>> = {};
@@ -267,7 +260,7 @@ registerReviewAcceptGuard({
 const verdict = (await handlers.tool_call?.(
   {
     toolName: "bash",
-    input: { command: "bun extension/scripts/review-accept.ts feat/x deadbeef --reason x" },
+    input: { command: `cat ~/.pi/agent/${STATE_LEAF}/k/t/${FINDINGS_FILE}` },
   },
   {},
 )) as { block?: boolean } | undefined;
