@@ -1,6 +1,6 @@
 /**
- * work-driver-lens-fix-reposition-gate — #981 (task-b) — the round-2+ lens-fix
- * reposition gate.
+ * work-driver-lens-fix-reposition-gate — #981 (task-b) — the round-2+
+ * lens-fix reposition gate.
  *
  * The round-2+ fix must build on the branch tip, which may have advanced
  * by a cherry-pick of a previous round's work. This gate moves the
@@ -9,18 +9,6 @@
  * worktree is verified at the branch tip. Anything else parks the fix
  * loop (`lens-fix-reposition` cap-hit). Unlanded/diverged trees are
  * backed up first so nothing is destroyed.
- *
- * What this gate touches, precisely: it fetches and moves the LENS-FIX
- * WORKTREE, and it used to be true that the main checkout was never its
- * concern. #1779 changed that for one arm: when a clean tree is strictly
- * AHEAD of the tip, the landing safety net (`landCommittedFix`, opted in via
- * `landAhead`) checks the branch out at repoRoot to cherry-pick onto it and
- * pushes the branch. Every other outcome — fetch, status, ff-merge, the
- * patch-equivalence checkout, the backup ref — still mutates only the tree.
- * Because that one arm moves the checkout, its failure path states the
- * verified-restore outcome (restored / NOT restored) rather than parking on
- * "unlanded" alone; the fetch, which runs outside the integration lock, still
- * only moves remote-tracking refs.
  *
  * Tip selection: the driver's worktrees are detached and the branch ref
  * is often absent, so the tip is resolved from BOTH `refs/heads/<branch>`
@@ -46,10 +34,6 @@ import {
   enumerateUnlanded,
   parkCherryFailedTree,
 } from "./work-driver-lens-fix-reposition-backup.ts";
-import {
-  type LensFixLandAheadCtx,
-  landStrictlyAhead,
-} from "./work-driver-lens-fix-reposition-land.ts";
 import {
   GIT_TIMEOUT_MS,
   cherryLines,
@@ -79,13 +63,7 @@ import type { ExecFn } from "./worktree.ts";
  *   `git cherry`), rather than by a fast-forward.
  * - `dirty` — uncommitted changes; fixer NOT dispatched.
  * - `unlanded` — clean and AHEAD of the tip (strict ancestor of the tree);
- *   holds commits the tip does not. By default these are LANDED (the tip is a
- *   strict ancestor, so the tree is the branch plus the fixer's commits on top
- *   — exactly what `landCommittedFix` takes) and the result is returned as
- *   `repositioned` with `landedAheadShas`. `PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0`,
- *   a landing the caller could not attempt, or a landing that failed restores
- *   the checkout (verified, with the claim in the detail) and parks: moved to a
- *   backup ref and reported.
+ *   holds commits the tip does not. Moved to backup ref; parks.
  * - `diverged` — holds commits the tip does not and is NOT behind it
  *   either (or local/remote refs diverged during tip selection). Moved to
  *   backup ref; parks.
@@ -108,14 +86,6 @@ export type RepositionResult =
       movedByPatchEquivalence?: boolean;
       /** The backup ref created before the cherry-landed move (the old tree HEAD). */
       backupRef?: string;
-      /**
-       * The tree's own commits that this reposition LANDED onto the branch
-       * (oldest first), and the SHAs they took there. Set only by the
-       * strictly-ahead landing: the tree held commits the tip did not, the tip
-       * was their strict ancestor, and the safety net landed them instead of
-       * parking (`work-driver-lens-fix-reposition-land.ts`).
-       */
-      landedAheadShas?: string[];
     }
   | {
       kind: "dirty";
@@ -157,12 +127,6 @@ export async function repositionLensFixWorktree(
    * tree parks exactly as before, with nothing saved, cleaned or written.
    */
   lostAttempt?: { repoRoot: string; issue: number; state: WorkState },
-  /**
-   * The strictly-ahead landing needs a repo root to land at and a state whose
-   * `baseSha` bounds the cherry-pick range. Both absent (every existing caller)
-   * keeps the pre-landing shape: a strictly-ahead tree backs up and parks.
-   */
-  landAhead?: LensFixLandAheadCtx,
 ): Promise<RepositionResult> {
   // 1. Fetch the branch, then resolve the tip from the local + remote
   //    refs (documented tip selection, module header). A fetch failure or
@@ -172,11 +136,9 @@ export async function repositionLensFixWorktree(
     // #981 — `git fetch` runs OUTSIDE the integration lock on purpose:
     // fetch only updates remote-tracking refs, which git locks per ref, so
     // concurrent fetches never collide; the integration lock serialises
-    // working-tree mutations at repoRoot, and THIS step is not one of them —
-    // it touches neither checkout, only the lens-fix worktree `tree` and the
-    // refs. (The strictly-ahead landing further down IS a repoRoot mutation
-    // and takes the lock itself, inside `landCommittedFix`.) So the fetch does
-    // not need it.
+    // working-tree mutations at repoRoot, which this gate never touches
+    // (it operates on the lens-fix worktree `tree`), so the fetch does not
+    // need it.
     // Bounded + non-interactive via runNetGit (#1095). Match sharedFetch
     // (work-driver-branch-mechanized.ts): the fetch's pack output scales with
     // branch history, not a fixed 64 KiB, hence the 1 MiB buffer.
@@ -445,31 +407,6 @@ export async function repositionLensFixWorktree(
     const aheadShas =
       plusShas.length > 0 ? plusShas : await enumerateUnlanded(execFn, tree, tipSha);
     const kind: "unlanded" | "diverged" = tipIsAncestorOfTree.isAncestor ? "unlanded" : "diverged";
-    // THE SAFETY NET. A clean tree whose commits sit strictly ON TOP of the
-    // branch tip is not a problem to park on — it is the branch plus a fix that
-    // nobody landed, which is what `landCommittedFix` exists to land. Parking
-    // it stranded a killed fixer's work in a backup ref (the field shape this
-    // row closes); landing it lets the cycle continue and the adversarial gate
-    // judge the content like any other fix. A tree that is NOT strictly ahead
-    // (`diverged`) still backs up and parks exactly as before.
-    if (kind === "unlanded") {
-      const landed = await landStrictlyAhead(execFn, tree, branchName, aheadShas, landAhead);
-      // The gate branches on the DISCRIMINANT, not on the shape of what came
-      // back: `landed` is returned as-is, `park` carries its own detail (the
-      // checkout may have moved, so the text names the restore claim), and
-      // `not-attempted` falls through to the backup-and-park prose below — the
-      // net did not run, so the generic diagnosis is the honest one.
-      if (landed.outcome === "landed") return landed.result;
-      if (landed.outcome === "park") {
-        trace(`${TRACE_PREFIX}: ${landed.detail}`);
-        return {
-          kind: "unlanded",
-          detail: landed.detail,
-          ...(backupRefName ? { backupRef: backupRefName } : {}),
-          aheadShas,
-        };
-      }
-    }
     const detail =
       kind === "unlanded"
         ? `worktree holds ${aheadShas.length} commit(s) the branch tip ${tipSha.slice(0, 12)} does not (previous-round work unlanded): ${aheadShas.join(", ") || "(unreadable)"}`

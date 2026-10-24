@@ -217,26 +217,10 @@ export async function runLensFix(
       lostAttemptOnStep(state, "lens-fix")
         ? { repoRoot: ctx.repoRoot, issue: ctx.issue, state }
         : undefined,
-      // The safety net: a clean tree whose commits sit strictly on top of the
-      // branch tip is landed rather than parked (and never pushed unreviewed —
-      // the tip is the branch's own HEAD, so these are commits the cycle's
-      // integration path already accepts for a committed lens-fix). Absent
-      // `baseSha` there is no range to land, and the gate parks as before. This
-      // is the one arm of the gate that moves the main checkout, so a landing
-      // that fails reports the verified-restore outcome instead of an
-      // unexplained park.
-      state.pipelineState.baseSha
-        ? {
-            repoRoot: ctx.repoRoot,
-            issue: ctx.issue,
-            state,
-            ...(ctx.dirtyRootExempt ? { dirtyRootExempt: ctx.dirtyRootExempt } : {}),
-          }
-        : undefined,
     );
     if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(
-        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.movedByPatchEquivalence ? " (movedByPatchEquivalence)" : ""}${rep.kind === "repositioned" && rep.landedAheadShas ? ` (landed ${rep.landedAheadShas.length} strictly-ahead commit(s))` : ""} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
+        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.movedByPatchEquivalence ? " (movedByPatchEquivalence)" : ""} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
       );
     } else {
       // Park: the base is not trustworthy. Build the cap-hit (routed to

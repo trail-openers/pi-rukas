@@ -43,7 +43,7 @@ import { roundCapMergeEnabled } from "../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
-import { lensFixLandAheadEnabled } from "../src/work-driver-lens-fix-reposition-land.ts";
+import { lensFixLandAheadEnabled } from "../src/work-driver-lens-fix-bound-land.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
 import { slowThresholds } from "../src/slow-notice.ts";

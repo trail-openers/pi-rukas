@@ -73,15 +73,18 @@ import { notifyAgent } from "./agent-message.ts";
 import { execp } from "./exec.ts";
 import { REVIEW_WALL_CLOCK_ENV, reviewWallClockMs } from "./review-budget.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
-import { childBoundGraceMs, lensChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import { LENS_REVIEW_MIN_USEFUL_MS, MIN_USEFUL_MS } from "./work-driver-deadline.ts";
+import { MIN_USEFUL_MS } from "./work-driver-deadline.ts";
 import { type PatchIdentity, currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { discloseResidualsAndRoute } from "./work-driver-lens-cap.ts";
 import { isFixerBoundKill } from "./work-driver-lens-fix-bound-land.ts";
-import { lensRoundReserveMs } from "./work-driver-lens-round-budget.ts";
+import {
+  MIN_FIX_DISPATCH_MS,
+  lensRoundReserveMs,
+  remainingFromClock,
+} from "./work-driver-lens-loop-numbers.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -89,12 +92,6 @@ import {
   appendEvent,
   persistCycle,
 } from "./workflow-state.ts";
-
-/** The least bound armed on a fix-loop dispatch: with the budget spent, the
- *  develop fix pass (which has no park of its own) is not left unbounded —
- *  that is the bug — nor killed at once; it is killed with the structured
- *  `timeout` killCause and the step fails through the normal router. */
-export const MIN_FIX_DISPATCH_MS = 60_000;
 
 /** Why no bound was armed — two distinct states that used to share one silence:
  *  enforcement off, or no review clock stamped (no lens round has run). */
@@ -135,8 +132,7 @@ export function reviewLoopActive(state: WorkState): boolean {
  */
 export function reviewRemainingMs(state: WorkState, now: number): number | undefined {
   if (!reviewEnforceEnabled()) return undefined;
-  const elapsed = reviewElapsedMs(state, now);
-  return elapsed === undefined ? undefined : reviewWallClockMs() - elapsed;
+  return remainingFromClock(state, now, reviewElapsedMs, reviewWallClockMs());
 }
 
 /**
@@ -171,17 +167,24 @@ export function reviewFixDispatchBoundMs(
   // #1742 — the owed lens round's floor is withheld from the fixer's bound:
   // a fixer that consumes the whole budget leaves a round that must be
   // refused at its own start gate, which is the cap the loop could not shed.
+  const ceiling = boundCeiling(requestedTimeoutMs);
   const bound = Math.min(
     Math.max(remaining - lensRoundReserveMs(), MIN_FIX_DISPATCH_MS),
-    boundCeiling(requestedTimeoutMs),
+    // No ceiling given is genuinely unbounded, not an arbitrarily large one:
+    // `Math.min(x, Infinity)` is also correct, but the trace below must say
+    // "none" rather than print a rendered infinity.
+    ceiling ?? Number.POSITIVE_INFINITY,
   );
   // Production attribution: a fixer killed AT its bound used to be
   // indistinguishable in the log from one killed by the role backstop, so a
   // park caused by the review budget could not be attributed to it. One line
   // per armed dispatch, naming the ceiling the caller passed, the reserve the
   // budget withheld and what the loop had left when the bound was resolved.
+  // A caller that passed NO ceiling prints `ceiling none`, not `Infinitym` —
+  // an unbounded dispatch and an arbitrarily large one are different facts and
+  // the log must not render them the same.
   trace(
-    `work-driver: ${fixerStepName(fixer)} fixer armed — bound ${Math.round(bound / 60_000)}m (ceiling ${Math.round(boundCeiling(requestedTimeoutMs) / 60_000)}m, reserve ${Math.round(lensRoundReserveMs() / 60_000)}m, budget left ${Math.max(0, Math.round(remaining / 60_000))}m)`,
+    `work-driver: ${fixerStepName(fixer)} fixer armed — bound ${Math.round(bound / 60_000)}m (ceiling ${ceiling === undefined ? "none" : `${Math.round(ceiling / 60_000)}m`}, reserve ${Math.round(lensRoundReserveMs() / 60_000)}m, budget left ${Math.max(0, Math.round(remaining / 60_000))}m)`,
   );
   return bound;
 }
@@ -223,9 +226,11 @@ export function traceFixPassBoundKill(
   trace(`work-driver: develop (fix pass) killed at its bound — ${killCause}, ${bound}`);
 }
 
-/** Never lengthen a dispatch the caller already bounded. */
-function boundCeiling(requestedTimeoutMs?: number): number {
-  return requestedTimeoutMs ?? Number.POSITIVE_INFINITY;
+/** Never lengthen a dispatch the caller already bounded. `undefined` is the
+ *  honest answer for "no ceiling was given" — rendering it as a number made an
+ *  unbounded dispatch print `ceiling Infinitym`. */
+function boundCeiling(requestedTimeoutMs?: number): number | undefined {
+  return requestedTimeoutMs;
 }
 
 /**

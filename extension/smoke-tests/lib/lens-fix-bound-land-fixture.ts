@@ -19,7 +19,14 @@ import { realExec } from "./exec-fake.ts";
 
 /** The runner's failure counter: `assert` sets it, the test file prints and
  *  exits with it. Shared so a scenario and its canaries report one verdict. */
-export const boundLandRun = { failed: false };
+/**
+ * #1789 round 2 — when true, the scripted fixer reports its work as DONE after
+ * committing instead of reporting a kill. A real child that has committed is
+ * ended as done at its bound (`spawn-child-bound.ts`), so the scenarios that
+ * want the *converted* shape set this and let the driver's own bound produce
+ * the kill; the scenarios that want a plain kill leave it off.
+ */
+export const boundLandRun = { failed: false, commitAndKill: false };
 
 export function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
@@ -224,6 +231,18 @@ export function killedFixer(wt: string, commits: number, killCause: DispatchResu
         await realExec(`git add fix-${i}.txt && git commit -q -m 'fix(lens): part ${i}'`, {
           cwd: wt,
           shell: "/bin/bash",
+        });
+      }
+      // #1789 round 2 — a real spawn ends a child that has COMMITTED as DONE,
+      // not as a `timeout` kill (spawn-child-bound.ts `atBackstop`/`commits:`).
+      // A scenario that needs the killed-anyway shape — the conversion, which
+      // is what runs when the child is stopped before it could report — leaves
+      // `commitAndKill` off, so the kill is reported as it was observed.
+      if (boundLandRun.commitAndKill) {
+        return mkResult({
+          role: "developer",
+          text: "Fixed, then stopped at the bound.",
+          transcriptPath: transcript("developer"),
         });
       }
       return mkResult({

@@ -9,10 +9,11 @@
  *   1. killed with NO commits — nothing to land, so the step still HALTs.
  *   2. a genuinely diverged tree — its commits are not a fast-forward of
  *      anything, so landing them would be guessing; it backs up and parks.
- *   3. `PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0` — the operator asked for every
- *      unlanded tree to be surfaced: a strictly-ahead tree parks.
- *   4. the SAME knob also disables the conversion — one escape hatch, both
- *      halves (#1779 c).
+ *   3. a strictly-ahead tree — the reposition gate has no landing arm, so it
+ *      parks whether or not the knob is set.
+ *   4. `PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0` — the knob governs ONLY the
+ *      conversion: a bound kill that committed keeps its `dispatch-failed`
+ *      tail and HALTs (#1779 c, #1789 round 2).
  *   5. a kill whose cause is NOT the fixer's bound (abort, inactivity, loop,
  *      token-budget) is a different diagnosis with its own cap, and converts
  *      nothing (#1779 a).
@@ -115,11 +116,16 @@ import {
   const wtHead = (await realExec("git log --oneline -1", { cwd: wt })).stdout.trim();
   assert(
     wtHead.includes("diverged fixer work"),
-    "the diverged tree was not moved or reset by the landing attempt",
+    "the diverged tree was not moved or reset",
   );
 }
 
-// ── 4. canary: PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0 still parks an unlanded tree ─
+// ── 4. canary: PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0 still HALTs a bound kill ───
+// #1789 round 2 — the knob governs ONLY the partial-fix conversion. The
+// reposition gate has no landing arm any more, so an unlanded tree parks with
+// the knob at either value; what the knob changes is whether a bound kill that
+// committed converts (knob on) or HALTs (knob off). Asserted here on both sides
+// of the knob so the switch cannot silently grow back a second behaviour.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "lens-bound-knob-"));
   const branch = "feature/lens-bound-knob";
@@ -131,32 +137,21 @@ import {
     cwd: wt,
     shell: "/bin/bash",
   });
-  process.env.PI_ENSEMBLE_LENS_FIX_LAND_AHEAD = "0";
-  try {
-    const rep = await repositionLensFixWorktree(
-      realExec,
-      wt,
-      branch,
-      [1804],
-      "knob canary",
-      undefined,
-      {
-        repoRoot: root,
-        issue: 1804,
-        state: mkLensFixState(1804, branch, baseSha, wt),
-      },
-    );
+  // The gate parks a strictly-ahead tree whatever the knob says — the landing
+  // arm that used to read it is gone.
+  for (const knob of ["", "0"]) {
+    process.env.PI_ENSEMBLE_LENS_FIX_LAND_AHEAD = knob;
+    const rep = await repositionLensFixWorktree(realExec, wt, branch, [1804], "knob canary");
     assert(
       rep.kind === "unlanded",
-      `with PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0 a strictly-ahead tree still parks (got ${rep.kind})`,
+      `a strictly-ahead tree parks at PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=${knob || "(default)"} (got ${rep.kind})`,
     );
     assert(
       rep.kind === "unlanded" && rep.backupRef !== undefined,
       "...and is still backed up to a ref",
     );
-  } finally {
-    process.env.PI_ENSEMBLE_LENS_FIX_LAND_AHEAD = "";
   }
+  process.env.PI_ENSEMBLE_LENS_FIX_LAND_AHEAD = "";
 }
 
 // ── 5. canary: the ONE knob (PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0) HALTs a kill ─

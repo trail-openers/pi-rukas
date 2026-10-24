@@ -22,6 +22,19 @@ export type PartialAfterKill = {
   commitShas: string[];
   /** When the kill happened — the converted event's `at` carried verbatim. */
   at: number;
+  /**
+   * #1789 round 2 — the killed child's own exit code, carried over from the
+   * `dispatch-failed` that the conversion keeps. The conversion must not cost a
+   * reader the diagnosis: which bound fired is visible in the error tail, and
+   * whether the child exited at all is visible here.
+   */
+  exitCode?: number;
+  /**
+   * #1789 round 2 — a short excerpt of the kill's `errorTail` (the line that
+   * names the bound and its override knob), bounded so the disclosure cannot
+   * crowd the event log. Absent when the failure carried no tail.
+   */
+  errorTail?: string;
 };
 
 /**

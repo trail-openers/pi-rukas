@@ -13,7 +13,10 @@
  *
  * This file runs the scenario: a killed fixer WITH commits converts to a
  * partial fix, routes to the adversarial gate, and its commit reaches
- * `origin/<branch>` through the normal integration path. The canaries (a kill
+ * `origin/<branch>` through the normal integration path — after which the lens
+ * worktree itself sits AT the branch tip, so the next round's reposition gate
+ * answers `already-at-tip` (the root fix, #1789 round 2: the tree is moved
+ * where the kill is classified, instead of a landing arm added to the gate). The canaries (a kill
  * with no commits, a diverged tree, both knob-off shapes, and every kill cause
  * that is not the fixer's bound) are in
  * `test-work-driver-lens-fix-bound-landed-canaries.ts`.
@@ -61,21 +64,51 @@ import {
   );
   const repositionCap = events.find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-reposition");
   assert(repositionCap === undefined, "no lens-fix-reposition park was recorded");
-  assert(
-    events.some((e) => e.kind === "dispatch-failed" && e.step === "lens-fix") === false,
-    "the killed lens-fix dispatch left no dispatch-failed tail — it was converted, not left to HALT",
+  // #1789 round 2 — THE CONVERSION KEEPS THE EVIDENCE. The completion is what
+  // the router reads (it is the tail); the kill it converted from stays in the
+  // log one event earlier, with its exit code and error tail. A conversion that
+  // deleted the failure would leave a cycle that cannot be audited: no reader
+  // could tell a killed child from one that finished.
+  const failedIdx = events.findIndex(
+    (e) => e.kind === "dispatch-failed" && e.step === "lens-fix",
+  );
+  const completedIdx = events.findIndex(
+    (e) => e.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true,
   );
   assert(
-    events.some((e) => e.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true),
+    failedIdx >= 0,
+    "the killed lens-fix dispatch still leaves its dispatch-failed record — the conversion keeps the evidence",
+  );
+  assert(
+    completedIdx >= 0,
     "a completed lens-fix stands in the log where the kill was",
+  );
+  assert(
+    completedIdx === failedIdx + 1,
+    `the completion was appended immediately after the failure it converted (failed ${failedIdx}, completed ${completedIdx})`,
+  );
+  assert(
+    // What the router reads is the step's TAIL: the last event the lens-fix
+    // step itself appended. A `dispatch-slow` watch event folded in after the
+    // conversion is display, not a verdict, so the scan accepts it and rejects
+    // anything that would have routed the step elsewhere (another failure, a
+    // cap-hit).
+    (() => {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i];
+        if (e?.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true) return true;
+        if (e?.kind === "dispatch-slow" || e?.kind === "dispatch-started") continue;
+        return false;
+      }
+      return false;
+    })(),
+    "the completion is the TAIL of the lens-fix step the router routes on, so the retained failure behind it cannot re-HALT the step",
   );
   const adv = events.find((e) => e.kind === "adversarial-approved");
   assert(adv !== undefined, "the killed fixer routed to the ADVERSARIAL path, not handoff");
   // (a) The conversion is machine-readable on the event, and (b) it is
   // disclosed to the operator through plumbReports with the cause and the SHAs.
-  const completed = events.find(
-    (e) => e.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true,
-  );
+  const completed = events[completedIdx];
   assert(
     completed?.kind === "dispatch-completed" && completed.partialAfterKill !== undefined,
     "the completed event carries the partialAfterKill disclosure field",
@@ -85,6 +118,15 @@ import {
       completed.partialAfterKill?.killCause === "timeout" &&
       (completed.partialAfterKill?.commitShas.length ?? 0) === 2,
     "...naming the kill cause and both commit SHAs the fixer made",
+  );
+  // The kill's own evidence rode across with the conversion: exit code and a
+  // bounded excerpt of the error tail that names the bound.
+  assert(
+    events[failedIdx]?.kind === "dispatch-failed" &&
+      completed?.kind === "dispatch-completed" &&
+      completed.partialAfterKill?.errorTail !== undefined &&
+      completed.partialAfterKill.errorTail.length > 0,
+    "the converted event carries an excerpt of the kill's error tail alongside the retained failure",
   );
   const plumbs = (state?.pipelineState.plumbReports ?? []).filter(
     (r) => r.step === "lens-fix" && r.role === "driver",
@@ -123,15 +165,24 @@ import {
   }
   assert(landed, "the fixer's commit reached origin/<branch> after the adversarial approval");
 
-  // The tree the fixer was killed in is left exactly as it stood: the landing
-  // moved the REF, not the worktree, and repositioning a tree that still holds
-  // commits the branch lacks would destroy work. `diverged` + a backup ref is
-  // therefore the correct answer here — and the origin check above is what
-  // proves the work was not stranded.
+  // The root fix: after a converted kill the lens worktree is MOVED onto what
+  // the branch carries, so the next round's reposition gate reads
+  // `already-at-tip` instead of a tree holding commits the branch lacks (which
+  // parks). A tree still `diverged` here means the work moved but the tree did
+  // not, and the next round parks on it — the exact shape this closes.
   const rep = await repositionLensFixWorktree(realExec, wt, branch, [issue], "bound landed");
   assert(
-    rep.kind === "diverged" && rep.backupRef !== undefined,
-    `a worktree still holding commits the branch lacks reports diverged with a backup ref (got ${rep.kind})`,
+    rep.kind === "already-at-tip",
+    `the next reposition sees the tree already at the tip — the conversion moved it (got ${rep.kind})`,
+  );
+  const { stdout: wtHead } = await realExec("git rev-parse HEAD", { cwd: wt });
+  const { stdout: remoteTip } = await realExec(
+    `git rev-parse ${JSON.stringify(`origin/${branch}`)}`,
+    { cwd: root },
+  );
+  assert(
+    wtHead.trim() === remoteTip.trim(),
+    "the lens worktree HEAD equals the branch tip the remote carries",
   );
 
   assert(
