@@ -369,6 +369,73 @@ assert(
   withAssignmentsExpanded(`A=x; echo ${D}A`) === "A=x; echo x",
   "substitution: a plain assignment is substituted",
 );
+// A substitution must not reach past the name it was given: `F=x` is an
+// assignment to F, and the `$FOO` later in the same command names a different
+// variable. Rewriting it would scan text the agent never wrote, which is how a
+// tripwire starts refusing commands it was never given.
+assert(
+  withAssignmentsExpanded(`F=x; echo ${D}FOO`) === `F=x; echo ${D}FOO`,
+  "substitution: a longer name is not the assigned one (F=x leaves $FOO alone)",
+);
+assert(
+  withAssignmentsExpanded(`F=x; echo ${D}{F}BAR`) === `F=x; echo xBAR`,
+  "substitution: the braced form ends at its own brace, so ${F}BAR expands F",
+);
+assert(
+  // `a$F` is not `$F`: the assignment regex reads the value as `x;`, so a name
+  // flush against a preceding character is a different token and stays put.
+  // The word boundary is what makes the substitution a name match at all.
+  withAssignmentsExpanded(`F=x; echo ${D}F ${D}FOO`) === `F=x; echo x ${D}FOO`,
+  "substitution: the same command substitutes F and leaves a longer name untouched",
+);
+// The refusal side of the same rule, where the misfire would actually cost
+// something: `F=x` is assigned, and the ROOT text hides inside the value of
+// the UNRELATED `FOO`. Substituting the shorter name would rewrite that value
+// into a bare root and refuse a command that names nothing.
+assert(
+  !bashRefused(
+    `F=x; FOO=${D}{HOME}/.pi/agent/${STATE_LEAF}stuff; echo ${D}FOO`,
+  ),
+  "substitution: a shorter assignment never rewrites a longer variable's value",
+);
+// And the rule still fires where it should: the shorter name used on its own
+// is substituted, so a root carried in `$F` is still caught.
+assert(
+  bashRefused(`F=${D}{HOME}/.pi/agent/${STATE_LEAF}; cat ${D}F/k/t/${STORE_FILE}`),
+  "substitution: a root carried in a variable is still caught when the name ends there",
+);
+// The refusal text distinguishes the two rules and the one admission.
+assert(
+  (reviewStateRefusal("write", { path: 42 }) ?? "").length > 0,
+  "refusal text: a non-string path still refuses",
+);
+assert(
+  (reviewStateRefusal("edit", { path: `/repo/.git/${STORE_FILE}` }) ?? "").includes("store file name"),
+  "refusal text: a store-basename hit names the store file, not the state root",
+);
+assert(
+  (reviewStateRefusal("edit", { path: `${RESOLVED}/k/t/other.json` }) ?? "").includes("state root"),
+  "refusal text: a containment hit names the state root",
+);
+// A fault inside the root builder degrades ONE branch, not every tool: an edit
+// whose target cannot be read is refused, and the same fault must not refuse
+// bash calls generally — so the edit branch still answers while the roots are
+// built per branch.
+assert(
+  editsReviewState("write", { path: `${RESOLVED}/k/t/${STORE_FILE}` }, ROOTS)?.kind ===
+    "store-file",
+  "editsReviewState: a store basename reports its kind, so the refusal can name it",
+);
+assert(
+  editsReviewState("write", { path: `${RESOLVED}/k/t/other.json` }, ROOTS)?.kind ===
+    "state-root",
+  "editsReviewState: containment reports the state-root kind",
+);
+assert(
+  editsReviewState("write", { get path() { throw new Error("getter"); } }, ROOTS)?.kind ===
+    "unreadable",
+  "editsReviewState: an unreadable path is its own kind, not a fabricated rule hit",
+);
 assert(
   namesReviewState("echo hello", ROOTS) === undefined &&
     namesReviewState("", ROOTS) === undefined,

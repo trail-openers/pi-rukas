@@ -125,7 +125,7 @@ const bashRefused = (c: string): boolean =>
 
 const storeFile = "/repo/.git/review-findings.json";
 assert(
-  editsReviewState("edit", { path: storeFile }, ROOTS) === storeFile,
+  editsReviewState("edit", { path: storeFile }, ROOTS)?.matched === storeFile,
   "guard: an edit of the findings file is refused",
 );
 assert(

@@ -52,7 +52,7 @@
 
 import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { FINDINGS_FILE, STATE_LEAF, agentDir } from "./review-state-path.ts";
 import { trace, traceWarn } from "./trace.ts";
 
@@ -153,15 +153,48 @@ function sameCommandAssignments(text: string): Array<[string, string]> {
 }
 
 /** The command text with every same-command assignment's `$NAME` / `${NAME}`
- * replaced by its value. */
+ * replaced by its value.
+ *
+ * THE ROOTS ARE BUILT PER BRANCH, not once for both (see `reviewStateRefusal`). A
+ * fault inside `agentDir()` or the environment therefore costs the one call being
+ * decided and nothing else: a guard that built its roots above the branch handlers
+ * would throw for every tool call in the session on its own setup bug, which is the
+ * global misfire this module exists to have ended.
+ *
+ * A substitution stops at an identifier character: `F=x` must not rewrite the
+ * `$FOO` later in the same command, because that is a different variable's name
+ * that merely starts with the assigned one. Substituting it would put text the
+ * agent never wrote into the scanned command, and a refusal built on text nobody
+ * typed is the misfire this module exists to have ended. The braced form has no
+ * such problem — `\${F}` ends at its own `}` — so it is always substituted. */
 export function withAssignmentsExpanded(text: string): string {
   let out = text;
   for (const [name, value] of sameCommandAssignments(text)) {
     out = out.split(`\${${name}}`).join(value);
-    out = out.split(`$${name}`).join(value);
+    out = out
+      .split(/\$/g)
+      .flatMap((part, i) => {
+        if (i === 0) return [part];
+        if (part.startsWith(name) && !startsWithIdentifierChar(part, name.length)) {
+          return [value, part.slice(name.length)];
+        }
+        return [`$${part}`];
+      })
+      .join("");
   }
   return out;
 }
+
+/** True when `text` still carries an identifier character at or after `from` —
+ * the test that keeps `F=x` from rewriting `$FOO`. */
+function startsWithIdentifierChar(text: string, from: number): boolean {
+  for (let i = from; i < text.length; i++) {
+    if (IDENTIFIER_CHAR_RE.test(text[i] as string)) return true;
+  }
+  return false;
+}
+
+const IDENTIFIER_CHAR_RE = /[A-Za-z0-9_]/;
 
 /** What a refused command matched, so the refusal can name it. */
 export type ReviewStateMatch =
@@ -243,17 +276,46 @@ export function namesReviewState(text: string, roots: string[]): ReviewStateMatc
   return undefined;
 }
 
-/** The refusal text: what matched, and the operator's remedy. */
-function refusal(match: ReviewStateMatch): string {
+/** The refusal for a bash match: what matched, and the operator's remedy. */
+function bashRefusal(match: ReviewStateMatch): string {
   const what =
     match.kind === "state-root"
       ? `the review findings state root (${match.matched})`
       : `the review findings store file name (${match.matched})`;
-  return `The review findings store is not agent-reachable: this call names ${what}. Accepting a finding is an operator act — run ${ACCEPT_CLI} from a terminal. This is a tripwire on the store's location, not a permission: an ordinary command is never refused for naming a tool, an expansion, or a heredoc.`;
+  return refusalLead() + what + refusalTail();
+}
+
+/** The refusal for an edit-style match. The kind chooses the sentence: the two
+ * real rules name what was hit, and `unreadable` says the guard could not read
+ * the target — which an operator must be able to tell apart from a rule firing. */
+function editRefusal(match: EditStateMatch): string {
+  const what =
+    match.kind === "state-root"
+      ? `the review findings state root (${match.matched})`
+      : match.kind === "store-file"
+        ? `the review findings store file name (${match.matched})`
+        : `a target whose path this guard could not read (${match.matched})`;
+  return refusalLead() + what + refusalTail();
+}
+
+function refusalLead(): string {
+  return "The review findings store is not agent-reachable: this call names ";
+}
+
+function refusalTail(): string {
+  return `. Accepting a finding is an operator act — run ${ACCEPT_CLI} from a terminal. This is a tripwire on the store's location, not a permission: an ordinary command is never refused for naming a tool, an expansion, or a heredoc.`;
 }
 
 /** Edit tools whose `path` argument is checked against the store's location. */
 const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
+
+/** What an edit-style target matched, so the refusal can say WHY it refused. The
+ * three kinds read differently to an operator: `state-root` and `store-file` are
+ * the two real rules, and `unreadable` is the guard admitting it could not read
+ * the target it was asked about. */
+export type EditStateMatch =
+  | { kind: "state-root" | "store-file"; matched: string }
+  | { kind: "unreadable"; matched: string };
 
 /** The target path when an edit-style call would land inside the review-state
  * root, else undefined.
@@ -278,7 +340,7 @@ export function editsReviewState(
   input: unknown,
   roots: string[],
   cwd?: string,
-): string | undefined {
+): EditStateMatch | undefined {
   if (!FILE_TOOLS.has(toolName)) return undefined;
   const obj = (input ?? {}) as Record<string, unknown>;
   if (!("path" in obj)) return undefined;
@@ -287,14 +349,18 @@ export function editsReviewState(
     target = obj.path;
   } catch (err) {
     // An unreadable `path` is a target the guard cannot rule out, so it is
-    // refused rather than read as "nothing to block".
-    trace(
-      `review-state-guard: ${toolName} path threw (${err instanceof Error ? err.message : String(err)})`,
+    // refused rather than read as "nothing to block". Operator-visible: a refusal
+    // that reads like a real rule is otherwise indistinguishable from one.
+    traceWarn(
+      `review-state-guard: ${toolName} path threw, refusing that call (${err instanceof Error ? err.message : String(err)})`,
     );
-    return "<unreadable path>";
+    return { kind: "unreadable", matched: `<${toolName}: path could not be read>` };
   }
   if (target === undefined || target === null) return undefined;
-  if (typeof target !== "string") return "<non-string path>";
+  if (typeof target !== "string") {
+    traceWarn(`review-state-guard: ${toolName} path was not a string, refusing that call`);
+    return { kind: "unreadable", matched: `<${toolName}: path was not a string>` };
+  }
 
   const base = cwd ?? process.cwd();
   // `~` is the home dir to a shell and to nothing else: a tool call that carries
@@ -302,7 +368,9 @@ export function editsReviewState(
   const expanded = expandHome(target);
   const asked = [target, eraseBackslashes(target)];
   for (const t of asked) {
-    if (t.toLowerCase().split(/[\\/]/).includes(FINDINGS_FILE.toLowerCase())) return target;
+    if (t.toLowerCase().split(/[\\/]/).includes(FINDINGS_FILE.toLowerCase())) {
+      return { kind: "store-file", matched: target };
+    }
   }
   const normalised = normalize(expanded.replace(/\/{2,}/g, "/"));
   const abs = isAbsolute(normalised) ? normalised : resolve(base, normalised);
@@ -313,7 +381,7 @@ export function editsReviewState(
   // on their normalised form.
   for (const root of roots) {
     const r = normalize(root);
-    if (abs === r || abs.startsWith(`${r}/`)) return target;
+    if (abs === r || abs.startsWith(`${r}/`)) return { kind: "state-root", matched: target };
   }
   // The textual spellings (`~`, `$HOME`, `${HOME}`, `$PI_AGENT_DIR`) are not
   // directories anything resolves to, so containment can never see them: the raw
@@ -328,7 +396,9 @@ export function editsReviewState(
       const rr = r.toLowerCase();
       if (!lower.startsWith(rr)) continue;
       const after = lower.slice(rr.length);
-      if (after === "" || BOUNDARY_RE.test(after)) return target;
+      if (after === "" || BOUNDARY_RE.test(after)) {
+        return { kind: "state-root", matched: target };
+      }
     }
   }
   return undefined;
@@ -355,48 +425,53 @@ export function reviewStateRefusal(
   input: unknown,
   cwd?: string,
 ): string | undefined {
-  const roots = reviewStateRoots(cwd);
   if (toolName === "bash") {
     try {
+      const roots = reviewStateRoots(cwd);
       const raw = (input as { command?: unknown } | null)?.command;
       if (raw === undefined || raw === null) return undefined;
       // A `command` that is present but not a string cannot be scanned, and a scan
       // that cannot run is not a pass.
-      if (typeof raw !== "string") return refusal({ kind: "store-file", matched: FINDINGS_FILE });
+      if (typeof raw !== "string")
+        return bashRefusal({ kind: "store-file", matched: FINDINGS_FILE });
       const match = namesReviewState(raw, roots);
-      return match ? refusal(match) : undefined;
+      return match ? bashRefusal(match) : undefined;
     } catch (err) {
-      trace(
+      traceWarn(
         `review-state-guard: bash scan threw, refusing that call (${err instanceof Error ? err.message : String(err)})`,
       );
-      return refusal({ kind: "store-file", matched: FINDINGS_FILE });
+      return bashRefusal({ kind: "store-file", matched: FINDINGS_FILE });
     }
   }
   try {
-    const target = editsReviewState(toolName, input, roots, cwd);
-    return target === undefined ? undefined : refusal({ kind: "state-root", matched: target });
+    const match = editsReviewState(toolName, input, reviewStateRoots(cwd), cwd);
+    return match === undefined ? undefined : editRefusal(match);
   } catch (err) {
-    trace(
+    traceWarn(
       `review-state-guard: edit scan threw, refusing that call (${err instanceof Error ? err.message : String(err)})`,
     );
-    return refusal({ kind: "state-root", matched: `<${toolName} scan failed>` });
+    return editRefusal({ kind: "unreadable", matched: `<${toolName}: the edit scan faulted>` });
   }
 }
 
 export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
-    const cwd = (ctx as { cwd?: unknown } | undefined)?.cwd;
-    const base = typeof cwd === "string" ? cwd : undefined;
+    // `cwd` is declared non-optional on ExtensionContext, so a string test is a
+    // no-op on typed input. It is kept deliberately: the hook also runs in a bare
+    // `Agent` / test harness that hands a handler no context at all, and a
+    // missing cwd must fall back to `process.cwd()` inside the scans rather than
+    // throw its way into the outer catch and refuse an ordinary call.
+    const cwd = ctx?.cwd;
     let reason: string | undefined;
     try {
-      reason = reviewStateRefusal(event.toolName, event.input, base);
+      reason = reviewStateRefusal(event.toolName, event.input, cwd);
     } catch (err) {
       // `reviewStateRefusal` catches both branches, so reaching here means even
       // the refusal could not be built. Fail closed on the call that faulted.
       traceWarn(
-        `review-state-guard: scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)})`,
+        `review-state-guard: ${event.toolName} scan threw, refusing that call (${err instanceof Error ? err.message : String(err)})`,
       );
-      reason = refusal({ kind: "store-file", matched: FINDINGS_FILE });
+      reason = bashRefusal({ kind: "store-file", matched: FINDINGS_FILE });
     }
     if (!reason) return;
     trace(`review-state-guard: BLOCKED ${event.toolName} naming the review findings store`);
