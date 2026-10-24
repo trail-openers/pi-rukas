@@ -1,4 +1,3 @@
-import { redactSecrets } from "./secret-patterns.ts";
 /**
  * work-driver-base-health-inflight — the single-flight registry that keeps the
  * base-health probe OFF the branch step's critical path (the probe seam itself is
@@ -31,6 +30,7 @@ import { redactSecrets } from "./secret-patterns.ts";
  *    records the verdict into state when it reads it.
  */
 import { trace } from "./trace.ts";
+import { redactedBaseHealthText } from "./work-driver-verify-base-health.ts";
 import type { BaseHealthProbeOutcome } from "./work-driver-verify-base-health.ts";
 import {
   type BaseHealthKey,
@@ -66,7 +66,7 @@ function unanswered(notes: string): BaseHealthProbeOutcome {
  * project's command printed — a token in a failing line must not reach the log.
  */
 function unexpected(err: unknown): BaseHealthProbeOutcome {
-  const message = redactSecrets(String((err as Error)?.message ?? err)).text.slice(0, 200);
+  const message = redactedBaseHealthText(String((err as Error)?.message ?? err));
   trace(`work-driver: base-health in-flight probe faulted (${message}) — read as unknown`);
   return unanswered(`the background probe could not run (${message})`);
 }

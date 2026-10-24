@@ -65,7 +65,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { redactSecrets } from "./secret-patterns.ts";
+import { redactClip } from "./decision-log.ts";
 import { trace } from "./trace.ts";
 import { peekBaseHealthProbe, startBaseHealthProbe } from "./work-driver-base-health-inflight.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
@@ -293,11 +293,32 @@ export async function applyBaseHealthProbe(
  * sat in the registry for the length of a settle answering for no run at all. The
  * reason is traced instead and the registry keeps only probes that exist.
  */
+/**
+ * How much of a fault's message any base-health report carries. One constant so
+ * the trace line and the note can never disagree about how much they showed.
+ */
+const PROBE_FAULT_BOUND = 200;
+
+/**
+ * Redact, THEN bound — the recipe every base-health site that quotes an executor
+ * message must use, and the reason it is a function rather than a line at each
+ * site is that the order is the whole point: redaction runs BEFORE the slice, so
+ * a secret cut in half by the bound cannot survive the cut as a fragment no
+ * pattern recognises.
+ *
+ * `redactClip` (decision-log.ts) is that recipe, and it also widens its scan
+ * past the cut so a credential whose context sits behind the boundary is still
+ * matched — a hand-rolled `redactSecrets(…).text.slice(…)` scans only the kept
+ * head and can report zero matches while shipping the key (#1393).
+ */
+export function redactedBaseHealthText(text: string, max = PROBE_FAULT_BOUND): string {
+  return redactClip(text, max, "start");
+}
+
 function redactedProbeFault(err: unknown): string {
   // Bounded, and bounded HERE: this text lands in an operator-visible trace, and
-  // an executor message is untrusted child output. Redaction runs BEFORE the
-  // slice, so a secret cut in half by the bound cannot survive the cut.
-  return redactSecrets(String((err as Error)?.message ?? err)).text.slice(0, 200);
+  // an executor message is untrusted child output.
+  return redactedBaseHealthText(String((err as Error)?.message ?? err));
 }
 
 export function startBaseHealthProbeAtBranch(
