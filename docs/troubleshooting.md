@@ -345,6 +345,16 @@ Every handoff carries three things it previously withheld.
 
 A lens that exits 0 without calling `report_finding` used to be indistinguishable from one that reviewed carefully and found nothing, so a silent review reported APPROVED. It now reports `REVIEW_INCOMPLETE` unless every lens produced either findings or a closing summary. If you see REVIEW_INCOMPLETE with no obvious failure, check the lens transcripts under `~/.pi/agent/ensemble-runs/<date>/` — a lens that returned only thinking content is the usual cause.
 
+### Adversarial review fails with no readable VERDICT on a large diff
+
+**Symptom:** `adversarial_loop` (or the `/work` adversarial step) reports an infrastructure failure saying the reviewer *"produced no readable VERDICT marker"*, and the transcript shows the child stopping after one or two output tokens with `stopReason: "length"`. Every retry fails identically, so the loop parks without ever reviewing the diff.
+
+**Cause:** the diff was larger than the reviewer's context. Both halves of the loop — the reviewer prompt and the fix-developer prompt — inlined the whole diff verbatim, so a large branch filled the child's context before it could answer. A child that runs out of context emits no verdict, and a missing verdict is (correctly) treated as a review that never happened, so no retry can recover it.
+
+**What the bound does:** each prompt now inlines at most a fixed budget of diff characters. Over the budget the prompt carries (a) a complete per-file inventory of every changed file with added/removed line counts, parsed from the diff text itself, (b) the head of the diff cut on a line boundary, and (c) a notice giving the character counts and, when the caller computed the diff from a ref range, the exact `git diff <base>...<head>` command to read the rest in its working directory. The inventory is complete even though the bodies are cut, so no changed file goes unmentioned. Under the budget the prompt is byte-identical to the unbuilt one — the bound only speaks when it cuts. A diff pasted in by the caller has no range to name, and the notice says the rest is simply not available rather than inventing a command.
+
+**If a reviewer still seems to be judging only part of a change:** the notice in its prompt says how much was inlined; re-run the review against a narrower range, or have it read the named files directly.
+
 ### A lens line says `N malformed report_finding call(s) skipped`
 
 Pi validates `report_finding` arguments against the tool's schema and rejects a call missing `severity`, `path` or `title` with `Validation failed for tool "report_finding"` — that text is Pi's, and it names one missing key per rejection. A rejected call records nothing; the lens normally repeats it, so the count beside the lens's findings usually means wasted turns, not a lost finding. To check, compare the lens's `N findings` with what its closing summary lists: a finding in the prose with no matching entry was rejected and never re-sent. The lens's line `Skill Load Status: SUCCESS` reports that its skill loaded, not its verdict.
