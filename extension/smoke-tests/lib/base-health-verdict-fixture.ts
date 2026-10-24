@@ -33,7 +33,14 @@ import { realExec } from "./restore-start-ref-fixtures.ts";
  * child at all — the last is the shape the branch probe must degrade on rather
  * than crash on, and no child rejection can produce it.
  */
-export type ProbeFailureShape = "pass" | "red" | "echo-only" | "killed" | "executor-threw";
+export type ProbeFailureShape =
+  | "pass"
+  | "red"
+  | "echo-only"
+  | "killed"
+  | "executor-threw"
+  /** The gate call rejects with no stream at all (a registry-level fault shape). */
+  | "rejects";
 
 /** Commit whatever the working tree holds — a rewritten gate, a seeded test. */
 export function commitAll(repo: string, message: string): void {
@@ -136,6 +143,11 @@ export function probeFailureExecutor(opts: {
         // No stdout, no stderr, no exit code: what the stream reduces to is
         // node's own `Command failed:` message and nothing else.
         throw new Error(`Command failed: ${command}`);
+      case "rejects":
+        // A rejection carrying nothing the probe can judge: the shape a
+        // background task faults in, and the one the registry must fold rather
+        // than let escape as an unhandled rejection.
+        return await Promise.reject(new Error("gate call rejected"));
       case "executor-threw":
         throw new Error("executor exploded: fork: retry: Resource temporarily unavailable");
       case "pass":

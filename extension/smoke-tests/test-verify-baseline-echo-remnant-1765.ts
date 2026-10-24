@@ -25,7 +25,7 @@ import { type HostBudget, __setHostBudget } from "../src/host-resources.ts";
 import { applyBaseHealthProbe } from "../src/work-driver-verify-base-health.ts";
 import { isWrapperRemnant } from "../src/work-driver-verify-echo.ts";
 import { matchingVerdict } from "../src/workflow-state-schema-base-health.ts";
-import { CMD, GREEN_GATE, branchState } from "./lib/base-health-probe-fixture.ts";
+import { CMD, GREEN_GATE, branchState, keyFor } from "./lib/base-health-probe-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
 import { redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
 
@@ -125,14 +125,15 @@ for (const remnant of [
       { host: {}, repoRoot: f.repo, issue: 1765 } as never,
       branchState(f.baseSha),
       CMD,
+      await keyFor(f.repo, f.baseSha),
     );
     assert(
       out.verdict?.status === c.want,
       `escaped echo (${c.name}): ${c.want} (got ${out.verdict?.status} — ${out.verdict?.reason ?? "no reason"})`,
     );
     assert(
-      c.want === "red" ? out.park !== undefined : out.park === undefined,
-      `escaped echo (${c.name}): ${c.want === "red" ? "the gate's own line still parks" : "the harness alone never parks"}`,
+      c.want === "red" ? out.red !== undefined : out.red === undefined,
+      `escaped echo (${c.name}): ${c.want === "red" ? "the gate's own line still carries evidence for the develop gate" : "the harness alone carries no evidence"}`,
     );
   }
   rmSync(escRoot, { recursive: true, force: true });

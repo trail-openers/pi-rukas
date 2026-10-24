@@ -358,20 +358,34 @@ export async function compareWithBaseline(
     failures: string[];
     notes: string[];
     /**
-     * #1765 — the cycle's own base verdict, when the branch step's pre-develop
-     * probe already established one for the SAME (baseSha, command, bound).
+     * The cycle's own base verdict, when the background probe (or an earlier
+     * round) already established one for the SAME (baseSha, command, bound).
      * Reusing it is the whole cost argument for that probe: the post-failure
-     * comparison pays for a second throwaway worktree and a second full suite
-     * run for a verdict this cycle already holds. Absent, or for a different
-     * key, the probe runs as it always did.
+     * comparison would otherwise pay for a second throwaway worktree and a second
+     * full suite run for a verdict this cycle already holds — and that is true of
+     * a GREEN as much as a RED, which is why both colours are reusable here. A
+     * resumed cycle in a new process must not pay a second suite run for a green
+     * that matchingVerdict says is its own. Absent, or for a different key, the
+     * probe runs as it always did.
      */
     cachedVerdict?: BaseHealthVerdict | undefined;
   },
 ): Promise<RedBaselineVerdict | undefined> {
   const { cmd, baseSha, timeoutMs } = opts;
   const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: timeoutMs };
+  // Any colour but `unknown`, for exactly this key, is a run already judged: a RED
+  // becomes the unevidenced red arm below, a GREEN is reported without a second
+  // suite run, and an `unknown` judged nothing so it never skips the probe.
   const cached =
-    opts.cachedVerdict?.status === "red" ? matchingVerdict(opts.cachedVerdict, key) : undefined;
+    opts.cachedVerdict !== undefined && opts.cachedVerdict.status !== "unknown"
+      ? matchingVerdict(opts.cachedVerdict, key)
+      : undefined;
+  if (cached?.status === "green") {
+    opts.notes.push(
+      `baseline verify reused the cycle's cached GREEN for \`${cmd}\` at base ${baseSha.slice(0, 12)} — no second suite run paid for`,
+    );
+    return undefined;
+  }
   const verdict: BaselineVerdict =
     cached === undefined
       ? await probeBaselineVerify(execFn, opts)

@@ -1,25 +1,36 @@
 /**
- * Shared fixture for the #1765 pre-develop base-health probe tests.
+ * Shared fixture for the base-health probe tests (the probe seam is #1765; taking
+ * it off the branch step's critical path is what these cases pin).
  *
- * `test-verify-base-health-probe.ts` drives the real branch-step probe
- * (`probeBaseAtBranch`) against a real git repo whose gate IS the suite's own
- * `verify-loop.sh` over its own fixtures, so the `FAILED:` markers a park's
- * evidence quotes are ones the loop really emitted — never a hand-written
- * imitation of them. What the file cannot do is also assert the cost rule from
- * a transcript alone: a case that only reads the state cannot tell one extra
- * suite run from none. So every probe call here counts the executions of the
- * PROJECT's command and the `git worktree add` calls separately, and hands both
- * back to the caller's assertions.
+ * The cases drive the real probe against a real git repo whose gate IS the suite's
+ * own `verify-loop.sh` over its own fixtures, so the `FAILED:` markers a red
+ * verdict's evidence quotes are ones the loop really emitted — never a hand-written
+ * imitation. What reading the state cannot do is assert the COST rule: a case that
+ * only reads the state cannot tell one extra suite run from none, so every probe
+ * call here counts executions of the PROJECT's command and the `git worktree add`
+ * calls separately and hands both back to the caller's assertions.
  *
- * Split out for the 500-line cap (AGENTS.md §12): the probe wrapper and its two
- * event readers are ~80 lines of executor plumbing that read better once than
- * twice, and a counter that drifts between two files would quietly make one of
- * them test a different cost model than the other.
+ * The probe is registered by the branch step and never awaited by it, so `probe`
+ * returns the step's state AND the promise the step left behind: a case that wants
+ * the verdict awaits `settled(r)`, and a case that asserts the step did not wait
+ * measures the call itself.
+ *
+ * Split out for the 500-line cap (AGENTS.md §12): the probe wrapper and its event
+ * readers are executor plumbing that reads better once than twice, and a counter
+ * that drifts between two files would quietly make one of them test a different
+ * cost model than the other.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { DriverExecFn } from "../../src/work-driver-context.ts";
-import { baseHealthCacheFile } from "../../src/work-driver-verify-base-health.ts";
+import type { BaseHealthConsulted } from "../../src/work-driver-verify-aggregate.ts";
+import { recordDevelopGateEvents } from "../../src/work-driver-verify-events.ts";
+import { developTierTimeouts } from "../../src/work-driver-verify-budget.ts";
+import {
+  type BaseHealthProbeOutcome,
+  baseHealthCacheFile,
+} from "../../src/work-driver-verify-base-health.ts";
+import type { BaseHealthKey } from "../../src/workflow-state-schema-base-health.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
 import { realExec } from "./restore-start-ref-fixtures.ts";
 import type { redGateFixture } from "./verify-baseline-probe-harness.ts";
@@ -44,6 +55,12 @@ export interface ProbeRun {
   worktreeAdds: number;
   /** The repo-level cache file's contents, or undefined when nothing wrote it. */
   cacheRaw: string | undefined;
+  /**
+   * The background probe's promise — what the branch step registered and did NOT
+   * await. `undefined` when nothing was registered (no verify command, or the
+   * switches off), which is the shape the "probe disabled" cases assert.
+   */
+  outcome: Promise<BaseHealthProbeOutcome> | undefined;
 }
 
 /** A state carrying the branch step's own outputs, as the probe's caller has them. */
@@ -58,10 +75,10 @@ export const execLine = (cmd: string, o?: { argv?: string[] }) =>
   o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
 
 /**
- * Run the real branch-step probe against a fixture. `opts.noCmd` leaves the
- * project with no verify command (the spec's skip condition); `opts.state`
- * supplies a state that already holds a verdict, which is how the cache rules
- * are exercised from both sides.
+ * Register and run the probe against a fixture, exactly as the branch step does —
+ * without awaiting it. `opts.noCmd` leaves the project with no verify command (the
+ * skip condition); `opts.state` supplies a state that already holds a verdict,
+ * which is how the cache rules are exercised from both sides.
  */
 export async function probe(
   f: Awaited<ReturnType<typeof redGateFixture>>,
@@ -73,31 +90,54 @@ export async function probe(
   if (opts.noCmd === true) rmSync(cmdFile, { force: true });
   else writeFileSync(cmdFile, `${PROBE_CMD}\n`);
   // The gate lists a fixed set of paths, so a case whose change adds one of
-  // them has to commit the gate too — `redGateFixture` only rewrites it when
-  // the caller passed `changeGateFiles`.
+  // them has to commit the gate too — `redGateFixture` only rewrites it when the
+  // caller passed `changeGateFiles`.
   const gate = path.join(f.worktrees.a, "gate.sh");
   if (existsSync(gate)) await realExec("git", { argv: ["add", "-A"], cwd: f.worktrees.a });
   const gateRuns: string[] = [];
   let worktreeAdds = 0;
   const execFn: DriverExecFn = async (cmd, o) => {
     const line = execLine(cmd, o);
-    if (line.startsWith("git worktree add")) worktreeAdds += 1;
-    else if (!line.startsWith("git ")) gateRuns.push(o?.cwd ?? "");
+    // Substring, not prefix: the probe qualifies each git call with `-C <root>`,
+    // and a prefix match would silently never fire and report "no probe tree" for
+    // a probe that built one.
+    if (line.includes("git worktree add")) worktreeAdds += 1;
+    else if (!line.includes("git ")) gateRuns.push(o?.cwd ?? "");
     return await realExec(cmd, o);
   };
-  const { probeBaseAtBranch } = await import("../../src/work-driver-verify-base-health.ts");
+  const { startBaseHealthProbeAtBranch } = await import(
+    "../../src/work-driver-verify-base-health.ts"
+  );
   const ctx = { host: {}, repoRoot: f.repo, issue: 1765 } as never;
-  const next = await probeBaseAtBranch(execFn, ctx, opts.state ?? branchState(f.baseSha));
+  const state = opts.state ?? branchState(f.baseSha);
+  // The branch step's entry point: it resolves the key, registers the run, and
+  // returns the state with the promise dropped. A case reads that promise through
+  // `settled`, which is the only way to the verdict the develop gate consulted.
+  // Awaited HERE, at the key resolution the step itself performs on its thread —
+  // the cost counters below then observe the whole run rather than its first
+  // await, which is what makes "exactly one run in one tree" mean anything.
+  const outcome = await startBaseHealthProbeAtBranch(execFn, ctx, state);
+  const { probeBaseAtBranch } = await import("../../src/work-driver-verify-base-health.ts");
+  const next = probeBaseAtBranch(execFn, ctx, state);
   let cacheRaw: string | undefined;
   try {
     cacheRaw = readFileSync(baseHealthCacheFile(f.repo), "utf8");
   } catch {
     cacheRaw = undefined;
   }
-  return { state: next, gateRuns, worktreeAdds, cacheRaw };
+  return { state: next, gateRuns, worktreeAdds, cacheRaw, outcome };
 }
 
-/** The cap-hit events a probe left on the state — the park, if there was one. */
+/**
+ * Await what the branch step left running, so a case can read the verdict the
+ * develop gate would have consulted. The promise never rejects, so no case has to
+ * defend itself against a probe that faulted.
+ */
+export async function settled(r: ProbeRun): Promise<BaseHealthProbeOutcome> {
+  return await (r.outcome ?? Promise.resolve({ ran: false, notes: [] }));
+}
+
+/** The cap-hit events a probe left on the state. No base verdict raises one. */
 export function capsOf(s: WorkState): Array<{ cap: string; evidence: string; nextStep: string }> {
   return s.eventLog.filter((e) => e.kind === "cap-hit") as Array<{
     cap: string;
@@ -111,4 +151,96 @@ export function notesOf(s: WorkState): string[] {
   return s.eventLog
     .filter((e) => e.kind === "dispatch-completed" && e.label === "driver:base-health")
     .map((e) => (e as { summary: string }).summary);
+}
+
+/**
+ * The key a probe run answers for, as the branch step would have computed it: the
+ * suite tier's own bound read from the fixture repo, so a case's cached verdict and
+ * the gate's lookup agree on which run they are talking about.
+ */
+export async function keyFor(
+  repo: string,
+  baseSha: string,
+  cmd: string = PROBE_CMD,
+): Promise<BaseHealthKey> {
+  return { baseSha, command: cmd, tierBoundMs: (await developTierTimeouts(repo)).suite };
+}
+
+/** The synchronous form, for a case that already knows the fixture's bound. */
+export function branchKey(baseSha: string, tierBoundMs = 1): BaseHealthKey {
+  return { baseSha, command: PROBE_CMD, tierBoundMs };
+}
+
+/**
+ * Run the probe the way a FRESH CYCLE does — through `applyBaseHealthProbe`, which
+ * is the probe body with the single-flight registry in front of it. A case that
+ * calls `probe` twice in one process would otherwise have the second call answer
+ * from the first call's registry entry and report "0 runs" for a cycle that in a
+ * real process pays for its own; this is the only way to observe what a new cycle
+ * actually pays.
+ */
+export async function freshProbe(
+  f: Awaited<ReturnType<typeof redGateFixture>>,
+  opts: { noCmd?: boolean; state?: WorkState; key?: BaseHealthKey } = {},
+): Promise<{ state: WorkState; out: BaseHealthProbeOutcome; gateRuns: string[]; worktreeAdds: number }> {
+  const piDir = path.join(f.repo, ".pi");
+  mkdirSync(piDir, { recursive: true });
+  const cmdFile = path.join(piDir, "verify-cmd");
+  if (opts.noCmd === true) rmSync(cmdFile, { force: true });
+  else writeFileSync(cmdFile, `${PROBE_CMD}\n`);
+  const gate = path.join(f.worktrees.a, "gate.sh");
+  if (existsSync(gate)) await realExec("git", { argv: ["add", "-A"], cwd: f.worktrees.a });
+  const gateRuns: string[] = [];
+  let worktreeAdds = 0;
+  const execFn: DriverExecFn = async (cmd, o) => {
+    const line = execLine(cmd, o);
+    if (line.includes("git worktree add")) worktreeAdds += 1;
+    else if (!line.includes("git ")) gateRuns.push(o?.cwd ?? "");
+    return await realExec(cmd, o);
+  };
+  const { applyBaseHealthProbe } = await import("../../src/work-driver-verify-base-health.ts");
+  const ctx = { host: {}, repoRoot: f.repo, issue: 1765 } as never;
+  const state = opts.state ?? branchState(f.baseSha);
+  const out = await applyBaseHealthProbe(
+    execFn,
+    ctx,
+    state,
+    PROBE_CMD,
+    opts.key ?? (await keyFor(f.repo, f.baseSha)),
+  );
+  return { state, out, gateRuns, worktreeAdds };
+}
+
+/**
+ * The record a develop gate makes when it consults a background probe: the colour
+ * it read and the run's measured wall clock. A case that drives the gate directly
+ * (rather than through `runDevelopVerifyGate`) builds this itself, which is why it
+ * lives beside the fixture rather than only inside the gate.
+ */
+export function consultedRecord(
+  out: BaseHealthProbeOutcome,
+  status: BaseHealthConsulted["status"],
+): BaseHealthConsulted {
+  return {
+    status,
+    baseSha: out.verdict?.baseSha ?? "",
+    ms: out.ms,
+    ran: out.ran,
+    ...(out.verdict?.timedOut === true ? { timedOut: true as const } : {}),
+  };
+}
+
+/** The event the develop gate appends for a consultation, through the real recorder. */
+export function consultedEvent(
+  state: WorkState,
+  out: BaseHealthProbeOutcome,
+  status: BaseHealthConsulted["status"],
+): WorkState {
+  // The recorder derives the event's ms from `startedAt`, so the probe's own wall
+  // clock is what has to reach it — exactly as the develop gate passes it.
+  const now = Date.now();
+  return recordDevelopGateEvents(state, {
+    baseHealthConsulted: consultedRecord(out, status),
+    baseHealthStartedAt: out.ms === undefined ? now : now - out.ms,
+  } as never);
 }

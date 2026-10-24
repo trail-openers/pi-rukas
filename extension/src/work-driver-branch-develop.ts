@@ -49,7 +49,7 @@ import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net
 import { probeBaseAtBranch } from "./work-driver-verify-base-health.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
-import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
+import { recordMechanizedBranchSetup } from "./workflow-state-events-provision.ts";
 import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import { DirtyWorktreeError, WorktreeScanError, gitErrorDetail } from "./worktree.ts";
 
@@ -211,69 +211,16 @@ export async function runBranch(
         }
         throw aheadErr;
       }
-      // #844 — the reset of a stale local branch is recorded in the event
-      // log (the recovery handle) so the audit trail carries the old tip
-      // even if a later step fails.
-      let baseState = state;
-      if (setup.resetFromSha !== undefined) {
-        baseState = appendEvent(baseState, {
-          kind: "branch-reset",
-          at: Date.now(),
-          branch: setup.branchName,
-          oldSha: setup.resetFromSha,
-          newSha: setup.baseSha,
-        });
-      }
-      const started = appendEvent(
-        {
-          ...baseState,
-          pipelineState: { ...baseState.pipelineState, currentStep: "branch" },
-        },
-        { kind: "step-started", step: "branch", at: now },
-      );
-      // Via the shared builder (work-driver-events.ts): unique jobId —
-      // the old inline literal "mechanized" appeared twice per fan-out
-      // cycle, making jobId useless as a correlation key.
-      const done = appendEvent(
-        started,
-        synthesizeDriverCompletion({
-          step: "branch",
-          label: "driver:branch",
-          summary: `Mechanized branch setup: ${setup.branchName} @ ${setup.baseSha.slice(0, 8)} off origin/${setup.mainline}; ${Object.keys(setup.worktrees).length} worktree(s).`,
-          startedAt: now,
-          now: Date.now(),
-        }),
-      );
-      // #536 — per-workstream provision event for targeted depsHint in verify-develop.
-      let withProvisions = done;
-      for (const [id, cwd] of Object.entries(setup.worktrees)) {
-        const pr = setup.provisions[id];
-        if (pr) {
-          withProvisions = appendEvent(
-            withProvisions,
-            makeWorktreeProvisionedEvent(id, cwd, pr.via, pr.problem, pr.hookFailed),
-          );
-        }
-      }
-      const recorded = {
-        ...withProvisions,
-        pipelineState: {
-          ...withProvisions.pipelineState,
-          branchName: setup.branchName,
-          baseSha: setup.baseSha,
-          worktrees: setup.worktrees,
-          // #679 — record the per-workstream effective base as of the branch
-          // step. Every independent workstream maps to the global baseSha;
-          // dependent workstreams (deferred) are NOT in this map yet — their
-          // entry is added by runDevelop at deferred-creation time, when the
-          // dependency's post-commit SHA is known. Readers (applySafetyNet,
-          // verifyDevelopOutcome) fall back to the global baseSha for any
-          // workstream id absent from the map.
-          workstreamBaseShas: setup.workstreamBaseShas,
-        },
-      };
-      // #1765 — probe the base before a developer is paid for.
-      return await probeBaseAtBranch(execFnPre, ctx, recorded);
+      // The whole success record — reset event, `driver:branch` completion, one
+      // provision event per workstream, and the pipelineState fields — is built by
+      // the events leaf that owns the provision event's shape (see
+      // `recordMechanizedBranchSetup`), so the step reports a setup it did not
+      // perform without rebuilding its events.
+      const recorded = recordMechanizedBranchSetup(state, setup, now);
+      // The base probe starts here and is NOT awaited: the branch step's wall
+      // clock is a config read, not a suite run, and the develop gate collects
+      // the verdict only if its own verify fails.
+      return probeBaseAtBranch(execFnPre, ctx, recorded);
     } catch (err) {
       // #545 — a NON-dirty mechanized failure used to fall back to the
       // ops dispatch with only a trace line and a bare `step-failed:branch`

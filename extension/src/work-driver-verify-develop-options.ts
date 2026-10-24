@@ -101,6 +101,20 @@ export interface VerifyDevelopOutcomeOptions {
     record: import("./work-driver-verify-select-exec.ts").SelectedVerifyRecord,
   ) => void;
   /**
+   * The verdict the develop gate collected from the BACKGROUND base-health probe
+   * (`work-driver-base-health-inflight.ts`), once per gate call — `undefined`
+   * when nothing was running for this cycle's key. The branch step starts that
+   * probe and returns without awaiting it, and a background task must not write
+   * workflow state (it would race this step's own writes), so the verdict reaches
+   * state only through this channel: the caller records it on the state it owns,
+   * which is what `compareWithBaseline` reuses in a later round and what the
+   * handoff names. Absent = this caller does not route on it.
+   */
+  onBaseHealthCollected?: (
+    verdict: import("./workflow-state-schema-base-health.ts").BaseHealthVerdict | undefined,
+    consulted?: import("./work-driver-verify-aggregate.ts").BaseHealthConsulted,
+  ) => void;
+  /**
    * #1557 — IN-parameter (not an out-channel): the cycle's spec, forwarded to
    * the develop scope/fanout gate so a changed path that matches a deliverable's
    * PATTERN slot counts as declared — the file the 500-line ratchet forces and

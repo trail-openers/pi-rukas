@@ -16,6 +16,9 @@
 import { trace } from "./trace.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { synthesizeDriverCompletion } from "./work-driver-events.ts";
+import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
+import { baseHealthConsultedNote } from "./work-driver-verify-aggregate.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { type DevelopGateRecord, gatePassKey } from "./work-driver-verify-gate-reuse.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
@@ -23,6 +26,7 @@ import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
 import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
+import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
@@ -102,6 +106,27 @@ export function recordDevelopGateEvents(
     consolidatedVerifySkipped?: AlreadyVerifiedTree;
     verifyEvents?: VerifyRunEventFragment[];
     gateRecord?: DevelopGateRecord;
+    /**
+     * The verdict the develop gate collected from the BACKGROUND base probe.
+     * Recorded here — in the seam that owns the state write — because the branch
+     * step starts that probe without awaiting it, and a background task that wrote
+     * this state itself would race the develop step's own writes.
+     */
+    baseHealthProbe?: BaseHealthVerdict;
+    /**
+     * The record of the consultation the gate performed, appended as a
+     * driver-completed event naming the verdict's colour and the probe's measured
+     * ms. This is where the probe's operator-visible record lives now that the
+     * branch step registers it instead of awaiting it.
+     */
+    baseHealthConsulted?: BaseHealthConsulted;
+    /**
+     * When the consultation began. The recorder derives the event's `ms` from it
+     * (`synthesizeDriverCompletion`'s own rule), so the develop gate passes the
+     * probe's measured end minus its measured duration and the log carries the
+     * probe's real wall clock instead of 0 ms.
+     */
+    baseHealthStartedAt?: number;
     selectedVerify?: SelectedVerifyRecord;
     fenceLifts?: FenceLift[];
   },
@@ -128,13 +153,37 @@ export function recordDevelopGateEvents(
           ),
         ]
       : []),
+    ...(gate.baseHealthConsulted === undefined
+      ? []
+      : [
+          synthesizeDriverCompletion({
+            step: "develop",
+            label: "driver:base-health",
+            summary: baseHealthConsultedNote(
+              state.pipelineState.baseSha ?? "",
+              gate.baseHealthConsulted,
+            ),
+            startedAt: gate.baseHealthStartedAt ?? Date.now(),
+            now: Date.now(),
+          }),
+        ]),
     ...(completed ? [completed] : []),
   ];
   const recorded = foldVerifyAttribution(
-    withGateRecord(state, gate.gateRecord),
+    withBaseHealthProbe(withGateRecord(state, gate.gateRecord), gate.baseHealthProbe),
     gate.selectedVerify,
   );
   return events.length === 0 ? recorded : appendEvent(recorded, ...events);
+}
+
+/**
+ * Record the base probe's verdict the develop gate read. A verdict that arrived
+ * is never dropped: it is what a later develop round reuses instead of paying for
+ * a third suite run, and what the handoff names when the base turned out red.
+ */
+function withBaseHealthProbe(state: WorkState, verdict: BaseHealthVerdict | undefined): WorkState {
+  if (verdict === undefined) return state;
+  return { ...state, pipelineState: { ...state.pipelineState, baseHealthProbe: verdict } };
 }
 
 /**

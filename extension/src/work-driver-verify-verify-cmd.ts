@@ -19,18 +19,18 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
 import type { BaselineRedEstablished } from "./work-driver-verify-aggregate.ts";
+import type { VerifyCommandGateBaseHealth } from "./work-driver-verify-base-health-channels.ts";
 import {
   buildConsolidatedRetry,
   buildConsolidatedVerifyOpts,
 } from "./work-driver-verify-consolidated-opts.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
+import { recordConsolidatedGateVerdict } from "./work-driver-verify-gate-record.ts";
 import {
   type GatePass,
   type GateRecorded,
-  combinedWorktreeTree,
   gatePassPlan,
-  gatePassRecord,
   reusableGatePass,
 } from "./work-driver-verify-gate-reuse.ts";
 import { runPerWorktreeVerify } from "./work-driver-verify-per-worktree.ts";
@@ -117,6 +117,11 @@ export type VerifyCommandGateOpts = {
   /** #1765 — the probe established a red base (the CAP's claim). */
   onBaselineRedEstablished?: BaselineRedEstablished;
   /**
+   * The background base probe's two channels, both forwarded from the develop
+   * gate and both documented in `work-driver-verify-base-health-channels.ts`.
+   */
+  baseHealthChannels?: VerifyCommandGateBaseHealth;
+  /**
    * #1427 — injectable process-tree walker, so a smoke test can assert the
    * report's shape without forking `ps`. Production omits it.
    */
@@ -192,6 +197,7 @@ async function runVerifyCommandGateBody(
     onConsolidatedVerifySkipped,
     onGateRecorded,
     onBuildResidueOnly,
+    baseHealthChannels, // #1765 r2 — the two channels, one object (see the leaf)
     fastTierTimeoutMs: fastTimeoutMs,
     suiteTimeoutKnob,
     suiteTierTimeoutMs: suiteTierTimeoutMsOpt,
@@ -404,40 +410,21 @@ async function runVerifyCommandGateBody(
   // the number the next round's reuse decision is screened against — and a
   // reused pass has no duration, because it ran nothing.
   const consolidatedDurationMs = reusedWholeGate ? undefined : Date.now() - consolidatedStartedAt;
-  // #1415 — record the verdict the moment it exists, in the seam that decided
-  // it: a caller that had to thread the result outward could drop it, and the
-  // symptom of a dropped record is only "the cycle is slow again". A pass that
-  // reused records NOTHING — refreshing `at` every round would keep a stale
-  // verdict permanently "fresh", and no new duration was measured to record.
-  // The combined tree is re-read AFTER the probe (whose checkout the probe has
-  // since restored) with the same function the reuse check used, so the record
-  // and the decision cannot describe different content; an unreadable tree
-  // records nothing (no record, no reuse).
-  if (cons.status === "passed" && !reusedWholeGate) {
-    const combined = await combinedWorktreeTree(
-      ctx.verifyExecFn ?? execp,
-      state.pipelineState.worktrees ?? {},
-    );
-    // A passing pass whose combined tree could not be read records no verdict:
-    // an entry needs a tree, and one guessed from a partial read is the record
-    // a later skip would stand on. Its greens are still recorded — each was
-    // read from its own worktree at the moment its command passed.
-    onGateRecorded?.(
-      combined === undefined
-        ? undefined
-        : gatePassRecord(combined, cmd, passTimeoutMs, consolidatedDurationMs),
-      greensRecorded,
-      greensRefuted,
-    );
-  } else if (reusedWholeGate) {
-    // A reused pass records nothing: it measured no duration, and refreshing a
-    // record's `at` every round would keep a stale verdict permanently "fresh".
-    onGateRecorded?.(undefined, [], []);
-  } else if (greensRefuted.length > 0) {
-    // A failed pass records no verdict, but a green the command just refuted
-    // must not survive to license the next round's skip.
-    onGateRecorded?.(undefined, [], greensRefuted);
-  }
+  // #1415 — the verdict is recorded in the seam that decided it, in the arms
+  // `work-driver-verify-gate-record.ts` documents (a reused pass records nothing;
+  // a failed pass still retires the greens its own run refuted).
+  await recordConsolidatedGateVerdict({
+    cons,
+    reusedWholeGate,
+    execFn: ctx.verifyExecFn ?? execp,
+    state,
+    cmd,
+    passTimeoutMs,
+    consolidatedDurationMs,
+    greensRecorded,
+    greensRefuted,
+    onGateRecorded,
+  });
   reportConsolidatedVerifyOutcome(cons, {
     cmd,
     failures,
@@ -496,5 +483,6 @@ async function runVerifyCommandGateBody(
       : {}),
     onBaselineAttributed: opts.onBaselineAttributed,
     onBaselineRedEstablished: opts.onBaselineRedEstablished,
+    ...(opts.baseHealthChannels ?? {}),
   });
 }

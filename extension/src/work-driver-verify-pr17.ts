@@ -16,15 +16,18 @@ import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
+import type { VerifyStepOutcomeResult } from "./work-driver-verify-pr17-result.ts";
 import { type VerifyCommandRecord, newVerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
+import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -157,89 +160,7 @@ export async function verifyStepOutcome(
   ctx: CycleContext,
   state: WorkState,
   step: "develop" | "commit-pr",
-): Promise<{
-  ok: boolean;
-  failures: string[];
-  notes: string[];
-  adoptedPrNumber?: number;
-  /**
-   * #782 — true when this run's consolidated verify recovered from a single
-   * transient flake (the caller emits `verify-flake-recovered` and records
-   * `retries: 1, recovered: true` on any verifyEvidence it writes). Absent
-   * on every other outcome, including the retry-failed path (that path
-   * records `retries: 1, recovered: false` without the flag).
-   */
-  flakeRecovered?: boolean;
-  /**
-   * #814 — structured develop-scope-fence violations recorded by the
-   * develop gate (absent when the gate recorded none, including
-   * pre-#814 state files and self-fence/dependsOn-exempt hits). The caller
-   * persists them on `pipelineState.verifyEvidence.fenceViolations` so the
-   * explain/handoff renderers can attribute a consolidation conflict to the
-   * fence instead of asserting an incoherent decomposition.
-   */
-  fenceViolations?: FenceViolationRecord[];
-  /** #1405 — the issue-fenced paths the primary's Test surface admitted this run. */
-  fenceLifts?: FenceLift[];
-  /**
-   * #841 — the consolidated verify's persisted raw-output log path (run2
-   * when a flake re-run fired, run1 otherwise), carried STRUCTURALLY so the
-   * caller records it on the cap-hit event's `logPaths` field instead of
-   * regexing the path out of the failure prose. Absent when no log was
-   * written (write failure, no consolidated run).
-   */
-  logPath?: string;
-  /** #1040 — the develop gate's comment-loss checks, structured (see `recordCommentEvidence`). */
-  commentEvidence?: CommentEvidence[];
-  /** #1349 — the verify command is red at base and its failures are the only ones. */
-  baselineRedOnly?: boolean;
-  /**
-   * #1765 — the probe ESTABLISHED the base red for the command the gate ran: the
-   * claim the develop CAP reads. Weaker than `baselineRedOnly` above, which also
-   * requires every failure to be the base's — one foreign entry used to drop a
-   * red base to `verify-failed:develop` and earn a corrective round for a base
-   * nothing can pass. Both stay reported so the excuse keeps its own answer.
-   */
-  baselineRedEstablished?: boolean;
-  /**
-   * #1421 fix round — the consolidated gate DECLINED to consolidate because
-   * the root held nothing but untracked, git-ignored build output. Carried
-   * STRUCTURALLY from the result's `kind`/`buildResidueOnly`, so the cap
-   * router never has to substring-match an operator-authored path out of the
-   * failure prose to tell an environment refusal from a verdict.
-   */
-  buildResidueOnly?: boolean;
-  /**
-   * #1427 — the gate-hang reports this gate persisted, one per gate run it
-   * killed at its bound (per-worktree, consolidated, or both). Carried
-   * STRUCTURALLY so the cap emit site records them on the cap-hit event's
-   * `logPaths` — the handoff then names the files, and no renderer has to find
-   * a path in prose. Absent when no run was killed or nothing could be written.
-   */
-  hangLogPaths?: string[];
-  /**
-   * #1240 — the consolidated verify did not run because its probe tree is the
-   * tree the per-worktree verify already judged. The caller turns this into a
-   * `consolidated-verify-skipped` event (`makeConsolidatedVerifySkippedEvent`).
-   */
-  consolidatedVerifySkipped?: AlreadyVerifiedTree;
-  /**
-   * #1415 — `verify-started` (already persisted, so the stream showed it while
-   * the gate ran) and `verify-completed`; the caller appends both through
-   * `recordDevelopGateEvents`. Absent when no verify command was resolved.
-   */
-  verifyEvents?: VerifyRunEventFragment[];
-  /**
-   * #1415 — the gate's reuse bookkeeping (see `GateRecorded`); the caller folds
-   * it into `pipelineState.gateReuse` through `recordDevelopGateEvents`, so the
-   * next develop pass can reuse a verdict this one established.
-   */
-  gateRecord?: DevelopGateRecord;
-  /** #1647 — the selected develop run's flaky and baseline-red tests, folded into `pipelineState.verifyAttribution`. */
-  selectedVerify?: SelectedVerifyRecord;
-  /** #1667 — what the verify command gate ran, for the corrective-round decision ("not-run" when no command ran). */
-  verifyRun?: VerifyCommandRecord;
-}> {
+): Promise<VerifyStepOutcomeResult> {
   const failures: string[] = [];
   const notes: string[] = [];
   if (!verifyGateEnabled()) {
@@ -291,6 +212,11 @@ export async function verifyStepOutcome(
     const selectedOut: { record?: SelectedVerifyRecord } = {};
     // #1667 — the verify command gate fills this in place (see VerifyRecordSlot).
     const verifyRecord = newVerifyRecordSlot();
+    // The background base probe's verdict, once the gate read it (see the
+    // `baseHealthProbe` field below): the develop gate is the only reader, so it
+    // is also the only writer.
+    let collectedBaseHealth: BaseHealthVerdict | undefined;
+    let consultedBaseHealth: BaseHealthConsulted | undefined;
     const verifyStarted = await beginVerifyRun(ctx, state);
     await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
       // #782 — the flake callback is wired at this layer: on recovery it
@@ -344,6 +270,10 @@ export async function verifyStepOutcome(
       onSelectedVerify: (record) => {
         selectedOut.record = record;
       },
+      onBaseHealthCollected: (verdict, consulted) => {
+        collectedBaseHealth = verdict;
+        consultedBaseHealth = consulted;
+      },
     });
     const flakeRecovered = flakeEvidenceTail !== undefined;
     const verifyEvents = finishVerifyRun(verifyStarted, failures.length === 0);
@@ -361,6 +291,10 @@ export async function verifyStepOutcome(
       ...(verifyEvents.length > 0 ? { verifyEvents } : {}),
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       ...(gateRecord !== undefined ? { gateRecord } : {}),
+      // The background base probe's verdict, when this gate read one: the caller
+      // records it into state through `recordDevelopGateEvents`.
+      ...(collectedBaseHealth !== undefined ? { baseHealthProbe: collectedBaseHealth } : {}),
+      ...(consultedBaseHealth !== undefined ? { baseHealthConsulted: consultedBaseHealth } : {}),
       ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
       verifyRun: verifyRecord.current,
       // #1427 round 3 — read the sink THIS call created, not the cycle context:

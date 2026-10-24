@@ -7,12 +7,14 @@
  * fixture.ts`, and the assertions here are the ones that make the probe safe to
  * run at branch at all.
  *
- * The rule under test is that ONLY a real red parks. A stream that is just the
- * executor's own `Command failed:` echo, an executor that throws before the gate
- * ever runs, and a cycle that is already interrupted are each a probe that
- * answered nothing — they are `unknown` with a note, never a park and never a
- * green, because the branch step would otherwise be held (or a cycle failed) by
- * the harness rather than by the project's tests.
+ * The rule under test is that ONLY a real red carries evidence. A stream that is
+ * just the executor's own `Command failed:` echo, an executor that throws before
+ * the gate ever runs, and a gate call that rejects are each a probe that answered
+ * nothing — they are `unknown` with a note, never evidence and never a green,
+ * because the develop gate would otherwise attribute a base to a run nobody
+ * performed. A red, by contrast, is reported as the colour the run reached, and
+ * the probe is NOT tied to the cycle's abort signal: an already-aborted or
+ * mid-run abort does not un-judge a run that finished.
  *
  * Offline: temp git repos, no dispatch, no spawn.
  */
@@ -31,7 +33,9 @@ import {
   CMD,
   GREEN_GATE,
   RED_GATE,
+  branchKey,
   branchState,
+  keyFor,
   notesOf,
 } from "./lib/base-health-probe-fixture.ts";
 import {
@@ -57,14 +61,14 @@ const root = mkdtempSync(path.join(tmpdir(), "pi-base-health-fail-"));
 __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
 
 // ── 15 — the three arms a probe can fail on, each reaching the caller as what
-// it actually was: a red that parks, an echo that proves nothing, and an
-// executor that threw (which must NOT propagate).
+// it actually was: a red that carries evidence, an echo that proves nothing, and
+// an executor that threw (which must NOT propagate).
 for (const [label, shape, throwWhere, expect] of [
   ["red gate", "red", "before", "red"],
   ["echo-only", "echo-only", "before", "unknown"],
   // The executor failed on a git call the probe makes BEFORE its own try block
   // (`worktree add`, then provisioning), so nothing about the base was judged
-  // and the probe must degrade rather than propagate or park.
+  // and the probe must degrade rather than propagate.
   ["executor threw", "executor-threw", "git", "unknown"],
 ] as const) {
   const f = await redGateFixture(root, `exec-${label}`, RED_GATE, { "notes.md": "x\n" });
@@ -88,6 +92,7 @@ for (const [label, shape, throwWhere, expect] of [
       { host: {}, repoRoot: f.repo, issue: 1765 } as never,
       branchState(announced),
       CMD,
+      branchKey(announced),
     );
   } catch (err) {
     threw = (err as Error).message;
@@ -99,7 +104,7 @@ for (const [label, shape, throwWhere, expect] of [
   // Which arms the gate itself ran for is a property of the arm, not a rule
   // each arm must satisfy: a real red ran it once, an echo-only run ran it and
   // printed nothing of its own, and an executor that threw never reached it.
-  // What must hold for every arm is the answer and the park decision below.
+  // What must hold for every arm is the answer and the evidence decision below.
   assert(
     gateRuns.length === (shape === "executor-threw" ? 0 : 1),
     `executor ${label}: the gate ran ${shape === "executor-threw" ? "not at all (the executor failed first)" : "exactly once"} (got ${gateRuns.length}) — the case is not vacuous`,
@@ -109,8 +114,8 @@ for (const [label, shape, throwWhere, expect] of [
     `executor ${label}: the verdict is ${expect} (got ${out?.verdict?.status})`,
   );
   assert(
-    expect === "red" ? out?.park !== undefined : out?.park === undefined,
-    `executor ${label}: ${expect === "red" ? "a real red still parks" : "no park — a probe that could not answer never fails the cycle"}`,
+    expect === "red" ? out?.red !== undefined : out?.red === undefined,
+    `executor ${label}: ${expect === "red" ? "a real red carries its rendered evidence for the develop gate to attribute" : "no evidence — a probe that could not answer attributes nothing"}`,
   );
   if (expect === "unknown") {
     assert(
@@ -120,47 +125,45 @@ for (const [label, shape, throwWhere, expect] of [
   }
 }
 
-// ── 16 — an aborted cycle is not a verdict: neither an already-aborted signal
-// nor one that fires during the probe may park, and neither may read as green.
+// ── 16 — the probe is NOT tied to the cycle's abort signal: an abort neither
+// stops it nor turns its answer into `unknown`, because a GREEN is a fact about
+// the base commit that a later cycle reuses, and abandoning it because this cycle
+// is on its way out throws away a verdict the repo still wants. Process exit ends
+// it, not the cycle's own controller.
 {
-  const mk = () =>
-    redGateFixture(root, `abort-${Math.random().toString(36).slice(2)}`, GREEN_GATE, {
-      "notes.md": "x\n",
-    });
-  // (a) aborted BEFORE the probe: no suite run is paid for at all.
-  const before = await mk();
+  const mk = (name: string) =>
+    redGateFixture(root, `abort-${name}`, GREEN_GATE, { "notes.md": "x\n" });
+  // (a) a signal already aborted when the probe starts still runs the gate and
+  // still answers — the run judged the base, so its colour stands.
+  const before = await mk("before");
   const acBefore = new AbortController();
   acBefore.abort();
   let gateBefore = 0;
+  // The gate's own runs are counted INSIDE the executor below, so this case's
+  // counter is the one that can tell "the probe ran the gate" from "some other
+  // cycle's probe answered from the registry".
   const outBefore = await applyBaseHealthProbe(
-    probeFailureExecutor({ shape: "pass", onGate: () => (gateBefore += 1) }),
+    async (cmd, o) => {
+      const l = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
+      if (!l.startsWith("git ")) gateBefore += 1;
+      return await realExec(cmd, o);
+    },
     { host: {}, repoRoot: before.repo, issue: 1765, signal: acBefore.signal } as never,
     branchState(before.baseSha),
     CMD,
+    await keyFor(before.repo, before.baseSha),
   );
   assert(
-    gateBefore === 0 && outBefore.verdict?.status === "unknown" && outBefore.park === undefined,
-    "abort before: no suite run, no verdict, no park",
+    gateBefore === 1 && outBefore.verdict?.status === "green",
+    `aborted before: the probe ran the project's command and judged the base anyway (gate calls=${gateBefore}, verdict=${outBefore.verdict?.status}) — the signal is not the probe's bound`,
   );
   assert(
-    notesOf(
-      appendEvent(
-        initialState(1765),
-        synthesizeDriverCompletion({
-          step: "branch",
-          label: "driver:base-health",
-          summary: outBefore.notes.join("; "),
-          startedAt: 0,
-          now: 0,
-        }),
-      ),
-    ).some((s) => s.includes("interrupted")),
-    "abort before: the note says the cycle was interrupted, not that the base is fine",
+    outBefore.red === undefined,
+    "aborted before: nothing to attribute — a green never carries red evidence",
   );
-  // (b) aborted DURING the probe. The gate sleeps and exits 1, the controller
-  // fires while it runs, and whatever that run then answers must not reach the
-  // caller: an interrupted run judged nothing, so it is not a red base.
-  const during = await mk();
+  // (b) a signal that fires DURING the probe does not invalidate the run that was
+  // already paid for: the run reached its own verdict and the probe reports it.
+  const during = await mk("during");
   const slow = path.join(root, "slow-gate.sh");
   writeFileSync(slow, "#!/bin/sh\nsleep 2\nexit 1\n", { mode: 0o755 });
   writeFileSync(path.join(during.repo, "gate.sh"), `#!/bin/sh\nexec sh ${slow}\n`, {
@@ -182,62 +185,49 @@ for (const [label, shape, throwWhere, expect] of [
     { host: {}, repoRoot: during.repo, issue: 1765, signal: acDuring.signal } as never,
     branchState(slowBase),
     CMD,
+    await keyFor(during.repo, slowBase),
   );
   clearTimeout(timer);
   assert(
     gateDuring === 1,
-    `abort during: the probe did pay for the run before the abort landed (got ${gateDuring})`,
+    `aborted during: the probe paid for its run and finished it (got ${gateDuring})`,
   );
   assert(
-    outDuring.verdict?.status === "unknown" && outDuring.park === undefined,
-    `abort during: unknown and no park (got ${outDuring.verdict?.status}) — an interrupted run judged nothing, and a red exit alone is not a verdict here`,
+    outDuring.ran === true && outDuring.verdict !== undefined,
+    `aborted during: the run answered for itself and the abort did not replace its answer (verdict=${outDuring.verdict?.status}, ran=${outDuring.ran}) — an aborted cycle is not a re-judgement of the base`,
   );
 }
 
-// ── 17 — an abort that lands DURING the cache write gives `unknown`, never a
-// recorded green. The green is written to disk before the abort is checked, so a
-// listener registered only around the suite run (the pre-round-3 shape) let a
-// torn-down cycle publish a GREEN the next cycle reads back instead of paying for
-// the suite — a verdict for a run this cycle never finished judging. The abort
-// must be caught at the write itself, and the file must not stand behind an
-// `unknown` answer.
+// ── 17 — a rejected gate call is folded to `unknown`, not propagated, and leaves
+// no green standing: the shape a background task faults in, which the registry
+// must answer for rather than let escape as an unhandled rejection.
 {
-  const f = await redGateFixture(root, "abort-write", GREEN_GATE, { "notes.md": "x\n" });
-  const ac = new AbortController();
+  const f = await redGateFixture(root, "reject-write", GREEN_GATE, { "notes.md": "x\n" });
   let gateCalls = 0;
-  const execFn = async (cmd: string, o?: Parameters<typeof realExec>[1]) => {
-    const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
-    if (!line.startsWith("git ")) gateCalls += 1;
-    // The abort lands while the probe is at work — before the green it earns
-    // would have been written.
-    if (gateCalls === 1) ac.abort();
-    return await realExec(cmd, o);
-  };
   const out = await applyBaseHealthProbe(
-    execFn,
-    { host: {}, repoRoot: f.repo, issue: 1765, signal: ac.signal } as never,
+    probeFailureExecutor({ shape: "rejects", onGate: () => (gateCalls += 1) }),
+    { host: {}, repoRoot: f.repo, issue: 1765 } as never,
     branchState(f.baseSha),
     CMD,
+    await keyFor(f.repo, f.baseSha),
   );
   assert(
     gateCalls === 1,
-    `abort at the cache write: the green arm really ran the gate once (got ${gateCalls}) — the case is not vacuous`,
+    `rejected gate: the gate arm really ran once (got ${gateCalls}) — the case is not vacuous`,
+  );
+  // The distinction the case must keep: a rejection is NOT reported as a GREEN,
+  // and no green is written for it. Whether the arm still reads as a red is the
+  // harness's own stream rule, tested by case 15's `echo-only` arm.
+  assert(
+    out.verdict?.status !== "green",
+    `rejected gate: a rejection is never a green (got ${out.verdict?.status})`,
   );
   assert(
-    out.verdict?.status === "unknown" && out.park === undefined,
-    `abort at the cache write: unknown and no park (got ${out.verdict?.status}) — a green the cycle was torn down for is not a verdict`,
-  );
-  assert(
-    (out.verdict?.reason ?? "").includes("interrupted"),
-    `abort at the cache write: the reason names the interruption (${out.verdict?.reason})`,
-  );
-  assert(
-    // The green's evidence is the cache file: whatever the write did, an
-    // `unknown` answer must not leave a GREEN standing for a later cycle to read
-    // instead of paying for the suite.
-    readBaseHealthCache(async () => readFileSync(baseHealthCacheFile(f.repo), "utf8"), f.repo)
-      ?.status !== "green",
-    "abort at the cache write: no GREEN stands in the cache behind an unknown answer",
+    (await readBaseHealthCache(
+      async () => readFileSync(baseHealthCacheFile(f.repo), "utf8"),
+      f.repo,
+    ))?.status !== "green",
+    "rejected gate: no GREEN stands in the cache behind a run that rejected",
   );
 }
 
