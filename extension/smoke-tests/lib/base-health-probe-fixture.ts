@@ -23,7 +23,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { DriverExecFn } from "../../src/work-driver-context.ts";
-import type { BaseHealthConsulted } from "../../src/work-driver-verify-aggregate.ts";
+import type { BaseHealthConsulted } from "../../src/work-driver-verify-base-health-channels.ts";
 import { recordDevelopGateEvents } from "../../src/work-driver-verify-events.ts";
 import { developTierTimeouts } from "../../src/work-driver-verify-budget.ts";
 import {
@@ -56,11 +56,14 @@ export interface ProbeRun {
   /** The repo-level cache file's contents, or undefined when nothing wrote it. */
   cacheRaw: string | undefined;
   /**
-   * The background probe's promise — what the branch step registered and did NOT
-   * await. `undefined` when nothing was registered (no verify command, or the
-   * switches off), which is the shape the "probe disabled" cases assert.
+   * The background probe's outcome — what the branch step registered and did NOT
+   * await. `undefined` when nothing was registered: no verify command, an
+   * unusable baseSha, or the switches off (#1809 fix round — those cases register
+   * nothing rather than a sentinel key nothing can match). The type is the probe
+   * seam's own `BaseHealthProbeOutcome`, not a locally invented shape, so a case
+   * that reads `settled(r).verdict` is reading what the gate's consultation reads.
    */
-  outcome: Promise<BaseHealthProbeOutcome> | undefined;
+  outcome: Promise<BaseHealthProbeOutcome | undefined> | undefined;
 }
 
 /** A state carrying the branch step's own outputs, as the probe's caller has them. */
@@ -105,19 +108,23 @@ export async function probe(
     else if (!line.includes("git ")) gateRuns.push(o?.cwd ?? "");
     return await realExec(cmd, o);
   };
-  const { startBaseHealthProbeAtBranch } = await import(
+  const { probeBaseAtBranch, startBaseHealthProbeAtBranch } = await import(
     "../../src/work-driver-verify-base-health.ts"
   );
   const ctx = { host: {}, repoRoot: f.repo, issue: 1765 } as never;
   const state = opts.state ?? branchState(f.baseSha);
-  // The branch step's entry point: it resolves the key, registers the run, and
-  // returns the state with the promise dropped. A case reads that promise through
-  // `settled`, which is the only way to the verdict the develop gate consulted.
-  // Awaited HERE, at the key resolution the step itself performs on its thread —
-  // the cost counters below then observe the whole run rather than its first
-  // await, which is what makes "exactly one run in one tree" mean anything.
+  // Registered ONCE (#1809 fix round): this used to call
+  // `startBaseHealthProbeAtBranch` AND `probeBaseAtBranch`, which started the
+  // probe twice (the second coalescing into the first via the single-flight
+  // registry, so a case that counted runs saw one while a real cycle pays for what
+  // may be another). Both entry points share one policy — `probeBaseAtBranch` is a
+  // one-line call to the other — so the seam under test is exercised here and its
+  // return value (the settled outcome the branch step itself drops) is what
+  // `outcome` carries. Awaited on THIS thread, at the key resolution the step
+  // performs there, so the cost counters below observe the whole run rather than
+  // its first await, which is what makes "exactly one run in one tree" mean
+  // anything. The case still cannot reach a rejection: the promise never rejects.
   const outcome = await startBaseHealthProbeAtBranch(execFn, ctx, state);
-  const { probeBaseAtBranch } = await import("../../src/work-driver-verify-base-health.ts");
   const next = probeBaseAtBranch(execFn, ctx, state);
   let cacheRaw: string | undefined;
   try {
@@ -224,8 +231,7 @@ export function consultedRecord(
   return {
     status,
     baseSha: out.verdict?.baseSha ?? "",
-    ms: out.ms,
-    ran: out.ran,
+    ...(out.ms === undefined ? {} : { ms: out.ms }),
     ...(out.verdict?.timedOut === true ? { timedOut: true as const } : {}),
   };
 }
@@ -236,11 +242,9 @@ export function consultedEvent(
   out: BaseHealthProbeOutcome,
   status: BaseHealthConsulted["status"],
 ): WorkState {
-  // The recorder derives the event's ms from `startedAt`, so the probe's own wall
-  // clock is what has to reach it — exactly as the develop gate passes it.
-  const now = Date.now();
+  // The recorder derives the event's ms from the consultation's OWN measured probe
+  // time, so the probe's duration is the only number a case has to hand it.
   return recordDevelopGateEvents(state, {
     baseHealthConsulted: consultedRecord(out, status),
-    baseHealthStartedAt: out.ms === undefined ? now : now - out.ms,
   } as never);
 }

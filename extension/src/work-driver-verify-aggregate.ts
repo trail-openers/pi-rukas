@@ -29,6 +29,11 @@ import { awaitInflightBaseHealth } from "./work-driver-base-health-inflight.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
+import type {
+  BaseHealthConsulted,
+  BaseHealthReport,
+} from "./work-driver-verify-base-health-channels.ts";
+import { baseHealthConsultedNote } from "./work-driver-verify-base-health-channels.ts";
 import { baselineExplainsChange, compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isValidSha, isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
@@ -38,36 +43,16 @@ import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-b
 export type BaselineRedEstablished = (established: boolean) => void;
 
 /**
- * What the develop gate saw when it consulted the background base probe: the
- * verdict's colour and the probe's own measured wall clock. This is the
- * operator-visible record of a probe that used to be a branch-step event, and the
- * gate that consulted it is the only place able to write it — a background task
- * writing state would race the develop step.
+ * The consultation record and its operator note are declared ONCE, in
+ * `work-driver-verify-base-health-channels.ts` — the one shape every layer of the
+ * develop gate carries. Re-exported so the recorder and the gate results keep the
+ * name they already read, and so a second copy cannot grow in this module.
  */
-export interface BaseHealthConsulted {
-  status: "green" | "red";
-  /** The base the verdict speaks for, so a reader can name it. */
-  baseSha: string;
-  /** The probe's measured run time; absent when it ran nothing (a cache answer). */
-  ms?: number;
-  /** True when the probe ran its own suite (false = a cache or in-state answer). */
-  ran?: boolean;
-  /** The red came from the timed-out arm — the operator must not be told to fix a test. */
-  timedOut?: true;
-  /** True when the verdict came from the registry rather than the state or cache. */
-  fromRegistry?: boolean;
-}
-
-/** The operator's note for a consulted verdict, as the develop gate records it. */
-export function baseHealthConsultedNote(baseSha: string, report: BaseHealthConsulted): string {
-  const timing =
-    report.ms === undefined ? "no suite run of its own" : `its own run measured ${report.ms} ms`;
-  const colour =
-    report.timedOut === true
-      ? `${report.status.toUpperCase()} (probe timed out)`
-      : report.status.toUpperCase();
-  return `base-health: the develop gate consulted the background probe — base ${(baseSha || report.baseSha).slice(0, 12)} ${colour} (${timing})`;
-}
+export type {
+  BaseHealthConsulted,
+  BaseHealthReport,
+} from "./work-driver-verify-base-health-channels.ts";
+export { baseHealthConsultedNote } from "./work-driver-verify-base-health-channels.ts";
 
 /**
  * #1765 — the develop gate's tail rule, in one call so the two claims travel
@@ -122,14 +107,15 @@ async function collectBackgroundBaseHealth(
   if (consulted === undefined) return undefined;
   if (consulted.verdict.status === "unknown") return undefined;
   // Carried into the record the gate writes: the ms is the probe's own measured
-  // wall clock, and it is the number the operator reads to judge what the probe cost.
+  // wall clock, and it is the number the operator reads to judge what the probe
+  // cost. `ran` and "did this come from the registry" are NOT reported — the only
+  // producer of this record is the registry read, so the latter was a constant, and
+  // no renderer ever showed the former. Both were dead fields wearing documentation.
   onConsulted?.({
     status: consulted.verdict.status,
     baseSha,
-    ms: consulted.outcome.ms,
-    ran: consulted.outcome.ran,
+    ...(consulted.outcome.ms === undefined ? {} : { ms: consulted.outcome.ms }),
     ...(consulted.verdict.timedOut === true ? { timedOut: true as const } : {}),
-    fromRegistry: true,
   });
   return consulted.verdict;
 }
@@ -166,22 +152,20 @@ export async function aggregateVerifyOutcome(args: {
   /** #1765 — the cycle's own base verdict, when the cycle holds one. */
   baseHealthProbe?: BaseHealthVerdict;
   /**
-   * Reports the verdict this seam collected from the BACKGROUND base probe, so
-   * the caller can record it into state — the only path by which a background
-   * probe's verdict ever reaches `pipelineState.baseHealthProbe`. Called only
-   * when a probe was actually running for this cycle's key, and never on a
-   * cycle whose verify passed.
+   * The ONE channel this seam reports on (#1809 fix round): the collected verdict
+   * and the consultation record travel as the two optional halves of one
+   * `BaseHealthReport`, declared in
+   * `work-driver-verify-base-health-channels.ts` and carried unchanged through
+   * every layer above. Called once per consultation; a receiver that keeps both
+   * halves must fold them (`mergeBaseHealthReport`), never assign.
    *
-   * #1809 fix round — a RED the gate read out of the registry is NOT passed here.
-   * A red is never cached across rounds, and `pipelineState.baseHealthProbe` is
-   * exactly the field that survives a round (and a resume), so persisting a
-   * consulted red would let the next develop pass reuse a verdict it never ran
-   * for. Only a GREEN is collected, and the callback's parameter is deliberately
-   * non-optional so a red cannot be passed by omission.
+   * #1809 fix round — a RED the gate read out of the registry is NOT carried in
+   * `collected`. A red is never cached across rounds, and
+   * `pipelineState.baseHealthProbe` is exactly the field that survives a round (and
+   * a resume), so persisting a consulted red would let the next develop pass reuse
+   * a verdict it never ran for. Only a GREEN is collected.
    */
-  onBaseHealthCollected?: (verdict: BaseHealthVerdict | undefined) => void;
-  /** Reports the verdict this gate consulted from the background probe. */
-  onBaseHealthConsulted?: (report: BaseHealthConsulted) => void;
+  onBaseHealth?: (report: BaseHealthReport) => void;
 }): Promise<boolean> {
   const {
     execFn,
@@ -195,8 +179,7 @@ export async function aggregateVerifyOutcome(args: {
     notes,
     onBaselineAttributed,
     onBaselineRedEstablished,
-    onBaseHealthCollected,
-    onBaseHealthConsulted,
+    onBaseHealth,
     baseHealthProbe,
   } = args;
 
@@ -235,46 +218,52 @@ export async function aggregateVerifyOutcome(args: {
     // over it could answer for a different run than the one the cycle recorded.
     let inFlightRed = false;
     let inFlightTimedOut = false;
+    // #1809 fix round — the ONE channel's payload. Both halves are optional
+    // properties and the callback fires ONCE, at the end, so no receiver on any
+    // layer can lose a half to a later `undefined`.
+    const report: BaseHealthReport = {};
     const inflight =
       baseHealthProbe === undefined
-        ? await collectBackgroundBaseHealth(ctx, cmd, baseSha, suiteTimeoutMs, (report) => {
-            // One report, three consumers: the note is the operator's record of the
-            // probe — written by the gate that consulted it, the only channel the
-            // probe itself is no longer allowed to touch; the consultation record
-            // travels to the caller; and a GREEN is additionally collected into
-            // state by the call below. A RED is the note exception: `compareWithBaseline`
-            // leads `notes` with the finding that names the base and its assertion,
-            // and a second line saying the same colour would be two records of one
-            // consultation. The consultation record (`onBaseHealthConsulted`) still
-            // carries the red's colour and measured ms for the state's event log.
-            if (report.status !== "red") {
-              notes.push(baseHealthConsultedNote(baseSha ?? "", report));
+        ? await collectBackgroundBaseHealth(ctx, cmd, baseSha, suiteTimeoutMs, (consulted) => {
+            // One consultation, one record: the note is the operator's record of
+            // the probe — written by the gate that consulted it, the only channel
+            // the probe itself is no longer allowed to touch — and the consultation
+            // record rides on the report below. A RED is the note exception:
+            // `compareWithBaseline` leads `notes` with the finding that names the
+            // base and its assertion, and a second line saying the same colour
+            // would be two records of one consultation. The consultation record
+            // still carries the red's colour and measured ms for the event log.
+            if (consulted.status !== "red") {
+              notes.push(baseHealthConsultedNote(baseSha ?? "", consulted));
             }
-            onBaseHealthConsulted?.(report);
-            // #1809 fix round — a consulted RED is kept OUT of the collected
-            // channel (`onBaseHealthCollected` below, the only writer of
-            // `pipelineState.baseHealthProbe`): the state field survives a round and
-            // a red is never cached across rounds. It still answers for THIS gate
-            // pass, which is what `fromInFlightProbe` on the reuse below says —
-            // without it `compareWithBaseline` would read this as an ordinary
-            // in-state verdict, an in-state red is unreusable there by design, and
-            // this cycle would silently pay for a second suite run it has already
-            // had judged. `baseSha` is non-null: the consultation only happens after
+            report.consulted = consulted;
+            // #1809 fix round — a consulted RED is kept OUT of the report's
+            // `collected` half (the only writer of `pipelineState.baseHealthProbe`):
+            // the state field survives a develop round and a red is never cached
+            // across rounds. It still answers for THIS gate pass, which is what
+            // `fromInFlightProbe` on the reuse below says — without it
+            // `compareWithBaseline` would read this as an ordinary in-state verdict,
+            // an in-state red is unreusable there by design, and this cycle would
+            // silently pay for a second suite run it has already had judged.
+            // `baseSha` is non-null: the consultation only happens after
             // `collectBackgroundBaseHealth` accepted the sha.
-            if (report.status === "red") {
+            if (consulted.status === "red") {
               inFlightRed = true;
-              inFlightTimedOut = report.timedOut === true;
+              inFlightTimedOut = consulted.timedOut === true;
             }
           })
         : undefined;
-    // #1809 fix round — the collected channel is what `recordDevelopGateEvents`
-    // writes to `pipelineState.baseHealthProbe`, so it carries a GREEN only: the
+    // The report's `collected` half is what `recordDevelopGateEvents` writes to
+    // `pipelineState.baseHealthProbe`, so it carries a GREEN only: the
     // consultation's own record already names a red's colour and cost, and the
     // field it would land in survives a develop round, which is exactly where a
-    // red must not survive. `inFlightRed` is the consulted colour, read back from
-    // the consultation report rather than from `inflight?.status`, so the two
-    // channels cannot disagree about what the probe said.
-    onBaseHealthCollected?.(inFlightRed ? undefined : inflight);
+    // red must not survive. The colour is read back from the consultation record,
+    // never from `inflight?.status`, so the two halves of one report cannot
+    // disagree about what the probe said.
+    if (!inFlightRed && inflight !== undefined) report.collected = inflight;
+    if (report.collected !== undefined || report.consulted !== undefined) {
+      onBaseHealth?.(report);
+    }
 
     // A verdict the cycle already holds wins over the registry's: it is the record
     // this cycle wrote, and a registry entry could answer for a different run. The

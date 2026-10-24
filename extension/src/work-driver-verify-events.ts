@@ -17,8 +17,10 @@ import { trace } from "./trace.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
-import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
-import { baseHealthConsultedNote } from "./work-driver-verify-aggregate.ts";
+import {
+  type BaseHealthConsulted,
+  baseHealthConsultedNote,
+} from "./work-driver-verify-base-health-channels.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { type DevelopGateRecord, gatePassKey } from "./work-driver-verify-gate-reuse.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
@@ -118,15 +120,15 @@ export function recordDevelopGateEvents(
      * driver-completed event naming the verdict's colour and the probe's measured
      * ms. This is where the probe's operator-visible record lives now that the
      * branch step registers it instead of awaiting it.
+     *
+     * The event's `ms` is derived from the consultation's OWN measured probe time
+     * (`baseHealthConsulted.ms`) — #1809 fix round. It used to come from a
+     * `baseHealthStartedAt` the develop gate was asked to supply, which no
+     * production caller did, so every consultation logged as though it had cost
+     * nothing. There is no wall clock of our own to keep here: the probe's duration
+     * is the only duration this event has ever had anything to be.
      */
     baseHealthConsulted?: BaseHealthConsulted;
-    /**
-     * When the consultation began. The recorder derives the event's `ms` from it
-     * (`synthesizeDriverCompletion`'s own rule), so the develop gate passes the
-     * probe's measured end minus its measured duration and the log carries the
-     * probe's real wall clock instead of 0 ms.
-     */
-    baseHealthStartedAt?: number;
     selectedVerify?: SelectedVerifyRecord;
     fenceLifts?: FenceLift[];
   },
@@ -163,7 +165,12 @@ export function recordDevelopGateEvents(
               state.pipelineState.baseSha ?? "",
               gate.baseHealthConsulted,
             ),
-            startedAt: gate.baseHealthStartedAt ?? Date.now(),
+            // The consultation's own measured probe time, not a wall clock the
+            // caller was supposed to hand us: `synthesizeDriverCompletion` renders
+            // `now - startedAt`, so a consultation whose probe measured N ms lands as
+            // `ms: N`. A consultation that ran no suite of its own (a cache answer)
+            // has no duration and honestly reports 0.
+            startedAt: Date.now() - (gate.baseHealthConsulted.ms ?? 0),
             now: Date.now(),
           }),
         ]),

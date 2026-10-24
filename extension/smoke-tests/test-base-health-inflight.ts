@@ -21,6 +21,9 @@
  *
  * Offline: no fixture repos, no dispatch, no spawn. Timers are real and short.
  */
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   awaitInflightBaseHealth,
   clearBaseHealthInflight,
@@ -227,6 +230,82 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   process.off("unhandledRejection", onUnhandled);
   assert(unhandled === 0, "sync-throw: no unhandled rejection reached the process");
   assert(inflightBaseHealthCount() === 0, "sync-throw: the entry is cleared even on a sync fault");
+}
+
+// ── 10 — a fault's message is REDACTED before it is bounded (#1809 fix round).
+//
+// The executor's message is whatever the project's command printed, and both the
+// trace line and the outcome note carry it. Slicing first and redacting after
+// would let a secret cut in half by the 200-char bound survive the cut, so the
+// order is redact-then-slice — and a long token has to come out whole-or-nothing.
+{
+  clearBaseHealthInflight();
+  const SECRET = "sk-ant-api03-" + "Z".repeat(40);
+  const leaked = `gate failed: token=${SECRET} ` + "x".repeat(400);
+  const p = startBaseHealthProbe(otherKey("e".repeat(40)), async () => {
+    throw new Error(leaked);
+  });
+  const out = await p;
+  const rendered = JSON.stringify(out);
+  assert(
+    !rendered.includes(SECRET),
+    "redact: a fault's own note never carries the secret it printed",
+  );
+  assert(
+    rendered.includes("[REDACTED]"),
+    `redact: the message is redacted, not dropped — the operator still sees why the probe died (${rendered.slice(0, 120)})`,
+  );
+  assert(
+    out.notes[0] !== undefined && out.notes[0].length <= 260,
+    `redact: the note stays bounded (${out.notes[0]?.length} chars) even for a 400-char fault`,
+  );
+  assert(inflightBaseHealthCount() === 0, "redact: the faulted probe cleared its own key");
+  clearBaseHealthInflight();
+}
+
+// ── 11 — the branch step registers NOTHING it cannot answer for (#1809 fix round).
+//
+// With no verify command, or an unusable baseSha, the old shape registered a
+// sentinel `{command: "", tierBoundMs: 0}` — a key no gate's own lookup can ever
+// match, occupying the registry for the length of a settle and answering for no
+// run at all. Registration is skipped and the reason traced instead, which this
+// asserts through the only observable the registry offers: its count.
+{
+  clearBaseHealthInflight();
+  const { probeBaseAtBranch } = await import("../src/work-driver-verify-base-health.ts");
+  const { initialState } = await import("../src/workflow-state.ts");
+  const noCmdState = initialState(1809);
+  noCmdState.pipelineState.baseSha = "f".repeat(40);
+  const noCmd = probeBaseAtBranch((async () => ({ stdout: "" })) as never, {
+    host: {},
+    // A real, empty temp dir: `verifyCmdFor` reads `.pi/verify-cmd` and the
+    // package.json scripts, and finds none of them.
+    repoRoot: await mkdtemp(path.join(tmpdir(), "pi-ens-bh-nocmd-")),
+    issue: 1809,
+  } as never, noCmdState);
+  assert(
+    noCmd === noCmdState,
+    "no-sentinel: probeBaseAtBranch still returns the state it was given (the step is not broken by the skip)",
+  );
+  // Give the entry a chance to be created (it is not) before reading the count.
+  await sleep(20);
+  assert(
+    inflightBaseHealthCount() === 0,
+    `no-sentinel: no verify command registers no registry entry (count=${inflightBaseHealthCount()}) — the empty-command sentinel is gone`,
+  );
+  const badSha = initialState(1809);
+  badSha.pipelineState.baseSha = "not-a-sha";
+  probeBaseAtBranch((async () => ({ stdout: "" })) as never, {
+    host: {},
+    repoRoot: await mkdtemp(path.join(tmpdir(), "pi-ens-bh-badsha-")),
+    issue: 1809,
+  } as never, badSha);
+  await sleep(20);
+  assert(
+    inflightBaseHealthCount() === 0,
+    `no-sentinel: an unusable baseSha registers no entry either (count=${inflightBaseHealthCount()})`,
+  );
+  clearBaseHealthInflight();
 }
 
 console.log(`\nexit ${exit}`);

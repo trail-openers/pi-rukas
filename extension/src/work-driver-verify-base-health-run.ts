@@ -51,8 +51,12 @@ export interface BaseHealthProbeOutcome {
  * the verdict that records the attempt, and the note that says so. Never a park —
  * a probe that could not run has established nothing, and the whole cost model of
  * this seam rests on that being cheap.
+ *
+ * MODULE-PRIVATE (#1809 fix round): an `unknown` is only honest when the arm that
+ * reached no verdict produced it. Exported, it invited any caller to synthesize a
+ * verdict the probe never judged.
  */
-export function unknownProbeOutcome(
+function unknownProbeOutcome(
   baseSha: string,
   cmd: string,
   tierBoundMs: number,

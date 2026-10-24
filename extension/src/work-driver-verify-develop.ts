@@ -47,8 +47,10 @@ import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts"
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
-import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
-import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
+import {
+  type BaseHealthReport,
+  mergeBaseHealthReport,
+} from "./work-driver-verify-base-health-channels.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /**
@@ -404,14 +406,13 @@ export async function verifyDevelopOutcome(
   // #1765 — the base probe's two claims, each recorded by `aggregateVerifyOutcome`
   // from the verdict it got back; `reportBaselineLeg` below reads them.
   const baselineLeg = { red: false, established: false };
-  // The background base probe's verdict, recorded HERE and nowhere else: the
+  // The background base probe's report, accumulated HERE and nowhere else: the
   // branch step starts the probe and returns, so a concurrent task that wrote
   // state itself would race this step's own writes. Only the seam that reads the
-  // verdict writes it, and only when it needed it (a failed verify).
-  let collectedBaseHealth: BaseHealthVerdict | undefined;
-  // The record of the consultation itself (colour + measured ms). The probe is no
-  // longer a branch-step event, so this is the operator-visible trace of it.
-  let consultedBaseHealth: BaseHealthConsulted | undefined;
+  // verdict writes it, and only when it needed it (a failed verify). Folded with
+  // `mergeBaseHealthReport` so a half is never overwritten by a call that carried
+  // only the other one.
+  const baseHealthOut: { report?: BaseHealthReport } = {};
   await runDevelopVerifyCommandChain({
     ctx,
     state,
@@ -427,18 +428,11 @@ export async function verifyDevelopOutcome(
     notes,
     options,
     baselineLeg,
-    // #1809 fix round — each half is assigned ONLY when the chain actually
-    // reported it, never overwritten with `undefined`.
-    // `runDevelopVerifyCommandChain` fires this callback once PER CHANNEL (collected,
-    // then consulted), each call passing `undefined` for the channel it is not about.
-    // Assigning unconditionally made the second call erase the first, so a gate that
-    // consulted a RED reported `{status:"red"}` and then collected `undefined` — and
-    // the consultation the operator's `driver:base-health` event is built from was
-    // gone. `undefined` means "not this channel", the only reading under which two
-    // callbacks can describe one consultation.
-    onBaseHealth: (verdict, consulted) => {
-      if (verdict !== undefined) collectedBaseHealth = verdict;
-      if (consulted !== undefined) consultedBaseHealth = consulted;
+    // The ONE channel, folded into the accumulator: `mergeBaseHealthReport` takes
+    // a half only when the report carries it, which is the rule every receiver in
+    // the chain follows and the one `verifyStepOutcome` used to break.
+    onBaseHealth: (report) => {
+      baseHealthOut.report = mergeBaseHealthReport(baseHealthOut.report ?? {}, report);
     },
   });
 
@@ -468,6 +462,6 @@ export async function verifyDevelopOutcome(
   // result as `baseHealthProbe` and is recorded by `recordDevelopGateEvents`.
   // #1809 fix round — read AFTER the chain: the two channels are filled by the
   // chain's own callbacks, so this is the only place either half is complete.
-  options.onBaseHealthCollected?.(collectedBaseHealth, consultedBaseHealth);
+  options.onBaseHealth?.(baseHealthOut.report ?? {});
   return undefined;
 }

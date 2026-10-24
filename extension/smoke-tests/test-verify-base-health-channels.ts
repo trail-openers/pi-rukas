@@ -38,16 +38,23 @@
  *
  * Offline: temp git repos for the gate runs only, no dispatch, no spawn, no model.
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  awaitInflightBaseHealth,
   clearBaseHealthInflight,
+  peekBaseHealthProbe,
   startBaseHealthProbe,
 } from "../src/work-driver-base-health-inflight.ts";
+import { baseHealthKey } from "../src/workflow-state-schema-base-health.ts";
 import type { DriverExecFn } from "../src/work-driver-context.ts";
 import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
-import type { BaseHealthConsulted } from "../src/work-driver-verify-aggregate.ts";
+import type {
+  BaseHealthConsulted,
+  BaseHealthReport,
+} from "../src/work-driver-verify-base-health-channels.ts";
+import { mergeBaseHealthReport } from "../src/work-driver-verify-base-health-channels.ts";
 import { BASELINE_RED_MARKER, compareWithBaseline } from "../src/work-driver-verify-baseline.ts";
 import type { BaseHealthProbeOutcome } from "../src/work-driver-verify-base-health.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify-pr17.ts";
@@ -56,7 +63,15 @@ import type { BaseHealthKey, BaseHealthVerdict } from "../src/workflow-state-sch
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { RED_GATE, branchState, keyFor } from "./lib/base-health-probe-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
-import { redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
+import { loopCmd, redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
+
+/** A suite fixture that always exits 1 — the test the change ADDS to the gate. */
+const RED_GATE_FIXTURE = readFileSync(
+  path.join(import.meta.dirname, "fixtures", "verify-loop", "fixture-1.ts"),
+  "utf8",
+);
+
+
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -155,11 +170,9 @@ async function aggregateWithProbe(
     perWorktreeVerifyFailures: failures,
     failures,
     notes,
-    onBaseHealthCollected: (v) => {
-      collected = v;
-    },
-    onBaseHealthConsulted: (r) => {
-      consulted = r;
+    onBaseHealth: (report) => {
+      collected = report.collected;
+      consulted = report.consulted;
     },
   });
   await registered;
@@ -222,12 +235,10 @@ try {
       perWorktreeVerifyFailures: [],
       failures,
       notes,
-      onBaseHealthCollected: (v) => {
-        collected = v;
-      },
-      onBaseHealthConsulted: (r) => {
-        consulted = r;
-        consultedSeen = true;
+      onBaseHealth: (report) => {
+        collected = report.collected;
+        consulted = report.consulted;
+        consultedSeen = report.consulted !== undefined;
       },
     });
     assert(attributed === false, "consulted red: no #1349 excuse from a colour with no stream");
@@ -461,6 +472,128 @@ try {
       "consulted red: the [baseline-red] finding still leads the failures",
     );
     assert(established, "consulted red: the cap's claim is raised — keeping it out of state does not lose the park");
+  }
+  // ── 6 — the consultation event's `ms` IS the probe's measured time (#1809 fix
+  // round). The recorder used to derive it from a `baseHealthStartedAt` no
+  // production caller supplied, so every consultation logged as `ms: 0` and the
+  // operator read a probe that ran a nine-minute suite as though it had run
+  // nothing. The duration now comes from the consultation's own `ms`.
+  {
+    const PROBED_MS = 4321;
+    for (const ms of [PROBED_MS, undefined]) {
+      const logged = recordDevelopGateEvents(branchState("a".repeat(40)), {
+        baseHealthConsulted: {
+          status: "green",
+          baseSha: "a".repeat(40),
+          ...(ms === undefined ? {} : { ms }),
+        },
+      } as never);
+      const ev = logged.eventLog.find(
+        (e) => e.kind === "dispatch-completed" && (e as { label?: string }).label === "driver:base-health",
+      ) as { ms?: number; summary?: string } | undefined;
+      assert(
+        ev !== undefined && ev.ms === (ms ?? 0),
+        `event ms: a probe that measured ${ms ?? "nothing"} ms logs ${ev?.ms} ms, not 0 by default (${JSON.stringify(ev?.ms)})`,
+      );
+      assert(
+        ev?.summary?.includes(ms === undefined ? "no suite run of its own" : `${ms} ms`) === true,
+        `event ms: the note states the probe's own measured cost (${ev?.summary})`,
+      );
+    }
+  }
+
+  // ── 7 — the ONE channel shape carries both halves when they arrive apart.
+  //
+  // `verifyStepOutcome`'s receiver used to assign both halves unconditionally from
+  // a two-positional-parameter callback, so the second call (`consulted` alone)
+  // overwrote the first (`collected` alone) and the gate result reported a
+  // consultation with no verdict — the same erasure the aggregate leg had fixed one
+  // layer below. `mergeBaseHealthReport` is the fold every receiver now applies;
+  // these are the cases that make the erasure fail loudly instead of quietly.
+  {
+    const green = verdict("b".repeat(40), "green", 1_000);
+    const record: BaseHealthConsulted = { status: "green", baseSha: "b".repeat(40), ms: 500 };
+    // (a) the erasure shape: two calls, each carrying one half.
+    let acc: BaseHealthReport = {};
+    acc = mergeBaseHealthReport(acc, { collected: green });
+    acc = mergeBaseHealthReport(acc, { consulted: record });
+    assert(
+      acc.collected?.status === "green" && acc.consulted?.status === "green",
+      `fold: two separate calls leave BOTH halves (collected=${acc.collected?.status ?? "unset"}, consulted=${acc.consulted?.status ?? "unset"}) — the exact shape that used to erase`,
+    );
+    // (b) the reverse order, because the erasure did not care which half came first.
+    let acc2: BaseHealthReport = {};
+    acc2 = mergeBaseHealthReport(acc2, { consulted: record });
+    acc2 = mergeBaseHealthReport(acc2, { collected: green });
+    assert(
+      acc2.collected?.status === "green" && acc2.consulted?.status === "green",
+      "fold: the order of the two calls does not decide which half survives",
+    );
+    // (c) the anti-vacuity: a report that carries NEITHER half must not invent one,
+    // so (a) is not passing because the fold defaults everything to something.
+    let acc3: BaseHealthReport = {};
+    acc3 = mergeBaseHealthReport(acc3, {});
+    assert(
+      acc3.collected === undefined && acc3.consulted === undefined,
+      "fold: an empty report adds nothing — so (a) means the fold kept what was given",
+    );
+    // (d) a real report replaces the half it carries and keeps the other.
+    const later = mergeBaseHealthReport(acc, { consulted: { status: "red", baseSha: "b".repeat(40) } });
+    assert(
+      later.collected?.status === "green" && later.consulted?.status === "red",
+      "fold: a later report updates only the half it carries",
+    );
+  }
+  // ── 8 — the consultation is the DEVELOP step's, not commit-pr's (#1809 fix
+  // round). `verifyStepOutcome` answers for both steps, and only develop has a
+  // probe to consult. The assertion is about the WAIT, which is what a commit-pr
+  // consultation would cost: `awaitInflightBaseHealth` is the sole reader of the
+  // single-flight registry — the aggregate leg, and only the aggregate leg, calls
+  // it — so a commit-pr that consulted would take the entry, run the probe thunk,
+  // and settle the entry. A probe that is still PENDING after the step returned
+  // is therefore proof the step never awaited it, and unlike the settled-entry
+  // counter (which a probe that auto-settles clears whatever happened) this one
+  // cannot be satisfied by a step that did consult.
+  {
+    clearBaseHealthInflight();
+    const f = await redGateFixture(root, "commit-pr-no-probe", RED_GATE, { "notes.md": "x\n" });
+    mkdirSync(path.join(f.repo, ".pi"), { recursive: true });
+    writeFileSync(path.join(f.repo, ".pi", "verify-cmd"), `${CMD}\n`);
+    const bound = (await keyFor(f.repo, f.baseSha, CMD)).tierBoundMs;
+    const key = { baseSha: f.baseSha, command: CMD, tierBoundMs: bound };
+    let settled = 0;
+    // A probe that NEVER settles: the only way to tell "the step never awaited it"
+    // from "the step awaited it and it answered", because an auto-settling probe
+    // clears the registry on its own the instant it is registered.
+    startBaseHealthProbe(key, () => new Promise<BaseHealthProbeOutcome>(() => {}));
+    const st = branchState(f.baseSha);
+    st.pipelineState.worktrees = { default: f.worktrees.a };
+    st.pipelineState.workstreams = {
+      default: { id: "default", scope: "s", paths: [], outOfScope: [] },
+    };
+    const ctx = {
+      host: { sendUserMessage: () => {} } as never,
+      repoRoot: f.repo,
+      issue: 1809,
+      verifyExecFn: realExec as never,
+    } as never;
+    const gate = await verifyStepOutcome(ctx, st, "commit-pr");
+    assert(
+      peekBaseHealthProbe(key) !== undefined,
+      "commit-pr: the probe was STILL UNANSWERED when the step returned — the step never awaited it, which is the wait commit-pr must not pay for",
+    );
+    assert(
+      gate.baseHealthConsulted === undefined && gate.baseHealthProbe === undefined,
+      `commit-pr: the gate result carries NEITHER half of a report (consulted=${gate.baseHealthConsulted?.status ?? "unset"}, collected=${gate.baseHealthProbe?.status ?? "unset"}) — nothing to record`,
+    );
+    // The paired control: a develop-shaped lookup on the SAME entry does reach it,
+    // so the assertion above is about the step and not about an unreadable registry.
+    const developed = await awaitInflightBaseHealth(key, 50);
+    assert(
+      developed === undefined,
+      "commit-pr control: the bounded develop-shaped read of a probe that never answers is 'nothing' — the registry itself is readable, so commit-pr's non-await above is the gate's own choice",
+    );
+    void settled;
   }
 } finally {
   clearBaseHealthInflight();

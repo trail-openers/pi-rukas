@@ -1,3 +1,4 @@
+import { redactSecrets } from "./secret-patterns.ts";
 /**
  * work-driver-base-health-inflight — the single-flight registry that keeps the
  * base-health probe OFF the branch step's critical path (the probe seam itself is
@@ -60,10 +61,12 @@ function unanswered(notes: string): BaseHealthProbeOutcome {
  * rejection to the caller that dropped the promise. `start()`'s synchronous throw
  * and its asynchronous rejection both land here, which is what keeps rule 1 of
  * this module's header true whatever the shape of the fault (#1809 fix round).
- * The message is bounded because it is child output that reaches a trace line.
+ * The message is bounded because it is child output that reaches a trace line, and
+ * REDACTED before it is bounded because the executor's message is whatever the
+ * project's command printed — a token in a failing line must not reach the log.
  */
 function unexpected(err: unknown): BaseHealthProbeOutcome {
-  const message = String((err as Error)?.message ?? err).slice(0, 200);
+  const message = redactSecrets(String((err as Error)?.message ?? err)).text.slice(0, 200);
   trace(`work-driver: base-health in-flight probe faulted (${message}) — read as unknown`);
   return unanswered(`the background probe could not run (${message})`);
 }

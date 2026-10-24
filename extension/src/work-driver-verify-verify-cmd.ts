@@ -117,8 +117,9 @@ export type VerifyCommandGateOpts = {
   /** #1765 — the probe established a red base (the CAP's claim). */
   onBaselineRedEstablished?: BaselineRedEstablished;
   /**
-   * The background base probe's two channels, both forwarded from the develop
-   * gate and both documented in `work-driver-verify-base-health-channels.ts`.
+   * The background base probe's ONE channel, forwarded verbatim from the develop
+   * gate and documented in `work-driver-verify-base-health-channels.ts`. This
+   * layer's job is to pass it down — it declares nothing and interprets nothing.
    */
   baseHealthChannels?: VerifyCommandGateBaseHealth;
   /**
@@ -197,7 +198,7 @@ async function runVerifyCommandGateBody(
     onConsolidatedVerifySkipped,
     onGateRecorded,
     onBuildResidueOnly,
-    baseHealthChannels, // #1765 r2 — the two channels, one object (see the leaf)
+    baseHealthChannels, // #1765 r2 — the one channel (see the leaf)
     fastTierTimeoutMs: fastTimeoutMs,
     suiteTimeoutKnob,
     suiteTierTimeoutMs: suiteTierTimeoutMsOpt,

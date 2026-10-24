@@ -12,7 +12,7 @@ import type { CommentEvidence } from "./comment-evidence.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
+import type { BaseHealthConsulted } from "./work-driver-verify-base-health-channels.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
 import type { VerifyCommandRecord } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";

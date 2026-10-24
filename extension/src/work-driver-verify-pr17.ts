@@ -16,7 +16,8 @@ import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import { type VerifyExecFn, resolveMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
+import type { BaseHealthReport } from "./work-driver-verify-base-health-channels.ts";
+import { mergeBaseHealthReport } from "./work-driver-verify-base-health-channels.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
@@ -27,7 +28,6 @@ import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
-import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -212,11 +212,13 @@ export async function verifyStepOutcome(
     const selectedOut: { record?: SelectedVerifyRecord } = {};
     // #1667 — the verify command gate fills this in place (see VerifyRecordSlot).
     const verifyRecord = newVerifyRecordSlot();
-    // The background base probe's verdict, once the gate read it (see the
-    // `baseHealthProbe` field below): the develop gate is the only reader, so it
-    // is also the only writer.
-    let collectedBaseHealth: BaseHealthVerdict | undefined;
-    let consultedBaseHealth: BaseHealthConsulted | undefined;
+    // The background base probe's report, once the gate read one (see the
+    // `baseHealthProbe` / `baseHealthConsulted` fields below): the develop gate is
+    // the only reader, so it is also the only writer. An accumulator rather than
+    // two `let`s so the fold below is the ONLY thing that decides what a report
+    // overwrites — #1809's bug lived in exactly that decision, made here as two
+    // unconditional assignments, which erased whichever half arrived first.
+    const baseHealthOut: { report?: BaseHealthReport } = {};
     const verifyStarted = await beginVerifyRun(ctx, state);
     await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
       // #782 — the flake callback is wired at this layer: on recovery it
@@ -270,9 +272,8 @@ export async function verifyStepOutcome(
       onSelectedVerify: (record) => {
         selectedOut.record = record;
       },
-      onBaseHealthCollected: (verdict, consulted) => {
-        collectedBaseHealth = verdict;
-        consultedBaseHealth = consulted;
+      onBaseHealth: (report) => {
+        baseHealthOut.report = mergeBaseHealthReport(baseHealthOut.report ?? {}, report);
       },
     });
     const flakeRecovered = flakeEvidenceTail !== undefined;
@@ -291,10 +292,16 @@ export async function verifyStepOutcome(
       ...(verifyEvents.length > 0 ? { verifyEvents } : {}),
       ...(buildResidueOnly ? { buildResidueOnly: true } : {}),
       ...(gateRecord !== undefined ? { gateRecord } : {}),
-      // The background base probe's verdict, when this gate read one: the caller
-      // records it into state through `recordDevelopGateEvents`.
-      ...(collectedBaseHealth !== undefined ? { baseHealthProbe: collectedBaseHealth } : {}),
-      ...(consultedBaseHealth !== undefined ? { baseHealthConsulted: consultedBaseHealth } : {}),
+      // The background base probe's report, when this gate read one: the caller
+      // records it into state through `recordDevelopGateEvents`. Each half is
+      // carried only when the report actually carried it — the same fold every
+      // other layer applies, now applied here too.
+      ...(baseHealthOut.report?.collected !== undefined
+        ? { baseHealthProbe: baseHealthOut.report.collected }
+        : {}),
+      ...(baseHealthOut.report?.consulted !== undefined
+        ? { baseHealthConsulted: baseHealthOut.report.consulted }
+        : {}),
       ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
       verifyRun: verifyRecord.current,
       // #1427 round 3 — read the sink THIS call created, not the cycle context:

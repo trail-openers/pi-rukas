@@ -65,22 +65,12 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
 import { peekBaseHealthProbe, startBaseHealthProbe } from "./work-driver-base-health-inflight.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
-import {
-  type BaseHealthRedEvidence,
-  baseHealthRedEvidence,
-  baselineRedForCmd,
-  baselineRedForCommand,
-} from "./work-driver-verify-base-park.ts";
-import {
-  type RedBaselineVerdict,
-  isRedBaseline,
-  probeBaselineVerify,
-} from "./work-driver-verify-baseline.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
-import { verifyChildEnv, verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { isValidSha } from "./work-driver-verify-develop-helpers.ts";
 import { baseHealthProbeEnabled } from "./work-driver-verify-pr17.ts";
 import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -102,12 +92,13 @@ export {
 // read them from the probe module they already know.
 export { baselineRedForCmd, baselineRedForCommand } from "./work-driver-verify-base-park.ts";
 // The arms a probe can reach live in the run leaf (the file-size split); the
-// outcome shape is re-exported so every consumer still reads one name.
+// outcome shape is re-exported so every consumer still reads one name. The run
+// leaf owns the `unknown` outcome too — it is module-private there now, because
+// the only honest producer of an `unknown` is the arm that reached no verdict.
 import {
   type BaseHealthProbeOutcome,
   runBaseHealthProbe,
   skippedProbeOutcome,
-  unknownProbeOutcome,
 } from "./work-driver-verify-base-health-run.ts";
 export type { BaseHealthProbeOutcome } from "./work-driver-verify-base-health-run.ts";
 
@@ -229,6 +220,9 @@ export async function applyBaseHealthProbe(
   key: BaseHealthKey,
 ): Promise<BaseHealthProbeOutcome> {
   if (cmd === undefined || cmd === "") {
+    // `cmd` is only ever undefined when `applyBaseHealthProbe` is called directly
+    // (a test, or the develop gate's own re-probe). The branch-step path refuses to
+    // register without one, so a probe that got this far always has a command.
     return skippedProbeOutcome("no verify command — nothing to probe");
   }
   if (!baseHealthProbeEnabled()) {
@@ -292,7 +286,20 @@ export async function applyBaseHealthProbe(
  * The promise this returns NEVER rejects — the registry folds every fault into an
  * unknown-shaped outcome — so a caller may register and drop it without an
  * unhandled rejection, which is exactly what the branch step does.
+ *
+ * Nothing is registered when there is nothing to probe (#1809 fix round). With no
+ * verify command, or an unusable `baseSha`, the old shape registered a SENTINEL —
+ * `{command: "", tierBoundMs: 0}` — which no gate's own key could ever match, so it
+ * sat in the registry for the length of a settle answering for no run at all. The
+ * reason is traced instead and the registry keeps only probes that exist.
  */
+function redactedProbeFault(err: unknown): string {
+  // Bounded, and bounded HERE: this text lands in an operator-visible trace, and
+  // an executor message is untrusted child output. Redaction runs BEFORE the
+  // slice, so a secret cut in half by the bound cannot survive the cut.
+  return redactSecrets(String((err as Error)?.message ?? err)).text.slice(0, 200);
+}
+
 export function startBaseHealthProbeAtBranch(
   execFn: DriverExecFn,
   ctx: CycleContext,
@@ -303,20 +310,34 @@ export function startBaseHealthProbeAtBranch(
   // never awaits cannot observe a rejection from one.
   const cmdAtEntry = verifyCmdFor(ctx.repoRoot);
   const baseSha = state.pipelineState.baseSha ?? "";
-  const register = (cmd: string | undefined) =>
-    developTierTimeouts(ctx.repoRoot)
+  const register = (cmd: string | undefined) => {
+    if (cmd === undefined || cmd === "" || !isValidSha(baseSha)) {
+      // Nothing to register (#1809 fix round): no command, or no base to check
+      // out. The old shape registered a SENTINEL key no gate could ever match, so
+      // the reason was reported from the probe's own skipped outcome — which is
+      // what `applyBaseHealthProbe` still produces, and what this returns rather
+      // than `undefined`. The registry, which is the only thing that must stay
+      // free of keys answering for no run, gets nothing; the caller still reads
+      // why. `applyBaseHealthProbe` never runs here, so a skipped outcome costs no
+      // filesystem read and no suite run.
+      const why =
+        cmd === undefined || cmd === ""
+          ? "no verify command — nothing to probe"
+          : "no readable baseSha on the state";
+      trace(`work-driver: base-health — ${why} for issue ${ctx.issue}; no base probe registered`);
+      return Promise.resolve(skippedProbeOutcome(why));
+    }
+    return developTierTimeouts(ctx.repoRoot)
       .then((tiers) => {
-        const key: BaseHealthKey = {
-          baseSha,
-          command: cmd ?? "",
-          tierBoundMs: cmd === undefined || cmd === "" || !isValidSha(baseSha) ? 0 : tiers.suite,
-        };
+        // The bound this key carries IS the kill bound the probe's own exec runs
+        // under: it reaches `runBaseHealthProbe` as `key.tierBoundMs` and from
+        // there `probeBaselineVerify`'s `timeoutMs` (work-driver-verify-baseline.ts
+        // passes it as the exec's `timeout`). Producer and consumer cannot disagree.
+        const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: tiers.suite };
         return startBaseHealthProbe(key, () => applyBaseHealthProbe(execFn, ctx, state, cmd, key));
       })
       .catch((err: unknown): BaseHealthProbeOutcome => {
-        // Bounded, and bounded HERE: this text lands in an operator-visible
-        // trace, and an executor message is untrusted child output.
-        const message = String((err as Error)?.message ?? err).slice(0, 200);
+        const message = redactedProbeFault(err);
         trace(`work-driver: base-health — probe could not start: ${message}`);
         return {
           ran: false,
@@ -324,6 +345,7 @@ export function startBaseHealthProbeAtBranch(
         };
       })
       .then((outcome) => {
+        if (outcome === undefined) return undefined;
         // The probe's own report, for the case nobody consulted it (a passing
         // develop): a trace line, never state, because writing state from here
         // would race the develop step. The verdict a consulted probe produced is
@@ -333,10 +355,11 @@ export function startBaseHealthProbeAtBranch(
         );
         return outcome;
       });
+  };
   return cmdAtEntry
     .then((cmd) => register(cmd))
     .catch((err: unknown): BaseHealthProbeOutcome => {
-      const message = String((err as Error)?.message ?? err).slice(0, 200);
+      const message = redactedProbeFault(err);
       trace(`work-driver: base-health — probe could not start: ${message}`);
       return {
         ran: false,

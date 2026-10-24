@@ -20,14 +20,15 @@
  */
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
-import type { VerifyCommandGateBaseHealth } from "./work-driver-verify-base-health-channels.ts";
+import type {
+  BaseHealthReport,
+  VerifyCommandGateBaseHealth,
+} from "./work-driver-verify-base-health-channels.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
 import { shouldSkipVerifyForFrontendOnly } from "./work-driver-verify-cmd.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import type { SelectedVerifyPlan } from "./work-driver-verify-select-develop.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
-import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /** The two claims `aggregateVerifyOutcome` reports, owned by the caller. */
@@ -52,10 +53,7 @@ export async function runDevelopVerifyCommandChain(opts: {
   notes: string[];
   options: VerifyDevelopOutcomeOptions;
   baselineLeg: DevelopBaselineLeg;
-  onBaseHealth: (
-    verdict: BaseHealthVerdict | undefined,
-    consulted: BaseHealthConsulted | undefined,
-  ) => void;
+  onBaseHealth: (report: BaseHealthReport) => void;
 }): Promise<void> {
   const {
     ctx,
@@ -148,18 +146,12 @@ export async function runDevelopVerifyCommandChain(opts: {
           baselineLeg.red = true;
         },
         baseHealthChannels: {
-          // #1809 fix round — BOTH channels reported on one call. These two fire
-          // for one consultation and must not clear each other: the caller keeps a
-          // half it was not given, so `undefined` means "this channel said nothing",
-          // never "forget the other one". One call, one report — a green is reported
-          // with its verdict and a red with its consultation record, and neither
-          // arrival overwrites the other.
-          onBaseHealthCollected: (verdict) => {
-            if (verdict !== undefined) onBaseHealth(verdict, undefined);
-          },
-          onBaseHealthConsulted: (report) => {
-            onBaseHealth(undefined, report);
-          },
+          // The ONE channel: the aggregate leg reports one `BaseHealthReport` per
+          // consultation and this layer passes it up unchanged, so no layer in the
+          // chain can lose a half. Declared in
+          // `work-driver-verify-base-health-channels.ts` and carried verbatim by
+          // `runVerifyCommandGate`, `verifyDevelopOutcome` and `verifyStepOutcome`.
+          onBaseHealth,
         },
         // #1765 — the CAP's claim, reported by `reportBaselineLeg`.
         onBaselineRedEstablished: (established) => {
