@@ -473,6 +473,20 @@ async function reset(): Promise<void> {
   assert(d.refspecs.join() === "+topic:refs/heads/topic", "a forced refspec is kept verbatim");
   const e = pushRefspecs([PUSH, "origin", ":refs/heads/gone"], PUSH, remotes);
   assert(e.refspecs.join() === ":refs/heads/gone", "a deletion refspec reaches the source strip");
+  // A delete publishes no commit, so the scan must resolve nothing and refuse
+  // nothing: an implementation that tried to resolve the empty source would
+  // fail closed on a routine branch deletion.
+  await reset();
+  const del = await scanPushRange({
+    exec,
+    cwd: repo,
+    remoteUrl: githubUrl,
+    ...scanOpts(pushCommand("origin :refs/heads/never-existed")),
+  });
+  assert(
+    del.scanned && del.problems.length === 0 && del.texts.length === 0,
+    "a deletion refspec publishes no commits and is not refused",
+  );
 }
 
 rmSync(root, { recursive: true, force: true });
