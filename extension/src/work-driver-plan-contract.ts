@@ -32,7 +32,7 @@
  */
 
 import fs from "node:fs/promises";
-import { pathsBoundNotice } from "./plan-paths-bound.ts";
+import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { CouplingResult } from "./work-driver-plan-coupling.ts";
 import { execp } from "./work-driver-verify.ts";
@@ -322,6 +322,11 @@ export function portPlanSection(ref: string | undefined): string {
  * first (the shared fold: union of paths, fence minus the merged paths) and
  * sets the scope to applying the referenced change. No reference → the map
  * is returned as-is.
+ *
+ * #1756 part b — the paths union is accumulated across the pass and bounded
+ * ONCE at the end: re-dedupeing the growing union per absorbed workstream was
+ * O(n²) normalisations for one number, and the line it printed claimed `0
+ * kept`. Every other unioned field still comes from `foldTwo`.
  */
 export function foldPortPlan(
   workstreams: Record<string, Workstream>,
@@ -331,12 +336,11 @@ export function foldPortPlan(
   const first = all[0];
   if (!ref || !first) return workstreams;
   let merged = first;
-  let duplicatePaths = 0;
+  // The union as the pass sees it: raw entries in the order the map holds them.
+  const union: string[] = [...first.paths];
   for (const ws of all.slice(1)) {
-    const next = foldTwo(merged, ws);
-    duplicatePaths += next.duplicatePaths;
-    const { duplicatePaths: _count, ...rest } = next;
-    merged = rest;
+    merged = foldTwo(merged, ws);
+    union.push(...ws.paths);
   }
   const absorbed = all.slice(1).map((w) => w.id);
   if (absorbed.length > 0) {
@@ -345,13 +349,21 @@ export function foldPortPlan(
     );
   }
   const { dependsOn: _drop, ...rest } = merged;
-  // ONE line for the whole port fold, not one per absorbed workstream.
-  if (duplicatePaths > 0) {
-    traceWarn(pathsBoundNotice(`port ${ref} fold`, { paths: [], duplicate: duplicatePaths }));
+  // ONE line for the whole port fold, not one per absorbed workstream, and it
+  // reports the REAL kept count — the length of the union this pass bounded.
+  const boundedPaths = boundPaths(union);
+  if (boundedPaths.duplicate > 0) {
+    traceWarn(
+      pathsBoundNotice(`port ${ref} fold`, {
+        kept: boundedPaths.paths.length,
+        duplicate: boundedPaths.duplicate,
+      }),
+    );
   }
   return {
     [first.id]: {
       ...rest,
+      paths: boundedPaths.paths,
       scope: `Port ${ref}: apply that change and resolve conflicts — ${first.scope}${absorbed.length > 0 ? ` (+merged: ${absorbed.join(", ")})` : ""}`,
     },
   };

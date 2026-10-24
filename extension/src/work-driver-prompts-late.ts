@@ -10,7 +10,7 @@
  * handlers in work-driver.ts.
  */
 import { quotedOutOfScope } from "./plan-fence-bound.ts";
-import { inScopeFilesLine } from "./plan-paths-bound.ts";
+import { quotedPaths } from "./plan-path-shape.ts";
 import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
@@ -167,7 +167,7 @@ export function inlineCommitPrPrompt(
       const wtPath = fallback.worktrees[id] ?? "(no path)";
       const sha = fallback.commitShas[id];
       const scope = ws?.scope ?? "(no scope captured)";
-      const paths = ws?.paths.length ? inScopeFilesLine(ws.paths) : "(no paths declared)";
+      const paths = ws?.paths.length ? quotedPaths(ws.paths) : "(no paths declared)";
       return [
         `  - **${id}** at \`${wtPath}\``,
         `      scope: ${scope}`,
@@ -238,7 +238,7 @@ export function inlineCommitPrPrompt(
       const ws = workstreams[id];
       const path = worktrees[id] ?? "(no path)";
       const scope = ws?.scope ?? "(no scope captured)";
-      const paths = ws?.paths.length ? inScopeFilesLine(ws.paths) : "(no paths declared)";
+      const paths = ws?.paths.length ? quotedPaths(ws.paths) : "(no paths declared)";
       return [
         `  - **${id}** at \`${path}\``,
         `      scope: ${scope}`,

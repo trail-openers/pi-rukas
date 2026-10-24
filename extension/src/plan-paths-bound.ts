@@ -34,6 +34,7 @@
  * child's companion graph stays the schema plus `plan-path-shape.ts`.
  */
 
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { quotedPaths } from "./plan-path-shape.ts";
 import { WORKSTREAM_PATH_INPUT_LIST_MAX } from "./plan-workstream-schema.ts";
 import { normaliseDeclaredPath } from "./work-driver-declared-path.ts";
@@ -58,8 +59,11 @@ export interface BoundPaths {
  * normaliser strips, so storing a normalised copy would lose the annotation the
  * later comparisons already tolerate.
  *
- * Dedup BEFORE the display cut, not after: a list of 80 with 20 duplicates
- * authorises 60 files, and the fanout denominator must read 60, not 80.
+ * The rule in one line: dedup happens BEFORE anything reads the list. Every
+ * consumer — the fanout denominator, the path-claims registry, the collision
+ * scan, the consolidation audit and the prompts — reads the SAME deduped array,
+ * so a list of 80 with 20 duplicates authorises 60 files everywhere, and no
+ * reader has to dedupe for itself (or fail to) to get a consistent answer.
  *
  * Dedup keys on `normaliseDeclaredPath`, the SAME identity every scope gate
  * uses: `**src/b.ts**` and `src/b.ts` are one file to the gates, so they are
@@ -72,9 +76,19 @@ export interface BoundPaths {
 export function boundPaths(paths: readonly string[]): BoundPaths {
   const kept: string[] = [];
   const seen = new Set<string>();
+  // One normalisation per DISTINCT raw string (#1756 round 2): a fold re-runs
+  // this over a union that is mostly the entries it already saw, and
+  // `normaliseDeclaredPath` is a regex pass over each of them. The memo lives
+  // for the duration of one call, so a repeated raw entry pays the normaliser
+  // once and the dedup rule itself is untouched.
+  const keys = new Map<string, string>();
   let duplicate = 0;
   for (const entry of paths) {
-    const key = normaliseDeclaredPath(entry);
+    let key = keys.get(entry);
+    if (key === undefined) {
+      key = normaliseDeclaredPath(entry);
+      keys.set(entry, key);
+    }
     if (seen.has(key)) {
       duplicate++;
       continue;
@@ -86,25 +100,37 @@ export function boundPaths(paths: readonly string[]): BoundPaths {
 }
 
 /**
+ * The tally a `paths` writer reports: how many entries the list NOW holds, and
+ * how many collapsed onto them. Deliberately not `BoundPaths` — a fold pass
+ * accumulates the union across its folds rather than re-deriving it, so it
+ * carries these two numbers and no array.
+ */
+export interface PathsTally {
+  /** Entries the bounded list keeps. */
+  kept: number;
+  /** Entries that collapsed onto a path the list already held. */
+  duplicate: number;
+}
+
+/**
  * The one trace line a bounded `paths` list produces, shared by every paths
  * writer so they cannot say the same event in different words. It says plainly
  * that nothing was removed: an operator who reads "dropped" here must not
  * conclude a file lost its authorisation, because that is exactly the claim the
  * #1744 fence line makes about a fence entry.
+ *
+ * `kept` is the REAL length of the bounded list, whatever pass produced it: a
+ * fold that reported `0 kept` read as an empty workstream, which is the one
+ * thing the line must never say — so every fold pass measures the union it
+ * actually built. `subject` is driver prose, but it carries
+ * planner-written text (a workstream id, a port reference) and reaches the same
+ * log channel the fence bound writes to, so it goes through the fence's own
+ * neutraliser — one line, no backticks, no forged clip marker.
  */
-export function pathsBoundNotice(subject: string, b: BoundPaths): string {
+export function pathsBoundNotice(subject: string, tally: PathsTally): string {
   const parts = [
-    `${b.paths.length} kept`,
-    `${b.duplicate} ${b.duplicate === 1 ? "duplicate" : "duplicates"} collapsed`,
+    `${tally.kept} kept`,
+    `${tally.duplicate} ${tally.duplicate === 1 ? "duplicate" : "duplicates"} collapsed`,
   ];
-  return `work-driver: ${subject} paths bounded — ${parts.join(", ")} (schema ceiling: ${WORKSTREAM_PATH_INPUT_LIST_MAX})`;
-}
-
-/**
- * The `In-scope files:` line for a prompt: EVERY declared path, quoted. The
- * schema ceiling (500) is what bounds the line; a developer must see its whole
- * authorised set, since the scope gates judge it against all of them.
- */
-export function inScopeFilesLine(paths: readonly string[]): string {
-  return quotedPaths(paths);
+  return `work-driver: ${neutraliseFenceEntry(subject)} paths bounded — ${parts.join(", ")} (schema ceiling: ${WORKSTREAM_PATH_INPUT_LIST_MAX})`;
 }

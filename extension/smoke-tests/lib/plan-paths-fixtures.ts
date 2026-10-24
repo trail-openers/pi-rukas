@@ -7,14 +7,12 @@
  * later regression cannot drift apart on what a legal crowded plan looks like.
  *
  * `VALID_ARGS` is `VALID` from `plan-outofscope-fixtures.ts` — the same minimal
- * accepted call, re-exported under the name this file's tests read, so the two
- * fixture modules cannot drift on what an accepted call is.
+ * accepted call, which is what `crowdedArgs` spreads here, so the two fixture
+ * modules cannot drift on what an accepted call is and there is no second name
+ * for it to re-export.
  */
 import type { WorkstreamArgs } from "../../src/plan-workstream-schema.ts";
 import { VALID } from "./plan-outofscope-fixtures.ts";
-
-/** A minimal accepted call — every fixture overrides the field it exercises. */
-export const VALID_ARGS: WorkstreamArgs = VALID;
 
 /**
  * N distinct plain repo-relative paths, all legal under the per-entry bound.
@@ -34,9 +32,9 @@ export function pathList(n: number, prefix = "src/mod"): string[] {
  * judge what a gate does with a list a develop prompt cannot print in full.
  *
  * This is the ONLY way a case should build its call arguments: a hand-spelled
- * `{ ...VALID_ARGS, … }` literal has two orders to get wrong, and a `paths`
- * written before the spread is silently overwritten by `VALID_ARGS.paths`.
+ * `{ ...VALID, … }` literal has two orders to get wrong, and a `paths` written
+ * before the spread is silently overwritten by `VALID.paths`.
  */
 export function crowdedArgs(id: string, paths: string[]): WorkstreamArgs {
-  return { ...VALID_ARGS, id, paths };
+  return { ...VALID, id, paths };
 }

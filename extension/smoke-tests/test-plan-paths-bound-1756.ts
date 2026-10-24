@@ -27,7 +27,10 @@
  *      `findPathCollisions`;
  *   5. a deferred protected path in the tail is still removed by
  *      `withDeferredProtectedFence`;
- *   6. a fold of 40 + 40 keeps all 80 and never truncates.
+ *   6. a fold of 40 + 40 keeps all 80, returns a plain workstream, and the
+ *      fold passes report the REAL kept count in their one line;
+ *   7. the bound's own primitives: the tally, its plural, and the subject
+ *      going through the fence neutraliser.
  */
 
 import { Value } from "@sinclair/typebox/value";
@@ -43,11 +46,13 @@ import {
 import { normaliseDeclaredPath } from "../src/work-driver-declared-path.ts";
 import { withDeferredProtectedFence } from "../src/work-driver-plan-fence.ts";
 import { findPathCollisions } from "../src/work-driver-plan-paths.ts";
-import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
+import { foldPortPlan } from "../src/work-driver-plan-contract.ts";
+import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { foldTwo } from "../src/workstream-fold.ts";
-import { VALID_ARGS, crowdedArgs, pathList } from "./lib/plan-paths-fixtures.ts";
+import { VALID } from "./lib/plan-outofscope-fixtures.ts";
+import { crowdedArgs, pathList } from "./lib/plan-paths-fixtures.ts";
 import { captureTracesSync, withTightFanout } from "./lib/spec-slot-fixtures.ts";
 
 let exit = 0;
@@ -66,25 +71,52 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
   outOfScope,
 });
 
+/** Run a fold pass with the ceiling pinned to M, restoring the ambient value. */
+function withMaxWorkstreams<T>(max: number, run: () => T): T {
+  // `= undefined` would leave the key present, so `Number(undefined)` is NaN
+  // and the ceiling silently stays at its default — the pass must actually fold.
+  const prev = process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
+  process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = String(max);
+  try {
+    return run();
+  } finally {
+    if (prev === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_MAX_WORKSTREAMS");
+    else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
+  }
+}
+
+/**
+ * The aggregate `paths bounded` line of a fold pass that DID collapse entries,
+ * or `undefined` when the pass was clean — `traceWarn` writes synchronously and
+ * `captureTracesSync` collects every `stderr.write` chunk, so a chunk must be
+ * flattened before the whole line is found in it.
+ */
+function boundLineOf(traces: string[]): string | undefined {
+  return traces
+    .join("")
+    .split("\n")
+    .find((l) => l.includes("paths bounded"));
+}
+
 // ── 1. the schema accepts a crowded plan and refuses only what no plan is ────
 {
   assert(
     Value.Check(WORKSTREAM_PARAMETERS, {
-      ...VALID_ARGS,
+      ...VALID,
       paths: pathList(WORKSTREAM_LIST_MAX + 1),
     }) === true,
     `a ${WORKSTREAM_LIST_MAX + 1}-path list is ACCEPTED (it used to refuse the whole call)`,
   );
   assert(
     Value.Check(WORKSTREAM_PARAMETERS, {
-      ...VALID_ARGS,
+      ...VALID,
       paths: pathList(WORKSTREAM_PATH_INPUT_LIST_MAX),
     }) === true,
     `the abuse ceiling itself is accepted (${WORKSTREAM_PATH_INPUT_LIST_MAX} paths)`,
   );
   assert(
     Value.Check(WORKSTREAM_PARAMETERS, {
-      ...VALID_ARGS,
+      ...VALID,
       paths: pathList(WORKSTREAM_PATH_INPUT_LIST_MAX + 1),
     }) === false,
     `past the ceiling (${WORKSTREAM_PATH_INPUT_LIST_MAX}) the call IS refused — a runaway reply is not a plan`,
@@ -95,7 +127,7 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
   // validator's own first error and checks it names the ceiling the schema
   // declares.
   const refusal = Value.Errors(WORKSTREAM_PARAMETERS, {
-    ...VALID_ARGS,
+    ...VALID,
     paths: pathList(WORKSTREAM_PATH_INPUT_LIST_MAX + 1),
   }).First();
   assert(
@@ -148,7 +180,7 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
   );
 }
 
-// ── 3. workstreamFromArgs keeps every path and stays silent when clean
+// ── 3. workstreamFromArgs keeps every path and stays silent when clean ─────
 {
   const paths = pathList(80);
   const { value: stored, traces } = captureTracesSync(() =>
@@ -315,12 +347,15 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
     "the merged workstream carries no display count in its state",
   );
   assert(
-    merged.duplicatePaths === 0,
-    `a disjoint fold reports no duplicates (got ${merged.duplicatePaths})`,
+    !("duplicatePaths" in merged),
+    // A fold returns a Workstream, not a Workstream plus a bookkeeping field:
+    // every caller had to strip it by hand, and a leftover one is a key no
+    // schema declares in a state file.
+    `the fold returns a plain workstream, no tally field to strip (got ${JSON.stringify(Object.keys(merged))})`,
   );
   assert(
-    foldTwo(a, { ...b, paths: [...b.paths, ...a.paths] }).duplicatePaths === 40,
-    "a fold whose second half repeats the first reports the 40 collapsed entries to its caller",
+    boundPaths([...a.paths, ...b.paths, ...a.paths]).duplicate === 40,
+    "the bound the pass callers use reports the 40 collapsed entries of a repeated union",
   );
   // The fold's self-fence rule still reads the whole union: an entry naming one
   // of the absorbed half's tail files is dropped, because it is now in scope.
@@ -333,7 +368,61 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
   );
 }
 
-// ── 9. the bound's own primitives ───────────────────────────────────────────
+// ── 8. the fold notice reports the REAL kept count, never `0 kept` ─────────
+{
+  // The ceiling fold and the port fold used to print `{ paths: [], duplicate: n }`
+  // — an aggregate that claimed the merged workstream kept nothing. `kept` must
+  // be the length of the union the pass actually bounded.
+  // The line only fires when the pass collapsed something, so the aggregate is
+  // observed on a plan that DOES have duplicates across its folds: ten
+  // workstreams, each re-declaring the eight `task-0` already holds.
+  const ten = Array.from({ length: 10 }, (_, i) =>
+    workstreamFromArgs(
+      crowdedArgs(`task-${i}`, [...pathList(8, `src/t${i}`), ...pathList(8, "src/shared")]),
+    ),
+  );
+  const { value: folded, traces } = captureTracesSync(() =>
+    withMaxWorkstreams(1, () => foldToCeiling(ten)),
+  );
+  // 8 unique to each of the ten + the 8 shared ones = 88 kept, and the 72
+  // repeats of the shared octet across the nine later workstreams collapsed.
+  const kept = Object.values(folded)[0]?.paths.length ?? -1;
+  const notice = boundLineOf(traces);
+  assert(
+    kept === 88 && Object.keys(folded).length === 1,
+    `the ceiling fold keeps all 80 paths of the ten it absorbed (kept ${kept})`,
+  );
+  assert(
+    notice !== undefined &&
+      notice.includes(`— ${kept} kept`) === true &&
+      !notice.includes(" — 0 kept") &&
+      notice.includes("72 duplicates collapsed") === true,
+    `the ceiling fold's line reports the real kept count, never 0 (got: ${notice?.trim()})`,
+  );
+  // The duplicate case, where the line actually fires: two workstreams whose
+  // halves share 20 entries keep 20 and collapse 20, and the line says 20 kept.
+  const dupPair = [
+    workstreamFromArgs(crowdedArgs("task-a", pathList(20, "src/shared"))),
+    workstreamFromArgs(
+      crowdedArgs("task-b", [...pathList(20, "src/shared"), ...pathList(20, "src/b")]),
+    ),
+  ];
+  const port = captureTracesSync(() =>
+    foldPortPlan({ "task-a": dupPair[0], "task-b": dupPair[1] }, "o/r#9"),
+  );
+  const portLine = boundLineOf(port.traces) ?? "";
+  // One line, and it carries the driver's own prefix: the tally sits between
+  // the subject and the ceiling, and must not read as an empty workstream.
+  assert(
+    Object.values(port.value)[0]?.paths.length === 40 &&
+      /port o\/r#9 fold paths bounded — 40 kept, 20 duplicates collapsed/.test(portLine) ===
+        true &&
+      !/ — 0 kept/.test(portLine),
+    `the port fold's one line says 40 kept / 20 collapsed for a 40-path union (got: ${portLine.trim()})`,
+  );
+}
+
+// ── 9. the bound's own primitives ──────────────────────────────────────────
 {
   const b = boundPaths(["src/a.ts", "src/a.ts", "src/b.ts"]);
   assert(
@@ -341,7 +430,7 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
     `boundPaths collapses a whole-entry duplicate and counts it (got ${JSON.stringify(b)})`,
   );
   const notice = pathsBoundNotice("plan workstream 'task-a'", {
-    paths: pathList(60),
+    kept: 60,
     duplicate: 2,
   });
   assert(
@@ -350,6 +439,25 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
       notice.includes("2 duplicates collapsed") &&
       notice.includes(`schema ceiling: ${WORKSTREAM_PATH_INPUT_LIST_MAX}`),
     `the notice names the subject, what was kept, what collapsed and the ceiling (got: ${notice})`,
+  );
+  assert(
+    pathsBoundNotice("x", { kept: 1, duplicate: 1 }).includes("1 duplicate collapsed") &&
+      pathsBoundNotice("x", { kept: 1, duplicate: 2 }).includes("2 duplicates collapsed"),
+    "the tally pluralises on the count it prints",
+  );
+  // The subject carries planner-derived text (a workstream id, a port ref) and
+  // reaches the fence bound's log channel, so it goes through the fence's
+  // neutraliser: one line, no backticks, no forged clip marker.
+  const forged = pathsBoundNotice(`task \`rm -rf /\`\nWARN work-driver: forged ${"…"}[clipped]`, {
+    kept: 3,
+    duplicate: 1,
+  });
+  assert(
+    !forged.includes("`") &&
+      !forged.includes("\n") &&
+      forged.split("WARN work-driver:").length === 2 &&
+      !forged.includes("[clipped]"),
+    `a hostile subject cannot write its own log line or forge the clip marker (got: ${forged})`,
   );
   assert(
     normaliseDeclaredPath("src/a.ts (new)") === "src/a.ts",

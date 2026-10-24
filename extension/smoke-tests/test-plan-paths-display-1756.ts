@@ -13,9 +13,9 @@
  * authorised set is what the scope gates judge the developer against, so the
  * prompts print all of it.
  *
- *   1. an 80-path workstream's develop prompt contains all 80 paths and no
- *      `+N` / "not shown" text, and the line is byte-identical to `quotedPaths`
- *      for a short list;
+ *   1. an 80-path workstream's develop prompt contains all 80 paths and none
+ *      of the old truncation notice's wording, and the line is byte-identical
+ *      to `quotedPaths` for a short list;
  *   2. the commit-pr prompt lists every path for staging (the multi-workstream
  *      shape — the N=1 prompt tells ops to stage from the reviewed diff);
  *   3. the corrective round prints the same list as the first pass;
@@ -23,7 +23,6 @@
  */
 
 import { quotedPaths } from "../src/plan-path-shape.ts";
-import { inScopeFilesLine } from "../src/plan-paths-bound.ts";
 import { correctiveDevelopPrompt } from "../src/work-driver-corrective-prompt.ts";
 import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
@@ -41,9 +40,21 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** The whole list printed, and no trace of a truncation notice. */
+/**
+ * The whole list printed, with no trace of the OLD truncation notice. The
+ * first version of the fix appended `(+N more declared paths in scope; read the
+ * plan list before adding new files)`, so the wording that notice used is what
+ * must be absent — a bare `+N` pattern would also fire on an ordinary path or
+ * version string and could be satisfied by rewording the notice away.
+ */
+const TRUNCATION_WORDING = ["more declared paths", "not shown", "read the plan list"];
+
 function printsAll(text: string, paths: string[]): boolean {
-  return paths.every((p) => text.includes(JSON.stringify(p))) && !/\+\d+/.test(text);
+  const lower = text.toLowerCase();
+  return (
+    paths.every((p) => text.includes(JSON.stringify(p))) &&
+    TRUNCATION_WORDING.every((w) => !lower.includes(w))
+  );
 }
 
 // ── 1. the develop prompt prints every declared path ────────────────────────
@@ -59,9 +70,7 @@ function printsAll(text: string, paths: string[]): boolean {
   const shownCount = (inScopeLine.match(/"src\/mod-/g) ?? []).length;
   assert(shownCount === 80, `all 80 paths are printed, none hidden (got ${shownCount})`);
   assert(
-    !/\+\d+/.test(inScopeLine) &&
-      !inScopeLine.toLowerCase().includes("not shown") &&
-      !inScopeLine.toLowerCase().includes("read the plan list"),
+    TRUNCATION_WORDING.every((w) => !inScopeLine.toLowerCase().includes(w)),
     `no truncation notice and no pointer to a list the developer cannot read (got: ${inScopeLine.slice(-120)})`,
   );
 
@@ -74,11 +83,6 @@ function printsAll(text: string, paths: string[]): boolean {
     smallLine === `In-scope files: ${quotedPaths(small.paths)}`,
     "with a short list the line is byte-identical to the previous rendering",
   );
-  assert(
-    inScopeFilesLine(small.paths) === quotedPaths(small.paths),
-    "inScopeFilesLine is quotedPaths exactly — no second grammar for the line",
-  );
-  assert(inScopeFilesLine([]) === "", "an empty list renders the empty string");
 }
 
 // ── 2. the commit-pr prompt lists every path for staging ───────────────────
@@ -172,7 +176,7 @@ function printsAll(text: string, paths: string[]): boolean {
       else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
     }
   });
-  const notices = traces.filter((t) => t.includes("paths bounded"));
+  const notices = traces.join("").split("\n").filter((l) => l.includes("paths bounded"));
   assert(
     notices.length <= 1,
     `a crowded fold of 10 workstreams produces at most ONE bound line (got ${notices.length})`,

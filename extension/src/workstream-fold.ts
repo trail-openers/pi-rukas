@@ -12,6 +12,10 @@
  *   - paths — UNION of both halves, deduped on the normalised identity (#1756
  *     part b). The union is never truncated and never clipped for display:
  *     every file either half authorised stays authorised and stays visible.
+ *     `foldTwo` returns a plain `Workstream` — no bookkeeping field to strip —
+ *     and a fold PASS that wants a duplicate tally accumulates the union itself
+ *     and calls `boundPaths` once, instead of re-dedupeing the growing union
+ *     for every absorbed workstream.
  *   - outOfScope — union of both halves MINUS the merged paths: after the
  *     merge the absorbed half's files ARE this workstream's scope, so a
  *     fence entry naming one of them would fence the merged workstream's
@@ -35,7 +39,8 @@
  * Pure: returns a NEW map; the input is never mutated. It emits NO trace of its
  * own — a crowded plan folds once per absorbed workstream, so a per-fold warning
  * would be N lines for one event. The caller that runs a whole fold pass
- * (`foldToCeiling`, `foldPortPlan`) aggregates one line for the pass.
+ * (`foldToCeiling`, `foldPortPlan`) accumulates the paths union across its folds,
+ * bounds it ONCE at the end, and emits one line for the pass.
  */
 
 import { capFenceList, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
@@ -63,9 +68,7 @@ export function foldWorkstream(
 ): Record<string, Workstream> {
   const intoWs = map[into];
   if (!intoWs) return map;
-  const merged = foldTwo(intoWs, absorbed);
-  const { duplicatePaths: _foldCount, ...mergedWs } = merged;
-  const next: Record<string, Workstream> = { ...map, [into]: mergedWs };
+  const next: Record<string, Workstream> = { ...map, [into]: foldTwo(intoWs, absorbed) };
   delete next[from];
   // Re-point dependsOn edges that pointed at the absorbed id.
   for (const [id, ws] of Object.entries(next)) {
@@ -87,23 +90,19 @@ export function foldWorkstream(
  * needed — the folded id is not a key any other workstream can depend on
  * yet) calls it directly; `foldWorkstream` composes it with the re-point.
  *
- * #1756 part b — returns the merged workstream and the count of duplicate
- * entries its `paths` union collapsed, so a caller that runs a whole fold pass
- * can say so ONCE. Per-fold warnings would be one line per absorbed workstream
- * for what is one plan event.
+ * #1756 part b — returns the merged workstream ITSELF: the shape of a
+ * workstream is the same whatever a fold produced it, so no caller has to
+ * strip a bookkeeping field by hand (a leftover `duplicatePaths` in a state
+ * file is a field no schema declares). A caller that runs a whole fold pass
+ * and wants to say how many entries collapsed accumulates the union itself
+ * and reports ONCE — `boundPaths` over the accumulated list gives it the two
+ * numbers, and it does not re-dedupe the growing union per fold.
  */
-export interface FoldResult extends Workstream {
-  /** Duplicate `paths` entries this fold's union collapsed (0 for a clean fold). */
-  duplicatePaths: number;
-}
-
-export function foldTwo(a: Workstream, b: Workstream): FoldResult {
-  // #1756 part b — the union re-runs the paths bound (duplicates across the two
-  // halves collapse on the normalised identity). It NEVER truncates and never
-  // counts for display: the merged workstream authorises every file either
-  // half did, and the prompts print all of them.
-  const merged = boundPaths([...a.paths, ...b.paths]);
-  const mergedPaths = merged.paths;
+export function foldTwo(a: Workstream, b: Workstream): Workstream {
+  // #1756 part b — the union dedupes on the normalised identity. It NEVER
+  // truncates and never counts for display: the merged workstream authorises
+  // every file either half did, and the prompts print all of them.
+  const mergedPaths = boundPaths([...a.paths, ...b.paths]).paths;
   const inScope = new Set(mergedPaths);
   const mergedList = [...new Set([...a.outOfScope, ...b.outOfScope])].filter(
     (p) => !inScope.has(p),
@@ -156,6 +155,5 @@ export function foldTwo(a: Workstream, b: Workstream): FoldResult {
       : {}),
     ...(introduces.length > 0 ? { introduces } : {}),
     ...(consumes.length > 0 ? { consumes } : {}),
-    duplicatePaths: merged.duplicate,
   };
 }

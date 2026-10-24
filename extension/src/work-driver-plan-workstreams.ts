@@ -52,7 +52,12 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
     // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same
     // reason (#1744) — an operator greps one channel for every bound the driver
     // applied, and a display bound nobody sees is a bound nobody can audit.
-    traceWarn(pathsBoundNotice(`plan workstream '${args.id}'`, boundedPaths));
+    traceWarn(
+      pathsBoundNotice(`plan workstream '${args.id}'`, {
+        kept: boundedPaths.paths.length,
+        duplicate: boundedPaths.duplicate,
+      }),
+    );
   }
   return {
     id: args.id.slice(0, WORKSTREAM_ID_MAX),
@@ -76,16 +81,20 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
  */
 export function foldToCeiling(entries: Workstream[]): Record<string, Workstream> {
   const out: Record<string, Workstream> = {};
-  let duplicatePaths = 0;
+  // The paths union as the pass accumulates it: every fold appends the absorbed
+  // half's entries here and the pass bounds the whole list ONCE at the end
+  // (#1756 round 2). Re-dedupeing the growing union for each absorbed
+  // workstream was O(n²) normalisations to produce one number, and the line it
+  // printed reported `0 kept`.
+  const union: string[] = [];
   for (const entry of entries) {
     if (Object.keys(out).length >= effectiveMaxWorkstreams()) {
       const lastId = Object.keys(out)[Object.keys(out).length - 1];
       if (!lastId) continue;
       const last = out[lastId];
       if (last) {
-        const foldedFull = foldTwo(last, entry);
-        duplicatePaths += foldedFull.duplicatePaths;
-        const { duplicatePaths: _count, ...folded } = foldedFull;
+        union.push(...entry.paths);
+        const folded = foldTwo(last, entry);
         // The ceiling fold's annotation is `+folded:` (the coupling merge's
         // `+merged:` is the other site's wording).
         folded.scope = `${last.scope} (+folded: ${entry.id})`;
@@ -94,13 +103,20 @@ export function foldToCeiling(entries: Workstream[]): Record<string, Workstream>
       }
       continue;
     }
+    union.push(...entry.paths);
     out[entry.id] = entry;
   }
   // ONE line for the whole pass, not one per fold (#1756 part b): a crowded
   // plan absorbs N workstreams and the duplicate count is a property of the
-  // pass, not of each fold.
-  if (duplicatePaths > 0) {
-    traceWarn(pathsBoundNotice("plan ceiling fold", { paths: [], duplicate: duplicatePaths }));
+  // pass, not of each fold. `kept` is the length of the union actually stored.
+  const boundedPaths = boundPaths(union);
+  if (boundedPaths.duplicate > 0) {
+    traceWarn(
+      pathsBoundNotice("plan ceiling fold", {
+        kept: boundedPaths.paths.length,
+        duplicate: boundedPaths.duplicate,
+      }),
+    );
   }
   return out;
 }
