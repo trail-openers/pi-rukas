@@ -41,6 +41,7 @@
  */
 
 import { trace } from "./trace.ts";
+import { readTreeHead } from "./work-driver-lens-fix-bound-land.ts";
 import { landCommittedFix, repoRootOriginalRef } from "./work-driver-lens-fix-commit.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -70,12 +71,26 @@ export function lensFixLandAheadEnabled(): boolean {
   return process.env.PI_ENSEMBLE_LENS_FIX_LAND_AHEAD !== "0";
 }
 
+/** What "do not land" means here, told apart so the caller never has to guess
+ *  from a doubled negation. `RepositionResult` carries no `outcome` field and
+ *  `not-attempted` carries no `kind` at all, so the three cases are disjoint by
+ *  construction rather than by a `!landed.kind` probe that silently becomes
+ *  wrong the day a `kind` is added to the parked shape. */
+export type LandAheadOutcome =
+  /** The tree's commits are on the branch and pushed; the gate returns this. */
+  | { outcome: "landed"; result: RepositionResult }
+  /** Landing was attempted and failed. The gate parks with this `detail` — the
+   *  checkout may have moved, so the text says where it stands. */
+  | { outcome: "park"; detail: string }
+  /** Nothing was attempted: the knob is off, the caller gave no landing
+   *  context, there were no commits, the tree HEAD could not be read, or the
+   *  branch ref could not be pushed. The gate falls through to its own
+   *  backup-and-park prose, which is the right text for a net that did not run. */
+  | { outcome: "not-attempted"; reason: string };
+
 /**
  * Land a strictly-ahead tree's commits onto `branchName` and move the tree to
- * the new tip. Returns a `repositioned` result carrying the landed SHAs, or
- * `undefined` to tell the caller "park as before" — which it does for every
- * reason there is to not land: the knob is off, the caller supplied no landing
- * context, the ref is not pushable, or the landing itself failed.
+ * the new tip. See {@link LandAheadOutcome} for the three answers.
  *
  * A failed landing never leaves the checkout on the branch: `landCommittedFix`
  * runs the verified restore on every one of its own failure paths and puts the
@@ -90,12 +105,38 @@ export async function landStrictlyAhead(
   branchName: string,
   aheadShas: string[],
   landAhead: LensFixLandAheadCtx | undefined,
-): Promise<RepositionResult | undefined> {
-  if (!lensFixLandAheadEnabled() || landAhead === undefined || aheadShas.length === 0) {
-    return undefined;
+): Promise<LandAheadOutcome> {
+  // THE CHECKS THAT COST NOTHING FIRST. `netRefProblem` decides whether this
+  // branch can be pushed at all; running it AFTER the landing meant the checkout
+  // was moved, the commits cherry-picked and the local branch advanced before
+  // discovering that the push could never happen — an avoidable mutation of the
+  // main checkout for an outcome known up front.
+  const refProblem = netRefProblem(branchName);
+  if (refProblem !== undefined) {
+    trace(`lens-fix-reposition: landing not attempted — ${refProblem}`);
+    return { outcome: "not-attempted", reason: refProblem };
   }
-  const fromSha = await treeHead(execFn, tree);
-  if (fromSha === undefined) return undefined;
+  if (!lensFixLandAheadEnabled() || landAhead === undefined || aheadShas.length === 0) {
+    return {
+      outcome: "not-attempted",
+      reason:
+        landAhead === undefined
+          ? "the caller supplied no landing context"
+          : aheadShas.length === 0
+            ? "no commits ahead of the tip to land"
+            : "PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=0",
+    };
+  }
+  const fromSha = await readTreeHead(execFn, tree);
+  if (fromSha === undefined) {
+    // An unreadable tree HEAD means nothing can be proven about what the tree
+    // holds. Say so: a silent fall-through here left the operator with a park
+    // whose text blamed the commits, not the failed read.
+    trace(
+      `lens-fix-reposition: strictly-ahead landing not attempted — the tree HEAD at ${tree} could not be read`,
+    );
+    return { outcome: "not-attempted", reason: `tree HEAD at ${tree} unreadable` };
+  }
   const land = await landCommittedFix(
     execFn,
     { repoRoot: landAhead.repoRoot, issue: landAhead.issue },
@@ -126,37 +167,42 @@ export async function landStrictlyAhead(
         label: "lens-fix-reposition-landing",
         dirtyRootExempt: landAhead.dirtyRootExempt,
       });
-      return { kind: "unlanded", detail: landFailureNote(land.error, restoreClaim(restore)) };
+      return { outcome: "park", detail: landFailureNote(land.error, restoreClaim(restore)) };
     }
-    return { kind: "unlanded", detail: landFailureNote(land.error, claim) };
+    return { outcome: "park", detail: landFailureNote(land.error, claim) };
   }
   // The land is only real once the remote has it: the whole point of landing
   // here (rather than parking) is that the work stops being stranded, and a
   // local-only landing the next round cannot see is the same stranding with a
-  // different shape. A push failure therefore falls back to the park, which is
-  // the disclosure the operator needs.
-  const refProblem = netRefProblem(branchName);
-  if (refProblem !== undefined) {
-    trace(`lens-fix-reposition: landing not pushed — ${refProblem}`);
-    return undefined;
-  }
+  // different shape. A push failure therefore parks — but with the SHAs that
+  // are on the local branch and the push error, not with the generic
+  // "previous-round work unlanded" text the gate would otherwise print: those
+  // commits ARE landed, they are only not pushed, and an operator who lands
+  // them by hand needs to know which ones.
   try {
     await runNetGit(execFn, "git", {
       cwd: landAhead.repoRoot,
       argv: ["push", "origin", branchName],
     });
   } catch (e) {
+    const pushError = ((e as Error)?.message ?? String(e)).slice(0, 160);
     trace(
-      `lens-fix-reposition: landed locally but the push failed (${(e as Error).message?.slice(0, 160)}) — backing up and parking as before`,
+      `lens-fix-reposition: landed locally but the push failed (${pushError}) — backing up and parking as before`,
     );
-    return undefined;
+    return {
+      outcome: "park",
+      detail: `strictly-ahead landing succeeded locally but was NOT pushed to origin/${branchName} — landed ${aheadShas.length} commit(s) locally (new tip ${land.sha.slice(0, 12)}; from ${aheadShas.join(", ")}); push error: ${pushError}`,
+    };
   }
   const landedShas = await landedTipShas(execFn, landAhead.repoRoot, branchName, land.sha);
   await moveTreeToTip(execFn, tree, land.sha);
   trace(
     `lens-fix-reposition: landed ${aheadShas.length} strictly-ahead commit(s) from ${tree} onto ${branchName} (${landedShas.map((s) => s.slice(0, 8)).join(", ")}) — no park`,
   );
-  return { kind: "repositioned", fromSha, tipSha: land.sha, landedAheadShas: landedShas };
+  return {
+    outcome: "landed",
+    result: { kind: "repositioned", fromSha, tipSha: land.sha, landedAheadShas: landedShas },
+  };
 }
 
 /**
@@ -197,22 +243,11 @@ function landFailureNote(error: string, claim: string): string {
   return `strictly-ahead landing failed — ${head.slice(0, 240)} — ${claim}`;
 }
 
-async function treeHead(execFn: ExecFn, tree: string): Promise<string | undefined> {
-  try {
-    const { stdout } = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
-    const sha = stdout.trim();
-    return sha.length >= 7 ? sha : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * The SHAs the branch actually carries now — the ones the operator can verify.
  * `landCommittedFix` returns the SOURCE tree's HEAD, which is not what landed
  * when the range had to be cherry-picked, so the branch is read rather than
- * assumed. When the read fails the caller is given the source SHAs: a wrong
- * evidence list is not a reason to lose the fact that the landing happened.
+ * assumed. An unreadable range yields `[]` rather than a guess (see the body).
  */
 async function landedTipShas(
   execFn: ExecFn,
@@ -231,21 +266,17 @@ async function landedTipShas(
       .filter(Boolean);
     if (shas.length > 0) return shas;
   } catch {
-    // fall through to the source SHAs below
+    // fall through
   }
-  try {
-    const { stdout } = await execFn(`git rev-list ${branchName}`, {
-      cwd: repoRoot,
-      maxBuffer: 256 * 1024,
-    });
-    return stdout
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(0, 1);
-  } catch {
-    return [fallbackHead];
-  }
+  // The range could not be read (or named nothing). There is NO second guess:
+  // a whole-history `rev-list <branch>` returns commits the fixer never wrote
+  // and would be reported to the operator as "what landed". The count the trace
+  // prints is the count the caller verified, so an empty list is honest and a
+  // plausible wrong one is not.
+  trace(
+    `lens-fix-reposition: the landed tip SHAs on ${branchName} could not be read (${fallbackHead.slice(0, 12)}..${branchName}) — the landed count stands, the SHAs are not claimed`,
+  );
+  return [];
 }
 
 /** Move the (detached) tree onto the new tip so the next dispatch builds on

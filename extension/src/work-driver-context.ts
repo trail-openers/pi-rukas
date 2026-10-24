@@ -135,7 +135,16 @@ export interface DriverContext {
    */
   dispatchFn?: (
     host: DispatchHost,
-    spec: { role: string; prompt: string; cwd?: string; images?: DispatchImage[] },
+    spec: {
+      role: string;
+      prompt: string;
+      cwd?: string;
+      images?: DispatchImage[];
+      /** #573/#1789 — the caller's run id, which `runSingleDispatch` now sets to
+       *  the dispatch's own jobId so the child's transcript names the driver
+       *  dispatch that spawned it. `dispatchCore` already accepts it. */
+      runId?: string;
+    },
     opts?: WriteFenceOpt & {
       label?: string;
       skipDeck?: boolean;

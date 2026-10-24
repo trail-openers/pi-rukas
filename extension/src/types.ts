@@ -216,6 +216,17 @@ export interface DispatchResult {
    */
   killedAtCycleDeadline?: boolean;
   /**
+   * #1789 — the id of the DRIVER dispatch that produced this result, when a
+   * driver ran the child (`runSingleDispatch` threads the id `beginDispatch`
+   * minted; a PM `dispatch_specialist` leaves it absent). Carried on the result
+   * rather than reconstructed from `transcriptPath`: the transcript file's
+   * basename is `spawn`'s own runId, a different identity from the driver's
+   * jobId, and the two never match. Without this, a step that must prove a
+   * `dispatch-failed` tail is ITS OWN dispatch (the lens-fix bound-kill
+   * conversion) has nothing to compare against.
+   */
+  dispatchJobId?: string;
+  /**
    * #1560 — the child reached its per-child run bound + grace after it had
    * committed ("committed") or its prompt's agent_end arrived ("reported"):
    * it was ended as done, with no kill cause (spawn-child-bound.ts).

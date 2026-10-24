@@ -228,6 +228,14 @@ export type WorkEvent =
       loopEvidence?: { tool: string; count: number; kind?: "streak" | "success" };
       /** #543 — the F6 budget + used tokens at a token-budget kill; same purpose as loopEvidence. */
       tokenBudget?: { budget: number; used: number };
+      /**
+       * #1593/#1789 — this kill's `timeout` came from the caller's cycle deadline
+       * (`PI_ENSEMBLE_CYCLE_DEADLINE`) tightening the child's own bound, not from
+       * a bound the fixer was armed with. Persisted (it is on the `DispatchResult`
+       * already) because the lens-fix partial-fix conversion must refuse it: a
+       * cycle that is out of time must park, not advance to the next step.
+       */
+      killedAtCycleDeadline?: boolean;
       /** #534 — tokens flushed before the process-level failure. */
       usage?: DispatchUsage;
     }

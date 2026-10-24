@@ -13,10 +13,9 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../../src/types.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
-import { repositionLensFixWorktree } from "../../src/work-driver-lens-fix-reposition-gate.ts";
-import { initialState, readState, writeState } from "../../src/workflow-state.ts";
-import { realExec } from "./exec-fake.ts";
+import { initialState } from "../../src/workflow-state.ts";
 import { mkLensSummary, setupSpawnGuard } from "../test-helpers.ts";
+import { realExec } from "./exec-fake.ts";
 
 /** The runner's failure counter: `assert` sets it, the test file prints and
  *  exits with it. Shared so a scenario and its canaries report one verdict. */
@@ -73,6 +72,12 @@ export function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResul
   };
 }
 
+// #1789 — the bound-land conversion joins the `dispatch-failed` tail to the
+// dispatch that wrote it by jobId, and that id comes from `beginDispatch`. With
+// resume off, `beginDispatch` returns the minted id but never marks it in
+// flight; keep resume ON so the fixture exercises the same write-ahead path
+// production runs (the state files it writes live in the per-test tmp dir).
+process.env.PI_ENSEMBLE_RESUME = "1";
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
@@ -118,14 +123,41 @@ export async function mkFixture(dir: string, branch: string) {
   return { origin, root, wt, baseSha };
 }
 
+/**
+ * Put a `dispatch-failed` lens-fix tail on a state, for the classifier tests
+ * that need an EXACT tail — a jobId the round does not own, or a kill the
+ * caller's cycle deadline produced. The driver path cannot fabricate either,
+ * so the guard is exercised where it lives.
+ */
+export function killTail<T extends { eventLog: unknown[] }>(
+  state: T,
+  jobId: string,
+  killCause: DispatchResult["killCause"],
+  killedAtCycleDeadline?: boolean,
+): T {
+  return {
+    ...state,
+    eventLog: [
+      ...state.eventLog,
+      {
+        kind: "dispatch-failed",
+        step: "lens-fix",
+        role: "developer",
+        jobId,
+        label: "developer:lens-fix-1",
+        ms: 1_000,
+        at: 3_000_000,
+        exitCode: null,
+        killCause,
+        ...(killedAtCycleDeadline === true ? { killedAtCycleDeadline: true } : {}),
+      },
+    ],
+  };
+}
+
 /** The state of a cycle that has just come back from a lens round with
  *  findings and is about to dispatch the fixer. */
-export function mkLensFixState(
-  issue: number,
-  branch: string,
-  baseSha: string,
-  wt: string,
-) {
+export function mkLensFixState(issue: number, branch: string, baseSha: string, wt: string) {
   const s = initialState(issue, 1_000_000);
   return {
     ...s,
@@ -170,14 +202,21 @@ export function mkLensFixState(
 }
 
 /** A fixer dispatch that commits in the lens worktree and then returns killed.
- *  `commits: 0` makes it kill without producing anything. */
+ *  `commits: 0` makes it kill without producing anything.
+ *
+ *  #1789 — the transcript path is derived from the `runId` the driver passed in
+ *  (which IS the dispatch's jobId), the way `spawn` does in production. That is
+ *  what lets the completion event carry the driver's jobId: the builder accepts
+ *  a claimed id only when the transcript basename proves it. */
 export function killedFixer(wt: string, commits: number, killCause: DispatchResult["killCause"]) {
   return async (
     _pi: unknown,
-    spec: { role?: string; prompt?: string },
+    spec: { role?: string; prompt?: string; runId?: string },
     opts?: { label?: string },
   ): Promise<DispatchResult> => {
     if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+    const transcript = (role: string) =>
+      spec.runId ? `/tmp/${spec.runId}-${role}.json` : "/tmp/stub.json";
     if (opts?.label?.startsWith("developer:lens-fix")) {
       const fs = await import("node:fs/promises");
       for (let i = 0; i < commits; i++) {
@@ -194,6 +233,7 @@ export function killedFixer(wt: string, commits: number, killCause: DispatchResu
         exitCode: null,
         killCause,
         killBudgetMs: 45 * 60_000,
+        transcriptPath: transcript("developer"),
       });
     }
     // An adversarial fix pass (the develop step re-dispatched with findings):
@@ -202,16 +242,28 @@ export function killedFixer(wt: string, commits: number, killCause: DispatchResu
     // stay exactly as the killed fixer left it, which is the whole subject of
     // the reposition assertion below.
     if (spec.role === "developer") {
-      return mkResult({ role: "developer", text: "Fixed." });
+      return mkResult({
+        role: "developer",
+        text: "Fixed.",
+        transcriptPath: transcript("developer"),
+      });
     }
     // Any other role (ops:ci, ops:handoff, step-back, …) answers so the cycle
     // runs to its real terminal rather than dying on the fixture. Throwing here
     // would fabricate a dispatch failure the driver then caps — a fixture
     // artefact the assertions would read as a product defect.
     if (spec.role === "ops") {
-      return mkResult({ role: "ops", text: "ci-status: success\nPosted." });
+      return mkResult({
+        role: "ops",
+        text: "ci-status: success\nPosted.",
+        transcriptPath: transcript("ops"),
+      });
     }
-    return mkResult({ role: spec.role ?? "explore", text: "done" });
+    return mkResult({
+      role: spec.role ?? "explore",
+      text: "done",
+      transcriptPath: transcript(spec.role ?? "explore"),
+    });
   };
 }
 

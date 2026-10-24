@@ -75,11 +75,13 @@ import { REVIEW_WALL_CLOCK_ENV, reviewWallClockMs } from "./review-budget.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { childBoundGraceMs, lensChildBoundMs } from "./spawn-child-bound.ts";
 import { trace } from "./trace.ts";
+import type { DispatchResult } from "./types.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { LENS_REVIEW_MIN_USEFUL_MS, MIN_USEFUL_MS } from "./work-driver-deadline.ts";
 import { type PatchIdentity, currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { discloseResidualsAndRoute } from "./work-driver-lens-cap.ts";
 import { isFixerBoundKill } from "./work-driver-lens-fix-bound-land.ts";
+import { lensRoundReserveMs } from "./work-driver-lens-round-budget.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -131,7 +133,7 @@ export function reviewLoopActive(state: WorkState): boolean {
  * The loop budget left, or `undefined` when enforcement is off or no review
  * clock has started (a cycle that has not reached lens-review).
  */
-function reviewRemainingMs(state: WorkState, now: number): number | undefined {
+export function reviewRemainingMs(state: WorkState, now: number): number | undefined {
   if (!reviewEnforceEnabled()) return undefined;
   const elapsed = reviewElapsedMs(state, now);
   return elapsed === undefined ? undefined : reviewWallClockMs() - elapsed;
@@ -151,6 +153,7 @@ export function reviewFixDispatchBoundMs(
   step: WorkStep,
   now: number,
   requestedTimeoutMs?: number,
+  fixer: FixerIdentity = "lens-fix",
 ): number | undefined {
   if (step !== "lens-fix") return undefined;
   const remaining = reviewRemainingMs(state, now);
@@ -158,7 +161,7 @@ export function reviewFixDispatchBoundMs(
   // fixer that ran with NO loop bound is exactly the fact an operator needs to
   // attribute a long kill afterwards, and previously it produced no line at all.
   if (remaining === undefined) {
-    trace(`work-driver: ${fixerStepName(state, step)} fixer ran UNBOUND — ${unboundReason()}`);
+    trace(`work-driver: ${fixerStepName(fixer)} fixer ran UNBOUND — ${unboundReason()}`);
     return undefined;
   }
   // #1742 — the owed lens round's floor is withheld from the fixer's bound:
@@ -174,65 +177,42 @@ export function reviewFixDispatchBoundMs(
   // per armed dispatch, naming the ceiling the caller passed, the reserve the
   // budget withheld and what the loop had left when the bound was resolved.
   trace(
-    `work-driver: ${fixerStepName(state, step)} fixer armed — bound ${Math.round(bound / 60_000)}m (ceiling ${Math.round(boundCeiling(requestedTimeoutMs) / 60_000)}m, reserve ${Math.round(lensRoundReserveMs() / 60_000)}m, budget left ${Math.max(0, Math.round(remaining / 60_000))}m)`,
+    `work-driver: ${fixerStepName(fixer)} fixer armed — bound ${Math.round(bound / 60_000)}m (ceiling ${Math.round(boundCeiling(requestedTimeoutMs) / 60_000)}m, reserve ${Math.round(lensRoundReserveMs() / 60_000)}m, budget left ${Math.max(0, Math.round(remaining / 60_000))}m)`,
   );
   return bound;
 }
 
-/** The step name a fixer trace carries. `reviewFixDispatchBoundMs` is called
- *  with `"lens-fix"` for BOTH halves of the fix loop (the lens-fix dispatch and
- *  the adversarial develop fix pass — `work-develop-run.ts`), so the step that
- *  owns the dispatch states itself; `"lens-fix"` is only ever the lens-fix step. */
-export function fixerStepName(state: WorkState, step: WorkStep): string {
-  return step === "lens-fix" && state.pipelineState.currentStep !== "lens-fix"
-    ? "develop (fix pass)"
-    : step;
+/** Which half of the fix loop armed this bound. `reviewFixDispatchBoundMs` is
+ *  called with `step: "lens-fix"` for BOTH of them (the lens-fix dispatch and
+ *  the adversarial develop fix pass — `work-develop-run.ts`), because the
+ *  second inherits the lens-fix bound by design. So the caller that owns the
+ *  dispatch STATES its identity; it is never inferred from
+ *  `pipelineState.currentStep`, which is whatever the last step left there — a
+ *  develop fix pass dispatched straight after a lens-fix read as `lens-fix`
+ *  and its traces named the wrong step. */
+export type FixerIdentity = "lens-fix" | "develop-fix-pass";
+
+/** The step name a fixer trace carries, from the identity its caller declared. */
+export function fixerStepName(fixer: FixerIdentity): string {
+  return fixer === "develop-fix-pass" ? "develop (fix pass)" : "lens-fix";
 }
 
 /** #1779 (a): a develop fix pass killed BY the bound the review budget armed is
  *  traced with the fact the dispatch-failed event lacks — the bound. Other kills
- *  need no extra trace; the completion event already names the cause. */
+ *  need no extra trace; the completion event already names the cause. An
+ *  un-armed bound (no review clock, or enforcement off) says so rather than
+ *  printing a bound of `0m` the dispatch never had. */
 export function traceFixPassBoundKill(
   isReviewFixPass: boolean,
-  killCause: string | undefined,
+  killCause: DispatchResult["killCause"],
   boundMs: number | undefined,
 ): void {
   if (!isReviewFixPass || !isFixerBoundKill(killCause)) return;
-  const min = Math.round((boundMs ?? 0) / 60_000);
-  trace(`work-driver: develop (fix pass) killed at its bound — ${killCause}, ${min}m`);
-}
-
-/**
- * #1742 — the slice of the loop budget a fixer may never spend: the minimum
- * a lens round needs to be worth starting (`MIN_USEFUL_MS["lens-review"]`).
- *
- * A committed fix OWES a re-review: the loop's contract is fix → re-review,
- * and a budget that lets the fixer spend everything but the re-review breaks
- * it at exactly the moment it matters — the findings have just been answered
- * and nothing has verified the answer. Measured: a lens-fix took the entire
- * remaining budget, the owed round was refused by this module's own start
- * gate, and the cycle capped with the fix unverified.
- *
- * Not an env knob: the reserve is the lens round's own floor, stated once as
- * `LENS_REVIEW_MIN_USEFUL_MS` (work-driver-deadline.ts) and read by the
- * round's start gate too — reserving less than a round's floor would reserve
- * a round that gets refused anyway, and a second literal would drift.
- */
-export function lensRoundReserveMs(): number {
-  return LENS_REVIEW_MIN_USEFUL_MS;
-}
-
-/**
- * #1242 / #1564 — each lens child's run bound: its own (30 min), shortened so
- * the wrap-up steer lands a grace before the loop budget runs out and the kill
- * at it. A round that crosses the cap ends there, its unfinished lanes
- * not-reviewed, instead of every lens running on past it.
- */
-export function lensRoundChildBoundMs(state: WorkState, now: number): number {
-  const own = lensChildBoundMs();
-  const remaining = reviewRemainingMs(state, now);
-  if (remaining === undefined) return own;
-  return Math.min(own, Math.max(MIN_FIX_DISPATCH_MS, remaining - childBoundGraceMs()));
+  const bound =
+    boundMs === undefined
+      ? "ran unbound (no review clock, or PI_ENSEMBLE_REVIEW_ENFORCE=0)"
+      : `${Math.round(boundMs / 60_000)}m`;
+  trace(`work-driver: develop (fix pass) killed at its bound — ${killCause}, ${bound}`);
 }
 
 /** Never lengthen a dispatch the caller already bounded. */

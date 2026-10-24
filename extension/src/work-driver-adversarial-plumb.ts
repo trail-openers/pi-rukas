@@ -160,8 +160,15 @@ export function parkFixPass(
   });
 }
 
-/** The shape plumbQuestion reads (the pipeline-state plumb report record). */
-export type PlumbReportLike = { body: string };
+/** The shape plumbQuestion reads (the pipeline-state plumb report record).
+ *  `role` is OPTIONAL so a bare `{ body }` literal still reads, and when it is
+ *  present a `"driver"` report is skipped — see `plumbQuestion`. */
+export type PlumbReportLike = { body: string; role?: string };
+
+/** Who wrote a plumb report. A driver report is the harness disclosing a fact
+ *  it decided; a developer report is the specialist asking a question. Only the
+ *  second kind may become a `developer question` line. */
+export const DRIVER_PLUMB_ROLE = "driver";
 
 /** The marker that identifies a plumb report (the one place both park branches read it). */
 export const PLUMB_REPORT_MARKER = /\[ensemble:plumb\]|plumb report|scope-ambiguity/i;
@@ -171,9 +178,20 @@ export const PLUMB_REPORT_MARKER = /\[ensemble:plumb\]|plumb report|scope-ambigu
  * the plumb marker, its body embedded as UNTRUSTED developer text — prefix
  * says so, code fences stripped, capped at 300 chars with an ellipsis
  * (display-only; the full body still rides in pipelineState). `null` when none.
+ *
+ * A report the DRIVER wrote is never a question. Every driver-authored row in
+ * `plumbReports` (the bound-kill conversion in `work-driver-lens-fix-bound-land.ts`,
+ * the mixed fan-out above, the fix-pass parks) is a disclosure the harness
+ * decided for itself, and its text can easily carry the marker words — so
+ * without this filter a driver's own note comes back as "developer question
+ * (untrusted text)" and the operator is sent to answer a question nobody asked.
+ * A report with no `role` is judged on its body, as before: the filter only
+ * refuses what it can positively identify as the driver's.
  */
 export function plumbQuestion(reports: readonly PlumbReportLike[]): string | null {
-  const plumb = reports.find((r) => PLUMB_REPORT_MARKER.test(r.body));
+  const plumb = reports.find(
+    (r) => r.role !== DRIVER_PLUMB_ROLE && PLUMB_REPORT_MARKER.test(r.body),
+  );
   if (!plumb) return null;
   const body = plumb.body
     .replace(/```[\s\S]*?```/g, "")

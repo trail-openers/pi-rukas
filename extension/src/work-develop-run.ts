@@ -225,7 +225,13 @@ export function makeRunOneWorkstream(
       (s.stateRef.current.pipelineState.lastCompletedStep === "lens-fix" ||
         reviewLoopActive(s.stateRef.current));
     const reviewFixBoundMs = isReviewFixPass
-      ? reviewFixDispatchBoundMs(s.stateRef.current, "lens-fix", startedAt)
+      ? reviewFixDispatchBoundMs(
+          s.stateRef.current,
+          "lens-fix",
+          startedAt,
+          undefined,
+          "develop-fix-pass",
+        )
       : undefined;
     // #1644 — the fix pass was BOUND but never PARKED: with the budget spent
     // it dispatched anyway under the 60-second floor and was killed to produce

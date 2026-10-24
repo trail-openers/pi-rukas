@@ -21,8 +21,8 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { runWorkDriver } from "../src/work-driver.ts";
 import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 import { readState, writeState } from "../src/workflow-state.ts";
 import { realExec } from "./lib/exec-fake.ts";
 import {
@@ -59,18 +59,14 @@ import {
     fixLoopCap === undefined,
     `the fix loop recorded no cap-hit of its own — the killed fixer was accepted, not capped (got ${fixLoopCap?.kind === "cap-hit" ? `${fixLoopCap.cap} on ${fixLoopCap.step}` : "none"})`,
   );
-  const repositionCap = events.find(
-    (e) => e.kind === "cap-hit" && e.cap === "lens-fix-reposition",
-  );
+  const repositionCap = events.find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-reposition");
   assert(repositionCap === undefined, "no lens-fix-reposition park was recorded");
   assert(
     events.some((e) => e.kind === "dispatch-failed" && e.step === "lens-fix") === false,
     "the killed lens-fix dispatch left no dispatch-failed tail — it was converted, not left to HALT",
   );
   assert(
-    events.some(
-      (e) => e.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true,
-    ),
+    events.some((e) => e.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true),
     "a completed lens-fix stands in the log where the kill was",
   );
   const adv = events.find((e) => e.kind === "adversarial-approved");
@@ -96,7 +92,11 @@ import {
   assert(
     plumbs.length === 1 &&
       plumbs[0].body.includes("killCause=timeout") &&
-      plumbs[0].body.includes((completed?.kind === "dispatch-completed" ? completed.partialAfterKill?.commitShas[0] ?? "" : "")),
+      plumbs[0].body.includes(
+        completed?.kind === "dispatch-completed"
+          ? (completed.partialAfterKill?.commitShas[0] ?? "")
+          : "",
+      ),
     "one plumbReport discloses the conversion with the kill cause and the commit SHAs",
   );
   assert(
@@ -106,7 +106,10 @@ import {
   );
 
   // The ground truth is the remote, not the event log.
-  const { stdout: remoteLog } = await realExec(`git ls-remote ${JSON.stringify(path.join(dir, "origin.git"))} ${JSON.stringify(`refs/heads/${branch}`)}`, { cwd: root });
+  const { stdout: remoteLog } = await realExec(
+    `git ls-remote ${JSON.stringify(path.join(dir, "origin.git"))} ${JSON.stringify(`refs/heads/${branch}`)}`,
+    { cwd: root },
+  );
   assert(remoteLog.trim().length > 0, "the branch exists on origin");
   let landed = false;
   try {
@@ -145,11 +148,12 @@ import {
     "the kill trace names the step, the kill cause and where the work goes",
   );
   assert(
-    traced.includes("lens-fix killed at its bound after committing 2 commit(s); treated as a partial fix"),
-    "the conversion is recorded as a partial fix with the commit count",
+    traced.includes(
+      "lens-fix killed at its bound (timeout) after committing 2 commit(s); treated as a partial fix",
+    ),
+    "the conversion is recorded as a partial fix with the kill cause and the commit count",
   );
 }
-
 
 console.log(`\nexit ${boundLandRun.failed ? 1 : 0}`);
 process.exit(boundLandRun.failed ? 1 : 0);

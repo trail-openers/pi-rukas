@@ -454,11 +454,13 @@ export async function repositionLensFixWorktree(
     // (`diverged`) still backs up and parks exactly as before.
     if (kind === "unlanded") {
       const landed = await landStrictlyAhead(execFn, tree, branchName, aheadShas, landAhead);
-      // A landing that failed on its way back from the branch is a PARK with a
-      // reason, not a silent fall-through: the checkout moved, so the result
-      // carries the restore claim the landing read from the verified restore.
-      if (landed !== undefined && !("kind" in landed && landed.kind === "unlanded")) return landed;
-      if (landed !== undefined) {
+      // The gate branches on the DISCRIMINANT, not on the shape of what came
+      // back: `landed` is returned as-is, `park` carries its own detail (the
+      // checkout may have moved, so the text names the restore claim), and
+      // `not-attempted` falls through to the backup-and-park prose below — the
+      // net did not run, so the generic diagnosis is the honest one.
+      if (landed.outcome === "landed") return landed.result;
+      if (landed.outcome === "park") {
         trace(`${TRACE_PREFIX}: ${landed.detail}`);
         return {
           kind: "unlanded",
