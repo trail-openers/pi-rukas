@@ -24,21 +24,44 @@
  *   - the payload-bearing marker (#1762,
  *     `FAILED: a_test.sh: expected 0 failures, got 3`).
  *
- * {@link matchPreVetoShapes} answers them; the classifier calls it BEFORE the
- * success veto and {@link matchShapes} after it. Two functions rather than one
- * list with a flag, because the ordering IS the contract and a reader must be
- * able to see it.
+ * {@link matchPreVetoShapes} answers them, and it is DERIVED from the table rather
+ * than restating the pair: a {@link ShapeEntry} carries `preVeto`, and the pre-veto
+ * step is the entries that set it. The classifier calls that step BEFORE the success
+ * veto and {@link matchShape} after it — the link the classifier's docblock names.
  */
 
 import type { FailureLine, FailureShape } from "./work-driver-verify-failures.ts";
 import { FAILED_MARKER_RE, payloadDetail } from "./work-driver-verify-marker.ts";
 
-/** A table entry: a shape, whether it names a check, and how to recognise it. */
+/**
+ * A table entry: a shape, whether it names a check, and how to recognise it.
+ *
+ * `test` is a PREDICATE, not a `RegExp` field. Half the entries are regexes and
+ * half are calls into another module's judge (the payload shape asks
+ * {@link payloadDetail}); an entry that keeps a regex field has to fake the other
+ * half into that type, and the fake (`as unknown as RegExp`) is a cast that hides a
+ * real lie — that the table does not know what its own entries are. A predicate is
+ * the honest union: a regex entry is `(line) => re.test(line)`, a derived entry is
+ * `(line) => judge(line) !== undefined`, and every entry answers the one question
+ * the table asks it.
+ *
+ * `preVeto` is the entry's answer to "may a line report itself as passing while
+ * carrying this shape?" The two entries that set it are the shapes
+ * {@link matchPreVetoShapes} asks before the success veto, so the exemption is a
+ * PROPERTY OF THE ENTRY and cannot drift from the table (see that function).
+ */
 export interface ShapeEntry {
   shape: FailureShape;
   namesTest: boolean;
-  /** A stateless test, taken through the classifier's {@link matches}-style call. */
-  re: RegExp;
+  /** Stateless: true when `line` carries this shape. */
+  test: (line: string) => boolean;
+  /** True for the shapes asked BEFORE the success veto. */
+  preVeto: boolean;
+}
+
+/** A regex entry, spelled once so the table reads as shapes, not as plumbing. */
+function reEntry(shape: FailureShape, namesTest: boolean, re: RegExp, preVeto = false): ShapeEntry {
+  return { shape, namesTest, preVeto, test: (line: string) => re.test(line) };
 }
 
 /**
@@ -52,23 +75,7 @@ export interface ShapeEntry {
  * FAILURE glyph — `✓` is its passing one — so it is a stronger signal than any
  * tally the same line carries, which is why it is asked before the success veto.
  */
-const ASSERTION_MARK_SHAPE: ShapeEntry = {
-  shape: "assertion-mark",
-  namesTest: true,
-  re: /^\s*✗\s/,
-};
-
-/**
- * The table's regex form of the payload shape, derived from the ONE judge
- * ({@link payloadDetail}) instead of a second pattern: the table wants an
- * `entry.re` to test, and a regex spelled out here would be a second definition
- * of "which marker names an assertion" — precisely the drift the verify layer
- * exists to forbid. It agrees with the pre-veto arm by construction, since both
- * wrap the same function over the same line.
- */
-const MARKER_PAYLOAD_RE: RegExp = {
-  test: (line: unknown) => payloadDetail(String(line)) !== undefined,
-} as unknown as RegExp;
+const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*✗\s/, true);
 
 /**
  * The `failed-marker` entry, hoisted so the ONE definition serves the table and,
@@ -77,44 +84,45 @@ const MARKER_PAYLOAD_RE: RegExp = {
  * veto asks) is a pair that drifts silently: exempt one and forget the other and
  * a payload marker either loses its shape or loses its exemption.
  */
-const FAILED_MARKER_SHAPE: ShapeEntry = {
-  shape: "failed-marker",
-  namesTest: false,
-  re: FAILED_MARKER_RE,
-};
+const FAILED_MARKER_SHAPE: ShapeEntry = reEntry("failed-marker", false, FAILED_MARKER_RE);
 
 /**
  * The shape the pre-veto step answers for: the payload-bearing marker, the #1762
  * half of the marker dialect the table used to answer for only as a bare
- * filename. Its test is {@link payloadDetail}, the single judge of what the shape
- * is, so the shape and the bare/payload split cannot disagree.
+ * filename. Its test is {@link payloadDetail} — THE single judge of what the shape
+ * is — so the shape and the bare/payload split cannot disagree, and no cast is
+ * needed to express it: a predicate entry is exactly what a derived test is.
  */
-const ASSERTION_MARKER_SHAPE = {
-  shape: "failed-marker-payload" as FailureShape,
+const ASSERTION_MARKER_SHAPE: ShapeEntry = {
+  shape: "failed-marker-payload",
   namesTest: true,
-  re: MARKER_PAYLOAD_RE,
+  preVeto: true,
+  test: (line: string) => payloadDetail(line) !== undefined,
 };
 
 /**
- * The shapes asked BEFORE the success veto. A runner prints a failing assertion
- * with the count it compared against (`✗ expected 0 failures`, `✗ got 0 errors,
- * expected 3`, `FAILED: a_test.sh: expected 0 failures, got 3`), so the veto has
- * to come after these or the tally inside the assertion vetoes the line that
- * names the defect. The ordering stays sound for every other shape because these
- * are the only patterns in the table a line reports as its own VERDICT and can
- * also carry a zero count in: a passing tally (`36 cases, 0 failed`, `0 failed`,
- * `12 passed`) is never printed with a leading `✗` (the mark is the failure
- * glyph) and never carries a `FAILED: <path>: <assertion>` prefix, so no success
- * line reaches the table through them.
+ * The shapes asked BEFORE the success veto, DERIVED from the table: the entries
+ * that set `preVeto`. Restating the pair was the defect — a third exemption added
+ * to the table and forgotten here (or the reverse) is silent, because the table
+ * still classifies and the veto step still vetoes. A runner prints a failing
+ * assertion with the count it compared against (`✗ expected 0 failures`, `✗ got 0
+ * errors, expected 3`, `FAILED: a_test.sh: expected 0 failures, got 3`), so the
+ * veto has to come after these or the tally inside the assertion vetoes the line
+ * that names the defect. The ordering stays sound for every other shape because
+ * these are the only patterns in the table a line reports as its own VERDICT and
+ * can also carry a zero count in: a passing tally (`36 cases, 0 failed`, `0
+ * failed`, `12 passed`) is never printed with a leading `✗` (the mark is the
+ * failure glyph) and never carries a `FAILED: <path>: <assertion>` prefix, so no
+ * success line reaches the table through them.
  */
 export function matchPreVetoShapes(line: string): FailureLine | undefined {
-  if (ASSERTION_MARK_SHAPE.re.test(line))
-    return { shape: ASSERTION_MARK_SHAPE.shape, namesTest: ASSERTION_MARK_SHAPE.namesTest };
-  if (ASSERTION_MARKER_SHAPE.re.test(line))
-    return {
-      shape: ASSERTION_MARKER_SHAPE.shape,
-      namesTest: ASSERTION_MARKER_SHAPE.namesTest,
-    };
+  // DERIVED from the table rather than restated: a third exemption added to SHAPES
+  // and forgotten here (or the reverse) is silent, because the table still
+  // classifies and the veto step still vetoes.
+  for (const entry of SHAPES) {
+    if (entry.preVeto && entry.test(line))
+      return { shape: entry.shape, namesTest: entry.namesTest };
+  }
   return undefined;
 }
 
@@ -149,13 +157,18 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
   {
     shape: "diagnostic",
     namesTest: true,
-    re: /^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b/,
+    preVeto: false,
+    test: (line: string) => /^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b/.test(line),
   },
   // The project-runner shape: a script's own summary block naming its failing checks.
   {
     shape: "script-tally",
     namesTest: true,
-    re: /[\w./-]+\.(?:sh|bash|py|js|ts|go|rs)\s*:\s*(?:failed|failing)\s+checks?\s*\(\s*[1-9]\d*\s*\)/i,
+    preVeto: false,
+    test: (line: string) =>
+      /[\w./-]+\.(?:sh|bash|py|js|ts|go|rs)\s*:\s*(?:failed|failing)\s+checks?\s*\(\s*[1-9]\d*\s*\)/i.test(
+        line,
+      ),
   },
   // A script/file line that says it failed, in the shapes a runner actually
   // prints: `<file>: failed|FAILED|FAIL|ERROR`, `<file> … FAILED`, `<file>: N
@@ -182,20 +195,46 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
   {
     shape: "named-file",
     namesTest: true,
-    re: /^\s*FAIL\s+[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b/i,
+    preVeto: false,
+    test: (line: string) =>
+      /^\s*FAIL\s+[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b/i.test(line),
   },
   {
     shape: "named-file",
     namesTest: true,
-    re: /[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b\s*(?::\s*(?:failed|failing|fail|error)\b|(?<=\s)FAILED(?=\W|$)|:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b)/i,
+    preVeto: false,
+    test: (line: string) =>
+      /[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b\s*(?::\s*(?:failed|failing|fail|error)\b|(?<=\s)FAILED(?=\W|$)|:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b)/i.test(
+        line,
+      ),
   },
   // TAP / bats. Anchored with a number so `book`, `token` and `lookup` never match.
-  { shape: "tap-not-ok", namesTest: true, re: /^\s*not\s+ok\b/i },
+  {
+    shape: "tap-not-ok",
+    namesTest: true,
+    preVeto: false,
+    test: (l: string) => /^\s*not\s+ok\b/i.test(l),
+  },
   // pytest's own failing lines (pytest also prints `path::name` tallies).
-  { shape: "pytest-failed", namesTest: true, re: /^FAILED\s+\S+::/ },
-  { shape: "pytest-error", namesTest: true, re: /^ERROR\s+\S+::/ },
+  {
+    shape: "pytest-failed",
+    namesTest: true,
+    preVeto: false,
+    test: (l: string) => /^FAILED\s+\S+::/.test(l),
+  },
+  {
+    shape: "pytest-error",
+    namesTest: true,
+    preVeto: false,
+    test: (l: string) => /^ERROR\s+\S+::/.test(l),
+  },
   // go test.
-  { shape: "go-fail", namesTest: true, re: /^\s*---\s+FAIL:\s+\S+/ },
+  {
+    shape: "go-fail",
+    namesTest: true,
+    preVeto: false,
+    test: (l: string) => /^\s*---\s+FAIL:\s+\S+/.test(l),
+  },
 ];
 
 /**

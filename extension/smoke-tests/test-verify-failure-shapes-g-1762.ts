@@ -40,6 +40,7 @@ import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts"
 import { harvestConsolidatedTallies } from "../src/work-driver-verify-tally.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 import {
+  CHECKS_BLOCK,
   CMD,
   EXAMPLE_STREAM,
   PAYLOAD_MARKER,
@@ -211,11 +212,13 @@ function consolidatedGate(raw: string): CorrectiveGateView {
       `per-worktree: the N=1 developer is given the payload line for its own worktree (got ${JSON.stringify(d.targets)})`,
     );
   }
-  // The per-worktree path NEVER produces a joined tally line: the harness wrapper
-  // flattens the stream to one line, so the indentation the harvest reads cannot
-  // exist there. Pinned so a future "helpful" harvest on this route is caught.
+  // The per-worktree path NEVER produces a joined tally line. `formatExecError`
+  // does not guarantee a one-line record — when the tail fits its window it keeps
+  // its newlines and indentation (see 3b, which is the real reproduction) — so what
+  // is pinned here is the ROUTING: the per-worktree reader is `assertionLines`,
+  // which has no harvest, and neither the joined tally nor the bare names appear.
   assert(
-    !lines.some((l) => l.includes(": ") && l.endsWith(TALLY_NAMES[1] ?? "")),
+    !lines.some((l) => l.includes(": ") && l.endsWith(TALLY_NAMES[1])),
     `per-worktree: no joined tally line is ever produced here (got ${JSON.stringify(lines)})`,
   );
   assert(
@@ -309,7 +312,7 @@ function consolidatedGate(raw: string): CorrectiveGateView {
     `consolidated: the joined tally is among the target lines (got ${JSON.stringify(lines)})`,
   );
   assert(
-    !lines.includes(TALLY_NAMES[0] ?? "") && !lines.includes(TALLY_NAMES[1] ?? ""),
+    !lines.includes(TALLY_NAMES[0]) && !lines.includes(TALLY_NAMES[1]),
     "consolidated: names are never emitted alone",
   );
   // One CORRECTIVE_MAX_LINES slot, and cut at CORRECTIVE_LINE_MAX like any line.
@@ -389,6 +392,21 @@ function consolidatedGate(raw: string): CorrectiveGateView {
   assert(
     !assertionLines("FAILED: 1 test(s) — test/z_test.sh").includes(other),
     "assertionLines: a count summary alone never offers an unrelated payload line",
+  );
+  // The unused fixture, used: the `mismatch` stream is a count summary naming a
+  // path no payload marker names, a tally with one indented name, and a payload
+  // marker for a DIFFERENT file. Two of its properties are load-bearing and were
+  // asserted only against hand-written single lines before — that the tally
+  // harvests its one name, and that the `✗`-free stream still offers the payload
+  // marker beside the tally rather than dropping it.
+  assert(
+    harvestConsolidatedTallies(mismatch).join("|") === "test.sh: failed checks (1), not run (0): lint",
+    `mismatch stream: the tally harvests its one name, alone (got ${JSON.stringify(harvestConsolidatedTallies(mismatch))})`,
+  );
+  const mismatchLines = assertionLines(mismatch);
+  assert(
+    mismatchLines.includes(PAYLOAD_MARKER) && !mismatchLines.includes(other),
+    `mismatch stream: the payload marker is offered and the unrelated path the summary names is not (got ${JSON.stringify(mismatchLines)})`,
   );
   // One file as BOTH a bare and a payload marker yields nothing extra: the bare
   // form stays refused, so the pair offers only the payload line, once.
@@ -474,5 +492,6 @@ function consolidatedGate(raw: string): CorrectiveGateView {
     `classifier recovery now names the payload marker (got ${JSON.stringify(vPayload.namedFailures)})`,
   );
 }
+
 
 process.exit(failed() ? 1 : 0);

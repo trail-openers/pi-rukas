@@ -30,7 +30,7 @@
  *     {@link scanWindow} before any regex or scan sees it, and everything a
  *     classifier then calls (`harnessVerifyStream`, `classifyStream`, the
  *     wrapper's inner-line pass) works on THAT text, never the caller's
- *     unclipped line — so the bound is applied once, at the entry, and no scan
+ *     unclipped line
  *     in this module is quadratic in a line the gate printed whole. The bound is a
  *     ceiling on ONE text, and a candidate walk that produces sixteen cuts of that
  *     text pays the ceiling sixteen times, which is why `harnessVerifyStream` clips
@@ -58,6 +58,40 @@ export type FailureShape =
   | "pytest-error"
   | "go-fail";
 
+/**
+ * ONE RULE PER SHAPE: whether a line carrying it may be the line the operator is
+ * sent to as "the specific assertion the developer can act on".
+ *
+ * `FailureShape` had no exhaustive consumer, so a new shape added to the union and
+ * the table was a compile-clean change whose behaviour was decided by an incidental
+ * `namesTest` value somebody typed next to it. A `Record<FailureShape, …>` makes
+ * that a compile error instead: forget the mapping and the build names the shape you
+ * left out. `false` = names a file or a status, but no check (the bare marker, and
+ * the tally that counts checks without naming one); `true` = the line names a check
+ * or carries an assertion, which is the bar `extractSpecificAssertion` and the
+ * corrective-round gate require.
+ *
+ * THE ONE CONTRACT THIS TABLE AND THE ENTRIES SHARE, stated once: a {@link
+ * ShapeEntry} declares `namesTest` for its own recognition, and this record is the
+ * cross-check on the union — every shape in `FailureShape` must appear here, and the
+ * one entry per shape is what makes adding a shape a build failure rather than a
+ * silent `false`. A shape whose entry disagrees with its rule here is a defect in
+ * whichever is wrong; the table is what the classifier answers from, and this record
+ * is what a reviewer reads to know what each shape is for.
+ */
+export const SHAPE_NAMES_A_CHECK: Record<FailureShape, boolean> = {
+  "failed-marker": false,
+  "failed-marker-payload": true,
+  "assertion-mark": true,
+  diagnostic: true,
+  "script-tally": true,
+  "named-file": true,
+  "tap-not-ok": true,
+  "pytest-failed": true,
+  "pytest-error": true,
+  "go-fail": true,
+};
+
 /** What `classifyFailureLine` decided about one line. */
 export interface FailureLine {
   shape: FailureShape;
@@ -66,18 +100,28 @@ export interface FailureLine {
 }
 
 /**
- * The exact marker `.pi/verify-cmd`'s smoke-test loop emits on failure
- * (`FAILED: <file>`, and its `FAILED: <n> test(s) — …` summary). Exported so the
- * three readers that must agree on what a marker IS — this table, the evidence-tail
- * anchor in `work-driver-exec-error.ts`, and the assertion veto in
- * `work-driver-consolidation-classify.ts` — share one regex rather than each
- * keeping a copy that can drift. The marker's INTERNAL grammar (bare vs
- * payload-bearing, the count summary, the tally count) lives in
- * `work-driver-verify-marker.ts`, the #1762 size split, and is re-exported through
- * this module so every reader keeps importing the failure-line vocabulary from ONE
- * place instead of keeping a private copy of it.
+ * The shape vocabulary every verify reader shares, re-exported so a reader imports
+ * it from ONE module and cannot keep a private copy of it. `FAILED_MARKER_RE` is
+ * what the evidence-tail anchor in `work-driver-exec-error.ts` and the assertion
+ * veto in `work-driver-consolidation-classify.ts` test a line against; the two
+ * marker predicates are what every veto site asks in place of the old blanket
+ * `/^FAILED:/` (#1762 — the blanket vetoed the payload-bearing form with the bare
+ * one, which is how a worktree whose gate printed only
+ * `FAILED: test/a_test.sh: … expected '0', got '1'` parked blind and spent the
+ * cycle's one corrective round on nothing); `scriptTallyCount` is the ONE reader of
+ * a tally's N, asked by the consolidated harvest in `work-driver-verify-tally.ts`.
+ * The marker's INTERNAL grammar (bare vs payload-bearing, the count summary, the
+ * tally count) lives in `work-driver-verify-marker.ts`, the #1762 size split, and
+ * is re-exported through this module so every reader keeps importing the
+ * failure-line vocabulary from ONE place instead of keeping a private copy of it —
+ * the #1762 round-1 defect was readers that disagreed about what a marker or a
+ * wrapper IS, and so disagreed about which lines a developer may act on.
  */
-export { FAILED_MARKER_RE } from "./work-driver-verify-marker.ts";
+export {
+  FAILED_MARKER_RE,
+  isBareFailedMarker,
+  scriptTallyCount,
+} from "./work-driver-verify-marker.ts";
 
 import { FAILED_MARKER_RE, isBareFailedMarker } from "./work-driver-verify-marker.ts";
 import {
@@ -105,16 +149,6 @@ import {
 export function isHarnessEchoLine(line: string): boolean {
   return /^\s*(?:Command failed:|Exit code:|\$\s|killed(?:\s+by\s+signal\b)?)/i.test(line);
 }
-
-/**
- * #1762 — the marker predicates, re-exported so every veto site asks them through
- * the failure-line module it already imports. `work-driver-verify-assertion.ts` and
- * `work-driver-consolidation-classify.ts` replace their old blanket `/^FAILED:/`
- * with `isBareFailedMarker`, and the consolidated tally harvest asks
- * `scriptTallyCount`; a reader that imported them from a third module would be a
- * reader that could import a private copy instead.
- */
-export { isBareFailedMarker, scriptTallyCount } from "./work-driver-verify-marker.ts";
 
 /**
  * A NON-ZERO failure count in a status position: right after the file's colon
@@ -307,12 +341,14 @@ export function matchShape(line: string): FailureLine | undefined {
   // requires a marker prefix AND an assertion token in the detail PAST the path:
   // a passing tally (`36 cases, 0 failed`, `0 failed`, `12 passed`) prints
   // neither, so no success line reaches the table through it. Both exemptions are
-  // keyed to the shape object itself, so re-ordering SHAPES cannot re-veto one.
+  // entries of the SAME table that carries the rule itself — `matchPreVetoShapes`
+  // is `SHAPES.filter(e => e.preVeto)` — so re-ordering SHAPES cannot re-veto one
+  // and adding an exemption means setting the flag on the entry that needs it.
   const preVeto = matchPreVetoShapes(line);
   if (preVeto !== undefined) return preVeto;
   if (isSuccessLine(line)) return undefined;
   for (const entry of SHAPES) {
-    if (entry.re.test(line)) return { shape: entry.shape, namesTest: entry.namesTest };
+    if (entry.test(line)) return { shape: entry.shape, namesTest: entry.namesTest };
   }
   return undefined;
 }

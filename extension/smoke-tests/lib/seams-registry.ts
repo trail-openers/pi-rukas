@@ -403,6 +403,12 @@ export const SEAMS: Seam[] = [
       // alone — so it is asserted directly, the way `isNonAssertionLine` is.
       matchShape:
         "the plain shape table, asked directly by test-verify-failure-shapes-1762.ts: the assertion-mark-before-the-success-veto exemption exists only in this function, so a change that keeps classifyFailureLine green while re-ordering the veto must still fail there",
+      // #1808 round — the exhaustive consumer of `FailureShape`. A `Record<FailureShape,
+      // boolean>` cannot omit a shape without failing the build, which is the point;
+      // the assertion below is that its VALUES still describe the table, so a shape
+      // whose rule is flipped to `true` (or `false`) without a test noticing fails here.
+      SHAPE_NAMES_A_CHECK:
+        "the exhaustive per-shape rule for 'may this line be the specific assertion'; #1808 — the union previously had no consumer, so a new shape was compile-clean. test-verify-failure-shapes-g-1762.ts cross-checks every entry against classifyFailureLine's namesTest",
     },
     canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
   },
@@ -438,16 +444,6 @@ export const SEAMS: Seam[] = [
         "the two shapes asked BEFORE the success veto (the assertion mark and, since #1762, the payload-bearing marker); the exemption lives here alone, so a change that keeps matchShape green while re-ordering the veto must still fail here",
     },
     canary: { symbol: "matchPreVetoShapes", importer: "work-driver-verify-failures.ts" },
-  },
-  {
-    // #1762 — the CONSOLIDATED-only tally harvest (a script's `failed checks (N)`
-    // block with its names indented beneath it). `consolidatedAssertionLines` in
-    // `work-driver-verify-record.ts` is its production caller — the ONLY one, since
-    // the #1808 fix round moved the harvest out of `assertionLines`, which every
-    // per-worktree route reads.
-    file: "work-driver-verify-tally.ts",
-    pending: {},
-    canary: { symbol: "harvestConsolidatedTallies", importer: "work-driver-verify-record.ts" },
   },
   {
     // #1762 round 1 — the vocabulary the two verify readers share, hoisted out of

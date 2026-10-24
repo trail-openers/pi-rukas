@@ -33,10 +33,17 @@ export const CHECK_DETAIL = "scripts/test.sh   pack_release_test.sh";
 export const PAYLOAD_MARKER =
   "FAILED: test/a_test.sh: a first run writes the settings: expected '0', got '1'";
 
-/** The two names a script's tally block prints indented beneath its count. */
-export const TALLY_NAMES = ["lint", "test/b_test.sh"];
+/**
+ * The two names a script's tally block prints indented beneath its count. A
+ * READONLY TUPLE, not `string[]`: the suites index it directly (`TALLY_NAMES[1]`),
+ * and on an array type that indexes to `string | undefined` under `noUncheckedIndexedAccess`,
+ * so every call site carried a `?? ""` fallback. `!(x ?? "").includes("")` is
+ * false whatever `x` is — the anti-harvest assertions were vacuous. A tuple makes
+ * the index `string` and the fallback disappears.
+ */
+export const TALLY_NAMES = ["lint", "test/b_test.sh"] as const;
 
-/** The tally line those names sit under (count 2, matching TALLY_NAMES). */
+/** The tally line those names sit under (count 2, matching TALLY_NAMES.length). */
 export const TALLY_LINE = "test.sh: failed checks (2), not run (0)";
 
 /**
