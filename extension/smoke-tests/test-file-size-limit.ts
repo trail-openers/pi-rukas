@@ -194,7 +194,23 @@ if (violations.length === 0) {
 // with a longer docstring.
 {
   const scanned = listSourceFiles(REPO_ROOT).map((f) => path.relative(REPO_ROOT, f));
-  for (const expected of ["install.sh", "build.sh", ".github/workflows/ci.yml", "bin/pi-rukas"]) {
+  // #1788's acceptance criterion says "no file exceeds 500 lines", and the
+  // feature added six modules plus a bin script. A criterion is only worth
+  // what its gate actually measures, so the feature's own files are named here
+  // — an exclusion that hides them would read as compliance.
+  for (const expected of [
+    "install.sh",
+    "build.sh",
+    ".github/workflows/ci.yml",
+    "bin/pi-rukas",
+    "extension/src/public-denylist.ts",
+    "extension/src/public-hygiene-scan.ts",
+    "extension/src/public-hygiene-guard.ts",
+    "extension/src/public-hygiene-push.ts",
+    "extension/src/public-hygiene-refusals.ts",
+    "extension/src/public-hygiene-types.ts",
+    "bin/pre-push-hygiene.sh",
+  ]) {
     assert(
       scanned.includes(expected),
       `canary: ${expected} is in scope — it was invisible to the old extension/-only scan`,
