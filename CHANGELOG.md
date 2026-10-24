@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.11](https://github.com/trail-openers/pi-rukas/compare/v0.14.10...v0.14.11) (2026-10-24)
+
+
+### Bug Fixes
+
+* **work:** name the failing test in a develop-verify attribution ([#1794](https://github.com/trail-openers/pi-rukas/issues/1794)) ([fcd85e0](https://github.com/trail-openers/pi-rukas/commit/fcd85e05620629770b54e1144dcfc1a67a586db1))
+
 ## [0.14.10](https://github.com/trail-openers/pi-rukas/compare/v0.14.9...v0.14.10) (2026-10-24)
 
 
