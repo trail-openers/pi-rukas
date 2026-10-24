@@ -38,7 +38,7 @@
  *
  * Offline: temp git repos for the gate runs only, no dispatch, no spawn, no model.
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -47,31 +47,26 @@ import {
   peekBaseHealthProbe,
   startBaseHealthProbe,
 } from "../src/work-driver-base-health-inflight.ts";
-import { baseHealthKey } from "../src/workflow-state-schema-base-health.ts";
-import type { DriverExecFn } from "../src/work-driver-context.ts";
 import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
+import type { BaseHealthProbeOutcome } from "../src/work-driver-verify-base-health.ts";
+import type { BaseHealthKey } from "../src/workflow-state-schema-base-health.ts";
 import type {
   BaseHealthConsulted,
   BaseHealthReport,
 } from "../src/work-driver-verify-base-health-channels.ts";
 import { mergeBaseHealthReport } from "../src/work-driver-verify-base-health-channels.ts";
 import { BASELINE_RED_MARKER, compareWithBaseline } from "../src/work-driver-verify-baseline.ts";
-import type { BaseHealthProbeOutcome } from "../src/work-driver-verify-base-health.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify-pr17.ts";
 import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
-import type { BaseHealthKey, BaseHealthVerdict } from "../src/workflow-state-schema-base-health.ts";
-import { type WorkState, initialState } from "../src/workflow-state.ts";
+import {
+  CMD,
+  aggregateWithProbe,
+  changeFailure,
+  verdict,
+} from "./lib/base-health-channel-harness.ts";
 import { RED_GATE, branchState, keyFor } from "./lib/base-health-probe-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
-import { loopCmd, redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
-
-/** A suite fixture that always exits 1 — the test the change ADDS to the gate. */
-const RED_GATE_FIXTURE = readFileSync(
-  path.join(import.meta.dirname, "fixtures", "verify-loop", "fixture-1.ts"),
-  "utf8",
-);
-
-
+import { redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -83,114 +78,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-bh-channels-"));
-const CMD = "sh gate.sh";
-
-/** The failure list a gate reports when the change's own verify failed. */
-const changeFailure = (cmd: string) => `verify command \`${cmd}\` failed in worktree a: 1 failed`;
-
-/**
- * Drive the REAL develop gate (`verifyStepOutcome`) over a fixture whose verify
- * command fails, with a background probe registered for the gate's own key, and
- * hand back both the gate's result and the state the caller would record it into.
- *
- * The gate is the only producer of the two channels, so a case that called
- * `aggregateVerifyOutcome` directly would pin the plumbing and miss the caller's
- * half: `verifyStepOutcome` is what copies the collected verdict onto its result
- * and what `recordDevelopGateEvents` later writes to the state.
- */
-/**
- * Drive the REAL develop gate's aggregate leg (`aggregateVerifyOutcome`) with a
- * background probe registered for the gate's own key, and hand back both the
- * channels the gate reports and the state the caller would record them into.
- *
- * `aggregateVerifyOutcome` is the single producer of both channels — the collected
- * verdict and the consultation record — and `recordDevelopGateEvents` is the single
- * writer of `pipelineState.baseHealthProbe`, so a case that stops short of either
- * would pin a callback nobody calls. `runVerifyCommandGate` is the seam ABOVE it and
- * is driven once here, so the whole chain from "the project's command failed" to
- * "what lands in state" is the code under test, with only the project's own gate
- * replaced by the fixture's.
- */
-async function aggregateWithProbe(
-  name: string,
-  /** Built AFTER the fixture, so the verdict speaks for the base the gate judges. */
-  outcomeFor: (baseSha: string, tierBoundMs: number) => BaseHealthProbeOutcome,
-): Promise<{
-  collected: BaseHealthVerdict | undefined;
-  consulted: BaseHealthConsulted | undefined;
-  failures: string[];
-  notes: string[];
-  state: WorkState;
-  recorded: WorkState;
-  /** 1 when the aggregate leg consulted the registry, 0 when it never got there. */
-  probeStarted: number;
-  /** Gate executions the fixture's command actually ran — the anti-vacuity count. */
-  gateRuns: number;
-}> {
-  clearBaseHealthInflight();
-  const f = await redGateFixture(root, name, RED_GATE, { "notes.md": "x\n" });
-  // The gate's command is discovered from the project, so the fixture has to
-  // declare one; without it the chain notes "no verify command" and consults
-  // nothing, which would leave every assertion below vacuously satisfied.
-  mkdirSync(path.join(f.repo, ".pi"), { recursive: true });
-  writeFileSync(path.join(f.repo, ".pi", "verify-cmd"), `${CMD}\n`);
-  const bound = (await keyFor(f.repo, f.baseSha, CMD)).tierBoundMs;
-  const key: BaseHealthKey = { baseSha: f.baseSha, command: CMD, tierBoundMs: bound };
-  let gateRuns = 0;
-  let probeStarted = 0;
-  const execFn: DriverExecFn = async (cmd, o) => {
-    const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
-    // The probe tree is the gate's own throwaway checkout of the base; counting it
-    // would make "the gate ran the command" mean two different runs.
-    if (!line.includes("git ") && !line.includes("baseline-verify-")) gateRuns += 1;
-    return await realExec(cmd, o);
-  };
-  // The branch step's shape: the probe is registered by a different step and the
-  // gate only reads it. Registered HERE (before the gate runs) rather than at the
-  // top of a gate call, because the entry is deleted when a reader takes it.
-  const registered = startBaseHealthProbe(key, async () => {
-    probeStarted += 1;
-    return outcomeFor(f.baseSha, bound);
-  });
-  const state = branchState(f.baseSha);
-  const failures = [changeFailure(CMD)];
-  const notes: string[] = [];
-  let collected: BaseHealthVerdict | undefined;
-  let consulted: BaseHealthConsulted | undefined;
-  await aggregateVerifyOutcome({
-    execFn,
-    ctx: { host: {}, repoRoot: f.repo, issue: 1809 } as never,
-    cmd: CMD,
-    baseSha: f.baseSha,
-    suiteTimeoutMs: bound,
-    // The shape a failed per-worktree run reaches the aggregate leg with: the
-    // consolidated run could not build, so `cons` passed and the per-worktree
-    // failures are the verdict. Either arm reaches the consultation.
-    cons: { status: "passed" } as never,
-    perWorktreeVerifyFailures: failures,
-    failures,
-    notes,
-    onBaseHealth: (report) => {
-      collected = report.collected;
-      consulted = report.consulted;
-    },
-  });
-  await registered;
-  return {
-    collected,
-    consulted,
-    failures,
-    notes,
-    state,
-    recorded: recordDevelopGateEvents(state, {
-      ...(collected === undefined ? {} : { baseHealthProbe: collected }),
-      ...(consulted === undefined ? {} : { baseHealthConsulted: consulted }),
-    } as never),
-    gateRuns,
-    probeStarted,
-  };
-}
-
 const verdict = (baseSha: string, status: "green" | "red", bound: number): BaseHealthVerdict => ({
   status,
   baseSha,
@@ -275,6 +162,7 @@ try {
   // the consultation that names it still is.
   for (const colour of ["green", "red"] as const) {
     const g = await aggregateWithProbe(
+      root,
       `agg-${colour}`,
       // The verdict must speak for the gate's OWN base and bound — a verdict for
       // some other commit matches nothing and is read as "no probe ran", which is
