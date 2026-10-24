@@ -84,8 +84,13 @@
 import { docsOrTestReason } from "./plan-docs-test-path.ts";
 import { clippedField, keepClippedRecords } from "./plan-fence-record.ts";
 import { trace } from "./trace.ts";
-import { fenceDirPrefix, normaliseDeclaredPath } from "./work-driver-declared-path.ts";
+import {
+  fenceDirPrefix,
+  normaliseDeclaredPath,
+  stripFenceGlob,
+} from "./work-driver-declared-path.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
+import { stripCodeBlocks } from "./work-driver-plan-unfence-code.ts";
 import { isProhibition } from "./work-driver-plan-unfence-extract.ts";
 import { type UnfenceRecord, unfencedDocsTestNote } from "./work-driver-plan-unfence-notes.ts";
 import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
@@ -97,9 +102,14 @@ import type { Workstream } from "./workflow-state-schema.ts";
  * disables, anything else — including unset — enables. Off, the plan keeps the
  * planner's docs and test fences exactly as written and the develop gate parks
  * as it did before #1250.
+ *
+ * The value is trimmed and lower-cased before the comparison: an operator who
+ * writes `PI_ENSEMBLE_UNFENCE_DOCS_TESTS=" 0 "` in a shell profile means the
+ * same instruction as `0`, and a rule that reads it as "on" has ignored the one
+ * thing the operator asked for.
  */
 export function unfenceDocsTestsEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS;
+  const v = process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS?.trim().toLowerCase();
   return v !== "0" && v !== "false";
 }
 
@@ -117,17 +127,78 @@ export function unfenceDocsTestsEnabled(): boolean {
  * (`docs/`, `docs/*`, `docs/**`) are one boundary: an issue that forbids a path
  * under `docs` keeps all three fenced, exactly as the develop gate fences them.
  * The planner's trailing separator and the issue's bare directory name are the
- * same boundary for the same reason.
+ * same boundary for the same reason. That containment runs in BOTH directions:
+ * an issue that forbids `docs/help.md` does fence `docs/page.md` at the develop
+ * gate, so the refusal about one file keeps the tree fenced.
+ *
+ * **Which prose counts, and which does not.** An issue's example block quotes a
+ * path to show what the change must not become; that is an illustration, not a
+ * refusal, so code blocks are stripped (`stripCodeBlocks`) before any sentence
+ * is read — the same strip the issue-named pass applies through
+ * `decisionSectionsOf`. What is NOT stripped is the section filter of that
+ * function: a prohibition lives precisely in the sections it does not keep
+ * (`## Out of scope`, `## Do not touch` — an extraction that read them as
+ * requirements would unfence exactly what they refuse), so keeping them here
+ * would re-fence every docs fence in the plan on the strength of a rule that
+ * only ever refuses to write them. Stripping code blocks is a SAFER reading
+ * than that view and exactly the one the brief asks for; the two grammars may
+ * differ on which sections they read, never on whether an example counts.
+ *
+ * **Bare substring naming** is the other reading this must not have: `docs/x`
+ * in prose must not forbid `doc/`, so each side is normalised (`\` → `/`, a
+ * leading `./` dropped, `//` collapsed, lower-cased) and the fence key is
+ * matched on path-segment boundaries, never as a substring a longer name
+ * contains.
+ *
+ * Sentences arrive pre-split: the body never changes between fence entries and a
+ * plan routinely has a dozen of them.
  */
-function issueForbidsPath(body: string, path: string): boolean {
+function issueForbidsPath(sentences: readonly string[], path: string): boolean {
   const needle = fenceDirPrefix(path).toLowerCase();
   if (needle.length === 0) return false;
-  for (const sentence of body.split(/(?<=[.!?])\s+|\n+/)) {
-    const normalized = sentence.replace(/\/+/g, "/").toLowerCase();
-    if (!normalized.includes(needle) && !normalized.includes(`${needle}/`)) continue;
-    if (isProhibition(sentence)) return true;
+  for (const sentence of sentences) {
+    const normalized = sentence
+      .replace(/\\/g, "/")
+      .replace(/(^|[\s(`'"])\.\//g, "$1")
+      .replace(/\/+/g, "/")
+      .toLowerCase();
+    if (!namesPathBoundary(normalized, needle)) continue;
+    // The prohibition is asked of a sentence carrying NO backslashes and no
+    // sentence-terminal punctuation: the `keep/leave/skip <path>` arm of
+    // `isProhibition` ends its path class at a character set that excludes `\`
+    // and `.`/`,`/`;`, so a Windows separator or the full stop closing the
+    // sentence silently un-prohibits the very sentence that forbids the path —
+    // and `docs/` as a fence key always ends in a `/`, which the arm then
+    // refuses to match at all. The judgement is about the refusal, not its
+    // spelling; `[^\w]` stops the path class exactly where prose does, so a
+    // sentence about `docs/x.ts` cannot swallow `docs` and invent a refusal
+    // when the fence key is the bare directory.
+    const refusal = normalized.replace(/[.,;:!?)]+([\s(]|$)/g, "$1");
+    if (isProhibition(refusal)) return true;
   }
   return false;
+}
+
+/**
+ * Does this prose name `key` as a PATH, including one that lives UNDER it?
+ *
+ * Sharper than a substring, looser than `pathTokenIn`'s exactness. The issue
+ * names a FILE (`docs/help.md`) while the fence is often the DIRECTORY (`docs/`)
+ * that the develop gate fences every file under — so a refusal about one file
+ * keeps that tree fenced, which is containment, not a new match rule. Neither
+ * side may be a bare substring: `doc` must not be named by `docs/x`, and
+ * `docs/guide.md-extra` must not count as naming `docs/guide.md`. The lookarounds
+ * are the same path-segment boundary `pathTokenIn` uses — the key may be
+ * followed only by nothing, or by the `/` that opens a path under it, and never
+ * by a word character, a `-`, or a further `.ext` that just lengthens the name.
+ */
+function namesPathBoundary(text: string, key: string): boolean {
+  // ONE boundary rule (the `pathTokenIn` shape, which already means "a whole
+  // path token, possibly with a path under it"): the key may be followed by
+  // nothing or by a `/`-opened remainder, never by a character that only makes
+  // the name longer.
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w./-])${escaped}(?![\\w-]|\\.\\w)`).test(text);
 }
 
 /**
@@ -152,6 +223,15 @@ export const DROPPED_ON_COPY: readonly (keyof Workstream)[] = ["outOfScopeClippe
  * concatenates `notes`, `warnings`, `placed` and `removed` and hands the union
  * to `unfenceSummary`). No I/O, no git, no model: the whole judgement is the
  * entry's shape and the issue's prose.
+ *
+ * **The N=1 precondition is this function's own, not its caller's.** The caller
+ * (`runPlanUnfencePass`) computes N and declines to call this at all for a
+ * multi-workstream plan — but a rule whose only guard is a caller's `if` is a
+ * rule that opens a sibling's test fence the first time anything else calls it,
+ * and with N>1 a test fence IS the #572/#1137 cross-declaration contract. So
+ * the first statement here returns the input map UNCHANGED — the same object,
+ * no copies, no removals, no records — unless the map holds exactly one
+ * workstream.
  */
 export function unfenceDocsTestPaths(
   workstreams: Record<string, Workstream>,
@@ -161,6 +241,15 @@ export function unfenceDocsTestPaths(
   const warnings: string[] = [];
   const removed: UnfenceRecord[] = [];
   const next: Record<string, Workstream> = {};
+
+  if (Object.keys(workstreams).length !== 1) {
+    return { workstreams, notes, warnings, placed: [], removed };
+  }
+  // The prohibition scan reads the WHOLE body with its code blocks stripped, ONCE
+  // for the whole call rather than once per fence entry. Not `decisionSectionsOf`:
+  // a refusal lives in the sections that function deliberately drops, and an
+  // unreadable prohibition must never open a fence (see the module header).
+  const sentences = stripCodeBlocks(body).split(/(?<=[.!?])\s+|\n+/);
 
   for (const id of Object.keys(workstreams)) {
     const ws = workstreams[id];
@@ -182,12 +271,20 @@ export function unfenceDocsTestPaths(
       // annotation hides the protected basename from exactly one of them:
       // `docs/CODEOWNERS (keep)` deannotates to a protected basename the raw
       // form does not end with, and the fence key strips the glob an annotated
-      // or directory entry carries. ANY of the three keeps the entry fenced.
+      // or directory entry carries. ANY of these keeps the entry fenced. The
+      // fourth read is the one an entry carrying BOTH a glob and an annotation
+      // needs: `docs/agents.json/** (new)` — `fenceDirPrefix` deannotates first,
+      // so an annotation sitting behind the glob is gone by the time the glob
+      // is, and neither of the two earlier reads ever holds `…/agents.json`
+      // alone. So the canonical form is asked twice: annotation stripped
+      // (`normaliseDeclaredPath`), then the trailing glob stripped from THAT
+      // (`stripFenceGlob`, the second half of what `fenceDirPrefix` composes).
       const protectedEntry =
         isProtectedPath(entry) ||
         isProtectedPath(normaliseDeclaredPath(entry)) ||
-        isProtectedPath(key);
-      if (reason === undefined || protectedEntry || issueForbidsPath(body, entry)) {
+        isProtectedPath(key) ||
+        isProtectedPath(stripFenceGlob(normaliseDeclaredPath(entry)));
+      if (reason === undefined || protectedEntry || issueForbidsPath(sentences, entry)) {
         kept.push(entry);
         continue;
       }

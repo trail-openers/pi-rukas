@@ -182,6 +182,13 @@ export async function runPlanUnfencePass(
   // The docs/test rule runs on the map the issue-named pass returned, so a
   // fence that pass restored (the no-owner rollback) is still visible to it and
   // a fence it already removed is not double-counted.
+  // #1250 change 1 round-2 — the rule's prohibition scan strips the issue's
+  // code blocks (an example block quotes a path to show what the change must
+  // NOT become; it is not a refusal) and matches the fence key on path-segment
+  // boundaries, both inside the rule. It reads the WHOLE body rather than only
+  // the extraction's three requirement sections, because a refusal lives
+  // precisely in the sections extraction drops — see the module header of
+  // work-driver-plan-unfence-docs-tests.ts.
   const opened: UnfenceResult = docsTestsOn
     ? unfenceDocsTestPaths(result.workstreams, read.body)
     : { workstreams: result.workstreams, notes: [], warnings: [], placed: [], removed: [] };

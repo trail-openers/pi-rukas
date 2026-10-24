@@ -109,7 +109,11 @@ export function unfencedNote(path: string): string {
  * here — one line, no backticks, no forged clip marker.
  */
 export function unfencedDocsTestNote(entry: string, kind: "docs" | "test"): string {
-  return `unfenced ${neutraliseFenceEntry(entry)}: ${kind} path, N=1`;
+  // Quoted, as the sibling refusal notes in work-driver-plan-repair.ts quote
+  // the path they name: the neutralised entry can still contain a space or a
+  // colon, and an unquoted `unfenced docs/a: b: docs path, N=1` is two
+  // colons-deep prose where the boundary of the entry is guesswork.
+  return `unfenced ${JSON.stringify(neutraliseFenceEntry(entry))}: ${kind} path, N=1`;
 }
 /** The note the operator sees when a symbol could not be resolved to one file. */
 export function unresolvedIdentifierNote(name: string, candidates: string[], ref: string): string {

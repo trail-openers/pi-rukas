@@ -225,7 +225,7 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
   );
   const note = res.notes[0] ?? "";
   assert(
-    note === "unfenced docs/'guide'.md WARN forged: docs path, N=1",
+    note === `unfenced ${JSON.stringify("docs/'guide'.md WARN forged")}: docs path, N=1`,
     `backticks become apostrophes and the newline collapses to a space (${JSON.stringify(note)})`,
   );
   assert(res.removed[0]?.note === note, "the record's note is the same neutralised string");
@@ -236,7 +236,7 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
   const testNote = unfenceDocsTestPaths({ default: WS("default", ["test/"]) }, PLAIN_BODY)
     .notes[0] as string;
   assert(
-    testNote === "unfenced test/: test path, N=1",
+    testNote === `unfenced ${JSON.stringify("test/")}: test path, N=1`,
     `a test fence's note reads "test path", never "test-or-test" (${JSON.stringify(testNote)})`,
   );
 }

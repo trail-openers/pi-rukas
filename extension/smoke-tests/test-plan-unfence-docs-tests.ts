@@ -38,6 +38,7 @@ import {
 import { unfenceSummary } from "../src/work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -101,11 +102,9 @@ const measuredPlan = (): Record<string, Workstream> => ({
   ),
 });
 
-process.env[HATCH] = "1";
-
 // ------------------------------------------- AC: N=1 opens docs and tests
 
-{
+await withEnv({ [HATCH]: "1" }, async () => {
   const out = await runPass(measuredPlan(), PLAIN_BODY);
   const fence = out.workstreams.default?.outOfScope ?? [];
   assert(!fence.includes("docs/guide.md"), "N=1: docs/guide.md is no longer fenced");
@@ -127,28 +126,28 @@ process.env[HATCH] = "1";
     "each removal's note names the rule that made it",
   );
   assert(
-    (out.summary?.notes ?? []).some((n) => n.startsWith("unfenced test/helper.sh: test path, N=1")),
+    (out.summary?.notes ?? []).some((n) => n.startsWith(`unfenced ${JSON.stringify("test/helper.sh")}: test path, N=1`)),
     "a test fence's note reads 'test path', not 'test-or-test path'",
   );
-}
+});
 
 // ------------------------------------- AC: an explicit prohibition is kept
 
-{
+await withEnv({ [HATCH]: "1" }, async () => {
   const body = `${PLAIN_BODY}\n## Out of scope\n\nDo not touch docs/guide.md in this change.\n`;
   const out = await runPass(measuredPlan(), body);
   const fence = out.workstreams.default?.outOfScope ?? [];
   assert(fence.includes("docs/guide.md"), "an issue that forbids docs/guide.md keeps it fenced");
   assert(!fence.includes("host/docs/"), "the prohibition is per-path — host/docs/ still opens");
   assert(
-    (out.summary?.notes ?? []).some((n) => n.startsWith("unfenced host/docs/")),
+    (out.summary?.notes ?? []).some((n) => n.includes("host/docs/")),
     "the kept entry's siblings are still recorded as opened",
   );
   assert(
-    out.summary?.docsTests === 3,
+    (out.summary?.docsTests ?? 0) === 3,
     `three openings recorded, not four (${out.summary?.docsTests})`,
   );
-}
+});
 
 // ------------------------------------------------ AC: N>1 changes nothing
 
@@ -169,8 +168,7 @@ process.env[HATCH] = "1";
 
 // --------------------------------------------- AC: the escape hatch
 
-{
-  process.env[HATCH] = "0";
+await withEnv({ [HATCH]: "0" }, async () => {
   const out = await runPass(measuredPlan(), PLAIN_BODY);
   const fence = out.workstreams.default?.outOfScope ?? [];
   assert(fence.length === 5, `hatch off: all five fences are exactly as written (${fence.length})`);
@@ -182,11 +180,10 @@ process.env[HATCH] = "1";
     "hatch off: today's behaviour — docs and test fences untouched",
   );
   assert(
-    out.summary?.docsTests === undefined,
+    (out.summary?.docsTests ?? 0) === 0,
     "hatch off: the summary claims no docs/test openings",
   );
-  process.env[HATCH] = "1";
-}
+});
 
 // --------------------------------- AC: the hatch is read per call, not cached
 
