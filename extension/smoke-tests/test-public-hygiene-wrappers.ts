@@ -178,6 +178,83 @@ await withEnv(env, async () => {
   );
 
   // ─────────────────────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────────────────────
+  // 2b. A GLUED SHORT text flag — one word carrying both the flag and its
+  // value. `valueAfter` of `-bsecret` returns the word AFTER it, so a glued value
+  // was scanned as a body of nothing (the term sat in the flag word, unexamined)
+  // while an unrelated argument was collected as the text.
+  // ───────────────────────────────────────────────────────────────
+  const gluedCases: readonly { label: string; command: string }[] = [
+    { label: "gh -b", command: `gh pr comment 3 -b${TERM}` },
+    { label: "gh -t plus a second glued flag", command: `gh issue create -t${TERM} -bok` },
+    { label: "git -m", command: `git commit -m${TERM}` },
+    { label: "gh -n (release notes)", command: `gh release create 1.0 -n${TERM}` },
+  ];
+  for (const { label, command } of gluedCases) {
+    const d = await ask(command);
+    assert(
+      blocked(d) && d?.verdict.kind === "denylist",
+      `${label}: a glued dirty value is BLOCKED (got ${d?.verdict.kind})`,
+    );
+    const scan = scanPublishSurfaces(command, dir);
+    assert(
+      scan.texts.some((t) => t.text === TERM),
+      `${label}: the scan reads the value out of the FLAG WORD, not the next argument`,
+    );
+    assert(
+      !scan.texts.some((t) => t.text === "3" || t.text === "1.0"),
+      `${label}: the next argument is not swallowed as the text`,
+    );
+  }
+  const gluedClean: readonly string[] = [
+    "gh pr comment 3 -bclean",
+    "git commit -mclean",
+    "gh issue create -tclean",
+  ];
+  for (const command of gluedClean) {
+    const d = await ask(command);
+    assert(
+      !blocked(d),
+      `a clean glued value is ALLOWED: ${command} (got ${d?.reason?.slice(0, 50)})`,
+    );
+  }
+
+  // ───────────────────────────────────────────────────────────────
+  // 2c. `gh api --input FILE` IS a write: gh POSTs the file as the request body,
+  // so an input with no method and no field flag still publishes. Its texts were
+  // collected and then dropped at the `writes` gate, which only counted `-f`/`-F`
+  // — the file's contents published unchecked, the unreadable refusal with it.
+  // ───────────────────────────────────────────────────────────────
+  writeFileSync(path.join(dir, "input-dirty.json"), JSON.stringify({ body: TERM }), "utf8");
+  writeFileSync(
+    path.join(dir, "input-clean.json"),
+    JSON.stringify({ body: "plain prose" }),
+    "utf8",
+  );
+  for (const flag of ["--input", "-i"]) {
+    const dirty = await ask(
+      `gh api repos/o/r/issues/1/comments ${flag} ${path.join(dir, "input-dirty.json")}`,
+    );
+    assert(
+      blocked(dirty) && dirty?.verdict.kind === "denylist",
+      `gh api ${flag} <dirty file> is BLOCKED (got ${dirty?.verdict.kind})`,
+    );
+    const missing = await ask(
+      `gh api repos/o/r/issues/1/comments ${flag} ${path.join(dir, "gone.json")}`,
+    );
+    assert(
+      blocked(missing) && missing?.verdict.kind === "unreadable",
+      `gh api ${flag} <missing file> is REFUSED as unreadable (got ${missing?.verdict.kind})`,
+    );
+    const clean = await ask(
+      `gh api repos/o/r/issues/1/comments ${flag} ${path.join(dir, "input-clean.json")}`,
+    );
+    assert(
+      !blocked(clean),
+      `gh api ${flag} <clean file> is ALLOWED (got ${clean?.reason?.slice(0, 50)})`,
+    );
+  }
+
   // 3. The controls — what must keep running.
   // ─────────────────────────────────────────────────────────────────────────
   const allowed: readonly string[] = [

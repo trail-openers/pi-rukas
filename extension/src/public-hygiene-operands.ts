@@ -46,12 +46,48 @@ export function valueAfter(
  * Does the word `w` use text flag `flag`, with the flag ENDED by a delimiter?
  * Accepts `--body`, `--body=…` and a glued short form (`-b…`), and refuses a
  * long flag that merely prefixes a longer one (`--body` vs `--body-file`).
+ *
+ * A glued SHORT form has no delimiter after the two characters, so the rule for
+ * it is "the flag is the whole prefix": `-btext` uses `--body` with value
+ * `text`, and the word must NOT fall through to the next-word reader —
+ * `valueAfter` on `-btext` returns the FOLLOWING word, which is how a single
+ * word carrying the text (`gh pr comment 3 -bsecret`) was scanned as a body of
+ * nothing while the real value sat unexamined in the flag word.
  */
 export function flagEndsAt(w: string, flag: string): boolean {
   if (w === flag) return true;
   if (!w.startsWith(flag)) return false;
   if (flag.length > 2) return w[flag.length] === "=";
   return w.length > flag.length;
+}
+
+/**
+ * The text a word carries for a text flag, and how many words it consumed.
+ *
+ * Three shapes, one reader: the separate form (`--body text`, `-b text`) takes
+ * the next word; the glued LONG form (`--body=text`) and the glued SHORT form
+ * (`-btext`, `-mtext`, `-ttext`) carry the value in the SAME word and consume
+ * nothing after it. `flagEndsAt` alone does not distinguish the last two, so the
+ * value is read here rather than by trusting a second call to `valueAfter`.
+ *
+ * Returns undefined when the word does not use the flag at all.
+ */
+export function textFlagValue(
+  words: string[],
+  i: number,
+  flag: string,
+): { value: string; used: number } | undefined {
+  const w = words[i] ?? "";
+  if (!flagEndsAt(w, flag)) return undefined;
+  if (w !== flag) {
+    // Glued: everything after the flag characters is the value — never the next
+    // word, which is a separate argument and belongs to whatever follows. A
+    // LONG flag got here only because the character right after it is `=` (that
+    // is `flagEndsAt`'s rule), so the `=` itself is dropped; a SHORT flag glues
+    // with no delimiter, so everything after the two characters is the value.
+    return { value: w.slice(flag.length + (flag.length > 2 ? 1 : 0)), used: 0 };
+  }
+  return valueAfter(words, i);
 }
 
 /** Glued short form: `-bfoo` is `-b` with value `foo` (getopt accepts it). */
@@ -62,9 +98,7 @@ export function glued(w: string, flag: string): string | undefined {
 }
 
 /** A `KEY=value` word, as bash accepts before a command name. */
-export function isAssignment(w: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
-}
+export { isAssignment } from "./public-hygiene-prefix.ts";
 
 /**
  * Does some simple command of this split name an inline publish-text flag whose

@@ -137,11 +137,6 @@ function ghNoun(argv: readonly string[]): string | undefined {
   return words[i];
 }
 
-/** A `KEY=value` word, as bash accepts before a command name. */
-function isAssignment(w: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
-}
-
 /**
  * The `git …` words of one argv (from the program word onward), or undefined.
  * Wrapper-stripped first, so `sudo git commit -m …` resolves its target from

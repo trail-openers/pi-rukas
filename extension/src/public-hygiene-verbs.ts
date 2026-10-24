@@ -11,7 +11,7 @@
  */
 
 import { apiFileOperand, readPublishFile } from "./public-hygiene-files.ts";
-import { flagEndsAt, glued, isAssignment, valueAfter } from "./public-hygiene-operands.ts";
+import { isAssignment, textFlagValue, valueAfter } from "./public-hygiene-operands.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
@@ -162,18 +162,18 @@ export function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): v
       // file reader — so the file was never read, its size bound never applied,
       // and its out-of-root path was never checked. Prefix-matching a flag set
       // is how a flag's whole policy quietly stops running.
-      if (flagEndsAt(w, flag)) {
-        const v = valueAfter(argv, i);
-        if (v) {
-          scan.texts.push({ location, text: v.value, generic: true });
-          i += v.used;
-        }
-        continue;
+      //
+      // `textFlagValue` (not `flagEndsAt` + `valueAfter`) is the reader: a
+      // glued short flag (`-bsecret`, `-tsecret`, `-nsecret`) carries its value
+      // in the SAME word, and `valueAfter` of that word returns the word AFTER
+      // it — which scanned `gh pr comment 3 -bsecret` as a body of nothing while
+      // the term sat unexamined in the flag word, and consumed an unrelated
+      // argument as the text.
+      const v = textFlagValue(argv, i, flag);
+      if (v !== undefined) {
+        scan.texts.push({ location, text: v.value, generic: true });
+        i += v.used;
       }
-      // A glued short form (`-bfoo`, `-tfoo`) carries its value inline; a long
-      // flag never glues, so `--bodyfile` is not `--body` with a value.
-      const gluedValue = flag.length === 2 ? glued(w, flag) : undefined;
-      if (gluedValue !== undefined) scan.texts.push({ location, text: gluedValue, generic: true });
     }
     for (const [flag, label] of Object.entries(fileFlags)) {
       if (w !== flag && !w.startsWith(`${flag}=`)) continue;
@@ -196,6 +196,7 @@ export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void 
   let method: string | undefined;
   let endpoint = "";
   let fields = 0;
+  let inputs = 0;
   const texts: PublishText[] = [];
   const problems: ScanProblem[] = [];
   for (let k = 0; k < rest.length; k++) {
@@ -242,6 +243,13 @@ export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void 
     if (w === "--input" || w === "-i") {
       const v = valueAfter(rest, k);
       if (v) {
+        // `--input` IS a write. `gh api` with `--input` sends the file as the
+        // request body, so it POSTs exactly as a `-f`/`-F` does — counting it
+        // only as text and leaving `fields` at 0 meant an
+        // `gh api …/comments --input notes.md` with no method and no field flag
+        // fell through the `writes` gate below and published the file's
+        // contents unchecked, including the fail-closed unreadable refusal.
+        inputs++;
         const read = readPublishFile(inputValue(v.value), cwd, "body");
         if (read.problem) problems.push(read.problem);
         else if (read.text !== undefined)
@@ -252,8 +260,9 @@ export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void 
     }
     if (!w.startsWith("-") && endpoint === "") endpoint = w;
   }
-  // gh api defaults to POST when it carries fields; an explicit verb wins.
-  const writes = method === undefined ? fields > 0 : API_WRITE_METHODS.has(method);
+  // gh api defaults to POST when it carries fields or an input body; an
+  // explicit verb wins.
+  const writes = method === undefined ? fields > 0 || inputs > 0 : API_WRITE_METHODS.has(method);
   if (!writes || !API_PUBLIC_PATH.test(endpoint)) return;
   scan.publishes = true;
   scan.publishKind ??= "comment";
@@ -272,17 +281,14 @@ export function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): v
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i] ?? "";
     for (const flag of COMMIT_MESSAGE_FLAGS) {
-      if (flagEndsAt(w, flag)) {
-        const v = valueAfter(argv, i);
-        if (v) {
-          scan.texts.push({ location: "commit message", text: v.value, generic: true });
-          i += v.used;
-        }
-        continue;
+      // Same reader as the gh text flags: `-msecret` carries the message in the
+      // flag word, and reading the NEXT word instead scanned a one-word commit
+      // message as nothing while the term sat in `-msecret` itself.
+      const v = textFlagValue(argv, i, flag);
+      if (v !== undefined) {
+        scan.texts.push({ location: "commit message", text: v.value, generic: true });
+        i += v.used;
       }
-      const gluedValue = glued(w, flag);
-      if (gluedValue !== undefined)
-        scan.texts.push({ location: "commit message", text: gluedValue, generic: true });
     }
     for (const flag of COMMIT_MESSAGE_FILE_FLAGS) {
       if (w !== flag && !w.startsWith(`${flag}=`)) continue;
