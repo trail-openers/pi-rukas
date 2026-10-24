@@ -21,12 +21,6 @@ export interface CorrectivePromptInput extends FenceView {
   parallel: boolean;
   scope?: string;
   paths: string[];
-  /**
-   * #1756 part b — declared paths the line does not print. Display only: the
-   * caller passes the workstream's own `pathsDropped`, and the scope gates read
-   * the full list from state, never this prompt text.
-   */
-  pathsDropped?: number;
   command: string;
   lines: string[];
   /** #1676 — the protected paths the plan deferred (no grant). */
@@ -61,7 +55,7 @@ export function correctiveDevelopPrompt(input: CorrectivePromptInput): string {
     input.scope !== undefined && input.scope.length > 0 ? [`Scope: ${oneLine(input.scope)}`] : [];
   const files =
     input.paths.length > 0
-      ? [`In-scope files: ${inScopeFilesLine(input.paths, input.pathsDropped ?? 0)}`]
+      ? [`In-scope files: ${inScopeFilesLine(input.paths)}`]
       : [];
   const fence = fenceLines(
     input.outOfScope,

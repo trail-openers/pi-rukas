@@ -32,7 +32,8 @@
  */
 
 import fs from "node:fs/promises";
-import { trace } from "./trace.ts";
+import { pathsBoundNotice } from "./plan-paths-bound.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { CouplingResult } from "./work-driver-plan-coupling.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -330,7 +331,13 @@ export function foldPortPlan(
   const first = all[0];
   if (!ref || !first) return workstreams;
   let merged = first;
-  for (const ws of all.slice(1)) merged = foldTwo(merged, ws);
+  let duplicatePaths = 0;
+  for (const ws of all.slice(1)) {
+    const next = foldTwo(merged, ws);
+    duplicatePaths += next.duplicatePaths;
+    const { duplicatePaths: _count, ...rest } = next;
+    merged = rest;
+  }
   const absorbed = all.slice(1).map((w) => w.id);
   if (absorbed.length > 0) {
     trace(
@@ -338,6 +345,10 @@ export function foldPortPlan(
     );
   }
   const { dependsOn: _drop, ...rest } = merged;
+  // ONE line for the whole port fold, not one per absorbed workstream.
+  if (duplicatePaths > 0) {
+    traceWarn(pathsBoundNotice(`port ${ref} fold`, { paths: [], duplicate: duplicatePaths }));
+  }
   return {
     [first.id]: {
       ...rest,

@@ -34,9 +34,9 @@ import { foldTwo } from "./workstream-fold.ts";
  * up to what the planner actually wrote.
  *
  * `paths` is bounded by the same instinct and a different rule (#1756 part b):
- * duplicates collapse and the excess is COUNTED, never removed, because the
- * whole list is the authorised set the scope gates read. `pathsDropped` records
- * what the develop prompt will not show.
+ * duplicates collapse on the normalised identity and NOTHING is removed — the
+ * whole list is the authorised set the scope gates read, and the prompts print
+ * all of it. Only the schema ceiling still refuses a call.
  */
 export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const dependsOn = args.dependsOn ?? [];
@@ -48,7 +48,7 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
     traceWarn(fenceBoundNotice(`plan workstream '${args.id}'`, fence));
   }
   const boundedPaths = boundPaths(args.paths);
-  if (boundedPaths.duplicate > 0 || boundedPaths.dropped > 0) {
+  if (boundedPaths.duplicate > 0) {
     // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same
     // reason (#1744) — an operator greps one channel for every bound the driver
     // applied, and a display bound nobody sees is a bound nobody can audit.
@@ -58,7 +58,6 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
     id: args.id.slice(0, WORKSTREAM_ID_MAX),
     scope: args.scope,
     paths: boundedPaths.paths,
-    ...(boundedPaths.dropped > 0 ? { pathsDropped: boundedPaths.dropped } : {}),
     outOfScope: fence.entries,
     ...clippedField(fence.clipped),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
@@ -77,13 +76,16 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
  */
 export function foldToCeiling(entries: Workstream[]): Record<string, Workstream> {
   const out: Record<string, Workstream> = {};
+  let duplicatePaths = 0;
   for (const entry of entries) {
     if (Object.keys(out).length >= effectiveMaxWorkstreams()) {
       const lastId = Object.keys(out)[Object.keys(out).length - 1];
       if (!lastId) continue;
       const last = out[lastId];
       if (last) {
-        const folded = foldTwo(last, entry);
+        const foldedFull = foldTwo(last, entry);
+        duplicatePaths += foldedFull.duplicatePaths;
+        const { duplicatePaths: _count, ...folded } = foldedFull;
         // The ceiling fold's annotation is `+folded:` (the coupling merge's
         // `+merged:` is the other site's wording).
         folded.scope = `${last.scope} (+folded: ${entry.id})`;
@@ -93,6 +95,14 @@ export function foldToCeiling(entries: Workstream[]): Record<string, Workstream>
       continue;
     }
     out[entry.id] = entry;
+  }
+  // ONE line for the whole pass, not one per fold (#1756 part b): a crowded
+  // plan absorbs N workstreams and the duplicate count is a property of the
+  // pass, not of each fold.
+  if (duplicatePaths > 0) {
+    traceWarn(
+      pathsBoundNotice(`plan ceiling fold`, { paths: [], duplicate: duplicatePaths }),
+    );
   }
   return out;
 }

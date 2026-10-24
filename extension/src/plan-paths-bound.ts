@@ -1,7 +1,6 @@
 /**
  * plan-paths-bound — what the driver does with a planner's `paths` list
- * (#1756 part b): keep EVERY declared path, and say out loud when the prompt
- * cannot show them all.
+ * (#1756 part b): keep EVERY declared path, and print every one of them.
  *
  * The defect (five field parks, all `plan-spec-mismatch`): the schema
  * carried `maxItems: WORKSTREAM_LIST_MAX` (50) on `paths`, so a 51st declared
@@ -18,11 +17,13 @@
  * (`work-driver-scope-fanout.ts`), the path-claims registry
  * (`work-driver-path-claims.ts`), `findPathCollisions`, `verifyConsolidation`,
  * the fix-pass anchors and the deferred-protected fence. A dropped path would
- * silently become unauthorised, so THIS bound never drops one: it dedupes, it
- * COUNTS what a prompt cannot show, and the count is what travels
- * (`Workstream.pathsDropped`). The schema's abuse ceiling
- * (`WORKSTREAM_PATH_INPUT_LIST_MAX`, 500) is the only thing that still refuses
- * a call, and it is there to stop a runaway reply, not to bound a plan.
+ * silently become unauthorised, so THIS bound never drops one: it dedupes and
+ * it prints. There is no display truncation — the prompts print the whole
+ * authorised set, because a developer cannot stay inside a list it never saw,
+ * and a notice pointing at a plan list it cannot read is not a bound. Size is
+ * bounded ONCE, by the schema's abuse ceiling (`WORKSTREAM_PATH_INPUT_LIST_MAX`,
+ * 500), which is the only thing that still refuses a call and is there to stop
+ * a runaway reply, not to bound a plan.
  *
  * Structural template: `plan-fence-bound.ts`. Kept separate on purpose — the
  * two lists are different kinds of thing, they refuse differently, and merging
@@ -34,19 +35,17 @@
  */
 
 import { quotedPaths } from "./plan-path-shape.ts";
-import { WORKSTREAM_LIST_MAX, WORKSTREAM_PATH_INPUT_LIST_MAX } from "./plan-workstream-schema.ts";
+import { WORKSTREAM_PATH_INPUT_LIST_MAX } from "./plan-workstream-schema.ts";
 import { normaliseDeclaredPath } from "./work-driver-declared-path.ts";
 
 /**
- * What one pass of the paths bound did. `dropped` is a DISPLAY count, never a
- * removal: it is how many declared paths the develop prompt will not print, and
- * the only thing it may ever influence is a line of prose.
+ * What one pass of the paths bound did. Nothing is removed, so the only thing
+ * worth reporting is how many entries collapsed onto a file the list already
+ * held.
  */
 export interface BoundPaths {
   /** Every declared path, deduped, in the planner's order (raw strings). */
   paths: string[];
-  /** Declared paths beyond the first `WORKSTREAM_LIST_MAX` — display only. */
-  dropped: number;
   /** Entries that collapsed onto a path the list already held. */
   duplicate: number;
 }
@@ -62,8 +61,13 @@ export interface BoundPaths {
  * Dedup BEFORE the display cut, not after: a list of 80 with 20 duplicates
  * authorises 60 files, and the fanout denominator must read 60, not 80.
  *
- * Pure: the caller owns the trace line and the `pathsDropped` field, so the
- * fold can carry its own count and one call emits one warning.
+ * Dedup keys on `normaliseDeclaredPath`, the SAME identity every scope gate
+ * uses: `**src/b.ts**` and `src/b.ts` are one file to the gates, so they are
+ * one entry here — deduping on the raw text would authorise the same file
+ * twice and inflate the fanout denominator.
+ *
+ * Pure: the caller owns the trace line, so the fold can aggregate its own
+ * pass and one pass emits one warning.
  */
 export function boundPaths(paths: readonly string[]): BoundPaths {
   const kept: string[] = [];
@@ -78,11 +82,7 @@ export function boundPaths(paths: readonly string[]): BoundPaths {
     seen.add(key);
     kept.push(entry);
   }
-  return {
-    paths: kept,
-    dropped: Math.max(0, kept.length - WORKSTREAM_LIST_MAX),
-    duplicate,
-  };
+  return { paths: kept, duplicate };
 }
 
 /**
@@ -96,24 +96,15 @@ export function pathsBoundNotice(subject: string, b: BoundPaths): string {
   const parts = [
     `${b.paths.length} kept`,
     `${b.duplicate} ${b.duplicate === 1 ? "duplicate" : "duplicates"} collapsed`,
-    `${b.dropped} ${b.dropped === 1 ? "path" : "paths"} past the ${WORKSTREAM_LIST_MAX}-path prompt display (all still in scope)`,
   ];
   return `work-driver: ${subject} paths bounded — ${parts.join(", ")} (schema ceiling: ${WORKSTREAM_PATH_INPUT_LIST_MAX})`;
 }
 
 /**
- * The `In-scope files:` line for a prompt: the first `WORKSTREAM_LIST_MAX`
- * quoted, and a pointer to the plan list when the workstream declared more.
- *
- * With nothing to hide the output is byte-identical to `quotedPaths(paths)`,
- * which is what keeps every existing prompt assertion working. The tail never
- * removes authorisation — the gates read `ws.paths`, not this line — so it
- * tells the developer the rest exists and where to read it, instead of letting
- * a 51st file look like an invention.
+ * The `In-scope files:` line for a prompt: EVERY declared path, quoted. The
+ * schema ceiling (500) is what bounds the line; a developer must see its whole
+ * authorised set, since the scope gates judge it against all of them.
  */
-export function inScopeFilesLine(paths: readonly string[], dropped: number): string {
-  const shown = dropped > 0 ? paths.slice(0, WORKSTREAM_LIST_MAX) : [...paths];
-  const listed = quotedPaths(shown);
-  if (dropped <= 0) return listed;
-  return `${listed} (+${dropped} more declared paths in scope; read the plan list before adding new files)`;
+export function inScopeFilesLine(paths: readonly string[]): string {
+  return quotedPaths(paths);
 }

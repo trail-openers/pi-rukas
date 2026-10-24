@@ -70,11 +70,6 @@ export function inlineCommitPrPrompt(
       dependsOn?: string[];
       /** #679 — optional; plan-quality declaration, never read by this prompt. */
       integrationTest?: string;
-      /**
-       * #1756 part b — declared paths the prompt does not print. Display only:
-       * staging and every scope gate read `paths`, never this count.
-       */
-      pathsDropped?: number;
     }
   >,
   branchName: string,
@@ -172,9 +167,7 @@ export function inlineCommitPrPrompt(
       const wtPath = fallback.worktrees[id] ?? "(no path)";
       const sha = fallback.commitShas[id];
       const scope = ws?.scope ?? "(no scope captured)";
-      const paths = ws?.paths.length
-        ? inScopeFilesLine(ws.paths, ws.pathsDropped ?? 0)
-        : "(no paths declared)";
+      const paths = ws?.paths.length ? inScopeFilesLine(ws.paths) : "(no paths declared)";
       return [
         `  - **${id}** at \`${wtPath}\``,
         `      scope: ${scope}`,
@@ -245,9 +238,7 @@ export function inlineCommitPrPrompt(
       const ws = workstreams[id];
       const path = worktrees[id] ?? "(no path)";
       const scope = ws?.scope ?? "(no scope captured)";
-      const paths = ws?.paths.length
-        ? inScopeFilesLine(ws.paths, ws.pathsDropped ?? 0)
-        : "(no paths declared)";
+      const paths = ws?.paths.length ? inScopeFilesLine(ws.paths) : "(no paths declared)";
       return [
         `  - **${id}** at \`${path}\``,
         `      scope: ${scope}`,

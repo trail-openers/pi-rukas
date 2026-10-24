@@ -9,10 +9,9 @@
  * diverged (out-of-scope handling, the dependsOn re-point, the scope
  * annotation). One helper:
  *
- *   - paths — UNION of both halves, deduped on the normalised identity and
- *     with the merged display count recomputed for `pathsDropped` (#1756 part
- *     b). The union is never truncated: every file either half authorised stays
- *     authorised.
+ *   - paths — UNION of both halves, deduped on the normalised identity (#1756
+ *     part b). The union is never truncated and never clipped for display:
+ *     every file either half authorised stays authorised and stays visible.
  *   - outOfScope — union of both halves MINUS the merged paths: after the
  *     merge the absorbed half's files ARE this workstream's scope, so a
  *     fence entry naming one of them would fence the merged workstream's
@@ -33,7 +32,10 @@
  *   - introduces / consumes (#1322) — union of both halves (absent when both
  *     are empty, so a fold of contract-less halves keeps the old shape).
  *
- * Pure: returns a NEW map; the input is never mutated.
+ * Pure: returns a NEW map; the input is never mutated. It emits NO trace of its
+ * own — a crowded plan folds once per absorbed workstream, so a per-fold warning
+ * would be N lines for one event. The caller that runs a whole fold pass
+ * (`foldToCeiling`, `foldPortPlan`) aggregates one line for the pass.
  */
 
 import { capFenceList, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
@@ -62,7 +64,8 @@ export function foldWorkstream(
   const intoWs = map[into];
   if (!intoWs) return map;
   const merged = foldTwo(intoWs, absorbed);
-  const next: Record<string, Workstream> = { ...map, [into]: merged };
+  const { duplicatePaths: _foldCount, ...mergedWs } = merged;
+  const next: Record<string, Workstream> = { ...map, [into]: mergedWs };
   delete next[from];
   // Re-point dependsOn edges that pointed at the absorbed id.
   for (const [id, ws] of Object.entries(next)) {
@@ -83,18 +86,23 @@ export function foldWorkstream(
  * without the sibling re-point. The ceiling fold (a single fold, no re-point
  * needed — the folded id is not a key any other workstream can depend on
  * yet) calls it directly; `foldWorkstream` composes it with the re-point.
+ *
+ * #1756 part b — returns the merged workstream and the count of duplicate
+ * entries its `paths` union collapsed, so a caller that runs a whole fold pass
+ * can say so ONCE. Per-fold warnings would be one line per absorbed workstream
+ * for what is one plan event.
  */
-export function foldTwo(a: Workstream, b: Workstream): Workstream {
+export interface FoldResult extends Workstream {
+  /** Duplicate `paths` entries this fold's union collapsed (0 for a clean fold). */
+  duplicatePaths: number;
+}
+
+export function foldTwo(a: Workstream, b: Workstream): FoldResult {
   // #1756 part b — the union re-runs the paths bound (duplicates across the two
-  // halves collapse on the normalised identity) and RECOMPUTES the display
-  // count for the merged list: two halves of 40 are 80 paths and a prompt that
-  // shows 50 of them, so the count describes the fold's result, not either
-  // half's. It NEVER truncates — the merged workstream authorises every file
-  // either half did.
+  // halves collapse on the normalised identity). It NEVER truncates and never
+  // counts for display: the merged workstream authorises every file either
+  // half did, and the prompts print all of them.
   const merged = boundPaths([...a.paths, ...b.paths]);
-  if (merged.duplicate > 0 || merged.dropped > 0) {
-    traceWarn(pathsBoundNotice(`plan fold '${a.id}' + '${b.id}'`, merged));
-  }
   const mergedPaths = merged.paths;
   const inScope = new Set(mergedPaths);
   const mergedList = [...new Set([...a.outOfScope, ...b.outOfScope])].filter(
@@ -140,7 +148,6 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
     id: a.id,
     scope: `${a.scope} (+merged: ${b.id})`,
     paths: mergedPaths,
-    ...(merged.dropped > 0 ? { pathsDropped: merged.dropped } : {}),
     outOfScope: fence.entries,
     ...clippedField(fence.clipped),
     dependsOn: mergedDeps.size > 0 ? [...mergedDeps] : undefined,
@@ -149,5 +156,6 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
       : {}),
     ...(introduces.length > 0 ? { introduces } : {}),
     ...(consumes.length > 0 ? { consumes } : {}),
+    duplicatePaths: merged.duplicate,
   };
 }

@@ -79,17 +79,6 @@ export interface Workstream {
    * planner never wrote. Absent when nothing was bounded — the pre-#1744 shape.
    */
   outOfScopeClipped?: OutOfScopeClip[];
-  /**
-   * #1756 part b — how many declared paths the develop prompt does NOT print.
-   * A DISPLAY count, never a removal: the driver keeps every path in `paths`
-   * because the scope gates (fanout denominator, path-claims, collisions,
-   * consolidation, fix anchors, deferred fence) read it as the authorised set,
-   * and a path that silently left the list would silently stop being
-   * authorised. Absent when the workstream declared at most
-   * `WORKSTREAM_LIST_MAX` paths — the pre-#1756 shape, so old state files
-   * still validate.
-   */
-  pathsDropped?: number;
   /** #679 — case 2(a). Workstream ids this one builds on (see above). */
   dependsOn?: string[];
   /** #679 — case 3. Consolidated-tree test path (see above). */

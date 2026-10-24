@@ -118,11 +118,6 @@ export function withDeferredProtectedFence(
     out[id] = {
       ...ws,
       paths: keptPaths.paths,
-      // #1756 part b — the display count is recomputed for the list this pass
-      // actually stores. A deferred protected path removed from a 60-path list
-      // leaves 59, so only 9 remain undisplayed; carrying the old 10 would tell
-      // the developer ten files exist that the plan no longer authorises.
-      ...(keptPaths.dropped > 0 ? { pathsDropped: keptPaths.dropped } : {}),
       outOfScope: fence.entries,
       ...clippedField(fence.clipped),
     };
