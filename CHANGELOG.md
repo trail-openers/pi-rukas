@@ -1148,11 +1148,11 @@ After v0.1.0, version bumps are driven automatically by
 
 ### Features
 
-* adopt codebase-memory-mcp; deprecate meadow + colgrep across the doctrine ([#191](https://github.com/randomm/pi-ensemble/issues/191)) ([4fe1cb7](https://github.com/randomm/pi-ensemble/commit/4fe1cb7f5b49f6239bb6e371b470d6a69b9e0a64))
+* adopt codebase-memory-mcp; deprecate the retired sibling-project search tools + colgrep across the doctrine ([#191](https://github.com/randomm/pi-ensemble/issues/191)) ([4fe1cb7](https://github.com/randomm/pi-ensemble/commit/4fe1cb7f5b49f6239bb6e371b470d6a69b9e0a64))
 * **ci:** publish sandbox image to GHCR; install.sh pulls instead of builds ([#219](https://github.com/randomm/pi-ensemble/issues/219)) ([a0ceb91](https://github.com/randomm/pi-ensemble/commit/a0ceb91da51cf04c78ebae38208a3c848da5a3f2))
 * dispatch_peek/steer transparently handle adversarial_loop jobIds ([#186](https://github.com/randomm/pi-ensemble/issues/186)) ([5082e85](https://github.com/randomm/pi-ensemble/commit/5082e859728678127f701396c0d24d4d10299b3d))
 * extend permission-guard into subagents (per-role allowlist applies universally) ([#187](https://github.com/randomm/pi-ensemble/issues/187)) ([56bcd6a](https://github.com/randomm/pi-ensemble/commit/56bcd6a7728ada2ae7b34e39e3a2791d6ba60f3d))
-* **sandbox:** --add-host plumbing so mesh network/LAN hostnames resolve inside container ([#204](https://github.com/randomm/pi-ensemble/issues/204)) ([aad53cb](https://github.com/randomm/pi-ensemble/commit/aad53cb46691b716dcd92059f3d2a903b23c4175))
+* **sandbox:** --add-host plumbing so private VPN/LAN hostnames resolve inside container ([#204](https://github.com/randomm/pi-ensemble/issues/204)) ([aad53cb](https://github.com/randomm/pi-ensemble/commit/aad53cb46691b716dcd92059f3d2a903b23c4175))
 * **sandbox:** docker-out-of-docker support for docker-based MCP servers ([#216](https://github.com/randomm/pi-ensemble/issues/216)) ([bcf3be2](https://github.com/randomm/pi-ensemble/commit/bcf3be2921efe49ebf10c2a89f2847c46773db88))
 * **sandbox:** drag-and-drop images + PM image-path guidance + /ensemble-model EROFS fix ([#213](https://github.com/randomm/pi-ensemble/issues/213)) ([88d423c](https://github.com/randomm/pi-ensemble/commit/88d423cdea2d5376e94e361883bbe99d0326549a))
 * **sandbox:** install parallel-cli in image + scrub PM's ghost-MCP web-search refs ([#218](https://github.com/randomm/pi-ensemble/issues/218)) ([5a47955](https://github.com/randomm/pi-ensemble/commit/5a47955719a337675d3e0f8120601da21a478693))

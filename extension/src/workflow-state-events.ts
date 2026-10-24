@@ -252,7 +252,7 @@ export type WorkEvent =
       /**
        * #286 — runAdversarial skipped the adversarial loop for a workstream
        * because its per-worktree diff was empty. Full adversarial reviewer
-       * spawns on empty diffs were pure waste: one spawn on lantern 2026-07-27
+       * spawns on empty diffs were pure waste: one spawn on 2026-07-27
        * concluded "treat the empty diff as a legitimate no-op" after burning
        * a complete review cycle. Skipped workstreams count as ok for the
        * aggregate verdict. Escape hatch: PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP=0.

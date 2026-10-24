@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Catching false claims in a diff — the lantern #658 class.
+ * Catching false claims in a diff — the defect class behind #658.
  *
  * That PR shipped two defects past all six lenses, which returned one cosmetic
  * LOW finding:
@@ -29,7 +29,7 @@
 
 import { extractClaimCandidates } from "../src/claim-scan.ts";
 import { isClaimScanProbe as isProbe } from "./lib/claim-scan-probe-fixture.ts";
-import { LANTERN_DIFF } from "./lib/claim-scan-fixture.ts";
+import { FIELD_DIFF } from "./lib/claim-scan-fixture.ts";
 import { runClaimScan } from "../src/lens-evidence.ts";
 import { computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
@@ -41,7 +41,7 @@ const GIT_GREP = "git " + "grep";
 // The probe matcher lives in lib/claim-scan-probe-fixture.ts, shared with
 // test-claim-scan-probe-cost.ts — a fake that fails to recognise the probe
 // answers "the file exists" for every call, which reads as a green suite that
-// asserts nothing. The lantern diff both suites read is in
+// asserts nothing. The synthetic docs diff both suites read is in
 // lib/claim-scan-fixture.ts for the same reason.
 
 let exit = 0;
@@ -56,7 +56,7 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------------- defect #2, the real shape
 
 {
-  const c = extractClaimCandidates(LANTERN_DIFF);
+  const c = extractClaimCandidates(FIELD_DIFF);
   const tokens = c.map((x) => x.token);
   assert(tokens.includes("64 GB"), "extracts the invented memory spec");
   assert(tokens.includes("2 TB"), "extracts the invented storage spec");
@@ -84,7 +84,7 @@ function assert(cond: boolean, msg: string) {
     }
     return { stdout: "origin/feature/x:src/config.ts\n" };
   };
-  const findings = await runClaimScan(exec, "/repo", "feature/x", LANTERN_DIFF);
+  const findings = await runClaimScan(exec, "/repo", "feature/x", FIELD_DIFF);
   assert(findings.length === 3, "the scan produces one finding per invented spec");
 
   // The pre-#1002 fake returned a code file for EVERY command, so the
@@ -227,14 +227,14 @@ function assert(cond: boolean, msg: string) {
     async () => ({ stdout: "origin/feature/x:src/config.ts\n" }),
     "/repo",
     "feature/x",
-    LANTERN_DIFF,
+    FIELD_DIFF,
   );
   assert(allGrounded.length === 0, "when everything grounds, the scan is silent");
 
   const prev = process.env.PI_ENSEMBLE_CLAIM_SCAN;
   process.env.PI_ENSEMBLE_CLAIM_SCAN = "0";
   assert(
-    (await runClaimScan(exec, "/repo", "feature/x", LANTERN_DIFF)).length === 0,
+    (await runClaimScan(exec, "/repo", "feature/x", FIELD_DIFF)).length === 0,
     "PI_ENSEMBLE_CLAIM_SCAN=0 disables it",
   );
   if (prev === undefined) delete process.env.PI_ENSEMBLE_CLAIM_SCAN;

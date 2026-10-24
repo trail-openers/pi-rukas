@@ -7,7 +7,7 @@
  *     the handoff's by the allowance after it, less the gh-fallback reserve;
  *     nothing outside a cycle (or without a deadline) is touched, and a bound
  *     is never loosened.
- *  2. terminalReasonAtHandoff, on the example-owner/orchard cycle 175 shape (developer
+ *  2. terminalReasonAtHandoff, on the reference shape (developer
  *     killed at the 2 h backstop, fence verdict `verify-failed:develop` in the
  *     same millisecond): the backstop kill is the terminal cap; with the
  *     deadline passed, `deadline` is, and its evidence keeps the verdict.
@@ -55,7 +55,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const T0 = 1_792_283_276_000; // cycle 175's start, epoch ms
+const T0 = 1_792_283_276_000; // the measured cycle's start, epoch ms
 const HOUR = 3_600_000;
 const BACKSTOP = 2 * HOUR;
 
@@ -113,7 +113,7 @@ const BACKSTOP = 2 * HOUR;
   );
 }
 
-// The example-owner/orchard cycle 175 shape: the developer killed at the 2 h backstop,
+// The reference shape: the developer killed at the 2 h backstop,
 // the fence gate's verdict recorded in the same millisecond.
 const AT = Date.parse("2026-10-18T03:13:15.845Z");
 const KILL_TAIL =

@@ -145,7 +145,7 @@ export type WorkCapLiteral =
   // work failed. A transport severance / endpoint timeout / short-burst 429
   // that survived every retry (and, for the adversarial gate, the fan-out's
   // own ladder) parks here instead of `step-failed:<step>`, for two reasons.
-  // (1) The caller can act: orchard runs pi-rukas headless and re-queues a
+  // (1) The caller can act: a host that runs pi-rukas headless re-queues a
   // provider park itself when the endpoint answers again — it has nothing to
   // look at, because nothing about the code was judged. (2) It is NOT a
   // mid-flight-halt shape: `runHandoff` keys `status: "aborted"` off the
@@ -280,7 +280,7 @@ export type WorkCapLiteral =
   // #1238 — the caller-set whole-cycle deadline (PI_ENSEMBLE_CYCLE_DEADLINE
   // or PI_ENSEMBLE_CYCLE_BUDGET_MS): at a step boundary the deadline was
   // within the handoff grace, so the driver started no new step and parked
-  // so the handoff posts before the caller kills the process (the orchard `docker stop` shape: a mid-step kill, no
+  // so the handoff posts before the caller kills the process (the `docker stop` shape: a mid-step kill, no
   // handoff, state left `running`). Emitted at the step boundary only — no
   // mid-step hard kill.
   | "deadline"
@@ -293,7 +293,7 @@ export type WorkCapLiteral =
   // unexpectedly (exit code N)`, no `errorStop`, no `killCause`) and its
   // worktree was left with uncommitted work that its pass never committed.
   // Pre-fix the step reported `step-completed … recovered: false` and the
-  // dead pass's fix stayed off the branch entirely (orchard #238: `M scripts/stop.sh`,
+  // dead pass's fix stayed off the branch entirely (a measured cycle: `M scripts/stop.sh`,
   // 56 insertions, reviewed by adversarial round 3 and then dropped).
   //
   // NOT a template and NOT `step-failed:develop`: that prefix terminalizes as

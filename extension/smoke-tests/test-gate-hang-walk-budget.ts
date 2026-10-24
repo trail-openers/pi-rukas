@@ -155,7 +155,7 @@ assert(
 // how the test would find out.
 {
   const STUCK = [
-    { pid: 4001, ppid: 3500, etime: "01:15:02", args: "target/debug/deps/lantern-1a2b" },
+    { pid: 4001, ppid: 3500, etime: "01:15:02", args: "target/debug/deps/my-app-1a2b" },
     { pid: 4002, ppid: 4001, etime: "01:14:58", args: "git pull --ff-only origin main" },
     { pid: 4003, ppid: 4002, etime: "01:14:57", args: "git remote-https origin https://x/y" },
   ];

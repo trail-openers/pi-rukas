@@ -8,7 +8,7 @@
  * permission nobody gave is the worst possible failure — and they still got it
  * wrong in both directions on real files:
  *
- *   - lantern's *"Agents may squash-merge **a** PR to main once CI is green"* —
+ *   - a measured cycle's *"Agents may squash-merge **a** PR to main once CI is green"* —
  *     a genuine, deliberate grant — matched nothing, because the pattern
  *     wanted `PRs` directly after `merge` and an indefinite article broke it.
  *     The gate reported `source: "none"`, indistinguishable from a project

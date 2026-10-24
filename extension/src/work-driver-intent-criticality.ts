@@ -63,10 +63,10 @@ function criticalityTokens(text: string): Set<string> {
  *
  * `contradicted` is meant to say "the ISSUE's claim is false against the code".
  * A resolver that finds a stale vipune row writes the same token for a
- * different subject: the MEMORY is what the code contradicts. On orchard #97 the
- * row read "vipune rows claiming issue 97 already moved the meter into
- * `header.topbar`, and one describing a `test/app_test.sh` that does not
- * exist" — rows the resolver had just superseded, under a `proceed` it argued
+ * different subject: the MEMORY is what the code contradicts. In one measured case the
+ * row read "vipune rows claiming the earlier issue already moved the meter
+ * into `header.topbar`, and one describing a `test/app_test.sh` that does
+ * not exist" — rows the resolver had just superseded, under a `proceed` it argued
  * with file:line evidence. It named a deliverable file and said "does not
  * exist", so the classifier below read the resolver's own correction as proof
  * that the issue was stale, and parked.

@@ -161,7 +161,7 @@ export async function dispatchExploreAttempt(
   // The explore role returns one report covering all issues (single dispatch).
   const event = await buildCompletionEvent(ctx, "explore", "explore", "explore", exploreDispatch);
   const after = appendEvent(clearDispatch(next, begun.jobId), event);
-  // A dispatch that FAILED has no reply to route on (lantern #686/#693).
+  // A dispatch that FAILED has no reply to route on (two failed downstream dispatches).
   return {
     state: after,
     jobId: event.jobId,

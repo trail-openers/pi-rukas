@@ -2,7 +2,7 @@
 /**
  * #290 — plan decomposition quality + the workstream ceiling.
  *
- * Motivating incident (lantern #604): an 8.6s plan collapsed six enumerated
+ * Motivating incident (one measured cycle): an 8.6s plan collapsed six enumerated
  * findings into ONE workstream. The developer then sprawled across 11 files,
  * looped 17 failed builds, and burned 10.5M tokens before dying. The gate is
  * deliberately arithmetic — asking the model that just under-decomposed

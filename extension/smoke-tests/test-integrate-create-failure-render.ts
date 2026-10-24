@@ -3,7 +3,7 @@
  * #1543 — when commit-pr cannot CREATE the integrate worktree, the handoff
  * names git's error, not a branch-holder audit that never ran.
  *
- * example-owner/orchard cycle cycle-id: `git worktree add` failed with "fatal:
+ * One measured cycle: `git worktree add` failed with "fatal:
  * not a git repository", the fallback raised `integration-worktree-violation`
  * without dispatching anyone, and the handoff then said "commit-pr's ops
  * fallback worked in the wrong tree … inspect the offending holder" — the
@@ -28,7 +28,7 @@ function assert(cond: boolean, msg: string, detail?: string) {
 }
 
 const GIT_ERR =
-  "fatal: not a git repository (or any parent up to mount point /home/ops/orchard/work)";
+  "fatal: not a git repository (or any parent up to mount point /home/ops/app/work)";
 
 function capped(evidence: string): WorkState {
   let s = initialState(56, 1) as WorkState;

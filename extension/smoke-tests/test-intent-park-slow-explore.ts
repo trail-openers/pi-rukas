@@ -3,7 +3,7 @@
  * #1385 — a `park` intent verdict ends the cycle at the intent gate, under
  * `--restart` and when the explore dispatch crossed the slow-notice threshold.
  *
- * Cycle example-owner/orchard#cycle-id ran `/work 194 --restart`. Its explore
+ * One measured cycle ran `/work <issue> --restart`. Its explore
  * dispatch crossed slow-notice level 1 (20 min) and resolved
  * `INTENT-VERDICT: park` / `PARK-REASON: already-implemented` with zero
  * deliverables. The driver traced the verdict and then ran plan, branch,

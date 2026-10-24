@@ -44,6 +44,6 @@ None. The recon confirms the issue body; no spec-level conflict.
 2. Wrap `execFn` in tests with a hanging stub (`sleep`) as well as the real-git test, because the existing stubs never exercise timeout or env. Confidence: High.
 3. Kill the process group on timeout (`killSignal` plus a detached group), so a timed-out push does not hold the integration lock. Confidence: Medium. Needs a check on Node exec behaviour.
 
-Scratch: `tmp/issue-1095` (not written; recon only).
+Scratch dir provided by the driver (not written; recon only).
 
 Stored in project memory: not stored (reconnaissance only; no new durable facts beyond the code state above).

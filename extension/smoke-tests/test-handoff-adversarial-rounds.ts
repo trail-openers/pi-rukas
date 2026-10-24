@@ -2,7 +2,7 @@
 /**
  * A handoff must say what actually happened.
  *
- * lantern #664's adversarial loop ran three full rounds — three reviews, two fix
+ * One measured cycle's adversarial loop ran three full rounds — three reviews, two fix
  * dispatches, twenty minutes — and the handoff comment posted to GitHub said:
  *
  *     **Rounds**: 0 of 3 review rounds

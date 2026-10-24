@@ -6,7 +6,7 @@
  * command as the leader of its own process group and SIGTERMs/SIGKILLs the
  * GROUP at the timeout), and the cap vocabulary already distinguishes a killed
  * run from a verdict (`verify-timeout:<step>`, #1324/#1349). What was missing
- * is the content of the report. The lantern #1054 measurement is the reason this
+ * is the content of the report. The #1054 measurement is the reason this
  * file exists: a `cargo test` gate hung for **75 minutes** with no output, the
  * cycle emitted only `slow` notices, and nothing said which test was stuck or
  * that the `git fetch` grandchildren of a test's own already-killed `git pull`

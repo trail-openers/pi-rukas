@@ -34,22 +34,22 @@ const mkDirtyState = (dirty: boolean | undefined) => {
       status: "handoff",
       branchName: "feature/issue-577-multi",
       worktrees: {
-        "prompt-reorder": "/repo/proj/.worktrees/issue-577-prompt-reorder",
-        observability: "/repo/proj/.worktrees/issue-577-observability",
+        "docs-research": "/repo/proj/.worktrees/issue-577-docs-research",
+        "app-logging": "/repo/proj/.worktrees/issue-577-app-logging",
       },
       baseSha: "aaa1111",
-      workstreamBaseShas: { "prompt-reorder": "aaa1111", observability: "aaa1111" },
-      commitShas: { "prompt-reorder": "bbb2222", observability: "ccc3333" },
+      workstreamBaseShas: { "docs-research": "aaa1111", "app-logging": "aaa1111" },
+      commitShas: { "docs-research": "bbb2222", "app-logging": "ccc3333" },
       incompleteConsolidation: {
         verdicts: [
           {
-            id: "prompt-reorder",
+            id: "docs-research",
             status: "uncovered" as const,
-            uncoveredPaths: ["selfhost/app-config/prompts/strategy-research.md"],
+            uncoveredPaths: ["docs/research.md"],
             ...(dirty !== undefined ? { dirty } : {}),
           },
         ],
-        filesPresent: ["selfhost/app-config/lantern.toml"],
+        filesPresent: ["config/app.toml"],
       },
     },
   };

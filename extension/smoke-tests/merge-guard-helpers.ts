@@ -71,7 +71,7 @@ export const TARGET: MergeTarget = {
   headBranch: "feature/x",
   headOid: "abc123",
   baseBranch: "main",
-  author: "janni",
+  author: "dev",
   labels: [],
 };
 

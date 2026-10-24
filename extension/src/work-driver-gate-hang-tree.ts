@@ -2,7 +2,7 @@
  * work-driver-gate-hang-tree — #1427: walking the killed gate's process tree.
  *
  * The hang report's most actionable section is the list of processes still
- * holding on when the wall clock fired (the lantern #1054 case: a test's own
+ * holding on when the wall clock fired (the case behind #1054: a test's own
  * already-killed `git pull` leaving a `git remote-http` behind, holding the
  * worktree). This module owns reading that tree — the `ps` invocation, the
  * breadth-first walk from the group leader, and the three bounds that keep the

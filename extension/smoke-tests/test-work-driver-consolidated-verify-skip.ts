@@ -3,7 +3,7 @@
  * #1240 — the develop gate ran the project's verify command TWICE on the same
  * content in an N=1 cycle: once in the develop worktree and once at repoRoot
  * for the consolidated probe, which cherry-picks that one workstream's OWN
- * commits onto baseSha. Measured on the orchard factory: ~21 min per pass, a
+ * commits onto baseSha. Measured: ~21 min per pass on one project, a
  * third of a three-round cycle, for a tree the first run already judged.
  *
  * The probe now compares git's own tree object ids and skips the command only

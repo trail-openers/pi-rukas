@@ -10,7 +10,7 @@
  * re-read an unchanged branch and re-flagged the same findings at escalating
  * severity until the round cap fired.
  *
- * Observed live on lantern #663. The pushed commit had deleted 1007 lines of
+ * Observed live on one measured cycle. The pushed commit had deleted 1007 lines of
  * `src/config/mod.rs` — the whole config module root — so CI could not compile.
  * The lens-fix developer diagnosed it and restored the files correctly: 1174
  * lines, staged in the index. None of it was ever committed or pushed, because

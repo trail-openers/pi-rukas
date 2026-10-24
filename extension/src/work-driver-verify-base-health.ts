@@ -7,13 +7,13 @@
  * (1) The cycle learned a red base only AFTER develop. `compareWithBaseline`
  * is paid for by the develop gate's post-run half
  * (`work-driver-verify-aggregate.ts`), so a base whose verify command is
- * already red cost orchard three develop rounds of 4909 s, 6883 s and 8211 s
+ * already red cost one measured cycle three develop rounds of 4909 s, 6883 s and 8211 s
  * before one probe said "no change can pass it". So the branch step — the
  * earliest step whose state carries `baseSha` — probes the base ONCE and
  * parks `verify-baseline-red:branch` with zero developer dispatches. The
  * green verdict is cached across cycles, keyed by (baseSha, command, tier
  * bound): the probe is a full suite run (7 m 24 s on this repo), so per-cycle
- * probing would tax every healthy cycle, and orchard ran several cycles and
+ * probing would tax every healthy cycle, and one measured project ran several cycles and
  * attempts against one base. A RED verdict is never cached across cycles —
  * each cycle that would park re-probes first, so a flaky red cannot park
  * cycles it did not run in.

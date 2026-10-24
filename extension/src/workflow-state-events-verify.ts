@@ -1,12 +1,12 @@
 /**
  * /work workflow state — the verify-gate run event pair (#1415).
  *
- * orchard cycle 261 ran 15,159 s and ~67 of its minutes went to the driver's own
+ * One measured cycle ran 15,159 s and ~67 of its minutes went to the driver's own
  * consolidated verify — ~22 minutes after EACH develop round — with nothing
  * written to the console while it ran. Between the developer's `Task complete`
  * and `step 4/9 develop done in 2491s` the operator watched a stall that was
  * not one. The gate's slowness is a separate, already-filed problem
- * (example-owner/orchard#247); that it is INVISIBLE while it runs is this one.
+ * (already filed on that project); that it is INVISIBLE while it runs is this one.
  *
  * So the gate announces itself: `verify-started` when the command is about to
  * be executed and `verify-completed` when it returns, carrying the duration,
@@ -86,7 +86,7 @@ export type VerifyStatus = "success" | "failure" | "skipped" | "timeout";
  *
  * Emitted BEFORE the exec, not alongside the completion: a pair that only
  * lands when the command returns says nothing during the 22 minutes the event
- * exists to fill. A cycle killed mid-run (the orchard `docker stop` shape)
+ * exists to fill. A cycle killed mid-run (the `docker stop` shape)
  * therefore leaves a `verify-started` with no `verify-completed`, which is
  * itself the finding — it localises the kill to the gate rather than to the
  * step at large.

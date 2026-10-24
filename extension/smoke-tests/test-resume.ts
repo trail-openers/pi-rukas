@@ -13,8 +13,8 @@
  * The tests below kill the driver mid-dispatch for real (the injected
  * `dispatchFn` throws a marker after the write-ahead has hit disk) and then
  * re-invoke it, because that is the only way to observe what a crash actually
- * leaves behind. Live evidence this matters: `.pi/work-state/547.json` and
- * `551.json` in this repo are stuck at `status: "running"` with empty event
+ * leaves behind. Live evidence this matters: two `.pi/work-state/<issue>.json`
+ * state files in this repo are stuck at `status: "running"` with empty event
  * logs — cycles that died and can never be resumed or diagnosed.
  */
 

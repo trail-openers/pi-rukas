@@ -31,7 +31,7 @@
  * marked +x is still data), so only `#!`-prefixed files count.
  *
  * **Proven in both directions.** A gate never observed to fail is worthless —
- * lantern's own file-size ratchet shipped with three separate fail-open bugs
+ * this repo's own file-size ratchet shipped with three separate fail-open bugs
  * that each passed CI green, including a counter incremented inside a piped
  * `while` loop, which lives in a subshell and is therefore always zero. So
  * this asserts not only that the repo is clean but that a deliberately

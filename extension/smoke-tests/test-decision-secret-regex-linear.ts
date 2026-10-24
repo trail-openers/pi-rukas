@@ -55,7 +55,7 @@ const globalOf = (re: RegExp) =>
  * to exist: an absent rule fails this file loudly rather than silently timing
  * `undefined`.
  */
-const PROBE = "https://janni:hunt/er2hunter2secretvalue@git.example.com/x";
+const PROBE = "https://devuser:hunt/er2hunter2secretvalue@git.example.com/x";
 const PROBE_SHAPE = /:\/\/[^:@\s]*:[^@\s]+@/;
 const matchers = SECRET_PATTERNS.filter((re) => re.test(PROBE));
 const urlCredential = matchers[0] ?? PROBE_SHAPE;
@@ -164,7 +164,7 @@ for (const [what, input] of NEAR_MISSES) {
 //    The rule keeps the `/`-in-PASSWORD half and drops this one, which is a documented
 //    gap on the user half, not a silent one.
 {
-  const r = redactSecrets("clone from https://janni:hunt/er2hunter2secretvalue@git.example.com/x");
+  const r = redactSecrets("clone from https://devuser:hunt/er2hunter2secretvalue@git.example.com/x");
   assert(
     r.count >= 1 && !r.text.includes("hunter2secretvalue"),
     `a real embedded credential is still replaced, so the bounds above measured a working pattern (${r.count} redaction(s))`,

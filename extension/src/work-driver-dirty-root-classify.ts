@@ -6,8 +6,8 @@
  * `git status --porcelain` reports anything outside the driver-managed and
  * configured-exempt prefixes, and the cycle then parks as
  * `verify-failed:develop` — the cap pi-rukas reserves for a gate that judged
- * the code. Live cycle cycle-id (example-owner/orchard#248) parked a complete,
- * reviewed, 3-commits-ahead change on five paths:
+ * the code. One measured cycle parked a complete, reviewed, 3-commits-ahead
+ * change on five paths:
  *
  *   target/.rustc_info.json, target/CACHEDIR.TAG, target/debug/.cargo-*-lock
  *

@@ -149,7 +149,7 @@ function sliceSubsection(text: string, name: string): string | undefined {
  * four spec fields (deliverables, acceptanceCriteria, evidence, openQuestions),
  * so a numbered spec parsed to an empty spec on every one of them. It could not
  * even self-rescue through #397's "a complete spec refutes underspecified"
- * path, because that reads the same empty fields. lantern #662 parked twice this
+ * path, because that reads the same empty fields. One measured cycle parked twice this
  * way while its own resolver rationale said the intent was clear.
  */
 function bullets(section: string | undefined): string[] {

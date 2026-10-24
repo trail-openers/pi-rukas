@@ -3,7 +3,7 @@
  * fixer dispatch, not only at the next verdict boundary.
  *
  * The 90-minute budget was printed every second and never acted on. Measured on
- * example-owner/orchard cycle cycle-id: the status line ticked `cap 93m21s/90m`
+ * A measured cycle: the status line ticked `cap 93m21s/90m`
  * … `cap 100m11s/90m`, and the cycle ended only because the operator quit Pi —
  * `session_shutdown … aborted 2 in-flight async jobs — work-driver,
  * developer:lens-fix-1`. No `cap-hit` anywhere in the stream, no handoff, and

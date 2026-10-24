@@ -167,8 +167,8 @@ if (parsed) {
 // ============================================================================
 // #830 — the shape a real resolver drifted into on /work 826.
 //
-// The live artifact (.pi/work-state/826/mudtycjy-j90ljq-explore.txt, cycle at
-// cd6cb5f) wrote the verdict whole-bold — `**INTENT-VERDICT: proceed**` — and
+// The live artifact (.pi/work-state/<issue>/<runId>-explore.txt) wrote the
+// verdict whole-bold — `**INTENT-VERDICT: proceed**` — and
 // nested its spec under a parent heading: `### Spec` inside `## Intent
 // resolution`, with bold labels for the subsections instead of `###`.
 // `parseNormalisedSpec` gated the whole parse on a level-2-only `Spec` slice,
@@ -237,7 +237,7 @@ if (parsed) {
 // #996 — the shape a real resolver wrote on /work 984, which parked as
 // `underspecified` despite a complete, fully-confirmed spec.
 //
-// The live artifact (.pi/work-state/984/muwnboi9-7qq2da-explore.txt) carries
+// The live artifact (.pi/work-state/<issue>/<runId>-explore.txt) carries
 // a complete `## Spec` — intent, 7 deliverables, 10 acceptance criteria,
 // 11 confirmed evidence rows — with **no** `INTENT-VERDICT`/`PARK-REASON`
 // token (correctly a default-park per #378), a parenthesised

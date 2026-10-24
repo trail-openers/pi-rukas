@@ -11,7 +11,7 @@ Symptom → cause → fix entries for the most common `pi-rukas` sandbox issues:
 Full reference for the `PI_ENSEMBLE_*` environment variables (main, outcome-verification, and sandbox-mode tables) plus the Configuration & paths table of repo-internal and per-host file locations.
 
 ### [sandbox.md](sandbox.md)
-Full detail on sandboxed mode: the bind-mount table, `pi-rukas` wrapper subcommands, cross-mode persistence, session resume, mesh network/host aliases, drag-and-drop images, and the docker-socket / SSH trade-off.
+Full detail on sandboxed mode: the bind-mount table, `pi-rukas` wrapper subcommands, cross-mode persistence, session resume, private host aliases, drag-and-drop images, and the docker-socket / SSH trade-off.
 
 ### [mcp.md](mcp.md)
 MCP bridge walkthrough: installing `pi-mcp-adapter`, the 4-tier server config, `command:` portability between host and sandbox, `directTools` surface modes, the 3-tier pi-rukas role-permission overlay, and security notes.

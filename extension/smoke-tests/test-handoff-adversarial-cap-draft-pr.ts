@@ -6,7 +6,7 @@
  * `adversarial-loop` means the reviewer's final verdict was CRITICAL — and the
  * cycle routes straight from adversarial to handoff, skipping commit-pr. The
  * handoff consolidated the reviewed commits onto a LOCAL branch only: nothing
- * pushed, no PR (orchard cycle 238: 3h45m, three fix rounds, a one-line CRITICAL
+ * pushed, no PR (one measured cycle: 3h45m, three fix rounds, a one-line CRITICAL
  * fix the reviewer had already written out — and nothing anyone could fetch).
  *
  * Real-git test (temp repos and a bare temp "origin" only). Pins:

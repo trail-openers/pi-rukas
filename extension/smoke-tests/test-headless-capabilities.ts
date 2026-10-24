@@ -100,7 +100,7 @@ assert(caps.verbs.work.flags.length >= 3, "work flags has at least --restart, --
 assert(caps.verbs.work.flags.includes("--restart"), "work flags includes --restart");
 assert(caps.verbs.work.flags.includes("--json"), "work flags includes --json");
 assert(caps.verbs.work.flags.includes("--timeout"), "work flags includes --timeout");
-// #1468 — orchard checks for this flag before it asks for a refresh.
+// #1468 — a headless caller checks for this flag before it asks for a refresh.
 assert(caps.verbs.work.flags.includes("--continue-pr"), "work flags includes --continue-pr");
 
 // ── #1021 — the S6 subcommands are listed with the flags their parsers accept,

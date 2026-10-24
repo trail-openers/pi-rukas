@@ -20,7 +20,7 @@
  *    acceptanceCriteria, evidence and openQuestions. So a numbered spec cannot
  *    even self-rescue via #397's "a complete spec refutes underspecified" path:
  *    it parks, and parks again on retry. That is the double-park shape seen on
- *    lantern #662, whose handoff said "does not say enough to build from" while
+ *    One measured cycle whose handoff said "does not say enough to build from" while
  *    quoting its own resolver saying "the intent is clear, no contradictions".
  *
  * Note the theory this replaces: the field diagnosis was that the resolver needs

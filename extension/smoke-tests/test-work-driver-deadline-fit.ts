@@ -2,7 +2,7 @@
 /**
  * #1567 item 6 — deadline, partial fit (#1447, #1547, #1242).
  *
- * example-owner/orchard cycle cycle-id started `lens-fix` with 35m29s left of
+ * one measured cycle started `lens-fix` with 35m29s left of
  * its caller deadline; the child ran 2,098 s and the cap fired only when it
  * returned, past the deadline. The policy: clamp a step to the remaining time
  * while at least 15 min (develop, lens-fix) or 10 min (lens) of useful time is

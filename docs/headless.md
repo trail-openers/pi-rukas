@@ -17,7 +17,7 @@ pi-rukas-headless --capabilities
 - **`plan`, `research`, `agents-md`, `lens-review`** — run the compiled /plan and /research pipelines, the agents-md verbs and the six-pass review once, on the same headless host. See [Subcommands](#subcommands).
 - **`--capabilities`** — prints one versioned JSON object describing what *this* build supports and exits 0. It starts no cycle, reads no project repository, and makes no network call.
 
-A caller (e.g. orchard) calls `--capabilities` once per image build and once before each cycle. An unknown name in the object means "not supported"; the caller fails closed on it.
+A headless caller calls `--capabilities` once per image build and once before each cycle. An unknown name in the object means "not supported"; the caller fails closed on it.
 
 ## Subcommands
 

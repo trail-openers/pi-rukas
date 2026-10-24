@@ -191,7 +191,7 @@ export async function runCommitPrConsolidatedVerify(
     let timedOut = false;
     let ranCmd = opts.verifyCmd;
     // #1427 — the killed run's stream and the tree captured at its kill. The
-    // capture happens in the catch, not after: the lantern #1054 case is children
+    // capture happens in the catch, not after: the #1054 case is children
     // that outlive their leader, and a walk after the settle would report nothing
     // about the processes the report exists to name.
     let killedOutput = "";

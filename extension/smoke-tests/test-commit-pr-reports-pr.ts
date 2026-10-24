@@ -3,7 +3,7 @@
  * commit-pr ends with an OPEN pull request recorded in state, or with a halt
  * that says why there is none — and it says what it did while it worked.
  *
- * orchard#97, 2026-10-13: the step ran 515 s and wrote nothing at all between
+ * One measured cycle: the step ran 515 s and wrote nothing at all between
  * "running step commit-pr" and "running step lens-review". It had in fact
  * verified the consolidated tree (the project's 8.5-minute gate), pushed and
  * opened PR #107 — but a successful mechanized commit-pr traced none of it, so

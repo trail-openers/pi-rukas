@@ -2,7 +2,7 @@
 /**
  * #1094 — an explore reply with no readable `## Spec` is re-dispatched ONCE.
  *
- * Measured: lantern #1095 explore replies carried a valid `INTENT-VERDICT:` but
+ * Measured: explore replies carried a valid `INTENT-VERDICT:` but
  * wrote the legacy `## Workstreams` / `## Prior decisions` / `## Touchpoints`
  * headings instead of `## Spec`, and the cycle parked on the first miss. The
  * fix is one bounded re-dispatch with a preface naming the missing heading, and

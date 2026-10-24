@@ -3,7 +3,7 @@
  * #1403 — a develop child whose engine DIED mid-pass is a named step outcome,
  * recorded structurally, with the dirty leftover named.
  *
- * The incident (orchard #238, cycle cycle-id): develop round 3's
+ * The incident (one measured cycle): develop round 3's
  * developer logged `the engine stopped unexpectedly (exit code 1); the next
  * request restarts it`, its async job "finished in 197676ms" with nothing in
  * `err.txt` recording a failure, and the step reported
@@ -139,10 +139,10 @@ try {
   const wt = path.join(dir, ".worktrees", "default");
   mkdirSync(path.join(dir, ".worktrees"), { recursive: true });
   mkdirSync(wt, { recursive: true });
-  // The dead pass's work: one modified file, uncommitted — the `scripts/stop.sh`
-  // shape from the incident.
-  mkdirSync(path.join(wt, "libexec"), { recursive: true });
-  writeFileSync(path.join(wt, "libexec", "stop"), "#!/bin/sh\n# fixed lock handling\n");
+  // The dead pass's work: one modified file, uncommitted — the shape the
+  // stubbed porcelain below reports.
+  mkdirSync(path.join(wt, "scripts"), { recursive: true });
+  writeFileSync(path.join(wt, "scripts", "stop.sh"), "#!/bin/sh\n# fixed lock handling\n");
   // A driver artefact, which must NOT be named as lost work.
   mkdirSync(path.join(wt, ".pi"), { recursive: true });
   writeFileSync(path.join(wt, ".pi", "note.txt"), "driver scratch\n");

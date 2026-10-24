@@ -13,6 +13,7 @@
  * test-headless-inputs.ts covers the `src/` side of the scan. Each rule of
  * the shell scan is also run against a planted fixture.
  */
+import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { SEAMS, isGrandfathered } from "../src/decision-seam-registry.ts";
@@ -164,10 +165,52 @@ assert(reads.has("PI_ENSEMBLE_NO_SSH"), `the wrapper scan finds its reads (${rea
     image !== undefined && byName("PI_ENSEMBLE_IMAGE")?.default === image,
     `PI_ENSEMBLE_IMAGE default matches the wrapper (${image})`,
   );
-  const aliases = wrapper.match(/default_aliases="([^"]*)"/)?.[1];
+  // The wrapper registers no host of its own: unset or empty, it emits nothing —
+  // not even the NUL an empty printf would leave behind — so no stray argument
+  // reaches `docker run`. With a value it emits one NUL-separated flag per pair.
+  {
+    const runAlias = (value: string | undefined) => {
+      const env: Record<string, string | undefined> = { ...process.env };
+      if (value === undefined) delete env.PI_ENSEMBLE_HOST_ALIASES;
+      else env.PI_ENSEMBLE_HOST_ALIASES = value;
+      const wrapperPath = path.join(REPO_ROOT, "bin", "pi-rukas");
+      const script = `set -e
+source <(sed -n '/^build_host_aliases()/,/^[}]/p' "${wrapperPath}")
+build_host_aliases | tr '\\0' '|'`;
+      const r = spawnSync("bash", ["-c", script], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        env,
+        timeout: 10_000,
+      });
+      // A probe that never produced an exit status (killed, unspawnable) is a
+      // probe failure, never an empty result the assertions could compare.
+      if (r.error || r.status === null) {
+        const why = r.error?.message ?? `signal ${r.signal}`;
+        throw new Error(`host-alias probe did not run: ${why}\n${r.stderr ?? ""}`);
+      }
+      if (r.status !== 0) {
+        throw new Error(`host-alias probe exited ${r.status}:\n${r.stderr ?? ""}`);
+      }
+      return (r.stdout || "").replace(/\|$/, "");
+    };
+    // Positive control: a value that must produce output, so the two empty
+    // assertions below cannot pass vacuously on a probe that ran nothing.
+    assert(
+      runAlias("gateway:192.0.2.10,db:198.51.100.20") ===
+        "--add-host=gateway:192.0.2.10|--add-host=db:198.51.100.20",
+      "HOST_ALIASES renders one --add-host per pair",
+    );
+    assert(runAlias(undefined) === "", "unset HOST_ALIASES adds no --add-host");
+    assert(runAlias("") === "", "empty HOST_ALIASES adds no --add-host and no stray NUL");
+  }
   assert(
-    aliases !== undefined && byName("PI_ENSEMBLE_HOST_ALIASES")?.default === aliases,
-    `PI_ENSEMBLE_HOST_ALIASES default matches the wrapper (${aliases})`,
+    byName("PI_ENSEMBLE_HOST_ALIASES")?.default === "",
+    "the listed HOST_ALIASES default is the empty string (no host ships)",
+  );
+  assert(
+    !/--add-host=[^$"]/.test(wrapper),
+    "the wrapper adds no alias when the variable is unset (no hardcoded --add-host)",
   );
   const dirs = wrapper.match(/default_image_dirs="([^"]*)"/)?.[1]?.replaceAll("$HOME", "~");
   assert(

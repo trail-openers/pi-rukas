@@ -380,7 +380,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     labelApplied: true,
     handoffBodyPath: "/tmp/issue-533/handoff-comment.md",
   });
-  const msg = renderHandoffUserMessage(s, "/repo/lantern", "/repo/lantern/tmp/issue-533");
+  const msg = renderHandoffUserMessage(s, "/repo/my-app", "/repo/my-app/tmp/issue-533");
   assert(
     msg.includes("explore concluded this issue is already done"),
     "explore-already-complete: explainCap output in body",

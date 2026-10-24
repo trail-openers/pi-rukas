@@ -111,7 +111,7 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
   }
   // #1238 — the caller-set whole-cycle deadline, rendered beside the loop
   // caps so the operator sees how much budget is left before the caller
-  // kills the process (the orchard `docker stop` shape this feature closes).
+  // kills the process (the `docker stop` shape this feature closes).
   if (ps.cycleDeadlineMs) {
     const remaining = Math.max(0, ps.cycleDeadlineMs - Date.now());
     lines.push(`  deadline: ${fmtElapsed(remaining)} remaining`);

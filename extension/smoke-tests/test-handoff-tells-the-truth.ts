@@ -6,7 +6,7 @@
  * them on `lens-issues-found`. Every surface then discarded them: the GitHub
  * body printed *"Review the JSON findings in the state file's most recent
  * `lens-issues-found` event"*, the in-chat message printed nothing at all, and
- * `/work-status` printed a count. Measured cost — across four lantern cycles the
+ * `/work-status` printed a count. Measured cost — across four cycles the
  * operator's PM rediscovered by hand, from the diff, exactly what the lenses
  * had already reported: a SECURITY CRITICAL for a deleted `src/config/mod.rs`,
  * a SIMPLICITY HIGH for duplicate `persist_lock` mutexes, and an
@@ -16,7 +16,7 @@
  *
  * **The kills.** `killCause` and an `errorTail` naming the budget are written
  * onto `dispatch-failed` and were rendered by nothing — `grep errorTail` across
- * all three surfaces returned zero hits. lantern #686 and #693 were both killed
+ * all three surfaces returned zero hits. Two cycles were both killed
  * at 31m08s having produced nothing, and both were described to their operator
  * as issue-quality problems, inviting the editing of two good issues.
  *

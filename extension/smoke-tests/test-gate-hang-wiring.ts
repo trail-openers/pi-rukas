@@ -58,7 +58,7 @@ const HUNG_STREAM = [
 
 /** The tree the injected walker returns: a test process holding a stuck pull. */
 const STUCK_TREE: HangProcess[] = [
-  { pid: 7001, ppid: 7000, etime: "01:15:02", args: "target/debug/deps/lantern-1a2b" },
+  { pid: 7001, ppid: 7000, etime: "01:15:02", args: "target/debug/deps/my-app-1a2b" },
   { pid: 7002, ppid: 7001, etime: "01:14:58", args: "git pull --ff-only origin main" },
   { pid: 7003, ppid: 7002, etime: "01:14:57", args: "git remote-https origin https://example/x" },
 ];

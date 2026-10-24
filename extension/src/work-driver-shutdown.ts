@@ -7,7 +7,7 @@
  * the handoff step, which needs an ops dispatch and forge calls that cannot
  * complete in a process that is exiting. The cycle was left at
  * `status: running, step: handoff` with a cap nobody had earned, and nothing
- * said why it ended (orchard #97: a reviewed, pushed change 47 s into its last
+ * said why it ended (a measured cycle: a reviewed, pushed change 47 s into its last
  * fix pass, reported as a failed lens fix).
  *
  * The driver now treats a shutdown as the crash #382 already knows how to

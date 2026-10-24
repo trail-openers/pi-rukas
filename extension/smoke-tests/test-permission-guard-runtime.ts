@@ -159,7 +159,7 @@ for (const command of gitDiffWithInjectionShouldAsk) {
 //
 // Pre-#959 this section covered the pi-mcp-adapter era: the catch-all used to
 // be `"*": "deny"` (silent-deny of unknown tools, including the `mcp` gateway
-// and per-server direct tools like `alpha_staging_db_execute_sql` that the
+// and per-server direct tools like `example_staging_db_execute_sql` that the
 // adapter surfaced with arbitrary names). The fix flipped it to `"*": "ask"`
 // so any unknown tool prompts. The MCP-gateway allow/ask split (PM `mcp: allow`,
 // specialists `mcp: ask`) is gone — native MCP registers per-tool names instead.
@@ -187,7 +187,7 @@ assert(mcpSearchOps === "allow", "#959: ops IS granted mcp__codebase_memory__sea
 
 // Any unknown mcp__ tool from a server the operator has not reviewed asks —
 // the prompt is the security boundary, not silent deny.
-const unknownMcp = resolveToolPermission("mcp__alpha_staging_db__execute_sql", "project-manager", {}, {}, agentsConfig);
+const unknownMcp = resolveToolPermission("mcp__example_staging_db__execute_sql", "project-manager", {}, {}, agentsConfig);
 assert(unknownMcp === "ask", "#959: unknown mcp__<server>__<tool> resolves to ask for PM (catch-all = ask)");
 
 // Any unknown tool — the prompt is the security boundary now, not silent deny.
@@ -349,9 +349,9 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   const noCwd = buildCwdHint(undefined);
   assert(noCwd === "", "L4: buildCwdHint returns empty string when cwd is undefined");
 
-  const withCwd = buildCwdHint("/Users/dev/projects/lantern/.worktrees/issue-482");
+  const withCwd = buildCwdHint("/Users/dev/projects/app/.worktrees/issue-482");
   assert(
-    withCwd.includes("/Users/dev/projects/lantern/.worktrees/issue-482"),
+    withCwd.includes("/Users/dev/projects/app/.worktrees/issue-482"),
     "L4: buildCwdHint embeds the literal cwd path",
   );
   assert(

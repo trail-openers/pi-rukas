@@ -53,7 +53,7 @@ YOU ONLY:
 |-----------|----------|
 | Research & exploration | @explore |
 | Database queries (MCP) | @explore |
-| Redis cache/queue inspection | @explore |
+| Cache/queue inspection | @explore |
 | Implementation (code writing only) | @developer |
 | Quality gates (tests, lint, type check, coverage) | @developer |
 | Running builds locally | @developer |

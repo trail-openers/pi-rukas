@@ -2,7 +2,7 @@
  * work-driver-verify-gate-reuse — #1415: a passing gate result is reused until
  * the thing it judged changes.
  *
- * The problem this closes (example-owner/orchard#261, cycle 261): the develop step ran
+ * The problem this closes (one measured cycle): the develop step ran
  * the project's verify command once per worktree AND once more at repoRoot for
  * the consolidated probe, on EVERY develop pass. Three adversarial rounds took
  * six full gate runs — ~67 minutes of a 4-hour cycle, in a harness that prints

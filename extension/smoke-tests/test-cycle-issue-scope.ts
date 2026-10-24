@@ -81,9 +81,9 @@ process.env.PI_ENSEMBLE_AUTO_STEER = "0";
 // The ops prompt the PM actually sent (stream.jsonl:2209), cwd the repo root.
 const incident: DispatchSpec = {
   role: "ops",
-  cwd: "/home/ops/orchard/work/orchard",
+  cwd: "/home/ops/app/work/app",
   prompt:
-    "Create a git worktree in /home/ops/orchard/work/orchard for issue #37 work.\n\nA previous attempt reported success but the directory does not exist.",
+    "Create a git worktree in /home/ops/app/work/app for issue #37 work.\n\nA previous attempt reported success but the directory does not exist.",
 };
 
 // ------------------------------------------------ 1. no live cycle: nothing to guard

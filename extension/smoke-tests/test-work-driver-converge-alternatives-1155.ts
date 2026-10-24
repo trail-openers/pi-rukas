@@ -2,7 +2,7 @@
 /**
  * #1155 — a declared deliverable path is a LIST OF ALTERNATIVES, not a literal.
  *
- * The incident (.pi/work-state/1137.json, 2026-10-13): the plan wrote
+ * The incident (one measured cycle's state file): the plan wrote
  * `- d2: … [paths: extension/src/work-driver-verify.ts or new
  * work-driver-<name>.ts]`. The developers created
  * `extension/src/work-driver-acceptance-coverage.ts`, the verify gate passed,

@@ -42,7 +42,7 @@ const SHA = /^[0-9a-f]{40}$/;
  *
  *   - `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` — object database and
  *     work tree (`GIT_DIR` alone makes a non-checkout answer with some other
- *     repository's HEAD, the example-owner/pi-rukas#32 shape);
+ *     repository's HEAD, #1275's failed-save shape);
  *   - `GIT_INDEX_FILE` — which index a status/revision read consults;
  *   - `GIT_NAMESPACE` — rewrites every ref name before lookup;
  *   - `GIT_OBJECT_DIRECTORY` / `GIT_ALTERNATE_OBJECT_DIRECTORIES` — where

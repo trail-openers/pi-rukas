@@ -3,7 +3,7 @@
  * #1415 (task C) — offline coverage for the verify events reaching the state
  * file, the `/work-status` rendering, and the headless NDJSON stream.
  *
- * example-owner/orchard#261 cycle 261: a develop step spent ~22 minutes per round inside
+ * One measured cycle: a develop step spent ~22 minutes per round inside
  * the consolidated verify with NOTHING on the console. Between the developer's
  * "Task complete" line and the driver's "step 4/9 develop done in 2491s" line,
  * the console was empty for 22 minutes — so an operator watching a cycle saw a

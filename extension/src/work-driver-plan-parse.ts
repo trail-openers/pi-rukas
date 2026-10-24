@@ -60,7 +60,7 @@ function escapeRegExp(literal: string): string {
  * `verifyConsolidation` looked for the mangled strings in the committed diff,
  * never found them, and reported every such workstream MISSING even after a
  * correct integration — halting the cycle at
- * `commit-pr-incomplete-consolidation`. Two of nine measured lantern cycles
+ * `commit-pr-incomplete-consolidation`. Two of nine measured cycles
  * died there.
  */
 export function splitOutsideParens(value: string): string[] {

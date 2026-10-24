@@ -7,7 +7,7 @@
  *
  * The reason this is a tool call rather than a marker line in the reply is the
  * whole point of #407. The gate it replaces was three regexes over `AGENTS.md`,
- * and they failed on real files: lantern's *"Agents may squash-merge **a** PR to
+ * and they failed on real files: a measured cycle's *"Agents may squash-merge **a** PR to
  * main"* missed because the pattern wanted `PRs` immediately after `merge`, and
  * this repo's own `does NOT merge to main` escaped the deny matcher because the
  * pattern wanted `do not`. A regex also silently assumes the operator writes

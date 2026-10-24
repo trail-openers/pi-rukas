@@ -58,7 +58,7 @@ git(repo, ["remote", "add", "origin", originDir]);
 git(repo, ["push", "-q", "-u", "origin", "main"]);
 // A real clone carries refs/remotes/origin/HEAD; the mainline is resolved from it (#1134).
 git(repo, ["remote", "set-head", "origin", "main"]);
-// The vipune ea8c836 shape, as a real commit on a real branch.
+// The option-widening shape, as a real commit on a real branch.
 git(repo, ["checkout", "-q", "-b", "feature/issue-279"]);
 writeFileSync(
   path.join(repo, "src", "lib.rs"),

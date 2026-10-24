@@ -14,12 +14,12 @@
  *
  *   - `findPathCollisions` compared the mangled strings, found no overlap, and
  *     waved through a fan-out where every workstream edited ONE file. Observed
- *     on lantern #693: a ~40-line single-file fix split into three workstreams
+ *     on one measured cycle: a ~40-line single-file fix split into three workstreams
  *     all editing `src/config/data.rs`.
  *   - `verifyConsolidation` then looked for those mangled strings in the
  *     committed diff, never found them, and reported every such workstream
  *     MISSING — even after a correct integration. The cycle halted at
- *     `commit-pr-incomplete-consolidation`. Two of nine measured lantern cycles
+ *     `commit-pr-incomplete-consolidation`. Two of nine measured cycles
  *     died there.
  *
  * The recovery advice printed at that halt was itself wrong twice over: it

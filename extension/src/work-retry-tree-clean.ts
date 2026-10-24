@@ -5,7 +5,7 @@
  * The router re-runs a step by dispatching a brand-new child into the SAME
  * worktree. Nothing used to commit, stash or discard what the severed child
  * left there, so the retry's own precondition was defeated by the failure it
- * was retrying after: orchard cycle 109 lost its round-2 lens-fix developer, the
+ * was retrying after: a measured cycle lost its round-2 lens-fix developer, the
  * retry met `lens-fix-reposition: worktree has uncommitted changes: M
  * DESIGN.md, …`, and the cycle parked one second into its third round.
  *

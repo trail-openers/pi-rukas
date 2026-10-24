@@ -2,7 +2,7 @@
  * Offline smoke: a gate killed at its bound reports WHAT hung.
  *
  * #1427. The wall-clock bound and the group kill already existed (#1324); what
- * the lantern #1054 measurement showed missing was the content — a `cargo test`
+ * the case behind #1054 showed missing was the content — a `cargo test`
  * gate hung 75 minutes and the cycle reported only `slow`, so the operator had
  * nothing to act on. This drives the reporter through the three shapes the gate
  * seams actually hand it:
@@ -58,9 +58,9 @@ function expect(cond: boolean, label: string) {
 }
 
 const CARGO_STREAM = [
-  "   Compiling lantern v0.1.0 (/work/lantern)",
+  "   Compiling my-app v0.1.0 (/work/my-app)",
   "    Finished test [unoptimized] target(s) in 4.2s",
-  "     Running unittests src/lib.rs (target/debug/deps/lantern-1a2b)",
+  "     Running unittests src/lib.rs (target/debug/deps/my-app-1a2b)",
   "",
   "running 212 tests",
   "test git::fetch::tests::pulls_a_branch ... ok",
@@ -72,7 +72,7 @@ const CARGO_STREAM = [
 
 const tree = (rows: HangProcess[]) => ({ processes: rows });
 const STUCK: HangProcess[] = [
-  { pid: 4001, ppid: 3500, etime: "01:15:02", args: "target/debug/deps/lantern-1a2b --format json" },
+  { pid: 4001, ppid: 3500, etime: "01:15:02", args: "target/debug/deps/my-app-1a2b --format json" },
   { pid: 4002, ppid: 4001, etime: "01:14:58", args: "git pull --ff-only origin main" },
   {
     pid: 4003,
@@ -85,7 +85,7 @@ const STUCK: HangProcess[] = [
 function base(over: Partial<Parameters<typeof reportGateHang>[0]> = {}) {
   return {
     cmd: "cargo test",
-    cwd: "/work/lantern",
+    cwd: "/work/my-app",
     timeoutMs: 30 * 60_000,
     // A tree is only consulted when the executor named the pid it killed: the
     // tests below pass one where they expect a walk, and omit it (case 3)
@@ -146,7 +146,7 @@ function main() {
     expect(report.includes("01:15:02"), "report: shows how long it has been sitting there");
     expect(report.includes("30m"), "report: states the bound it hit");
     expect(report.includes("cargo test"), "report: names the gate's own command");
-    expect(report.includes("/work/lantern"), "report: names where it ran");
+    expect(report.includes("/work/my-app"), "report: names where it ran");
   }
 
   // ── Case 2: nothing recognisable — says so, twice, rather than going blank
@@ -201,10 +201,10 @@ function main() {
 
   // ── The failure string still leads with the bound ────────────────────
   {
-    const msg = verifyHangFailure("cargo test", "in /work/lantern/.worktrees/issue-1", 1_800_000, {
+    const msg = verifyHangFailure("cargo test", "in /work/my-app/.worktrees/issue-1", 1_800_000, {
       output: CARGO_STREAM,
       cmd: "cargo test",
-      cwd: "/work/lantern",
+      cwd: "/work/my-app",
       timeoutMs: 1_800_000,
       tree: tree(STUCK),
     });
@@ -234,7 +234,7 @@ function main() {
 
   // ── Fix 1 (round 3): names are bounded, and the marker survives ───────
   //
-  // The case the lantern measurement never produced and a fan-out does: ten
+  // The case the single-project measurement never produced and a fan-out does: ten
   // generated-proptest-sized names in one killed run. Two separate defects hid
   // here. (a) Each name went into the clause verbatim, so the clause grew past
   // the evidence window; (b) the clause was spliced into the MIDDLE of the

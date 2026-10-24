@@ -2,7 +2,7 @@
 /**
  * #1416 — the 90-minute review-loop cap is ENFORCED, not just printed.
  *
- * Measured on example-owner/orchard cycle cycle-id: the status line carried the
+ * Measured on one cycle: the status line carried the
  * budget every second (`cap 93m21s/90m` … `cap 100m11s/90m`) and the driver
  * never acted on it. The stream keeps ticking ten minutes past its own limit
  * and stops only when the operator quits Pi — `session_shutdown … aborted 2

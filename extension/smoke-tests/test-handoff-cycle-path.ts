@@ -4,7 +4,7 @@
  * failure, not a cap-hit)", and `Last step:` names the step that stopped, not
  * the last one that completed.
  *
- * example-owner/orchard cycles 142 and 285: the developer was killed at the backstop,
+ * Two measured cycles: the developer was killed at the backstop,
  * the driver recorded `cap developer-timeout` and ran the handoff, and the
  * rendered message then read `Last step: branch` / `Cycle: aborted (mid-flight
  * failure, not a cap-hit)`. `runHandoff` stores `aborted` for the bound/kill

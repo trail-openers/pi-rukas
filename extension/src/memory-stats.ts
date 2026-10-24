@@ -22,8 +22,8 @@
  * aggregate question, and opening the database `mode=ro` cannot alter a byte
  * of it.
  *
- * Measured on the live store for `randomm/pi-rukas`: 111 rows (103 active,
- * 2 candidate, 6 superseded), 1186 retrievals, max 31, and only 8 rows never
+ * Measured on a live project store: 111 rows (103 active, 2 candidate,
+ * 6 superseded), 1186 retrievals, max 31, and only 8 rows never
  * retrieved. The corpus is heavily used — just not by this harness, which
  * contributes none of those reads. That number is the baseline this is meant to
  * move.

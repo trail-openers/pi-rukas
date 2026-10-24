@@ -5,7 +5,7 @@
  * cherry-pick each workstream's commits) and runs the project's verify
  * command against it. With one workstream whose own verify just passed, that
  * probe holds the same content the run above already judged, and the second
- * execution proves nothing (~21 min per pass on the orchard factory).
+ * execution proves nothing (~21 min per pass, measured on one project).
  *
  * The decision lives here rather than inline because it is the whole of the
  * safety argument for a change whose failure mode is "a gate silently stops

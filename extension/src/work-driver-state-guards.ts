@@ -175,7 +175,7 @@ function hostParkRefusalReason(verdict: RepeatParkVerdict): string {
  * forge artefact either: pi-rukas posts no comment and applies no
  * `needs-human-attention` label there BY CONTRACT, so the attention gate above
  * has nothing to read, and a factory that passes `--restart` every cycle wipes
- * the state file. The result, measured in the orchard batch behind this issue: the
+ * the state file. The result, measured in the batch of cycles behind this issue: the
  * same park re-run three to nine times on an unchanged issue body.
  *
  * So the guard consults the host's own signal (`work-driver-park-memory-host.ts`)

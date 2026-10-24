@@ -4,9 +4,9 @@
  * The driver bounds steps (spawn backstop, inactivity, verify, handoff, the
  * 90-min review loop) but had no bound for the cycle as a whole, and no way
  * for the caller to give it one. An unattended caller has to bound the cycle
- * itself — orchard does it with a 6-hour `docker stop`, which lands MID-STEP:
+ * itself — an unattended host does it with a 6-hour `docker stop`, which lands MID-STEP:
  * aborted jobs, state left at `status: running`, no handoff, no comment
- * (example-owner/orchard#47/#61, #119).
+ * (three reports from the field).
  *
  * This is the driver-side half: the caller sets `PI_ENSEMBLE_CYCLE_DEADLINE`
  * (an absolute epoch ms) or `PI_ENSEMBLE_CYCLE_BUDGET_MS` (resolved to an
@@ -15,7 +15,7 @@
  * Semantics: the deadline is where step work ends; only the handoff runs
  * after it. The caller sets it to its hard kill minus its handoff allowance
  * and passes that allowance as `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` (#1593, the
- * example-owner/orchard#355 contract), so the handoff has the allowance to itself.
+ * cross-repo contract with the caller), so the handoff has the allowance to itself.
  *
  * - Step work ends at `deadline − handoff grace`; what is left before that
  *   is the step's useful time. At each step boundary the driver parks with

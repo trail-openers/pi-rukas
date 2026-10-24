@@ -11,7 +11,7 @@
  * license the proceed path.
  *
  * The shadow is constructed as a SYNTHETIC in-memory object, never sourced
- * from the on-disk .pi/work-state/984/spec.txt (which holds
+ * from the on-disk .pi/work-state/<issue>/spec.txt (which holds
  * verdict: "proceed-with-assumptions" with no provenance fields — a
  * different shape, and it must not be quoted as evidence of a park).
  *

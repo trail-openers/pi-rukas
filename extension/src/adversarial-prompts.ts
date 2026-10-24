@@ -1,7 +1,7 @@
 /**
  * adversarial-prompts — what each half of the loop is told.
  *
- * Measured on lantern #664's five real spawns, the information flow was:
+ * Measured on five real spawns from one cycle, the information flow was:
  *
  *   round 1 reviewer  — the diff, plus a one-sentence context
  *   round 1 fixer     — the reviewer's *entire reply* as "findings", including

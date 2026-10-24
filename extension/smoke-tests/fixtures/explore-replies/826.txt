@@ -51,7 +51,7 @@ Task complete: /work issue #826 — Step 1 reconnaissance
 
 **Evidence**
 
-- `flakeRetryPrecondition` in `work-driver-verify-verify-cmd.ts` is length-only (no assertion comparison) — confirmed by reading the file at HEAD cd6cb5f.
+- `flakeRetryPrecondition` in `work-driver-verify-verify-cmd.ts` is length-only (no assertion comparison) — confirmed by reading the file at HEAD `<sha>`.
 - `sharesAssertion` is private in `work-driver-consolidation-classify.ts` L177 (`consolidated.includes(per)`) — confirmed.
 - `test-work-driver-verify-classify-retry.ts` defines a local `retryPrecondition` (L80-91) and never imports `runVerifyCommandGate` — confirmed.
 - `runCommitPrConsolidatedVerify` has its own inline `canRetry` (first-run + N>1 + empty perWorktree map) — confirmed.

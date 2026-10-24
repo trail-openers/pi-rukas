@@ -4,7 +4,7 @@
  * PATTERN slot admits the file it authorises, at both fences that refused it,
  * and admits NOTHING the slot did not authorise.
  *
- * The shape from `.pi/work-state/1557.json`: deliverable d1 declared four
+ * The shape from a measured cycle's state file: deliverable d1 declared four
  * concrete files plus `extension/src/review-ledger-*.ts`. PR #1707 had just
  * exempted such slots from the plan-to-spec gate (`plannedPathProblem` refuses
  * a glob in a `report_workstream` `paths` entry, so no plan may name one), and

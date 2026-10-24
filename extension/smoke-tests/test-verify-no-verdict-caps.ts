@@ -146,7 +146,7 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
   state.pipelineState.worktrees = wts;
   state.pipelineState.baseSha = baseSha;
   // The #1765 mixed set: a scope/fanout fence violation pushed by the gate
-  // BEFORE the verify chain (the work-item shape, where `before !== 0` defeated
+  // BEFORE the verify chain (the fence-first shape, where `before !== 0` defeated
   // the old length rule), plus an uncommitted workstream whose own tree fails.
   if (name === "fence-first") {
     state.pipelineState.workstreams = {
@@ -206,7 +206,7 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
   // #1765 — the inverted pin. The old rule required the `[baseline-red]` entry
   // to be the gate's ONLY failure, so a workstream's own failure beside it
   // produced `verify-failed:develop` — the one cap a corrective round may earn
-  // — and orchard paid three develop rounds on a base nothing could pass. The
+  // — and one measured cycle paid three develop rounds on a base nothing could pass. The
   // rule is now attribution: the entry names the command the probe re-ran, so
   // it wins the cap and the other entry travels as secondary evidence.
   assert(
@@ -226,7 +226,7 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
     mixed.baselineRedEstablished,
     "mixed set: onBaselineRedEstablished still fired — the foreign entry voids the excuse, not the base claim",
   );
-  // The work-item shape: the foreign failure is pushed BEFORE the verify chain,
+  // The fence-first shape: the foreign failure is pushed BEFORE the verify chain,
   // so the old `before === 0` half of the rule failed as well as the length
   // half. Attribution by command does not care about either.
   const fenceFirst = await develop("fence-first", true, true);

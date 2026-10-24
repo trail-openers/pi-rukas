@@ -98,7 +98,7 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------------ grouping: GitHub keywords
 
 {
-  // lantern #657 said "closes #650". R1 had no `closes` keyword, so the two
+  // one issue said "closes" another. R1 had no `closes` keyword, so the two
   // issues that were literally the same work were analysed as unrelated.
   const linked = groupIssues([650, 657], {
     650: "The container image does not build.",
@@ -106,7 +106,7 @@ function assert(cond: boolean, msg: string) {
   });
   assert(
     groupCount(linked) === 1,
-    "'closes #N' links two issues into one group — the lantern #657/#650 case",
+    "'closes #N' links two issues into one group — the two-issue grouping case",
   );
   assert(
     linked.notes.some((n) => /R1 link/.test(n)),
@@ -138,11 +138,11 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------- grouping: the shared file type
 
 {
-  // `.container` was not in R2's extension list, so the ONE file lantern #650
+  // `.container` was not in R2's extension list, so the ONE file a two-issue group
   // and #657 genuinely shared contributed nothing to their overlap score.
   const g = groupIssues([1, 2], {
-    1: "Broken in lantern.container:12 and deploy.container:3",
-    2: "Same root cause — lantern.container:40, deploy.container:9",
+    1: "Broken in app.container:12 and deploy.container:3",
+    2: "Same root cause — app.container:40, deploy.container:9",
   });
   assert(groupCount(g) === 1, "'.container' files now count toward path overlap");
 }

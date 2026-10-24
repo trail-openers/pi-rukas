@@ -14,7 +14,7 @@
  * same file.
  *
  * Not hypothetical: measured on this host, current cycles are routinely N>1
- * (lantern 664 = 3 workstreams, 673 = 2, 677 = 3).
+ * (measured plans: 3 workstreams, 2, 3).
  *
  * This is a plan-quality defect of exactly the shape `planQualityReason`
  * already models, so it becomes a third reason and inherits the existing

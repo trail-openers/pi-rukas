@@ -3,8 +3,8 @@
  * #1642 run 6b — the plan-to-spec gate must not demand a path no plan may
  * declare, measured on the #1557 false refusal.
  *
- * The incident (VERIFIED on disk, `.pi/work-state/1557.json` + the two
- * preserved plan artifacts `.pi/work-state/1557/mvh1eqji-ngygqa-explore.txt`
+ * The incident (VERIFIED on disk, the cycle's `.pi/work-state/<issue>.json` + the two
+ * preserved plan artifacts `.pi/work-state/<issue>/<runId>-explore.txt`
  * and `mvh1hoxg-y3109x-explore.txt`): the spec's d1 declared four concrete
  * files PLUS `extension/src/review-ledger-*.ts` — the split the 500-line
  * ratchet forces — and BOTH plan replies declared all four concrete files

@@ -17,7 +17,7 @@
  * REJECTED, and **41 of those 49 (83.7%) ended on ISSUES_FOUND**. Only 8 ended
  * on CRITICAL. A loop still alive at round 3 was roughly 2:1 to be rejected.
  *
- * lantern #664 is the worked example. Its final round said "quality gates pass
+ * A measured loop is the worked example. Its final round said "quality gates pass
  * … the overall design is sound", filed one item under `### ISSUES` and the
  * rest under `### MINOR_OBSERVATIONS`, and returned ISSUES_FOUND. The cycle
  * died with no commit and no PR.
@@ -165,10 +165,10 @@ const MAX = 3;
   );
 }
 
-// ---------------------------------------------- lantern #664, replayed exactly
+// ------------------------------------------- the measured case, round by round
 
 {
-  // The real sequence from loop mspwtzfk-dkzy3v.
+  // The verdict sequence a real loop produced: critical, then issues, then issues.
   const sequence = ["CRITICAL_ISSUES_FOUND", "ISSUES_FOUND", "ISSUES_FOUND"] as const;
   const actions = sequence.map((v, i) => decideLoopAction(v, i + 1, MAX, true));
   assert(

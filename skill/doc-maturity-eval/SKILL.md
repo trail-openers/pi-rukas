@@ -162,4 +162,4 @@ If the user has already done an evaluation and wants to check progress, focus on
 
 ## Output
 
-Save the evaluation report as a markdown file with a descriptive name like `alpha-doc-maturity-eval.md` or `project-documentation-assessment.md`. If the project name is unknown, use `doc-maturity-eval.md`.
+Save the evaluation report as a markdown file with a descriptive name like `example-doc-maturity-eval.md` or `project-documentation-assessment.md`. If the project name is unknown, use `doc-maturity-eval.md`.

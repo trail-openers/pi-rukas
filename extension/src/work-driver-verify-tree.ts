@@ -8,8 +8,8 @@
  * consolidated probe (`work-driver-consolidated-verify.ts`), which cherry-
  * picks that one workstream's own commits onto `baseSha` — the same commit
  * range the worktree holds, so the resulting tree is byte-identical. The
- * consolidated half is pure duplicate work: measured on the orchard factory,
- * ~21 minutes per pass, a third of a three-round cycle.
+ * consolidated half is pure duplicate work: measured, ~21 minutes per
+ * pass on one project, a third of a three-round cycle.
  *
  * Identity is established POSITIVELY, from git's own tree object ids:
  *

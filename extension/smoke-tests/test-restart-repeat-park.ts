@@ -3,7 +3,7 @@
  * A park is remembered, and a repeat links the first one instead of posting a
  * near-identical second comment (#1743, forge channel + intent parks).
  *
- * Measured (example-owner/orchard#85, example-owner/orchard#88, 12 Oct): the first cycle parked
+ * Measured (two cycles, one day): the first cycle parked
  * `intent-park (contradicted-by-code)`; a second cycle 21-36 min later ran
  * with `--restart`, which starts from `initialState` — so nothing remembered
  * the park. It reached the same verdict and posted a second near-identical

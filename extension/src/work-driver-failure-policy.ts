@@ -13,7 +13,7 @@ import type { WorkStep } from "./workflow-state.ts";
  *
  * Background: PR #239 driver continued past `dispatch-failed` because
  * `nextStep()` has no branch for that event kind — the linear table just
- * advanced. On lantern #553, a developer SIGTERM at 30 min cascaded into
+ * advanced. In one measured cycle, a developer SIGTERM at 30 min cascaded into
  * 2h31m of adversarial review against partial work, then 40 min of
  * provider-timeouting handoff. ~4 hours wasted, opaque outcome.
  *

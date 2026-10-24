@@ -319,7 +319,7 @@ export async function runPlan(
   const findingsCount = spec ? planFindingsCount(spec) : await countFindingsForCycle(ctx, next);
 
   // #290 — deterministic plan-quality gate: an under-decomposed plan is the
-  // dominant convergence failure (lantern #604: an 8.6s plan collapsed six
+  // dominant convergence failure (one measured cycle: an 8.6s plan collapsed six
   // findings into ONE workstream; the developer sprawled 11 files, looped 17
   // builds, burned 10.5M tokens). Arithmetic, not judgment — asking the model
   // that just under-decomposed whether it decomposed well is worthless.

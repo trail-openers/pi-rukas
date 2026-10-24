@@ -115,7 +115,7 @@ const claimsFixtures: Record<string, { comment: string; claims: unknown[] }> = {
   },
   "observed-1421-1427": {
     comment:
-      "Verbatim shape of the park that opened #1454: 19 paths claimed by #1421 (abbreviated to the two that overlapped), claimed ~87 minutes before #1427 parked at plan. Evidence in .pi/work-state/1392.json and 1402.json (the claimant-naming parks), not 1427.json.",
+      "Verbatim shape (names removed) of the park that opened #1454: a claim over the shared worktree/verify helper paths (the two that overlapped), held ~87 minutes before the sibling cycle parked at plan. The claimant-naming parks in the same state directory are the evidence, not the parking cycle's own file.",
     claims: [claim(1421, DEAD, CLAIMED_PATHS, 5_220_000)],
   },
 };

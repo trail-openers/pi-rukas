@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { scanTypeWidening } from "../src/invariant-scan.ts";
 
-/** Rust option widening (vipune ea8c836 shape: `T` → `Option<T>` or `T?`) */
+/** Rust option widening (`T` → `Option<T>` or `T?`) */
 function testRustOptionWidening() {
   const diff = `--- a/src/lib.rs
 +++ b/src/lib.rs

@@ -73,7 +73,7 @@ export async function aggregateVerifyOutcome(args: {
    * #1765 — the probe ESTABLISHED a red base for `cmd`, whatever the excuse
    * question answered: the excuse ("every failure is the base's") is voided by
    * one foreign entry, and pricing the CAP on it spent three develop rounds on a
-   * base nothing could pass (orchard, work 439). Position decides nothing — the
+   * base nothing could pass (one measured cycle). Position decides nothing — the
    * timed-out arm leads with `[verify-timeout]` — so the rule is attribution to
    * the command the probe re-ran. The no-verdict families keep their precedence
    * inside `verifyCapFor`, so a killed run is still the actionable timeout.
@@ -163,9 +163,10 @@ export async function aggregateVerifyOutcome(args: {
     // #1765 — the excuse question is #1349's and stays its answer; what changed is
     // how the develop gate RAISES the cap on it. It used to require the probe's
     // entry to be the gate's ONLY failure at its own position, so one foreign
-    // failure beside it (the work-item scope fence) dropped `verify-baseline-red`
-    // to `verify-failed` and orchard burned three develop rounds on a base nothing
-    // could pass. A reused verdict states the base's colour only: no stream, so
+    // failure beside it (a scope fence pushed before the verify chain) dropped
+    // `verify-baseline-red` to `verify-failed` and one measured cycle burned
+    // three develop rounds on a base nothing could pass. A reused verdict
+    // states the base's colour only: no stream, so
     // nothing to match the change's failures against, so never an excuse.
     const attributed = verdict.reused !== true && baselineExplainsChange(verdict, changeFailures);
     if (attributed) onBaselineAttributed?.();

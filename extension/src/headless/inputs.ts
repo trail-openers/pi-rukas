@@ -202,8 +202,8 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   ms("HANDOFF_TIMEOUT_MS", 480_000),
   // The headless supervisor marks its `work` child (#1591); "1" runs `work` unsupervised.
   flag("HEADLESS_SUPERVISED", false, "internal"),
-  // `name:ip` pairs passed to the container as `--add-host`.
-  list("HOST_ALIASES", ",", "fieldbox:192.0.2.10", "wrapper"),
+  // name:ip pairs passed to the container as --add-host; none unless the operator sets it.
+  list("HOST_ALIASES", ",", "", "wrapper"),
   // #1528 — the host-wide child bound, shared by processes using one slot dir.
   int("HOST_SPAWN_CAP", 64),
   dir("HOST_SPAWN_DIR", null),
@@ -273,7 +273,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   family(str("PROVIDER_LENS_<LENS>", null), LENS_MEMBERS),
   // #1243 — the provider-class backoff. A transient retry used to wait 5s then
   // 10s, so every re-spawn landed inside the same endpoint outage (measured: the
-  // three orchard cycles 45/61/63 parked within 30 minutes with sub-second waits).
+  // three measured cycles parked within 30 minutes with sub-second waits).
   // A provider-class failure now waits at least FLOOR, scaled by the attempt;
   // MAX_WAIT is the clamp on EACH wait, not a budget across the cycle. `0`
   // restores the pre-#1243 shape.

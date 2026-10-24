@@ -6,7 +6,7 @@
  * non-interactive SSH setting. `GIT_TERMINAL_PROMPT=0` only covers HTTPS
  * credential prompts; ssh reads a key passphrase or agent unlock from
  * /dev/tty directly, so a forwarded agent that vanished parks the call
- * indefinitely (one meadow `--restart` sat ~5h before handing off at branch).
+ * indefinitely (one `--restart` on a sibling project sat ~5h before handing off at branch).
  *
  * Every driver network git call goes through `runNetGit`, which:
  *   - runs with `GIT_TERMINAL_PROMPT=0` and a `GIT_SSH_COMMAND` that adds

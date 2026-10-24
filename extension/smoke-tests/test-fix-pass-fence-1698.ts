@@ -5,11 +5,11 @@
  * evidence named, while still refusing an unrelated new file, a protected
  * path, and a finding-named file in a non-anchored directory.
  *
- * The two reproductions (orchard #316 and run 6c / #1064): a develop round 1
+ * Two reproductions (#1064): a develop round 1
  * creates a file; the adversarial finding names it; the fix pass edits it to
  * satisfy the finding — and `namedPaths` refused, because the candidate set
  * was the tree tracked AT base and a file the cycle created is never in it.
- * And in run 6c the driver dispatched a corrective round whose evidence told
+ * And in the second reproduction the driver dispatched a corrective round whose evidence told
  * the child to change a file, then capped the cycle for changing it, because
  * `headBefore` predates the round and the round's commit landed in the
  * fix-pass stray set.

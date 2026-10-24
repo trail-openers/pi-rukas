@@ -2,7 +2,7 @@
  * work-develop-crash — #1403: a develop child whose engine DIED is a named
  * step outcome, not a success.
  *
- * The incident (orchard #238, cycle cycle-id): in develop round 3 the
+ * The incident (one measured cycle): in develop round 3 the
  * developer child logged `the engine stopped unexpectedly (exit code 1)` and
  * its async job finished 197676 ms later with nothing in `err.txt` saying so.
  * The step then reported `--- step 4/9 develop done in 1490s` and the state

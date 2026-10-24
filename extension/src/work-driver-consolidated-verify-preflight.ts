@@ -7,7 +7,7 @@
  * that was one answer — anything outside the driver-managed and
  * configured-exempt prefixes refused the batch and the cycle parked as
  * `verify-failed:develop`, the cap reserved for a gate that judged the code.
- * Live cycle cycle-id (example-owner/orchard#248) parked a complete, reviewed
+ * One measured cycle parked a complete, reviewed
  * change on five cargo lock files. This module splits the question in two, on
  * git's own opinion rather than on the shape of the porcelain output:
  *

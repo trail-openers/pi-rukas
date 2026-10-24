@@ -409,7 +409,7 @@ const COMPLETE = (parkReason: string) =>
 // ------------- #404: a park the RESOLVER declared is never overridden
 
 {
-  // The bug, verbatim from a live lantern run: the resolver wrote its reason as
+  // The bug, verbatim from a live downstream run: the resolver wrote its reason as
   // a markdown heading, the colon-anchored regex missed it, the parser
   // synthesised `underspecified`, and #397's override then BUILT the thing the
   // resolver had said was already done — attaching OVERRIDE_ASSUMPTION to the

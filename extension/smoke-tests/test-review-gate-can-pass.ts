@@ -28,7 +28,7 @@
  *    hidden from the one consumer that could act on it. The next round then
  *    re-read `origin/<base>..origin/<branch>`, which had not moved, and
  *    re-reported the identical findings until the round cap fired. Measured on
- *    lantern #686: two full rounds after the driver had already logged that it
+ *    One measured cycle: two full rounds after the driver had already logged that it
  *    refused to integrate. Same shape on #673 and #677.
  *
  *    The silent sibling was worse: `res.empty` mapped to `{committed:false}`

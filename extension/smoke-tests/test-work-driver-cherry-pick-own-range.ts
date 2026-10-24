@@ -43,7 +43,7 @@ function assert(cond: boolean, msg: string) {
 
 const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
   try {
-    // #1258 — argv is honoured like the production executors (example-owner/pi-rukas#34): a fake that
+    // #1258 — argv is honoured like the production executors (a reported incident, #34): a fake that
     // drops it fails the restore's save, and a failed save now leaves the tree.
     const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
     const { stdout } = o?.argv

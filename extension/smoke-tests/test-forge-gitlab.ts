@@ -93,7 +93,7 @@ async function main() {
       assert(issue.state === "OPEN", `state ${issue.state}`);
       assert(issue.url === "https://gitlab.com/acme/widget/-/issues/42", `url ${issue.url}`);
       assert(issue.labels[0]!.name === "bug", `labels ${issue.labels[0]!.name}`);
-      assert(issue.author === "janni", `author ${issue.author}`);
+      assert(issue.author === "dev", `author ${issue.author}`);
     });
     await check("issueEdit uses glab api -X PUT with description=@file", async () => {
       const issue = await forge.issueEdit(42, "edited");

@@ -3,7 +3,7 @@
  * #1415 (task C) — offline coverage for REUSING a passing consolidated verify
  * across develop rounds instead of re-running the project's whole gate.
  *
- * example-owner/orchard#261 cycle 261: the driver ran the consolidated verify after
+ * One measured cycle: the driver ran the consolidated verify after
  * EVERY develop round. Three rounds × ~22 min = ~67 of the cycle's ~150
  * minutes, with nothing written to the console while it ran. Task A's fix
  * lets a round whose tree a previous consolidated pass already judged reuse

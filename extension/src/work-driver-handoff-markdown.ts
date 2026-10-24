@@ -221,7 +221,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
   }
   if (lastFindings) {
     // The findings themselves, not a pointer to them. This block used to say
-    // "review the JSON findings in the state file" — so four lantern cycles
+    // "review the JSON findings in the state file" — so four measured cycles
     // handed off with CRITICAL findings nobody read, and the same defects were
     // later rediscovered by hand from the diff. See lens-findings-render.ts.
     const rendered = renderLensFindings(lastFindings.findings, lastFindings.verdict);

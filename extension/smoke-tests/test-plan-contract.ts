@@ -258,14 +258,14 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
 // ── port detection ──────────────────────────────────────────────────────
 {
   const yes: Array<[string, string]> = [
-    ["Found and fixed in example-owner/pi-rukas#81 — port it.", "example-owner/pi-rukas#81"],
+    ["Found and fixed in upstream-owner/example-repo#81 — port it.", "upstream-owner/example-repo#81"],
     ["Please cherry-pick 1a2b3c4d onto main.", "1a2b3c4d"],
     ["Port the fix from PR #81.", "PR #81"],
     ["Backport #412 to the release line.", "#412"],
-    ["It regressed last week. Port example-owner/pi-rukas#81 to fix it.", "example-owner/pi-rukas#81"],
+    ["It regressed last week. Port upstream-owner/example-repo#81 to fix it.", "upstream-owner/example-repo#81"],
     [
-      "This was already fixed upstream in commit example-owner/pi-rukas@0f9e8d7c6b.",
-      "example-owner/pi-rukas@0f9e8d7c6b",
+      "This was already fixed upstream in commit upstream-owner/example-repo@0f9e8d7c6b.",
+      "upstream-owner/example-repo@0f9e8d7c6b",
     ],
     ["Landed as https://github.com/o/r/pull/12 in the fork.", "https://github.com/o/r/pull/12"],
   ];
@@ -280,10 +280,10 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
     "Implement the port scanner for #33.",
     "Add a deadbeef constant.",
     "Do not cherry-pick #12; it is the wrong fix.",
-    "Don't port example-owner/pi-rukas#81 — rewrite it.",
+    "Don't port upstream-owner/example-repo#81 — rewrite it.",
     "We should never backport 1a2b3c4d.",
     "This regressed by 0f9e8d7c6b.",
-    "Fixed in 1a2b3c4d, then regressed by example-owner/pi-rukas#90.",
+    "Fixed in 1a2b3c4d, then regressed by upstream-owner/example-repo#90.",
   ];
   for (const body of no) {
     assert(
@@ -379,12 +379,12 @@ async function plan(
   );
 }
 {
-  const r = await plan("Already fixed in example-owner/pi-rukas#81; port it upstream.", DISJOINT);
+  const r = await plan("Already fixed in upstream-owner/example-repo#81; port it upstream.", DISJOINT);
   assert(/## Port detected/.test(r.prompts[0] ?? ""), "runPlan: the prompt names the port");
-  assert(/janit\/pi-rukas#81/.test(r.prompts[0] ?? ""), "runPlan: the port reference is quoted");
+  assert(/upstream-owner\/example-repo#81/.test(r.prompts[0] ?? ""), "runPlan: the port reference is quoted");
   const ids = Object.keys(r.ws);
   assert(
-    ids.length === 1 && /^Port janit\/pi-rukas#81: /.test(r.ws[ids[0] ?? ""]?.scope ?? ""),
+    ids.length === 1 && /^Port upstream-owner\/example-repo#81: /.test(r.ws[ids[0] ?? ""]?.scope ?? ""),
     "runPlan: a port issue is planned as one cherry-pick workstream",
   );
 }
@@ -392,7 +392,7 @@ async function plan(
   // #1652 — a plan with no report_workstream call is no plan: one corrective,
   // and an empty corrective parks. There is no synthetic `default` to fall back
   // to, so the port scope the old fallback carried has nothing to attach to.
-  const r = await plan("Already fixed in example-owner/pi-rukas#81; port it upstream.", []);
+  const r = await plan("Already fixed in upstream-owner/example-repo#81; port it upstream.", []);
   assert(r.prompts.length === 2, "runPlan: a plan with no call gets exactly one corrective");
   assert(Object.keys(r.ws).length === 0, "runPlan: an empty corrective parks with no workstreams");
   assert(

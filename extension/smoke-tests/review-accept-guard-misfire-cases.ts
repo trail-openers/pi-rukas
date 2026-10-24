@@ -21,7 +21,7 @@ const D = String.fromCharCode(36); // a dollar sign, spelled so the table is dat
 const DATA = "review-findings.json";
 const STORE = "review-findings-store";
 /** A worktree / checkout path — an ordinary directory the guard has no business with. */
-const TREE = "/home/ops/orchard/work/orchard";
+const TREE = "/home/ops/app/work/app";
 
 /**
  * The commands a plan cycle was REFUSED today and must never be refused again. Every one
@@ -113,7 +113,7 @@ export const MEASURED_MISFIRES_ALLOWED: Case[] = [
   // refused — see STORE_REACHING_REFUSALS.
   { c: "git -C ~/work/wt status", why: "the sanctioned worktree form, home-relative" },
   {
-    c: "git -C ~/orchard/work/orchard log --oneline -5 origin/main",
+    c: "git -C ~/my-app/work/my-app log --oneline -5 origin/main",
     why: "a home-relative worktree log",
   },
   // The git WRITE VERB is a POSITION — the bare word after the segment's leading `git` — so
@@ -294,8 +294,8 @@ export const STORE_REACHING_REFUSALS: Case[] = [
   },
   // A `~` is only an ordinary path at the HEAD of the target, where it is HOME. `~user`
   // expands outside this user's home and a `~` elsewhere is a path the guard cannot resolve.
-  { c: "git -C ~boss/orchard status", why: "ACCEPTANCE: a `~user` selector" },
-  { c: "git -C orchard/~boss status", why: "a `~` away from the head of the target" },
+  { c: "git -C ~otheruser/app status", why: "ACCEPTANCE: a `~user` selector" },
+  { c: "git -C app/~otheruser status", why: "a `~` away from the head of the target" },
   // The write verb is a POSITION asked of the words as the shell hands them over, so a quoted
   // verb counts, and one `hash-object` decoy cannot answer for a write verb beside it (#1738).
   {

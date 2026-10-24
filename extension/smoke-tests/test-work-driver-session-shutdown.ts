@@ -2,7 +2,7 @@
 /**
  * A session shutdown under a running /work cycle is not a step failure.
  *
- * The incident (orchard #97): Pi was quit while the driver awaited a lens-fix
+ * The incident (one measured cycle): Pi was quit while the driver awaited a lens-fix
  * developer. `session_shutdown` aborted the child, the driver read the abort
  * as the step failing, recorded `cap-hit: step-failed:lens-fix`, and entered
  * a handoff it could not finish — leaving `status: running, step: handoff`

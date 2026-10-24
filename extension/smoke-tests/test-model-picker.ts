@@ -175,24 +175,24 @@ function assert(cond: boolean, msg: string) {
     `non-subscription providers in alpha order (got ${JSON.stringify(nonSub)})`,
   );
   // Description carries provider + context + thinking flag.
-  const local-gpu = realItems.find(
+  const localGpu = realItems.find(
     (i) => parseModelValue(i.value)?.provider === "local-gpu",
   );
   assert(
-    local-gpu?.description?.includes("local-gpu") ?? false,
+    localGpu?.description?.includes("local-gpu") ?? false,
     "local-gpu description names the provider",
   );
   assert(
-    local-gpu?.description?.includes("262K") ?? false,
+    localGpu?.description?.includes("262K") ?? false,
     "local-gpu description shows context",
   );
   assert(
-    local-gpu?.description?.includes("thinks") ?? false,
+    localGpu?.description?.includes("thinks") ?? false,
     "local-gpu description shows thinking flag",
   );
   // The displayed label is the model (without provider prefix).
   assert(
-    local-gpu?.label === "Qwen/Qwen3.6-35B-A3B-FP8",
+    localGpu?.label === "Qwen/Qwen3.6-35B-A3B-FP8",
     "local-gpu label is the model id (no provider prefix)",
   );
 }

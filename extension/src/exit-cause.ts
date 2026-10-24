@@ -7,7 +7,7 @@
  * one), or Pi exiting on its own. The one line the driver prints on shutdown
  * (`[pi-rukas] session_shutdown (reason: quit): …`) showed only `quit`, so an
  * operator reading a headless log could not tell a self-quit from a signal
- * from a dead pipe (orchard #61 / #97: a session quit mid-cycle with no trigger
+ * from a dead pipe (two reported sessions quit mid-cycle with no trigger
  * in the log, and nothing to say where the quit came from).
  *
  * The origin is not in Pi's event payload, so this module tracks it at the

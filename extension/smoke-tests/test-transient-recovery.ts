@@ -23,7 +23,7 @@
  * `branch-completed` per workstream and then `branches-converged`, burying the
  * per-child failures.
  *
- * Measured in lantern's `673.json`: three developers hit a 429 carrying a
+ * Measured in a real develop fan-out: three developers hit a 429 carrying a
  * 59-second retry-after — a delay the taxonomy already waits out for single
  * dispatches, which is why both `plan` steps recovered — and develop halted
  * with `transientRetryAttempts: {}`. Never attempted, not exhausted.
@@ -71,7 +71,7 @@ function assert(cond: boolean, msg: string) {
 // ---------------------------------- 2. fan-out failures reach the classifier
 
 /**
- * The real tail of lantern's develop step, verbatim from `673.json`. Three
+ * The tail of a real develop step, captured from a live fan-out. Three
  * children dispatched; two hit 429s and one succeeded.
  */
 const fanOutTail = (opts: { anySucceeded: boolean }): WorkEvent[] =>

@@ -126,9 +126,8 @@ export function collapseEvents(
   // and empty content. The child process still exits 0 (the failure is
   // *inside* the conversation, not at the process level), so without this
   // signal the dispatch report mistakes the last successful thinking block
-  // for the final reply. See PR #236 + transcripts under
-  // ~/.pi/agent/ensemble-runs/2026-06-19/run-id-*.json for the
-  // failure shape that motivated the detection.
+  // for the final reply. See PR #236 and the transcripts of the run that
+  // motivated the detection for the failure shape.
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const errorStop =
     lastAssistant?.stopReason === "error"

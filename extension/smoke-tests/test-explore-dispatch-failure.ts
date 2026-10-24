@@ -9,7 +9,7 @@
  * `cap-hit: explore-needs-clarification`, which becomes the event-log tail and
  * overrides the `dispatch-failed` event the step router would have classified.
  *
- * Measured: lantern #686 and #693 both recorded `dispatch-failed explore …
+ * Measured: two cycles both recorded `dispatch-failed explore …
  * killCause: timeout` immediately followed by `cap-hit
  * explore-needs-clarification`. The operator was told to go add acceptance
  * criteria to two issues that were already fully specified.

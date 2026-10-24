@@ -18,10 +18,10 @@ import type { WorkState } from "./workflow-state.ts";
  * snapshots between adversarial rounds, captured screenshots, one-off
  * verification scripts, analysis outputs).
  *
- * Background: PR #239 live-tested on lantern issue #553 left 12+ dot-
- * prefixed diff files (`.pr1_r2.diff`, `.regate-1.diff`, etc.) in the
- * repo root, plus PNG screenshots, e2e scenario scripts, a 2.3 GB ELF
- * core dump, and a scratch test_string_error.rs at root. Causes:
+ * Background: PR #239 live-tested on one /work cycle left a dozen dot-
+ * prefixed diff files named after PR and round numbers (`.pr<N>_r<K>.diff`)
+ * in the repo root, plus PNG screenshots, e2e scenario scripts, a large
+ * ELF core dump, and a scratch test file at root. Causes:
  * agents improvised "save diff between rounds" with arbitrary names, and
  * the project's .gitignore didn't anticipate. The next /work's branch
  * step ABORTed correctly ("working tree is not clean") — but PR #239

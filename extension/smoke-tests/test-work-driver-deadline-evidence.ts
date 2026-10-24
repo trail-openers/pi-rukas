@@ -2,7 +2,7 @@
 /**
  * #1542 — the deadline cap's evidence line tells the truth about time and step.
  *
- * example-owner/orchard cycle cycle-id parked with "-3727975ms remained, within
+ * one measured cycle parked with "-3727975ms remained, within
  * the 480000ms handoff grace — step "develop" not started": a negative number
  * in a field called "remained", next to a step that had completed hours
  * earlier, while the adversarial gate had just asked for a fix pass. The line

@@ -10,7 +10,7 @@
  *   - Every workstream develops in its own detached worktree under .worktrees/
  *     and patches are applied under a single integration lock (in-process
  *     promise chain + O_EXCL lockfile), eliminating the shared repo-root
- *     contention that destroyed 2 of 4 lantern cycles at commit-pr.
+ *     contention that destroyed 2 of 4 measured cycles at commit-pr.
  * The sequential default (1) was judged too conservative for current operator
  * workflow: a 6-group queue ran entirely sequential under cap=1.
  *
@@ -94,7 +94,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   // to assert the dispatch carried NO timeout override at all: a killed handoff
   // had left the operator with nothing — no comment, no label, no artefact —
   // twice in one overnight run. Unbounded is not the property that was wanted,
-  // though. It is what let lantern #626 spend 25.8 min posting a comment whose
+  // though. It is what let one cycle spend 25.8 min posting a comment whose
   // body was already on disk. The property that was wanted is that the artefact
   // survives the dispatch, and `test-handoff-bounded.ts` asserts THAT
   // behaviourally — bound exceeded and dispatch thrown both still produce

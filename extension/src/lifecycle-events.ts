@@ -77,7 +77,7 @@ export type LifecycleKind =
    * #1415 — the driver's own verify gate, announced while it runs. The
    * step-boundary lines bracket the STEP; a develop step that dispatches for
    * 19 minutes and then verifies for 22 showed one `started` and one
-   * `finished` with 22 minutes of nothing between them (orchard cycle 261), so
+   * `finished` with 22 minutes of nothing between them (a measured cycle), so
    * an operator watching a live cycle could not tell the gate from a hang.
    * These two are the gate's own pair, emitted before and after the exec.
    */

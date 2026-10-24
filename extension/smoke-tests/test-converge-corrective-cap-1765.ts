@@ -7,8 +7,8 @@
  * pair of red claims and dropped `baselineRedEstablished`, so the SAME gate
  * result capped `verify-failed:develop` — the one cap a corrective round may
  * earn, and the one that tells a developer to go fix code — on the re-run and
- * `verify-baseline-red:develop` on the first pass. orchard paid for exactly that
- * extra round. All three sites now read `developVerifyCap`, and this case pins
+ * `verify-baseline-red:develop` on the first pass. One measured cycle paid for
+ * exactly that extra round. All three sites now read `developVerifyCap`, and this case pins
  * the one that drifted: a re-run whose failures hold a `[baseline-red]` entry
  * naming the command beside a foreign entry caps `verify-baseline-red:develop`.
  *

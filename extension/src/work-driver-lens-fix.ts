@@ -237,7 +237,7 @@ export async function runLensFix(
     // `continue`d, so the fix was silently dropped and the next lens round
     // re-flagged the same findings at escalating severity until the cap.
     //
-    // Observed on lantern #663: the pushed commit had deleted 1007 lines of
+    // Observed on one measured cycle: the pushed commit had deleted 1007 lines of
     // src/config/mod.rs, breaking the build. The lens-fix developer restored it
     // correctly — 1174 lines, staged — and none of it was ever committed.
     //

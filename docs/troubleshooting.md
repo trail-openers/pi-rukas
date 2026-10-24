@@ -231,7 +231,7 @@ PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912) · PR: [#1360](
 
 > merge refused: the merge guard checks only one plain merge command — … Operator override: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1`
 
-The three reports are example-owner/orchard #244 and #253 (twelve refusals of plain reads between them — issue `view`/`list` reads with `--json`/`--jq` filters, plus `labels` / `timeline` / `events` API reads) and #261 (an installer script held the same way). The guard was active even though the session logged `permission-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating` — it is registered before that short-circuit, so neither sandbox nor trust mode silences it.
+The three reports are three issues from one project: #244 and #253 (twelve refusals of plain reads between them — issue `view`/`list` reads with `--json`/`--jq` filters, plus `labels` / `timeline` / `events` API reads) and #261 (an installer script held the same way). The guard was active even though the session logged `permission-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating` — it is registered before that short-circuit, so neither sandbox nor trust mode silences it.
 
 **Cause:** the guard is a **trigger**, not a merge parser: a command naming a forge, HTTP client or interpreter **and** a merge word is held to the plain-merge form whether or not it merges anything (see the two exemptions above). A read trips it when a merge word appears anywhere in its text — in a `--jq` filter, in an argument, in a log-file name — because once the trigger fires the command must be the one plain merge form, and a read never is. The refusal text made it worse a second way: it read as a merge refusal whatever had actually been held, and the only remedy it offered was widening the merge safety switch. **An operator who follows that advice to unblock a read weakens merge protection to fix something that was never about merging** — that is the failure this entry exists to stop.
 
@@ -279,7 +279,7 @@ PR: [#1449](https://github.com/trail-openers/pi-rukas/issues/1449)
 
 Before assuming a workstream's work is genuinely missing, look at how the plan declared its paths. A qualified declaration — `src/config/data.rs (lines 21-44, function body only)` — used to be split on the inner comma into two fragments with unbalanced parentheses, which nothing downstream could normalise back into a path.
 
-That broke two gates in opposite directions: the plan-time overlap check compared the mangled strings, saw no collision and allowed a fan-out where every workstream edited one file; then the consolidation gate looked for those same mangled strings in the committed diff, never found them, and reported every such workstream MISSING *even after a correct integration*. Two of nine measured lantern cycles halted there. Commas inside parentheses are no longer separators.
+That broke two gates in opposite directions: the plan-time overlap check compared the mangled strings, saw no collision and allowed a fan-out where every workstream edited one file; then the consolidation gate looked for those same mangled strings in the committed diff, never found them, and reported every such workstream MISSING *even after a correct integration*. Two of nine measured cycles halted there. Commas inside parentheses are no longer separators.
 
 If the cap fires for real, the recovery commands now match what the driver itself does — stage inside the worktree first (`git diff HEAD` omits untracked new files), capture with `--binary`, apply with `--3way`. The old advice used `git diff HEAD | git apply --index`, which dropped new files and rejected any second workstream touching the same file.
 
@@ -335,7 +335,7 @@ The 30-minute model-silence budget (and the 60-minute tool-inactivity bound) are
 
 Every handoff carries three things it previously withheld.
 
-**The review's own findings**, severity-ordered worst-first, with lens, path and line. These used to be replaced by a pointer — *"Review the JSON findings in the state file"* — in the GitHub body, and omitted entirely from the in-chat message. Four lantern cycles handed off with CRITICAL findings that nobody read, and the same defects were later rediscovered by hand from the diff. If a round reports issues but records nothing readable, the handoff says *that* rather than staying silent.
+**The review's own findings**, severity-ordered worst-first, with lens, path and line. These used to be replaced by a pointer — *"Review the JSON findings in the state file"* — in the GitHub body, and omitted entirely from the in-chat message. Four measured cycles handed off with CRITICAL findings that nobody read, and the same defects were later rediscovered by hand from the diff. If a round reports issues but records nothing readable, the handoff says *that* rather than staying silent.
 
 **Whether we killed the subagent.** A `timeout` or `inactivity` kill is now named as ours, with its cause. Previously `killCause` and `errorTail` were written to the event and rendered nowhere, so a wall-clock kill was indistinguishable from a crash, a 429, or a provider error — and two perfectly good issues were described to their operator as ambiguous because of it.
 
@@ -637,27 +637,27 @@ PR: [#196](https://github.com/trail-openers/pi-rukas/pull/196)
 
 PR: [#203](https://github.com/trail-openers/pi-rukas/pull/203)
 
-### Custom LLM endpoint (e.g. `fieldbox`) returns "connection refused" or "no such host"
+### Custom LLM endpoint on a private hostname returns "connection refused" or "no such host"
 
-**Symptom:** A custom provider (configured in `~/.pi/agent/models.json` with `baseUrl: "http://fieldbox:8080/v1"`) works from host-mode `pi` but fails inside `pi-rukas`.
+**Symptom:** A custom provider (configured in `~/.pi/agent/models.json` with `baseUrl: "http://gateway:8080/v1"`) works from host-mode `pi` but fails inside `pi-rukas`.
 
-**Cause:** The container's resolver doesn't see your `/etc/hosts`, Mesh VPN mesh DNS, or your home network. The hostname `fieldbox` doesn't resolve.
+**Cause:** The container's resolver doesn't see your `/etc/hosts`, your VPN's DNS, or your home network. The private hostname doesn't resolve.
 
-**Fix:** Set `PI_ENSEMBLE_HOST_ALIASES` before launching:
+**Fix:** Set `PI_ENSEMBLE_HOST_ALIASES` before launching — the wrapper ships no default address, so this is the operator's own configuration:
 
 ```bash
-PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-rukas
+PI_ENSEMBLE_HOST_ALIASES="gateway:192.0.2.10,db:198.51.100.20" pi-rukas
 ```
 
-Comma-separated `name:ip` pairs. The IP must be reachable from the host (the container's network rides the host's stack via Docker bridge).
+The addresses above are RFC 5737 documentation addresses — use your host's real address.
 
-Default already includes `fieldbox:192.0.2.10` — set the var if your fieldbox is elsewhere or you need additional hosts.
+Comma-separated `name:ip` pairs. The IP must be reachable from the host (the container's network rides the host's stack via Docker bridge). With the variable unset, no `--add-host` is passed and no private hostname resolves inside the container.
 
 PR: [#204](https://github.com/trail-openers/pi-rukas/pull/204)
 
 ### Custom provider missing from `/ensemble-model` picker
 
-**Symptom:** `/ensemble-model` inside sandbox shows fewer providers than `/ensemble-model` outside. Your `local-gpu`, `fieldbox`, or other custom provider is missing.
+**Symptom:** `/ensemble-model` inside sandbox shows fewer providers than `/ensemble-model` outside. Your local GPU provider, a private gateway provider, or another custom provider is missing.
 
 **Cause:** Wrapper bind-mounts `~/.pi/agent/models.json:ro` (post-#205). If you're on an older wrapper version, custom providers aren't visible inside the container.
 
@@ -912,7 +912,7 @@ PR: [#207](https://github.com/trail-openers/pi-rukas/pull/207)
 
 ### Container hostnames change between sandbox runs
 
-**Symptom:** Container names like `pi-rukas-lantern-8cbaf2dccfbd-a1b2c3d4` appear in `docker ps`. New name each launch.
+**Symptom:** Container names like `pi-rukas-0123abcd-1` appear in `docker ps`. New name each launch.
 
 **Cause:** Wrapper composes the container name as `pi-rukas-<project>-<project-hash>-<run-suffix>`, where the project-hash is a 12-hex `sha256` prefix of the project's absolute path and the 8-hex run-suffix is random per invocation. The project-hash disambiguates DIFFERENT projects (avoiding collisions in `docker ps`). The 8-hex run-suffix disambiguates concurrent sessions in the SAME project. Not a bug.
 
@@ -1340,17 +1340,17 @@ A leftover with no uncommitted work and no unpushed commits is still removed aut
 git worktree list
 
 # 2. Is the cycle terminal? (status: handoff | aborted is safe; running is not)
-cat .pi/work-state/540.json
+cat .pi/work-state/<issue>.json
 
 # 3. Is the worktree clean? (empty output = safe to remove)
-git -C .worktrees/issue-540-task-a status --porcelain
-git -C .worktrees/issue-540-task-a rev-list --count origin/main..HEAD
+git -C .worktrees/issue-<N>-task-a status --porcelain
+git -C .worktrees/issue-<N>-task-a rev-list --count origin/main..HEAD
 
 # 4. Salvage anything worth keeping (the diff, if any)
-git -C .worktrees/issue-540-task-a diff > /tmp/issue-540-task-a.patch
+git -C .worktrees/issue-<N>-task-a diff > /tmp/issue-<N>-task-a.patch
 
 # 5. Remove the worktree and prune its administrative record
-git worktree remove --force -- .worktrees/issue-540-task-a
+git worktree remove --force -- .worktrees/issue-<N>-task-a
 git worktree prune
 ```
 
@@ -1368,7 +1368,7 @@ There is no built-in bulk-cleanup command. The recipe above is the documented pa
 
 A lens-fix round ran but its output did not land: either the integration failed (a dirty repo root, an apply conflict, a git error) or the fixer wrote nothing in any worktree. The cycle now halts here.
 
-It used to continue. The failure was recorded in `plumbReports` rather than the event log *specifically* so the log tail would stay `adversarial-approved` and routing would carry on — which meant the one consumer that could have acted on it never saw it. The next round then re-read `origin/<base>..origin/<branch>`, which had not moved, and re-reported the identical findings at escalating severity until the round cap fired. Measured on lantern #686: two full review rounds after the driver had already logged that it refused to integrate, with the whole review budget spent on a defect that was already solved on disk. Same shape on #673 and #677.
+It used to continue. The failure was recorded in `plumbReports` rather than the event log *specifically* so the log tail would stay `adversarial-approved` and routing would carry on — which meant the one consumer that could have acted on it never saw it. The next round then re-read `origin/<base>..origin/<branch>`, which had not moved, and re-reported the identical findings at escalating severity until the round cap fired. Measured on one cycle: two full review rounds after the driver had already logged that it refused to integrate, with the whole review budget spent on a defect that was already solved on disk. Same shape on its next two attempts.
 
 **The fix may still be on disk.** Check `git -C .worktrees/issue-<N>-<id> status` before re-running — the developer's work is usually there, uncommitted.
 
@@ -1478,7 +1478,7 @@ Crossing an armed budget steers the child to wrap up, then kills it after `PI_EN
 
 ### `ci` step timeout — CI runs > 10 min (PR15)
 
-The `ci` step dispatches `ops` to run `gh run watch <id>`, which blocks until CI completes. Pre-PR15 this inherited ops' 10-min default, so any CI run exceeding 10 min SIGTERM'd mid-watch and routed through `step-failed:ci` handoff (3× this session on lantern's ~15-min pipeline).
+The `ci` step dispatches `ops` to run `gh run watch <id>`, which blocks until CI completes. Pre-PR15 this inherited ops' 10-min default, so any CI run exceeding 10 min SIGTERM'd mid-watch and routed through `step-failed:ci` handoff (3× this session on a measured cycle's ~15-min pipeline).
 
 PR15 gives `ci` its own 30-min cap (30 × 60000 ms). Override via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` (milliseconds). The per-role ops default this sentence used to name no longer exists — every other `ops` dispatch is bounded only by the two mechanisms in the table above, except `handoff`, which has its own bound (next entry).
 
@@ -1510,7 +1510,7 @@ That event deliberately carries **no `killCause`**: nothing was killed, the driv
 **If the fallback also fails** (no `gh`, unauthenticated, network down), the handoff record is still written: `handoff-emitted` carries `handoffBodyPath`, and the in-chat `HANDOFF DISPATCH INCOMPLETE` banner prints the verbatim `gh ... comment --body-file <path>` command to run by hand.
 ### A host-killed cycle's record names a fence or verify park, or its handoff landed seconds before the kill
 
-**Symptom.** A cycle run under a host wall clock ends with a step verdict as its cap — e.g. `"cap": "verify-failed:develop"` with fence evidence — while the same step's log holds a `dispatch-failed … killed after 7200000ms timeout` with the same timestamp. Or the handoff is written seconds before the host stops the container (example-owner/orchard cycles 175 and 329).
+**Symptom.** A cycle run under a host wall clock ends with a step verdict as its cap — e.g. `"cap": "verify-failed:develop"` with fence evidence — while the same step's log holds a `dispatch-failed … killed after 7200000ms timeout` with the same timestamp. Or the handoff is written seconds before the host stops the container (two measured cycles).
 
 **Why.** The cycle deadline was checked only before a step started. A step already running when it arrived ran to its own backstop (2 h for a developer), into the host's kill, so the handoff got whatever time was left. And the last cap-hit is the cycle's cap, so the verdict the step reached on the tree its killed child left stood as the terminal reason.
 
@@ -1519,7 +1519,7 @@ That event deliberately carries **no `killCause`**: nothing was killed, the driv
 
 **Symptom.** `.pi/work-state/<issue>.json` shows `cap-hit{cap:"round-cap", nextStep:"ci"}` and the cycle carried on to Step 8 rather than stopping at handoff. The PR carries a comment headed *"Six-pass review — findings still open at the round cap"*.
 
-**This is intended.** The round cap used to park every capped review. Measured on one overnight run, two of six outcomes died that way (`.pi/work-state/457.json` and `680.json`); a human then judged #457 merge-as-is and #680's PR merged unchanged. Each park cost a re-run plus operator time for a diff that was fine.
+**This is intended.** The round cap used to park every capped review. Measured on one overnight run, two of six outcomes died that way in the state files of six overnight cycles; a human then judged both parked diffs merge-worthy and merged one unchanged. Each park cost a re-run plus operator time for a diff that was fine.
 
 A round cap now routes to `ci` only when all of the following hold, and parks at handoff otherwise:
 
@@ -1560,7 +1560,7 @@ That hold is deliberate and not redundant with the grant. Every grant this gate 
 
 ### Guardrails
 
-- **`MAX_ISSUES_PER_GROUP` = 3**: a component with more than 3 issues splits into per-issue singletons. Empirical convergence ceiling from vipune `memory-row` — bigger groups approach the adversarial fix-loop wall.
+- **`MAX_ISSUES_PER_GROUP` = 3**: a component with more than 3 issues splits into per-issue singletons. Empirical convergence ceiling from project memory — bigger groups approach the adversarial fix-loop wall.
 - **Fanout policy**: today groups run sequentially regardless of `fanout.mode`. Future PR may add per-group parallel worktrees; the `groupIssues()` return already carries the intended mode (`parallel` for K ≤ 2, `sequential` for K > 2), overridable via `PI_ENSEMBLE_PARALLEL_GROUPS`.
 
 ### Cycle shape per group
@@ -1571,7 +1571,7 @@ Each cycle produces **its own PR** and its own state file (`.pi/work-state/<prim
 
 ### Pre-PR16 behavior (v0.12.6–v0.12.15)
 
-- **PR10 (v0.12.6–v0.12.9)**: bundled ALL N issues into ONE PR unconditionally. Empirically failed 3× (vipune `memory-row`: convergence-drop, phantom-bundle, oversized-diff cap).
+- **PR10 (v0.12.6–v0.12.9)**: bundled ALL N issues into ONE PR unconditionally. Empirically failed 3× (project memory: convergence-drop, phantom-bundle, oversized-diff cap).
 - **PR15 (v0.12.15)**: retreated to strictly sequential one-PR-per-issue. Safe but ignored the "these issues genuinely belong together" signal.
 - **PR16 (v0.12.16+)**: deterministic grouping decides the middle path.
 
@@ -1705,7 +1705,7 @@ Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS
 
 ### The develop gate ran the verify command twice on the same tree (#1240)
 
-**Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (the orchard factory: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.
+**Symptom:** `develop` completes many minutes after its developer child finished, with nothing between them but the driver's consolidated verify. On a project whose gate is slow (a measured cycle: `scripts/test.sh`, ~18 min of serial shell tests) an N=1 cycle pays that twice per gate pass — once in the develop worktree and once again at repoRoot for the consolidated probe — and the second run checks content the first already judged. Four gate passes per cycle meant eight runs where four sufficed.
 
 **Cause:** with one workstream, the consolidated probe cherry-picks that workstream's *own* commits onto the cycle's base. The result is the same tree, so the second run is duplicate work, not a second opinion. It was never redundant at N>1, where the combination genuinely is a tree no worktree held.
 
@@ -1808,7 +1808,7 @@ A cycle that aborts or hands off before `commit-pr` never reaches `lens-review` 
 
 ### Resume — what happens when Pi dies mid-cycle
 
-Before #382 a crash lost the cycle *and* hid the fact. State was persisted only at step boundaries while a single dispatch can run for thirty minutes, so a death inside that window left the file at the *previous* boundary still saying `status: "running"`. A dead cycle and a live one looked identical, forever. (This repo still carries the evidence: `.pi/work-state/547.json` and `551.json` are stuck at `running` with empty event logs.)
+Before #382 a crash lost the cycle *and* hid the fact. State was persisted only at step boundaries while a single dispatch can run for thirty minutes, so a death inside that window left the file at the *previous* boundary still saying `status: "running"`. A dead cycle and a live one looked identical, forever. (This repo still carries the evidence: two `.pi/work-state/<issue>.json` state files are stuck at `running` with empty event logs.)
 
 Every step now **writes ahead**: before awaiting a dispatch it persists a `dispatch-started` event, the in-flight job id, and the owning process id. All nine steps do this, not just the five that share `runSingleDispatch` — `develop` is the longest-running step in the cycle and has its own fan-out, so covering only the shared helper would have left the biggest window uncovered.
 
@@ -2219,7 +2219,7 @@ Escape hatch: `PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE=1` restores the old halt-on-fir
 
 ### Why deterministic grouping rather than PM-narrated?
 
-The compiled driver's PR10 shortcut (v0.12.5–v0.12.14) bundled ALL issues into ONE PR without any judgment — that empirically failed 3× (vipune `memory-row`). PR15's retreat to strictly-sequential was safe but ignored real relatedness signal. PR16's grouping rules encode explicit heuristics (link markers, path overlap, subsystem tags) that produce reproducible partitions — same input → same groups, testable, no LLM budget, no drift between runs.
+The compiled driver's PR10 shortcut (v0.12.5–v0.12.14) bundled ALL issues into ONE PR without any judgment — that empirically failed 3× (project memory). PR15's retreat to strictly-sequential was safe but ignored real relatedness signal. PR16's grouping rules encode explicit heuristics (link markers, path overlap, subsystem tags) that produce reproducible partitions — same input → same groups, testable, no LLM budget, no drift between runs.
 
 ### `develop` no longer spawns a second `explore:speculative` child
 
@@ -2277,7 +2277,7 @@ One real failure next to any of these is a code failure, so the cap stays `verif
 
 **Cause:** The verify command fails on a clean checkout of the cycle's base commit, so the gate was red before the change was written and no change can pass it. At `:branch` the probe established that on its own. At `:develop` it fires when the base demonstrably fails the way the change does — every failure of the change's run contains the assertion extracted at base, or the base run and every change run timed out. A base that fails on a different assertion, on one that cannot be extracted, or by timing out while the change fails on a real assertion does not excuse the change, and the `[baseline-red]` finding still leads the evidence while the cap is `verify-failed:develop`.
 
-**A `[baseline-red]` entry wins the cap by attribution, not by position (#1765).** The rule used to be that the verify command's failures had to be the gate's *only* ones, so one foreign entry beside it — a scope fence pushed before the verify chain, a skip-ratchet or smoke failure — relabelled a red base as `verify-failed:develop`, which is the one cap a corrective developer round may earn. Three orchard attempts on one base each re-paid a develop round (4909 s, 6883 s, 8211 s) that way. Now a `[baseline-red]` entry that names the verify command the probe re-ran decides the cap, and every other entry stays a failure on the change, listed as secondary evidence. Attribution is by the command named *inside* the entry rather than by which leg produced it, because a mixed set cannot say what else sat beside it: fast-tier, smoke, skip-ratchet, comment-retention and scope-fence entries are still verdicts on the change and still block. The no-verdict families keep their precedence over all of it — a `[baseline-red]` beside a `[verify-timeout]`, a `[host-resource-exhaustion]` or a build-residue decline still parks `verify-timeout:<step>` / `verify-env:<step>`, because "the bound was too short" and "the host refused to fork" are the actionable diagnosis.
+**A `[baseline-red]` entry wins the cap by attribution, not by position (#1765).** The rule used to be that the verify command's failures had to be the gate's *only* ones, so one foreign entry beside it — a scope fence pushed before the verify chain, a skip-ratchet or smoke failure — relabelled a red base as `verify-failed:develop`, which is the one cap a corrective developer round may earn. Three attempts on one base each re-paid a develop round (4909 s, 6883 s, 8211 s) that way. Now a `[baseline-red]` entry that names the verify command the probe re-ran decides the cap, and every other entry stays a failure on the change, listed as secondary evidence. Attribution is by the command named *inside* the entry rather than by which leg produced it, because a mixed set cannot say what else sat beside it: fast-tier, smoke, skip-ratchet, comment-retention and scope-fence entries are still verdicts on the change and still block. The no-verdict families keep their precedence over all of it — a `[baseline-red]` beside a `[verify-timeout]`, a `[host-resource-exhaustion]` or a build-residue decline still parks `verify-timeout:<step>` / `verify-env:<step>`, because "the bound was too short" and "the host refused to fork" are the actionable diagnosis.
 
 **The probe's cost, and when it does not run.** The pre-develop probe is one run of `.pi/verify-cmd` under the suite tier's own bound, in a throwaway tree the probe removes. Its GREEN verdict is cached for the repo in `.pi/work-state/base-health.json` and keyed by all three of (`baseSha`, the verify command, the tier bound the run got): any one of them differing re-probes, so a moved base, a changed gate or a raised budget can never be answered by a stale pass. A **red** verdict is never cached across cycles — each cycle that would park re-probes first, so one flaky red cannot park cycles it never ran in. A cache file that cannot be parsed is re-probed, never read as green. A red verdict recorded earlier in the *same* cycle is reused by the develop gate's post-failure comparison, which is what stops that seam paying for a second full suite run for a verdict the cycle already holds. **`.pi/work-state/base-health.json` is driver-written runtime state, not a file you edit:** if you suspect a stale green is skipping a probe you expected, delete it and the next cycle re-probes.
 

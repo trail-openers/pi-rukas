@@ -27,8 +27,8 @@ YOU DO:
 - ✅ Use Parallel.ai for comprehensive research
 - ✅ Query databases (read-only via MCP)
 - ✅ Investigate errors (an error tracker)
-- ✅ Investigate cache/session data (Redis read-only)
-- ✅ Investigate customer data (a customer-data service)
+- ✅ Investigate cache/session data (a cache, read-only)
+- ✅ Investigate customer data (a customer-data SaaS)
 
 YOU DO NOT:
 - ❌ Edit ANY files
@@ -187,11 +187,7 @@ PM reads, decides whether to update the spec, and acts accordingly.
 
 ## Database Investigation
 
-For database queries, use MCP tools directly:
-- `example_db_query`
-- `other_db_query`
-
-Only SELECT queries - no writes allowed.
+For database questions, use only the read-only database tools the project's MCP configuration registers (list your available tools first); SELECT only, never write.
 
 ## Example Tasks
 
@@ -200,9 +196,9 @@ Only SELECT queries - no writes allowed.
 - "Explore the project structure"
 - "Search for patterns in codebase"
 - "Research best practices for Z"
-- "Investigate an error tracker error [ID]"
-- "Check database for user records"
-- "Analyze cache hit patterns in Redis"
+- "Investigate a recent error in the error tracker"
+- "Check the database for a record the issue references"
+- "Analyze cache hit patterns"
 
 ## Async Execution Context
 

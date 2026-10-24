@@ -53,7 +53,7 @@ const assert = (c: boolean, m: string) => {
 };
 
 const SENTINEL: HangProcess[] = [
-  { pid: 7001, ppid: 7000, etime: "01:15:02", args: "target/debug/deps/lantern-1a2b" },
+  { pid: 7001, ppid: 7000, etime: "01:15:02", args: "target/debug/deps/my-app-1a2b" },
   { pid: 7002, ppid: 7001, etime: "01:14:58", args: SENTINEL_ARGS },
 ];
 

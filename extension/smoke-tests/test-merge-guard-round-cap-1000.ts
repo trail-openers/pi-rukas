@@ -34,6 +34,7 @@ import {
   TARGET,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
+import type { MergeTarget } from "../src/merge-target.ts";
 import { readPrCommentBodies } from "../src/merge-guard-reads.ts";
 
 await setupLedgerPath();
@@ -55,8 +56,11 @@ await setupLedgerPath();
   // and the round-cap shape check sees a valid OID.
   const PR_HEAD = "a".repeat(40);
   const TARGET_OVERRIDE = { ...TARGET, headOid: PR_HEAD };
-  const hook = (cmd: string, entries: LedgerEntry[], opts: Parameters<typeof hookDecision>[2] = {}) =>
-    hookDecision(cmd, entries, { fetchedHead: PR_HEAD, target: TARGET_OVERRIDE, ...opts });
+  const hook = (
+    cmd: string,
+    entries: LedgerEntry[],
+    opts: Parameters<typeof hookDecision>[2] = {},
+  ) => hookDecision(cmd, entries, { fetchedHead: PR_HEAD, target: TARGET_OVERRIDE, ...opts });
   const lens = (over: Partial<LedgerEntry> & { at: number }): LedgerEntry => ({
     branch: "feature/x",
     kind: "lens",
@@ -89,17 +93,20 @@ await setupLedgerPath();
         calls.push(cmd);
         return { stdout: NO_COMMENTS };
       };
-      const T = {
+      const T: MergeTarget = {
         forge: "github",
         prNumber: 12,
         headBranch: "feature/x",
         headOid: PR_HEAD,
         baseBranch: "main",
-        author: "janni",
+        author: "dev",
         labels: [],
-      } as never;
+      };
       const bodies = await readPrCommentBodies(fn, dir, T, 12, `o/r;id`);
-      assert(bodies.length === 0, "readPrCommentBodies: an invalid repo value returns [] (fail closed)");
+      assert(
+        bodies.length === 0,
+        "readPrCommentBodies: an invalid repo value returns [] (fail closed)",
+      );
       assert(calls.length === 0, "…with NO exec call (the value is never interpolated)");
       const ok = await readPrCommentBodies(fn, dir, T, 12, "o/r");
       assert(ok.length === 0 && calls.length === 1, "a valid repo value still reaches the exec");
@@ -108,7 +115,10 @@ await setupLedgerPath();
       // check): non-integer and non-positive values are refused before any
       // exec → [] (the marker check fails, the merge is refused).
       const badPr = await readPrCommentBodies(fn, dir, T, NaN, "o/r");
-      assert(badPr.length === 0 && calls.length === 1, "an invalid PR number (NaN) returns [] with NO new exec");
+      assert(
+        badPr.length === 0 && calls.length === 1,
+        "an invalid PR number (NaN) returns [] with NO new exec",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -199,8 +209,14 @@ await setupLedgerPath();
         ghComments: commentsWith("feature/x", "p1"),
       });
       assert(r.block === true, "malformed detail → refused");
-      assert(/verdict is malformed/.test(r.reason ?? ""), "…naming the malformed verdict (condition-N wording)");
-      assert(!/round-cap path was not evaluated/.test(r.reason ?? ""), "…NOT the 'not evaluated' fall-through");
+      assert(
+        /verdict is malformed/.test(r.reason ?? ""),
+        "…naming the malformed verdict (condition-N wording)",
+      );
+      assert(
+        !/round-cap path was not evaluated/.test(r.reason ?? ""),
+        "…NOT the 'not evaluated' fall-through",
+      );
     }
 
     /* #1449 — the refusal distinguishes "never reviewed" from "reviewed, but the

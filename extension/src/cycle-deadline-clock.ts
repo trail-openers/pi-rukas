@@ -5,10 +5,10 @@
  * The step-boundary check (work-driver-deadline.ts) only decides whether a
  * NEW step starts. A step already running when the deadline arrived was
  * bounded only by its own backstop (2 h for a developer), so it could run
- * into the caller's hard kill: example-owner/orchard cycle 329 wrote its handoff 8 s
+ * into the caller's hard kill: a measured cycle wrote its handoff 8 s
  * before `docker stop` removed the container.
  *
- * The cross-repo contract (example-owner/orchard#355): the caller sets
+ * The cross-repo contract (observed with the caller): the caller sets
  * `PI_ENSEMBLE_CYCLE_DEADLINE` = its hard kill − its handoff allowance, and
  * passes that allowance as `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`. So the deadline
  * is where step work ends, and `deadline + allowance` is the kill. This

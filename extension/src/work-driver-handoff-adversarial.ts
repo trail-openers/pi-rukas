@@ -25,7 +25,7 @@ import type { WorkEvent, WorkState } from "./workflow-state.ts";
  *
  * `reviewRound` is the LENS counter. An adversarial cap reported it anyway, so
  * a cycle whose adversarial loop ran three full rounds told the human
- * `Rounds: 0 of 3` — lantern #664, verbatim. The reader's reasonable conclusion
+ * `Rounds: 0 of 3` — a measured cycle, verbatim. The reader's reasonable conclusion
  * is that nothing happened, when in fact three reviews and two fix rounds had.
  */
 export function adversarialRoundsLine(

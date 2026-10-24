@@ -3,7 +3,7 @@
  *
  * `/work N --restart` starts from `initialState`, so nothing remembered that
  * the previous cycle parked this issue. A factory that passes `--restart` on
- * every cycle re-resolved example-owner/orchard#85 and #88 minutes after they parked,
+ * every cycle re-resolved two sibling cycles minutes after they parked,
  * reached the same verdict, and posted a second near-identical "Cap hit"
  * comment. The fix added a per-issue record of the reported intent park — but
  * the record only existed when a comment URL came back with it, so the

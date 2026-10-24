@@ -263,7 +263,7 @@ export async function runConsolidatedVerifyUnlocked(
         if (timedOut) {
           // ONE capture per killed run, made HERE — in the window between the
           // kill and its settle where the group's stragglers can still be alive
-          // (the lantern #1054 case is children that outlive their leader) — and
+          // (the case behind #1054 is children that outlive their leader) — and
           // handed to BOTH the written report and the failure-string clause.
           // #1427 round 4 removed the clause's ability to walk at all, so this
           // line is the only thing that produces process rows for this seam.

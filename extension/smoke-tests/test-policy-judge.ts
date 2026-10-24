@@ -6,7 +6,7 @@
  * two sentences below are the ones it got wrong **in production**, in opposite
  * directions. They are the first two tests here, verbatim:
  *
- *   1. lantern's `AGENTS.md:263` — *"Agents may squash-merge a PR to main once
+ *   1. a measured cycle's `AGENTS.md` — *"Agents may squash-merge a PR to main once
  *      CI is green…"*. A real, deliberate grant. Matched nothing, because the
  *      pattern wanted `PRs` directly after `merge` and the indefinite article
  *      broke it. The operator was told merging was not permitted, and a
@@ -58,19 +58,19 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
 // ------------------------------------- the two sentences the regexes got wrong
 
 {
-  // lantern AGENTS.md:263, verbatim. The regex missed this; the gate reported
+  // A downstream project's `AGENTS.md`, verbatim. The regex missed this; the gate reported
   // `source: "none"` — indistinguishable from a project that said nothing.
-  const LANTERN =
+  const GRANT =
     "**Agent Merge Authorization**: Agents may squash-merge a PR to main once CI is green and the adversarial/review gate has approved — merging an approved, green PR is authorized for the pi-ensemble ops role.";
-  const d = docs(`## 12. Agent policy\n\n${LANTERN}\n`);
+  const d = docs(`## 12. Agent policy\n\n${GRANT}\n`);
   const decision = await askPolicy(
-    judgeSaying({ verdict: "permitted", quote: LANTERN, sourceFile: "AGENTS.md" }),
+    judgeSaying({ verdict: "permitted", quote: GRANT, sourceFile: "AGENTS.md" }),
     MERGE_POLICY_QUESTION,
     d,
   );
   assert(
     decision.permitted,
-    "lantern's real grant resolves to PERMITTED — the regex missed it on 'a PR' vs 'PRs'",
+    "the measured cycle's real grant resolves to PERMITTED — the regex missed it on 'a PR' vs 'PRs'",
   );
   assert(
     decision.sourceFile === "AGENTS.md" && (decision.quote ?? "").includes("squash-merge a PR"),

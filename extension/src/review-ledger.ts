@@ -1,7 +1,7 @@
 /**
  * review-ledger — the per-clone record that a branch's changes were reviewed.
  *
- * #912. The incident (sibling project meadow, 2026-09-27): a PM managing work
+ * #912. The incident (a sibling project, 2026-09-27): a PM managing work
  * OUTSIDE the /work driver merged two PRs on a developer's self-report plus
  * green CI — skipping adversarial_loop and dispatch_lens_review. Prompt
  * doctrine demanded both; the prompt layer is what failed. This module is the

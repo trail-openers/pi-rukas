@@ -1,7 +1,7 @@
 /**
  * headless/capabilities — the `--capabilities` answer (issue #1306): one
  * versioned JSON object describing what THIS build of pi-rukas-headless
- * supports, so a caller (orchard) can check before starting a cycle and fail
+ * supports, so a caller can check before starting a cycle and fail
  * closed on an unknown name instead of discovering a gap mid-run.
  *
  *   pi-rukas-headless --capabilities   (prints the object to stdout, exit 0)

@@ -187,7 +187,7 @@ export async function rerunConsolidatedVerifyOnce(
     // sets `killed` too, and is not one).
     timedOut = isTimedOutKill(e);
     // #1427 — walked synchronously in the catch, while the killed run's
-    // grandchildren may still be alive: the lantern #1054 case is precisely
+    // grandchildren may still be alive: the case behind #1054 is precisely
     // children that outlive the leader, and a walk after the settle would
     // report nothing about them.
     //

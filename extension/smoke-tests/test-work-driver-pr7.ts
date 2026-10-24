@@ -302,7 +302,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       handoffBodyPath: "/tmp/issue-553/handoff-comment.md",
     },
   );
-  const msg = renderHandoffUserMessage(s, "/repo/lantern", "/repo/lantern/tmp/issue-553");
+  const msg = renderHandoffUserMessage(s, "/repo/my-app", "/repo/my-app/tmp/issue-553");
   assert(
     msg.includes("Workstream verdicts (develop fanout, 0/3 ok)"),
     "renderHandoffUserMessage: surfaces multi-workstream verdicts header with ratio",

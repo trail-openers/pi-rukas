@@ -129,7 +129,7 @@ Verify (sandbox mode, recommended): `pi-rukas` from any project, then run `/ense
 
 `pi-rukas` launches Pi inside a Docker container where the container fence IS the trust boundary — no per-call permission prompts. Host state that should survive across sessions is bind-mounted in; container-local caches use named volumes. This is the recommended mode; host-mode `pi` remains available without Docker.
 
-Note: the container has unrestricted network egress for v1 — the sandbox protects your filesystem but not your network. Full detail — the bind-mount table, `pi-rukas` wrapper subcommands, cross-mode persistence, session resume, mesh network/host aliases, drag-and-drop images, and the docker-socket / SSH trade-off — lives in [docs/sandbox.md](docs/sandbox.md).
+Note: the container has unrestricted network egress for v1 — the sandbox protects your filesystem but not your network. Full detail — the bind-mount table, `pi-rukas` wrapper subcommands, cross-mode persistence, session resume, private host aliases, drag-and-drop images, and the docker-socket / SSH trade-off — lives in [docs/sandbox.md](docs/sandbox.md).
 
 ## How it works
 

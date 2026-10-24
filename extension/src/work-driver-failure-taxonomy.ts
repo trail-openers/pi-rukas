@@ -235,7 +235,7 @@ const MODEL_NOT_FOUND_PATTERN = /\b404\b.*not[ _]found|\bmodel\b.*\bnot found\b/
 /**
  * #1243 — the whole reason, not a prefix of it. Every reason site used to
  * `slice(0, 60)` the provider's message and the child's tail, which is why the
- * three orchard cycles all read `subagent failed: Adversarial loop infrastructure
+ * three measured cycles all read `subagent failed: Adversarial loop infrastructure
  * failure: round 2 review disp` — cut 60 characters into our OWN composite
  * text, so the number that followed was invisible and the one number that WAS
  * visible ("3m54s") read as a constant rather than that attempt's cost.

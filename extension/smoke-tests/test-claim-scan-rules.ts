@@ -11,7 +11,7 @@
 
 import { extractClaimCandidates, groundClaims, isProseFile } from "../src/claim-scan.ts";
 import { pathsInDiff } from "../src/work-driver-diff.ts";
-import { LANTERN_DIFF } from "./lib/claim-scan-fixture.ts";
+import { FIELD_DIFF } from "./lib/claim-scan-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -59,7 +59,7 @@ function assert(cond: boolean, msg: string) {
   );
   assert(isProseFile("docs/a.md") && !isProseFile("src/a.ts"), "prose classification");
   assert(
-    pathsInDiff(LANTERN_DIFF).join() === "docs/deployment.md",
+    pathsInDiff(FIELD_DIFF).join() === "docs/deployment.md",
     "pathsInDiff reads the +++ side",
   );
 }
@@ -67,7 +67,7 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------------------- the grounding rule
 
 {
-  const candidates = extractClaimCandidates(LANTERN_DIFF);
+  const candidates = extractClaimCandidates(FIELD_DIFF);
 
   // Nothing anywhere → ungrounded.
   const none = await groundClaims(candidates, async () => []);

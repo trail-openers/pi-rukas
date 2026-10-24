@@ -1,5 +1,5 @@
 /**
- * The lantern #658 diff that both claim-scan suites read.
+ * The synthetic docs diff that both claim-scan suites read.
  *
  * Two defects shipped past all six lenses: a docs paragraph that contradicted
  * another seventy lines below it, and invented hardware specs ("Intel i7, 64 GB
@@ -9,7 +9,7 @@
  * on what the gate reports. Shared rather than duplicated so a fixture edit
  * cannot make one suite green about a diff the other no longer sees.
  */
-export const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
+export const FIELD_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
 --- a/docs/deployment.md
 +++ b/docs/deployment.md
 @@ -155,2 +155,4 @@

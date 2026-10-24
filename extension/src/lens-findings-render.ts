@@ -8,7 +8,7 @@
  * event"* plus generic advice about patterns to look for, the in-chat message
  * printed nothing at all, and `/work-status` printed a count.
  *
- * The cost of that was measured. Across four lantern cycles the operator's PM
+ * The cost of that was measured. Across four measured cycles the operator's PM
  * reported discovering, by reading the committed diff by hand, exactly the
  * defects the lenses had already found and reported hours earlier:
  *

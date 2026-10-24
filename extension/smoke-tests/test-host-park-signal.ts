@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 /**
  * #1696 — a host-mode park arms a repeat guard even when no record covers it.
  *
- * The orchard batch behind this issue parked the same way three to nine times on
+ * The batch behind this issue parked the same way three to nine times on
  * an unchanged issue body. `PI_ENSEMBLE_HANDOFF_CHANNEL=host` posts no comment
  * and applies no `needs-human-attention` label BY CONTRACT, so the attention
  * gate has nothing to read; and the #1743 park record exists only for the three

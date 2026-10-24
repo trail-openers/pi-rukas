@@ -127,8 +127,8 @@ try {
 	);
 	assert(
 		detectPortReference(
-			"Already fixed in example-owner/pi-rukas@8641f52d; port it.",
-		) === "example-owner/pi-rukas@8641f52d",
+			"Already fixed in upstream-owner/example-repo@8641f52d; port it.",
+		) === "upstream-owner/example-repo@8641f52d",
 		'xref: "fixed in owner/repo@sha" is a port reference',
 	);
 	assert(

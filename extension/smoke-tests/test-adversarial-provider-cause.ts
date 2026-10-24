@@ -5,7 +5,7 @@
  * cannot help, and waits a burst 429's stated delay instead of re-spawning at
  * once.
  *
- * Observed (orchard cycles 45/61/63): every reviewer child died on
+ * Observed (three measured cycles): every reviewer child died on
  * `Request timed out.`; the loop spawned `-review`, `-retry`, `-retry-2`,
  * `-retry-3`, the fan-out and the router's RETRY_ONCE re-ran it all, and the
  * only line left in err.txt was `adversarial loop infrastructure failure
@@ -220,7 +220,7 @@ async function loopResultFor(script: (string | undefined)[]): Promise<DispatchRe
     failureCauseReason(ev).includes(TIMEOUT) && failureCauseReason(ev).includes("×2"),
     `reason names the error and the repeat (got: ${failureCauseReason(ev)})`,
   );
-  // #1243 — the reason is not cut mid-sentence. The orchard cycles all read
+  // #1243 — the reason is not cut mid-sentence. The measured cycles all read
   // `subagent failed: Adversarial loop infrastructure failure: round 2 review
   // disp` — truncated at 60 chars into our own composite text, which made the
   // one surviving number look like a constant. A long provider error is now

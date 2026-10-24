@@ -30,8 +30,9 @@ import type { FenceView, Workstream } from "./workflow-state-schema.ts";
  * Boilerplate appended to every inline prompt. Tells the subagent where
  * the project-local scratch dir is so they don't drop diffs, screenshots,
  * capture scripts, analysis files at the repo root (the empirical pollution
- * pattern from lantern issue #553 — 12 dot-prefixed diff files, 2 PNG
- * screenshots at root, scratch test_string_error.rs, etc).
+ * pattern from a /work cycle — a dozen dot-prefixed diff files named after
+ * PR and round numbers, PNG screenshots at root, one-off e2e capture
+ * scripts, a scratch test file).
  *
  * Both `./tmp/` (project-local, gitignored via .git/info/exclude) and
  * `/tmp/` (host-level) are acceptable. The driver creates and points at

@@ -34,7 +34,7 @@ import { trace } from "./trace.js";
 // Sandbox workspace root inside the container — the primary in-bounds dir.
 //
 // Read from PI_ENSEMBLE_WORKSPACE_ROOT env, set by bin/pi-rukas wrapper
-// to the project's host absolute path (e.g. /Users/dev/projects/lantern)
+// to the project's host absolute path (e.g. /Users/dev/projects/my-app)
 // so Pi's session-bucket scoping matches host mode (#207). Falls back to
 // `/workspace` for users running the image directly via `docker run`
 // without the wrapper, or via VS Code devcontainer.json (which still mounts

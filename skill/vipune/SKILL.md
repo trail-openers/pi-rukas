@@ -87,7 +87,7 @@ vipune add 'vllm_extra_args containing JSON must escape inner quotes inside the 
   --memory-type guard
 
 # An observation that may or may not be load-bearing — hold provisionally
-vipune add 'Caddy LE state lives at /srv/app/data, survives tofu destroy' \
+vipune add "Caddy's ACME state lives under the app's data mount, so it survives an infra teardown" \
   --memory-type observation --status candidate
 ```
 
@@ -99,11 +99,11 @@ Vipune ships with 5 types. Each routes by purpose:
 
 | Type | What it captures | Examples |
 |---|---|---|
-| `fact` (default) | Objective truths about the project, codebase, or environment | "Project uses OpenTofu, not Terraform" / "GPU has 80 GB VRAM" / "Floating IP is 192.0.2.11" |
-| `preference` | How the user wants things done | "User prefers concise responses with no trailing summaries" / "Always confirm before tofu apply" |
-| `procedure` | Validated step-by-step recipes | "To stop the GPU: source .env, then SERVER_ID=... ./scripts/server-lifecycle.sh stop" |
+| `fact` (default) | Objective truths about the project, codebase, or environment | "Project uses PostgreSQL for the vector store, not an in-process approximation" / "The build host has four cores, so parallel test runs are capped at four" / "The server's public address is assigned by the provider, not static" |
+| `preference` | How the user wants things done | "User prefers concise responses with no trailing summaries" / "Always confirm before applying infrastructure changes" |
+| `procedure` | Validated step-by-step recipes | "To stop the self-hosted embedding server: source .env, then SERVER_ID=... ./scripts/server-lifecycle.sh stop" |
 | `guard` | Things the agent MUST NOT do | "Never use --no-verify on commits" / "Never put secrets in tfvars committed to git" |
-| `observation` | Notable but not yet load-bearing context | "Network throughput between GPU and HF Hub is ~120 MB/s typical" |
+| `observation` | Notable but not yet load-bearing context | "On the staging host, the model download from the hub was much slower than from the local cache" |
 
 Default to `fact` only when nothing more specific fits. **Be aggressive about typing** — typed memories filter better, decay better, and survive consolidation passes.
 
@@ -118,7 +118,7 @@ Vipune has no built-in TTL. Use `--status` instead:
 
 ```bash
 # Provisional — won't show in default searches until an operator promotes it
-vipune add 'tofu apply takes ~5 min when only user_data changed' \
+vipune add 'Applying infrastructure changes takes ~5 min when only user_data changed' \
   --memory-type observation --status candidate
 
 # Leave the row a candidate. Promotion is an operator action — report the
@@ -169,10 +169,10 @@ From vipune's own query-guide scoring data:
 |---|---|---|
 | Single technical term | `vipune search "Caddyfile"` | 0.81 |
 | `[Domain] [Component]` | `vipune search "vllm extra_args"` | 0.80 |
-| `[Feature] [Implementation]` | `vipune search "floating IP attach"` | 0.79 |
+| `[Feature] [Implementation]` | `vipune search "volume mount attach"` | 0.79 |
 | `[Component] [Action] [Concept]` | `vipune search "torch.compile cache invalidation"` | 0.78–0.81 |
 | `[Problem] [Technical Context]` | `vipune search "vllm startup mamba cache"` | 0.80 |
-| Natural-language question | `vipune search "how do we stop the GPU"` | ~0.70 (still useful) |
+| Natural-language question | `vipune search "how do we stop the embedding server"` | ~0.70 (still useful) |
 
 Hybrid mode helps short / proper-noun queries:
 

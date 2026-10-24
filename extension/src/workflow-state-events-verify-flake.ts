@@ -67,7 +67,7 @@ export type VerifyFullStatusEvent = {
  * cherry-picking each workstream's own commits onto the base. With ONE
  * workstream whose per-worktree verify just passed, the probe holds the same
  * content the run above already judged, so the second execution proves nothing
- * and costs the full gate a second time (~21 min per pass on the orchard
+ * and costs the full gate a second time (~21 min per pass on a slow project gate
  * factory). The gate now compares git's own tree object ids and, when it can
  * prove the probe tree IS the tree that passed, records this event instead of
  * running the command.

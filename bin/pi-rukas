@@ -348,25 +348,26 @@ build_env() {
 }
 
 build_host_aliases() {
-  # Hostnames that exist on the host's network (Mesh VPN mesh DNS, LAN, /etc/hosts)
-  # but won't resolve inside the container. Use `--add-host name:ip` to teach the
-  # container's resolver. List is colon-separated `name:ip` pairs in
-  # $PI_ENSEMBLE_HOST_ALIASES (env), with one well-known default:
+  # Hostnames that exist on the host's network (a VPN's DNS, a LAN, the host's
+  # /etc/hosts) but won't resolve inside the container: `--add-host name:ip`
+  # teaches the container's resolver. The list is comma-separated `name:ip`
+  # pairs in $PI_ENSEMBLE_HOST_ALIASES (env), e.g. a private gateway in
+  # ~/.pi/agent/models.json (documentation addresses — use your real one):
   #
-  #   PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20"
+  #   PI_ENSEMBLE_HOST_ALIASES="gateway:192.0.2.10,db:198.51.100.20"
   #
-  # The default below registers `fieldbox` (the LLM gateway documented in your
-  # ~/.pi/agent/models.json). Override the env to add more or change the IP.
+  # There is deliberately NO default address: this is a public repository, so
+  # it registers no host of its own unless the operator sets the variable.
   local aliases=()
-  local default_aliases="fieldbox:192.0.2.10"
-  local raw="${PI_ENSEMBLE_HOST_ALIASES:-$default_aliases}"
+  local raw="${PI_ENSEMBLE_HOST_ALIASES:-}"
   IFS=',' read -ra pairs <<<"$raw"
   for pair in "${pairs[@]}"; do
     [ -z "$pair" ] && continue
     aliases+=(--add-host="$pair")
   done
-  # NUL-separated for consistency with build_mounts / build_env IPC.
-  printf '%s\0' "${aliases[@]}"
+  # NUL-separated, like build_mounts / build_env. An empty list prints nothing:
+  # printf over an empty array still emits a NUL the caller would read as an arg.
+  [ ${#aliases[@]} -eq 0 ] || printf '%s\0' "${aliases[@]}"
 }
 
 # Repair the host terminal after `docker run -it`. Pi inside the container

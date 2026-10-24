@@ -9,7 +9,7 @@
  *
  * Why the distinction exists: a cycle that parks because the endpoint was down
  * for forty minutes is not a cycle whose code failed — there is nothing for a
- * person to look at. The caller (orchard runs pi-rukas headless) needs to tell the
+ * person to look at. A headless caller needs to tell the
  * two apart so it can re-queue the first when the endpoint answers again, and
  * the cap is the only thing a headless host switches on.
  */

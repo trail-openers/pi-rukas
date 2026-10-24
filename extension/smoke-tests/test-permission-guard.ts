@@ -70,7 +70,7 @@ const defaultRoleRemoved =
   resolveToolPermission("read", "default", {}, {}, agentsConfig) === "deny";
 assert(!defaultRoleRemoved, "Issue #104: default role removed → unknown-role queries return false");
 
-// Test 8: Wildcard patterns work correctly (live agents.json — was meadow* pre-codebase-memory-mcp).
+// Test 8: Wildcard patterns work correctly (live agents.json — the wildcard rule predated codebase-memory-mcp).
 // PM has `"parallel-search*": "deny"`; verify the wildcard matches an arbitrary suffix.
 // We assert on resolveToolPermission so we can distinguish "wildcard hit and
 // returned deny" from "no rule matched and defaulted to ask".
@@ -370,7 +370,7 @@ const ghIssueAllowed = [
   "gh issue close 123",
   "gh issue reopen 123",
   "gh issue comment 123 -b 'thx'",
-  "gh search issues 'is:open author:janni'",
+  "gh search issues 'is:open author:dev'",
   "gh api repos/randomm/pi-ensemble/issues/123",
 ];
 for (const command of ghIssueAllowed) {

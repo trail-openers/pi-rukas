@@ -9,7 +9,7 @@
  * distinguish a wall-clock kill from a crash, a 429, or a provider error
  * without opening the state file by hand.
  *
- * That is how lantern #686 and #693 — both killed at 31m08s having produced
+ * That is how two measured cycles — both killed at 31m08s having produced
  * nothing — arrived at their operator described as issue-quality problems,
  * inviting the editing of two perfectly good issues.
  *

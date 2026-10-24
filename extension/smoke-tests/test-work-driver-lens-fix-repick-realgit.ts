@@ -3,7 +3,7 @@
  * Two lens-fix rounds against REAL git: round 2 must integrate only its own
  * commit.
  *
- * The live shape (orchard #97, 2026-10-13): commit-pr put the feature on the
+ * The live shape (one measured cycle): commit-pr put the feature on the
  * branch as F; round 1's fixer committed on top of F and the driver landed
  * it as R1; the reposition gate moved the worktree to R1; round 2's fixer
  * committed R2 on top. `landCommittedFix` then walked `baseSha..HEAD` =

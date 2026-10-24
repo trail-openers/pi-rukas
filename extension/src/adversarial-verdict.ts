@@ -27,7 +27,7 @@
  * "attack this implementation" will always find *something*, and anything was
  * enough.
  *
- * lantern #664 is the worked example: its final round wrote "quality gates pass
+ * the measured case is the worked example: its final round wrote "quality gates pass
  * … the overall design is sound", filed one item under `### ISSUES` and the
  * rest under `### MINOR_OBSERVATIONS`, and returned `ISSUES_FOUND`. The cycle
  * died with green tests, no commit and no PR.

@@ -82,7 +82,7 @@ console.log("=== test-sandbox-fs-guard-boundary summary ===\n");
 
 // === PR #207: sandbox-fs-guard reads PI_ENSEMBLE_WORKSPACE_ROOT env var ===
 // The wrapper now mounts the project at its host absolute path (e.g.
-// /Users/dev/projects/lantern) instead of /workspace. The guard's
+// /Users/dev/projects/app) instead of /workspace. The guard's
 // boundary check must follow — read the env var, fall back to /workspace
 // for raw `docker run` users without the wrapper.
 //

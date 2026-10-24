@@ -1,5 +1,5 @@
 {
-  "$comment": "Verbatim shape of the park that opened #1454: 19 paths claimed by #1421 (abbreviated to the two that overlapped), claimed ~87 minutes before #1427 parked at plan. Evidence in .pi/work-state/1392.json and 1402.json (the claimant-naming parks), not 1427.json.",
+  "$comment": "Verbatim shape (names removed) of the park that opened #1454: a claim over the shared worktree/verify helper paths, held ~87 minutes before the sibling cycle parked at plan. The claimant-naming parks are the evidence, not the parking cycle's own state file.",
   "claims": [
     {
       "issue": 1421,

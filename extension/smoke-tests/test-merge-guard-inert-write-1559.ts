@@ -31,7 +31,7 @@ const show = (m: MergeCommand) => JSON.stringify(m).slice(0, 160);
 
 // ------------------------------------------------------------ the incident shapes
 const WRITES: string[] = [
-  // The four held commands of cycle cycle-id, as reported.
+  // The four held commands of one measured cycle, as reported.
   "cat > tmp/issue-301/spec.md <<'EOF'\nINTENT-VERDICT: park\nPARK-REASON: already-implemented\n## Spec\nThe dispatcher stops; a PR can still merge via gh when CI passes.\nEOF",
   "printf '%s\\n' 'INTENT-VERDICT: park' 'PARK-REASON: already-implemented' '' '## Spec' '' '### Intent' 'honoured by the dispatcher; the PR merge flow in gh is unchanged.' > tmp/issue-301/spec.md",
   // Prose that spells the merge form outright, in every quoting.

@@ -298,7 +298,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     handoffBodyPath: "/tmp/issue-553/handoff-comment.md",
   });
 
-  const msg = renderHandoffUserMessage(s, "/repo/lantern", "/repo/lantern/tmp/issue-553");
+  const msg = renderHandoffUserMessage(s, "/repo/my-app", "/repo/my-app/tmp/issue-553");
   assert(
     msg.includes("HANDOFF DISPATCH INCOMPLETE"),
     "renderHandoffUserMessage: INCOMPLETE banner when commentUrl is null",
@@ -330,7 +330,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "renderHandoffUserMessage: no per-role timeout env var is advertised",
   );
   assert(
-    msg.includes("rm /repo/lantern/.pi/work-state/553.json"),
+    msg.includes("rm /repo/my-app/.pi/work-state/553.json"),
     "renderHandoffUserMessage: recovery #3 surfaces the rm command",
   );
 }

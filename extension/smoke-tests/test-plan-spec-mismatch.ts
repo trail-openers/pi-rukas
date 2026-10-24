@@ -3,7 +3,7 @@
  * #819 — the plan-to-spec gate, and the parser that must not take the first of
  * several workstream blocks.
  *
- * The incident (VERIFIED on disk, `.pi/work-state/818.json` + the preserved
+ * The incident (VERIFIED on disk, the cycle's `.pi/work-state/<issue>.json` + the preserved
  * `plan:corrective` artifact): the issue body, the explore reply, the
  * normalisedSpec and the FIRST plan were all correct. `planQualityReason`
  * flagged the correct one-workstream plan, the corrective reply came back with

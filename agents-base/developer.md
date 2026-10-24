@@ -243,7 +243,7 @@ When you create ephemeral artefacts (diff snapshots between rounds, captured scr
 - The path the dispatcher names in your prompt (e.g. `<repo>/tmp/issue-<N>/`) when one is provided, **OR**
 - `/tmp/pi-rukas-dev/` for host-level scratch when no project tmp dir is named
 
-**NEVER** write scratch files to the repo root or any tracked directory. Empirical pattern: previous /work cycles polluted `lantern` with 12 dot-prefixed `.pr1_r2.diff` / `.regate-1.diff` style files, abandoned PNG screenshots (`screenshot.png` at repo root), one-off e2e scripts (`frontend/e2e/capture-screenshots.mjs`, `clickability-audit.mjs`), and a scratch `test_string_error.rs` at root. The next /work's branch step then ABORTed because `git status --porcelain` wasn't empty.
+**NEVER** write scratch files to the repo root or any tracked directory. Empirical pattern on a /work cycle: previous /work cycles polluted the repo with a dozen dot-prefixed diff files named after PR and round numbers (`.pr<N>_r<K>.diff`), abandoned PNG screenshots at repo root, one-off e2e capture scripts, and a scratch test file at root. The next /work's branch step then ABORTed because `git status --porcelain` wasn't empty.
 
 Before returning from your dispatch:
 - For files you wrote that ARE intended to land: stage them with `git add` and commit them in the worktree — the driver's develop gate requires committed work ahead of base SHA, and @ops pushes in Step 6.

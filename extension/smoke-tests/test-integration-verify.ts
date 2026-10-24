@@ -6,7 +6,7 @@
  * inside a single worktree, and adversarial reviews a single worktree's diff.
  * The first build of the integrated tree happened at `ci` — after `commit-pr`
  * had pushed, after the PR existed, and after six lenses had spent up to two
- * hours reviewing it. Four of nine measured lantern cycles died at lens-review;
+ * hours reviewing it. Four of nine measured cycles died at lens-review;
  * none ever reached `ci`, so in practice the integrated tree was NEVER built.
  *
  * Two workstreams that each verify alone can still fail together — one renames

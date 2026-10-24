@@ -2,7 +2,7 @@
  * work-driver-intent-grounding — an `already-implemented` park must name a mainline commit (#1351).
  *
  * "Already implemented" is a claim about the mainline, and nothing checked it
- * there. On example-owner/orchard#127 the resolver recorded that main had no trace of the
+ * there. In one measured case the resolver recorded that main had no trace of the
  * feature, that the work existed only on an open, conflicting PR, and then
  * parked `already-implemented` — so the cycle stopped on a claim its own
  * evidence refuted, and the one actionable fact (the open PR) never surfaced.

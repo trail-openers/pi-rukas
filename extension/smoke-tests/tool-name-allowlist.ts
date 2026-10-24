@@ -214,10 +214,7 @@ export const ALLOWLIST = new Set<string>([
   "python-tdd",
   "api-design",
   // --- Other legitimate non-tool tokens
-  "lantern",
   "awaiting-human-merge",
-  "example_db_query",
-  "other_db_query",
   // --- codebase-memory MCP tools named by the doctrine but NOT granted to any
   //     role in agents.json. These moved to the committed registry
   //     `tool-name-doctrine-mcp.json` (#995 adversarial round) where each carries

@@ -60,7 +60,7 @@
  *
  * Provider/model are read from `PI_ENSEMBLE_LIVE_PROVIDER` /
  * `PI_ENSEMBLE_LIVE_MODEL` env (default: `local-gpu` /
- * `RedHatAI/Qwen3.8-27B-INT4`, the host's configured subagent model from
+ * `RedHatAI/Qwen3.8-27B-INT4`, a host-configured subagent model from
  * ~/.pi/agent/ensemble-models.json). Live tests are excluded from the
  * offline pre-push gate (PI_ENSEMBLE_FORBID_LIVE_SPAWN=1), so the model
  * does not need to be the production one.
@@ -102,9 +102,9 @@ function assert(cond: boolean, msg: string) {
 type AnyEvent = Record<string, unknown>;
 
 // Provider/model for the live child. Read from env so the test works
-// regardless of which model the host has quota for; defaults to the
-// local-gpu model that the host's ensemble-models.json already
-// configures for all subagents.
+// regardless of which model the host has quota for; the defaults name a
+// local GPU provider and a model a host's ensemble-models.json typically
+// configures for subagents.
 const liveProvider = process.env.PI_ENSEMBLE_LIVE_PROVIDER ?? "local-gpu";
 const liveModel = process.env.PI_ENSEMBLE_LIVE_MODEL ?? "RedHatAI/Qwen3.8-27B-INT4";
 

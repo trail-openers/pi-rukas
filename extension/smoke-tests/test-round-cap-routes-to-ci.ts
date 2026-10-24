@@ -3,7 +3,7 @@
  * The lens round cap must not park work that is merge-worthy.
  *
  * Measured: two of six outcomes in one overnight run died here. Both
- * `.pi/work-state/457.json` and `680.json` show the same tail —
+ * Two capped cycles' state files show the same tail —
  * `lens-issues-found` → `cap-hit{cap:"round-cap"}` → `handoff`. A human then
  * judged #457 merge-as-is, and #680's PR merged unchanged. The cap parked work
  * that was fine, and each park cost a re-run plus operator time.

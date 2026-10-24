@@ -5,7 +5,7 @@
  * The headless result and the handoff marker read the LAST cap-hit as the
  * cycle's cap. A step that ends on a verdict (`verify-failed:develop`, a fence
  * park) writes that verdict last, even when what actually ended the step was a
- * clock. example-owner/orchard cycle 175 is the reference: its developer was killed at
+ * clock. One measured cycle is the reference: its developer was killed at
  * the 2 h spawn backstop, the fence gate then judged the tree the killed child
  * left, and both events carry one timestamp — the record read as a code-fence
  * park for a develop round that was killed at its ceiling.

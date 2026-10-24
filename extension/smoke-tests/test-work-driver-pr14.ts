@@ -105,27 +105,27 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         branchName: "feature/issue-577-multi",
         issueBodyArtifact,
         worktrees: {
-          "prompt-reorder": `${dir}/.worktrees/issue-577-prompt-reorder`,
-          observability: `${dir}/.worktrees/issue-577-observability`,
-          "config-tweak": `${dir}/.worktrees/issue-577-config-tweak`,
+          "docs-research": `${dir}/.worktrees/issue-577-docs-research`,
+          "app-logging": `${dir}/.worktrees/issue-577-app-logging`,
+          "app-config": `${dir}/.worktrees/issue-577-app-config`,
         },
         workstreams: {
-          "prompt-reorder": {
-            id: "prompt-reorder",
+          "docs-research": {
+            id: "docs-research",
             scope: "reorder write-sweep step",
-            paths: ["selfhost/app-config/prompts/strategy-research.md"],
+            paths: ["docs/research.md"],
             outOfScope: ["src/unrelated.rs"],
           },
-          observability: {
-            id: "observability",
+          "app-logging": {
+            id: "app-logging",
             scope: "WARN log on missing SWP file",
             paths: ["src/cron/mod.rs"],
             outOfScope: ["docs/unrelated.md"],
           },
-          "config-tweak": {
-            id: "config-tweak",
+          "app-config": {
+            id: "app-config",
             scope: "raise max_iterations",
-            paths: ["selfhost/app-config/lantern.toml"],
+            paths: ["config/app.toml"],
             outOfScope: [".github/workflows/unrelated.yml"],
           },
         },
@@ -150,7 +150,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     };
     await runWorkDriver(ctx).catch(() => {});
 
-    for (const id of ["prompt-reorder", "observability", "config-tweak"]) {
+    for (const id of ["docs-research", "app-logging", "app-config"]) {
       assert(
         capturedPrompt.includes(id),
         `PR14 §B: commit-pr prompt enumerates workstream id '${id}'`,
@@ -161,9 +161,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       );
     }
     assert(
-      capturedPrompt.includes("strategy-research.md") &&
+      capturedPrompt.includes("docs/research.md") &&
         capturedPrompt.includes("src/cron/mod.rs") &&
-        capturedPrompt.includes("lantern.toml"),
+        capturedPrompt.includes("app.toml"),
       "PR14 §B: commit-pr prompt lists each workstream's in-scope paths",
     );
     assert(
@@ -288,15 +288,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       cwd: dir,
       shell: "/bin/bash",
     });
-    await fs.mkdir(path.join(dir, "selfhost", "app-config", "prompts"), { recursive: true });
-    await fs.writeFile(
-      path.join(dir, "selfhost", "app-config", "prompts", "strategy-research.md"),
-      "base\n",
-    );
+    await fs.mkdir(path.join(dir, "docs"), { recursive: true });
+    await fs.mkdir(path.join(dir, "config"), { recursive: true });
+    await fs.writeFile(path.join(dir, "docs", "research.md"), "base\n");
     await fs.mkdir(path.join(dir, "src", "cron"), { recursive: true });
     await fs.writeFile(path.join(dir, "src", "cron", "mod.rs"), "// base\n");
     await fs.writeFile(
-      path.join(dir, "selfhost", "app-config", "lantern.toml"),
+      path.join(dir, "config", "app.toml"),
       "max_iterations = 25\n",
     );
     await execp("git add . && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });
@@ -305,9 +303,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       cwd: dir,
     });
     await execp("git checkout -qb feature/issue-577-multi", { cwd: dir });
-    // Commit ONLY config-tweak's file (simulates the v0.12.13 partial bug).
+    // Commit ONLY app-config's file (simulates the v0.12.13 partial bug).
     await fs.writeFile(
-      path.join(dir, "selfhost", "app-config", "lantern.toml"),
+      path.join(dir, "config", "app.toml"),
       "max_iterations = 40\n",
     );
     await execp("git add . && git commit -q -m 'partial: only config'", {
@@ -326,27 +324,27 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         lastCompletedStep: "adversarial",
         branchName: "feature/issue-577-multi",
         worktrees: {
-          "prompt-reorder": `${dir}/.worktrees/p`,
-          observability: `${dir}/.worktrees/o`,
-          "config-tweak": `${dir}/.worktrees/c`,
+          "docs-research": `${dir}/.worktrees/p`,
+          "app-logging": `${dir}/.worktrees/o`,
+          "app-config": `${dir}/.worktrees/c`,
         },
         workstreams: {
-          "prompt-reorder": {
-            id: "prompt-reorder",
+          "docs-research": {
+            id: "docs-research",
             scope: "x",
-            paths: ["selfhost/app-config/prompts/strategy-research.md"],
+            paths: ["docs/research.md"],
             outOfScope: [],
           },
-          observability: {
-            id: "observability",
+          "app-logging": {
+            id: "app-logging",
             scope: "y",
             paths: ["src/cron/mod.rs"],
             outOfScope: [],
           },
-          "config-tweak": {
-            id: "config-tweak",
+          "app-config": {
+            id: "app-config",
             scope: "z",
-            paths: ["selfhost/app-config/lantern.toml"],
+            paths: ["config/app.toml"],
             outOfScope: [],
           },
         },
@@ -382,8 +380,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     const missingIds = missing.map((m) => m.id).sort();
     assert(
-      JSON.stringify(missingIds) === JSON.stringify(["observability", "prompt-reorder"]),
-      `PR14 §D: incompleteConsolidation lists prompt-reorder + observability (got: ${JSON.stringify(missingIds)})`,
+      JSON.stringify(missingIds) === JSON.stringify(["app-logging", "docs-research"]),
+      `PR14 §D: incompleteConsolidation lists docs-research + app-logging (got: ${JSON.stringify(missingIds)})`,
     );
     // #540 — both sides recorded: the missing verdicts AND the committed
     // file list (what actually shipped), so the handoff renders present +
@@ -392,7 +390,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       after?.pipelineState.incompleteConsolidation,
     );
     assert(
-      filesPresent.includes("selfhost/app-config/lantern.toml"),
+      filesPresent.includes("config/app.toml"),
       `PR14 §D (#540): filesPresent records the committed file list (got: ${JSON.stringify(filesPresent)})`,
     );
     assert(
@@ -419,17 +417,17 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       incompleteConsolidation: {
         verdicts: [
           {
-            id: "prompt-reorder",
+            id: "docs-research",
             status: "uncovered",
-            uncoveredPaths: ["selfhost/app-config/prompts/strategy-research.md"],
+            uncoveredPaths: ["docs/research.md"],
           },
           {
-            id: "observability",
+            id: "app-logging",
             status: "uncovered",
             uncoveredPaths: ["src/cron/mod.rs"],
           },
         ],
-        filesPresent: ["selfhost/app-config/lantern.toml"],
+        filesPresent: ["config/app.toml"],
       },
     },
   };
@@ -450,43 +448,43 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 
   const explanation = explainCap("commit-pr-incomplete-consolidation", s);
   assert(
-    /prompt-reorder/.test(explanation) && /observability/.test(explanation),
+    /docs-research/.test(explanation) && /app-logging/.test(explanation),
     "PR14 §E: explainCap names the missing workstreams",
   );
 
   const msg = renderHandoffUserMessage(s, "/repo/proj", "/repo/proj/tmp/issue-577");
   assert(
     msg.includes("Missing workstreams from the committed diff:") &&
-      msg.includes("prompt-reorder") &&
-      msg.includes("observability"),
+      msg.includes("docs-research") &&
+      msg.includes("app-logging"),
     "PR14 §E: renderHandoffUserMessage lists missing workstreams",
   );
   assert(
-    msg.includes(".worktrees/issue-577-prompt-reorder") &&
-      msg.includes(".worktrees/issue-577-observability"),
+    msg.includes(".worktrees/issue-577-docs-research") &&
+      msg.includes(".worktrees/issue-577-app-logging"),
     "PR14 §E: renderHandoffUserMessage shows per-worktree recovery commands",
   );
 
   const md = renderHandoffMarkdown(s);
   assert(
-    md.includes("prompt-reorder") && md.includes("observability"),
+    md.includes("docs-research") && md.includes("app-logging"),
     "PR14 §E: renderHandoffMarkdown lists missing workstreams",
   );
   // #540 — all three renderers render the PRESENT side too (filesPresent),
   // not just the missing list.
   assert(
     /Committed \(the present side of the consolidation verdict\)/.test(md) &&
-      md.includes("selfhost/app-config/lantern.toml"),
+      md.includes("config/app.toml"),
     "PR14 §E: renderHandoffMarkdown renders the present side (filesPresent)",
   );
   assert(
     /Committed \(the present side of the consolidation verdict\)/.test(msg) &&
-      msg.includes("selfhost/app-config/lantern.toml"),
+      msg.includes("config/app.toml"),
     "PR14 §E: renderHandoffUserMessage renders the present side (filesPresent)",
   );
   assert(
     /committed diff contains 1 file/.test(explanation) &&
-      explanation.includes("selfhost/app-config/lantern.toml"),
+      explanation.includes("config/app.toml"),
     "PR14 §E: explainCap renders the present side (filesPresent)",
   );
   assert(

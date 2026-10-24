@@ -2,7 +2,7 @@
 /**
  * S6 — writing a park comment must never cost 26 minutes.
  *
- * lantern's `.pi/work-state/626.json`: after two killed explore dispatches the
+ * A measured cycle's `.pi/work-state/<issue>.json`: after two killed explore dispatches the
  * cycle reached handoff and logged
  * `dispatch-completed handoff ops:handoff ms=1547126` — 25.8 minutes to post a
  * comment whose body was already on disk. It COMPLETED, so neither the

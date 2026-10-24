@@ -14,7 +14,7 @@ vipune supports five types; **default `fact` only when nothing more specific fit
 
 | Type | Use when |
 |---|---|
-| `fact` | Objective truths about the project / codebase / environment (e.g. "project uses OpenTofu, not Terraform") |
+| `fact` | Objective truths about the project / codebase / environment (e.g. "Project uses PostgreSQL for the vector store, not an in-process approximation") |
 | `preference` | How the user wants things done (e.g. "user prefers concise responses, no trailing summaries") |
 | `procedure` | Validated step-by-step recipes (e.g. "to deploy: source .env, then ./scripts/deploy.sh stage") |
 | `guard` | Things the agent MUST NOT do (e.g. "never use --no-verify on commits") |

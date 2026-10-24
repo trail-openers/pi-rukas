@@ -364,7 +364,7 @@ Other GitLab operations:
 
 ## Scratch hygiene — clean-tree precondition depends on it
 
-You enforce `git status --porcelain` must be empty before branching (Step 3 in /work doctrine). That precondition fails when previous /work cycles polluted the repo root with scratch files (diff snapshots `.pr1_r2.diff`, screenshots, one-off scripts).
+You enforce `git status --porcelain` must be empty before branching (Step 3 in /work doctrine). That precondition fails when previous /work cycles polluted the repo root with scratch files (diff snapshots `.pr<N>_r<K>.diff`, screenshots, one-off scripts).
 
 Two implications for you:
 

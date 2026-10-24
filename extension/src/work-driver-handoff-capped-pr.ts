@@ -6,7 +6,7 @@
  * the `adversarial-loop` cap means the final verdict was CRITICAL. That cap
  * routes from adversarial straight to handoff — commit-pr never runs — and the
  * handoff consolidation is local-only by design, so the reviewed commits ended
- * on a branch only the parked workspace could see (orchard cycle 238: three fix
+ * on a branch only the parked workspace could see (a measured cycle: three fix
  * rounds, a one-line CRITICAL fix the reviewer had written out, and no pushed
  * branch, no PR, nothing an operator could fetch before the workspace sweep).
  *

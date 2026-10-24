@@ -16,7 +16,7 @@ import { orderingDependencies } from "./work-queue-deps.ts";
  * For /work N M P with K > 1 activeIssues, partition them into groups
  * that will each become one worktree + one PR. The compiled driver's
  * PR10 shortcut bundled ALL K issues into ONE PR; that empirically
- * failed 3× (vipune `memory-row`). PR15 retreated to one-PR-per-issue.
+ * failed 3× (project memory). PR15 retreated to one-PR-per-issue.
  * PR16 restores the old PM-driven /work's smarts (analyze → group
  * related issues → parallelize independent ones) but codified as pure
  * code so it's deterministic and testable.
@@ -48,12 +48,12 @@ import { orderingDependencies } from "./work-queue-deps.ts";
  * Guardrails after grouping:
  *
  *   - Cap group size at MAX_ISSUES_PER_GROUP (3) — bigger groups
- *     approach the adversarial convergence wall (vipune `memory-row`
+ *     approach the adversarial convergence wall (project memory
  *     empirical ceiling: > 3 issues in one bundle collapsed 3×).
  *     Excess splits into per-issue singletons.
  *   - K > MAX_PARALLEL_GROUPS_DEFAULT (3) triggers "sequential" fanout
- *     mode for the remainder (matches worktree cherry-pick ceiling from
- *     vipune `memory-row`).
+ *     mode for the remainder (matches the worktree cherry-pick ceiling from
+ *     project memory).
  *
  * Output shape matches the plan's workstream map: `Record<groupId, {id, scope,
  * paths, outOfScope, issues}>`. Each entry becomes one workstream
@@ -71,7 +71,7 @@ export const MAX_ISSUES_PER_GROUP = 3;
 //   - Every workstream develops in its own detached worktree under .worktrees/
 //     and patches are applied under a single integration lock (in-process
 //     promise chain + O_EXCL lockfile), eliminating the shared repo-root
-//     contention that destroyed 2 of 4 lantern cycles at commit-pr.
+//     contention that destroyed 2 of 4 measured cycles at commit-pr.
 // The sequential default (1) was judged too conservative: a 6-group queue ran
 // entirely sequential under cap=1 (session 2026-08-26). `PI_ENSEMBLE_PARALLEL_GROUPS`
 // still overrides in either direction; `PI_ENSEMBLE_PARALLEL_WORK=0` hard-forces 1.
@@ -242,7 +242,7 @@ export function groupIssues(
   // blocked-by. Directed edge → union both ends.
   // #408 — `closes` / `fixes` / `resolves` / `part of` / `related to` were
   // missing, and GitHub's own closing keywords are how issues reference each
-  // other in practice: lantern #657 said "closes #650" and R1 saw nothing, so
+  // other in practice: one issue said "closes" another and R1 saw nothing, so
   // two issues that were literally the same work were grouped apart.
   const linkRe =
     /\b(?:depends[-\s]?on|companion[-\s]?(?:to|of)|blocks?|blocked[-\s]?by|close[sd]?|fix(?:e[sd])?|resolve[sd]?|supersedes?|part[-\s]of|relate[sd]?[-\s]to|duplicate[-\s]of)\s*:?\s*#(\d+)/gi;
@@ -275,7 +275,7 @@ export function groupIssues(
 
   // R2 — Path overlap. Extract path-shaped tokens from each body,
   // compute Jaccard on pairs, union if ≥ 0.5.
-  // #408 — `container` was absent, so the one file lantern #650 and #657
+  // #408 — `container` was absent, so the one file two sibling cycles
   // genuinely shared contributed nothing to their Jaccard score. Extended
   // with the infra/config shapes issues actually cite.
   const EXT =

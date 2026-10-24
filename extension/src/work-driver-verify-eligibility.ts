@@ -7,7 +7,7 @@
  * cherry-picking each workstream's commits onto the cycle's base. With ONE
  * workstream whose per-worktree verify just passed, that probe is base + the
  * same commits, i.e. the content the run above already judged — a second
- * full gate for nothing (measured: ~21 min per pass on the orchard factory,
+ * full gate for nothing (measured on a slow project gate: ~21 min per pass,
  * roughly a third of the cycle).
  *
  * The rule lives here, away from the gate that consults it, because what it

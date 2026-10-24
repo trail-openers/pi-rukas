@@ -225,7 +225,7 @@ export function renderHandoffUserMessage(
   // The review's own findings, in the surface the operator actually reads.
   // This message showed them NOWHERE — not a pointer, not a count — while the
   // six lenses had already located the defect, named the file and rated it
-  // CRITICAL. Four lantern cycles handed off that way and the same defects were
+  // CRITICAL. Four measured cycles handed off that way and the same defects were
   // rediscovered later by hand from the diff. See lens-findings-render.ts.
   const lastFindings = [...state.eventLog]
     .reverse()

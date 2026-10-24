@@ -19,7 +19,7 @@
  *    `build.sh`, task-b owned only the test asserting on it.
  *
  * Not hypothetical: measured on this host, current cycles are routinely N>1
- * (lantern 664 = 3 workstreams, 673 = 2, 677 = 3).
+ * (measured plans: 3 workstreams, 2, 3).
  */
 
 import { isPlainRepoRelativePath, isPlannedRepoRelativePath } from "./plan-path-shape.ts";

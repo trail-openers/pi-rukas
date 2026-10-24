@@ -2,7 +2,7 @@
 /**
  * #1765 — the branch step asks the base commit BEFORE a developer is paid for.
  *
- * Three /work attempts on one orchard base each re-paid a develop round (4909 s,
+ * Three /work attempts on one base each re-paid a develop round (4909 s,
  * 6883 s, 8211 s) before anything said "the gate is red at the base commit, no
  * change can pass it". The fix is the probe in `work-driver-verify-base-health.ts`
  * and the two rules that make it affordable: a GREEN verdict is cached across

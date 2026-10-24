@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * #1565 — the generic recovery block ("inspect / discard / take over") must
- * run git where a repository was actually found. Live (orchard #329), the
+ * run git where a repository was actually found. Live (one measured cycle), the
  * handoff told the operator to run `git status` / `add -p` / `commit` /
  * `push` at a repoRoot that the same handoff's own snapshot read had just
  * proved is not a git repository, while the retained worktree holding the
@@ -27,10 +27,10 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const REPO = "/home/ops/orchard/work/orchard";
+const REPO = "/home/ops/app/work/app";
 const WT = `${REPO}/.worktrees/issue-1-default`;
 const BRANCH = "feature/issue-1-example-fix";
-const NOT_A_REPO = `git rev-parse HEAD in ${REPO}: fatal: not a git repository (or any parent up to mount point /home/ops/orchard/work)`;
+const NOT_A_REPO = `git rev-parse HEAD in ${REPO}: fatal: not a git repository (or any parent up to mount point /home/ops/app/work)`;
 
 type Snap = NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>;
 function state(opts: {
@@ -58,7 +58,7 @@ function state(opts: {
   return {
     schemaVersion: 1,
     resumable: false,
-    issue: 329,
+    issue: 1,
     createdAt: 1,
     updatedAt: 2,
     pipelineState: {

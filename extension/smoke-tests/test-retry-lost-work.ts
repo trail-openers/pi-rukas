@@ -79,7 +79,7 @@ const severed = {
   );
 }
 
-// 1b. #1243 — the reason beside that line is not cut. The three orchard cycles all
+// 1b. #1243 — the reason beside that line is not cut. The three measured cycles all
 //     printed `subagent failed: Adversarial loop infrastructure failure: round 2
 //     review disp` — 60 characters of our own composite text, so the cost that
 //     followed was invisible and the number that survived read like a constant.

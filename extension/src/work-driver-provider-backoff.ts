@@ -7,7 +7,7 @@
  * HOW LONG to sit out the causes it already named.
  *
  * The transient ladder was `5s × attempt` — 5s, then 10s. Measured across the
- * 14 Oct orchard incident (three cycles parked inside 30 minutes on one endpoint
+ * 14 Oct downstream incident (three cycles parked inside 30 minutes on one endpoint
  * outage, cycles 45/61/63): every one of those waits landed inside the SAME
  * incident, so every re-spawn died on the identical provider error and the
  * step's single retry was spent in under five minutes. A sub-minute ladder

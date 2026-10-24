@@ -248,7 +248,7 @@ registerWorkTools(fakePi);
     "the original no-editing rule is still present, not replaced",
   );
   // #911 — the developer bullet names BOTH review gates, not just the
-  // adversarial one: the meadow incident was a PM that merged on a developer's
+  // adversarial one: the incident behind #911 was a PM that merged on a developer's
   // self-report plus CI, having lost sight of the lens review.
   assert(
     /adversarial_loop/.test(preamble),

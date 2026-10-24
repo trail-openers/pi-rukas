@@ -13,7 +13,7 @@
 | `~/.pi/agent/sessions/` | same | bind / volume fallback | Pi conversation sessions — drives `pi-rukas -r`. |
 | `~/.pi/agent/ensemble-runs/` | same | bind / volume fallback | Subagent transcripts (`/runs` slash command). |
 | `~/.pi/agent/ensemble-models.json` | same | bind (ro) | pi-rukas per-role model picks. |
-| `~/.pi/agent/models.json` | same | bind (ro) | Pi PROVIDER config (anthropic / openai / local-gpu / fieldbox / etc.). |
+| `~/.pi/agent/models.json` | same | bind (ro) | Pi PROVIDER config (anthropic / openai / a local GPU provider / a private gateway / etc.). |
 | `~/.pi/agent/mcp.json` | same | bind (ro) | Pi 1.0.0's native MCP config (codebase-memory-mcp wiring + your other MCP servers). Issue #959 moved the wiring from the adapter-era `~/.config/mcp/mcp.json` to this path; the devcontainer.json bind-mount of `~/.config/mcp` is removed (see docs/mcp.md). |
 | `~/.config/gh/` | same | bind (ro) | gh CLI config (fallback; primary auth is `GH_TOKEN` extracted from `gh auth token` and forwarded as env). |
 | — | `~/.cache/` | named volume `pi-ensemble-cache` | codebase-memory-mcp index, HF model cache. |
@@ -48,13 +48,13 @@
 
 **Host mode is still available.** `pi` continues to work for users who don't have Docker, prefer the legacy UX, or are iterating on pi-rukas itself. Per-call permission gating is OFF in interactive host mode by default — when pi-rukas runs as your own UID outside a sandbox, there is no agent-tool-layer gate that can meaningfully constrain a misbehaving subagent (it has the same FS / network / credential access as you). The honest position: you trust the agent, or you don't run it. Set `PI_ENSEMBLE_STRICT_PERMISSIONS=1` to restore the legacy ask-flow if you actively want prompts back. Headless mode (`pi -p`) still hard-denies novel commands — no human to consent means the deny is meaningful.
 
-**Reaching hosts that live on your mesh network / LAN.** The container's resolver doesn't see Mesh VPN mesh DNS or your `/etc/hosts`. If you've registered an OpenAI-compatible LLM gateway at `http://fieldbox:8080` (or similar) in your `~/.pi/agent/models.json`, the wrapper teaches the container's resolver via `--add-host` so the hostname works inside. The default registration covers `fieldbox:192.0.2.10`. Override or extend via env:
+**Reaching a private host that lives on your LAN or VPN.** The container's resolver doesn't see a mesh VPN's DNS or your `/etc/hosts`. If you've registered an OpenAI-compatible LLM gateway at a private hostname in your `~/.pi/agent/models.json` — say `http://gateway:8080` — the wrapper can teach the container's resolver via `--add-host` so the hostname works inside. **The wrapper ships no default address:** nothing is registered unless you set the variable yourself, with a generic shape like `gateway:192.0.2.10` (an RFC 5737 documentation address — substitute your host's real address):
 
 ```bash
-PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-rukas
+PI_ENSEMBLE_HOST_ALIASES="gateway:192.0.2.10,db:198.51.100.20" pi-rukas
 ```
 
-Comma-separated `name:ip` pairs. The IPs must be reachable from the host (the container's network rides the host's stack via Docker bridge); Mesh VPN-only hostnames work as long as your host can route to the mesh network IP.
+Comma-separated `name:ip` pairs. Use your host's real address, not the documentation range above: the IPs must be reachable from the host (the container's network rides the host's stack via Docker bridge); hostnames that only resolve over a VPN work as long as your host can route to that address.
 
 **Drag-and-drop images.** Pi uses `@<path>` to attach a file as multimodal input — e.g. `@/Users/you/Downloads/screenshot.png describe this`. Dragging an image into the terminal pastes its absolute path; **you then type `@` in front of the pasted path yourself** (the terminal doesn't add it). Without the `@` prefix, Pi treats the path as plain text in the prompt and never attaches the bytes.
 
@@ -90,7 +90,7 @@ What the driver will not take from a manifest: a manifest for another issue, a `
 
 The driver does not check that the step's model reads images. A launcher should set this up only for a model that does: for any other the prompt section describes pictures the model cannot see, or the model's server refuses the request. A dispatch that is resumed after a crash continues the Pi session of the first one, which holds the kickoff message; the resume prompt itself is text.
 
-For your provider to actually use the image, `~/.pi/agent/models.json` must mark the model as multimodal: `"input": ["text", "image"]`. Built-in providers (Anthropic / OpenAI / Google) know vision capabilities natively; custom OpenAI-compatible providers (e.g. fieldbox's Qwen3.6) need the explicit hint.
+For your provider to actually use the image, `~/.pi/agent/models.json` must mark the model as multimodal: `"input": ["text", "image"]`. Built-in providers (Anthropic / OpenAI / Google) know vision capabilities natively; a custom OpenAI-compatible provider (e.g. a self-hosted vision model on your own gateway) needs the explicit hint.
 
 **Docker-based MCP servers and SSH work transparently.** Two capabilities that exist on the host carry through to the sandbox by default — you don't set a flag for them:
 

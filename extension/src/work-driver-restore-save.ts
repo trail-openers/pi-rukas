@@ -68,7 +68,7 @@ ${staged}
     trace(`work-driver: ${label} — discarded state preserved to ${file}`);
     return { kind: "saved", path: file };
   } catch (err) {
-    // Name the argv and git's own stderr: a bare `Command failed: git` (example-owner/pi-rukas#32)
+    // Name the argv and git's own stderr: a bare `Command failed: git` (#1275)
     // could not be told apart from an environment failure.
     const e = err as Error & { stderr?: string };
     const what = argv ? `\`git ${argv.join(" ")}\` failed: ` : "";

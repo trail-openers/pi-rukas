@@ -96,7 +96,7 @@ All findings must follow this structure:
 
 6. **Error-Context Observability**
    - Caught errors logged as text-only (`logger.warn("something failed")`) with no error object, no stack, no correlation/request id, no operation name, no affected identifiers.
-   - Errors reported to an error-tracking system (Sentry/an error tracker/Datadog/Bugsnag/Honeybadger/etc.) without tags/extras that would let on-call triage.
+   - Errors reported to an error-tracking system (Sentry/Datadog/Bugsnag/Honeybadger/etc.) without tags/extras that would let on-call triage.
    - Errors rescued-and-raised-differently such that the error tracker sees only the outer wrapper and loses the original.
 
 7. **Resource Cleanup on Error Paths**

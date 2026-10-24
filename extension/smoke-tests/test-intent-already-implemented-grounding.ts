@@ -2,7 +2,7 @@
 /**
  * An `already-implemented` park must name a commit on the mainline (#1351).
  *
- * example-owner/orchard#127: the resolver wrote down that main had no trace of the
+ * In one measured case: the resolver wrote down that main had no trace of the
  * feature and that the work lived only on an open, conflicting PR, then parked
  * `already-implemented`. Nothing checked the claim against the mainline, so the
  * park stood. This test builds a real clone (origin with `main` and an unmerged
@@ -45,12 +45,12 @@ await git(clone, "commit", "-q", "--allow-empty", "-m", "main: base");
 const mainSha = await git(clone, "rev-parse", "HEAD");
 await git(clone, "push", "-q", "origin", "main");
 await git(clone, "checkout", "-q", "-b", "pr-214");
-await git(clone, "commit", "-q", "--allow-empty", "-m", "pr: ORCHARD_WORK_FILES");
+await git(clone, "commit", "-q", "--allow-empty", "-m", "pr: ATTACHMENT_SWITCH");
 const prSha = await git(clone, "rev-parse", "HEAD");
 await git(clone, "push", "-q", "origin", "pr-214");
 await git(clone, "remote", "set-head", "origin", "main");
 
-/** The orchard#127 shape: a park whose own evidence says the mainline lacks the work. */
+/** The shape behind this issue: a park whose own evidence says the mainline lacks the work. */
 const reply = (implementedAt: string | undefined, deliverables = true) =>
   [
     "INTENT-VERDICT: park",
@@ -59,14 +59,14 @@ const reply = (implementedAt: string | undefined, deliverables = true) =>
     "",
     "## Spec",
     "### Intent",
-    "Add a ORCHARD_WORK_FILES switch.",
+    "Add an ATTACHMENT_SWITCH switch.",
     "### Deliverables",
     ...(deliverables ? ["- d1: add the switch [paths: lib/attachments.sh]"] : []),
     "### Acceptance criteria",
-    "- ORCHARD_WORK_FILES=1 attaches text-like files",
+    "- ATTACHMENT_SWITCH=1 attaches text-like files",
     "### Evidence",
-    `- main has no ORCHARD_WORK_FILES — lib/attachments.sh — confirmed`,
-    `- #127 exists only on PR #214 (open, CONFLICTING) — gh pr view 214 — confirmed`,
+    `- main has no ATTACHMENT_SWITCH — lib/attachments.sh — confirmed`,
+    `- the feature exists only on PR #214 (open, CONFLICTING) — gh pr view 214 — confirmed`,
     "",
     "## Rationale",
     "The work exists on PR #214.",

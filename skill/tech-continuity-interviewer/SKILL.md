@@ -111,7 +111,7 @@ Work through these areas. The order can flex — follow the natural conversation
 - Alerting — what triggers alerts, who gets them, how
 - SLOs / SLAs if defined
 - On-call rotation (if any)
-- Error tracking (Sentry, an error tracker, etc.)
+- Error tracking (Sentry, Datadog, etc.)
 
 #### 7. Backups & Data Protection
 - What data is backed up

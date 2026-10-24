@@ -3,7 +3,7 @@
  * #1421 — build output at repoRoot is not "repoRoot is dirty" (part 1: the
  * classifier, the gate, the cap, the handoff).
  *
- * The incident (example-owner/orchard#248, cycle `cycle-id`, one cargo
+ * The incident (one measured cycle, a cargo
  * workspace at the repo root). Develop finished green, the adversarial gate
  * ran, the fix pass committed — then the outcome gate refused the step:
  *

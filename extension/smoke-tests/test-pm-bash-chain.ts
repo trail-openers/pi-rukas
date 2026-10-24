@@ -44,7 +44,7 @@ const run = async (command: string) => handlers[0]?.({ toolName: "bash", input: 
 for (const cmd of [
   "jq '{issue, step, attempts, reviewRound, updatedAt, notes}' .pi/work-state/5.json 2>/dev/null",
   "find .pi/work-state -name '*.json' 2>/dev/null; echo ---; jq '{issue, step}' .pi/work-state/5.json 2>/dev/null",
-  "gh issue view 127 --repo example-owner/orchard --json number,title,state,labels,body 2>&1 | head -c 4000",
+  "gh issue view 127 --repo example-org/app --json number,title,state,labels,body 2>&1 | head -c 4000",
   "git log --oneline -12; echo ---; git show --stat --oneline 935895a 2>&1 | head -40",
   'git status --short && echo "--- diffstat ---" && git diff --stat',
   "git -C /w/.worktrees/issue-131-default status --short || echo missing",
