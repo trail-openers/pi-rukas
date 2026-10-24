@@ -33,6 +33,7 @@ import {
   FAILED_MARKER_RE,
   classifyFailureLine,
   harnessInnerLine,
+  isBareFailedMarker,
   isHarnessWrapper,
 } from "./work-driver-verify-failures.ts";
 
@@ -53,8 +54,16 @@ export const NO_SPECIFIC_ASSERTION = "(no specific assertion could be extracted)
  * reported this as the assertion, sending operators to a filename) and its
  * post-#804 summary (`FAILED: 2 test(s) — a.ts, b.ts`). The real assertion
  * sits beneath the marker; the summary carries the count.
+ *
+ * #1762 — this used to be a blanket `/^FAILED:/`, which vetoed the
+ * payload-bearing form with the bare one. A gate that prints
+ * `FAILED: test/a_test.sh: … expected '0', got '1'` as its ONLY line yielded no
+ * assertion at all: every reader refused the line that named the defect, the
+ * corrective round declined, and the cycle parked blind. The veto is now "the
+ * table classifies this line as the BARE marker shape", which keeps #798 (a
+ * filename is not an assertion) and lets the payload form through.
  */
-const IS_MARKER_LINE = /^FAILED:/;
+const isMarkerLine = isBareFailedMarker;
 /** #807 — an ECHOED shell command (the verify-cmd chain's `$ …` output, #746). */
 const IS_ECHOED_COMMAND = /^\$ /;
 
@@ -89,7 +98,7 @@ export function looksLikeCredential(line: string): boolean {
  * and the forge comment.
  */
 export function isNonAssertionLine(line: string): boolean {
-  return IS_MARKER_LINE.test(line) || IS_ECHOED_COMMAND.test(line) || LOOKS_LIKE_SECRET.test(line);
+  return isMarkerLine(line) || IS_ECHOED_COMMAND.test(line) || LOOKS_LIKE_SECRET.test(line);
 }
 
 /**
@@ -112,7 +121,7 @@ export function isNonAssertionLine(line: string): boolean {
  * beneath it is.
  */
 function assertionCandidate(line: string): string | undefined {
-  if (IS_MARKER_LINE.test(line)) return undefined;
+  if (isMarkerLine(line)) return undefined;
   const inner = harnessInnerLine(line);
   // Not a wrapper, or a wrapper carrying no stream that reports a failure
   // (#1667's exemption, which `classifyFailureLine` also answers undefined for).
@@ -195,10 +204,19 @@ export function extractSpecificAssertion(failureTail: string): string {
   for (const line of lines) {
     const candidate = assertionCandidate(line);
     if (candidate === undefined || isNonAssertionLine(candidate)) continue;
-    // The count summary is the one marker-shaped line this reader KEEPS — the
+    // The count summary is the one BARE-marker-shaped line this reader KEEPS — the
     // marker veto below would otherwise drop it, and it carries the count.
-    if (IS_MARKER_LINE.test(candidate) && !isCountSummary(candidate)) continue;
-    if (classifyFailureLine(candidate) !== undefined) return redactedAssertion(candidate);
+    //
+    // #1762 — the shape gate is `namesTest`, not "the table recognised something".
+    // A bare marker that happens to carry a tally (`FAILED: 2 test(s) — …`) and a
+    // marker whose detail is prose (`FAILED: a_test.sh: no such file`) are both
+    // recognised, and both name NOTHING — they are filenames, which is #798
+    // (an operator sent to a file, and the one corrective round spent there). Only
+    // a line that names a check may be the specific assertion, so a bare marker
+    // stays refused however it classifies, and the count-summary exception above
+    // stays the only marker-shaped line that survives.
+    if (isMarkerLine(candidate) && !isCountSummary(candidate)) continue;
+    if (classifyFailureLine(candidate)?.namesTest === true) return redactedAssertion(candidate);
   }
   return NO_SPECIFIC_ASSERTION;
 }
