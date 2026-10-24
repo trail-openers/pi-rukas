@@ -307,6 +307,8 @@ export function runScopeFanoutGate(
   }
   for (const [id, changedPaths] of changedPathsByWorkstream) {
     const workstream = workstreams[id];
+    // #1756 part b — the FULL declared list, deliberately: the prompts print
+    // every path, so the denominator here reads every path the plan authorised.
     const declaredPaths = (workstream?.paths ?? [])
       .map(normaliseScopePath)
       .filter((p) => p.length > 0);

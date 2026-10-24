@@ -40,6 +40,18 @@ export const WORKSTREAM_ID_MAX = 80;
 /** Longest accepted declared path. */
 export const WORKSTREAM_PATH_MAX = 300;
 
+/**
+ * The abuse ceiling the SCHEMA accepts for the `paths` ARRAY (#1756 part b).
+ *
+ * `WORKSTREAM_PATH_INPUT_LIST_MAX` (500) is what bounds the list (#1756 part
+ * b): every scope gate reads `ws.paths` as the authorised set and every prompt
+ * prints the whole list, so refusing a call at the 51st path made the omitted
+ * files unauthorised — five field cycles parked on exactly that (`paths: must
+ * not have more than 50 items`). The schema now accepts what a large refactor
+ * declares and refuses only what no plan is; there is no display bound.
+ */
+export const WORKSTREAM_PATH_INPUT_LIST_MAX = 500;
+
 /** Longest accepted `scope` label. */
 export const WORKSTREAM_SCOPE_MAX = 300;
 
@@ -86,10 +98,13 @@ export const WORKSTREAM_PARAMETERS = Type.Object(
       maxLength: WORKSTREAM_SCOPE_MAX,
       description: "One-line scope label for this workstream.",
     }),
+    // The ceiling is abuse-level, not plan-level (#1756 part b): a crowded
+    // list is NEVER a reason to refuse the call. Every declared path is printed
+    // to the developer and every one counts as in scope for the scope gates.
     paths: Type.Array(Type.String({ maxLength: WORKSTREAM_PATH_MAX }), {
-      maxItems: WORKSTREAM_LIST_MAX,
+      maxItems: WORKSTREAM_PATH_INPUT_LIST_MAX,
       description:
-        "Plain repo-relative file paths this workstream is EXPECTED to modify, one per entry (e.g. src/foo.ts). No globs, no leading / or -, no .. segment, no shell characters.",
+        "Plain repo-relative file paths this workstream is EXPECTED to modify, one per entry (e.g. src/foo.ts). No globs, no leading / or -, no .. segment, no shell characters. Declare every file the change touches — the whole list is shown to the developer and is the authorised set the scope gates read.",
     }),
     // No `maxItems` and a ceiling far above a sentence, on purpose (#1744): this
     // field is free text, and a long entry or a crowded list is bounded by

@@ -38,6 +38,7 @@ import {
 } from "./plan-fence-bound.ts";
 import { clippedField } from "./plan-fence-record.ts";
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
+import { boundPaths } from "./plan-paths-bound.ts";
 import { traceWarn } from "./trace.ts";
 import { splitDeliverablePaths } from "./work-driver-deliverable-paths.ts";
 import { protectedPathsEnabled } from "./work-driver-doctrine.ts";
@@ -113,9 +114,10 @@ export function withDeferredProtectedFence(
     if (fenceWasBounded(fence)) {
       traceWarn(fenceBoundNotice(`plan workstream '${id}' deferred protected fence`, fence));
     }
+    const keptPaths = boundPaths(paths);
     out[id] = {
       ...ws,
-      paths,
+      paths: keptPaths.paths,
       outOfScope: fence.entries,
       ...clippedField(fence.clipped),
     };

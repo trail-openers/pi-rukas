@@ -396,6 +396,14 @@ Each workstream gets its own worktree and its own developer, running in parallel
 
 **Now:** `outOfScope` is free text and is BOUNDED, never a reason to refuse the call — an over-long entry is clipped at its last path separator, comma or space at or before `WORKSTREAM_FENCE_MAX` (500), a path list written as one entry is split, duplicates collapse, and past `WORKSTREAM_LIST_MAX` (50) entries the rest are dropped; every one of those is recorded on the workstream (`outOfScopeClipped`) and rendered where the fence is read. Only an entry past the abuse ceiling (20 000 chars) or an array past 500 entries is still refused, and `paths` over `WORKSTREAM_PATH_MAX` (300) is still refused outright.
 
+### A plan parks at `plan-spec-mismatch` saying paths must not have more than 50 items (#1756 part b)
+
+**Symptom (before the fix):** the plan step reports `Validation failed for tool "report_workstream": paths: must not have more than 50 items`, the planner re-reports with a shorter list (or the cycle parks on the mismatch), and the files the plan stopped naming are no longer authorised — the develop scope gate treats them as undeclared fanout.
+
+**Grep for:** `paths bounded` (a `WARN` line only where entries actually collapsed, naming the workstream or fold pass, `N kept`, the duplicates collapsed, and the schema ceiling; the ceiling fold and the port fold each say one line for the whole pass, not one per fold).
+
+**Now:** a crowded `paths` list is never a reason to refuse the call, and there is **no display truncation**. The schema accepts up to `WORKSTREAM_PATH_INPUT_LIST_MAX` (500) declared paths — past that a reply is a runaway loop, not a plan — and `boundPaths` keeps every path (duplicates collapse on the normalised identity, so `src/a.ts (new)`, `**src/a.ts**` and `src/a.ts` are one entry). The develop, corrective and commit prompts print the WHOLE list: a developer cannot stay inside a list it never saw, and the 500-item ceiling is what bounds the prompt's size. Every gate — the fanout denominator, the path-claims registry, `findPathCollisions`, consolidation verification, the fix-pass anchors and the deferred-protected fence — reads the same whole list. A per-entry path over `WORKSTREAM_PATH_MAX` (300) is still refused, as is a glob or a shell character.
+
 ### A parallel plan parks at `verify-failed:develop` with a type error no workstream caused alone
 
 **Symptom:** every developer reports success, yet develop parks with a type error such as *"Property 'x' does not exist"* or *"Module has no exported member 'y'"*, and the consolidated tree fails with the same error.

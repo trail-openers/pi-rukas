@@ -42,7 +42,8 @@
  */
 
 import { OPEN_POINT_CHAR_CAP } from "./open-points-reader.ts";
-import { plannedPathProblem } from "./plan-path-shape.ts";
+import { plannedPathProblem, quotedPaths } from "./plan-path-shape.ts";
+import { boundPaths } from "./plan-paths-bound.ts";
 import { flattenIssueText, redactThenBound } from "./text-flatten.ts";
 import { fenceDirPrefix } from "./work-driver-declared-path.ts";
 import {
@@ -209,8 +210,13 @@ export function repairOmittedDeliverablePaths(
     }
   }
   if (added.length === 0) return undefined;
+  // Every paths writer dedupes the same way (#1756 part b): the repair appends
+  // to a list the plan step already bounded, and a slot that reached here
+  // through a different spelling can still be a file the plan declared. The
+  // driver must not store a second entry for it — the fanout denominator reads
+  // this list, and the prompts print it.
   return {
-    workstreams: { [id]: { ...ws, paths: [...ws.paths, ...added] } },
+    workstreams: { [id]: { ...ws, paths: boundPaths([...ws.paths, ...added]).paths } },
     added,
   };
 }

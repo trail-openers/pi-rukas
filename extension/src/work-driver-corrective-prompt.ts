@@ -8,6 +8,7 @@
  * round is a repair of named failures, not a second implementation pass.
  */
 
+import { quotedPaths } from "./plan-path-shape.ts";
 import { fenceLines } from "./work-driver-plan-fence.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import type { FenceView } from "./workflow-state-schema.ts";
@@ -52,8 +53,7 @@ export function correctiveDevelopPrompt(input: CorrectivePromptInput): string {
   const fenced = input.lines.map(evidenceLine).join("\n");
   const scope =
     input.scope !== undefined && input.scope.length > 0 ? [`Scope: ${oneLine(input.scope)}`] : [];
-  const files =
-    input.paths.length > 0 ? [`In-scope files: ${input.paths.map(oneLine).join(", ")}`] : [];
+  const files = input.paths.length > 0 ? [`In-scope files: ${quotedPaths(input.paths)}`] : [];
   const fence = fenceLines(
     input.outOfScope,
     input.deferredProtected ?? [],
