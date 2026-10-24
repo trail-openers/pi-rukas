@@ -29,6 +29,7 @@ import {
   reviewStateRefusal,
   reviewStateRoots,
 } from "../src/review-accept-guard.ts";
+import { readFileSync } from "node:fs";
 import { STATE_LEAF, FINDINGS_FILE } from "../src/review-state-path.ts";
 
 let exit = 0;
@@ -97,6 +98,37 @@ assert(
   assert(
     reviewStateRefusal("bash", { command: "git status" }) === undefined,
     "branch isolation: a fault in the edit branch does not refuse an ordinary bash call",
+  );
+}
+
+// The roots are built INSIDE each branch's try, not above them: a fault in the
+// root builder (a hostile agentDir / environment) costs the one call being
+// decided, never every tool in the session. Nothing here can throw inside
+// `reviewStateRoots` on this host, so the property is pinned where it is decided
+// — the two call sites are each the first statement of their own try — rather
+// than by a fault that cannot be induced from a test.
+{
+  const src = readFileSync(
+    new URL("../src/review-accept-guard.ts", import.meta.url),
+    "utf8",
+  );
+  const fn = src.slice(src.indexOf("export function reviewStateRefusal"));
+  const head = fn.slice(0, fn.indexOf("if (toolName === \"bash\")"));
+  assert(
+    !head.includes("reviewStateRoots"),
+    "per-branch roots: no root is built above the branch handlers, so a builder fault cannot reach every tool",
+  );
+  assert(
+    /if \(toolName === "bash"\) \{\s*try \{\s*const roots = reviewStateRoots\(cwd\);/.test(
+      fn,
+    ),
+    "per-branch roots: the bash branch builds its roots as the first thing inside its own try",
+  );
+  assert(
+    /try \{\s*const match = editsReviewState\(toolName, input, reviewStateRoots\(cwd\), cwd\);/.test(
+      fn,
+    ),
+    "per-branch roots: the edit branch builds its roots inside its own try",
   );
 }
 
