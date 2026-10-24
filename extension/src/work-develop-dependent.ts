@@ -382,3 +382,7 @@ export async function runDependentWorkstreams(
   }
   return { ...wtRef, parked: false };
 }
+
+/** #799 — `work-develop-run.ts` re-exports this under its historical
+ * path so existing imports keep working; the implementation lives here.
+ */

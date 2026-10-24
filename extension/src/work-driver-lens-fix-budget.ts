@@ -153,6 +153,10 @@ export function reviewFixDispatchBoundMs(
   step: WorkStep,
   now: number,
   requestedTimeoutMs?: number,
+  /** #1789 — WHICH fixer this dispatch is, so the armed trace names the
+   *  right step. Defaults to the lens-fix half of the loop. */
+  /** #1789 — WHICH fixer this dispatch is, so the armed trace names the
+   *  right step. Defaults to the lens-fix half of the loop. */
   fixer: FixerIdentity = "lens-fix",
 ): number | undefined {
   if (step !== "lens-fix") return undefined;
@@ -191,6 +195,10 @@ export function reviewFixDispatchBoundMs(
  *  develop fix pass dispatched straight after a lens-fix read as `lens-fix`
  *  and its traces named the wrong step. */
 export type FixerIdentity = "lens-fix" | "develop-fix-pass";
+
+/** The identity the adversarial develop fix pass declares (its call site spells
+ *  `step: "lens-fix"`, so naming the fixer is what keeps the trace honest). */
+export const FIXER_DEVELOP_PASS: FixerIdentity = "develop-fix-pass";
 
 /** The step name a fixer trace carries, from the identity its caller declared. */
 export function fixerStepName(fixer: FixerIdentity): string {

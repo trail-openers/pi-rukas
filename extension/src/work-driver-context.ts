@@ -16,7 +16,7 @@ import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
-import type { DispatchImage, DispatchResult, WriteFenceOpt } from "./types.ts";
+import type { DispatchResult, DispatchSpec, WriteFenceOpt } from "./types.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
@@ -135,16 +135,7 @@ export interface DriverContext {
    */
   dispatchFn?: (
     host: DispatchHost,
-    spec: {
-      role: string;
-      prompt: string;
-      cwd?: string;
-      images?: DispatchImage[];
-      /** #573/#1789 — the caller's run id, which `runSingleDispatch` now sets to
-       *  the dispatch's own jobId so the child's transcript names the driver
-       *  dispatch that spawned it. `dispatchCore` already accepts it. */
-      runId?: string;
-    },
+    spec: DispatchSpec,
     opts?: WriteFenceOpt & {
       label?: string;
       skipDeck?: boolean;

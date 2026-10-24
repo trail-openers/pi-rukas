@@ -26,7 +26,11 @@ import type {
 import type { InterruptedEvent } from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
-import type { PartialAfterKill } from "./workflow-state-events-partial-kill.ts";
+import type {
+  CycleDeadlineKill,
+  DispatchStartedEvent,
+  PartialAfterKill,
+} from "./workflow-state-events-partial-kill.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type {
   LensResidualsPostFailedEvent,
@@ -148,15 +152,7 @@ export type WorkEvent =
       /** The job id the unreadable attempt's dispatch-completed was recorded under. */
       firstJobId: string;
     }
-  | {
-      kind: "dispatch-started";
-      step: WorkStep;
-      role: string;
-      jobId: string;
-      label: string;
-      at: number;
-      transcriptPath?: string;
-    }
+  | DispatchStartedEvent
   | {
       kind: "dispatch-completed";
       step: WorkStep;
@@ -228,14 +224,8 @@ export type WorkEvent =
       loopEvidence?: { tool: string; count: number; kind?: "streak" | "success" };
       /** #543 — the F6 budget + used tokens at a token-budget kill; same purpose as loopEvidence. */
       tokenBudget?: { budget: number; used: number };
-      /**
-       * #1593/#1789 — this kill's `timeout` came from the caller's cycle deadline
-       * (`PI_ENSEMBLE_CYCLE_DEADLINE`) tightening the child's own bound, not from
-       * a bound the fixer was armed with. Persisted (it is on the `DispatchResult`
-       * already) because the lens-fix partial-fix conversion must refuse it: a
-       * cycle that is out of time must park, not advance to the next step.
-       */
-      killedAtCycleDeadline?: boolean;
+      /** #1593/#1789 — a kill the caller's cycle deadline armed. */
+      killedAtCycleDeadline?: CycleDeadlineKill;
       /** #534 — tokens flushed before the process-level failure. */
       usage?: DispatchUsage;
     }
