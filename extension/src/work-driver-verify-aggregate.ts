@@ -45,14 +45,16 @@ export type BaselineRedEstablished = (established: boolean) => void;
 /**
  * The consultation record and its operator note are declared ONCE, in
  * `work-driver-verify-base-health-channels.ts` — the one shape every layer of the
- * develop gate carries. Re-exported so the recorder and the gate results keep the
- * name they already read, and so a second copy cannot grow in this module.
+ * develop gate carries. The types are re-exported so the recorder and the gate
+ * results keep the name they already read, and so a second copy cannot grow in
+ * this module. The note function itself is NOT re-exported: every caller imports
+ * it from the channels leaf beside the shape it renders, and a re-export nobody
+ * imports is a second name for one thing.
  */
 export type {
   BaseHealthConsulted,
   BaseHealthReport,
 } from "./work-driver-verify-base-health-channels.ts";
-export { baseHealthConsultedNote } from "./work-driver-verify-base-health-channels.ts";
 
 /**
  * #1765 — the develop gate's tail rule, in one call so the two claims travel

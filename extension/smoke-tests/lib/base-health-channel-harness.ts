@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * #1809 — shared scaffolding for the base-health channel tests
- * (`test-verify-base-health-channels.ts`, `test-verify-base-health-step.ts`).
+ * #1809 — shared scaffolding for the base-health channel test
+ * (`test-verify-base-health-channels.ts`), the only file that imports it.
  *
- * Both files need the same thing: a real git fixture whose project verify command
+ * One file needs this: a real git fixture whose project verify command
  * fails, a background probe registered under the key the develop gate will build,
  * and the two channel callbacks captured rather than asserted on from prose. That
  * setup is 90 lines of fixture work with three anti-vacuity requirements baked in,
@@ -30,8 +30,11 @@ import type {
 } from "../../src/work-driver-verify-base-health-channels.ts";
 import type { BaseHealthProbeOutcome } from "../../src/work-driver-verify-base-health.ts";
 import { recordDevelopGateEvents } from "../../src/work-driver-verify-events.ts";
-import type { BaseHealthKey, BaseHealthVerdict } from "../../src/workflow-state-schema-base-health.ts";
-import { type WorkState } from "../../src/workflow-state.ts";
+import type {
+  BaseHealthKey,
+  BaseHealthVerdict,
+} from "../../src/workflow-state-schema-base-health.ts";
+import type { WorkState } from "../../src/workflow-state.ts";
 import { RED_GATE, branchState, keyFor } from "./base-health-probe-fixture.ts";
 import { realExec } from "./restore-start-ref-fixtures.ts";
 import { redGateFixture } from "./verify-baseline-probe-harness.ts";
@@ -44,7 +47,11 @@ export const changeFailure = (cmd: string) =>
   `verify command \`${cmd}\` failed in worktree a: 1 failed`;
 
 /** A verdict for a given base, so a probe speaks for the commit the gate judges. */
-export const verdict = (baseSha: string, status: "green" | "red", bound: number): BaseHealthVerdict => ({
+export const verdict = (
+  baseSha: string,
+  status: "green" | "red",
+  bound: number,
+): BaseHealthVerdict => ({
   status,
   baseSha,
   command: CMD,

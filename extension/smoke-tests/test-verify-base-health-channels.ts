@@ -48,16 +48,16 @@ import {
   startBaseHealthProbe,
 } from "../src/work-driver-base-health-inflight.ts";
 import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
-import type { BaseHealthProbeOutcome } from "../src/work-driver-verify-base-health.ts";
-import type { BaseHealthKey } from "../src/workflow-state-schema-base-health.ts";
-import type {
-  BaseHealthConsulted,
-  BaseHealthReport,
+import {
+  type BaseHealthConsulted,
+  type BaseHealthReport,
+  mergeBaseHealthReport,
 } from "../src/work-driver-verify-base-health-channels.ts";
-import { mergeBaseHealthReport } from "../src/work-driver-verify-base-health-channels.ts";
+import type { BaseHealthProbeOutcome } from "../src/work-driver-verify-base-health.ts";
 import { BASELINE_RED_MARKER, compareWithBaseline } from "../src/work-driver-verify-baseline.ts";
-import { verifyStepOutcome } from "../src/work-driver-verify-pr17.ts";
 import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
+import { verifyStepOutcome } from "../src/work-driver-verify-pr17.ts";
+import type { BaseHealthKey, BaseHealthVerdict } from "../src/workflow-state-schema-base-health.ts";
 import {
   CMD,
   aggregateWithProbe,
@@ -78,12 +78,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-bh-channels-"));
-const verdict = (baseSha: string, status: "green" | "red", bound: number): BaseHealthVerdict => ({
-  status,
-  baseSha,
-  command: CMD,
-  tierBoundMs: bound,
-});
 
 try {
   // ── 1 — a CONSULTED RED: reported as a consultation, never collected, never
@@ -325,15 +319,12 @@ try {
       "extra.md": "y\n",
     });
     const bound = (await keyFor(f.repo, f.baseSha, CMD)).tierBoundMs;
-    startBaseHealthProbe(
-      { baseSha: f.baseSha, command: CMD, tierBoundMs: bound },
-      async () => ({
-        ran: true,
-        ms: 300,
-        verdict: verdict(f.baseSha, "red", bound),
-        notes: [],
-      }),
-    );
+    startBaseHealthProbe({ baseSha: f.baseSha, command: CMD, tierBoundMs: bound }, async () => ({
+      ran: true,
+      ms: 300,
+      verdict: verdict(f.baseSha, "red", bound),
+      notes: [],
+    }));
     const failures = [changeFailure(CMD)];
     let established = false;
     await aggregateVerifyOutcome({
@@ -359,7 +350,10 @@ try {
       failures[0]?.startsWith(BASELINE_RED_MARKER) === true,
       "consulted red: the [baseline-red] finding still leads the failures",
     );
-    assert(established, "consulted red: the cap's claim is raised — keeping it out of state does not lose the park");
+    assert(
+      established,
+      "consulted red: the cap's claim is raised — keeping it out of state does not lose the park",
+    );
   }
   // ── 6 — the consultation event's `ms` IS the probe's measured time (#1809 fix
   // round). The recorder used to derive it from a `baseHealthStartedAt` no
@@ -377,7 +371,9 @@ try {
         },
       } as never);
       const ev = logged.eventLog.find(
-        (e) => e.kind === "dispatch-completed" && (e as { label?: string }).label === "driver:base-health",
+        (e) =>
+          e.kind === "dispatch-completed" &&
+          (e as { label?: string }).label === "driver:base-health",
       ) as { ms?: number; summary?: string } | undefined;
       assert(
         ev !== undefined && ev.ms === (ms ?? 0),
@@ -426,7 +422,9 @@ try {
       "fold: an empty report adds nothing — so (a) means the fold kept what was given",
     );
     // (d) a real report replaces the half it carries and keeps the other.
-    const later = mergeBaseHealthReport(acc, { consulted: { status: "red", baseSha: "b".repeat(40) } });
+    const later = mergeBaseHealthReport(acc, {
+      consulted: { status: "red", baseSha: "b".repeat(40) },
+    });
     assert(
       later.collected?.status === "green" && later.consulted?.status === "red",
       "fold: a later report updates only the half it carries",
@@ -449,7 +447,6 @@ try {
     writeFileSync(path.join(f.repo, ".pi", "verify-cmd"), `${CMD}\n`);
     const bound = (await keyFor(f.repo, f.baseSha, CMD)).tierBoundMs;
     const key = { baseSha: f.baseSha, command: CMD, tierBoundMs: bound };
-    let settled = 0;
     // A probe that NEVER settles: the only way to tell "the step never awaited it"
     // from "the step awaited it and it answered", because an auto-settling probe
     // clears the registry on its own the instant it is registered.
@@ -481,7 +478,6 @@ try {
       developed === undefined,
       "commit-pr control: the bounded develop-shaped read of a probe that never answers is 'nothing' — the registry itself is readable, so commit-pr's non-await above is the gate's own choice",
     );
-    void settled;
   }
 } finally {
   clearBaseHealthInflight();
