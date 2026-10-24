@@ -62,7 +62,7 @@ export function shellBuilt(value: string): boolean {
  * refusal the agent can satisfy with a file, and the cost of under-including is
  * an unchecked publish.
  */
-const TEXT_FLAG_LOCATIONS: readonly (readonly [string, string])[] = [
+export const TEXT_FLAG_LOCATIONS: readonly (readonly [string, string])[] = [
   ["--title", "title"],
   ["-t", "title"],
   ["--body", "body"],
@@ -74,7 +74,7 @@ const TEXT_FLAG_LOCATIONS: readonly (readonly [string, string])[] = [
 ];
 
 /** `key=value` forms of gh api's field flags, whose value is published text. */
-const API_FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
+export const API_FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
 
 /**
  * Every unreadable publish operand in one argv.

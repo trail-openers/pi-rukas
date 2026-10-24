@@ -60,6 +60,7 @@ import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
 import { apiFileOperand, codeOf, readPublishFile } from "./public-hygiene-files.ts";
+import { publishSegmentsWithSubstitution } from "./public-hygiene-substitution.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import { unreadableOperands } from "./public-hygiene-unreadable.ts";
 
@@ -399,6 +400,16 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
         }
       }
     }
+  }
+  // The word splitter cannot see a substitution that sits AFTER a space inside a
+  // quoted operand (`--body "PREFIX $(cat f) tail"` arrives as `--body PREFIX`),
+  // so the raw command is walked once with quoting and substitution depth
+  // tracked, and any segment that both publishes inline text and substitutes is
+  // refused on the same "could not read the text" rule as the glued form.
+  // Nested `bash -c` bodies are covered by the same call: the outer scan already
+  // sees the whole raw text, and a publish one layer down is the same publish.
+  for (const _segment of publishSegmentsWithSubstitution(command)) {
+    scan.problems.push({ location: "body", reason: SHELL_BUILT_REASON });
   }
   return scan;
 }
