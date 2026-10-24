@@ -24,10 +24,10 @@ import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
 import { foldVerifyAttribution } from "./work-driver-verify-events.ts";
 import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
+import { keepEvidenceHead } from "./work-driver-verify-full.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-import { keepEvidenceHead } from "./work-driver-verify-full.ts";
 
 // Tree-killing: the ci step runs `.pi/verify-cmd-full`, the longest gate. The
 // shell executor scrubs driver knobs from its env.
@@ -246,9 +246,7 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
           result.outcome === "success" && result.recovered
             ? (result.firstRunOutput ?? result.output)
             : result.output,
-          result.outcome === "success" && result.recovered
-            ? true
-            : (result.anchored ?? false),
+          result.outcome === "success" && result.recovered ? true : (result.anchored ?? false),
         ),
       });
 

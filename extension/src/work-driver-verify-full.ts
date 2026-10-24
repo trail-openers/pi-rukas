@@ -232,11 +232,17 @@ function storeTierOutput(text: string): StoredTierOutput {
     // already and the cut is a pure bound. The excerpt is measured from the anchor
     // forward, so its HEAD is the failure and `anchored` is the flag a downstream
     // cut needs to keep it.
-    return { output: boundByCodePoints(redacted.slice(from), VERIFY_FULL_OUTPUT_MAX).text, anchored: true };
+    return {
+      output: boundByCodePoints(redacted.slice(from), VERIFY_FULL_OUTPUT_MAX).text,
+      anchored: true,
+    };
   }
   // Nothing in the scanned tail names a failure: fall back to the positional tail,
   // so an unrecognised gate still gets its last words stored rather than nothing.
-  return { output: boundByCodePoints(redacted, VERIFY_FULL_OUTPUT_MAX, "tail").text, anchored: false };
+  return {
+    output: boundByCodePoints(redacted, VERIFY_FULL_OUTPUT_MAX, "tail").text,
+    anchored: false,
+  };
 }
 
 /**
