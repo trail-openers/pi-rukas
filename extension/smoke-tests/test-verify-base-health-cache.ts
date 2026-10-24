@@ -101,8 +101,14 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
 {
   const f = await redGateFixture(root, "cache-green", GREEN_GATE, { "notes.md": "x\n" });
   const first = await probe(f);
+  // The probe is registered and NOT awaited (that is the #1809 change), so a case
+  // that reads the cost counters has to settle it first — the same point the
+  // develop gate would have read the verdict. `outcome === undefined` here would
+  // mean no probe was registered, which is a different failure from zero runs.
+  await settled(first);
   assert(first.gateRuns.length === 1, "cache: the first cycle pays for the probe");
   const second = await probe(f);
+  await settled(second);
   assert(
     second.gateRuns.length === 0 && second.worktreeAdds === 0,
     `cache: a second cycle on the same base does NOT re-probe (got ${second.gateRuns.length})`,
@@ -114,6 +120,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   });
   const moved = (await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: f.repo })).stdout.trim();
   const third = await probe(f, { state: branchState(moved) });
+  await settled(third);
   assert(
     third.gateRuns.length === 1,
     `cache: a new baseSha re-probes (got ${third.gateRuns.length}) — a green is only a green for the commit it ran on`,
@@ -136,6 +143,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   mkdirSync(path.join(f.repo, ".pi"), { recursive: true });
   writeFileSync(path.join(f.repo, ".pi", "verify-timeout-ms"), `${bound + 60_000}\n`);
   const raised = await probe(f);
+  await settled(raised);
   assert(
     raised.gateRuns.length === 1,
     `cache key: a raised suite bound re-probes (got ${raised.gateRuns.length}) — the cached verdict judged a different budget`,

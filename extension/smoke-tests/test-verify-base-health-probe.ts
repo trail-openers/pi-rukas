@@ -116,7 +116,18 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     caps.length === 0 && !caps.some((c) => c.cap === "verify-baseline-red:branch"),
     `red base: the branch step raises no cap at all (got ${JSON.stringify(caps.map((c) => c.cap))}) — a red base is attributed at develop`,
   );
+  // The probe runs BESIDE the step (#1809), so the cost counters below are read
+  // after the probe settles — the same moment the develop gate would have read the
+  // verdict. A case that counted before settling would race the run it counts.
+  // The probe runs beside the step and is NOT awaited by `probe` (#1809), so a
+  // case must settle it before reading the cost counters — the counters fill while
+  // the child runs. `outcome === undefined` is that case's own assertion for "the
+  // step registered nothing", never a fabricated no-run outcome.
   const out = await settled(r);
+  assert(
+    r.outcome !== undefined,
+    "red base: the branch step registered a probe (outcome is not undefined) — so the verdict below is read from a probe that ran, not from the fixture inventing one",
+  );
   assert(
     r.gateRuns.length === 1 && r.worktreeAdds === 1,
     `red base: exactly one gate run in one throwaway tree (got ${r.gateRuns.length} runs / ${r.worktreeAdds} adds)`,
@@ -163,6 +174,10 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   // waits, so counting before it would race the run it is meant to count.
   const green = await settled(r);
   assert(
+    r.outcome !== undefined && green !== undefined,
+    `green base: a probe was registered and answered (outcome=${r.outcome === undefined ? "undefined" : "set"}) — the assertions below are not reading a fabricated no-run`,
+  );
+  assert(
     r.gateRuns.length === 1 && r.worktreeAdds === 1,
     `green base: the gate ran exactly once (got ${r.gateRuns.length} runs / ${r.worktreeAdds} adds)`,
   );
@@ -181,6 +196,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "green base: a note records what the probe established",
   );
   const again = await probe(f, { state: r.state });
+  await settled(again);
   assert(
     again.gateRuns.length === 0 && again.worktreeAdds === 0,
     `green base, probed again in the same cycle: no second suite run (got ${again.gateRuns.length})`,
@@ -191,20 +207,30 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
 {
   const f = await redGateFixture(root, "nocmd", RED_GATE, { "notes.md": "x\n" });
   const r = await probe(f, { noCmd: true });
+  const skipped = await settled(r);
   assert(
-    capsOf(r.state).length === 0 && r.gateRuns.length === 0,
-    "no verify command: nothing runs and nothing parks",
+    // "No probe was registered" is observed, not assumed: the seam reports the
+    // no-command case as a SKIPPED outcome (`ran: false`) rather than as a probe
+    // that ran, and the gate executed nothing. `settled` never fabricates this
+    // shape, so a fixture that invented a no-run outcome would fail here.
+    skipped !== undefined &&
+      skipped.ran === false &&
+      r.gateRuns.length === 0 &&
+      r.worktreeAdds === 0 &&
+      skipped.notes.some((n) => n.includes("no verify command")),
+    `no verify command: nothing was registered to probe (ran=${String(skipped?.ran)}, ${r.gateRuns.length} gate runs / ${r.worktreeAdds} trees) and the note says why`,
   );
-  assert(
-    (await settled(r)).notes.some((n) => n.includes("no verify command")),
-    "no verify command: the note says there was nothing to probe",
-  );
+  assert(capsOf(r.state).length === 0, "no verify command: nothing parks");
 }
 
 // ── 4 — `unknown` never parks: the throwaway tree could not be created.
 {
   const f = await redGateFixture(root, "add-fail", GREEN_GATE, { "notes.md": "x\n" });
   const r = await probe(f, { state: branchState("0".repeat(40)) });
+  assert(
+    r.outcome !== undefined,
+    "worktree add fails: a probe WAS registered (there is a base-shaped key to answer for) — the unknown below is the probe's own verdict",
+  );
   assert(
     capsOf(r.state).length === 0,
     "worktree add fails: the cycle is NOT parked — unknown is never a verdict",
@@ -364,6 +390,10 @@ for (const [label, env] of [
   clearBaseHealthInflight();
   const r = await probe(f);
   const out = await settled(r);
+  assert(
+    r.outcome !== undefined,
+    `${label}: the branch step registered a probe whose skipped outcome carries the switch note (outcome=${r.outcome === undefined ? "undefined" : "set"}) — the note below is the probe's, not the fixture's`,
+  );
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;

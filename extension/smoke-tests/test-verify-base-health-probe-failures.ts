@@ -76,7 +76,9 @@ for (const [label, shape, throwWhere, expect] of [
   // call the probe makes, so the arms below can only ever be raised for it.
   announceGate(path.join(f.repo, "gate.sh"));
   commitAll(f.repo, "chore: announce the gate");
-  const announced = (await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: f.repo })).stdout.trim();
+  const announced = (
+    await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: f.repo })
+  ).stdout.trim();
   const gateRuns: string[] = [];
   const execFn = probeFailureExecutor({
     shape,
@@ -223,10 +225,12 @@ for (const [label, shape, throwWhere, expect] of [
     `rejected gate: a rejection is never a green (got ${out.verdict?.status})`,
   );
   assert(
-    (await readBaseHealthCache(
-      async () => readFileSync(baseHealthCacheFile(f.repo), "utf8"),
-      f.repo,
-    ))?.status !== "green",
+    (
+      await readBaseHealthCache(
+        async () => readFileSync(baseHealthCacheFile(f.repo), "utf8"),
+        f.repo,
+      )
+    )?.status !== "green",
     "rejected gate: no GREEN stands in the cache behind a run that rejected",
   );
 }

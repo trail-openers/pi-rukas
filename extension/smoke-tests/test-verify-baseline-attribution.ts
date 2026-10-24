@@ -25,14 +25,20 @@
  * cap (that file was sitting at it). Case 13 needs no fixture at all; case 14
  * reuses the probe harness's own repo builder.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type HostBudget, __setHostBudget } from "../src/host-resources.ts";
-import {
-  baselineRedForCmd,
-  baselineRedForCommand,
-} from "../src/work-driver-verify-base-health.ts";
+import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
+import { baselineRedForCmd, baselineRedForCommand } from "../src/work-driver-verify-base-health.ts";
 import {
   applyBaseHealthProbe,
   baseHealthCacheFile,
@@ -41,9 +47,8 @@ import {
   startBaseHealthProbeAtBranch,
 } from "../src/work-driver-verify-base-health.ts";
 import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
-import { VERIFY_TIMEOUT_LABEL } from "../src/work-driver-verify-develop-helpers.ts";
 import { developTierTimeouts } from "../src/work-driver-verify-budget.ts";
-import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
+import { VERIFY_TIMEOUT_LABEL } from "../src/work-driver-verify-develop-helpers.ts";
 import {
   PROBE_CMD as CMD,
   GREEN_GATE,
@@ -54,7 +59,9 @@ import {
   keyFor,
   notesOf,
   probe,
+  settled,
 } from "./lib/base-health-probe-fixture.ts";
+import type { ProbeRun } from "./lib/base-health-probe-fixture.ts";
 import {
   commitAll,
   probeFailureExecutor,
@@ -159,8 +166,11 @@ assert(
     streams.push({ f, stdout, stderr });
     return f;
   };
-  const streams: Array<{ f: Awaited<ReturnType<typeof redGateFixture>>; stdout: string; stderr: string }> =
-    [];
+  const streams: Array<{
+    f: Awaited<ReturnType<typeof redGateFixture>>;
+    stdout: string;
+    stderr: string;
+  }> = [];
   const fixtures = [
     // The echo alone, in each of its spellings: nothing beneath it.
     { name: "echo alone", stdout: `Command failed: ${CMD}`, want: "unknown" },
@@ -253,7 +263,9 @@ for (const timedOut of [false, true]) {
     if (line.startsWith("git worktree add")) worktreeAdds += 1;
     return await realExec(command, o);
   };
-  const failures: string[] = ["verify command `sh gate.sh` failed in worktree a: expected 1, got 2"];
+  const failures: string[] = [
+    "verify command `sh gate.sh` failed in worktree a: expected 1, got 2",
+  ];
   const notes: string[] = [];
   const established: boolean[] = [];
   const attributed = await aggregateVerifyOutcome({
@@ -424,7 +436,20 @@ for (const timedOut of [false, true]) {
     { host: {}, repoRoot: timed.repo, issue: 1765 } as never,
     after17,
   );
-  const settled17 = await (out17 ?? Promise.resolve({ ran: false, notes: [] }));
+  // The promise the branch step itself drops, read through the shared `settled`
+  // reader rather than a local `?? { ran: false }` fallback (which would let a
+  // consultation record be built for a probe that did not exist).
+  const settled17 = await settled({
+    state: after17,
+    gateRuns: [],
+    worktreeAdds: 0,
+    cacheRaw: undefined,
+    outcome: out17,
+  } as ProbeRun);
+  assert(
+    out17 !== undefined && settled17 !== undefined,
+    "probe duration: a probe WAS registered for this base, so the ms below is a real probe's",
+  );
   const logged17 = consultedEvent(after17, settled17, "green");
   const probeEvent = logged17.eventLog.find(
     (e) => e.kind === "dispatch-completed" && e.label === "driver:base-health",

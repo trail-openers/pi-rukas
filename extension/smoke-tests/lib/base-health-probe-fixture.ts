@@ -24,12 +24,12 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import type { DriverExecFn } from "../../src/work-driver-context.ts";
 import type { BaseHealthConsulted } from "../../src/work-driver-verify-base-health-channels.ts";
-import { recordDevelopGateEvents } from "../../src/work-driver-verify-events.ts";
-import { developTierTimeouts } from "../../src/work-driver-verify-budget.ts";
 import {
   type BaseHealthProbeOutcome,
   baseHealthCacheFile,
 } from "../../src/work-driver-verify-base-health.ts";
+import { developTierTimeouts } from "../../src/work-driver-verify-budget.ts";
+import { recordDevelopGateEvents } from "../../src/work-driver-verify-events.ts";
 import type { BaseHealthKey } from "../../src/workflow-state-schema-base-health.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
 import { realExec } from "./restore-start-ref-fixtures.ts";
@@ -59,9 +59,12 @@ export interface ProbeRun {
    * The background probe's outcome — what the branch step registered and did NOT
    * await. `undefined` when nothing was registered: no verify command, an
    * unusable baseSha, or the switches off (#1809 fix round — those cases register
-   * nothing rather than a sentinel key nothing can match). The type is the probe
-   * seam's own `BaseHealthProbeOutcome`, not a locally invented shape, so a case
-   * that reads `settled(r).verdict` is reading what the gate's consultation reads.
+   * nothing rather than a sentinel key nothing can match). Stored UN-awaited, so a
+   * case can observe the probe while it is still running; read it through
+   * `settled(r)` rather than awaiting it here, which would make "the step did not
+   * wait" unobservable. The type is the probe seam's own `BaseHealthProbeOutcome`,
+   * not a locally invented shape, so a case that reads `settled(r).verdict` is
+   * reading what the gate's consultation reads.
    */
   outcome: Promise<BaseHealthProbeOutcome | undefined> | undefined;
 }
@@ -87,6 +90,9 @@ export async function probe(
   f: Awaited<ReturnType<typeof redGateFixture>>,
   opts: { noCmd?: boolean; state?: WorkState } = {},
 ): Promise<ProbeRun> {
+  const { startBaseHealthProbeAtBranch } = await import(
+    "../../src/work-driver-verify-base-health.ts"
+  );
   const piDir = path.join(f.repo, ".pi");
   mkdirSync(piDir, { recursive: true });
   const cmdFile = path.join(piDir, "verify-cmd");
@@ -103,45 +109,59 @@ export async function probe(
     const line = execLine(cmd, o);
     // Substring, not prefix: the probe qualifies each git call with `-C <root>`,
     // and a prefix match would silently never fire and report "no probe tree" for
-    // a probe that built one.
+    // a probe that built one. The counters fill BEFORE the child is awaited: the
+    // red-base arm's child always throws, so a counter after the await would record
+    // no run at all and "one gate run in one tree" would be unfalsifiable.
     if (line.includes("git worktree add")) worktreeAdds += 1;
     else if (!line.includes("git ")) gateRuns.push(o?.cwd ?? "");
     return await realExec(cmd, o);
   };
-  const { probeBaseAtBranch, startBaseHealthProbeAtBranch } = await import(
-    "../../src/work-driver-verify-base-health.ts"
-  );
   const ctx = { host: {}, repoRoot: f.repo, issue: 1765 } as never;
   const state = opts.state ?? branchState(f.baseSha);
   // Registered ONCE (#1809 fix round): this used to call
-  // `startBaseHealthProbeAtBranch` AND `probeBaseAtBranch`, which started the
-  // probe twice (the second coalescing into the first via the single-flight
+  // `startBaseHealthProbeAtBranch` AND `probeBaseAtBranch`, which registered the
+  // same probe twice (the second coalescing into the first via the single-flight
   // registry, so a case that counted runs saw one while a real cycle pays for what
   // may be another). Both entry points share one policy — `probeBaseAtBranch` is a
-  // one-line call to the other — so the seam under test is exercised here and its
-  // return value (the settled outcome the branch step itself drops) is what
-  // `outcome` carries. Awaited on THIS thread, at the key resolution the step
-  // performs there, so the cost counters below observe the whole run rather than
-  // its first await, which is what makes "exactly one run in one tree" mean
-  // anything. The case still cannot reach a rejection: the promise never rejects.
-  const outcome = await startBaseHealthProbeAtBranch(execFn, ctx, state);
-  const next = probeBaseAtBranch(execFn, ctx, state);
+  // one-line call to the other — so the seam under test is still exercised here.
+  //
+  // `outcome` carries the UN-AWAITED promise the branch step itself drops, and that
+  // is the fix: it is the only thing that lets a case tell "the step registered a
+  // probe" from "the step registered nothing" — but NOT by value. The seam resolves
+  // a SKIPPED outcome (`{ ran: false, notes: ["… nothing to probe"] }`) for the
+  // no-command and unreadable-baseSha cases, so `undefined` never occurs on this
+  // path and a case asserts the registration by what the probe reported: a
+  // registration whose notes say "nothing to probe" is no registration. `settled(r)`
+  // never fabricates that shape, which the old `?? { ran: false, notes: [] }` did —
+  // it made "no probe" and "a probe that established nothing" one value. A case may
+  // also read the counters while the probe is still in flight, since they fill as
+  // each call is made, which is what "the step did not wait" costs a case to observe.
+  const outcome = startBaseHealthProbeAtBranch(execFn, ctx, state);
+  // The fixture does await what the step would not, for one reason: the cache file
+  // below is the single observable a running probe WRITES, and reading it at
+  // registration time reports a green the probe already earned as absent. The
+  // promise never rejects, so this await cannot fault.
+  await outcome;
   let cacheRaw: string | undefined;
   try {
     cacheRaw = readFileSync(baseHealthCacheFile(f.repo), "utf8");
   } catch {
     cacheRaw = undefined;
   }
-  return { state: next, gateRuns, worktreeAdds, cacheRaw, outcome };
+  return { state, gateRuns, worktreeAdds, cacheRaw, outcome };
 }
 
 /**
  * Await what the branch step left running, so a case can read the verdict the
- * develop gate would have consulted. The promise never rejects, so no case has to
- * defend itself against a probe that faulted.
+ * develop gate would have consulted. `undefined` is the caller's answer for "no
+ * probe was registered" (no verify command, an unusable baseSha, or the switches
+ * off) — it is NEVER fabricated here, because an invented `{ ran: false }` is
+ * indistinguishable from a probe that ran and established nothing. The promise
+ * itself never rejects, so no case has to defend itself against a probe that
+ * faulted.
  */
-export async function settled(r: ProbeRun): Promise<BaseHealthProbeOutcome> {
-  return await (r.outcome ?? Promise.resolve({ ran: false, notes: [] }));
+export async function settled(r: ProbeRun): Promise<BaseHealthProbeOutcome | undefined> {
+  return r.outcome === undefined ? undefined : await r.outcome;
 }
 
 /** The cap-hit events a probe left on the state. No base verdict raises one. */
@@ -189,7 +209,12 @@ export function branchKey(baseSha: string, tierBoundMs = 1): BaseHealthKey {
 export async function freshProbe(
   f: Awaited<ReturnType<typeof redGateFixture>>,
   opts: { noCmd?: boolean; state?: WorkState; key?: BaseHealthKey } = {},
-): Promise<{ state: WorkState; out: BaseHealthProbeOutcome; gateRuns: string[]; worktreeAdds: number }> {
+): Promise<{
+  state: WorkState;
+  out: BaseHealthProbeOutcome;
+  gateRuns: string[];
+  worktreeAdds: number;
+}> {
   const piDir = path.join(f.repo, ".pi");
   mkdirSync(piDir, { recursive: true });
   const cmdFile = path.join(piDir, "verify-cmd");
