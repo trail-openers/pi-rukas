@@ -14,7 +14,9 @@
  * 3. a resolver that throws, returns nothing useful, or never answers is
  *    REFUSED (fail closed), as is an unresolvable remote: "could not tell" is
  *    never "clean";
- * 4. the cache asks `gh` ONCE per OWNER/REPO, however many publishes arrive.
+ * 4. the cache asks `gh` ONCE per host plus OWNER/REPO, however many publishes
+ *    arrive — and asks AGAIN after a lookup that failed or timed out, because an
+ *    obtained answer is the only thing a cache may hold (#1788 round 2).
  *
  * Nothing here touches the network: the visibility question and the remote-URL
  * question are both injected, which is precisely why they are seams. Terms are
@@ -43,6 +45,10 @@ import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
 const TERM = "example-private-host";
+/** A host that is not github.com, assembled from parts (the same convention as
+ * the push verb in this suite: the guard's own fixtures never carry a literal a
+ * scan could mistake for configuration). */
+const GITLAB_HOST = ["gitlab", ".", "exa", "mple"].join("");
 const PUSH = ["pu", "sh"].join("");
 const GITHUB_URL = "https://github.com/example-owner/example-repo.git";
 
@@ -223,7 +229,115 @@ await withEnv(denylistEnv, async () => {
     visibility: async () => false,
   });
   assert(other === undefined, "a clean publish to another repo passes");
-  assert(visibilityLookupCount() === 2, `and the second repository got its own lookup`)
+  assert(visibilityLookupCount() === 2, `and the second repository got its own lookup`);
+});
+
+// ── 4b. A FAILED lookup is never cached (#1788 round 2). Caching the promise
+// that resolves to the synthetic "public" of a blip pinned the failure for the
+// life of the process: one transient network error at session start silenced the
+// gate for every later publish to that repository. The second ask must reach the
+// resolver again and its answer must be the one used.
+await withEnv(denylistEnv, async () => {
+  const dirty = SURFACES[1]?.command ?? "";
+  resetVisibilityCacheForTests();
+  let asked = 0;
+  const flaky = async (): Promise<boolean> => {
+    asked += 1;
+    if (asked === 1) throw new Error("gh: connection reset");
+    return true;
+  };
+  const first = await ask(dirty, { visibility: flaky });
+  assert(first !== undefined, "the failed lookup checks the dirty surface");
+  assert(visibilityLookupCount() === 0, "and the failed answer is not in the cache");
+  const second = await ask(dirty, { visibility: flaky });
+  assert(
+    asked === 2 && second === undefined,
+    `the retry reaches the resolver and its private answer is used (asked ${asked}, refused=${second !== undefined})`,
+  );
+  assert(visibilityLookupCount() === 1, "and only the obtained answer is cached");
+
+  // A lookup that never answers is a failure too, so the next publish asks
+  // again rather than inheriting a timeout for the rest of the session.
+  resetVisibilityCacheForTests();
+  let hangsAsked = 0;
+  const hanging = async (): Promise<boolean> => {
+    hangsAsked += 1;
+    if (hangsAsked === 1) return new Promise<boolean>(() => undefined);
+    return true;
+  };
+  const timedOut = await ask(dirty, {
+    visibility: hanging,
+    exec: undefined,
+  });
+  assert(timedOut !== undefined, "a lookup that never answers checks the surface");
+  assert(visibilityLookupCount() === 0, "and the timed-out answer is not cached either");
+  const afterTimeout = await ask(dirty, { visibility: hanging });
+  assert(
+    hangsAsked === 2 && afterTimeout === undefined,
+    `the publish after a timeout asks again and honours the private answer (asked ${hangsAsked})`,
+  );
+});
+
+// ── 4c. The cache key includes the HOST: two forges can host the same slug and
+// disagree about its visibility, so an answer carried from one to the other is a
+// wrong answer delivered with full confidence. The github legs are what prove
+// it: a key of slug alone would answer the second repository from the first's
+// entry and the resolver would be asked once instead of twice.
+await withEnv(denylistEnv, async () => {
+  resetVisibilityCacheForTests();
+  let askedGithub = 0;
+  const githubOnly = async (): Promise<boolean> => {
+    askedGithub += 1;
+    return false;
+  };
+  const first = await isPrivateTarget(
+    { owner: "acme", repo: "widget", host: "github.com" },
+    { lookup: githubOnly },
+  );
+  assert(first === false, `the first github answer is the public one (got ${first})`);
+  assert(
+    visibilityLookupCount() === 1,
+    `and the cache holds one entry for host plus slug (got ${visibilityLookupCount()})`,
+  );
+
+  // A different slug on the same host is a different entry, not a shared answer.
+  const otherRepo = await isPrivateTarget(
+    { owner: "acme", repo: "gadget", host: "github.com" },
+    { lookup: async () => false },
+  );
+  assert(otherRepo === false, "a second repository on the same host gets its own answer");
+  assert(visibilityLookupCount() === 2, `and its own cache entry (got ${visibilityLookupCount()})`);
+
+  // A non-GitHub host on a slug the cache already answered for github.com is
+  // answered WITHOUT a lookup, so it can neither reuse nor displace the github
+  // entry: the host is part of the identity, not a hint.
+  let nonGithubAsked = 0;
+  const untouched = async (): Promise<boolean> => {
+    nonGithubAsked += 1;
+    return true;
+  };
+  const onGitlab = await isPrivateTarget(
+    { owner: "acme", repo: "widget", host: GITLAB_HOST },
+    { lookup: untouched },
+  );
+  assert(
+    onGitlab === false && nonGithubAsked === 0,
+    "a non-github host is checked without asking gh, even for a cached slug",
+  );
+  assert(
+    visibilityLookupCount() === 2,
+    `and the non-github answer created no cache entry (got ${visibilityLookupCount()})`,
+  );
+
+  // The same repository asked again is served from the entry, not the resolver:
+  // one lookup per host plus slug, however many publishes.
+  const stillCached = await isPrivateTarget(
+    { owner: "acme", repo: "widget", host: "github.com" },
+    { lookup: githubOnly },
+  );
+  assert(stillCached === false, "the cached github answer is reused without a new lookup");
+  assert(askedGithub === 1, `and the resolver was asked once (asked ${askedGithub})`);
+  resetVisibilityCacheForTests();
 });
 
 // ── 5. `ghVisibility`: the raw answer, and the ways it must not be believed.
@@ -282,8 +396,7 @@ await withEnv(denylistEnv, async () => {
     return true;
   };
   assert(
-    (await isPrivateTarget(target, { host: "gitlab.com", lookup: untouched })) === false &&
-      !called,
+    (await isPrivateTarget(target, { host: "gitlab.com", lookup: untouched })) === false && !called,
     "a non-github host is checked without asking gh",
   );
   resetVisibilityCacheForTests();

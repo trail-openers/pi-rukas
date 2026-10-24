@@ -41,6 +41,33 @@ export function isRepoTarget(t: Target): t is RepoTarget {
   return (t as RepoTarget).owner !== undefined && (t as RepoTarget).repo !== undefined;
 }
 
+/**
+ * The host a flag-named target lives on.
+ *
+ * `-R owner/repo` and a `repos/OWNER/REPO` endpoint name a repository without
+ * naming a host, so the only host the process actually knows is the one this
+ * clone publishes to — `origin`, asked through the same `remoteUrl` seam every
+ * other read here uses so an offline fixture still answers it. When the clone has
+ * no parseable remote the host stays undefined, which the visibility module reads
+ * as "do not claim to know" and checks. A `-R` at another forge while `origin` is
+ * github.com is the one shape this could get wrong; guessing a host the clone has
+ * never named would be an unverified claim, so it asks `gh` instead, and a wrong
+ * `gh` answer means a checked repository — the conservative side.
+ */
+async function withHost(
+  t: RepoTarget,
+  cwd: string,
+  remote: (name: string, dir: string) => Promise<string>,
+): Promise<RepoTarget> {
+  if (t.host !== undefined) return t;
+  try {
+    const parsed = parseRemoteUrl((await remote("origin", cwd)).trim());
+    return parsed === undefined ? t : { ...t, host: parsed.host };
+  } catch {
+    return t;
+  }
+}
+
 /** A well-formed `owner/repo`, and nothing else — no path, no flag, no traversal. */
 function cleanSlug(raw: string): RepoTarget | undefined {
   const m = raw.trim().match(/^([^/\s]+)\/([^/\s]+)$/);
@@ -224,6 +251,21 @@ export async function resolveCommandTarget(
   } = {},
 ): Promise<Target> {
   let last: UnknownTarget = { reason: "the command names no repository" };
+  // One read of a remote URL, through the injected seam when there is one and
+  // through git when there is not. `ask` (which turns it into a Target) and
+  // `withHost` (which only wants its host) both go through here, so a fixture
+  // that pins the seam pins every host read too.
+  const askUrl = async (name: string, dir: string): Promise<string> => {
+    if (opts.remoteUrl !== undefined) return await opts.remoteUrl(name, dir);
+    if (exec === undefined) throw new Error(`no executor to read the ${name} remote`);
+    const { stdout } = await exec("git", {
+      argv: ["remote", "get-url", name],
+      cwd: dir,
+      timeout: 10_000,
+      maxBuffer: 64 * 1024,
+    });
+    return stdout;
+  };
   const ask = async (name: string, dir: string): Promise<Target> => {
     let url: string;
     try {
@@ -252,7 +294,10 @@ export async function resolveCommandTarget(
       last = { reason: `the ${name} remote URL is not a repository URL` };
       return last;
     }
-    return { owner: parsed.owner, repo: parsed.repo };
+    // The host travels with the target. `gh` can answer visibility for
+    // github.com only, and a caller that never sees the host would either ask
+    // `gh` about a GitLab project or assume something about it.
+    return { owner: parsed.owner, repo: parsed.repo, host: parsed.host };
   };
 
   for (const argv of simpleCommands(command)) {
@@ -262,14 +307,13 @@ export async function resolveCommandTarget(
       const flagged = repoFlag(argv);
       if (flagged !== undefined) {
         const t = cleanSlug(flagged);
-        if (t) return t;
-        last = { reason: "the repository flag is not an owner/repo" };
+        if (t) return withHost(t, cwd, askUrl);
         continue;
       }
       if (noun === "api") {
         const endpoint = apiEndpoint(argv);
         const t = endpoint === undefined ? undefined : targetFromEndpoint(endpoint);
-        if (t) return t;
+        if (t) return withHost(t, cwd, askUrl);
         // An endpoint that names no repository falls through to the cwd's own
         // origin, which is the repository `gh` itself would resolve it against.
       }

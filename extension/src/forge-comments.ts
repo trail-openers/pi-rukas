@@ -49,7 +49,7 @@ export interface CommentSeamDeps {
    * explicit no-op, which says in the call site what the type used to allow
    * silently.
    */
-  checkPublicText: (label: string, text: string) => void;
+  checkPublicText: (label: string, text: string) => Promise<void>;
 }
 
 /** List an issue's comments (the idempotency check for the handoff fallback).
@@ -122,8 +122,10 @@ export async function postPrComment(
   // driver's in-process handoff fallback reaches the forge through this seam
   // rather than a `tool_call`, so the check has to be here too. Not optional:
   // see `CommentSeamDeps.checkPublicText` for why the type refuses a caller
-  // that never thought about it.
-  deps.checkPublicText("pull request comment", body);
+  // that never thought about it. AWAITED, because the check now resolves the
+  // target repository's visibility — a seam a caller cannot forget awaiting is
+  // a comment posted unchecked, which is exactly what this line exists to stop.
+  await deps.checkPublicText("pull request comment", body);
   return deps.withBodyFile(`pr-comment-${number}`, body, (file) =>
     deps.run(cmds.prCommentCmd(deps.forge, number, file), (stdout) => {
       if (deps.forge === "github") return stdout.trim();

@@ -95,7 +95,8 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { execp } from "./exec.ts";
-import { type DenylistRead, publicTextProblem, readPublicDenylist } from "./public-denylist.ts";
+import { type DenylistRead, readPublicDenylist } from "./public-denylist.ts";
+import { hygieneGuardDisabled } from "./public-hygiene-config.ts";
 import { pushGitCwd } from "./public-hygiene-cwd.ts";
 import { firstHit } from "./public-hygiene-hit.ts";
 import { scanPushRange } from "./public-hygiene-push.ts";
@@ -104,10 +105,9 @@ import {
   denylistUnreadableRefusal,
   refusalFor,
 } from "./public-hygiene-refusals.ts";
-import { PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
-import { commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
+import { PUSH_SCAN_TIMEOUT_MS, commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
 import { type Target, isRepoTarget, resolveCommandTarget } from "./public-hygiene-target.ts";
-import { publicTextRefusal, publishesText } from "./public-hygiene-text.ts";
+import { publicTextRefusal } from "./public-hygiene-text.ts";
 import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import type { PushScanResult } from "./public-hygiene-types.ts";
 import type { Verdict } from "./public-hygiene-verdict.ts";
@@ -122,28 +122,12 @@ import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
- * The refusal a driver-authored publish carries when the forge exec seam
- * rejects it (#1788).
- *
- * Typed so the driver's existing error handling distinguishes "this text is
- * not publishable" from "`gh` failed" without parsing prose, and so a caller
- * that wants to surface the refusal verbatim has a named class to catch. The
- * message IS the refusal text and never contains the matched term.
+ * The escape hatch and the refusal class live in `public-hygiene-config.ts` —
+ * the dependency-free module that keeps the text checker and this guard from
+ * importing each other. Re-exported so existing callers keep one import for the
+ * whole guard surface.
  */
-export class PublicHygieneError extends Error {
-  /** Stable marker the driver's error paths match on, independent of the text. */
-  readonly publicHygiene = true;
-
-  constructor(message: string) {
-    super(message);
-    this.name = "PublicHygieneError";
-  }
-}
-
-/** The operator's off switch — exactly `0`, read at registration. */
-export function hygieneGuardDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PI_ENSEMBLE_PUBLIC_HYGIENE === "0";
-}
+export { PublicHygieneError, hygieneGuardDisabled } from "./public-hygiene-config.ts";
 
 /**
  * Whether THIS process has already installed the hook.
@@ -480,7 +464,5 @@ async function boundedScan(
 
 /**
  * The first dirty surface across every text this command would publish lives in
- * `public-hygiene-hit.ts`, re-exported here so the guard's callers keep one
- * import for the whole decision.
+ * `public-hygiene-hit.ts`.
  */
-export { firstHit } from "./public-hygiene-hit.ts";

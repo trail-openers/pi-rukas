@@ -187,20 +187,18 @@ const SHELL_BUILT_REASON =
  * and `git commit` alongside the create/edit/comment/review verbs.
  */
 export function publishesText(argv: readonly string[]): boolean {
-  const at = argv.findIndex((w) => w === "gh" || w === "oo");
-  const words = argv[0] === "oo" || at === 0 ? argv : argv;
-  const prog = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+  const prog = argv.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
   if (prog === undefined) return false;
   const base = prog.replace(/^.*\//, "");
   if (base === "gh") {
     return (
-      words.includes("issue") ||
-      words.includes("pr") ||
-      words.includes("release") ||
-      words.includes("api")
+      argv.includes("issue") ||
+      argv.includes("pr") ||
+      argv.includes("release") ||
+      argv.includes("api")
     );
   }
-  if (base === "git") return words.includes("commit");
+  if (base === "git") return argv.includes("commit");
   return false;
 }
 

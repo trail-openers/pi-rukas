@@ -52,9 +52,8 @@ import { type Finding, carriedHeading, isCarried } from "./lens-review-types.ts"
 import type { LensReviewSummary } from "./lens-review.ts";
 import { mergeIdentity } from "./merge-guard-reads.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
-import { driverPublicTextRefusal } from "./public-hygiene-driver.ts";
-import { PublicHygieneError } from "./public-hygiene-guard.ts";
-import { publicTextRefusal } from "./public-hygiene-text.ts";
+import { PublicHygieneError } from "./public-hygiene-config.ts";
+import { driverPublishRefusal } from "./public-hygiene-driver.ts";
 import { remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -349,15 +348,11 @@ async function doPost(
   // #1788 — the whole body, on the public-repositories-only rule, before
   // anything is written: this is a publish the tool_call guard cannot see (an
   // in-process exec), and its text is quoted off the branch by six reviewers.
-  const refusal = await driverPublicTextRefusal(
-    "pull request comment",
-    body,
-    "gh pr comment",
+  const refusal = await driverPublishRefusal("pull request comment", body, {
+    command: "gh pr comment",
     cwd,
-    {
-      exec: (cmd, opts) => execFn(cmd, opts ?? {}),
-    },
-  );
+    exec: (cmd, opts) => execFn(cmd, opts ?? {}),
+  });
   if (refusal !== undefined) throw new PublicHygieneError(refusal);
   await postPrComment(
     {
@@ -367,13 +362,16 @@ async function doPost(
       // composed from lens findings quoted off the branch, so it is exactly the
       // kind of text that has carried a private name before; a refusal is thrown
       // and this module's best-effort contract reports it rather than posting.
-      checkPublicText: (label, text) => {
-        // Synchronous by the seam's shape: the async, visibility-scoped check
-        // runs on the full body just before the post below, which is the only
-        // text this seam publishes. The seam's own call is the belt to that
-        // braces — it keeps the pure matcher on the path even if the caller
-        // above is ever reordered.
-        const refusal = publicTextRefusal(label, text);
+      // The seam's own awaited check is the one that judges this body: it now
+      // resolves the target repository's visibility, so a second synchronous
+      // copy of the pure matcher here would be a second owner of a decision the
+      // seam already makes with more information than this call has.
+      checkPublicText: async (label, text) => {
+        const refusal = await driverPublishRefusal(label, text, {
+          command: "gh pr comment",
+          cwd,
+          exec: (cmd, opts) => execFn(cmd, opts ?? {}),
+        });
         if (refusal !== undefined) throw new PublicHygieneError(refusal);
       },
       run: (cmd, map) =>

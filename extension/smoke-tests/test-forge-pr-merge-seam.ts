@@ -82,18 +82,25 @@ export async function forgePrMergeSeam(
     !String((thrown as Error)?.message ?? "").includes(term),
     "and its refusal carries no term",
   );
-  assert(execed.length === 0, "nothing was execed: the merge did not happen");
+  // The commands that PUBLISH. Since the driver's checks grew the public-only
+  // gate (#1788 round 2), a refused subject also asks `git remote get-url` and
+  // `gh api … --jq .private` on its way to deciding which repository this is.
+  // Those are reads, and an assertion that counted them would fail for a check
+  // that correctly refused BEFORE publishing — so the predicate names writes.
+  const published = (): string[] =>
+    execed.filter((c) => c.startsWith("gh issue") || c.startsWith("gh pr") || c.startsWith("glab"));
+  assert(published().length === 0, "nothing was execed: the merge did not happen");
   // A clean subject reaches the exec, and no subject at all (gh composes one
   // from the PR) is nobody's business to refuse.
   execed.length = 0;
   await forge.prMerge(7, "squash", "feat(x): wire the build");
   assert(
-    execed.length === 1 && execed[0]?.includes("gh pr merge 7"),
+    published().length === 1 && published()[0]?.includes("gh pr merge 7"),
     "a clean subject reaches the merge command",
   );
   execed.length = 0;
   await forge.prMerge(7);
-  assert(execed.length === 1, "no subject at all is not refused — gh composes one");
+  assert(published().length === 1, "no subject at all is not refused — gh composes one");
 }
 
 // Run as its own file as well as being called by test-public-hygiene-guard.ts:

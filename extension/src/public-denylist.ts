@@ -59,6 +59,7 @@
 import { readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { blankEmailTokens } from "./public-hygiene-email.ts";
 import { traceWarn } from "./trace.ts";
 
 /** The env var naming the file (the `memory-stats.ts` `VIPUNE_DB_PATH` idiom). */
@@ -206,12 +207,7 @@ export function genericCategoryOf(text: string): GenericCategory | undefined {
  * sentences later. The address itself is exempt (its host part legitimately
  * looks like a host), nothing else is.
  */
-const EMAIL_TOKEN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-
-/** Every email address in `text`, replaced by a neutral placeholder. */
-function withoutEmailTokens(text: string): string {
-  return text.replace(EMAIL_TOKEN, " email ");
-}
+const withoutEmailTokens = blankEmailTokens;
 
 /**
  * Absolute home directories. `/home/alice/` and `/Users/alice/` name a person;

@@ -12,6 +12,7 @@
  * model the behaviour they enforce.
  */
 
+import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { tmpdir } from "node:os";
@@ -24,19 +25,19 @@ import {
   readPublicDenylist,
   resetDenylistCacheForTests,
 } from "../src/public-denylist.ts";
+import { admissibleRoots, pushGitCwd, segmentCwds, within } from "../src/public-hygiene-cwd.ts";
 import {
   publicHygieneInstalled,
   registerPublicHygieneGuard,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
+import { inspectCommand } from "../src/public-hygiene-guard.ts";
 import { publicTextRefusal } from "../src/public-hygiene-text.ts";
+import type { ExecFn } from "../src/worktree.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
+import { driverAuthoredText } from "./public-hygiene-driver-text-fixture.ts";
 import { forgePrMergeSeam } from "./test-forge-pr-merge-seam.ts";
-import { execFile } from "node:child_process";
-import { admissibleRoots, pushGitCwd, segmentCwds, within } from "../src/public-hygiene-cwd.ts";
-import { inspectCommand } from "../src/public-hygiene-guard.ts";
-import type { ExecFn } from "../src/worktree.ts";
 
 /** Realpath, or "" when it cannot be resolved — a fixture guard, not a decision. */
 function safeRealpath(p: string): string {
@@ -394,70 +395,14 @@ function expectRefusal(
   });
 }
 
-// ── 7b. The same seam for a DRIVER-AUTHORED COMMIT MESSAGE (#1788, PM
-// decision 8). The driver's forge writes are in-process execs, so the
-// tool_call hook never sees them: `forge.ts`'s `checkPublicText` is what stops
-// a commit-message string the driver composes itself (a squash-subject, a
-// release note) from reaching the forge with a private term in it.
+// ── 7b/7c. The seam for text the DRIVER composes itself — a commit message and
+// a squash subject — moved to public-hygiene-driver-text-fixture.ts under
+// AGENTS.md §12's size cap, the same way 4b/4c moved to
+// test-public-hygiene-roots.ts. It runs inside this file's denylist so one
+// scratch list governs every case here.
 {
   await withEnv(denylistEnv, async () => {
-    const execed: string[] = [];
-    const det = {
-      forge: "github",
-      host: "github.com",
-      url: "https://github.com/example-owner/example-repo.git",
-      source: "remote",
-    } as const;
-    const forge = createForge(det as never, {
-      execFn: (async (_cmd: string, _opts?: unknown) => {
-        execed.push(_cmd);
-        return { stdout: "{}", exitCode: 0 };
-      }) as never,
-      cwd: dir,
-    });
-    const dirty = `feat(x): wire ${TERM} into the build`;
-    let thrown: unknown;
-    try {
-      await forge.issueCreate("release notes", `commit ${dirty} to the release`);
-    } catch (err) {
-      thrown = err;
-    }
-    assert(thrown !== undefined, "a driver-authored commit message is refused at the forge seam");
-    assert(
-      (thrown as Error)?.name === "PublicHygieneError",
-      "as the hygiene error the driver's error paths already recognise",
-    );
-    const message = String((thrown as Error)?.message ?? "");
-    assert(message.length > 0 && !message.includes(TERM), "and its refusal carries no term");
-    assert(
-      execed.length === 0,
-      "nothing was execed: the check runs before the forge command, not after the post",
-    );
-    // And the clean counterpart, so the block is not satisfied by a seam that
-    // refuses everything. The assertion is on what reached the exec, not on the
-    // call resolving: a fake forge whose stdout is not a created-issue URL
-    // rejects for that reason AFTER the check passed, and conflating the two
-    // would report a passing seam as a refusing one.
-    execed.length = 0;
-    await forge
-      .issueCreate("release notes", "commit feat(x): wire the build")
-      .catch(() => undefined);
-    assert(
-      execed.length === 1,
-      "a clean driver-authored message reaches the exec — the seam did not refuse it",
-    );
-  });
-}
-
-// ── 7c. The same seam for a MERGE COMMIT SUBJECT (#1788 round 2). A squash
-// merge publishes the subject as the commit message on main, so it is a public
-// text surface like a title or a body — and the merge is the one forge write
-// the cycle cannot undo. The check must run BEFORE `run`, so a refused subject
-// merges nothing. The assertions live in `test-forge-pr-merge-seam.ts`, which
-// also runs them as its own file so the offline loop discovers them.
-{
-  await withEnv(denylistEnv, async () => {
-    await forgePrMergeSeam(TERM, dir, createForge);
+    await driverAuthoredText(TERM, dir, createForge);
   });
 }
 

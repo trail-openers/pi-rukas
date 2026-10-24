@@ -1,7 +1,11 @@
 /**
- * public-hygiene-text — the two TEXT surfaces of the #1788 guard that are not
- * git reads, split out of `public-hygiene-guard.ts` along the seam AGENTS.md §12
- * asks for (the guard decides; these decide what a command's own words say).
+ * public-hygiene-text — the TEXT surface of the #1788 guard that is not a git
+ * read, split out of `public-hygiene-guard.ts` along the seam AGENTS.md §12
+ * asks for (the guard decides; this decides what a command's own words say).
+ *
+ * The driver's own forge posts go through this module, and the tool_call guard
+ * reaches for the same function so the two cannot disagree about what is
+ * publishable.
  *
  * ## `publicTextRefusal` — the driver's seam
  *
@@ -16,22 +20,11 @@
  * blocked `tool_call` for a comment — and a throw past a contract is a step that
  * dies instead of a cycle that parks with a reason. `undefined` means clean; the
  * string never carries the term, only what `public-hygiene-refusals.ts` renders.
- *
- * ## `publishesText` — the publish predicate
- *
- * The unreadable-operand check needs to know whether a command publishes at all
- * before it refuses to read one of its fields. That predicate is the same one
- * the scan uses, and it lives there for one reason: `gh api` is a publish only
- * with a content-carrying `-f/-F`, and the scan owns that nuance. Duplicating
- * the bare-`api` rule here would create a second owner of a decision the scan
- * already had to think through (#1788 round-1 adversarial: "a second owner of
- * the push-verb decision").
  */
 
 import { type DenylistRead, publicTextProblem, readPublicDenylist } from "./public-denylist.ts";
-import { hygieneGuardDisabled } from "./public-hygiene-guard.ts";
+import { hygieneGuardDisabled } from "./public-hygiene-config.ts";
 import { denylistUnreadableRefusal, refusalFor } from "./public-hygiene-refusals.ts";
-import { publishesText as publishesCommand } from "./public-hygiene-scan.ts";
 
 /**
  * The pure text check the driver's own forge posts go through (#1788, PM
@@ -56,13 +49,4 @@ export function publicTextRefusal(
     return refusalFor(undefined, { location: label, line: hit.line }, undefined);
   }
   return refusalFor(undefined, undefined, { location: label, category: hit.category });
-}
-
-/**
- * Whether this command publishes text the guard is meant to read. Delegates to
- * the scan's own predicate so `gh api` without a content flag is not called a
- * publish here either.
- */
-export function publishesText(argv: readonly string[]): boolean {
-  return publishesCommand(argv);
 }

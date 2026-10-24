@@ -14,11 +14,12 @@
  * Terms are synthetic and the denylist is always a temp file.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resetDenylistCacheForTests } from "../src/public-denylist.ts";
-import { PublicHygieneError } from "../src/public-hygiene-guard.ts";
+import { PublicHygieneError } from "../src/public-hygiene-config.ts";
+import { isPrivateTarget, resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
 import { publicTextRefusal } from "../src/public-hygiene-text.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
 import { executeAndVerifyMerge } from "../src/work-driver-merged-mechanized.ts";
@@ -200,7 +201,101 @@ try {
   );
   process.env.PI_ENSEMBLE_PUBLIC_DENYLIST = entryList;
   resetDenylistCacheForTests();
-  // Sanity: the seam's own checker answers, so a failure above means the merge
+
+  // 5. The public-only gate reaches this path too (#1788 round 2). This fallback
+  //    used to call the pure checker directly, so it refused a private project's
+  //    merge subject while the adapter path skipped the same text. The two cases
+  //    differ only in whether the forge reports the repository private — the
+  //    variable the gate actually acts on — and the fake answers the real
+  //    `gh api … --jq .private` question by slug. A fake that answered it with
+  //    an empty string would make the lookup FAIL, and a failed lookup means
+  //    "check": the private case would then be refused for a reason that has
+  //    nothing to do with the gate under test.
+  const gitDir = path.join(dir, "git-repo");
+  mkdirSync(gitDir, { recursive: true });
+  // The two reads whose answers decide this case are PINNED TO FILES rather
+  // than answered by the fake, for the same reason the driver's own seam is
+  // hard to fake from here: a single executor answers several callers, and a
+  // fake that distinguishes them by call order is a fake with a counter in it.
+  // The file pins what the code asks (the origin URL, the visibility answer);
+  // the fake stays a recorder plus the two commands the merge itself issues.
+  const originFile = path.join(dir, "origin-url");
+  const privateFile = path.join(dir, "is-private");
+  writeFileSync(originFile, "https://github.com/acme/private-backlog.git\n", "utf8");
+  writeFileSync(privateFile, "true\n", "utf8");
+  const remotes: { calls: string[] } = { calls: [] };
+  const gitExec: VerifyExecFn = async (cmd, opts) => {
+    const full = opts?.argv ? [cmd, ...opts.argv].join(" ") : cmd;
+    remotes.calls.push(full);
+    if (full.startsWith("git remote") && !full.includes("get-url")) {
+      // No remotes at all: the forge probe resolves nothing, so the merge takes
+      // the DIRECT-exec fallback this case exists to cover.
+      return { stdout: "" };
+    }
+    if (full.includes("remote get-url")) {
+      return { stdout: readFileSync(originFile, "utf8") };
+    }
+    if (full.startsWith("gh api repos/")) {
+      return { stdout: readFileSync(privateFile, "utf8") };
+    }
+    if (full.includes("pr view")) {
+      return { stdout: remotes.calls.some((c) => c.includes("pr merge")) ? "MERGED\n" : "OPEN\n" };
+    }
+    return { stdout: "" };
+  };
+  // Sanity, stated where the fixture is visible: the fake does answer the
+  // visibility question `true` for this slug. Without this a failure below
+  // cannot be told apart from a fixture that never said private at all.
+  resetVisibilityCacheForTests();
+  const probe = await isPrivateTarget(
+    { owner: "acme", repo: "private-backlog", host: "github.com" },
+    { exec: gitExec as never, cwd: gitDir },
+  );
+  assert(probe === true, `the fixture answers this repository private (probe ${probe})`);
+  resetVisibilityCacheForTests();
+  resetDenylistCacheForTests();
+  const privateMerge = await executeAndVerifyMerge(
+    7,
+    "squash",
+    gitExec,
+    gitDir,
+    `feat: ship ${TERM}`,
+    NO_FORGE,
+  );
+  assert(
+    (privateMerge as { merged?: boolean }).merged === true,
+    `a private repository's dirty merge subject is not refused (${JSON.stringify(privateMerge).slice(0, 80)})`,
+  );
+  assert(
+    remotes.calls.some((c) => c.includes("pr merge")),
+    "and the private merge really ran",
+  );
+
+  remotes.calls.length = 0;
+  // The variable the gate acts on, flipped: the same merge, the same subject,
+  // the same fixture, with the repository answered PUBLIC. Only the answer
+  // differs, so a pass here and a pass above together say the refusal came from
+  // the gate and not from anything about the subject or the path.
+  writeFileSync(privateFile, "false\n", "utf8");
+  resetVisibilityCacheForTests();
+  resetDenylistCacheForTests();
+  const publicMerge = await executeAndVerifyMerge(
+    7,
+    "squash",
+    gitExec,
+    gitDir,
+    `feat: ship ${TERM}`,
+    NO_FORGE,
+  );
+  assert(
+    (publicMerge as { ok?: boolean })?.ok === false,
+    "the same subject on a PUBLIC repository is still refused by this path",
+  );
+  assert(
+    remotes.calls.every((c) => !c.includes("pr merge")),
+    "and that refusal still happens before any exec",
+  );
+  resetVisibilityCacheForTests();  // Sanity: the seam's own checker answers, so a failure above means the merge
   // path is missing the check and not that the checker is unreachable. It is
   // called with the default reader, so it is asked while the denylist is the
   // entry-bearing one rather than the generic-only file case 4 installs.

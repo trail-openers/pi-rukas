@@ -23,6 +23,7 @@ import {
   terminalCommitPrFailure,
   withPatchNote,
 } from "./work-driver-commit-helpers.ts";
+import { commitMessageRefusal } from "./work-driver-commit-hygiene.ts";
 
 import { ensureIntegrateWorktreeOrHalt } from "./work-driver-commit-fallback.ts";
 import {
@@ -210,6 +211,18 @@ export async function mechanizedCommitPr(
           ]
         : [];
     const commitBody = [...fixesLines, ...companionLines, ...workstreamLines].join("\n");
+    // #1788 — the commit message is a publish, and the `tool_call` guard cannot
+    // see it: the message is assembled here and reaches git inside
+    // `integrate()`'s own exec. The rule and its reason live in
+    // work-driver-commit-hygiene.ts.
+    const messageRefusal = await commitMessageRefusal(title, commitBody, {
+      cwd: ctx.repoRoot,
+      issue: ctx.issue,
+      exec: execFn,
+    });
+    if (messageRefusal !== undefined) {
+      return { ok: false, reason: messageRefusal };
+    }
     // #287 — consolidation, commit and push all happen inside `integrate()`,
     // the single writer to repoRoot. It creates the branch at the recorded
     // baseSha rather than at whatever repoRoot's HEAD is, and refuses a dirty
