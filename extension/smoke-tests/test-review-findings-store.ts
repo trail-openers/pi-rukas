@@ -28,7 +28,7 @@ import {
 } from "../src/review-findings-match.ts";
 import { acceptFinding as acceptFinding } from "../src/review-findings-store.ts";
 import { readBranchRows, recordFindingRunOutcome } from "../src/review-findings-store.ts";
-import { ledgerPathFor } from "../src/review-ledger-path.ts";
+import { findingsStateDir } from "../src/review-state-path.ts";
 import { decide } from "./lib/review-findings-fixtures.ts";
 
 let exit = 0;
@@ -190,11 +190,24 @@ const finding = (
 });
 
 const { dir, commit } = makeRepo();
+// #1764 — this fixture runs with NO ledger override, so the store resolves to
+// the real state-dir root. Pin `PI_ENSEMBLE_REVIEW_STATE`-free isolation by
+// pointing `PI_AGENT_DIR` at a temp dir: the store lands there, never in the
+// operator's `~/.pi/agent`.
+const savedAgentDir = process.env.PI_AGENT_DIR;
+const agentDir = mkdtempSync(path.join(os.tmpdir(), "findings-store-agent-"));
+process.env.PI_AGENT_DIR = agentDir;
 try {
   const c1 = commit(SRC.join("\n"));
-  const ledger = await ledgerPathFor(execp, dir);
+  // #1764 phase 1 — the store resolves through the state-dir resolver, which
+  // is the same one the store's own `locate` uses. With no
+  // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` in the environment this is the REAL
+  // location: under `$PI_AGENT_DIR/review-state/<key>/<token>/`, outside the
+  // clone. The test pins its own agent dir so a fixture never writes the
+  // operator's.
+  const loc = await findingsStateDir(execp, dir);
   assert(
-    ledger !== undefined && existsSync(path.dirname(ledger)),
+    loc !== undefined && existsSync(path.dirname(loc.ledger)),
     "store: the clone has a git common dir",
   );
 
@@ -205,10 +218,14 @@ try {
     findings: [finding("Division by zero possible", 4)],
     review: "full",
   });
-  const findingsFile = path.join(path.dirname(ledger as string), "review-findings.json");
+  const findingsFile = loc?.file as string;
   assert(
     existsSync(findingsFile),
-    "store: review-findings.json is written beside review-ledger.json",
+    "store: the findings file is written in the clone's state dir",
+  );
+  assert(
+    !findingsFile.startsWith(dir),
+    "store: the findings file is NOT inside the clone (#1764)",
   );
   const rows1 = await readBranchRows(dir, "feat/x");
   assert(
@@ -477,6 +494,10 @@ try {
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });
+  rmSync(agentDir, { recursive: true, force: true });
+  if (savedAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+  else process.env.PI_AGENT_DIR = savedAgentDir;
+  (await import("../src/review-state-path.ts")).resetFindingsStateCache();
 }
 
 process.exit(exit);

@@ -45,8 +45,7 @@
  * review-accept-guard.ts refuses agent attempts (advisory in trust mode).
  */
 
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { type ChangedRanges, changedLineRanges } from "./review-diff.ts";
@@ -67,15 +66,13 @@ import { type HeadState, readHeadLines } from "./review-findings-head.ts";
 import { hashText } from "./review-findings-match.ts";
 import {
   type BranchRows,
-  FINDINGS_FILE,
-  findingsFileFor,
   readBranchRowsFailOpen,
   readBranchRowsRaw,
 } from "./review-findings-read.ts";
 import { applyFindingRound } from "./review-findings-round.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
-import { ledgerPathFor } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";
+import { type FindingsLocation, findingsStateDir } from "./review-state-path.ts";
 
 /**
  * What a round decided for one finding, aligned by index with the findings it
@@ -85,8 +82,15 @@ import { trace } from "./trace.ts";
  */
 export type { Decision } from "./review-findings-file.ts";
 
-/** The findings file's name, beside `review-ledger.json` — re-exported by the store. */
-export { FINDINGS_FILE } from "./review-findings-read.ts";
+/**
+ * The findings file's pre-#1764 name — the basename its `.tmp` / `.corrupt-*`
+ * siblings are built from, and the name the one-time migration looks for under
+ * the git common dir. The live store file itself is `findings.json` inside the
+ * state dir (review-state-path.ts); the name stays re-exported so every
+ * copy-aside site keeps one naming scheme, and so the offline fixtures that
+ * build a path beside a redirected ledger still name the same file.
+ */
+export { FINDINGS_FILE } from "./review-state-path.ts";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const ROW_ID = /^[0-9a-f]{8}$/;
@@ -189,7 +193,7 @@ function setAside(file: string, row: unknown): void {
  * per call, defaulting to the real atomic write.
  */
 async function mutateFindings<T>(
-  loc: { ledger: string; file: string },
+  loc: FindingsLocation,
   fn: (rows: StoredFinding[]) => { rows: StoredFinding[]; result: T },
   /** Memory the caller had already read and set aside BEFORE this write: on a
    * failed write the round never reaches its summary, so these notices would be
@@ -242,21 +246,26 @@ async function mutateFindings<T>(
 }
 
 /**
- * Resolve the findings file's path and the ledger path that guards it. Both
- * are undefined outside a git clone; the findings file lives beside the ledger.
+ * Resolve the findings file's path and the ledger path that guards it. Both are
+ * undefined outside a git clone.
  *
- * The resolved path is RETURNED, never cached: the read path takes it as an
+ * #1764 phase 1 - the two no longer share a directory. The ledger (and its lock)
+ * still live under the git common dir; the findings file lives in the per-clone
+ * state dir under the agent dir (`$PI_AGENT_DIR`/review-state/<key>/<token>/),
+ * outside the repository and outside every worktree, so an agent's ordinary bash
+ * cannot name it. `PI_ENSEMBLE_REVIEW_LEDGER_FILE` still pins the findings file
+ * beside the override, which is what the whole offline suite isolates on. The
+ * resolution itself - key, token, modes, migration and the fallback to the old
+ * location - lives in review-state-path.ts.
+ *
+ * The resolved path is RETURNED, never cached here: the read path takes it as an
  * argument from whoever called `locate`, so changing `PI_ENSEMBLE_REVIEW_LEDGER_FILE`
  * between two rounds cannot leave a later round reading the first round's file.
  * Each entry point calls this ONCE and threads the result through its read and
  * its write, so neither half of a round can diverge onto another file.
  */
-async function locate(cwd: string): Promise<{ ledger: string; file: string } | undefined> {
-  const ledger = await ledgerPathFor(execp, cwd);
-  if (!ledger) return undefined;
-  const dir = path.dirname(ledger);
-  if (!existsSync(dir)) return undefined;
-  return { ledger, file: path.join(dir, FINDINGS_FILE) };
+async function locate(cwd: string): Promise<FindingsLocation | undefined> {
+  return findingsStateDir(execp, cwd);
 }
 
 /**
@@ -362,7 +371,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` between them, and a round whose read came
     // from one file and whose write landed in another is a round whose decisions
     // describe memory it did not modify.
-    let loc: { ledger: string; file: string } | undefined;
+    let loc: FindingsLocation | undefined;
     try {
       loc = await locate(run.cwd);
       if (!loc) {

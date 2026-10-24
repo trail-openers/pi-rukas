@@ -45,10 +45,16 @@ import {
   describeSetAside,
   splitRows,
 } from "./review-findings-file.ts";
+import { FINDINGS_FILE } from "./review-state-path.ts";
 import { trace } from "./trace.ts";
 
-/** The findings file's name, beside `review-ledger.json` — re-exported by the store. */
-export const FINDINGS_FILE = "review-findings.json";
+/**
+ * The findings file's basename — re-exported from review-state-path.ts so the
+ * store, its corrupt-copy siblings and the offline fixtures all name one file.
+ * From #1764 the file lives in the per-clone state dir rather than beside the
+ * ledger; the name is unchanged.
+ */
+export { FINDINGS_FILE } from "./review-state-path.ts";
 
 /** What one branch's read produced: its valid rows, and its malformed rows. */
 export interface BranchRows {
@@ -56,7 +62,16 @@ export interface BranchRows {
   malformed: SetAsideNotice[];
 }
 
-/** The findings file that sits beside a ledger the caller has already resolved. */
+/**
+ * The findings file that sits beside a ledger the caller has already resolved.
+ *
+ * #1764 phase 1 — the store's live location is no longer derived from the
+ * ledger: it is `findingsStateDir`'s answer (review-state-path.ts), and the
+ * store's `locate` uses that. This helper is the FALLBACK spelling — a caller
+ * that has only a ledger path, and the offline fixtures that isolate a whole
+ * store by redirecting the ledger — so it names the same basename the resolver
+ * puts inside the state dir.
+ */
 export function findingsFileFor(ledger: string): string {
   return path.join(path.dirname(ledger), FINDINGS_FILE);
 }
