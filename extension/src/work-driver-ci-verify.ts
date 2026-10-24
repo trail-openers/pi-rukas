@@ -126,18 +126,25 @@ export async function runCiVerifyFull(
     });
     // The record is the attribution's own account of a rerun. It is read here,
     // not reconstructed: a recovered run reports the first run's tail, as runVerifyFull does.
-    // The recovered excerpt is the attribution's OWN text, so its anchor offset is
-    // computed here by the same producer the ci tier uses, and an excerpt with no
-    // recognised failure line carries no offset rather than the run's own.
+    // The recovered excerpt is the attribution's OWN text, so it goes through the
+    // same producer the ci tier uses — and BOTH of its halves come from that ONE
+    // call. Pairing a raw stream with an offset measured inside the stored excerpt
+    // describes two different strings with one number, and leaves the raw, unbounded
+    // and unredacted first run in a field the state file persists and the handoff
+    // renders. An excerpt with no recognised failure line carries no offset rather
+    // than the run's own.
     return {
       ...result,
-      ...(record.recovered !== undefined
-        ? {
-            recovered: true,
-            firstRunOutput: record.recovered.firstRunOutput,
-            firstRunAnchorOffset: storeTierOutput(record.recovered.firstRunOutput).anchorOffset,
-          }
-        : {}),
+      ...(record.recovered === undefined
+        ? {}
+        : (() => {
+            const stored = storeTierOutput(record.recovered.firstRunOutput);
+            return {
+              recovered: true,
+              firstRunOutput: stored.output,
+              firstRunAnchorOffset: stored.anchorOffset,
+            };
+          })()),
       record,
     };
   } finally {

@@ -238,7 +238,8 @@ export interface StoredTierOutput {
  *     survives. Code points, never chars, so a surrogate pair is never split.
  *
  * With no anchor in the scanned tail the excerpt is the positional tail — an
- * unrecognised gate still gets its last words stored, and `anchored` says so.
+ * unrecognised gate still gets its last words stored, and the absence of
+ * `anchorOffset` says so.
  */
 export function storeTierOutput(text: string): StoredTierOutput {
   // Redact the whole stream BEFORE any cut — see the first rule above. The bound
@@ -354,9 +355,17 @@ export const VERIFY_FULL_EVIDENCE_MAX = 500;
  * not match anything costs an extra pass over 500 characters.
  */
 export function keepEvidenceHead(output: string, anchorOffset?: number): string {
-  return anchorOffset === undefined
-    ? redactThenBound(output, VERIFY_FULL_EVIDENCE_MAX, "tail").text
-    : redactThenBound(output.slice(anchorOffset), VERIFY_FULL_EVIDENCE_MAX, "head").text;
+  // An offset outside the excerpt describes no position in it, so the caller is
+  // not handed an empty or nonsense head cut: the field is persisted, re-read and
+  // hand-written by an older round, and `slice(99)` of a 5-character string is "".
+  const anchored =
+    anchorOffset !== undefined &&
+    Number.isInteger(anchorOffset) &&
+    anchorOffset >= 0 &&
+    anchorOffset < output.length;
+  return anchored
+    ? redactThenBound(output.slice(anchorOffset), VERIFY_FULL_EVIDENCE_MAX, "head").text
+    : redactThenBound(output, VERIFY_FULL_EVIDENCE_MAX, "tail").text;
 }
 
 /**
