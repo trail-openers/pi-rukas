@@ -15,12 +15,20 @@
  * ## What it refuses
  *
  * - `gh issue|pr|release create|edit|comment|review` — `--title`, `--body`,
- *   `--body-file`/`-F`, `--notes`/`--notes-file`, including inside `bash -c`;
+ *   `--body-file`/`-F`, `--notes`/`--notes-file`, including inside `bash -c` and
+ *   behind any process wrapper (`sudo`, `env`, `timeout`, `nohup`, `watch`,
+ *   `xargs`, `exec`, `nice`, `command`);
  * - `gh api` writing to an `/issues`, `/pulls`, `/releases` or `/comments`
  *   path — `-f`/`-F` values, `@file` operands and `--input` files;
  * - `git commit -m`/`--message`/`-F`/`--file`;
  * - `git push` to a github.com remote — the outgoing commits' messages and
  *   ADDED diff lines, against the PRIVATE denylist only.
+ *
+ * A command whose raw text matches a publish shape (`gh pr|issue|release
+ * create|comment|edit|review`, a `gh api` with a field flag, a `git` … `commit`
+ * with a message flag) but whose publish the scan could not see at all is
+ * refused too — see `public-hygiene-publish-shapes.ts`. The scan runs on github
+ * CLIs only: a `glab` publish is not scanned here.
  *
  * ## What it never does
  *
@@ -112,6 +120,7 @@ import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import type { PushScanResult } from "./public-hygiene-types.ts";
 import type { Verdict } from "./public-hygiene-verdict.ts";
 import { traceVerdict } from "./public-hygiene-verdict.ts";
+import { looksLikePublish, unseenPublishReason } from "./public-hygiene-publish-shapes.ts";
 import {
   type VisibilityFn,
   ghVisibility,
@@ -320,6 +329,19 @@ export async function inspectCommand(
   }
   const scan = scanPublishSurfaces(command, cwd);
   const push = commandPushes(command);
+  // THE BACKSTOP. A command whose words name a publish is scanned; a command
+  // that only LOOKS like one in its raw text — a wrapper or interpreter the
+  // strip rule does not produce a command from (`python3 -c "gh pr comment
+  // …"`) — records no surface, and "the scan saw nothing" is not "the publish
+  // is clean". One refusal, naming that the guard could not see the publish.
+  // It is asked of the RAW text on purpose: that is the only view a scan that
+  // saw nothing can be contradicted by.
+  if (!scan.publishes && !push && looksLikePublish(command)) {
+    return {
+      reason: unseenPublishReason(),
+      verdict: { kind: "unreadable", location: "publish", length: 0 },
+    };
+  }
   if (!scan.publishes && !push) return undefined;
 
   // Public repositories only. The guard exists to keep private text out of

@@ -208,7 +208,7 @@ function isTextFlag(w: string): boolean {
 }
 
 /** What `unwrap` found: the command's words, or (for `env -S`) the payload and the words after it. */
-interface Unwrapped {
+export interface Unwrapped {
   argv: string[];
   split?: string[];
 }
@@ -222,8 +222,16 @@ function skipRedirects(words: string[]): string[] {
   return rest;
 }
 
-/** Strip `VAR=value` prefixes and the WRAPPERS, with their options. */
-function unwrap(argv: readonly string[]): Unwrapped {
+/**
+ * Strip `VAR=value` prefixes and the WRAPPERS, with their options.
+ *
+ * Exported because the rule "which words of this argv are the command" must have
+ * ONE owner: the memory write guard and the public hygiene publish scan (`public-
+ * hygiene-scan.ts`) both ask it, and a second copy is how the scan came to miss
+ * every publish behind a `sudo`, `env`, `timeout`, `nohup`, `watch`, `xargs`,
+ * `exec` or `nice` prefix while this predicate saw all of them.
+ */
+export function unwrap(argv: readonly string[]): Unwrapped {
   let rest = [...argv];
   for (;;) {
     rest = skipRedirects(rest);

@@ -66,13 +66,13 @@ const COMMIT_MESSAGE_FILE_FLAGS = new Set(["-F", "--file"]);
 
 /**
  * Is `argv` a `gh <noun> <publish-verb> …`? Returns the noun, or undefined.
- * A leading `oo` (the verbose runner this harness rewrites to) and any
- * `KEY=value` assignment are skipped by the shared prefix rule.
+ * The caller hands words that have already been wrapper-stripped (`sudo`, `env`,
+ * `timeout`, … by `unwrap`) and had their `oo`/`KEY=value` prefix skipped, by
+ * `publishArgv` — the one place that rule lives.
  */
 function ghPublishNoun(argv: string[]): string | undefined {
   const i = commandPrefixLength(argv);
   if (argv[i] !== "gh") return undefined;
-  i;
   let k = i + 1;
   // `oo`/`KEY=value` are a runner prefix and already skipped above, so they can
   // never be consumed as a gh flag here.

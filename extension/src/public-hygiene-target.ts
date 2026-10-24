@@ -23,8 +23,9 @@
  * decision hides.
  */
 
-import { simpleCommands } from "./bash-destructive-write.ts";
+import { simpleCommands, unwrap } from "./bash-destructive-write.ts";
 import { parseRemoteUrl } from "./forge-detect.ts";
+import { commandPrefixLength } from "./public-hygiene-prefix.ts";
 import type { RepoTarget } from "./public-hygiene-visibility.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -114,19 +115,26 @@ function targetFromEndpoint(endpoint: string): RepoTarget | undefined {
   return cleanSlug(`${m[1]}/${m[2]}`);
 }
 
-/** Does this argv run `gh`, and which noun? A leading `oo`/assignment is skipped. */
+/**
+ * Does this argv run `gh`, and which noun? Runner prefixes are skipped by the
+ * shared rule — the wrapper pass (`unwrap`) and then `oo`/`KEY=value`
+ * (`commandPrefixLength`) — so the resolver names the same repository for
+ * `sudo gh pr comment …` that it names for `gh pr comment …`, and a wrapper
+ * cannot move a publish's target out of reach of the visibility question.
+ */
 function ghNoun(argv: readonly string[]): string | undefined {
-  let i = 0;
-  while (i < argv.length && (argv[i] === "oo" || isAssignment(argv[i] ?? ""))) i++;
-  if (argv[i] !== "gh") return undefined;
+  const stripped = unwrap(argv).argv;
+  let i = commandPrefixLength(stripped);
+  const words = stripped;
+  if (words[i] !== "gh") return undefined;
   // Skip gh's OWN global options, with one exception: `-R owner/repo` is the flag
   // this resolver exists to read, and skipping it with its value would make
   // `-R acme/private-backlog pr create …` resolve to the cwd repo — the exact
   // case the visibility gate is for.
-  while (i < argv.length && (argv[i] ?? "").startsWith("-")) {
-    i += argv[i] === "-R" || argv[i] === "--repo" ? 2 : 1;
+  while (i < words.length && (words[i] ?? "").startsWith("-")) {
+    i += words[i] === "-R" || words[i] === "--repo" ? 2 : 1;
   }
-  return argv[i];
+  return words[i];
 }
 
 /** A `KEY=value` word, as bash accepts before a command name. */
@@ -134,12 +142,16 @@ function isAssignment(w: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
 }
 
-/** The `git …` words of one argv (from the program word onward), or undefined. */
+/**
+ * The `git …` words of one argv (from the program word onward), or undefined.
+ * Wrapper-stripped first, so `sudo git commit -m …` resolves its target from
+ * the same clone `git commit -m …` does.
+ */
 function gitWords(argv: readonly string[]): string[] | undefined {
-  let i = 0;
-  while (i < argv.length && isAssignment(argv[i] ?? "")) i++;
-  if (i >= argv.length || (argv[i] ?? "").replace(/^.*\//, "") !== "git") return undefined;
-  return argv.slice(i);
+  const words = unwrap(argv).argv;
+  let i = commandPrefixLength(words);
+  if (i >= words.length || (words[i] ?? "").replace(/^.*\//, "") !== "git") return undefined;
+  return words.slice(i);
 }
 
 /** The first WORD after `git` and its global options — the verb, positionally. */
@@ -302,39 +314,47 @@ export async function resolveCommandTarget(
 
   for (const argv of simpleCommands(command)) {
     if (argv.length === 0) continue;
-    const noun = ghNoun(argv);
-    if (noun !== undefined) {
-      const flagged = repoFlag(argv);
-      if (flagged !== undefined) {
-        const t = cleanSlug(flagged);
-        if (t) return withHost(t, cwd, askUrl);
+    // `env -S STRING` hands its payload to the kernel as the command line, so it
+    // is re-split as one here — the same reading `publishCommandLines` gives the
+    // scan, which is what keeps target resolution and the scan in agreement.
+    const { split } = unwrap(argv);
+    const inner = split === undefined ? [argv] : simpleCommands(split.join(" "));
+    for (const words0 of inner) {
+      if (words0.length === 0) continue;
+      const noun = ghNoun(words0);
+      if (noun !== undefined) {
+        const flagged = repoFlag(words0);
+        if (flagged !== undefined) {
+          const t = cleanSlug(flagged);
+          if (t) return withHost(t, cwd, askUrl);
+          continue;
+        }
+        if (noun === "api") {
+          const endpoint = apiEndpoint(words0);
+          const t = endpoint === undefined ? undefined : targetFromEndpoint(endpoint);
+          if (t) return withHost(t, cwd, askUrl);
+          // An endpoint that names no repository falls through to the cwd's own
+          // origin, which is the repository `gh` itself would resolve it against.
+        }
+        const fromCwd = await ask("origin", cwd);
+        if (isRepoTarget(fromCwd)) return fromCwd;
+      }
+      const words = gitWords(words0);
+      if (words === undefined) continue;
+      const verb = gitVerb(words);
+      if (verb === "commit") {
+        const t = await ask("origin", segmentCwd(words, cwd));
+        if (isRepoTarget(t)) return t;
+        last = t;
         continue;
       }
-      if (noun === "api") {
-        const endpoint = apiEndpoint(argv);
-        const t = endpoint === undefined ? undefined : targetFromEndpoint(endpoint);
-        if (t) return withHost(t, cwd, askUrl);
-        // An endpoint that names no repository falls through to the cwd's own
-        // origin, which is the repository `gh` itself would resolve it against.
+      if (opts.pushVerb !== undefined && verb === opts.pushVerb) {
+        const dir = segmentCwd(words, cwd);
+        const remotes = await remoteList(exec, dir);
+        const t = await ask(pushRemoteName(words, opts.pushVerb, remotes), dir);
+        if (isRepoTarget(t)) return t;
+        last = t;
       }
-      const fromCwd = await ask("origin", cwd);
-      if (isRepoTarget(fromCwd)) return fromCwd;
-    }
-    const words = gitWords(argv);
-    if (words === undefined) continue;
-    const verb = gitVerb(words);
-    if (verb === "commit") {
-      const t = await ask("origin", segmentCwd(words, cwd));
-      if (isRepoTarget(t)) return t;
-      last = t;
-      continue;
-    }
-    if (opts.pushVerb !== undefined && verb === opts.pushVerb) {
-      const dir = segmentCwd(words, cwd);
-      const remotes = await remoteList(exec, dir);
-      const t = await ask(pushRemoteName(words, opts.pushVerb, remotes), dir);
-      if (isRepoTarget(t)) return t;
-      last = t;
     }
   }
   return last;

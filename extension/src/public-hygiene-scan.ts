@@ -22,10 +22,27 @@
  *
  * ## Reuse over new parsers
  *
- * `simpleCommands`/`unwrap` (bash-destructive-write.ts) supply the simple-
- * command split and the `bash -c` / wrapper unwrapping — a publish hidden
- * inside `bash -c 'gh pr comment … --body …'` is the same shape the memory
- * write guard already refuses to miss. `pushesRemote` (git-push-command.ts)
+ * ## What the scan actually follows
+ *
+ * A publish is found whenever the command's OWN words name it, after the runner
+ * prefixes are stripped: `simpleCommands` splits the line, `unwrap`
+ * (bash-destructive-write.ts) removes the process wrappers and their option
+ * operands (`sudo`, `env`, `timeout`, `nohup`, `watch`, `xargs`, `exec`, `nice`,
+ * `command`) and `NAME=value` assignments, and `commandPrefixLength` removes the
+ * `oo` runner prefix that `unwrap` does not know. A `sudo`/`env`/`timeout` prefix
+ * therefore no longer skips the scan — nor the fail-closed body-file and
+ * substitution refusals, which are part of the same scan. A `bash -c`/`sh -lc`/
+ * `eval` body is followed and scanned as its own command line, and `env -S STRING`
+ * is re-split the same way.
+ *
+ * What it does NOT follow: a publish whose words the strip rule does not produce
+ * as a command — an interpreter run (`python3 -c "gh pr comment …"`), a wrapper
+ * table does not list, or a program that composes the publish itself. Those are
+ * not silently allowed: when the RAW text still matches a publish shape
+ * (`public-hygiene-publish-shapes.ts`) and the scan recorded no surface, the
+ * guard refuses the command for being a publish it could not see.
+ *
+ * `pushesRemote` (git-push-command.ts)
  * recognises the push verb, including one hidden in a shell body.
  * `parseRemoteUrl` (forge-detect.ts) decides whether a remote host is
  * github.com. `simpleCommands` strips the quotes the same way bash does, so an
@@ -59,6 +76,7 @@
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
+import { publishArgv, publishCommandLines } from "./public-hygiene-command.ts";
 import { codeOf } from "./public-hygiene-files.ts";
 import { isAssignment, operandlessTextFlag, unpairedQuote } from "./public-hygiene-operands.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
@@ -96,7 +114,9 @@ const UNSPLIT_OPERAND_REASON =
  * and `git commit` alongside the create/edit/comment/review verbs.
  */
 export function publishesText(argv: readonly string[]): boolean {
-  const body = argv.slice(commandPrefixLength(argv));
+  // Wrapper-stripped first: the noun table that decides this question is the
+  // same one the verb readers use, and a `sudo` prefix must not answer "no".
+  const body = publishArgv(argv);
   const prog = body.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
   if (prog === undefined) return false;
   const base = prog.replace(/^.*\//, "");
@@ -126,7 +146,7 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
   // a command at `$(` and throws the rest of the operand away, so an argv cut
   // that way can be missing the very flag that names the publish.
   const substitutes = containsShellExpansion(command);
-  const words = simpleCommands(command);
+  const words = publishCommandLines(command);
   for (const argv of words) {
     if (argv.length === 0) continue;
     scanGhPublish(argv, cwd, scan);
@@ -157,7 +177,7 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
     // write guard refuses the identical shape).
     const nested = shellBody(argv);
     if (nested !== undefined) {
-      for (const inner of simpleCommands(nested)) {
+      for (const inner of publishCommandLines(nested)) {
         scanGhPublish(inner, cwd, scan);
         scanGhApi(inner, cwd, scan);
         scanGitCommit(inner, cwd, scan);
