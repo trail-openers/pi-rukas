@@ -100,9 +100,7 @@ export function foldToCeiling(entries: Workstream[]): Record<string, Workstream>
   // plan absorbs N workstreams and the duplicate count is a property of the
   // pass, not of each fold.
   if (duplicatePaths > 0) {
-    traceWarn(
-      pathsBoundNotice(`plan ceiling fold`, { paths: [], duplicate: duplicatePaths }),
-    );
+    traceWarn(pathsBoundNotice("plan ceiling fold", { paths: [], duplicate: duplicatePaths }));
   }
   return out;
 }

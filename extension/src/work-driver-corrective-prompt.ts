@@ -53,10 +53,7 @@ export function correctiveDevelopPrompt(input: CorrectivePromptInput): string {
   const fenced = input.lines.map(evidenceLine).join("\n");
   const scope =
     input.scope !== undefined && input.scope.length > 0 ? [`Scope: ${oneLine(input.scope)}`] : [];
-  const files =
-    input.paths.length > 0
-      ? [`In-scope files: ${inScopeFilesLine(input.paths)}`]
-      : [];
+  const files = input.paths.length > 0 ? [`In-scope files: ${inScopeFilesLine(input.paths)}`] : [];
   const fence = fenceLines(
     input.outOfScope,
     input.deferredProtected ?? [],

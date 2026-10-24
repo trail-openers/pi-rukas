@@ -103,7 +103,8 @@ export const WORKSTREAM_PARAMETERS = Type.Object(
     // to the developer and every one counts as in scope for the scope gates.
     paths: Type.Array(Type.String({ maxLength: WORKSTREAM_PATH_MAX }), {
       maxItems: WORKSTREAM_PATH_INPUT_LIST_MAX,
-      description: `Plain repo-relative file paths this workstream is EXPECTED to modify, one per entry (e.g. src/foo.ts). No globs, no leading / or -, no .. segment, no shell characters. Declare every file the change touches — the whole list is shown to the developer and is the authorised set the scope gates read.`,
+      description:
+        "Plain repo-relative file paths this workstream is EXPECTED to modify, one per entry (e.g. src/foo.ts). No globs, no leading / or -, no .. segment, no shell characters. Declare every file the change touches — the whole list is shown to the developer and is the authorised set the scope gates read.",
     }),
     // No `maxItems` and a ceiling far above a sentence, on purpose (#1744): this
     // field is free text, and a long entry or a crowded list is bounded by

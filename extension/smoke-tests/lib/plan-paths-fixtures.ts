@@ -5,16 +5,16 @@
  * size that is still a legal plan: distinct, plain, repo-relative paths, short
  * enough for `WORKSTREAM_PATH_MAX`. Kept in one place so the bound test and any
  * later regression cannot drift apart on what a legal crowded plan looks like.
+ *
+ * `VALID_ARGS` is `VALID` from `plan-outofscope-fixtures.ts` — the same minimal
+ * accepted call, re-exported under the name this file's tests read, so the two
+ * fixture modules cannot drift on what an accepted call is.
  */
 import type { WorkstreamArgs } from "../../src/plan-workstream-schema.ts";
+import { VALID } from "./plan-outofscope-fixtures.ts";
 
 /** A minimal accepted call — every fixture overrides the field it exercises. */
-export const VALID_ARGS: WorkstreamArgs = {
-  id: "task-a",
-  scope: "the fix",
-  paths: ["src/a.ts"],
-  outOfScope: [],
-};
+export const VALID_ARGS: WorkstreamArgs = VALID;
 
 /**
  * N distinct plain repo-relative paths, all legal under the per-entry bound.
