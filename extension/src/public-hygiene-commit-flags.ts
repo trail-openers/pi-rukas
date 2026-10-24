@@ -17,14 +17,45 @@
  *   delimiter after it, so `-am<term>` published unchecked while `-a -m <term>`
  *   was blocked.
  *
- * ## Why an unrecognised cluster is fail-closed
+ * ## What an unrecognised word does — and does not — do
  *
- * A letter that is no git commit short option makes the WHOLE word unrecognised
- * (`-ao`, `-F=x`). The reader then claims nothing, the scan's fail-closed
- * invariant or the raw-shape backstop refuses the command, and an unreadable
- * publish is never a pass. Guessing "the tail is probably the message" for a word
- * git would have rejected is the confident-wrong-answer shape this guard has
- * repeatedly been asked not to take.
+ * Only two things make a cluster a cluster: an `m` or an `F` (the value
+ * option whose tail is the message or the file) and, before it, letters drawn
+ * from {@link CLUSTER_VALUELESS}. Anything else is not read, and what happens
+ * next depends on the shape of the word, so the honest statement is per-shape:
+ *
+ * - **`m`/`F` clusters** are read here, tails and all (`-am<msg>`, `-aF<file>`,
+ *   `-F=x.md`).
+ * - **Listed valueless letters** are accepted as switches, so `-aqm<msg>` is a
+ *   message and `q` is part of it exactly as getopt parses it.
+ * - **Other short options are NOT read, and nothing refuses them.** A bare
+ *   `-S`, `-e`, `-o` or `-u` is two characters: `commitCluster` requires
+ *   `length >= 3`, and none of the listed flags matches it, so its operand — the
+ *   NEXT word — is never read as a message. `-S gpg-key-name`, `-e GIT_EDITOR=c`,
+ *   `-o <file>` and `-u <file>` therefore contribute no text and no named
+ *   surface. That is not a fail-closed refusal, and this header used to claim it
+ *   was: the scan's fail-closed invariant fires only on a NAMED surface, and
+ *   `namesCommitMessageFlag` does not recognise those four, so no invariant had
+ *   anything to refuse. The boundary for a command like that is the push scan,
+ *   which reads EVERY pushed commit message (`public-hygiene-push.ts`) — the
+ *   message a `-S`/`-e`/`-o`/`-u` commit eventually carries is judged there even
+ *   though the commit command itself was judged on nothing. A commit that is
+ *   never pushed is judged by no one, which is the accepted limit of a scan that
+ *   reads commands rather than repository state.
+ * - **A cluster with an unlisted letter before its value option** is
+ *   unrecognised, so it claims nothing — and, as above, an unreadable publish is
+ *   not automatically a refusal: it becomes one only when some other rule names
+ *   the surface. The unlisted letter must sit BEFORE the value option: `-qm` is
+ *   read (`q` is a listed switch), `-aqz` is not (`z` is unlisted and precedes
+ *   nothing after a value option it lacks). Note which examples are NOT this
+ *   case: `-F=x` is a cluster (`=` is getopt's argument separator, not an
+ *   unlisted letter, so it opens `x`). Claiming more than that here is how a
+ *   header talked about an invariant nobody had written.
+ *
+ * What this module refuses to do is guess. Treating an unrecognised word's tail
+ * as "probably the message" would be a confident claim about a command git
+ * itself would have rejected, and the guard has repeatedly been asked not to
+ * invent text a command did not carry.
  *
  * ## Where the reuse rule lives
  *
