@@ -97,6 +97,7 @@ import { simpleCommands } from "./bash-destructive-write.ts";
 import { execp } from "./exec.ts";
 import { type DenylistRead, publicTextProblem, readPublicDenylist } from "./public-denylist.ts";
 import { pushGitCwd } from "./public-hygiene-cwd.ts";
+import { firstHit } from "./public-hygiene-hit.ts";
 import { scanPushRange } from "./public-hygiene-push.ts";
 import {
   type DenylistHitLocation,
@@ -106,15 +107,18 @@ import {
 import { PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
 import { commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
 import { type Target, isRepoTarget, resolveCommandTarget } from "./public-hygiene-target.ts";
+import { publicTextRefusal, publishesText } from "./public-hygiene-text.ts";
 import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import type { PushScanResult } from "./public-hygiene-types.ts";
+import type { Verdict } from "./public-hygiene-verdict.ts";
+import { traceVerdict } from "./public-hygiene-verdict.ts";
 import {
   type VisibilityFn,
   ghVisibility,
   isPrivateTarget,
   targetSlug,
 } from "./public-hygiene-visibility.ts";
-import { trace, traceWarn } from "./trace.ts";
+import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -137,7 +141,7 @@ export class PublicHygieneError extends Error {
 }
 
 /** The operator's off switch — exactly `0`, read at registration. */
-function hygieneGuardDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+export function hygieneGuardDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.PI_ENSEMBLE_PUBLIC_HYGIENE === "0";
 }
 
@@ -208,36 +212,6 @@ export interface PublicHygieneOpts {
   visibilityExecFn?: ExecFn;
   /** The repository a driver-authored text will be published to (the forge slug). */
   target?: Target;
-}
-
-/** A verdict the guard reached, for the trace. Never carries text. */
-type Verdict =
-  | { kind: "clean"; texts: number }
-  | { kind: "denylist"; location: string; line: number; length: number }
-  | { kind: "generic"; location: string; category: string; length: number }
-  | { kind: "unreadable"; location: string; length: number };
-
-/**
- * Trace a verdict the guard reached: categories, line numbers and lengths
- * only, never the term (`traceWarn` is ungated stderr that reaches the
- * transcript and the run log — #1417).
- */
-function traceVerdict(v: Verdict): void {
-  if (v.kind === "denylist") {
-    traceWarn(
-      `public-hygiene: BLOCKED publish denylist line=${v.line} location=${v.location} textLength=${v.length}`,
-    );
-  } else if (v.kind === "generic") {
-    traceWarn(
-      `public-hygiene: BLOCKED publish category=${v.category} location=${v.location} textLength=${v.length}`,
-    );
-  } else if (v.kind === "unreadable") {
-    traceWarn(
-      `public-hygiene: BLOCKED publish unreadable location=${v.location} textLength=${v.length}`,
-    );
-  } else {
-    trace(`public-hygiene: publish clean (${v.texts} text surface(s) checked)`);
-  }
 }
 
 /**
@@ -504,68 +478,9 @@ async function boundedScan(
   }
 }
 
-/** The first dirty surface across every text this command would publish. */
-export function firstHit(
-  texts: readonly PublishText[],
-  deny: DenylistRead,
-):
-  | {
-      denylistHit?: DenylistHitLocation;
-      genericHit?: { location: string; category: "private-ipv4" | "home-path" };
-      verdict: Verdict;
-    }
-  | undefined {
-  for (const text of texts) {
-    const hit = publicTextProblem(text.text, deny, text.generic);
-    if (!hit) continue;
-    if (hit.kind === "unreadable") {
-      return { verdict: { kind: "unreadable", location: text.location, length: text.text.length } };
-    }
-    if (hit.kind === "denylist") {
-      return {
-        denylistHit: { location: text.location, line: hit.line },
-        verdict: {
-          kind: "denylist",
-          location: text.location,
-          line: hit.line,
-          length: text.text.length,
-        },
-      };
-    }
-    return {
-      genericHit: { location: text.location, category: hit.category },
-      verdict: {
-        kind: "generic",
-        location: text.location,
-        category: hit.category,
-        length: text.text.length,
-      },
-    };
-  }
-  return undefined;
-}
-
 /**
- * The pure text check the driver's own forge posts go through (#1788, PM
- * decision 1): issue and PR titles and bodies checked before the forge adapter
- * execs anything. The generic set applies to every public text surface,
- * including the driver's in-process writes; only the `git push` DIFF scan is
- * private-denylist-only.
- *
- * Returns a refusal string, or undefined when the text is clean. It never
- * contains the matched term.
+ * The first dirty surface across every text this command would publish lives in
+ * `public-hygiene-hit.ts`, re-exported here so the guard's callers keep one
+ * import for the whole decision.
  */
-export function publicTextRefusal(
-  label: string,
-  text: string,
-  deny: DenylistRead = readPublicDenylist(),
-): string | undefined {
-  if (hygieneGuardDisabled()) return undefined;
-  const hit = publicTextProblem(text, deny, true);
-  if (!hit) return undefined;
-  if (hit.kind === "unreadable") return denylistUnreadableRefusal(hit.reason);
-  if (hit.kind === "denylist") {
-    return refusalFor(undefined, { location: label, line: hit.line }, undefined);
-  }
-  return refusalFor(undefined, undefined, { location: label, category: hit.category });
-}
+export { firstHit } from "./public-hygiene-hit.ts";

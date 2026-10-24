@@ -15,7 +15,8 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ShellExecFn } from "./exec.ts";
 import { prMergeSubjectFlag } from "./forge-commands.ts";
-import { PublicHygieneError, publicTextRefusal } from "./public-hygiene-guard.ts";
+import { PublicHygieneError } from "./public-hygiene-guard.ts";
+import { publicTextRefusal } from "./public-hygiene-text.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -32,6 +33,25 @@ import type { WorkState } from "./workflow-state.ts";
  * An argv-form call added on this path needs the argv-aware `execp` first.
  */
 const execp: ShellExecFn = promisify(exec);
+
+/**
+ * The hygiene refusal, recognised without importing a class across a forge
+ * adapter that may be a test's own fake: the forge seam throws
+ * `PublicHygieneError`, and `publicHygiene === true` is the stable marker the
+ * class carries for exactly this question.
+ */
+function isPublicHygieneRefusal(err: unknown): boolean {
+  return (
+    err instanceof PublicHygieneError ||
+    (err as { publicHygiene?: unknown } | null)?.publicHygiene === true
+  );
+}
+
+/** The refusal text, never anything the guard would not have printed itself. */
+function refusalMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return msg.slice(0, 400);
+}
 
 /** Valid merge methods — maps to the forge adapter's `prMerge` method argument. */
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -161,9 +181,22 @@ export async function executeAndVerifyMerge(
   }
 
   // Execute the merge.
+  //
+  // #1788 round 1 — the subject check must not escape this function's contract.
+  // `executeAndVerifyMerge` promises a discriminated result and `runMerged`
+  // routes on it; a throw past here (the shape the forge adapter's `prMerge`
+  // uses, where a `PublicHygieneError` is the caller's own error to catch) would
+  // have left the merge step with an exception instead of a reason, and the
+  // cycle would die instead of parking with the reason the guard gave. Same
+  // shape as every other refusal in this function: `{ ok: false, reason }`.
   try {
     await forge.prMerge(prNumber, method, subject);
   } catch (err) {
+    if (isPublicHygieneRefusal(err)) {
+      const reason = refusalMessage(err);
+      trace(`work-driver: merge subject refused for PR #${prNumber}: ${reason.slice(0, 200)}`);
+      return { ok: false, reason };
+    }
     const e = err as Error & { stderr?: string };
     const message = (e.stderr ?? e.message ?? "").toString();
     // If the error indicates the PR is already merged, treat as success.
@@ -253,11 +286,16 @@ async function executeAndVerifyMergeDirect(
   // through `checkPublicText`; this direct-exec fallback builds the same command
   // itself and reaches no adapter, so the same pure checker from the same seam
   // runs here — one rule, one owner, and a fallback that cannot become the way
-  // past it. Same failure shape as the adapter: `runMerged` already treats a
-  // `PublicHygieneError` as a merge that must not happen.
+  // past it. It returns the function's OWN failure shape rather than throwing,
+  // for the reason spelled out on the adapter path above: `runMerged` routes on
+  // the result, and a merge the guard refused is a merge that parks with a
+  // reason, not an exception that escapes the step.
   if (subject !== undefined) {
     const refusal = publicTextRefusal("merge commit subject", subject);
-    if (refusal !== undefined) throw new PublicHygieneError(refusal);
+    if (refusal !== undefined) {
+      trace(`work-driver: merge subject refused for PR #${prNumber}: ${refusal.slice(0, 200)}`);
+      return { ok: false, reason: refusal };
+    }
   }
 
   // Execute the merge.

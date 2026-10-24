@@ -27,10 +27,10 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   PublicHygieneError,
-  publicTextRefusal,
   registerPublicHygieneGuard,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
+import { publicTextRefusal } from "../src/public-hygiene-text.ts";
 import {
   denylistRefusal,
   genericRefusal,

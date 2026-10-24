@@ -56,18 +56,15 @@
  * which directory a chained command's push runs in.
  */
 
-import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
-import { admissibleRoots, within } from "./public-hygiene-cwd.ts";
-import { unreadableOperands } from "./public-hygiene-unreadable.ts";
+import { apiFileOperand, codeOf, readPublishFile } from "./public-hygiene-files.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
+import { unreadableOperands } from "./public-hygiene-unreadable.ts";
 
 export type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
-
-/** A body file this large is not a body. */
-export const MAX_BODY_FILE_BYTES = 1024 * 1024;
+export { MAX_BODY_FILE_BYTES, OUTSIDE_ROOTS, readPublishFile } from "./public-hygiene-files.ts";
 
 /** Bound on each git call the push scan makes (PM decision). */
 export const PUSH_SCAN_TIMEOUT_MS = 10_000;
@@ -179,78 +176,6 @@ function isAssignment(w: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
 }
 
-/**
- * Read a file the agent named, if it may be read. `undefined` means "no
- * problem, nothing to scan" is NOT an option here — a refusal reason is
- * returned instead, so an unreadable file never reads as clean.
- */
-function readPublishFile(
-  file: string,
-  cwd: string,
-  location: string,
-): { text?: string; problem?: ScanProblem } {
-  if (file === "") return { problem: { location, reason: "named an empty file" } };
-  const abs = path.resolve(cwd, file);
-  // The admissible-root test comes BEFORE anything is opened. Reading first and
-  // checking after would decide by CONTENT which files this guard is allowed to
-  // read: a file outside the cwd tree and the temp dir that happened to carry a
-  // denylist term was reported as a hit and its refusal named the term's line,
-  // which is a confirmation that the private string occurs at that path in a
-  // directory the guard had just said it would not read. A file outside the
-  // roots is refused on its PATH alone, whatever — and whoever — is in it.
-  const roots = admissibleRoots(cwd);
-  let real: string;
-  try {
-    real = realpathSync(abs);
-  } catch (err) {
-    // A path that does not resolve is still a path, and the roots question is
-    // answerable for it: an unreadable file under an admissible root is a
-    // problem the agent can fix, so it is reported where it was named.
-    if (!roots.some((root) => within(root, path.resolve(abs)))) {
-      return {
-        problem: {
-          location,
-          reason: OUTSIDE_ROOTS,
-        },
-      };
-    }
-    return {
-      problem: { location, reason: `could not read the named file (${codeOf(err)})` },
-    };
-  }
-  if (!roots.some((root) => within(root, real))) {
-    return {
-      problem: {
-        location,
-        reason: OUTSIDE_ROOTS,
-      },
-    };
-  }
-  let size: number;
-  try {
-    size = statSync(real).size;
-  } catch (err) {
-    return { problem: { location, reason: `could not read the named file (${codeOf(err)})` } };
-  }
-  if (size > MAX_BODY_FILE_BYTES) {
-    return {
-      problem: {
-        location,
-        reason: `names a file larger than ${MAX_BODY_FILE_BYTES} bytes`,
-      },
-    };
-  }
-  try {
-    return { text: readFileSync(real, "utf8") };
-  } catch (err) {
-    return { problem: { location, reason: `could not read the named file (${codeOf(err)})` } };
-  }
-}
-
-/** What a refusal may say about a path it will not open — and the only thing it may say. */
-const OUTSIDE_ROOTS =
-  "names a file outside this directory tree, the system temp dir and the repository";
-
 /** The `problems` reason for a text the shell assembles. Names no content. */
 const SHELL_BUILT_REASON =
   "is built by the shell, so its text cannot be read from the command; write it to a file and pass that file";
@@ -261,24 +186,22 @@ const SHELL_BUILT_REASON =
  * narrower question the unreadable-operand pass asks, and it admits `gh api`
  * and `git commit` alongside the create/edit/comment/review verbs.
  */
-function publishesText(argv: readonly string[]): boolean {
+export function publishesText(argv: readonly string[]): boolean {
   const at = argv.findIndex((w) => w === "gh" || w === "oo");
   const words = argv[0] === "oo" || at === 0 ? argv : argv;
   const prog = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
   if (prog === undefined) return false;
   const base = prog.replace(/^.*\//, "");
   if (base === "gh") {
-    return words.includes("issue") || words.includes("pr") || words.includes("release") || words.includes("api");
+    return (
+      words.includes("issue") ||
+      words.includes("pr") ||
+      words.includes("release") ||
+      words.includes("api")
+    );
   }
   if (base === "git") return words.includes("commit");
   return false;
-}
-
-/** `@file` and `file=@path` are gh api's ways of taking a field from a file. */
-function apiFileOperand(v: string): string | undefined {
-  if (v.startsWith("@")) return v.slice(1);
-  const at = v.indexOf("=@");
-  return at > 0 ? v.slice(at + 2) : undefined;
 }
 
 /** The text an `--input` file contributes, or the problem reading it. */
@@ -430,13 +353,6 @@ function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): void {
   }
 }
 
-/** An exec/fs error's `code`, for a refusal that names why without quoting content. */
-function codeOf(err: unknown): string {
-  const code = (err as { code?: unknown })?.code;
-  if (typeof code === "string") return code;
-  return err instanceof Error && err.message ? "unreadable" : "unknown error";
-}
-
 /**
  * Every publish surface in a bash command. Wrappers and `bash -c` bodies are
  * followed, so a publish hidden one layer down is still a publish.
@@ -489,7 +405,20 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
   return scan;
 }
 
-/** The script a `bash -c`/`sh -lc`/`eval` word list hands to a shell, if any. */
+/**
+ * The script a `bash -c`/`sh -lc`/`eval` word list hands to a shell, if any.
+ *
+ * NOT `executedBodies` from `git-push-command.ts`, which looks superficially
+ * like the same helper and is not: that one answers "does any shell body of the
+ * WHOLE command contain the push verb?" and therefore (a) takes the raw command
+ * string and re-tokenises it on whitespace, (b) attaches EVERY quoted run of the
+ * command to ANY segment that runs a shell, and (c) has no `eval` case. This one
+ * answers "which script does THIS argv hand to a shell?" per simple command, so
+ * it must return the one body at the `-c` position of this word list (and the
+ * tail of an `eval`) for the nested scan to attribute a publish to the right
+ * layer. Sharing the helper would either widen the push matcher's over-approximation
+ * into the publish scan or lose `eval` and the per-argv precision the scan needs.
+ */
 function shellBody(argv: string[]): string | undefined {
   const head = argv.find((w) => !isAssignment(w) && !w.startsWith("-"));
   const base = head === undefined ? undefined : path.basename(head);

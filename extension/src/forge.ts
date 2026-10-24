@@ -40,7 +40,8 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
-import { PublicHygieneError, publicTextRefusal } from "./public-hygiene-guard.ts";
+import { PublicHygieneError } from "./public-hygiene-guard.ts";
+import { publicTextRefusal } from "./public-hygiene-text.ts";
 export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
 import type {
   CiWatchOpts,

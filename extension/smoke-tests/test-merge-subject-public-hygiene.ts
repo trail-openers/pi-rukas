@@ -18,7 +18,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resetDenylistCacheForTests } from "../src/public-denylist.ts";
-import { PublicHygieneError, publicTextRefusal } from "../src/public-hygiene-guard.ts";
+import { PublicHygieneError } from "../src/public-hygiene-guard.ts";
+import { publicTextRefusal } from "../src/public-hygiene-text.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
 import { executeAndVerifyMerge } from "../src/work-driver-merged-mechanized.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
@@ -84,17 +85,33 @@ try {
   // "merged, then noticed".
   const dirty = recording();
   let thrown: unknown;
+  // #1788 round 1: the refusal is a RESULT, not an exception. `runMerged` routes
+  // on the discriminated return, so a throw past this contract is a step that
+  // dies instead of a cycle that parks with the reason the guard gave.
+  let dirtyResult: unknown;
   try {
-    await executeAndVerifyMerge(7, "squash", dirty.exec, repoRoot, `feat: ship ${TERM}`, NO_FORGE);
+    dirtyResult = await executeAndVerifyMerge(
+      7,
+      "squash",
+      dirty.exec,
+      repoRoot,
+      `feat: ship ${TERM}`,
+      NO_FORGE,
+    );
   } catch (err) {
     thrown = err;
   }
   assert(
-    thrown instanceof PublicHygieneError,
-    "a squash subject with a private term is refused by the direct merge path",
+    thrown === undefined,
+    `a refused direct merge returns rather than throwing (threw ${String((thrown as Error)?.name ?? thrown).slice(0, 30)})`,
   );
   assert(
-    (thrown as Error)?.message.includes("private-denylist entry matched") === true,
+    (dirtyResult as { ok?: boolean })?.ok === false,
+    "a squash subject with a private term is refused by the direct merge path",
+  );
+  const dirtyRefusal = (dirtyResult as { ok?: boolean; reason?: string })?.reason ?? "";
+  assert(
+    dirtyRefusal.includes("private-denylist entry matched"),
     "and the refusal is the hygiene refusal the driver's error paths already recognise",
   );
   assert(
@@ -160,8 +177,9 @@ try {
   const entryList = list;
   const addr = recording();
   let addrThrown: unknown;
+  let addrResult: unknown;
   try {
-    await executeAndVerifyMerge(
+    addrResult = await executeAndVerifyMerge(
       7,
       "squash",
       addr.exec,
@@ -173,8 +191,8 @@ try {
     addrThrown = err;
   }
   assert(
-    addrThrown instanceof PublicHygieneError,
-    "the generic set also refuses a private address in a merge subject",
+    addrThrown === undefined && (addrResult as { ok?: boolean })?.ok === false,
+    "the generic set also refuses a private address in a merge subject, as a result",
   );
   assert(
     addr.calls.every((c) => !c.includes("pr merge")),

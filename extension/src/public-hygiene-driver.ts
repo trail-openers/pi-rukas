@@ -20,8 +20,8 @@
  * checked, which is the same outcome as a failed lookup.
  */
 
-import { publicTextRefusal } from "./public-hygiene-guard.ts";
 import { type Target, isRepoTarget, resolveCommandTarget } from "./public-hygiene-target.ts";
+import { publicTextRefusal } from "./public-hygiene-text.ts";
 import { type VisibilityFn, isPrivateTarget } from "./public-hygiene-visibility.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";

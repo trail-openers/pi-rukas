@@ -26,10 +26,10 @@ import {
 } from "../src/public-denylist.ts";
 import {
   publicHygieneInstalled,
-  publicTextRefusal,
   registerPublicHygieneGuard,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
+import { publicTextRefusal } from "../src/public-hygiene-text.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 import { forgePrMergeSeam } from "./test-forge-pr-merge-seam.ts";

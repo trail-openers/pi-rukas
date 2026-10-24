@@ -132,9 +132,37 @@ export function unreadableOperands(argv: readonly string[], raw?: string): Unrea
     const value = eq > 0 ? raw2.slice(eq + 1) : raw2;
     if (!value.startsWith("@") && (shellBuilt(value) || shellBuilt(raw2)))
       found.push({ location: "comment" });
+    // The raw command is asked for the SAME reason as for the text flags: a
+    // process substitution splits the word (`-F body=<` + `(/dev/stdin)`), so
+    // the words alone can miss it while the command plainly carries one.
+    if (shellBuiltFieldOperand(raw, w)) found.push({ location: "comment" });
     i += 1;
   }
   return found;
+}
+
+/**
+ * Does the RAW command carry a substitution glued to a FIELD flag's operand,
+ * where the word list cut it in half? `-F body=<(/dev/stdin)` arrives as
+ * `-F`, `body=<`, `(/dev/stdin)`, and asking only the words would report a clean
+ * publish. The operand is located after `flag` and asked on its own, so an
+ * unrelated `$(…)` elsewhere in the chain cannot refuse this field.
+ */
+function shellBuiltFieldOperand(raw: string | undefined, flag: string): boolean {
+  if (raw === undefined) return false;
+  let at = raw.indexOf(flag);
+  while (at >= 0) {
+    const operand =
+      raw
+        .slice(at + flag.length)
+        .trimStart()
+        .split(/\s/)[0] ?? "";
+    const eq = operand.indexOf("=");
+    const value = eq > 0 ? operand.slice(eq + 1) : operand;
+    if (value !== "" && !value.startsWith("@") && shellBuilt(operand)) return true;
+    at = raw.indexOf(flag, at + 1);
+  }
+  return false;
 }
 
 /**
