@@ -48,7 +48,7 @@ export type VerifyCommandRecord = { status: "not-run" } | RanVerifyRecord;
  * scan window is 8 KiB, so an evidence line longer than this is a serialized
  * payload rather than an assertion, and the handoff does not need it whole.
  */
-const ASSERTION_LINE_MAX = 500;
+export const ASSERTION_LINE_MAX = 500;
 
 /** The out-parameter the gate fills in place. Starts as "not-run". */
 export interface VerifyRecordSlot {
@@ -89,6 +89,17 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  *     stream, joined the harness's own sentence into a SECOND evidence line
  *     (`verify command … failed in <cwd>: test.sh: failed checks (2), not run (0): lint,
  *     test/b_test.sh`) and spent a `CORRECTIVE_MAX_LINES` slot on harness prose.
+ *
+ *   - **The harvest reads the READER'S VIEW, never the raw text.** The
+ *     `harvestTallies` option feeds {@link harvestConsolidatedTallies} the stream
+ *     THIS function just walked — every wrapper line replaced by what
+ *     {@link harnessInnerLine} reports behind it — not `text`. A wrapper line that
+ *     carried a tally block (`… failed in <cwd>: test.sh: failed checks (2)` above
+ *     two indented names) is itself the tally line the harvest anchors on, so
+ *     harvesting the raw text joined the harness's own sentence into the evidence
+ *     line and spent a `CORRECTIVE_MAX_LINES` slot on it (#1810's adversarial
+ *     reproduction). The unwrap is the same one the per-line walk above applies, so
+ *     harvest and reader can no longer disagree about what a line IS.
  *
  *   - **What comes back is REDACTED.** These lines are the evidence of a park:
  *     they reach the corrective-round prompt, the handoff and the forge comment.
@@ -149,7 +160,13 @@ export function assertionLines(text: string, opts: AssertionLinesOptions = {}): 
   // The tally harvest is gathered HERE so it goes through the same `push` as every
   // other line: same dedupe (`seen`), same redact-then-bound, same `✗` preference.
   if (opts.harvestTallies === true) {
-    for (const joined of harvestConsolidatedTallies(text)) push(joined);
+    // The reader's own view of the stream, not `text`: a wrapper line is replaced
+    // by what sits behind it (empty when the wrapper carries no gate stream), so
+    // the harness sentence can never be the tally the harvest anchors its join on.
+    const view = splitLines(text)
+      .map((l) => (isHarnessWrapper(l) ? (harnessInnerLine(l) ?? "") : l))
+      .join("\n");
+    for (const joined of harvestConsolidatedTallies(view)) push(joined);
   }
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis.

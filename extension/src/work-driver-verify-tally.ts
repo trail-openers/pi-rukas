@@ -54,12 +54,14 @@
  *     inside it whatever the gate printed as the count.
  */
 
+import { redactSecrets } from "./secret-patterns.ts";
 import { looksLikeCredential } from "./work-driver-verify-assertion.ts";
 import {
   classifyFailureLine,
   isSuccessLine,
   scriptTallyCount,
 } from "./work-driver-verify-failures.ts";
+import { ASSERTION_LINE_MAX } from "./work-driver-verify-record.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 
 /** A name line's own shape: a bare token, nothing a runner prints a status with. */
@@ -82,21 +84,78 @@ const TALLY_NAME_LINE_MAX = 128;
  */
 const TALLY_NAMES_MAX = 20;
 
+/** The most one joined tally line may carry — the WHOLE line, tally included. */
+const TALLY_LINE_MAX = 200;
+
+/**
+ * A separator-free run of 32 or more characters that reads as a DIGEST or a KEY is
+ * not a test name, and the harvest stops rather than joining it. "Reads as a
+ * digest" is asked as a conjunction, because neither half alone works:
+ *
+ *   - a bare **length** rule refused `a{40}_{b}{40}_{c}{40}` and `check_` + 30
+ *     letters — both names a runner really prints — because they carry long runs.
+ *   - a bare **"hex or mixed-alnum"** rule refused `a{40}` too, since a run of one
+ *     letter is trivially alphanumeric.
+ *
+ * So a run is opaque only when it is long AND either all-hex (a SHA/MD5 fragment)
+ * or letters-mixed-with-digits (a base64-ish key body, `MIIEvQ…`, `a1B2c3…`). A
+ * real name's long run is prose: one alphabet, no digits, and it survives. The
+ * rule is asked per separator-free RUN, never of the whole line — `test.sh: failed
+ * checks (2), not run (0)` is prose whose runs are at most 6, and a rule that
+ * flattened the line before asking would refuse every tally in the stream, the
+ * guard silently disabling the feature it guards. Both shapes are pinned by the
+ * `-i-` suite. This sits BELOW the reach of the separator-aware secret patterns,
+ * which need a prefix or a keyword to anchor on — that is why it is here.
+ */
+const TALLY_OPAQUE_RUN_MIN = 24;
+const HEX_RUN_RE = /^[0-9a-fA-F]+$/;
+const DIGIT_RE = /[0-9]/;
+// A base64url/standard key body: long, and carrying BOTH letters and digits. A real
+// name's long run is one alphabet (`a{40}`, `check_` + 30 letters, `y{120}_0`), so
+// the mixed requirement is what separates a key from a slug.
+const KEY_BODY_RE = /^(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[A-Za-z0-9+/]+$/;
+
+/** True when any separator-free run inside `name` reads as a digest or a key body. */
+function hasOpaqueRun(name: string): boolean {
+  for (const run of name.split(/[^A-Za-z0-9+/]+/)) {
+    if (run.length < TALLY_OPAQUE_RUN_MIN) continue;
+    // A hex run needs a digit to be a digest — `f`.repeat(40) is a slug, and the
+    // hex alphabet is a subset of the name alphabet, so the bare shape test would
+    // refuse every `deadbeef`-style fixture name a gate might really print.
+    if (HEX_RUN_RE.test(run) && DIGIT_RE.test(run)) return true;
+    if (KEY_BODY_RE.test(run)) return true;
+    // A `+` or `/` inside a long run is not a path separator a test name carries —
+    // it is a base64 digit.
+    if (run.includes("+") || run.includes("/")) return true;
+  }
+  return false;
+}
+
+/** The most the ` (+K more)` disclosure may print; beyond it the digit is a claim. */
+const TALLY_OMITTED_DISPLAY_MAX = 999;
+
+/**
+ * How many joined tally lines one harvest contributes. The record's `push` caps the
+ * whole set with every assertion in it at the corrective round's own line cap;
+ * capping here too means the harvest never builds evidence the reader is certain to
+ * drop — the same number `work-driver-corrective-decide.ts` slices with.
+ */
+const TALLY_OUTPUT_MAX = 6;
+
 /**
  * The most one joined tally line may carry — the NAMES half of it. The record's
  * own evidence bound is {@link ASSERTION_LINE_MAX}; the tally prefix and the
  * ` (+K more)` disclosure also live on that line, and both are sized by the
  * tally's PRINTED count, which is text from the gate — a `failed checks
  * (1000000)` line makes the suffix 9 characters longer and an 8 KiB prefix
- * possible. So the join is capped at HALF the evidence bound: that leaves 250
- * characters for prefix and suffix (a count is never realistically printed with
- * more than ~240 digits), and the record's `push` redacts and clips the whole
+ * possible. So the join is capped well under HALF the evidence bound: that leaves
+ * room for prefix and suffix (a count is never realistically printed with hundreds
+ * of digits), and the record's `push` redacts and clips the whole
  * line to {@link ASSERTION_LINE_MAX} whatever the gate printed around it.
  */
 const TALLY_JOIN_MAX = 250;
 
-/** The bound the record applies to every stored verify line, mirrored here. */
-const ASSERTION_LINE_MAX = 500;
+/** The bound the record applies to every stored verify line, imported from its owner. */
 
 /** Leading-whitespace width of a raw line (the indentation, measured untrimmed). */
 function indentOf(raw: string): number {
@@ -130,6 +189,10 @@ export function harvestConsolidatedTallies(raw: string): string[] {
     const rawTally = lines[i] ?? "";
     const tally = rawTally.trim();
     if (tally.length === 0) continue;
+    // The tally's own text is part of the emitted line, so the line is bounded by
+    // the tally's length too: a 10 KB "tally line" is not evidence and the reader
+    // would clip it to noise.
+    if (tally.length > TALLY_LINE_MAX) continue;
     const count = scriptTallyCount(tally);
     if (count === undefined) continue;
     const names: string[] = [];
@@ -143,6 +206,13 @@ export function harvestConsolidatedTallies(raw: string): string[] {
       if (name.length === 0 || name.length > TALLY_NAME_LINE_MAX) break;
       if (!NAME_LINE_RE.test(name)) break;
       if (looksLikeCredential(name)) break;
+      // Two more shape checks, both aimed at the token-shaped name the credential
+      // patterns do not reach: an unbroken base64/hex run (a digest, a key fragment,
+      // a PEM body line), and anything the redactor would alter. Both are asked of
+      // the NAME alone, never of the tally line, so the guard cannot refuse the very
+      // tally it is reporting.
+      if (hasOpaqueRun(name)) break;
+      if (redactSecrets(name).text !== name) break;
       if (classifyFailureLine(name) !== undefined) break;
       if (isSuccessLine(name)) break;
       const next = names.length === 0 ? name : `${joined}, ${name}`;
@@ -152,8 +222,14 @@ export function harvestConsolidatedTallies(raw: string): string[] {
       if (names.length >= TALLY_NAMES_MAX) break;
     }
     if (names.length === 0) continue;
+    // K is the gate's claim, not a measurement, so it is displayed under a cap and
+    // never negative or fractional — `scriptTallyCount` already refuses a count that
+    // is not a safe integer, so the subtraction here is always well-defined.
     const omitted = count - names.length;
-    out.push(`${tally}: ${joined}${omitted > 0 ? ` (+${omitted} more)` : ""}`);
+    const shown =
+      omitted > TALLY_OMITTED_DISPLAY_MAX ? `${TALLY_OMITTED_DISPLAY_MAX}+` : String(omitted);
+    out.push(`${tally}: ${joined}${omitted > 0 ? ` (+${shown} more)` : ""}`);
+    if (out.length >= TALLY_OUTPUT_MAX) break;
   }
   return out;
 }

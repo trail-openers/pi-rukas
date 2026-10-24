@@ -103,5 +103,8 @@ export function scriptTallyCount(line: string): number | undefined {
   const m = /\bfailed\s+checks?\s*\(\s*(\d+)\s*\)/i.exec(line.trim());
   if (m === null) return undefined;
   const n = Number(m[1]);
-  return Number.isFinite(n) ? n : undefined;
+  // A count that is not a safe integer is not a count: `Number.isFinite` would let a
+  // 400-digit numeral through as a float, and the harvest's `count - names.length`
+  // then discloses an omitted figure that never was a tally.
+  return Number.isSafeInteger(n) ? n : undefined;
 }

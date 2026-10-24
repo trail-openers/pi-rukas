@@ -29,12 +29,16 @@
  */
 
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
+import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts";
 import { harvestConsolidatedTallies } from "../src/work-driver-verify-tally.ts";
 import {
   CHECKS_BLOCK,
+  CMD,
+  EXAMPLE_STREAM,
   PAYLOAD_MARKER,
   TALLY_LINE,
   TALLY_NAMES,
+  WT,
   makeAssert,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
@@ -99,7 +103,10 @@ const { assert, failed } = makeAssert();
   // here is deliberately absurd relative to the names actually printed (a folded
   // stream does this), which is exactly why the JOIN is bounded and the whole line
   // is clipped by the reader rather than by arithmetic here.
-  const wide = "y".repeat(120);
+  // Each name is 60 alphanumerics plus a segment separator: long enough to press
+  // the join bound, and short enough that the opaque-token rule (24+) leaves it
+  // alone — a 120-char blob is a hash, not a test name, and is refused outright.
+  const wide = "y".repeat(60);
   const bounded = harvestConsolidatedTallies(
     `test.sh: failed checks (1000000), not run (0)\n${Array.from({ length: 9 }, (_, n) => `    ${wide}_${n}`).join("\n")}`,
   );
@@ -115,7 +122,45 @@ const { assert, failed } = makeAssert();
   );
 }
 
-// ── 2. the shape union has an exhaustive consumer ────────────────────────────
+// ── 3. the harvest reads the READER'S VIEW, not the raw text (#1810) ────────
+// `harvestTallies` used to be handed `text` while the per-line loop above it refused
+// wrapper lines. A wrapper line that carried a tally block IS the tally line the
+// harvest anchors on, so the joined evidence line opened with the harness's own
+// sentence — exactly what the per-line loop was written to keep out. Synthetic
+// harness prose and synthetic gate output; none of it this repo's own dialect.
+{
+  const wrappedTally =
+    `verify command \`${CMD}\` failed in ${WT}: ${TALLY_LINE}\n` +
+    `    ${TALLY_NAMES[0]}\n` +
+    `    ${TALLY_NAMES[1]}`;
+  const wrapped = consolidatedAssertionLines(wrappedTally);
+  assert(
+    !wrapped.some((l) => l.includes("verify command")),
+    `#1810: a wrapper line inside consolidatedRaw yields no target line with the harness sentence (got ${JSON.stringify(wrapped)})`,
+  );
+  assert(
+    !wrapped.some((l) => l.includes("verify command") && l.includes(`: ${TALLY_NAMES.join(", ")}`)),
+    `#1810: the harness sentence is never the tally the names are joined to (got ${JSON.stringify(wrapped)})`,
+  );
+  // The plain tally plus its indented names still harvests through the same route.
+  const plain = consolidatedAssertionLines(EXAMPLE_STREAM);
+  assert(
+    plain.includes(`${TALLY_LINE}: ${TALLY_NAMES.join(", ")}`),
+    `#1810: the plain tally plus names still harvests (got ${JSON.stringify(plain)})`,
+  );
+  // The joined tally the wrapped stream DOES produce is anchored on the gate's own
+  // tally, which is what the reader's view leaves behind once the wrapper is cut —
+  // the same line the plain stream produces. The defect was never "no tally when a
+  // wrapper carried one"; it was "the harness sentence became the tally".
+  const joinedForm = (l: string): boolean =>
+    l.startsWith(TALLY_LINE) && l.includes(`: ${TALLY_NAMES.join(", ")}`);
+  assert(
+    wrapped.some(joinedForm) && plain.some(joinedForm),
+    `#1810: both routes anchor the join on the gate's tally, never on harness prose (wrapped ${JSON.stringify(wrapped)})`,
+  );
+}
+
+// ── 4. the shape union has an exhaustive consumer ────────────────────────────
 {
   // #1808 — `FailureShape` used to have no consumer the compiler checked, so a
   // shape added to the union and the table was compile-clean while its answer came
