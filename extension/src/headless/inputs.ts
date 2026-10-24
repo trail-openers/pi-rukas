@@ -229,6 +229,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // #1742 — caller ceiling on ONE lens-fix dispatch (review-budget.ts), so a
   // single fixer cannot outlive the loop even when the wall clock leaves more.
   ms("LENS_FIX_BOUND_MS", 2_700_000),
+  // #1779 — one knob for both halves of the bound-kill fix: the reposition
+  // gate's strictly-ahead landing AND the lens-fix partial-fix conversion.
+  // `0` restores the pre-#1779 shape (park / `step-failed:lens-fix` → handoff).
+  flag("LENS_FIX_LAND_AHEAD", true),
   // Unset or 0: no bound on concurrent lens children per model.
   int("LENS_MODEL_CONCURRENCY", null),
   int("LENS_ROUND_CAP", 3),

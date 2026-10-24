@@ -11,6 +11,7 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
+import { landLensFixAfterBoundKill, readTreeHead } from "./work-driver-lens-fix-bound-land.ts";
 import { parkLensFixOverrun, reviewFixDispatchBoundMs } from "./work-driver-lens-fix-budget.ts";
 import {
   countCommittedAhead,
@@ -89,7 +90,10 @@ export async function runLensFix(
   // #1742 — the fixer carries a caller ceiling of its own
   // (PI_ENSEMBLE_LENS_FIX_BOUND_MS, 45 min default) so one fixer can never
   // outlive the loop's memory of why it started, even when the wall clock
-  // leaves more than that. The loop bound still only ever shortens it.
+  // leaves more than that. The loop bound still only ever shortens it. The
+  // arming itself is traced once, by `reviewFixDispatchBoundMs`, including the
+  // case where nothing is armed (#1779 item (e)) — no second copy of the number
+  // is carried here for a later trace to re-derive or contradict.
   const dispatchBoundMs = reviewFixDispatchBoundMs(state, "lens-fix", now, lensFixBoundMs());
   // #654 — empty-diff shape: re-dispatch the fix ONCE with no-diff evidence
   // before re-flagging identical findings at escalating severity.
@@ -211,10 +215,26 @@ export async function runLensFix(
       lostAttemptOnStep(state, "lens-fix")
         ? { repoRoot: ctx.repoRoot, issue: ctx.issue, state }
         : undefined,
+      // The safety net: a clean tree whose commits sit strictly on top of the
+      // branch tip is landed rather than parked (and never pushed unreviewed —
+      // the tip is the branch's own HEAD, so these are commits the cycle's
+      // integration path already accepts for a committed lens-fix). Absent
+      // `baseSha` there is no range to land, and the gate parks as before. This
+      // is the one arm of the gate that moves the main checkout, so a landing
+      // that fails reports the verified-restore outcome instead of an
+      // unexplained park.
+      state.pipelineState.baseSha
+        ? {
+            repoRoot: ctx.repoRoot,
+            issue: ctx.issue,
+            state,
+            ...(ctx.dirtyRootExempt ? { dirtyRootExempt: ctx.dirtyRootExempt } : {}),
+          }
+        : undefined,
     );
     if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(
-        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.movedByPatchEquivalence ? " (movedByPatchEquivalence)" : ""} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
+        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.movedByPatchEquivalence ? " (movedByPatchEquivalence)" : ""}${rep.kind === "repositioned" && rep.landedAheadShas ? ` (landed ${rep.landedAheadShas.length} strictly-ahead commit(s))` : ""} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
       );
     } else {
       // Park: the base is not trustworthy. Build the cap-hit (routed to
@@ -223,7 +243,14 @@ export async function runLensFix(
     }
   }
 
-  return runSingleDispatch(
+  // The base the fixer writes on top of, snapshotted AFTER the reposition gate
+  // above (so it is the verified tip) and BEFORE the dispatch. The bound-land
+  // conversion compares the tree's HEAD against this to tell "the fixer
+  // committed" from "the tree already held this".
+  const execFnHead: ExecFn = ctx.verifyExecFn ?? execp;
+  const roundTipSha = await readTreeHead(execFnHead, fixTree);
+
+  const dispatched = await runSingleDispatch(
     ctx,
     next,
     "lens-fix",
@@ -255,6 +282,14 @@ export async function runLensFix(
       ...(dispatchBoundMs !== undefined ? { timeoutMs: dispatchBoundMs } : {}),
     },
   );
+  // #1779 — a fixer killed AT its bound that had already committed is a
+  // partial fix, not a failed step: classified HERE, before the router sees the
+  // tail, so the linear table takes `lens-fix` → `adversarial` with
+  // `lastCompletedStep: lens-fix` and `integrateLensFix` lands it through the
+  // normal gate. Every other kill cause falls through to today's HALT. The
+  // adversarial gate is not skipped and no completion is faked: the gate still
+  // reviews the diff before anything lands.
+  return landLensFixAfterBoundKill(dispatched, { tree: fixTree, tipSha: roundTipSha }, execFnHead);
 }
 
 /**

@@ -43,6 +43,7 @@ import { roundCapMergeEnabled } from "../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
+import { lensFixLandAheadEnabled } from "../src/work-driver-lens-fix-reposition-land.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
 import { slowThresholds } from "../src/slow-notice.ts";
@@ -327,6 +328,9 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LENS_BOUND_MS", lensChildBoundMs],
   // #1742 — the per-lens-fix-dispatch caller ceiling.
   ["PI_ENSEMBLE_LENS_FIX_BOUND_MS", () => lensFixBoundMs()],
+  // #1779 — the single knob for both halves of the bound-kill fix (the
+  // reposition gate's strictly-ahead landing and the partial-fix conversion).
+  ["PI_ENSEMBLE_LENS_FIX_LAND_AHEAD", () => lensFixLandAheadEnabled()],
   ["PI_ENSEMBLE_COMMENT_RETENTION_PATHS", () => COMMENT_RETENTION_PATHS.join(",")],
   ["PI_ENSEMBLE_GIT_NET_TIMEOUT_MS", () => NET_GIT_TIMEOUT_DEFAULT_MS],
   ["PI_ENSEMBLE_HANDOFF_CHANNEL", handoffChannel],

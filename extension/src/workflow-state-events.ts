@@ -26,6 +26,7 @@ import type {
 import type { InterruptedEvent } from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
+import type { PartialAfterKill } from "./workflow-state-events-partial-kill.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type {
   LensResidualsPostFailedEvent,
@@ -178,6 +179,8 @@ export type WorkEvent =
       usage?: DispatchUsage;
       /** #456 — per-lens lens-review timings; additive, old state files load unchanged. */
       lensTimings?: Array<{ lens: string; startMs: number; ms: number }>;
+      /** #1779 (a): converted bound kill — absent = finished normally. */
+      partialAfterKill?: PartialAfterKill;
     }
   | {
       kind: "dispatch-failed-provider";
@@ -463,9 +466,8 @@ export type WorkEvent =
     }
   | {
       /**
-       * Fanned-out step's `Promise.all` resolved (PR3). Carries the
-       * per-branch verdicts so the driver's next-step decision can
-       * route on the aggregate (e.g., "any branch failed" → halt).
+       * Fanned-out step's `Promise.all` resolved (PR3). Carries the per-branch
+       * verdicts so the next-step decision can route on the aggregate.
        */
       kind: "branches-converged";
       step: WorkStep;
@@ -475,8 +477,7 @@ export type WorkEvent =
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
   | ConsolidatedVerifySkippedEvent
-  // #1415 — verify-started / verify-completed: the gate announces the run it
-  // is doing, so the ~22-minute consolidated verify is a row, not a silence.
+  // #1415 — verify-started / verify-completed (`VerifyRunEventFragment`).
   | VerifyRunEventFragment
   | ConsolidatedVerifyPreExistingEvent
   | WideningScanEvent

@@ -226,6 +226,8 @@ const EXPECTED: Record<string, number> = {
   "work-driver-sweep-policy.ts": 1,
   "work-driver-handoff-snapshot.ts": 1,
   "work-driver-lens-fix-reposition-gate.ts": 1,
+  // #1779 — the strictly-ahead landing's push of the branch it just landed.
+  "work-driver-lens-fix-reposition-land.ts": 1,
   "merge-guard.ts": 1,
   "lens-review-residuals.ts": 1,
   "work-driver-continue-pr-branch.ts": 1,
