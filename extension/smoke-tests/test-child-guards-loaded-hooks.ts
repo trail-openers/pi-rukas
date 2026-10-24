@@ -10,13 +10,17 @@
  * companion no-ops entirely under PI_ENSEMBLE_SUBAGENT_MODE=1 (where the full
  * pi-rukas extension registers the same guards and a second set would
  * double-run the merge guard's gh/git exec chain).
+ *
+ * Env pins go through `withEnv`, which restores exactly what was there
+ * (including an absent variable), so nothing leaks into the next test file.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { default as childGuards, failClosedPi } from "../src/child-guards.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
+import childGuards, { failClosedPi } from "../src/child-guards.ts";
 import { assert } from "./merge-guard-helpers.ts";
-import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.ts";
+import { withEnv } from "./lib/env-scope.ts";
+import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.ts";
 
 // ============================================================
 // 1. Loading with no SUBAGENT_MODE: the mode-independent guards, no tools,
@@ -35,8 +39,8 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
 }
 
 // ============================================================
-// 2. The loaded hooks refuse the merge (no ledger, real exec → gh fails
-//    → refused) and issue creation, and leave a read alone.
+// 2. The loaded hooks refuse the merge (no ledger → gh pr view fails →
+//    refused) and issue creation, and leave a read alone.
 // ============================================================
 {
   const fake = makeFakePi();
@@ -65,8 +69,6 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
 //     refusal, not an aborted turn.
 // ============================================================
 {
-  // Drive the wrapper directly: pass a throwing/blocking/inert handler through
-  // failClosedPi and verify the wrapped handler's behaviour.
   const makeWrapped = (behaviour: "throw" | "block" | "inert") => {
     const handlers: Handler[] = [];
     const spyPi = {
@@ -79,12 +81,10 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
       if (behaviour === "block") return { block: true, reason: "inner" };
       return undefined;
     };
-    const wrapped = failClosedPi(spyPi);
-    wrapped.on("tool_call", underlying);
+    failClosedPi(spyPi).on("tool_call", underlying);
     return handlers;
   };
 
-  // A throwing handler → block with the reason naming the error.
   const throwing = makeWrapped("throw");
   const results = await Promise.all(throwing.map((h) => h("x", {})));
   assert(
@@ -94,7 +94,6 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
     "fail-closed: a throwing guard → block with the reason naming the error, never a rethrow",
   );
 
-  // A well-behaved block passes through unchanged.
   const blocking = makeWrapped("block");
   const rBlock = await Promise.all(blocking.map((h) => h("x", {})));
   assert(
@@ -102,7 +101,6 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
     "fail-closed: a well-behaved guard's refusal passes through unchanged",
   );
 
-  // Inert: a no-op handler still returns undefined.
   const inert = makeWrapped("inert");
   const rInert = await Promise.all(inert.map((h) => h("x", {})));
   assert(
@@ -118,17 +116,15 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
 // ============================================================
 {
   const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
-    if (cmd.includes("gh pr view")) throw new Error("gh: no pull requests found (stub: no ledger)");
+    if (cmd.includes("gh pr view"))
+      throw new Error("gh: no pull requests found (stub: no ledger)");
     return { stdout: "" };
   };
   const fake = makeFakePi();
   registerMergeGuard(fake as unknown as ExtensionAPI, { execFn: stubExec as never });
   const merge = await dispatch(fake, "bash", "gh pr merge 5 --squash");
   const m = merge as { block?: boolean; reason?: string } | undefined;
-  assert(
-    m?.block === true,
-    "merge guard (stubbed exec, no ledger) refuses `gh pr merge 5 --squash`",
-  );
+  assert(m?.block === true, "merge guard (stubbed exec, no ledger) refuses a merge");
   assert(
     m?.reason !== undefined && m.reason.length > 0,
     "the stubbed-exec refusal is fail-closed with a named reason",
@@ -149,12 +145,9 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
 }
 
 // ============================================================
-// 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero hooks registered (the full
-//    pi-rukas extension registers the guards there; a second set would
-//    double-run the merge guard's gh/git exec chain).
+// 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero hooks registered.
 // ============================================================
-{
-  process.env.PI_ENSEMBLE_SUBAGENT_MODE = "1";
+await withEnv({ PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
@@ -163,5 +156,4 @@ import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.
     fake.registeredTools.length === 0 && fake.registeredCommands.length === 0,
     "no-op registers nothing else",
   );
-  process.env.PI_ENSEMBLE_SUBAGENT_MODE = undefined;
-}
+});
