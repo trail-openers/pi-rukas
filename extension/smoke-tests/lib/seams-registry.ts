@@ -329,7 +329,8 @@ export const SEAMS: Seam[] = [
       // Read by the plan step's conflict path and by the terminal steps; exported
       // so those callers batch one disk read across the workstreams rather than
       // one per cycle.
-      readClaims: "#1101 — batched read; work-driver-plan.ts + test-work-driver-cross-group-conflicts.ts",
+      readClaims:
+        "#1101 — batched read; work-driver-plan.ts + test-work-driver-cross-group-conflicts.ts",
       checkCrossGroupClaims: "#571 — the async entry to the overlap check; test-asserted",
       checkCrossGroupClaimsSync: "#571 — the pure core the batched read feeds; test-asserted",
       registerClaim: "#571 — registers a plan-declared claim; test-asserted",
@@ -402,8 +403,47 @@ export const SEAMS: Seam[] = [
       // alone — so it is asserted directly, the way `isNonAssertionLine` is.
       matchShape:
         "the plain shape table, asked directly by test-verify-failure-shapes-1762.ts: the assertion-mark-before-the-success-veto exemption exists only in this function, so a change that keeps classifyFailureLine green while re-ordering the veto must still fail there",
+      // #1808 round — the exhaustive consumer of `FailureShape`. A `Record<FailureShape,
+      // boolean>` cannot omit a shape without failing the build, which is the point;
+      // the assertion below is that its VALUES still describe the table, so a shape
+      // whose rule is flipped to `true` (or `false`) without a test noticing fails here.
+      SHAPE_NAMES_A_CHECK:
+        "the exhaustive per-shape rule for 'may this line be the specific assertion'; #1808 — the union previously had no consumer, so a new shape was compile-clean. test-verify-failure-shapes-g-1762.ts cross-checks every entry against classifyFailureLine's namesTest",
     },
     canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
+  },
+  {
+    // #1762 — the marker's internal grammar, split out of the table for the
+    // 500-line cap. `payloadDetail` is the single judge of the payload shape and
+    // has no production CALLER outside the two modules that wrap it (the table's
+    // shape entry and `isBareFailedMarker`), so the reachability gate needs the
+    // declaration to see it; the shape suite asserts it directly.
+    file: "work-driver-verify-marker.ts",
+    pending: {},
+    testOnly: {
+      payloadDetail:
+        "the one judge of what makes a FAILED: marker payload-bearing; the table's shape entry and isBareFailedMarker both wrap it, and test-verify-failure-shapes-g-1762.ts asserts the token, path and count-summary cases directly",
+    },
+    canary: { symbol: "isBareFailedMarker", importer: "work-driver-verify-failures.ts" },
+  },
+  {
+    // #1762 — the failure-line TABLE itself (its shape entries, their priority
+    // order, and the pre-veto exemption pair), split out of the classifier for the
+    // 500-line cap. The classifier imports all four exports, which its own file is
+    // excluded from, so each is declared here and asserted by the shape suite.
+    file: "work-driver-verify-shapes.ts",
+    pending: {},
+    testOnly: {
+      SHAPES:
+        "the table in priority order; asserted as a whole by test-verify-failure-shapes-1762.ts, which pins the payload marker sitting ahead of the bare marker",
+      SUCCESS_LINE:
+        "the passing-line veto, reached only through isSuccessLine in the classifier; test-verify-failure-shapes-1762.ts asks the arms directly",
+      ShapeEntry:
+        "the table entry shape, named so a re-ordering that drops a field fails rather than type-checking into a wider entry",
+      matchPreVetoShapes:
+        "the two shapes asked BEFORE the success veto (the assertion mark and, since #1762, the payload-bearing marker); the exemption lives here alone, so a change that keeps matchShape green while re-ordering the veto must still fail here",
+    },
+    canary: { symbol: "matchPreVetoShapes", importer: "work-driver-verify-failures.ts" },
   },
   {
     // #1762 round 1 — the vocabulary the two verify readers share, hoisted out of
@@ -417,7 +457,7 @@ export const SEAMS: Seam[] = [
     pending: {},
     testOnly: {
       splitLines:
-        "the one line-break split (\r\n, \r, \n) every verify reader shares; test-verify-failure-shapes-b-1762.ts pins the \r case that split(\"\\n\") used to miss",
+        'the one line-break split (\r\n, \r, \n) every verify reader shares; test-verify-failure-shapes-b-1762.ts pins the \r case that split("\\n") used to miss',
       // #1762 round 2 (B3) — the offsets variant, and the reason `splitLines`
       // cannot serve a reader that keeps its own offset: it discards the separator,
       // so the caller cannot see that `\r\n` is two characters and an advance of
@@ -443,6 +483,9 @@ export const SEAMS: Seam[] = [
       isNonAssertionLine:
         "the marker/echo/secret veto, applied by extractSpecificAssertion in-module AND by verify-record's assertionLines on every unwrapped inner line; test-verify-failure-shapes-b-1762.ts pins the inner-secret and inner-echo cases",
     },
-    canary: { symbol: "classifyConsolidatedVerifyFailure", importer: "work-driver-integrate-verify.ts" },
+    canary: {
+      symbol: "classifyConsolidatedVerifyFailure",
+      importer: "work-driver-integrate-verify.ts",
+    },
   },
 ];
