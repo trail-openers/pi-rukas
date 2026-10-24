@@ -328,8 +328,8 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LENS_BOUND_MS", lensChildBoundMs],
   // #1742 — the per-lens-fix-dispatch caller ceiling.
   ["PI_ENSEMBLE_LENS_FIX_BOUND_MS", () => lensFixBoundMs()],
-  // #1779 — the single knob for both halves of the bound-kill fix (the
-  // reposition gate's strictly-ahead landing and the partial-fix conversion).
+  // #1779 — the escape hatch for the lens-fix partial-fix conversion (a bound
+  // kill that committed HALTs instead of converting to a partial fix).
   ["PI_ENSEMBLE_LENS_FIX_LAND_AHEAD", () => lensFixLandAheadEnabled()],
   ["PI_ENSEMBLE_COMMENT_RETENTION_PATHS", () => COMMENT_RETENTION_PATHS.join(",")],
   ["PI_ENSEMBLE_GIT_NET_TIMEOUT_MS", () => NET_GIT_TIMEOUT_DEFAULT_MS],

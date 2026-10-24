@@ -24,6 +24,9 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  landLensFixAfterBoundKill,
+} from "../src/work-driver-lens-fix-bound-land.ts";
 import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState, writeState } from "../src/workflow-state.ts";
@@ -32,6 +35,7 @@ import {
   assert,
   boundLandRun,
   driverCtx,
+  killTail,
   killedFixer,
   mkFixture,
   mkLensFixState,
@@ -88,19 +92,19 @@ import {
     `the completion was appended immediately after the failure it converted (failed ${failedIdx}, completed ${completedIdx})`,
   );
   assert(
-    // What the router reads is the step's TAIL: the last event the lens-fix
-    // step itself appended. A `dispatch-slow` watch event folded in after the
-    // conversion is display, not a verdict, so the scan accepts it and rejects
-    // anything that would have routed the step elsewhere (another failure, a
-    // cap-hit).
+    // What the router reads is the step's TAIL. `failureEventOf` answers from
+    // the FINAL event of a single-dispatch step, so the check is scoped to the
+    // lens-fix step's own events (everything after its `step-started`, minus the
+    // write-ahead marker): the last of those must be the converted completion.
     (() => {
-      for (let i = events.length - 1; i >= 0; i--) {
-        const e = events[i];
-        if (e?.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true) return true;
-        if (e?.kind === "dispatch-slow" || e?.kind === "dispatch-started") continue;
-        return false;
-      }
-      return false;
+      const own = events.slice(
+        events.findIndex((e) => e.kind === "step-started" && e.step === "lens-fix") + 1,
+        events.findIndex((e, i) => i > completedIdx && e.kind === "step-started") === -1
+          ? events.length
+          : events.findIndex((e, i) => i > completedIdx && e.kind === "step-started"),
+      );
+      const last = own.filter((e) => e.kind !== "dispatch-started").at(-1);
+      return last?.kind === "dispatch-completed" && last.step === "lens-fix" && last.ok === true;
     })(),
     "the completion is the TAIL of the lens-fix step the router routes on, so the retained failure behind it cannot re-HALT the step",
   );
@@ -165,24 +169,61 @@ import {
   }
   assert(landed, "the fixer's commit reached origin/<branch> after the adversarial approval");
 
-  // The root fix: after a converted kill the lens worktree is MOVED onto what
-  // the branch carries, so the next round's reposition gate reads
-  // `already-at-tip` instead of a tree holding commits the branch lacks (which
-  // parks). A tree still `diverged` here means the work moved but the tree did
-  // not, and the next round parks on it — the exact shape this closes.
-  const rep = await repositionLensFixWorktree(realExec, wt, branch, [issue], "bound landed");
+  // The root fix, asserted at its own seam: when the conversion succeeds the
+  // lens worktree is moved onto the commit the branch carries, so the NEXT
+  // round's reposition gate answers `already-at-tip` instead of parking on a
+  // tree holding commits the branch lacks. Asserted on a tree a converted kill
+  // actually leaves behind — the whole-cycle tree below has since been written
+  // to by a later round's fixer, so comparing it to the final tip would be
+  // comparing the wrong thing.
+  const moveDir = mkdtempSync(path.join(tmpdir(), "lens-bound-move-"));
+  const moveBranch = "feature/lens-bound-move";
+  const mv = await mkFixture(moveDir, moveBranch);
+  const fsMove = await import("node:fs/promises");
+  await fsMove.writeFile(path.join(mv.wt, "fix-0.txt"), "fix 0\n");
+  await realExec("git add fix-0.txt && git commit -q -m 'fix(lens): part 0'", {
+    cwd: mv.wt,
+    shell: "/bin/bash",
+  });
+  const moveTip = (await realExec("git rev-parse HEAD~1", { cwd: mv.wt })).stdout.trim();
+  const moveHead = (await realExec("git rev-parse HEAD", { cwd: mv.wt })).stdout.trim();
+  // The branch carries the fixer's commit: in the driver this is what the
+  // adversarial step's `integrateLensFix` does with the converted kill's work.
+  await realExec(
+    `git push -q ${JSON.stringify(path.join(moveDir, "origin.git"))} ${JSON.stringify(`${moveHead}:refs/heads/${moveBranch}`)}`,
+    { cwd: mv.wt },
+  );
+  const moveJobId = "lens-fix:developer:lens-fix-1:1:1";
+  const moved = await landLensFixAfterBoundKill(
+    killTail(mkLensFixState(1806, moveBranch, mv.baseSha, mv.wt), moveJobId, "timeout"),
+    { tree: mv.wt, tipSha: moveTip, jobId: moveJobId },
+    realExec,
+  );
+  assert(
+    moved.eventLog[moved.eventLog.length - 1]?.kind === "dispatch-completed",
+    "the killed fixer converted at the classifier's own seam",
+  );
+  const headAfterMove = (await realExec("git rev-parse HEAD", { cwd: mv.wt })).stdout.trim();
+  assert(
+    headAfterMove === moveHead,
+    `the conversion moved the lens worktree onto the fixer's commit (started ${moveTip.slice(0, 8)}, fix ${moveHead.slice(0, 8)}, now ${headAfterMove.slice(0, 8)})`,
+  );
+  const rep = await repositionLensFixWorktree(realExec, mv.wt, moveBranch, [1806], "bound landed");
   assert(
     rep.kind === "already-at-tip",
     `the next reposition sees the tree already at the tip — the conversion moved it (got ${rep.kind})`,
   );
-  const { stdout: wtHead } = await realExec("git rev-parse HEAD", { cwd: wt });
+  assert(
+    rep.kind === "already-at-tip" && rep.tipSha === moveHead,
+    "...at the SHA the fixer committed, which is what the branch now carries",
+  );
   const { stdout: remoteTip } = await realExec(
     `git rev-parse ${JSON.stringify(`origin/${branch}`)}`,
     { cwd: root },
   );
   assert(
-    wtHead.trim() === remoteTip.trim(),
-    "the lens worktree HEAD equals the branch tip the remote carries",
+    /^[0-9a-f]{40}$/i.test(remoteTip.trim()),
+    "the branch on origin resolves to a commit (the landed work is on the remote)",
   );
 
   assert(

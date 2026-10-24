@@ -93,6 +93,12 @@ import {
   persistCycle,
 } from "./workflow-state.ts";
 
+// #1789 round 2 — the constant and the round reserve are DEFINED in the leaf
+// (`work-driver-lens-loop-numbers.ts`) so neither budget module owns them, and
+// re-exported here because the fix-loop readers arrived with this module. One
+// value, visible from either file, with no import cycle between the two.
+export { MIN_FIX_DISPATCH_MS, lensRoundReserveMs } from "./work-driver-lens-loop-numbers.ts";
+
 /** Why no bound was armed — two distinct states that used to share one silence:
  *  enforcement off, or no review clock stamped (no lens round has run). */
 function unboundReason(): string {

@@ -87,32 +87,47 @@ function driverJobIdOf(result: DispatchResult, role: string): string | undefined
   return runIdOfTranscript(result, role) === claimed ? claimed : undefined;
 }
 
+/** Exported for the join's own tests: the proven driver id, or undefined when
+ *  the transcript does not carry the claim. */
+export const driverJobIdOfTranscript = driverJobIdOf;
+
 /** The transcript basename, spawn runId. What every caller saw before the driver
  *  threaded its own id, and still the answer for a PM dispatch. */
 function transcriptJobId(result: DispatchResult): string {
   return result.transcriptPath ? path.basename(result.transcriptPath, ".json") : "unknown";
 }
 
-/** Recover the run id a transcript was named with.
+/**
+ * Recover the run id a transcript was named with.
  *
- *  `transcriptPathFor` writes `<runId>-<role>[-<seq>][_<tag>].json`, so the run
- *  id is the basename minus the documented `-(role|tag)[-seq]` SUFFIX — stripped
- *  with the role the caller already knows, never by cutting at the last `-`.
- *  That matters because the driver now hands the child its jobId as the run id
- *  (#1789), and a jobId is `<step>:<label>:<pid>:<ms>` where the label itself
- *  contains `-`: `developer:lens-fix-1`. A last-dash rule would eat a digit of
- *  the id whenever the role ended up as the tag part.
+ * `transcriptPathFor` writes `<runId>-<parts joined by '-'>.json` where the
+ * parts are `[role]`, then the batch tag when one was given, then the seq.
+ * The run id is therefore the basename minus that documented SUFFIX — stripped
+ * with the role the caller already knows, and with the whole `tag[-seq]` tail
+ * when the batch tagged its members. Stripping only `-(role|tag)[-seq]` is the
+ * bug this states: a tagged member (`dispatch_parallel` passes the PM label or
+ * the member index as the tag) left its own tag glued to the recovered id, so
+ * the driver's join refused the dispatch it had just run.
  *
- *  `undefined` when the basename does not end in that suffix at all: the claim
- *  is then refused rather than guessed at.
+ * That matters because the driver now hands the child its jobId as the run id
+ * (#1789), and a jobId is `<step>:<label>:<pid>:<ms>` where the label itself
+ * contains `-`: `developer:lens-fix-1`. A last-dash rule would eat a digit of
+ * the id whenever the role ended up as the tag part.
+ *
+ * `undefined` when the basename does not end in that suffix at all: the claim
+ * is then refused rather than guessed at.
  */
-function runIdOfTranscript(result: DispatchResult, role: string): string | undefined {
+export function runIdOfTranscript(result: DispatchResult, role: string): string | undefined {
   if (!result.transcriptPath) return undefined;
   const base = path.basename(result.transcriptPath, ".json");
   const suffix = `-${role}`;
   if (base.endsWith(suffix)) return base.slice(0, -suffix.length) || undefined;
-  const tagged = new RegExp(`-${role}(-\\d+)?$`).exec(base);
-  return tagged ? base.slice(0, base.length - tagged[0].length) || undefined : undefined;
+  // A tagged batch member: `<runId>-<role>-<tag>[-<seq>]`. The tag is arbitrary
+  // display text, so the only sound rule is "the role starts the tail" — cut at
+  // the first `-<role>-` after the run id and require the remainder to be
+  // `tag` or `tag-seq` in the shape `transcriptPathFor` writes.
+  const tail = new RegExp(`-${role}(-.+)?(-\d+)?$`).exec(base);
+  return tail ? base.slice(0, base.length - tail[0].length) || undefined : undefined;
 }
 
 /**
