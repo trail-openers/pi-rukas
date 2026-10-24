@@ -219,7 +219,7 @@ for (const c of [
   `echo ${FINDINGS_FILE}`,
   // A path built in a variable is still the store's path (#1764 criterion 6).
   `F=${STORE_PATH}; cat $F`,
-  `export F=~/.pi/agent/${STATE_LEAF}; ls $D{F}`,
+  `export F=~/.pi/agent/${STATE_LEAF}; ls ${D}{F}`,
   // A runtime writing the store by its basename names the store, so the path
   // guard refuses it — the row the old shell-semantics guard refused for a
   // SHAPE, this one refuses for the NAME.

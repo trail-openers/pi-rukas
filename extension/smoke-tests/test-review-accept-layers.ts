@@ -119,24 +119,25 @@ assert(
 const STATE_LEAF = "review-state";
 const D = String.fromCharCode(36);
 const stateRoot = reviewStateRoots()[0] ?? "";
+const ROOTS = reviewStateRoots();
 const bashRefused = (c: string): boolean =>
   reviewStateRefusal("bash", { command: c }) !== undefined;
 
 const storeFile = "/repo/.git/review-findings.json";
 assert(
-  editsReviewState("edit", { path: storeFile }) === storeFile,
+  editsReviewState("edit", { path: storeFile }, ROOTS) === storeFile,
   "guard: an edit of the findings file is refused",
 );
 assert(
-  editsReviewState("write", { path: `${storeFile}.corrupt-123` }) === undefined,
+  editsReviewState("write", { path: `${storeFile}.corrupt-123` }, ROOTS) === undefined,
   "guard: a dotted sibling outside the state root is not the file itself",
 );
 assert(
-  editsReviewState("multiedit", { path: "/repo/src/a.ts" }) === undefined,
+  editsReviewState("multiedit", { path: "/repo/src/a.ts" }, ROOTS) === undefined,
   "guard: an edit of an unrelated file is allowed",
 );
 assert(
-  editsReviewState("read", { path: storeFile }) === undefined,
+  editsReviewState("read", { path: storeFile }, ROOTS) === undefined,
   "guard: reading the findings file is not an edit",
 );
 // #1764 phase 2: the bash branch is a substring test on the store's LOCATION.
@@ -148,7 +149,7 @@ for (const c of [
   `cat ${storeFile}`,
   `cat ${stateRoot}/${"k"}/${"t"}/review-findings.json`,
   `F=${storeFile}; cat $F`,
-  `export P=~/.pi/agent/${STATE_LEAF}; ls $D{P}`,
+  `export P=~/.pi/agent/${STATE_LEAF}; ls ${D}{P}`,
   // A heredoc body naming the location is part of the command text, so it matches.
   `cat > /tmp/f <<EOF\n${storeFile}\nEOF`,
   'git commit -m "fix: note review-findings.json (#1)"',
@@ -175,7 +176,7 @@ for (const c of [
 }
 assert(stateRoot !== "", "guard: the state root resolves for this process");
 assert(
-  editsReviewState("write", { path: `${stateRoot}/k/t/review-findings.json` }) !== undefined,
+  editsReviewState("write", { path: `${stateRoot}/k/t/review-findings.json` }, ROOTS) !== undefined,
   "guard: a write under the resolved state root is refused",
 );
 assert(

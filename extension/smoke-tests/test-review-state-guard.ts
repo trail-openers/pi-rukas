@@ -55,6 +55,9 @@ const STATE_LEAF = ["review", "state"].join("-");
 /** The resolved root, read out of the guard rather than spelled, so a fixture
  * that moves PI_AGENT_DIR moves the expectations with it. */
 const RESOLVED = reviewStateRoots()[0] ?? "";
+/** The roots every direct call below must pass: they are REQUIRED, so that a
+ * fixture which moves `PI_AGENT_DIR` cannot assert against a cached root. */
+const ROOTS = reviewStateRoots();
 /** A store path under the state root, in the `~` spelling. */
 const STORE_IN_ROOT = `~/.pi/agent/${STATE_LEAF}/deadbeef01234567/${STORE_FILE}`;
 
@@ -121,7 +124,7 @@ for (const t of REFUSED_BASH) {
 const namesStoreText = (c: string): boolean =>
   c.toLowerCase().includes(STORE_FILE.toLowerCase()) ||
   c.toLowerCase().includes(STATE_LEAF) ||
-  namesReviewState(withAssignmentsExpanded(c)) !== undefined;
+  namesReviewState(withAssignmentsExpanded(c), ROOTS) !== undefined;
 
 const corpusRefusals = STORE_REACHING_REFUSALS.filter((t) => namesStoreText(t.c));
 assert(corpusRefusals.length > 0, "corpus: the frozen table still has store-naming rows to hold");
@@ -133,42 +136,108 @@ for (const t of corpusRefusals) {
 
 for (const tool of ["edit", "write", "multiedit"]) {
   assert(
-    editsReviewState(tool, { path: STORE_IN_ROOT }) !== undefined,
+    editsReviewState(tool, { path: STORE_IN_ROOT }, ROOTS) !== undefined,
     `${tool}: a write of the store file is refused`,
   );
   assert(
-    editsReviewState(tool, { path: `${RESOLVED}/k/t/other.json` }) !== undefined,
+    editsReviewState(tool, { path: `${RESOLVED}/k/t/other.json` }, ROOTS) !== undefined,
     `${tool}: a write anywhere inside the state root is refused`,
   );
   assert(
-    editsReviewState(tool, { path: `${RESOLVED}/k/t/${STORE_FILE}` }) !== undefined,
+    editsReviewState(tool, { path: `${RESOLVED}/k/t/${STORE_FILE}` }, ROOTS) !== undefined,
     `${tool}: the resolved spelling is refused too`,
   );
   assert(
-    editsReviewState(tool, { path: RESOLVED }) !== undefined,
+    editsReviewState(tool, { path: RESOLVED }, ROOTS) !== undefined,
     `${tool}: the state root itself is refused`,
   );
   assert(
-    editsReviewState(tool, { path: `~/.pi/agent/${STATE_LEAF}x/a.json` }) === undefined,
+    editsReviewState(tool, { path: `~/.pi/agent/${STATE_LEAF}x/a.json` }, ROOTS) === undefined,
     `${tool}: a sibling directory whose name only starts with the root is allowed`,
   );
-  assert(editsReviewState(tool, { path: "src/a.ts" }) === undefined, `${tool}: an ordinary file`);
-  assert(editsReviewState(tool, {}) === undefined, `${tool}: no path at all`);
+  assert(
+    editsReviewState(tool, { path: "src/a.ts" }, ROOTS) === undefined,
+    `${tool}: an ordinary file`,
+  );
+  assert(editsReviewState(tool, {}, ROOTS) === undefined, `${tool}: no path at all`);
+
+  // B2 (#1764 round 1): containment is decided on the NORMALISED ABSOLUTE path,
+  // with `~` expanded and the hook's cwd as the base for a relative target. The
+  // three shapes below are the ways an agent gets a store path without typing it
+  // as one, and each was previously judged on raw text alone.
+  const SLASH = String.fromCharCode(47);
+  const collapsed = `~/.pi/agent/${SLASH}${SLASH}${STATE_LEAF}${SLASH}${SLASH}aa${SLASH}${SLASH}bb${SLASH}x.json`;
+  assert(
+    editsReviewState(tool, { path: collapsed }, ROOTS, "/tmp") !== undefined,
+    `${tool}: a doubled-slash spelling of the root is refused (normalisation, not text)`,
+  );
+  // `../` walks UP into the root from a cwd that sits inside the agent dir. The
+  // fixture cwd is DERIVED from the resolved root, so a fixture that moves
+  // PI_AGENT_DIR moves the walk with it.
+  const insideCwd = `${RESOLVED}${SLASH}ensemble-runs`;
+  assert(
+    editsReviewState(
+      tool,
+      { path: `..${SLASH}..${SLASH}${STATE_LEAF}${SLASH}k${SLASH}x.json` },
+      ROOTS,
+      insideCwd,
+    ) !== undefined,
+    `${tool}: a ../ walk that lands inside the root is refused`,
+  );
+  // A relative path whose remainder puts it under the state leaf, resolved against
+  // the hook's cwd — NOT this process's directory. An absolute target spelled with
+  // `~` is the same check from the other side: only an implementation that expands
+  // the tilde before resolving can refuse it.
+  assert(
+    editsReviewState(
+      tool,
+      { path: `~${SLASH}.pi${SLASH}agent${SLASH}${STATE_LEAF}${SLASH}k${SLASH}x.json` },
+      ROOTS,
+      "/tmp/elsewhere",
+    ) !== undefined,
+    `${tool}: a tilde path into the root is refused whatever cwd it is given`,
+  );
+  // The same relative shape resolved against an UNRELATED cwd is an ordinary file:
+  // this is the assertion that proves the base is the hook cwd and not process.cwd.
+  assert(
+    editsReviewState(
+      tool,
+      { path: `.${SLASH}pi${SLASH}agent${SLASH}${STATE_LEAF}${SLASH}k${SLASH}x.json` },
+      ROOTS,
+      "/tmp/elsewhere",
+    ) === undefined,
+    `${tool}: the same relative path outside the root resolves elsewhere and runs`,
+  );
+  // Source files under extension/src are ordinary code and never a store target.
+  for (const src of [
+    `extension${SLASH}src${SLASH}${STORE_MODULE}.ts`,
+    `extension${SLASH}src${SLASH}${ACCEPT_SCRIPT}-guard.ts`,
+    `extension${SLASH}smoke-tests${SLASH}test-${STORE_MODULE}-store.ts`,
+  ]) {
+    assert(
+      editsReviewState(tool, { path: src }, ROOTS, "/repo") === undefined,
+      `${tool}: a source file under extension/src is allowed — ${src}`,
+    );
+  }
 }
 assert(
-  editsReviewState("read", { path: STORE_IN_ROOT }) === undefined,
+  editsReviewState("read", { path: STORE_IN_ROOT }, ROOTS) === undefined,
   "reading the findings file is not an edit",
 );
 assert(
-  editsReviewState("write", { path: 42 }) !== undefined,
+  editsReviewState("write", { path: 42 }, ROOTS) !== undefined,
   "write: a non-string path is refused, not waved through",
 );
 assert(
-  editsReviewState("write", {
-    get path(): string {
-      throw new Error("getter");
+  editsReviewState(
+    "write",
+    {
+      get path(): string {
+        throw new Error("getter");
+      },
     },
-  }) !== undefined,
+    ROOTS,
+  ) !== undefined,
   "write: a throwing path getter is refused rather than escaping the guard",
 );
 
@@ -186,7 +255,7 @@ for (const src of [
 ]) {
   for (const tool of ["edit", "write", "multiedit"]) {
     assert(
-      editsReviewState(tool, { path: src }) === undefined,
+      editsReviewState(tool, { path: src }, ROOTS) === undefined,
       `${tool}: a source file is never the store — ${src}`,
     );
   }
@@ -302,11 +371,103 @@ assert(
   "substitution: a plain assignment is substituted",
 );
 assert(
-  namesReviewState("echo hello") === undefined && namesReviewState("") === undefined,
+  namesReviewState("echo hello", ROOTS) === undefined &&
+    namesReviewState("", ROOTS) === undefined,
   "namesReviewState: nothing named is no match, empty included",
 );
 
-// ── 7. canary: the guard is registered, and the hook refuses in every mode ───
+// ── 7. the cheap pass, the per-branch failure boundary, and the roots contract ──
+
+// B3: the raw lowercased text is asked first, and the expensive views (an
+// assignment scan plus two backslash strips) are built only when it misses AND the
+// text carries an `=` or a backslash. A command with neither must still be judged —
+// and judged the same way — so behaviour is asserted to be identical while the
+// shape that would need those views is absent.
+assert(
+  namesReviewState("git status --porcelain", ROOTS) === undefined &&
+    namesReviewState(`ls ~/.pi/agent/${STATE_LEAF}`, ROOTS) !== undefined,
+  "cheap pass: a plain command and a store-naming command are both judged with no = or backslash present",
+);
+assert(
+  namesReviewState(`echo a${D}b`, ROOTS) === undefined,
+  "cheap pass: a dollar sign alone is not an assignment and is not a store path",
+);
+
+// B4: each branch fails closed only for ITSELF. A fault inside the edit scan must
+// not refuse a bash call, and a fault inside the bash scan must not refuse an edit.
+// The fault is induced with a getter that throws on the argument the branch reads.
+{
+  const boom = {
+    get command(): string {
+      throw new Error("hostile getter");
+    },
+  };
+  // A throwing `command` getter is a scan that cannot run: that bash call is
+  // refused, and nothing else is.
+  assert(
+    reviewStateRefusal("bash", boom) !== undefined,
+    "branch isolation: a bash scan that cannot run refuses that bash call",
+  );
+  assert(
+    reviewStateRefusal("edit", { path: "/repo/src/a.ts" }) === undefined,
+    "branch isolation: a fault in the bash branch does not touch an edit call",
+  );
+  assert(
+    reviewStateRefusal("write", { path: "/repo/src/a.ts" }) === undefined,
+    "branch isolation: a fault in the bash branch does not touch a write call",
+  );
+  const editBoom = {
+    get path(): string {
+      throw new Error("hostile path getter");
+    },
+  };
+  assert(
+    reviewStateRefusal("edit", editBoom) !== undefined,
+    "branch isolation: an edit scan that cannot run refuses that edit call",
+  );
+  assert(
+    reviewStateRefusal("bash", { command: "git status" }) === undefined,
+    "branch isolation: a fault in the edit branch does not refuse an ordinary bash call",
+  );
+}
+
+// B5: `roots` is a REQUIRED parameter — a call without it is a type error, and the
+// guard must answer from the roots it was GIVEN, not from whatever the environment
+// happens to say. An unrelated root list refuses nothing, and one that names a
+// made-up directory refuses exactly that directory.
+{
+  const FAKE = `/no/such/agent/${STATE_LEAF}-fixture`;
+  assert(
+    namesReviewState(`cat ${FAKE}/k/x.json`, [FAKE]) !== undefined,
+    "roots are honoured: a caller-supplied root is the thing refused",
+  );
+  assert(
+    namesReviewState(`cat ${FAKE}/k/x.json`, ["/unrelated/root"]) === undefined,
+    "roots are honoured: the same text is nothing at all under a different root list",
+  );
+  assert(
+    editsReviewState("write", { path: `${FAKE}/k/x.json` }, [FAKE]) !== undefined,
+    "roots are honoured for edits: a target under the supplied root is refused",
+  );
+  assert(
+    editsReviewState("write", { path: `${FAKE}/k/x.json` }, ["/unrelated/root"]) === undefined,
+    "roots are honoured for edits: the same target runs under a different root list",
+  );
+}
+
+// The roots themselves: the resolved spelling is the state root (agent dir PLUS
+// the leaf), and a sibling directory whose name merely starts with a root is not
+// it — the path-boundary rule in both branches.
+assert(
+  ROOTS.every((r) => r.endsWith(STATE_LEAF)),
+  "every root names the state leaf, so the guard and the store cannot drift",
+);
+assert(
+  namesReviewState(`cat ${RESOLVED}x/k/x.json`, ROOTS) === undefined,
+  "boundary: a directory whose name only starts with the resolved root is not the root",
+);
+
+// ── 8. canary: the guard is registered, and the hook refuses in every mode ───
 
 {
   const handlers: Record<string, (e: unknown, c: unknown) => Promise<unknown>> = {};

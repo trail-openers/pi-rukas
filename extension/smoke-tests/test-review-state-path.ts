@@ -49,9 +49,8 @@ function assert(cond: boolean, msg: string) {
 }
 
 const { FINDINGS_FILE, STATE_LEAF, agentDir, findingsStateDir, resetFindingsStateCache } =
-  await import(
-  "../src/review-state-path.ts"
-);
+  await import("../src/review-state-path.ts");
+const { reviewStateRoots } = await import("../src/review-accept-guard.ts");
 
 const ROWS = { rows: [{ id: "deadbeef", branch: "feat/x", title: "a stored finding" }] };
 
@@ -345,6 +344,10 @@ try {
       resetFindingsStateCache();
       const fell = await findingsStateDir(execp, repo);
       assert(fell!.fellBack, `a malformed token (${bad.length} chars) falls back beside the ledger`);
+      assert(
+        reviewStateRoots().some((r) => r.startsWith(agentDir())),
+        "the guard builds its resolved root from the same agentDir the store writes into",
+      );
       assert(
         path.dirname(fell!.file) === commonDir,
         `…and the fallback is the ledger's own directory for a ${bad.length}-char token`,
