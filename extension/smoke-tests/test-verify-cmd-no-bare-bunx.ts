@@ -89,7 +89,6 @@ const PROSE_FILES: readonly string[] = [
 const EXEMPT_FILES: readonly string[] = [
   "extension/src/bash-command-parser.ts",
   "extension/src/review-accept-guard.ts",
-  "extension/src/review-accept-arms.ts",
   ".github/workflows/ci.yml",
   "extension/smoke-tests/fixtures/agents-md/rich-manifest-no-codestyle-agents-md.md",
   "extension/smoke-tests/fixtures/issues/341.json",

@@ -12,7 +12,8 @@
  * directory is not.
  */
 
-import type { Case } from "./review-accept-guard-cases.ts";
+/** A command and the reason the suite asserts its verdict — the reason is the test name. */
+export type Case = { c: string; why: string };
 
 const NL = String.fromCharCode(10);
 const CR = String.fromCharCode(13);

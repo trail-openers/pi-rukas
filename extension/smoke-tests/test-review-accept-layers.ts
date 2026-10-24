@@ -111,84 +111,74 @@ assert(
 
 // ── layer 3: the guard ──────────────────────────────────────────────────────
 
+const STATE_LEAF = "review-state";
+const D = String.fromCharCode(36);
+const stateRoot = reviewStateRoots()[0] ?? "";
+const bashRefused = (c: string): boolean =>
+  reviewStateRefusal("bash", { command: c }) !== undefined;
+
 const storeFile = "/repo/.git/review-findings.json";
 assert(
-  editsFindingsFile("edit", { path: storeFile }) === storeFile,
+  editsReviewState("edit", { path: storeFile }) === storeFile,
   "guard: an edit of the findings file is refused",
 );
 assert(
-  editsFindingsFile("write", { path: `${storeFile}.corrupt-123` }) !== undefined,
-  "guard: a write of a corrupt-copy sibling is refused",
+  editsReviewState("write", { path: `${storeFile}.corrupt-123` }) === undefined,
+  "guard: a dotted sibling outside the state root is not the file itself",
 );
 assert(
-  editsFindingsFile("multiedit", { path: "/repo/src/a.ts" }) === undefined,
+  editsReviewState("multiedit", { path: "/repo/src/a.ts" }) === undefined,
   "guard: an edit of an unrelated file is allowed",
 );
 assert(
-  editsFindingsFile("read", { path: storeFile }) === undefined,
+  editsReviewState("read", { path: storeFile }) === undefined,
   "guard: reading the findings file is not an edit",
 );
+// #1764 phase 2: the bash branch is a substring test on the store's LOCATION.
+// Everything the old shell-semantics guard refused for a SHAPE (an eval flag, a
+// preload, a heredoc body, a `--output`) is an ordinary command now; what stays
+// refused is a command that names the state root or the store's basename, in any
+// spelling, including one built in a same-command variable (criterion 6).
 for (const c of [
   `cat ${storeFile}`,
-  'bun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
-  // A multi-line command starting with git is scanned, not waved through as plain git.
-  'git status\nbun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
-  // A git/gh command with a shell operator is not plain: its store mention is scanned.
-  "git log; cat review-findings.json",
-  // A test run with an eval flag runs code from the command line.
-  "bun test -e 'x' smoke-tests/review-findings-store*",
-  // A preload runs a named module before the test run: the same route as eval.
-  "bun test --preload ./x.ts smoke-tests/review-findings-store*",
-  "bun test -r ./x.ts smoke-tests/review-findings-store*",
-  // The operator script is not a test file, even under a test runner.
-  "bun test smoke-tests/review-accept-row.ts",
-  "bun test smoke-tests/review-accept.ts",
-  // #1125 — a file-writing (`--output`, `-o`) or config/alias (`-c`) argument is
-  // scanned like any other: those can create the store or run a shell.
-  "git show HEAD:blob --output=review-findings.json",
-  "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
-  // #1125 — the runtime match used to require one line, so a here-doc body or a
-  // program piped into `bun -` reached the store untouched.
-  'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
-  "printf 'import \"./src/review-findings-store.ts\"' | bun -",
+  `cat ${stateRoot}/${"k"}/${"t"}/review-findings.json`,
+  `F=${storeFile}; cat $F`,
+  `export P=~/.pi/agent/${STATE_LEAF}; ls $D{P}`,
+  // A heredoc body naming the location is part of the command text, so it matches.
+  `cat > /tmp/f <<EOF\n${storeFile}\nEOF`,
 ]) {
-  assert(
-    runsReviewAccept(c) !== undefined,
-    `guard: refuses a bash mention of the store — ${c.slice(0, 40)}`,
-  );
+  assert(bashRefused(c), `guard: refuses a bash mention of the store — ${c.slice(0, 40)}`);
 }
-assert(
-  runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
-  "guard: a test glob that names no store path is allowed",
-);
-// #1125 — a read-only test run is judged by what it RUNS: an eval flag runs code.
-assert(
-  runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
-  "guard: a test glob that cannot name a protected file is allowed",
-);
-// #1125 clause (b): the three documented OVER-REFUSALS (canonical: OVER_REFUSALS).
 for (const c of [
+  "bun test smoke-tests/test-review-*.ts",
+  "bun test smoke-tests/test-review-findings-store*.ts",
+  'git commit -m "fix: note review-findings.json (#1)"',
   "git show HEAD:README.md --output=/tmp/readme.txt",
   "cat payload.js | bun -",
   "bun test smoke-tests/review-findings-store*",
+  "bun test -e 'x' smoke-tests/review-findings-store*",
+  "bun test --preload ./x.ts smoke-tests/review-findings-store*",
+  "bun test smoke-tests/review-accept.ts",
 ]) {
   assert(
-    runsReviewAccept(c) !== undefined,
-    `guard: over-refuses rather than guesses — ${c.slice(0, 44)}`,
+    !bashRefused(c),
+    `guard: a command naming no location runs — ${c.slice(0, 44)}`,
   );
 }
+assert(stateRoot !== "", "guard: the state root resolves for this process");
 assert(
-  runsReviewAccept("bun test smoke-tests/test-review-findings-store*.ts") === undefined,
-  "guard: a test arm whose argv are valueless switches and test paths is allowed",
+  editsReviewState("write", { path: `${stateRoot}/k/t/review-findings.json` }) !== undefined,
+  "guard: a write under the resolved state root is refused",
 );
 assert(
-  runsReviewAccept('git commit -m "fix: note review-findings.json (#1)"') === undefined,
-  "guard: a git commit message naming the findings file is allowed",
+  registerReviewAcceptGuard !== undefined,
+  "guard: the registration entry point keeps its exported name (#1764)",
 );
-// #1125 — the hardening must not swallow the reads the exemption exists for.
+
+// #1764 — the guard must not swallow the reads it was never about.
 for (const c of ["git diff HEAD -- extension/src/review-accept-guard.ts", "gh pr view 1105"]) {
   assert(
-    runsReviewAccept(c) === undefined,
+    !bashRefused(c),
     `guard: a plain git/gh read is allowed — ${c.slice(0, 44)}`,
   );
 }

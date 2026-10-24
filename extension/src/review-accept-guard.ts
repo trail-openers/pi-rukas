@@ -1,394 +1,301 @@
 /**
- * review-accept-guard — deny-by-default refusal of agent bash that could reach the
- * review findings store (#1105, #1125), and of agent edits of the findings file.
+ * review-accept-guard — the PATH tripwire for the review findings store (#1105,
+ * #1764 phase 2).
  *
  * Accepting a recorded finding suppresses it from every later round, so it stays a
- * human act: the operator runs `extension/scripts/review-accept.ts` in a terminal.
- * This hook refuses, in every mode and for every role, agent bash that could reach
- * that store, and agent edit / write / multiedit of the findings file, one of its
- * `.tmp` / `.corrupt` siblings, or the store module's own source.
+ * human act: the operator runs `extension/scripts/review-accept.ts` in a terminal,
+ * and that script refuses an agent context (`agentContext`). This hook is the
+ * second layer: it refuses an agent bash command that NAMES the store's location,
+ * and an agent edit / write / multiedit whose target resolves inside it.
  *
- * ADVISORY, not a security boundary: every rule is a string match on the command
- * text or the target path. The threat model is the honest-but-forgetful agent, and
- * the operator's terminal is the real boundary.
+ * WHAT IT USED TO BE, AND WHY THAT IS GONE. Until #1764 this guard modelled shell
+ * semantics: a tokeniser, a heredoc skipper, repo-location selectors, and eight
+ * "arms" of allowlisted command shapes, with everything unmatched refused. On
+ * fieldbox, 2026-10-21/22, it refused ~6,400 ordinary agent commands across 421
+ * of 576 children — a `grep` whose pattern held a `$`, a heredoc with a quoted
+ * tag, a prose `gh issue edit --title`. #1767 tried to narrow the parser; five
+ * review rounds each found a new under-refusal. The store then moved out of the
+ * repository entirely (`review-state-path.ts`), so its location is no longer
+ * anything an agent is told, and the only decision left worth guarding is an agent
+ * writing the path down or reading the file. Both are a string match.
  *
- * ── THE ADJUDICATION RULE (#1125, operator decision 2026-10-16), in code ────────
+ * So: ONE rule for bash — the command text contains the state root (in any of the
+ * spellings a command could use for it, after same-command variable substitution)
+ * or the store's basename. NO other shell parsing: no arms, no segments, no
+ * heredoc semantics, no read-tool lists, no allowlist. A command that spells
+ * neither string runs, whatever else it is.
  *
- *   (a) ORDERING. One EXACT allowlist of read-only command forms (the arms below) is
- *       authoritative FOR THE COMMANDS IT GOVERNS: the ones that name the findings
- *       store — the data file, the store module, their stems, a `.tmp` / `.corrupt`
- *       sibling. A command that names none of those is an ordinary agent command and
- *       the allowlist does not speak to it: `mkdir -p tmp/x`, `git add -A`, `git push`,
- *       `npm install`, `cargo test`, `python3 -c …` and `sed -n`/`awk`/`gh api` on a
- *       NON-protected path all pass, and the guard does not consult the arms at all.
- *       Every command that DOES name the store is refused unless it matches an arm
- *       exactly. A command this module cannot parse — unbalanced quotes, a heredoc body
- *       that never terminates — is NOT refused for being unparseable: it faces the SAME
- *       scope predicate a readable command faces, evaluated on the text that did reach
- *       us. In scope it is refused (an unreadable command is exactly where a name hides);
- *       out of scope it is an ordinary agent command, stray quote and all (#1665, #1738).
- *   (b) POLARITY. Fail closed. Over-refusing a harmless read is an ACCEPTED COST —
- *       `--output`/`-o` on any file, `-c` at all, `bun test <non-test-path>`, a read
- *       tool naming the store, a word carrying `$`/backtick/backslash, a redirection.
- *       Each refusal names the flag or operand to drop, or the accept CLI to run instead.
- *   (c) EVOLUTION. A newly discovered bypass spelling is closed by REMOVING AN
- *       ALLOWANCE or ADDING A REFUSAL — never by adding a command scanner. This file
- *       has exactly one parser (`normalise`), one matcher (`namesStore`) and one
- *       dispatch (`scanCommand`); the parsing helpers live in review-accept-command.ts,
- *       the arms and the "which program runs this command" predicates live in
- *       review-accept-arms.ts, the git VERB position in review-accept-verb.ts, the six
- *       scope tests of clause (a) live in review-accept-scope.ts, and this module composes
- *       them.
+ * THE OPERATOR PATH IS UNCHANGED. `extension/scripts/review-accept.ts` stays the
+ * only way to accept a finding, and its agent-context refusal stays. This module
+ * never refused the CLI by name and does not: the file lives in the repository, so
+ * refusing it meant refusing the prose that discusses it (issue criterion 12).
  *
- * ── THE DECISION, in order ──────────────────────────────────────────────────────
- *
- *   1. `normalise()` — ONE pass: lowercase, whitespace and newlines collapsed to a
- *      single space, balanced `'…'` / `"…"`, spans removed (their contents are prose,
- *      so a commit message may name the store), and each heredoc BODY replaced by the
- *      bare marker `<<` (the body is text this guard cannot read). An odd count of `'`
- *      or `"` — or a heredoc whose delimiter never returns — is a parse FAILURE whose
- *      cause `normalise()` itself reports: the scope
- *      predicate then runs on the squeezed raw text, and only a command it brings INTO
- *      scope is refused.
- *   2. `namesStore()` — TOKEN-wise match against the protected names, their stems and
- *      the `.tmp` / `.corrupt` siblings, asked of the RAW text, the NORMALISED text and
- *      the raw text with every quote, brace and comma removed (so `rev{iew-findings}.json`
- *      and `'rev''iew-findings.json'` both count). A heredoc body is part of the raw
- *      text, so it is asked too. NOTHING ELSE RUNS IF THIS IS FALSE: a command that
- *      names no protected token is allowed here, before the segment gates and before the
- *      arms, because clause (a) scopes the allowlist to commands that name the store.
- *   3. THE PRE-CHECKS — a command in scope then faces the runner / heredoc / operator
- *      pre-checks and the write-flag / path-operand remedies are decided here. There is
- *      no cheap exit in front of the allowlist for a store-naming command: deny-by-
- *      default is not free, and the arms are a handful of array tests.
- *   4. THE ARMS — the raw command is split into segments on `|`, `;`, `&&`, `||`, `&`
- *      and newlines, and EVERY segment must clear the two segment-wide gates and match
- *      one arm exactly. The segment-wide gates refuse ANY word carrying shell
- *      expansion (`$`, backtick, backslash — the guard cannot read what the shell will
- *      substitute, so a protected name can be ASSEMBLED rather than spelled) or a
- *      redirection (`<` / `>` — bytes move to or from a path no arm ever saw).
- *        A1  git (--no-pager)? status|log|diff|show|blame — no -o, -c, --ext-diff,
- *            no repo-location / config selector the target test cannot CLEAR (`-c
- *            key=value`, `--git-dir`, `--work-tree`, `--exec-path`, or a `-C` at the
- *            store's directory — but NOT `git -C <worktree>`, which is sanctioned,
- *            #1643), no `alias`, and no operand naming the store by position
- *        A2  gh pr view|diff|list|checks | gh repo view | gh issue view|list
- *        A3  glab mr view|diff. `gh api` is NOT an arm: it carries an arbitrary method
- *            and body, so no flag ban can make it a read.
- *        A4  (bun|bunx) test <flags-without-values | test paths>
- *        A5  bash …/verify-loop.sh <same argv, plus --digest>
- *        A6  the exact build forms: bun run build, bun run check, bunx tsc --noEmit
- *        A7  git commit -m "<prose>" — git at word 0, and one UNQUOTED -m whose
- *            QUOTED message is the only prose the arm excuses
- *        A8  a read tool (ls, cat, head, tail, wc, grep, rg, file, stat, which,
- *            basename, dirname, echo, printf, cd, pwd, true) at word 0, with no
- *            exec-capable flag (--pre, --pre-glob, --exec, -exec, --command) and
- *            naming nothing protected. `sed` and `awk` are NOT read tools: each can
- *            run a shell (`sed -n '1e id'`, `awk BEGIN{system("id")}`) and `sed` can
- *            write a file (`sed -n 'w /tmp/x'`), so no flag ban turns either one
- *            into a read.
- *      A segment matching no arm is refused.
+ * ADVISORY, NOT A SECURITY BOUNDARY. Every rule here is a substring test on text
+ * the agent itself wrote, and agents run as the same UID as everything else: a
+ * name assembled from expansions, or read out of a file, walks straight past it.
+ * The real boundary is the tool-level one: the acceptance write has no caller in
+ * `src/` (test-review-accept-layers.ts holds that) and the CLI refuses an agent
+ * context. This guard exists so the honest-but-forgetful agent that pastes the
+ * path into a `cat` is stopped and told where the acceptance actually happens.
  */
 
-import { posix } from "node:path";
+import { isAbsolute, normalize, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  VCS,
-  WRITE_FLAGS,
-  armBuild,
-  armCommit,
-  armForgeRead,
-  armGitRead,
-  armRead,
-  armTest,
-  armVerifyLoop,
-  hasFlag,
-} from "./review-accept-arms.ts";
-import {
-  UNREADABLE,
-  armsOf,
-  baseName,
-  isProtectedToken,
-  namesProtected,
-  normalise,
-  shellWords,
-  squeeze,
-  unquote,
-} from "./review-accept-command.ts";
-import { inScope } from "./review-accept-scope.ts";
-import { trace, traceWarn } from "./trace.ts";
+import { FINDINGS_FILE } from "./review-state-path.ts";
+import { trace } from "./trace.ts";
+
 /** The one source of truth for the CLI the refusal tells the operator to use. */
 const ACCEPT_CLI = "extension/scripts/review-accept.ts";
-/** Shell expansion characters are the shared `UNREADABLE` (see `unsafeChars` below). */
-/** Redirection characters: an arm word carrying one moves bytes to or from a path the
- * arms never saw. */
-const REDIRECT = /[<>]/;
 
-/** Does a word carry shell expansion or a redirection character? The expansion test is
- * the shared `UNREADABLE` (a word whose final form the guard cannot read — `$(…)`,
- * `${V}`, backticks, escapes, `{a,b}` / `{1..9}` — so a protected name can be ASSEMBLED
- * rather than spelled, and clause (a) refuses what it cannot parse). It is the same
- * predicate the `-C <path>` target test asks, which is why it is imported rather than
- * re-spelled here. Asked of the RAW word, quotes included. */
-const unsafeChars = (word: string): boolean => UNREADABLE.test(word) || REDIRECT.test(word);
+/** The directory under the agent dir that holds every clone's state — the same
+ * literal `review-state-path.ts` builds its keys under. */
+const STATE_LEAF = "review-state";
 
-/** Does one segment match one of the arms? Judged on the raw words, quotes kept. */
-function segmentAdmitted(words: string[]): boolean {
-  if (words.length === 0) return false;
-  // Clause (a): a heredoc body the guard cannot read is not an argument. The marker is
-  // tested FIRST, so no arm can vouch for a command whose body was removed.
-  if (words.some((x) => x === "<<" || unquote(x) === "<<")) return false;
-  // Two shapes no arm vouches for, in any position: shell expansion, whose result the
-  // guard cannot read (`$V`, `$(…)`, backticks and escapes can ASSEMBLE a protected name
-  // the text never spells), and a redirection, which moves bytes to or from a path no
-  // arm ever saw. Both are asked of the RAW word, quotes included.
-  if (words.some(unsafeChars)) return false;
-  return [armGitRead, armForgeRead, armTest, armVerifyLoop, armBuild, armCommit, armRead].some(
-    (arm) => arm(words),
-  );
-}
+/** The store's basename, so a test can name it without spelling it. */
+export const REVIEW_STATE_FILE = FINDINGS_FILE;
 
-/** The refusal reasons (clause (b)): one base, plus the sentence naming the remedy. */
-function refusalReason(
-  opts: { vcsWrite?: boolean; dataOperand?: boolean; target?: string } = {},
-): string {
-  if (opts.target)
-    return `The review findings file (${opts.target}) is written only by ${ACCEPT_CLI}. Agents may not edit it.`;
-  const base = `Accepting a review finding is an operator act: agents may not reach the review findings store. Run ${ACCEPT_CLI} from a terminal for an acceptance. Allowed reads: git status/log/diff/show/blame, gh|glab pr|mr view|diff, gh repo view, gh issue view|list, bun|bunx test <test-path.ts>, bash smoke-tests/lib/verify-loop.sh <test-path.ts>, bun run build, bun run check, bunx tsc --noEmit, git commit -m "<message>", or a read tool (cat, grep, rg, ...) on a path that is not the findings store.`;
-  // `false` means "this route is not a write-flag one" and must add nothing; only
-  // `true` speaks of flags. `opts.vcsWrite` is a three-state value here — undefined
-  // when the command names nothing protected — so a truthiness test read as a route.
-  const vcs =
-    opts.vcsWrite === true
-      ? " Drop the write-capable flag (-o/--output/-c): e.g. `git --no-pager log` instead of `git -c core.pager=cat log`."
-      : "";
-  const data =
-    opts.dataOperand === true
-      ? " Drop the path operand naming the store: it is not an argument any command may take."
-      : "";
-  return base + vcs + data;
-}
-
-/**
- * THE DECISION — clause (a) in code: parse first (a failure refuses), then the
- * pre-checks, then the allowlist, and a segment with no matching arm refuses. Returns
- * the refusal reason, or undefined for "allowed": the DEFAULT is ALLOW, so a shape this
- * module simply does not think about passes — only the routes enumerated above block.
- */
-/** Is any NON-QUOTED word the store? A quoted word is prose, not an argument. */
-const opensProtected = (words: string[]): boolean =>
-  words.some((w) => !/["']/.test(w) && isProtectedToken(unquote(w)));
-
-/**
- * The segment the arms match: balanced quotes are STEPPED OVER, not deleted, so a
- * word keeps its quoting (which tells prose from an argument) while glued operators
- * (`x.ts;rm`) become ordinary characters the arms cannot mistake for a separator.
- */
-function unquoteKeepQuotes(segment: string): string {
-  let out = "";
-  let i = 0;
-  while (i < segment.length) {
-    const c = segment[i] as string;
-    if (c === "'" || c === '"') {
-      const end = segment.indexOf(c, i + 1);
-      const stop = end < 0 ? segment.length : end + 1;
-      out += segment.slice(i, stop).replace(/\s/g, "_");
-      // An unpaired quote leaves `stop` at `i`: the walk has to move forward anyway or
-      // the scan spins until the process dies, and a scan that dies is not a guard.
-      i = stop > i ? stop : i + 1;
-      continue;
-    }
-    out += c;
-    i++;
+/** The agent dir, in every spelling a command could carry for it. */
+function agentDirSpellings(): string[] {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const envForm = process.env.PI_AGENT_DIR?.trim();
+  const out: string[] = [];
+  // The resolved form first: what a real command carries when the agent read the
+  // path out of a trace line or a tool result.
+  if (envForm) out.push(envForm);
+  else if (home) out.push(`${home}/.pi/agent`);
+  // The textual spellings, which fire whether or not the environment agrees.
+  // `~`, `$HOME` and `${HOME}` keep the `.pi/agent` prefix — that is how a human
+  // or a script types the location. `PI_AGENT_DIR` IS the agent dir, so the
+  // variable form hangs `review-state` straight off it: an agent that reads the
+  // variable out of its own environment reaches the root that way, and a
+  // `.pi/agent` left in the middle would match a path that does not exist.
+  for (const prefix of ["~", "$HOME", "${HOME}"]) {
+    out.push(`${prefix}/.pi/agent`);
+  }
+  for (const prefix of ["$PI_AGENT_DIR", "${PI_AGENT_DIR}"]) {
+    out.push(prefix);
   }
   return out;
 }
 
-/**
- * Clause (a), part (vi) is implemented in `review-accept-command.ts` as
- * `namesAttachedValue`, which strips the option prefix (`-G`, `-S`, `--grep=`, `-o`,
- * `--output=`) before asking the name and matches case-insensitively — the guard asks it
- * of its lowercased view, so `git log -GReview-Findings-Store` counts too.
- */
+/** The literal spellings that must fire even with no environment set at all —
+ * they are pure text, and a guard whose rules depended on the ambient HOME or
+ * PI_AGENT_DIR would simply not fire in a process that has neither. */
+const ALWAYS_MATCHED = ["~", "$HOME", "${HOME}", "$PI_AGENT_DIR", "${PI_AGENT_DIR}"];
 
-/** A command in a trace line: folded, and short enough to keep a trace file readable. */
-function traceCommand(command: string): string {
-  const flat = squeeze(command);
-  return flat.length <= 160 ? flat : `${flat.slice(0, 157)}…`;
+/** `<agentDir>/review-state` resolved to an absolute path, or undefined when
+ * neither PI_AGENT_DIR nor HOME is set. */
+function resolveStateRoot(cwd: string | undefined): string | undefined {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const envForm = process.env.PI_AGENT_DIR?.trim();
+  const agentDir = envForm || (home ? `${home}/.pi/agent` : "");
+  if (!agentDir) return undefined;
+  const joined = `${agentDir}/${STATE_LEAF}`;
+  return isAbsolute(agentDir) ? normalize(joined) : resolve(cwd ?? process.cwd(), joined);
 }
 
-function scanCommand(command: string): string | undefined {
-  // The newline is kept here: it is a segment separator, and the SEGMENTS are taken from
-  // this view. `flat` (the folded text) decides only the pre-checks and the remedy
-  // sentences, where a newline is just whitespace. Keeping both views derived from one
-  // text is what makes the newline case unforgeable.
-  const kept = command.toLowerCase();
-  const trimmed = squeeze(command);
-  if (trimmed === "") return undefined;
-  // normalise() is asked of the UNFOLDED command (#1665). A heredoc's delimiter is a
-  // LINE, and the previously-folded view had no lines left to search, so EVERY heredoc
-  // parsed as unreadable and every `cat > f <<EOF` was refused whatever it wrote. The
-  // fold is not lost: normalise's own last step is `squeeze`, so every other view here is
-  // the same folded text it always was.
-  const parsed = normalise(command);
-  const raw = kept;
-  // The words as the shell hands them out (`--output=<path>` is ONE word here, which is
-  // precisely what an arm's `-o <name>` pair test cannot see).
-  const words = shellWords(raw);
-  // On a parse failure the scope predicate still gets a lowercase, whitespace-folded text to
-  // ask its questions of — the fold normalise() performs, spelled here for the one view it
-  // could not produce — rather than a branch that asks only some of them.
-  const norm = parsed.ok ? parsed.text : squeeze(kept);
-  // An UNREADABLE command is the guard's business exactly when a READABLE one of the same
-  // text would be (#1665, and #1738: this branch used to consult test (1) alone, so an
-  // unparseable command that reached the store by any of the other five routes walked
-  // free). A stray quote in a command nowhere near the findings store is an ordinary
-  // agent command — the findings-store refusal is the ONLY message this guard has, and a
-  // store sentence on `echo 'a` is what made five cycles unreadable to their own agents.
-  // In scope it is refused: an odd quote or a heredoc whose body never terminates is
-  // precisely how a name hides behind text the guard cannot read. An ALLOWED one is an
-  // ordinary command with a stray quote in it, so it logs at trace level, not warn: a host
-  // that types `echo 'a` a hundred times a day should not read a hundred warnings.
-  if (!parsed.ok) {
-    const blocked = inScope(raw, norm, words);
-    const line = `review-accept-guard: unparseable command (${parsed.cause}) ${
-      blocked ? "in scope, refusing" : "out of scope, allowing"
-    }: ${traceCommand(command)}`;
-    if (blocked) traceWarn(line);
-    else trace(line);
-    return blocked ? refusalReason({ dataOperand: true }) : undefined;
+/** Every state root a command might name: the resolved one, and each textual
+ * agent-dir spelling joined to `review-state`. The `~` / `$HOME` spellings are
+ * always present — they are literal text, so a process with no HOME set still
+ * refuses a command that names the root the way a human would type it. */
+export function reviewStateRoots(cwd?: string): string[] {
+  const roots: string[] = [];
+  const push = (root: string): void => {
+    const clean = root.endsWith("/") ? root.slice(0, -1) : root;
+    if (clean && !roots.includes(clean)) roots.push(clean);
+  };
+  const resolvedRoot = resolveStateRoot(cwd);
+  if (resolvedRoot) push(resolvedRoot);
+  for (const dir of agentDirSpellings()) push(`${dir}/${STATE_LEAF}`);
+  // The variable's own ROOT spelling: `PI_AGENT_DIR` is the agent dir, so the
+  // state root sits directly under it. Always present, so a process with no
+  // PI_AGENT_DIR set still refuses a command that names the root through it.
+  for (const prefix of ["$PI_AGENT_DIR", "${PI_AGENT_DIR}"]) {
+    push(`${prefix}/${STATE_LEAF}`);
   }
-  // Does the folded command name a protected file? Both remedy computations below ask
-  // the same question, so it is asked ONCE here and reused rather than re-derived.
-  const namesTheStore = namesProtected(norm);
-  if (!inScope(raw, norm, words)) return undefined;
+  return roots;
+}
 
-  // From here the command is IN SCOPE, so everything the guard knows how to refuse
-  // applies — the segment-wide gates (expansion, braces, a redirection) and the arms,
-  // and a segment matching no arm is refused. There is no cheap exit in front of the
-  // allowlist for a command in scope: deny-by-default is not free, and the arms are a
-  // handful of array tests.
+/** `VAR=value` / `export VAR=value` assignments appearing in a command, as
+ * (name, value) pairs (#1764 criterion 6). A command that builds the path in a
+ * variable and then names `$VAR` spells nothing until the shell expands it, so
+ * the substitution happens here, on the text, before the match.
+ *
+ * Deliberately literal: only what the text plainly assigns. One assignment
+ * appearing EARLIER in the command than the use — a `VAR=` to the right of the
+ * use is a different statement's business, and substituting it would be guessing.
+ * No arithmetic, no subshells, no quoting rules beyond stripping one matching
+ * pair of quotes. */
+function sameCommandAssignments(text: string): Array<[string, string]> {
+  const pairs: Array<[string, string]> = [];
+  const re = /(?:^|[;&|\n]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|]+)/g;
+  for (const m of text.matchAll(re)) {
+    const name = m[1] as string;
+    let value = m[2] as string;
+    const quote = value[0];
+    if ((quote === "'" || quote === '"') && value.length > 1 && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    }
+    pairs.push([name, value]);
+  }
+  return pairs;
+}
 
-  // The write-flag remedy applies only when the command BOTH names the store and
-  // carries one of the write-capable arguments; a runtime import of the store is
-  // neither, and must not be told to drop a flag it never passed.
-  const vcsWrite = namesTheStore
-    ? shellWords(raw).some((w) => VCS.test(baseName(unquote(w)))) &&
-      hasFlag(shellWords(raw), ...WRITE_FLAGS)
-    : false;
-  const dataOperand =
-    namesTheStore && !vcsWrite
-      ? armsOf(norm).some((s) => {
-          const w = shellWords(s);
-          // Two shapes name the store as data: a non-verb word (`cat <store>`,
-          // `git add <store>`), or the VERB of a command that executes text it cannot
-          // read — a heredoc marker (`cat << review-findings-store`). Either way the
-          // remedy is to drop the path.
-          return w.length > 1 && (opensProtected(w.slice(1)) || (w.length > 2 && w.includes("<<")));
-        })
-      : false;
+/** The command text with every same-command assignment's `$NAME` / `${NAME}`
+ * replaced by its value. */
+export function withAssignmentsExpanded(text: string): string {
+  let out = text;
+  for (const [name, value] of sameCommandAssignments(text)) {
+    out = out.split(`\${${name}}`).join(value);
+    out = out.split(`$${name}`).join(value);
+  }
+  return out;
+}
 
-  // The SEGMENTS come from the raw view, where a newline still separates: iterating
-  // the folded view would judge one merged segment and never see the second line at all.
-  const rawArms = armsOf(raw);
-  for (const rawSegment of rawArms) {
-    // The ARMS see the raw segment with its quotes intact: a quoted word is prose and
-    // must not be mistaken for an argument, and `git commit -m "…"` needs to see that
-    // its message was quoted at all. The normalised text is lowercase, so lowercasing
-    // the raw segment keeps the two views comparable.
-    const words = shellWords(unquoteKeepQuotes(rawSegment));
-    if (!segmentAdmitted(words)) return refusalReason({ vcsWrite, dataOperand });
+/** What a refused command matched, so the refusal can name it. */
+export type ReviewStateMatch =
+  | { kind: "state-root"; matched: string }
+  | { kind: "store-file"; matched: string };
+
+/** A shell-escaped word is the word with its backslashes gone: the shell removes
+ * `\` before the program ever sees the argument, so `re\view-findings.json` IS the
+ * store's name by the time anything reads it. Asked in addition to the raw text
+ * (never instead of it), and cheap: one strip per command. Without it the store's
+ * name hides behind backslashes, which was a real refusal in the frozen corpus. */
+function eraseBackslashes(text: string): string {
+  // `\\` + newline is a LINE CONTINUATION: the shell deletes both characters and
+  // joins the halves, so the store's name can hide across a line break. Erasing
+  // the backslash alone would leave the newline between the two halves.
+  return text
+    .replace(/\\[\r\n]/g, "")
+    .replace(/\\/g, "");
+}
+
+/** Does a piece of text name the store's location? Asked of the RAW text (quotes
+ * intact — a quoted path is still a path an agent typed), of the same text with
+ * its own assignments substituted, and of both with backslashes erased. */
+export function namesReviewState(
+  text: string,
+  roots: string[] = reviewStateRoots(),
+  storeName: string = FINDINGS_FILE,
+): ReviewStateMatch | undefined {
+  if (!text) return undefined;
+  const file = storeName.toLowerCase();
+  const lowered = roots.map((r) => r.toLowerCase());
+  const candidates = [text, withAssignmentsExpanded(text)];
+  const haystacks = [...candidates, ...candidates.map(eraseBackslashes)].map((h) =>
+    h.toLowerCase(),
+  );
+  for (const h of haystacks) {
+    if (h.includes(file)) return { kind: "store-file", matched: storeName };
+    for (let i = 0; i < lowered.length; i++) {
+      if (h.includes(lowered[i] as string))
+        return { kind: "state-root", matched: roots[i] as string };
+    }
   }
   return undefined;
 }
 
-/** The refusal text when a bash command could reach the findings store, else undefined. */
-export function runsReviewAccept(command: string): string | undefined {
-  return scanCommand(command);
+/** The refusal text: what matched, and the operator's remedy. */
+function refusal(match: ReviewStateMatch): string {
+  const what =
+    match.kind === "state-root"
+      ? `the review findings state root (${match.matched})`
+      : `the review findings store file name (${match.matched})`;
+  return (
+    `The review findings store is not agent-reachable: this call names ${what}. ` +
+    `Accepting a finding is an operator act — run ${ACCEPT_CLI} from a terminal. ` +
+    "This is a tripwire on the store's location, not a permission: an ordinary " +
+    "command is never refused for naming a tool, an expansion, or a heredoc."
+  );
 }
 
-/** Edit tools whose `path` argument is checked against the protected files. */
+/** Edit tools whose `path` argument is checked against the store's location. */
 const FILE_TOOLS = new Set(["edit", "write", "multiedit"]);
 
-/** The target path when an edit-style call would write a protected file, else undefined.
+/** The target path when an edit-style call would land inside the review-state
+ * root, else undefined.
  *
- * Fail-closed like the bash branch: a throw here must not read as "nothing to block".
- * The `path` property is read exactly ONCE, inside its own try — a caller whose `path` is
- * a throwing getter (a Proxy, a lazy field) made the old shape re-read the same getter in
- * its catch, so the guard's own error escaped and the tool_call handler saw an exception
- * rather than a refusal. The value is normalised before its basename is taken, so a
- * trailing `/.` or a `../..` walk out of the store's directory cannot present the store
- * as some other file: every SEGMENT of the normalised path is asked.
+ * A SOURCE file is never a target: `extension/src/review-findings-store.ts` and
+ * every `review-accept-*.ts` module are ordinary code an agent edits routinely, so
+ * only the data file's own basename and a path under the state root refuse. The
+ * raw text is asked before normalisation, so a `../..` walk into the store's
+ * directory is caught by the walk itself and not only by its destination.
  */
-export function editsFindingsFile(toolName: string, input: unknown): string | undefined {
+export function editsReviewState(
+  toolName: string,
+  input: unknown,
+  roots: string[] = reviewStateRoots(),
+  storeName: string = FINDINGS_FILE,
+): string | undefined {
   if (!FILE_TOOLS.has(toolName)) return undefined;
-  // A PRESENT key is asked for even when its value is `undefined` / `null` — reading
-  // `input.path` can itself throw (a Proxy, a lazy field), and that is refused below.
   const obj = (input ?? {}) as Record<string, unknown>;
   if (!("path" in obj)) return undefined;
   let target: unknown;
   try {
     target = obj.path;
   } catch (err) {
-    traceWarn(
-      `review-accept-guard: edit scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)})`,
+    // An unreadable `path` is a target the guard cannot rule out, so it is
+    // refused rather than read as "nothing to block".
+    trace(
+      `review-state-guard: ${toolName} path threw (${err instanceof Error ? err.message : String(err)})`,
     );
-    // An unreadable `path` is a target the guard cannot rule out, so it is refused rather
-    // than read as "nothing to block" — the string the caller would have handed back.
     return "<unreadable path>";
   }
-  // A `path` that is PRESENT but not a string (a number, an array, an object with a
-  // `toString`) is a target the guard cannot rule out: the writer below would coerce it,
-  // so it is refused rather than read as "nothing to block". Only an ABSENT path — no
-  // property at all, or `undefined` / `null` — means there is nothing to block.
-  if (typeof target !== "string")
-    return target === undefined || target === null ? undefined : "<non-string path>";
-  try {
-    // The RAW path is asked SEGMENT-wise BEFORE normalisation: `.normalize` collapses
-    // `<store>/../../src/x.ts` to `/repo/src/index.ts`, which reads as an ordinary file —
-    // yet the bytes a writer following that path touches come from the store's directory, so
-    // the walk itself is the refusal. Normalisation is asked too, for the trailing `/` and
-    // `/.` spellings whose last segment is empty once the separators are gone.
-    const walked = target.split(/[\\/]/).some((segment) => isProtectedToken(segment));
-    if (walked || posix.normalize(target).split("/").some(isProtectedToken)) return target;
-    return undefined;
-  } catch (err) {
-    traceWarn(
-      `review-accept-guard: edit scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)})`,
-    );
-    return target;
+  if (target === undefined || target === null) return undefined;
+  if (typeof target !== "string") return "<non-string path>";
+  const asked = [target, eraseBackslashes(target)];
+  for (const t of asked) {
+    if (t.toLowerCase().split(/[\\/]/).includes(storeName.toLowerCase())) return target;
   }
+  const abs = isAbsolute(target) ? normalize(target) : resolve(process.cwd(), target);
+  for (const root of roots) {
+    const r = normalize(root);
+    if (abs === r || abs.startsWith(`${r}/`)) return target;
+  }
+  return undefined;
+}
+
+/** The refusal for one tool call, or undefined to let it run. Exported for the
+ * suite; `registerReviewAcceptGuard` is the only caller in src. */
+export function reviewStateRefusal(
+  toolName: string,
+  input: unknown,
+  cwd?: string,
+): string | undefined {
+  const roots = reviewStateRoots(cwd);
+  if (toolName === "bash") {
+    const raw = (input as { command?: unknown } | null)?.command;
+    if (raw === undefined || raw === null) return undefined;
+    // A `command` that is present but not a string cannot be scanned, and a scan
+    // that cannot run is not a pass.
+    if (typeof raw !== "string") return refusal({ kind: "store-file", matched: FINDINGS_FILE });
+    const match = namesReviewState(raw, roots);
+    return match ? refusal(match) : undefined;
+  }
+  const target = editsReviewState(toolName, input, roots);
+  return target === undefined ? undefined : refusal({ kind: "state-root", matched: target });
 }
 
 export function registerReviewAcceptGuard(pi: ExtensionAPI): void {
-  pi.on("tool_call", async (event, _ctx) => {
-    if (event.toolName === "bash") {
-      const raw = (event.input as { command?: unknown } | null)?.command;
-      // A `command` that is PRESENT but not a string cannot be scanned, and a scan that
-      // cannot run is not a pass: refused fail-closed, like every other unreadable input.
-      if (raw !== undefined && raw !== null && typeof raw !== "string")
-        return { block: true, reason: refusalReason() };
-      const command = typeof raw === "string" ? raw : "";
-      // A scan that throws must not read as "nothing to block": a guard that fails
-      // open on its own bug stops being a guard (clause (a) again).
-      let reason: string | undefined;
-      try {
-        reason = scanCommand(command);
-      } catch (err) {
-        traceWarn(
-          `review-accept-guard: scan threw, refusing fail-open (${
-            err instanceof Error ? err.message : String(err)
-          })`,
-        );
-        reason = refusalReason();
-      }
-      if (!reason) return;
-      trace("review-accept-guard: BLOCKED agent-run finding acceptance (mode-independent)");
-      return { block: true, reason };
+  pi.on("tool_call", async (event, ctx) => {
+    const cwd = (ctx as { cwd?: unknown } | undefined)?.cwd;
+    let reason: string | undefined;
+    try {
+      reason = reviewStateRefusal(
+        event.toolName,
+        event.input,
+        typeof cwd === "string" ? cwd : undefined,
+      );
+    } catch (err) {
+      // A scan that throws is not a pass: the guard fails closed on its own bug.
+      trace(
+        `review-state-guard: scan threw, refusing fail-open (${err instanceof Error ? err.message : String(err)})`,
+      );
+      reason = refusal({ kind: "store-file", matched: FINDINGS_FILE });
     }
-    const target = editsFindingsFile(event.toolName, event.input);
-    if (!target) return;
-    trace(`review-accept-guard: BLOCKED ${event.toolName} of the review findings file`);
-    return { block: true, reason: refusalReason({ target }) };
+    if (!reason) return;
+    trace(`review-state-guard: BLOCKED ${event.toolName} naming the review findings store`);
+    return { block: true, reason };
   });
 }
