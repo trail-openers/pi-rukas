@@ -35,10 +35,7 @@
  * and stays false so an honest absence still reports absence.
  */
 
-import {
-  type HarnessStream,
-  harnessVerifyStream,
-} from "./work-driver-verify-inner-line.ts";
+import { type HarnessStream, harnessVerifyStream } from "./work-driver-verify-inner-line.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 
 /** The shape a line was recognised as. Stable strings: tests pin them. */
@@ -279,10 +276,14 @@ export { isHarnessWrapper } from "./work-driver-verify-inner-line.ts";
  * check. The re-anchored window is the same size, so a pathological line still costs
  * a constant; only its position moves, to where the truth is.
  */
-function gateView(line: string, found: HarnessStream): string {
-  const t = line.trim();
-  if (t.length <= FAILURE_LINE_SCAN_MAX || found.streamStart < 0) return found.stream;
-  return t.slice(found.streamStart, found.streamStart + FAILURE_LINE_SCAN_MAX);
+function gateView(found: HarnessStream): string {
+  // The stream the cut RETURNED *is* the gate's own view: already cut past the
+  // wrapper, already stripped of the harness's residue, already measured from the
+  // gate's first character. Re-slicing the caller's window from the cut's offset would
+  // re-derive that text from an offset the stripping does not have to agree with, and
+  // would answer "no view at all" for the common case where a gate's last line runs to
+  // the end of a long wrapper — exactly when the report matters most.
+  return found.stream;
 }
 
 /**
@@ -296,18 +297,23 @@ function gateView(line: string, found: HarnessStream): string {
  * stream out of one it has already built.
  */
 export function classifyFailureLine(line: string): FailureLine | undefined {
-  // The line is bounded ONCE, here, so no scan below can be quadratic in what the gate
-  // printed whole. A line no longer than the window — every line a real harness
-  // composes — is handed on UNCLIPPED.
-  const t = scanWindow(line);
-  if (t.length === 0) return undefined;
-  // Ask about the gate's own output, never the wrapper around it: the wrapper is not a
-  // failure line (#1667), and the first line behind it that reports a failure is the
-  // answer. A line that is not a wrapper at all goes straight to the table.
+  // The cut is asked over the UNCLIPPED line: where the wrapper ENDS is a fact about
+  // the wrapper, not about how much text a judge may read. Deciding it from the clip
+  // made a wrapper whose command string runs past the window answer "not a wrapper",
+  // and the table then judged the harness's own prose. The scan window is the bound on
+  // what the TABLE reads, and everything below is asked inside it.
   const found = harnessVerifyStream(line);
-  if (found === undefined) return matchShape(t);
+  if (found === undefined) {
+    const t = scanWindow(line);
+    return t.length === 0 ? undefined : matchShape(t);
+  }
   if (found.stream.length === 0) return undefined;
-  return matchShape(gateView(line, found)) ?? firstInnerFailure(gateView(line, found));
+  // The cut's stream is measured FROM the gate's first character, so a long harness
+  // prefix can never consume the budget the report needs; clipping it here bounds the
+  // table's scans without clipping away the report.
+  const gate = scanWindow(gateView(found));
+  if (gate.length === 0) return undefined;
+  return matchShape(gate) ?? firstInnerFailure(gate);
 }
 
 /**
@@ -356,12 +362,15 @@ function firstInnerFailure(stream: string): FailureLine | undefined {
  * verbatim, with the harness's residue removed at the cut.
  */
 export function harnessInnerLine(line: string): string | undefined {
-  // The other entry into `harnessVerifyStream`, clipped to the same window and
-  // re-anchored the same way, so the reader is shown exactly the text the classifier
-  // judged and neither re-derives the other's view.
-  const t = scanWindow(line);
-  const found = harnessVerifyStream(t);
-  return found === undefined ? undefined : gateView(line, found);
+  // The cut is asked over the UNCLIPPED line, for the classifier's own reason: the
+  // wrapper's end is not a function of the judge's budget. The view is then clipped to
+  // the same window the classifier judges, so reader and classifier cannot disagree.
+  const found = harnessVerifyStream(line);
+  if (found === undefined) return undefined;
+  const view = scanWindow(gateView(found));
+  // An empty view is the same answer as no stream at all: a reader must never be shown
+  // the harness's own sentence, which is the defect this window work exists to close.
+  return view.length === 0 ? undefined : view;
 }
 
 /** The lines of `text` that report a failure, in stream order, trimmed. */

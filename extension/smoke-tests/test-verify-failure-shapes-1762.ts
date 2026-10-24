@@ -28,10 +28,10 @@ import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
   FAILURE_LINE_SCAN_MAX,
   classifyFailureLine,
-  depsHintStartFor,
   failureLines,
   isSuccessLine,
 } from "../src/work-driver-verify-failures.ts";
+import { depsHintStartFor } from "../src/work-driver-verify-inner-line.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
 import { CHECKS_BLOCK, CMD, WT, makeAssert } from "./lib/verify-failure-shapes-fixtures.ts";
 

@@ -42,23 +42,34 @@ function assert(cond: boolean, msg: string) {
   assert(attributed, "combined multi-stage output: attributed is true when a marker is found");
 }
 
-// 2. No FAILED marker present (a single-command failure, e.g. tsc or a
-// direct execFn rejection). #1762: such a line IS now recognised, so the tail
-// is anchored on it — attribution that used to be lost is now recovered. The
-// pre-#723 blind slice still stands for a stream with no failure line at all
-// (case 10).
+// 2. A recognised diagnostic line on its OWN line anchors the tail (#1762): a
+// single-command failure arrives as `${stdout}\n${stderr}`, so the harness hands the
+// extractor a separate line, and the table recognises it. Attribution that used to be
+// lost is now recovered — the pre-#723 blind slice stands only for a stream with no
+// failure line at all (case 10).
 {
-  // `\n` before the diagnostic: the harness's own stdout+stderr concatenation is
-  // `${stdout}\n${stderr}`, so a single-command failure arrives as a separate
-  // line, which is what the #1762 anchor can see (an unbroken 2000-char run of
-  // noise has no line boundary and no recognised shape, so nothing anchors it).
   const combined = `${"a".repeat(2000)}\nerror[E0308]: mismatched types --> src/foo.rs:42`;
   const { tail, attributed } = extractAttributedTail(combined, 1500);
-  assert(tail.includes("E0308"), "no marker: the tail contains the real error");
-  assert(tail.length <= 1500, "no marker: tail respects maxLen");
+  assert(tail.includes("E0308"), "anchored diagnostic: the tail contains the real error");
+  assert(tail.length <= 1500, "anchored diagnostic: tail respects maxLen");
   assert(
     attributed === true,
-    "no marker (#1762): a recognised diagnostic line anchors the tail, so attribution is true",
+    "anchored diagnostic (#1762): a recognised diagnostic line on its own line anchors the tail",
+  );
+}
+
+// 2b. The same diagnostic with NO line boundary before it: a 2000-char run directly
+// followed by the diagnostic is ONE line whose head is noise, and the table's shapes
+// are anchored at the start of a line, so nothing in this stream is recognised. This
+// is the case the blind slice exists for, and `attributed: false` is the honest answer
+// — an evidence tail that claims attribution it does not have is the #723 defect.
+{
+  const combined = `${"a".repeat(2000)}error[E0308]: mismatched types --> src/foo.rs:42`;
+  const { tail, attributed } = extractAttributedTail(combined, 1500);
+  assert(tail.length <= 1500, "separator-less: tail respects maxLen");
+  assert(
+    attributed === false,
+    "separator-less: a diagnostic welded to the end of a long noise run, with no line boundary, anchors nothing",
   );
 }
 

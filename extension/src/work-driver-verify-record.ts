@@ -9,6 +9,7 @@
  * It also holds the reading of verify output that the gate and the decision share.
  */
 
+import { redactThenBound } from "./text-flatten.ts";
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
@@ -21,7 +22,6 @@ import {
 } from "./work-driver-verify-failures.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
-import { redactThenBound } from "./text-flatten.ts";
 
 /** One verify run the gate actually made. */
 export interface RanVerifyRecord {

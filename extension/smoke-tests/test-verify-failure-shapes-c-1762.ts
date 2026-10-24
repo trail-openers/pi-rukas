@@ -174,9 +174,16 @@ const { assert, failed } = makeAssert();
     `window: a failing gate line behind a >8 KiB wrapper prefix is still found (${JSON.stringify(got)})`,
   );
   const asserted = extractSpecificAssertion(wrapped);
+  // The reader must be shown the GATE'S line alone. Handing back the wrapper is the
+  // #798 defect through the window: an operator sent to the harness sentence, and the
+  // cycle's one corrective round spent on text the harness wrote.
   assert(
     asserted === CHECKS_BLOCK,
-    `window: and the assertion reader sees the same gate line (${JSON.stringify(asserted)})`,
+    `window: the assertion reader is given the gate line, not the wrapper (${JSON.stringify(asserted).slice(0, 100)}...)`,
+  );
+  assert(
+    !asserted.startsWith("verify command"),
+    `window: the wrapper sentence is never returned as the assertion`,
   );
 }
 

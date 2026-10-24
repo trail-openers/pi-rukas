@@ -133,10 +133,7 @@ function hintColonPositions(line: string, from: number): number[] {
   const first = Math.max(0, from);
   const last = Math.min(line.length, first + HINT_PROSE_MAX);
   const cols: number[] = [];
-  for (
-    let at = line.indexOf(STREAM_SEPARATOR, Math.max(0, first - SEPARATOR_LEN));
-    at !== -1;
-  ) {
+  for (let at = line.indexOf(STREAM_SEPARATOR, Math.max(0, first - SEPARATOR_LEN)); at !== -1; ) {
     if (at < last) cols.push(at);
     if (at >= last || cols.length >= COLON_SCAN_MAX) break;
     at = line.indexOf(STREAM_SEPARATOR, at + SEPARATOR_LEN);

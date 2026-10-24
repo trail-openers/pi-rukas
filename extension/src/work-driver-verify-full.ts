@@ -7,10 +7,10 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { redactThenBound } from "./text-flatten.ts";
 import { withVerifySlot } from "./host-resources.ts";
-import { failureLines } from "./work-driver-verify-failures.ts";
+import { redactThenBound } from "./text-flatten.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
+import { failureLines } from "./work-driver-verify-failures.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 
 /** Read the first non-empty, non-comment line from a config file. */
