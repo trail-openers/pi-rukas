@@ -21,6 +21,10 @@
  * restored records, the neutralised note) live in
  * `test-plan-unfence-docs-tests-round2.ts` — the 500-line cap made the seam
  * between "the rule's ACs" and "what the reviews caught" the natural split.
+ * The `DROPPED_ON_COPY` canary lives there too: it asserts the shape of that
+ * list against the fence fields a `Workstream` really carries, which is the
+ * direction the module's `Pick<Workstream, (typeof DROPPED_ON_COPY)[number]>`
+ * annotation cannot enforce itself (see that module).
  *
  * Paths are synthetic (`docs/`, `host/docs/`, `test/`, `src/`, `lib/`): this
  * repo is public and no real host path belongs in a fixture.
@@ -205,10 +209,17 @@ await withEnv({ [HATCH]: "0" }, async () => {
   // `DROPPED_ON_COPY` names the fields a copy must not inherit so this pass can
   // re-key them. An unlisted SECOND fence field would be copied stale — the
   // defect the copy exists to avoid — and nothing else would notice. So the
-  // list is asserted against the fence fields a Workstream really carries, and
-  // `DROPPED_ON_COPY` is typed `readonly (keyof Workstream)[]`, which makes the
-  // clip record below a REAL `OutOfScopeClip` rather than a cast fixture: a
-  // record shape the driver never writes is a type error here.
+  // list is asserted from the outside against the fence fields a Workstream
+  // really carries. The module's own `Pick<Workstream, (typeof
+  // DROPPED_ON_COPY)[number]>` annotation enforces only that every name in the
+  // list is a real field (the list is `as const satisfies`, so its element type
+  // is the literal `"outOfScopeClipped"` rather than the whole `keyof Workstream`
+  // union — a bare annotation there would make that `Pick` a whole `Workstream`
+  // and enforce nothing). It cannot prove that no fence field is MISSING from the
+  // list, because the copy is built by a spread. This block is the only thing
+  // that checks that direction. The clip record below is a REAL `OutOfScopeClip`
+  // rather than a cast fixture, so a record shape the driver never writes is a
+  // type error here.
   const sample: Workstream = {
     id: "default",
     scope: "s",

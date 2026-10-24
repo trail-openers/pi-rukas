@@ -171,8 +171,20 @@ export async function runPlanUnfencePass(
   // class of failure `readIssueBody` exists to refuse. The issue-named half of
   // the pass still runs (an empty body extracts nothing, so it removes nothing),
   // and the trace below says which rule did not run and why.
+  //
+  // A MISSING artifact is treated exactly like an unreadable one for THIS rule
+  // (#1250 round 4). `readIssueBody` reports it as `{ body: "", unreadable:
+  // false }` — honestly, because a cycle that cached no body never had a cache
+  // file to lose — and that `false` is what the issue-named half wants: an empty
+  // body extracts nothing, so it removes nothing, and the operator must not be
+  // told a file went missing when none did. But it is the SAME epistemic state
+  // for this rule — an absent artifact means the issue's refusals cannot be read
+  // either — so the precondition fails closed here too, with the same trace.
+  // `unfenceSummary` below still reports `issueBodyUnreadable` only for a real
+  // read failure, so the two facts stay apart for the operator.
   const single = Object.keys(workstreams).length === 1;
-  const docsTestsOn = single && !read.unreadable && unfenceDocsTestsEnabled();
+  const docsTestsBlocked = read.unreadable || !state.pipelineState.issueBodyArtifact;
+  const docsTestsOn = single && !docsTestsBlocked && unfenceDocsTestsEnabled();
   const result: UnfenceResult = await unfenceIssueNamedPaths(workstreams, read.body, {
     execFn: opts.execFn ?? execp,
     repoRoot: opts.repoRoot,
@@ -193,13 +205,13 @@ export async function runPlanUnfencePass(
     ? unfenceDocsTestPaths(result.workstreams, read.body)
     : { workstreams: result.workstreams, notes: [], warnings: [], placed: [], removed: [] };
   if (single && !docsTestsOn) {
-    // The two reasons a single-workstream plan keeps its docs/test fences are
+    // Three reasons a single-workstream plan keeps its docs/test fences are
     // different facts an operator needs apart: an operator who turned the knob
     // off wants to see that it was OFF, and one whose explore cache went missing
-    // wants to see that the rule declined to run without the issue. Read per
-    // call, like every other hatch in this file.
+    // — or was never written — wants to see that the rule declined to run
+    // without the issue. Read per call, like every other hatch in this file.
     trace(
-      read.unreadable
+      docsTestsBlocked
         ? "work-driver: plan unfence docs/test rule skipped — the issue body could not be read, so the rule cannot honour a prohibition it cannot read; docs and test fences left as written"
         : "work-driver: plan unfence docs/test rule disabled by PI_ENSEMBLE_UNFENCE_DOCS_TESTS=0 — docs and test fences left as written",
     );

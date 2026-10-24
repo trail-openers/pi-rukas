@@ -33,6 +33,30 @@
  *     reads a fence through that normaliser and a shape judgement made on the
  *     raw entry disagrees with the gate about what one fence is: `docs/** (new)`
  *     is the same fence as `docs/`, and a bare `docs` is a directory too.
+ *   - **A non-concrete entry is never opened.** A fence is a git pathspec, so
+ *     the question is whether one entry bounds a set of files or a pattern over
+ *     them: `*` spans directories, which makes `docs/**` a fence that can reach
+ *     outside the docs tree, and `/docs/` is not a repo path at all. Such an
+ *     entry is kept whatever its shape — the pass cannot say WHICH files opening
+ *     it frees. The three clauses are a glob/bracket character (`* ? [ ]`), a
+ *     `..` segment, and an absolute root (`/`, `~/`, a `C:` drive letter); the
+ *     first two are the same questions `isUnfenceablePath` (work-driver-plan-
+ *     unfence-notes.ts) asks of an issue-derived token in the sibling pass, so
+ *     the two rules cannot drift apart on what the driver may touch, and the
+ *     traversal/absolute half runs through `isPlainRepoRelativePath`, the
+ *     predicate that bar composes. Each clause is asked of its own projection:
+ *     braces are stripped (they are not a pattern, and the bar refuses them only
+ *     because an issue body is untrusted prose), and whitespace and quoting are
+ *     stripped before the shape predicate — `docs/my file.md` and a name carrying
+ *     a backtick are fences this rule has always opened, and their note is
+ *     neutralised at render time (#1744), not kept fenced. The full reasoning is
+ *     on `isConcreteFenceKey`. Concrete
+ *     directory globs — `docs/**`, `docs/*`, `docs/** (new)` — were already
+ *     collapsed to their directory by `fenceDirPrefix` before this question is
+ *     asked, and stay open.
+ *     directory globs — `docs/**`, `docs/*`, `docs/** (new)` — were already
+ *     collapsed to their directory by `fenceDirPrefix` before this question is
+ *     asked, and stay open.
  *   - **A protected path is never opened, whatever its extension.** The
  *     `.pi/`, `.github/` and `CODEOWNERS`/`agents.json` files are what decide
  *     what verification MEANS within a cycle (#406/#285), so the develop gate
@@ -90,9 +114,14 @@ import {
   stripFenceGlob,
 } from "./work-driver-declared-path.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
+import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import { stripCodeBlocks } from "./work-driver-plan-unfence-code.ts";
 import { isProhibition } from "./work-driver-plan-unfence-extract.ts";
-import { type UnfenceRecord, unfencedDocsTestNote } from "./work-driver-plan-unfence-notes.ts";
+import {
+  type UnfenceRecord,
+  isUnfenceablePath,
+  unfencedDocsTestNote,
+} from "./work-driver-plan-unfence-notes.ts";
 import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 
@@ -192,6 +221,78 @@ function issueForbidsPath(sentences: readonly string[], path: string): boolean {
  * followed only by nothing, or by the `/` that opens a path under it, and never
  * by a word character, a `-`, or a further `.ext` that just lengthens the name.
  */
+/**
+ * Is this fence key concrete enough for the pass to know what it frees?
+ *
+ * A fence is a git pathspec, so the question is whether one entry bounds a
+ * *set* of files or a *pattern* over them — `*` spans directories, so
+ * `docs/**` is not a docs fence but a fence that can reach the whole tree. The
+ * brief's three clauses, each asked of its own projection so none can reach into
+ * a name's spelling and fence an ordinary page:
+ *
+ *   - **A glob or bracket character (`* ? [ ]`) is a pattern.** It is asked as
+ *     characters rather than through a path predicate, and the braces come out
+ *     first: `isUnfenceablePath` refuses `{}`/`{}` because the issue body it
+ *     judges is untrusted prose, and here a brace is part of a real docs name
+ *     (`app/{group}/guide.md`) that is no pattern. Stripping them (not blanking
+ *     them, which whitespace-blanking would also do) keeps the brackets visible,
+ *     so a forged ` …[clipped]` marker still fails.
+ *   - **A `..` segment and a leading `/` or `~/` are not repo paths**, from
+ *     `isPlainRepoRelativePath` — the predicate `isUnfenceablePath` composes, so
+ *     the refusal cannot drift from the sibling rule's bar.
+ *   - **A Windows drive root is absolute** and neither predicate looks for one
+ *     (that predicate refuses only a leading `/`; the bracket clause has no
+ *     reason to notice a colon), so it is named explicitly, on the raw key — the
+ *     only projection on which the shape exists.
+ *
+ * Why projections rather than the shared bar applied whole: that bar is written
+ * for an issue-derived token that must survive a shell before it becomes a
+ * deliverable in `ws.paths`. A fence entry reaches the develop gate as DATA, and
+ * the two clauses that bar tests which this rule has no use for are its
+ * whitespace and quoting clauses — `docs/my file.md` and `docs/`+"`x`"+`.md` are
+ * fences this rule has always opened, and the note for each is neutralised at
+ * render time (#1744), not kept fenced. Reading the bar whole would fence both,
+ * and the round-2 suite pins the second one. So the shape predicate is asked of
+ * the key with its whitespace, quotes and shell punctuation removed, which
+ * leaves it reporting exactly the traversal and absoluteness the rule needs.
+ *
+ * `fenceDirPrefix` has already collapsed the directory spellings, so `docs/**`,
+ * `docs/*` and `docs/` remain concrete and open.
+ */
+function isConcreteFenceKey(key: string): boolean {
+  // Three clauses — a pattern, a traversal, an absolute root — and each is asked
+  // of its own projection, so no clause can reach into a name's spelling and
+  // fence an ordinary docs page. The shared bar (`isUnfenceablePath` over
+  // `isPlainRepoRelativePath`) is the right set of QUESTIONS and the wrong set
+  // of characters to test as one string: it is written for an issue-derived
+  // token that must survive a shell before it becomes a deliverable in
+  // `ws.paths`, whereas a fence entry reaches the develop gate as data, and
+  // names carrying a space (`docs/my file.md`) or a backtick are fences this rule
+  // has always opened — their note is neutralised at render time (#1744), not
+  // kept fenced. So those two clauses are taken as characters, never as shape.
+  const lower = key.toLowerCase();
+  // (a) A Windows drive root (`C:/docs`, `c:\docs`) or a home root (`~/docs`) is
+  // absolute, and neither predicate below looks for one — `isPlainRepoRelativePath`
+  // refuses only a leading `/`, and the bracket clause has no reason to notice a
+  // colon or a tilde. Asked of the raw key, the only projection on which these
+  // shapes exist at all (the clause-(c) projection strips the colon and leaves a
+  // bare `~docs`, which is a legitimate directory name).
+  if (/^[a-z]:([/\\]|$)/.test(lower) || lower.startsWith("~/")) return false;
+  // (b) A pattern names no directory, so the pass cannot bound what opening it
+  // frees: `fenceDirPrefix` has already collapsed the three directory spellings
+  // (`docs/`, `docs/*`, `docs/**`) and anything with a wildcard left is a real
+  // glob whose reach this rule cannot follow. The braces are stripped, not
+  // refused, so `app/{group}/guide.md` stays open while the brackets still
+  // catch `[clipped]` — a forged driver marker must not read as a clean path.
+  const chars = lower.replace(/[{}]/g, "");
+  if (/[*?[\]]/.test(chars)) return false;
+  // (c) A traversal or an absolute root is not a repo path: asked of the
+  // characters a path shape is made of (separators and letters), with every
+  // space, quote and shell punctuation character removed first so the predicate
+  // reports only traversal and absoluteness and not the spelling of a name.
+  return isPlainRepoRelativePath(chars.replace(/[\s`'"();&|<>$]/g, ""));
+}
+
 function namesPathBoundary(text: string, key: string): boolean {
   // ONE boundary rule (the `pathTokenIn` shape, which already means "a whole
   // path token, possibly with a path under it"): the key may be followed by
@@ -212,12 +313,26 @@ function namesPathBoundary(text: string, key: string): boolean {
  * one today: it is re-keyed from the surviving entries below. Exported so the
  * smoke suite can assert the list still covers the fence fields a `Workstream`
  * actually carries — an unlisted second fence-record field would silently be
- * copied stale, which is the defect this block exists to prevent. Typed as keys
- * of `Workstream` so the canary is a real assertion rather than a string
- * comparison: a name that stopped being a field is a type error, not a test that
- * quietly stops meaning anything.
+ * copied stale, which is the defect this block exists to prevent.
+ *
+ * `as const satisfies readonly (keyof Workstream)[]` is what makes the type
+ * claim in the copy below real. A bare `(keyof Workstream)[]` annotation WIDENS
+ * the element type to the whole union, so `Pick<Workstream, (typeof
+ * DROPPED_ON_COPY)[number]>` is `Pick<Workstream, keyof Workstream>` — i.e. a
+ * full `Workstream`, which the spread satisfies whatever it omits. The literal
+ * type `"outOfScopeClipped"` is what turns that `Pick` into a one-field type the
+ * compiler can compare the copy against, and `satisfies` is what keeps the
+ * literal checked against the interface: a name that stopped being a field is a
+ * compile error here, not a string that quietly stopped meaning anything. What
+ * the `Pick` DOES constrain is that every name in this list really is a field
+ * the copy claims to supply; it does not and cannot prove the reverse (that no
+ * fence field is missing from this list) — that direction is the smoke canary's
+ * job, and `Pick<Workstream, keyof Workstream>` is exactly the vacuous reading a
+ * bare annotation would have given.
  */
-export const DROPPED_ON_COPY: readonly (keyof Workstream)[] = ["outOfScopeClipped"];
+export const DROPPED_ON_COPY = [
+  "outOfScopeClipped",
+] as const satisfies readonly (keyof Workstream)[];
 
 /**
  * Open every docs/test fence in a single-workstream plan that the issue does
@@ -256,11 +371,16 @@ export function unfenceDocsTestPaths(
   // unreadable prohibition must never open a fence (see the module header).
   const sentences = stripCodeBlocks(body).split(/(?<=[.!?])\s+|\n+/);
 
+  // A workstream read back from a state file written before #679/#1744 may
+  // carry neither list, and every sibling reader of these fields falls back to
+  // `?? []` (`work-driver-adversarial-fix-scope.ts`, `work-driver-corrective-
+  // round.ts`, `ownerOf` in work-driver-plan-unfence-notes.ts). A pass that
+  // threw here would take the plan step down over a field it never needed.
   for (const id of Object.keys(workstreams)) {
     const ws = workstreams[id];
     if (!ws) continue;
     const kept: string[] = [];
-    for (const entry of ws.outOfScope) {
+    for (const entry of ws.outOfScope ?? []) {
       // ONE normalised form for both halves of the judgement. `fenceDirPrefix`
       // is the develop gate's own fence normaliser (paired markup, a planner
       // annotation, `./` and the `dir/**` / `dir/*` directory spellings all
@@ -289,7 +409,20 @@ export function unfenceDocsTestPaths(
         isProtectedPath(normaliseDeclaredPath(entry)) ||
         isProtectedPath(key) ||
         isProtectedPath(stripFenceGlob(normaliseDeclaredPath(entry)));
-      if (reason === undefined || protectedEntry || issueForbidsPath(sentences, entry)) {
+      // A fence whose key is still a pattern, a traversal or an absolute path
+      // is NOT concrete: the gate cannot say which files lie under it, so this
+      // pass cannot know what opening it frees — a `docs/**/*` can reach outside
+      // the docs tree, and `/docs/` is not a repo path at all. It stays fenced.
+      // Asked of the key, never the raw entry: an annotation or a directory glob
+      // (`docs/** (new)`) is not what makes a fence non-concrete, and the key is
+      // the form the gate itself compares.
+      const concrete = isConcreteFenceKey(key);
+      if (
+        reason === undefined ||
+        !concrete ||
+        protectedEntry ||
+        issueForbidsPath(sentences, entry)
+      ) {
         kept.push(entry);
         continue;
       }
@@ -309,10 +442,13 @@ export function unfenceDocsTestPaths(
     // `DROPPED_ON_COPY`, typed `keyof Workstream`, which doubles as the
     // type-level statement of the same fact: `Pick<Workstream, …>` is exactly
     // the fields this copy must supply itself, so the literal below is checked
-    // against the interface rather than waved through by a cast — add a fence
-    // field to `Workstream` and leave it out of the spread and this line stops
-    // compiling. The smoke-suite canary asserts the same list from the other
-    // side. A clip marker is keyed by its ENTRY TEXT, so a removed entry takes
+    // against the interface rather than waved through by a cast. It constrains
+    // only that every name listed in `DROPPED_ON_COPY` really is a field of
+    // `Workstream` that this copy supplies itself; it cannot prove the reverse
+    // (that no fence field is missing from the list), because a spread carries
+    // whatever it is given — that direction is the smoke-suite canary's job. A
+    // bare `readonly (keyof Workstream)[]` on the list would make this `Pick` a
+    // whole `Workstream` and enforce nothing at all. A clip marker is keyed by its ENTRY TEXT, so a removed entry takes
     // its own record with it: the same rule `unfenceIssueNamedPaths` applies via
     // `keepClippedRecords`.
     const carried: Pick<Workstream, (typeof DROPPED_ON_COPY)[number]> = { ...ws };
@@ -320,7 +456,7 @@ export function unfenceDocsTestPaths(
     next[id] = {
       ...ws,
       ...carried,
-      paths: [...ws.paths],
+      paths: [...(ws.paths ?? [])],
       outOfScope: kept,
       ...(ws.dependsOn ? { dependsOn: [...ws.dependsOn] } : {}),
       ...(ws.introduces ? { introduces: [...ws.introduces] } : {}),
