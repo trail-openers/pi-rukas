@@ -235,29 +235,30 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
         // most recent tail (the re-run's, if we ran one).
         //
         // #1762 round 2 (C2) — the cut keeps the ANCHORED head. The producer
-        // already chose which end of the stream to store and says so with
-        // `anchored`: an excerpt that opens AT the recognised failure line must
-        // keep its HEAD, because a blind `slice(-500)` of a 4 KB excerpt that
-        // starts at the failure keeps the 500 characters of PASSING output that
-        // follow it and throws the failure away — #1762's symptom re-created by
-        // the reader after the producer fixed it. A positional tail (no anchor)
-        // still keeps its tail, which is where its last words are.
-        // #1762 round 3 — the flag is the PRODUCER'S, not a guess about the shape
-        // the excerpt happens to be in. `firstRunOutput` is stored by the same
-        // `storeTierOutput` as `output` and carries the same `anchored` decision, so
-        // `result.anchored` says which end of EITHER excerpt opens at the failure
-        // line. Passing `true` unconditionally here claimed an anchor the producer
-        // never granted whenever the first run was unanchored — and unanchored means
-        // the stream's ONLY recognised failure sits past the window the producer
-        // scanned, which is exactly the region a head-cut excerpt never contains: the
-        // handoff then kept 500 characters of preamble and dropped the tail the
-        // failure was in. A positional excerpt keeps its tail, which is where its
-        // last words are, anchored or recovered.
+        // already chose where the failure sits and says so with `anchorOffset`: an
+        // excerpt whose failure opens it must be cut from there, because a blind
+        // `slice(-500)` of a 4 KB excerpt that starts at the failure keeps the 500
+        // characters of PASSING output that follow it and throws the failure away —
+        // #1762's symptom re-created by the reader after the producer fixed it. An
+        // excerpt with no anchor at all is a positional tail, and its last words are
+        // its tail.
+        // #1762 round 3 — the offset is the PRODUCER'S, not a guess about the shape
+        // the excerpt happens to be in.
+        // #1762 round 4 — and each excerpt carries its OWN offset. `firstRunOutput`
+        // is a different string than `output` (for a recovered run it is the first,
+        // failing run's stored excerpt, stored by the same `storeTierOutput`), so
+        // borrowing `output`'s offset cut the recovered excerpt at a position that
+        // describes the other run: when the failure sat in the last excerpt-width of
+        // the stream, the window started before it and the head cut from 0 dropped
+        // the failure line again. So the recovered branch cuts with the FIRST run's
+        // own offset, or none at all when that excerpt has no anchor.
         evidenceTail: keepEvidenceHead(
           result.outcome === "success" && result.recovered
             ? (result.firstRunOutput ?? result.output)
             : result.output,
-          result.anchored ?? false,
+          result.outcome === "success" && result.recovered
+            ? result.firstRunAnchorOffset
+            : result.anchorOffset,
         ),
       });
 

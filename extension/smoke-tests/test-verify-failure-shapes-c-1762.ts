@@ -21,7 +21,12 @@ import {
   isHarnessEchoLine,
 } from "../src/work-driver-verify-failures.ts";
 import { assertionLines } from "../src/work-driver-verify-record.ts";
-import { VERIFY_FULL_OUTPUT_MAX, keepEvidenceHead, runVerifyFull } from "../src/work-driver-verify-full.ts";
+import { redactSecrets } from "../src/secret-patterns.ts";
+import {
+  VERIFY_FULL_OUTPUT_MAX,
+  keepEvidenceHead,
+  runVerifyFull,
+} from "../src/work-driver-verify-full.ts";
 import { VERIFY_FULL_EVIDENCE_MAX } from "../src/work-driver-verify-full.ts";
 import { CHECKS_BLOCK, CMD, WT, makeAssert } from "./lib/verify-failure-shapes-fixtures.ts";
 
@@ -259,7 +264,7 @@ const { assert, failed } = makeAssert();
   // (c) The stepback's 500-character evidence contains the failure line. This is
   // the cut that used to be `slice(-500)` on an excerpt that starts at the failure,
   // i.e. the reader undoing what the producer had just fixed.
-  const evidence = keepEvidenceHead(run.output, run.anchored === true);
+  const evidence = keepEvidenceHead(run.output, run.anchorOffset);
   assert(
     evidence.length <= VERIFY_FULL_EVIDENCE_MAX,
     `c3: the evidence is bounded to the handoff budget (${evidence.length})`,
@@ -277,6 +282,18 @@ const { assert, failed } = makeAssert();
   assert(
     TOKEN.length === 40 && /^ghp_[A-Za-z0-9]{36}$/.test(TOKEN),
     `c3: the evidence fixture is a token plus 36 alphanumerics (${TOKEN.length})`,
+  );
+  // The fixture must prove the REDACTOR FIRES on this token. Every assertion below
+  // could be satisfied by a cut that merely clipped past it, and an arm that stopped
+  // matching `ghp_…` would then silently turn this whole block green while shipping
+  // keys into the handoff — so the redaction itself is asserted here, at the source,
+  // before any cut is involved.
+  const redactedToken = redactSecrets(`token=${TOKEN} tail`);
+  assert(
+    redactedToken.count === 1 &&
+      !redactedToken.text.includes("ghp_") &&
+      redactedToken.text.includes("[REDACTED]"),
+    `c3: the redactor fires on the fixture token exactly once (count ${redactedToken.count}, ${JSON.stringify(redactedToken.text)})`,
   );
   // The token sits INSIDE the 500 characters each cut keeps — so close to the edge
   // that the REDACTED marker itself runs past the budget. `redactThenBound` redacts
@@ -333,7 +350,9 @@ const { assert, failed } = makeAssert();
       positional.includes("ghp_"),
       `c3: the fixture really does carry the token before the cut, anchored=${anchored}`,
     );
-    const leaked = keepEvidenceHead(leakedSource, anchored);
+    const leaked = anchored
+      ? keepEvidenceHead(leakedSource, headCaseOffset)
+      : keepEvidenceHead(leakedSource, undefined);
     if (anchored) headResult = leaked;
     else tailResult = leaked;
     // Where the token has to sit for each cut: inside the 500 code points the cut
@@ -378,12 +397,17 @@ const { assert, failed } = makeAssert();
     throw quiet;
   });
   assert(
-    quietRun.anchored === false,
-    `c3: a stream with no recognised failure reports no anchor (got ${JSON.stringify(quietRun.anchored)})`,
+    quietRun.anchorOffset === undefined,
+    `c3: a stream with no recognised failure reports no anchor offset (got ${JSON.stringify(quietRun.anchorOffset)})`,
   );
   assert(
     quietRun.output === Array.from(quietStream).slice(-VERIFY_FULL_OUTPUT_MAX).join(""),
     "c3: an unanchored excerpt is the positional tail",
+  );
+  assert(
+    keepEvidenceHead(quietRun.output, quietRun.anchorOffset) ===
+      Array.from(quietRun.output).slice(-VERIFY_FULL_EVIDENCE_MAX).join(""),
+    "c3: with no anchor the evidence is the excerpt's tail",
   );
 }
 

@@ -18,7 +18,7 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { createVerifyChannel } from "./work-driver-integrate-verify-flake.ts";
-import { runVerifyFull } from "./work-driver-verify-full.ts";
+import { runVerifyFull, storeTierOutput } from "./work-driver-verify-full.ts";
 import { removeVerifyReportDir } from "./work-driver-verify-report-path.ts";
 import { selectOptedIn } from "./work-driver-verify-select-develop.ts";
 import {
@@ -40,11 +40,18 @@ export interface CiVerifyRun {
   recovered?: boolean;
   firstRunOutput?: string;
   /**
-   * #1762 round 2 — passed through from `runVerifyFull`: true when `output` opens
-   * at a recognised failure line, which is what tells the ci step's evidence cut
-   * whether to keep the excerpt's head or its tail.
+   * #1762 round 2/4 — passed through from `runVerifyFull`: the offset of the
+   * recognised failure line inside `output`, which is what tells the ci step's
+   * evidence cut where to start. Undefined when the excerpt carries no anchor.
    */
-  anchored?: boolean;
+  anchorOffset?: number;
+  /**
+   * #1762 round 4 — the offset of the failure line inside `firstRunOutput`, for the
+   * recovered run whose evidence is that excerpt rather than `output`. Undefined
+   * when that excerpt carries no anchor. Never borrowed from {@link anchorOffset}:
+   * the two are different strings and each has its own position.
+   */
+  firstRunAnchorOffset?: number;
   /** Tests this run let through without blocking; undefined when attribution did not run. */
   record?: SelectedVerifyRecord;
 }
@@ -119,10 +126,17 @@ export async function runCiVerifyFull(
     });
     // The record is the attribution's own account of a rerun. It is read here,
     // not reconstructed: a recovered run reports the first run's tail, as runVerifyFull does.
+    // The recovered excerpt is the attribution's OWN text, so its anchor offset is
+    // computed here by the same producer the ci tier uses, and an excerpt with no
+    // recognised failure line carries no offset rather than the run's own.
     return {
       ...result,
       ...(record.recovered !== undefined
-        ? { recovered: true, firstRunOutput: record.recovered.firstRunOutput }
+        ? {
+            recovered: true,
+            firstRunOutput: record.recovered.firstRunOutput,
+            firstRunAnchorOffset: storeTierOutput(record.recovered.firstRunOutput).anchorOffset,
+          }
         : {}),
       record,
     };

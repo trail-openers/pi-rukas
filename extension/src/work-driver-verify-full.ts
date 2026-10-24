@@ -10,7 +10,7 @@ import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
 import { redactThenBound } from "./text-flatten.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
-import { classifyFailureLine } from "./work-driver-verify-failures.ts";
+import { FAILURE_LINE_SCAN_MAX, classifyFailureLine } from "./work-driver-verify-failures.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 
 /** Read the first non-empty, non-comment line from a config file. */
@@ -55,8 +55,8 @@ interface VerifyRun {
   ms: number;
   ok: boolean;
   output: string;
-  /** True when `output` opens at a recognised failure line — see {@link StoredTierOutput}. */
-  anchored: boolean;
+  /** Where the failure line sits inside `output` — see {@link StoredTierOutput}. */
+  anchorOffset?: number;
 }
 
 /**
@@ -104,14 +104,26 @@ export const VERIFY_FULL_OUTPUT_MAX = 4000;
 const VERIFY_FULL_ANCHOR_SCAN_MAX = 8 * VERIFY_FULL_OUTPUT_MAX;
 
 /**
+ * Clip one candidate slice to {@link FAILURE_LINE_SCAN_MAX} BEFORE it reaches
+ * {@link classifyFailureLine}.
+ *
+ * The classifier bounds what it JUDGES (see its own docs), but its wrapper arm is
+ * asked over the UNCLIPPED line — deciding where a harness wrapper ends is a fact
+ * about the wrapper — and that arm's scans backtrack per candidate. A 32 KB
+ * unbroken run inside the scanned tail would be handed to it whole. Clipping here
+ * keeps the anchor scan's cost constant in the stream, which is its whole point.
+ */
+function clipForScanSlice(slice: string): string {
+  return slice.length > FAILURE_LINE_SCAN_MAX ? slice.slice(0, FAILURE_LINE_SCAN_MAX) : slice;
+}
+
+/**
  * A recognised failure line and where it sits, as {@link lastFailureLineIn} found
  * it. The offset is a UTF-16 offset into the REDACTED text the scan was given,
  * which is the same text the window is cut from — one coordinate space, so a
  * caller never re-derives an offset from a string it was handed.
  */
 interface FailureAnchor {
-  /** The recognised line, trimmed. */
-  line: string;
   /** Its first character in `text`. */
   at: number;
 }
@@ -142,20 +154,20 @@ function lastFailureLineIn(text: string): FailureAnchor | undefined {
       // The offset is the LEADING whitespace only. Subtracting the fully trimmed
       // length counts trailing spaces too and lands the anchor past the line's
       // first character, so the stored excerpt opens mid-word.
-      const rawSlice = text.slice(start, lineEnd);
+      const rawSlice = clipForScanSlice(text.slice(start, lineEnd));
       const line = rawSlice.trim();
       if (line.length > 0 && classifyFailureLine(line) !== undefined) {
-        return { line, at: start + (rawSlice.length - rawSlice.trimStart().length) };
+        return { at: start + (rawSlice.length - rawSlice.trimStart().length) };
       }
     }
     lineEnd = i;
   }
   // The head of the scanned region is a line with no break before it.
   if (lineEnd > from) {
-    const rawSlice = text.slice(from, lineEnd);
+    const rawSlice = clipForScanSlice(text.slice(from, lineEnd));
     const head = rawSlice.trim();
     if (head.length > 0 && classifyFailureLine(head) !== undefined) {
-      return { line: head, at: from + (rawSlice.length - rawSlice.trimStart().length) };
+      return { at: from + (rawSlice.length - rawSlice.trimStart().length) };
     }
   }
   return undefined;
@@ -182,16 +194,23 @@ export function boundByCodePoints(
 }
 
 /**
- * A tier's stored excerpt: the bounded text, and whether it opens AT a
- * recognised failure line. The flag is returned rather than left for a caller to
- * re-derive, because the caller's own cut is what the flag is for: a reader that
- * takes `slice(-500)` of an excerpt that starts at the failure throws the failure
- * away and keeps the passing tail.
+ * A tier's stored excerpt, and where the recognised failure line sits INSIDE it.
+ * The offset is returned rather than left for a caller to re-derive, because the
+ * caller's own cut is what it is for: a reader that takes `slice(-500)` of an
+ * excerpt that opens at the failure throws the failure away and keeps the passing
+ * tail.
+ *
+ * It is an OFFSET and not a boolean, because the excerpt does not always open at
+ * the anchor. When the failure sits in the last {@link VERIFY_FULL_OUTPUT_MAX}
+ * characters of the stream the window starts at the positional tail instead — the
+ * failure is still inside the excerpt, just not at its head — and a flag that said
+ * "anchored" there licensed a head cut that drops everything above the failure.
+ * The cut is correct for both shapes only when it knows the actual position.
  */
 export interface StoredTierOutput {
   output: string;
-  /** True when `output` starts at the anchor line (so its HEAD is the evidence). */
-  anchored: boolean;
+  /** The failure line's first character inside `output`; undefined when there is none. */
+  anchorOffset?: number;
 }
 
 /**
@@ -221,7 +240,7 @@ export interface StoredTierOutput {
  * With no anchor in the scanned tail the excerpt is the positional tail — an
  * unrecognised gate still gets its last words stored, and `anchored` says so.
  */
-function storeTierOutput(text: string): StoredTierOutput {
+export function storeTierOutput(text: string): StoredTierOutput {
   // Redact the whole stream BEFORE any cut — see the first rule above. The bound
   // below is applied to that text alone, so no window is ever redacted from a
   // stream that was clipped first. The cap is a safety bound on a gate that printed
@@ -232,21 +251,24 @@ function storeTierOutput(text: string): StoredTierOutput {
   if (anchor !== undefined) {
     // Never start the window past the anchor's own first character: whatever the
     // budget, the failure line survives, and the lines around it fill the rest.
+    // When the failure lives in the last excerpt-width of the stream this clamp
+    // starts the window BEFORE the anchor, so the excerpt's head is not the failure
+    // and the position a downstream cut needs is the anchor RELATIVE to the window,
+    // not zero and not "true".
     const from = Math.min(anchor.at, Math.max(0, redacted.length - VERIFY_FULL_OUTPUT_MAX));
     // `boundByCodePoints`, not `redactThenBound`: this text has been redacted once
     // already and the cut is a pure bound. The excerpt is measured from the anchor
-    // forward, so its HEAD is the failure and `anchored` is the flag a downstream
-    // cut needs to keep it.
+    // forward whenever the budget allows, so its HEAD is the failure; when it does
+    // not, the offset below is where the cut must start to keep it.
     return {
       output: boundByCodePoints(redacted.slice(from), VERIFY_FULL_OUTPUT_MAX).text,
-      anchored: true,
+      anchorOffset: anchor.at - from,
     };
   }
   // Nothing in the scanned tail names a failure: fall back to the positional tail,
   // so an unrecognised gate still gets its last words stored rather than nothing.
   return {
     output: boundByCodePoints(redacted, VERIFY_FULL_OUTPUT_MAX, "tail").text,
-    anchored: false,
   };
 }
 
@@ -286,7 +308,7 @@ async function execVerifyOnce(
     const ms = Date.now() - startedAt;
     const output = (stdout || stderr || "").trim();
     const stored = storeTierOutput(output);
-    return { ms, ok: true, output: stored.output, anchored: stored.anchored };
+    return { ms, ok: true, output: stored.output, anchorOffset: stored.anchorOffset };
   } catch (err) {
     const ms = Date.now() - startedAt;
     // #1770 — the same concatenation every other verify tier uses. Reading
@@ -296,7 +318,7 @@ async function execVerifyOnce(
     // failure said nothing, and a developer dispatched to fix it blind.
     const output = combinedExecFailureStream(asExecError(err));
     const stored = storeTierOutput(output);
-    return { ms, ok: false, output: stored.output, anchored: stored.anchored };
+    return { ms, ok: false, output: stored.output, anchorOffset: stored.anchorOffset };
   }
 }
 
@@ -312,8 +334,8 @@ export const VERIFY_FULL_EVIDENCE_MAX = 500;
  * Cut a stored tier excerpt down to the handoff's evidence budget, KEEPING THE END
  * THAT HOLDS THE FAILURE (#1762 round 2, C2).
  *
- * The producer already chose which end of the stream to store and says so with
- * `anchored`. An excerpt that opens AT the recognised failure line must keep its
+ * The producer already chose where the failure sits and says so with
+ * `anchorOffset`. An excerpt that opens AT the recognised failure line must keep its
  * HEAD: a blind `slice(-500)` of a 4 KB excerpt that starts at the failure keeps
  * the 500 characters of PASSING output that follow it and throws the failure away
  * — #1762's symptom re-created by the reader after the producer fixed it. An
@@ -331,8 +353,10 @@ export const VERIFY_FULL_EVIDENCE_MAX = 500;
  * is the lesser one: an arm that matches a fragment redacts it, and an arm that does
  * not match anything costs an extra pass over 500 characters.
  */
-export function keepEvidenceHead(output: string, anchored: boolean): string {
-  return redactThenBound(output, VERIFY_FULL_EVIDENCE_MAX, anchored ? "head" : "tail").text;
+export function keepEvidenceHead(output: string, anchorOffset?: number): string {
+  return anchorOffset === undefined
+    ? redactThenBound(output, VERIFY_FULL_EVIDENCE_MAX, "tail").text
+    : redactThenBound(output.slice(anchorOffset), VERIFY_FULL_EVIDENCE_MAX, "head").text;
 }
 
 /**
@@ -365,23 +389,29 @@ export async function runVerifyFull(
   recovered?: boolean;
   firstRunOutput?: string;
   /**
-   * #1762 round 2 — true when `output` opens AT a recognised failure line. The
-   * ci step's evidence cut needs this: an excerpt that starts at the failure must
-   * keep its HEAD, and one that is a positional tail must keep its TAIL, so a
-   * caller that cuts blindly throws the failure away half the time.
+   * #1762 round 2/4 — the offset of the recognised failure line inside `output`,
+   * or undefined when the excerpt carries none. The ci step's evidence cut needs
+   * this: an excerpt whose failure sits at offset N must be cut from N, and one
+   * that is a positional tail must keep its TAIL, so a caller that cuts blindly
+   * throws the failure away half the time.
    */
-  anchored?: boolean;
+  anchorOffset?: number;
 }> {
   const first = await execVerifyOnce(cmd, cwd, timeoutMs, execFn);
   if (first.ok)
-    return { outcome: "success", ms: first.ms, output: first.output, anchored: first.anchored };
+    return {
+      outcome: "success",
+      ms: first.ms,
+      output: first.output,
+      anchorOffset: first.anchorOffset,
+    };
 
   if (!opts?.retry) {
     return {
       outcome: "failure",
       ms: first.ms,
       output: first.output,
-      anchored: first.anchored,
+      anchorOffset: first.anchorOffset,
     };
   }
 
@@ -395,7 +425,10 @@ export async function runVerifyFull(
       output: second.output,
       recovered: true,
       firstRunOutput: first.output,
-      anchored: second.anchored,
+      // The evidence a recovered run keeps is the FIRST run's excerpt, so the
+      // offset handed to the cut is the first run's own — the re-run passed, and
+      // its anchor describes a different string.
+      anchorOffset: first.anchorOffset,
     };
   }
   // Second run also failed — report the second run's output as the primary
@@ -407,6 +440,6 @@ export async function runVerifyFull(
     ms: first.ms + second.ms,
     output: second.output,
     firstRunOutput: first.output,
-    anchored: second.anchored,
+    anchorOffset: second.anchorOffset,
   };
 }
