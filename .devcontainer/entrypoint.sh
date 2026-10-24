@@ -86,7 +86,7 @@ if [ "$(id -u)" = "0" ]; then
     IFS=: read -r -a _vol_targets <<<"${PI_ENSEMBLE_VOLUME_MOUNTS}"
     for _t in "${_vol_targets[@]}"; do
       case "$_t" in
-        /home/vscode/.pi/agent/sessions|/home/vscode/.pi/agent/ensemble-runs|/home/vscode/.vipune|/home/vscode/.cache|/home/vscode/.bun|/home/vscode/.cargo|/commandhistory) ;;
+        /home/vscode/.pi/agent/sessions|/home/vscode/.pi/agent/ensemble-runs|/home/vscode/.pi/agent/review-state|/home/vscode/.vipune|/home/vscode/.cache|/home/vscode/.bun|/home/vscode/.cargo|/commandhistory) ;;
         *) continue ;;
       esac
       if [ -d "$_t" ] && [ "$(stat -c %u "$_t")" = "0" ]; then

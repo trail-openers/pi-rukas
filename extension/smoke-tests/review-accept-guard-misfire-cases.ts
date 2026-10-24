@@ -2,8 +2,8 @@
  * Case tables for #1665 / #1643 / #1578 — the guard misfires measured on a live host,
  * and the store-reaching shapes that must stay refused beside them.
  *
- * Kept in its own module (the #1125 sibling `review-accept-guard-cases.ts` is at the
- * §12 size cap). These are DATA only; the polarity is the suite's.
+ * Kept in its own module. These are DATA only; the polarity is the suite's, and
+ * since #1764 phase 2 `test-review-state-guard.ts` is the suite that reads them.
  *
  * The shape of the rule these tables encode (#1643 Decision 1, resolved-target):
  * a command is the guard's business only when it REFERENCES the findings store or runs
@@ -12,7 +12,8 @@
  * directory is not.
  */
 
-import type { Case } from "./review-accept-guard-cases.ts";
+/** A command and the reason the suite asserts its verdict — the reason is the test name. */
+export type Case = { c: string; why: string };
 
 const NL = String.fromCharCode(10);
 const CR = String.fromCharCode(13);

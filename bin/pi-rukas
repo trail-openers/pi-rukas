@@ -10,6 +10,9 @@
 #       (cross-session project memory; preserves your accumulated vipune store)
 #   - $HOME/.pi/agent/ensemble-runs/       → /home/vscode/.pi/agent/ensemble-runs
 #   - $HOME/.pi/agent/sessions/            → /home/vscode/.pi/agent/sessions
+#   - $HOME/.pi/agent/review-state/        → same path (#1764: the review findings
+#       store lives under the agent dir, so the sandbox must carry it or recorded
+#       review memory dies with each container)
 #   - $HOME/.pi/agent/ensemble-models.json → same path (per-role model picks)
 #   - $HOME/.pi/agent/mcp.json             → same path (RO, native MCP, issue #959)
 #   - $HOME/.config/gh/                    → same path (RO; gh auth — or set GH_TOKEN)
@@ -127,23 +130,20 @@ build_mounts() {
     mounts+=(-v pi-ensemble-vipune:/home/vscode/.vipune)
   fi
 
-  # ensemble-runs transcripts — same pattern; /runs browses these.
-  if [ -d "$HOME/.pi/agent/ensemble-runs" ]; then
-    mounts+=(-v "$HOME/.pi/agent/ensemble-runs:/home/vscode/.pi/agent/ensemble-runs")
-  else
-    mounts+=(-v pi-ensemble-runs:/home/vscode/.pi/agent/ensemble-runs)
-  fi
-
-  # Pi sessions — `pi -r` reads these. NOTE: Pi scopes sessions by absolute
-  # project path, and the same project can live at different paths on host
-  # vs. in the container — so host and sandbox sessions live in DIFFERENT
-  # sub-buckets and don't cross-resume. Within each mode: `pi -r` / `pi-rukas`
-  # -r finds previous sessions for the same project.
-  if [ -d "$HOME/.pi/agent/sessions" ]; then
-    mounts+=(-v "$HOME/.pi/agent/sessions:/home/vscode/.pi/agent/sessions")
-  else
-    mounts+=(-v pi-ensemble-sessions:/home/vscode/.pi/agent/sessions)
-  fi
+  # The agent-dir state dirs are one decision, made three times: bind-mount the
+  # host directory when it exists (so host and sandbox share it), else a named
+  # volume that persists across container runs. `pi -r` reads sessions/, /runs
+  # browses ensemble-runs/, and review-state/ carries the review findings store
+  # that #1764 moved out of the git dir - without it a sandbox run starts with
+  # no review memory at all. Pi scopes sessions by absolute project path, so host
+  # and sandbox sessions sit in different sub-buckets and do not cross-resume.
+  for _leaf in ensemble-runs sessions review-state; do
+    if [ -d "$HOME/.pi/agent/$_leaf" ]; then
+      mounts+=(-v "$HOME/.pi/agent/$_leaf:/home/vscode/.pi/agent/$_leaf")
+    else
+      mounts+=(-v "pi-ensemble-$_leaf:/home/vscode/.pi/agent/$_leaf")
+    fi
+  done
 
   # ensemble-models.json — per-role model picks. Bound RW (not :ro) so
   # /ensemble-model inside the sandbox can update picks and persist them

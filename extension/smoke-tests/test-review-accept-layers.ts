@@ -23,7 +23,12 @@ import type { LensReviewSummary, LensRunResult } from "../src/lens-review-format
 import { isReviewIncomplete } from "../src/lens-review-incomplete.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
 import type { Finding } from "../src/lens-review-types.ts";
-import { editsFindingsFile, runsReviewAccept } from "../src/review-accept-guard.ts";
+import {
+  editsReviewState,
+  registerReviewAcceptGuard,
+  reviewStateRefusal,
+  reviewStateRoots,
+} from "../src/review-accept-guard.ts";
 import { capRows } from "../src/review-findings-file.ts";
 import {
   type StoredFinding,
@@ -32,6 +37,7 @@ import {
   recordFindingRunOutcome,
 } from "../src/review-findings-store.ts";
 import { decide } from "./lib/review-findings-fixtures.ts";
+import { FINDINGS_FILE, findingsStateDir, resetFindingsStateCache } from "../src/review-state-path.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -110,84 +116,78 @@ assert(
 
 // ── layer 3: the guard ──────────────────────────────────────────────────────
 
+const STATE_LEAF = "review-state";
+const D = String.fromCharCode(36);
+const stateRoot = reviewStateRoots()[0] ?? "";
+const ROOTS = reviewStateRoots();
+const bashRefused = (c: string): boolean =>
+  reviewStateRefusal("bash", { command: c }) !== undefined;
+
 const storeFile = "/repo/.git/review-findings.json";
 assert(
-  editsFindingsFile("edit", { path: storeFile }) === storeFile,
+  editsReviewState("edit", { path: storeFile }, ROOTS)?.matched === storeFile,
   "guard: an edit of the findings file is refused",
 );
 assert(
-  editsFindingsFile("write", { path: `${storeFile}.corrupt-123` }) !== undefined,
-  "guard: a write of a corrupt-copy sibling is refused",
+  editsReviewState("write", { path: `${storeFile}.corrupt-123` }, ROOTS) === undefined,
+  "guard: a dotted sibling outside the state root is not the file itself",
 );
 assert(
-  editsFindingsFile("multiedit", { path: "/repo/src/a.ts" }) === undefined,
+  editsReviewState("multiedit", { path: "/repo/src/a.ts" }, ROOTS) === undefined,
   "guard: an edit of an unrelated file is allowed",
 );
 assert(
-  editsFindingsFile("read", { path: storeFile }) === undefined,
+  editsReviewState("read", { path: storeFile }, ROOTS) === undefined,
   "guard: reading the findings file is not an edit",
 );
+// #1764 phase 2: the bash branch is a substring test on the store's LOCATION.
+// Everything the old shell-semantics guard refused for a SHAPE (an eval flag, a
+// preload, a heredoc body, a `--output`) is an ordinary command now; what stays
+// refused is a command that names the state root or the store's basename, in any
+// spelling, including one built in a same-command variable (criterion 6).
 for (const c of [
   `cat ${storeFile}`,
-  'bun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
-  // A multi-line command starting with git is scanned, not waved through as plain git.
-  'git status\nbun -e \'require("fs").writeFileSync("review-findings-store", "")\'',
-  // A git/gh command with a shell operator is not plain: its store mention is scanned.
-  "git log; cat review-findings.json",
-  // A test run with an eval flag runs code from the command line.
-  "bun test -e 'x' smoke-tests/review-findings-store*",
-  // A preload runs a named module before the test run: the same route as eval.
-  "bun test --preload ./x.ts smoke-tests/review-findings-store*",
-  "bun test -r ./x.ts smoke-tests/review-findings-store*",
-  // The operator script is not a test file, even under a test runner.
-  "bun test smoke-tests/review-accept-row.ts",
-  "bun test smoke-tests/review-accept.ts",
-  // #1125 — a file-writing (`--output`, `-o`) or config/alias (`-c`) argument is
-  // scanned like any other: those can create the store or run a shell.
-  "git show HEAD:blob --output=review-findings.json",
-  "git -c alias.dump='!cat /tmp/payload review-findings.json' dump",
-  // #1125 — the runtime match used to require one line, so a here-doc body or a
-  // program piped into `bun -` reached the store untouched.
-  'bun <<EOF\nimport { acceptFinding } from "./src/review-findings-store.ts"\nEOF',
-  "printf 'import \"./src/review-findings-store.ts\"' | bun -",
+  `cat ${stateRoot}/${"k"}/${"t"}/review-findings.json`,
+  `F=${storeFile}; cat $F`,
+  `export P=~/.pi/agent/${STATE_LEAF}; ls ${D}{P}`,
+  // A heredoc body naming the location is part of the command text, so it matches.
+  `cat > /tmp/f <<EOF\n${storeFile}\nEOF`,
+  'git commit -m "fix: note review-findings.json (#1)"',
 ]) {
-  assert(
-    runsReviewAccept(c) !== undefined,
-    `guard: refuses a bash mention of the store — ${c.slice(0, 40)}`,
-  );
+  assert(bashRefused(c), `guard: refuses a bash mention of the store — ${c.slice(0, 40)}`);
 }
-assert(
-  runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
-  "guard: a test glob that names no store path is allowed",
-);
-// #1125 — a read-only test run is judged by what it RUNS: an eval flag runs code.
-assert(
-  runsReviewAccept("bun test smoke-tests/test-review-*.ts") === undefined,
-  "guard: a test glob that cannot name a protected file is allowed",
-);
-// #1125 clause (b): the three documented OVER-REFUSALS (canonical: OVER_REFUSALS).
 for (const c of [
+  "bun test smoke-tests/test-review-*.ts",
+  "bun test smoke-tests/test-review-findings-store*.ts",
+  // A basename in a commit message is still the basename: the path guard has no
+  // prose exemption, so naming the data file at all is the trigger. The row is
+  // asserted as a refusal below.
   "git show HEAD:README.md --output=/tmp/readme.txt",
   "cat payload.js | bun -",
   "bun test smoke-tests/review-findings-store*",
+  "bun test -e 'x' smoke-tests/review-findings-store*",
+  "bun test --preload ./x.ts smoke-tests/review-findings-store*",
+  "bun test smoke-tests/review-accept.ts",
 ]) {
   assert(
-    runsReviewAccept(c) !== undefined,
-    `guard: over-refuses rather than guesses — ${c.slice(0, 44)}`,
+    !bashRefused(c),
+    `guard: a command naming no location runs — ${c.slice(0, 44)}`,
   );
 }
+assert(stateRoot !== "", "guard: the state root resolves for this process");
 assert(
-  runsReviewAccept("bun test smoke-tests/test-review-findings-store*.ts") === undefined,
-  "guard: a test arm whose argv are valueless switches and test paths is allowed",
+  editsReviewState("write", { path: `${stateRoot}/k/t/review-findings.json` }, ROOTS) !== undefined,
+  "guard: a write under the resolved state root is refused",
 );
 assert(
-  runsReviewAccept('git commit -m "fix: note review-findings.json (#1)"') === undefined,
-  "guard: a git commit message naming the findings file is allowed",
+  registerReviewAcceptGuard !== undefined,
+  "guard: the registration entry point keeps its exported name (#1764)",
 );
-// #1125 — the hardening must not swallow the reads the exemption exists for.
+
+// #1764 — the guard must not swallow the reads it was never about.
 for (const c of ["git diff HEAD -- extension/src/review-accept-guard.ts", "gh pr view 1105"]) {
   assert(
-    runsReviewAccept(c) === undefined,
+    !bashRefused(c),
     `guard: a plain git/gh read is allowed — ${c.slice(0, 44)}`,
   );
 }
@@ -197,7 +197,18 @@ for (const c of ["git diff HEAD -- extension/src/review-accept-guard.ts", "gh pr
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 const dir = mkdtempSync(path.join(os.tmpdir(), "review-accept-layers-"));
-const findingsFile = path.join(dir, ".git", "review-findings.json");
+// #1764 — the store no longer lives under the clone's .git: it resolves through
+// the state-dir resolver, whose path nobody can derive. Pin PI_AGENT_DIR at a
+// temp dir so this fixture never touches the operator's real one (RESOLVING
+// BEFORE THE CLONE EXISTS would answer "no git common dir" and silently fall
+// back to the old beside-the-ledger spelling, which is what the assertions here
+// would then be pinning). The path is read out of the resolver itself rather
+// than from a spelling the store no longer uses.
+const agentDir = mkdtempSync(path.join(os.tmpdir(), "review-accept-layers-agent-"));
+process.env.PI_AGENT_DIR = agentDir;
+resetFindingsStateCache();
+let findingsFile = "";
+let stateDir = "";
 const SRC = [
   "export function alpha() {",
   "  const a = x + 1;",
@@ -219,6 +230,11 @@ try {
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "c");
   const head = git(dir, "rev-parse", "HEAD");
+  // The clone now exists, so the resolver answers with the real state dir.
+  const stateLoc = await findingsStateDir((await import("../src/exec.ts")).execp, dir);
+  if (!stateLoc) throw new Error("the fixture clone resolved no findings store");
+  findingsFile = stateLoc.file;
+  stateDir = stateLoc.dir;
 
   // CRITICAL: refused by acceptRow, and never suppressed on a delta.
   const crit = await decide({
@@ -320,8 +336,7 @@ try {
     "corrupt row: the valid rows and the acceptance survive",
   );
   assert(
-    readdirSync(path.join(dir, ".git")).filter((f) => f.startsWith("review-findings.json.corrupt-"))
-      .length === 1,
+    readdirSync(stateDir).filter((f) => f.startsWith(`${FINDINGS_FILE}.corrupt-`)).length === 1,
     "corrupt row: exactly one .corrupt copy holds the malformed row",
   );
 
@@ -383,6 +398,9 @@ try {
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });
+  rmSync(agentDir, { recursive: true, force: true });
+  delete process.env.PI_AGENT_DIR;
+  resetFindingsStateCache();
 }
 
 // ── capRows never evicts an accepted row ────────────────────────────────────

@@ -3,12 +3,13 @@
  * Issue #1538 (follow-up) — verify-loop: `--jobs-from-host`.
  *
  * `.pi/verify-cmd` used to size the pool inline with
- * `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"`. That prefix is not a form
- * the review-accept guard (#1125) admits: its A5 arm (`armVerifyLoop`) accepts
- * `bash …/verify-loop.sh` only when EVERY word after the script is `--digest` or
- * a test path, and `test-review-accept-guard-hardened.ts` requires each arm of
- * `.pi/verify-cmd` to pass that arm — an expansion-word is neither. So the
- * sizing lives inside the script, behind an opt-in flag the arm does accept.
+ * `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"`. That prefix was not a form
+ * the review-accept guard (#1125) admitted: its A5 arm (`armVerifyLoop`) accepted
+ * `bash …/verify-loop.sh` only when EVERY word after the script was `--digest` or
+ * a test path, and an expansion-word is neither. The guard is now a path tripwire
+ * with no argv rules at all (#1764 phase 2), so the sizing lives inside the script
+ * behind this opt-in flag for the same historical reason — the spelling is kept
+ * because it works, not because a guard still requires it.
  *
  * Cases:
  *   1. `--jobs-from-host` with the variable UNSET → the host decides: 4 when

@@ -28,7 +28,7 @@ import {
 } from "../src/review-findings-match.ts";
 import { acceptFinding as acceptFinding } from "../src/review-findings-store.ts";
 import { readBranchRows, recordFindingRunOutcome } from "../src/review-findings-store.ts";
-import { ledgerPathFor } from "../src/review-ledger-path.ts";
+import { findingsStateDir } from "../src/review-state-path.ts";
 import { decide } from "./lib/review-findings-fixtures.ts";
 
 let exit = 0;
@@ -39,125 +39,10 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-// ── pure identity ───────────────────────────────────────────────────────────
-
-const SRC = [
-  "// header", // 1
-  "export function alpha(x: number) {", // 2
-  "  const a = x + 1;", // 3
-  "  return a * 2;", // 4
-  "}", // 5
-  "", // 6
-  "export class Beta {", // 7
-  "  run() {", // 8
-  "    return 1;", // 9
-  "  }", // 10
-  "}", // 11
-];
-
-assert(
-  anchorAt(SRC, 4) === "alpha",
-  "anchor: nearest declaration above the cited line is the enclosing function",
-);
-assert(anchorAt(SRC, 9) === "run", "anchor: a method declaration is found (run, not the class)");
-assert(anchorAt(SRC, 1) === "file", "anchor: no declaration at or above the line → file");
-assert(anchorAt(SRC, undefined) === "file", "anchor: no line → file");
-const shifted = ["x", "y", ...SRC];
-assert(anchorAt(shifted, 6) === "alpha", "anchor: a line shift keeps the same anchor");
-assert(
-  snippetHashAt(SRC, 4) === snippetHashAt(shifted, 6),
-  "snippetHash: a positional ±2 window moves with its code, so a pure shift keeps the hash",
-);
-assert(
-  snippetHashAt(SRC, 4) ===
-    snippetHashAt(
-      SRC.map((l) => l.replace(/ +/g, "  ")),
-      4,
-    ),
-  "snippetHash: whitespace-normalised (runs of spaces collapse)",
-);
-assert(
-  snippetHashAt(SRC, 4) !== snippetHashAt(SRC, 9),
-  "snippetHash: different code, different hash",
-);
-
-assert(
-  titleClassOf("The default timeout is not set") === titleClassOf("Timeout default set"),
-  "titleClass: stopwords removed and tokens sorted, so word order and filler do not matter",
-);
-assert(titleTokens("the a of").length === 0, "titleTokens: stopword-only title yields no tokens");
-assert(jaccard(["a", "b", "c"], ["a", "b", "d"]) === 0.5, "jaccard: 2 shared of 4 union = 0.5");
-assert(jaccard([], ["a"]) === 0, "jaccard: an empty side is 0");
-
-const mk = (title: string, line: number | undefined, lines: string[] = SRC) =>
-  identityOf({ path: "src/a.ts", line, title }, lines);
-const rowOf = (
-  id: FindingIdentity,
-  extra: Partial<MatchableRow> = {},
-): MatchableRow & { title: string } => ({
-  id: "deadbeef",
-  path: id.path,
-  anchor: id.anchor,
-  titleClass: id.titleClass,
-  title: id.title,
-  snippetHash: id.snippetHash,
-  lastSeen: 1,
-  ...extra,
-});
-
-const base = mk("Division by zero possible", 4);
-assert(
-  pickMatch(mk("Division by zero possible", 6, shifted), [rowOf(base)]) !== undefined,
-  "match: identical title after a line shift matches (same anchor, same titleClass)",
-);
-assert(
-  pickMatch(mk("possible division by zero!", 4), [rowOf(base)]) !== undefined,
-  "match: reworded title with the same tokens matches on titleClass",
-);
-assert(
-  pickMatch(mk("Division by zero may occur", 4), [rowOf(base)]) === undefined,
-  "match: a rewording below Jaccard 0.6 on the same snippet is a new finding, not the old row",
-);
-assert(
-  pickMatch(mk("Unrelated logging issue", 3), [rowOf(base)]) === undefined,
-  "match: an unrelated title on the same anchor and a different snippet does not match",
-);
-const otherAnchor = mk("Division by zero possible", 9);
-assert(
-  pickMatch(otherAnchor, [rowOf(base)]) === undefined,
-  "match: a different anchor never matches",
-);
-const noLine = mk("Missing null check", undefined);
-const noLine2 = mk("Hardcoded retry budget", undefined);
-assert(noLine.anchor === "file" && !noLine.hasLine, "no-line finding: anchor file, hasLine false");
-assert(
-  pickMatch(noLine2, [rowOf(noLine)]) === undefined,
-  "no-line finding: two different no-line findings in one file do NOT match on the empty snippet",
-);
-assert(
-  pickMatch(mk("Missing null check", undefined), [rowOf(noLine)]) !== undefined,
-  "no-line finding: the same title matches on titleClass",
-);
-const snippetOnly = mk("Completely different words here", 4);
-assert(
-  pickMatch(snippetOnly, [rowOf(base, { title: "zzz qqq", titleClass: "qqq zzz" })]) === undefined,
-  "match: an equal snippetHash alone does not match when titles differ (a new row)",
-);
-
-const older = rowOf(base, { id: "00000001", lastSeen: 10 });
-const newer = rowOf(base, { id: "00000002", lastSeen: 20, snippetHash: "other" });
-assert(
-  pickMatch(base, [older, newer])?.id === "00000001",
-  "pick: an equal-snippet row beats a more recent row with a different snippet",
-);
-assert(
-  pickMatch(mk("Division by zero possible", 4), [older, { ...older, id: "00000003", lastSeen: 30 }])
-    ?.id === "00000003",
-  "pick: among equal candidates the most recently seen wins",
-);
-
 // ── store, in a real temp clone ─────────────────────────────────────────────
+// The pure identity half (anchor / titleClass / Jaccard / snippetHash / pickMatch)
+// moved to test-review-findings-identity.ts with the fixture source it cites.
+import { SRC } from "./lib/review-findings-src-fixture.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -190,11 +75,24 @@ const finding = (
 });
 
 const { dir, commit } = makeRepo();
+// #1764 — this fixture runs with NO ledger override, so the store resolves to
+// the real state-dir root. Pin `PI_ENSEMBLE_REVIEW_STATE`-free isolation by
+// pointing `PI_AGENT_DIR` at a temp dir: the store lands there, never in the
+// operator's `~/.pi/agent`.
+const savedAgentDir = process.env.PI_AGENT_DIR;
+const agentDir = mkdtempSync(path.join(os.tmpdir(), "findings-store-agent-"));
+process.env.PI_AGENT_DIR = agentDir;
 try {
   const c1 = commit(SRC.join("\n"));
-  const ledger = await ledgerPathFor(execp, dir);
+  // #1764 phase 1 — the store resolves through the state-dir resolver, which
+  // is the same one the store's own `locate` uses. With no
+  // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` in the environment this is the REAL
+  // location: under `$PI_AGENT_DIR/review-state/<key>/<token>/`, outside the
+  // clone. The test pins its own agent dir so a fixture never writes the
+  // operator's.
+  const loc = await findingsStateDir(execp, dir);
   assert(
-    ledger !== undefined && existsSync(path.dirname(ledger)),
+    loc !== undefined && existsSync(path.dirname(loc.ledger)),
     "store: the clone has a git common dir",
   );
 
@@ -205,10 +103,14 @@ try {
     findings: [finding("Division by zero possible", 4)],
     review: "full",
   });
-  const findingsFile = path.join(path.dirname(ledger as string), "review-findings.json");
+  const findingsFile = loc?.file as string;
   assert(
     existsSync(findingsFile),
-    "store: review-findings.json is written beside review-ledger.json",
+    "store: the findings file is written in the clone's state dir",
+  );
+  assert(
+    !findingsFile.startsWith(dir),
+    "store: the findings file is NOT inside the clone (#1764)",
   );
   const rows1 = await readBranchRows(dir, "feat/x");
   assert(
@@ -477,6 +379,10 @@ try {
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });
+  rmSync(agentDir, { recursive: true, force: true });
+  if (savedAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+  else process.env.PI_AGENT_DIR = savedAgentDir;
+  (await import("../src/review-state-path.ts")).resetFindingsStateCache();
 }
 
 process.exit(exit);
