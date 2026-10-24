@@ -2687,7 +2687,7 @@ The acceptance boundary is layered:
 
 1. The script refuses to run when `PI_ENSEMBLE_ROLE` is set, or when `PI_ENSEMBLE_SUBAGENT_MODE=1` or `PI_ENSEMBLE_TRUST_MODE=1` is in its environment.
 2. The acceptance write itself (`acceptFinding` in `extension/src/review-findings-store.ts`) is called by no other `src/` module and registered by no Pi tool, and `src/` imports nothing from `scripts/` — the operator script is the only caller in the tree, and smoke tests assert both. The reason rule and the CRITICAL refusal live with it in the store.
-3. `review-accept-guard.ts` refuses agent bash that names the operator script `extension/scripts/review-accept.ts`, the findings file `review-findings.json`, or the store module `review-findings-store.ts`, and agent `edit`/`write`/`multiedit` of `review-findings.json`.
+3. `review-accept-guard.ts` is a **path** tripwire (#1764 phase 2): it refuses agent bash whose text names the state root or the findings file's basename, and agent `edit`/`write`/`multiedit` whose target resolves inside the state root. It no longer models shell semantics at all — see the next section.
 
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
@@ -2714,21 +2714,55 @@ Layers 1 and 3 are **advisory in trust mode**. They are environment and string c
 
 **Override:** `PI_ENSEMBLE_REVIEW_LEDGER_FILE` keeps its old meaning for the findings file too — with it set, the findings file stays **beside the override**, in that file's own directory. That is what every offline smoke test isolates on, so a fixture never writes a real store. Note the asymmetry the #1449 misdirection check relies on: the override moves the findings file and the ledger, but `cloneLedgerPathFor` still reports the clone's own ledger under the git common dir.
 
-#### An ordinary git/gh read got blocked by the accept guard (#1125)
+#### An ordinary git/gh read got blocked by the accept guard (#1125, #1665, #1764)
 
-Layer 3 hardening closed three routes, and a legitimate command can be caught by the shape test. It now refuses:
+**Fixed by #1764 phase 2: the guard is now a path tripwire.** Read this section if a
+command was refused by a build older than the one carrying #1764; on a current build
+nothing here refuses anything, and the refusal you saw should not recur.
 
-- **a git/gh argument that writes or execs**, naming a protected file — `--output` / `-o` (spaced `-o <file>` or attached `-o<file>`), `-c`, `gh alias set`, `gh config set alias`, `git config alias.`. Those arguments make the tool write a file or run a shell, so they are outside the plain-git exemption that lets a commit message name the store.
-- **a JS runtime invoked in a command that names the store**, on any line — a `bun <<EOF` here-doc importing the module, a program piped into `bun -`, or the `-e` / `-p` / `--print` / `--eval` forms.
-- **a plain git that removes the data file** — `checkout` / `restore` / `rm` / `stash` / `clean` naming `review-findings.json`. The data file dominates the exemption.
+Until #1764 the guard decided whether a command "could reach" the store by modelling
+the shell: one tokeniser, a heredoc skipper, per-segment gates on expansion and
+redirection, repo-location selectors, and eight allowlisted arms. Every rule was a
+reason to refuse, and each review round found a shape the parser read differently from
+bash. Measured on one host, 2026-10-21/22: **~6,400 refusals across 421 of 576
+children** — a `grep` whose pattern held a `$`, a heredoc with a quoted tag (`<<'EOF'`),
+a `gh issue edit --title "…review-accept guard"`, and every refusal printed the same
+unrelated remedy about running the accept CLI. #1767 attempted to narrow the parser;
+five review rounds each produced a new under-refusal, and that branch was parked.
 
-Remedy: drop the write-capable argument — `git show HEAD:x` without `--output`, and `git --no-pager log` instead of `git -c core.pager=cat log` — and the read is allowed again. Reading the store **module** is now an accepted over-refusal: `git log -- extension/src/review-findings-store.ts` and `git diff HEAD -- …` are refused because a path segment whose last segment is a protected stem is refused by position, and `grep`/`wc`/`sed -n` on the file are refused the same way (clause (b): over-refusing a harmless read is the accepted cost). Read the module with the `read` tool instead, which is not bash and is not guarded. A commit message is prose — quoted `-m` or a heredoc — and prose is excused only where the guard reads it as prose: inside a quoted `-m`, or in a `git commit -F- <<EOF` body (#1643: a heredoc is unreadable text only to a program that EXECUTES it, which `git commit` does not). Neither form is a hiding place: a message that NAMES a protected file is refused by the name test whoever would read it, so the heredoc commit is allowed only while its body names no protected file. The guard refuses `-F`/`--file` outright, so keep the message in `-m "…"` or in a `-F-` heredoc.
+**What the guard refuses now** (`extension/src/review-accept-guard.ts`, one rule per
+branch, ~260 lines with its documentation):
 
-**What a repo-location selector does to a command (#1643).** `git -C <worktree> status --porcelain` — the form this file itself mandates — runs: the selector is MATCHED against the store's location, and a `-C` aimed at an ordinary directory clears. Matched, not RESOLVED: the guard never asks the filesystem what a path turns out to be, so a symlink or a glob that lands on `.git` is not caught by anything here and stays the operator's boundary. What still refuses is the target, not the flag: `-C` at the git common dir (where `review-findings.json` lives) or at any protected name, a `-c key=value` whose value the program runs (a pager, a hook path, an alias), and `--git-dir` / `--work-tree` / `--exec-path`, which move the object store or the git program itself and are refused whatever they point at. A selector whose value the guard cannot read is refused too — a path it cannot resolve is a path it cannot clear: `-C "$WORKTREE"`, a bare `-C` at the end of a segment, a target carrying a glob or bracket (`-C .git/*`), or a `..` segment (`-C repo/../.git`). A `~` is resolved only at the HEAD of the target, where it is HOME: `git -C ~/work/wt status` runs (#1738 — refusing it re-created #1643), while `~user` and a `~` anywhere else stay refused. A SPACED selector whose next word is another option (`-C -c core.pager=cat`) takes no value and is unresolved, and each word is asked twice, as written and with its backslashes gone, because the shell strips the escape before git reads the word — `-\c core.fsmonitor=…` is a selector (#1738). An ATTACHED selector (`-C/tmp/x`, `-C=/tmp/x`) consumes no following word, so the word after it is still examined — #1738 closed a `-C/tmp/x -c core.fsmonitor=/tmp/p` that read only the first half.
+- **bash** — the command's raw text contains the **state root** or the **store's
+  basename**. The root is matched in each spelling a command can carry it in (`~/.pi/agent/review-state`,
+  `$HOME/.pi/agent/review-state`, `${HOME}/…`, `$PI_AGENT_DIR/review-state`, and the
+  resolved absolute root), and after `VAR=…` / `export VAR=…` assignments from earlier in
+  the same command are substituted, so `F=$HOME/.pi/agent/review-state/…; cat $F` is caught
+  by the text it actually spells. Backslash spellings are erased first, since the shell
+  strips them before the program reads the word — which also catches a name split across a
+  line continuation. That is the whole bash rule: **no arms, no segments, no heredoc
+  semantics, no read-tool lists, no allowlist.**
+- **edit / write / multiedit** — the `path` resolves inside the state root, or its basename
+  is the store file. A source file is never a target: `extension/src/review-findings-store.ts`
+  and every `review-accept-*.ts` module are ordinary code, and an agent edits them routinely.
 
-**The guard speaks about one thing, so it fires only for that thing (#1665).** Its whole vocabulary is the findings-store refusal, and a command that neither names the store nor runs `extension/scripts/review-accept.ts` never hears it: `git -C <path> fetch`, a heredoc into an ordinary file (`cat > f <<EOF`, which used to fail because the heredoc terminator was searched for in text whose newlines had already been folded away), `printf 'x\n' > f`, `echo -e "a\nb"`, a `grep`/`rg` pattern carrying `\|` or `\.`, and a `gh … --jq '… "\n" …'` filter are all ordinary commands. A backslash is no longer an "unreadable word": an ESCAPED store name (`cat re\view-findings.json`) is caught instead by matching the name with backslashes removed, which refuses the bypass without refusing the prose. An unparseable command (an odd quote, a heredoc whose delimiter never returns) is refused only when the command is in the guard's scope — the same six tests a readable command faces (the name, a name attached to an option, an uncleared repo selector, a heredoc beside a program that executes or writes, an unreadable word on a store-capable program, a write-capable flag), not the name test alone — which is exactly what the unreadable shape could be hiding; the cause `normalise()` reports rides along in the trace line, and an ALLOWED unparseable command is a `trace`, not a warning. The git WRITE VERB of that fourth test is a POSITION, not a word that appears: the bare word after the segment's leading `git`, in the segment that carries the unreadable `<<` body or stdin `-`. So `git commit -m "apply" <<EOF`, a heredoc body reading `rm the old notes` and prose mentioning `git rm` are ordinary commands, while a quoted `git "apply" <<EOF`, a `git hash-object --stdin && git apply <<EOF` (the decoy answers for nothing) and `git am - <<EOF` are not (#1738).
+**What it no longer refuses**, each of which used to be a refusal and is now asserted
+allowed in `test-review-state-guard.ts`: a quoted heredoc (`python3 - <<'PY'`), `echo "$HOME"`,
+`grep -n 'a$' src/x.ts`, `printf "count: %s\n" "$n"`, `cd extension && echo $PWD`, a prose
+`gh issue edit --title "the review-accept guard"`, `git -C <worktree>` in any spelling, a
+`git -c` config override, and the operator CLI's own path (the CLI refuses an agent context
+itself — refusing its *name* here would refuse the prose that discusses it).
 
-Three shapes are refused **on purpose** and have no workaround inside the guard, because a string match cannot tell them from a command: a fenced `bun run build` line followed by prose naming the store, a quoted markdown table whose cells hold `|` and name the store, and a regex literal `/bun|node|deno/` beside a store path. Write the prose without naming the file, or run the read separately. All three are asserted as refusals in `test-review-accept-guard-hardened.ts`. What the guard does not cover at all is in the module header — most load-bearing: it does not guard writes to the store module's own **source** (`sed -i`, `cp`, `tee`, a redirect, `edit`/`write`), only the findings data file and its `.tmp` / `.corrupt` siblings.
+**Why it is a tripwire, not a security boundary.** Agents run as the same user as the
+store's owner, so a name assembled from expansions, read out of a file, or built at
+runtime walks straight past a substring test — and no amount of parsing fixes that, which
+is what five rounds of #1767 demonstrated. The boundary is the tool-level one: the
+acceptance write has no caller in `src/` (asserted by `test-review-accept-layers.ts`) and
+`extension/scripts/review-accept.ts` refuses an agent context. This guard's remaining job
+is to stop an honest agent that pasted the location into a `cat`, and to tell it where the
+acceptance actually happens; the refusal names what matched (the state root, or the store
+file name) and the operator remedy. It registers at the same mode-independent site as
+before, so children are covered too.
 
 A corrupt `review-findings.json` is never overwritten — wherever it lives, the state dir or (as the fallback) beside the ledger. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
 
@@ -2745,7 +2779,7 @@ Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a boun
 
 The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
 
-When the suite is on the critical path of a **gate** rather than a developer's own run, the ceiling is the gate's bound, not the pool's: this repo's `.pi/verify-cmd` passes `--jobs-from-host` to `verify-loop.sh`, which sizes the pool from the host when `PI_ENSEMBLE_VERIFY_TEST_JOBS` is unset (4 on 8 or more CPUs, 2 otherwise; an ambient setting of the variable wins) so the full develop-gate command stays inside `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. It is a flag on the script and not an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` prefix because the review-accept guard's A5 arm (#1125) admits `bash …/verify-loop.sh` only when every word after the script is `--digest` or a test path, and an expansion-word is neither (A5 is this arm's argv rule, not a general ban on expansions in a `bash` command; `test-review-accept-guard-hardened.ts` checks each `.pi/verify-cmd` arm against it). CI passes no flag, so `.github/workflows/ci.yml` keeps the shipped default of 2. `test-verify-loop-jobs-from-host.ts` pins all three branches against a stubbed `getconf`. See `docs/configuration.md` → `PI_ENSEMBLE_VERIFY_TEST_JOBS`.
+When the suite is on the critical path of a **gate** rather than a developer's own run, the ceiling is the gate's bound, not the pool's: this repo's `.pi/verify-cmd` passes `--jobs-from-host` to `verify-loop.sh`, which sizes the pool from the host when `PI_ENSEMBLE_VERIFY_TEST_JOBS` is unset (4 on 8 or more CPUs, 2 otherwise; an ambient setting of the variable wins) so the full develop-gate command stays inside `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. It is a flag on the script and not an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` prefix for a historical reason worth knowing: until #1764 phase 2 the accept guard's A5 arm admitted `bash …/verify-loop.sh` only when every word after the script was `--digest` or a test path, and an expansion-word was neither. The guard is now a path tripwire with no argv rules at all (`docs/troubleshooting.md` → "An ordinary git/gh read got blocked by the accept guard"), so the flag spelling is kept because it works, not because a guard requires it. CI passes no flag, so `.github/workflows/ci.yml` keeps the shipped default of 2. `test-verify-loop-jobs-from-host.ts` pins all three branches against a stubbed `getconf`. See `docs/configuration.md` → `PI_ENSEMBLE_VERIFY_TEST_JOBS`.
 
 ### A consolidated verify parks with "the verify report file …" instead of naming failing tests
 

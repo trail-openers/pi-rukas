@@ -220,6 +220,10 @@ for (const c of [
   // A path built in a variable is still the store's path (#1764 criterion 6).
   `F=${STORE_PATH}; cat $F`,
   `export F=~/.pi/agent/${STATE_LEAF}; ls $D{F}`,
+  // A runtime writing the store by its basename names the store, so the path
+  // guard refuses it — the row the old shell-semantics guard refused for a
+  // SHAPE, this one refuses for the NAME.
+  "node -e \"require('fs').writeFileSync('review-findings.json','{}')\"",
 ]) {
   assert(bashRefused(c), `guard: refuses a command naming the store — ${c.slice(0, 48)}`);
 }
@@ -235,7 +239,6 @@ for (const c of [
   // test-review-accept-layers.ts asserts that layer.
   "bun extension/scripts/review-accept.ts feat/x deadbeef --reason 'a reason that is long enough'",
   "cd extension && bunx tsx scripts/review-accept.ts main 0123abcd --reason y",
-  "node -e \"require('fs').writeFileSync('review-findings.json','{}')\"",
   "git show HEAD:README.md --output=/tmp/readme.txt",
   'gh pr create --body "Adds the review-accept acceptance path"',
   "echo review-acceptance-notes",

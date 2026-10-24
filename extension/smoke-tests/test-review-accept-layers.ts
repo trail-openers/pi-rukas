@@ -23,7 +23,12 @@ import type { LensReviewSummary, LensRunResult } from "../src/lens-review-format
 import { isReviewIncomplete } from "../src/lens-review-incomplete.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
 import type { Finding } from "../src/lens-review-types.ts";
-import { editsFindingsFile, runsReviewAccept } from "../src/review-accept-guard.ts";
+import {
+  editsReviewState,
+  registerReviewAcceptGuard,
+  reviewStateRefusal,
+  reviewStateRoots,
+} from "../src/review-accept-guard.ts";
 import { capRows } from "../src/review-findings-file.ts";
 import {
   type StoredFinding,
@@ -146,13 +151,16 @@ for (const c of [
   `export P=~/.pi/agent/${STATE_LEAF}; ls $D{P}`,
   // A heredoc body naming the location is part of the command text, so it matches.
   `cat > /tmp/f <<EOF\n${storeFile}\nEOF`,
+  'git commit -m "fix: note review-findings.json (#1)"',
 ]) {
   assert(bashRefused(c), `guard: refuses a bash mention of the store — ${c.slice(0, 40)}`);
 }
 for (const c of [
   "bun test smoke-tests/test-review-*.ts",
   "bun test smoke-tests/test-review-findings-store*.ts",
-  'git commit -m "fix: note review-findings.json (#1)"',
+  // A basename in a commit message is still the basename: the path guard has no
+  // prose exemption, so naming the data file at all is the trigger. The row is
+  // asserted as a refusal below.
   "git show HEAD:README.md --output=/tmp/readme.txt",
   "cat payload.js | bun -",
   "bun test smoke-tests/review-findings-store*",

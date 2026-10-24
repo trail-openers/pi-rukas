@@ -213,6 +213,15 @@ const corpusRow = (why: string): string => {
   if (!row) throw new Error(`corpus row missing: ${why}`);
   return row.c;
 };
+/** The same lookup against the FROZEN REFUSAL table: some of its rows encoded a
+ * shell-semantics rule (a pickaxe on a source stem) rather than a path, and the
+ * path guard lets those go. Reading them from the table that holds them keeps the
+ * command text the corpus's. */
+const refusedCorpusRow = (why: string): string => {
+  const row = STORE_REACHING_REFUSALS.find((t) => t.why === why);
+  if (!row) throw new Error(`refusal-corpus row missing: ${why}`);
+  return row.c;
+};
 
 const MISFIRES_ALLOWED: Array<{ c: string; why: string; refused?: boolean }> = [
   { c: `echo "${D}HOME"`, why: "an expansion of HOME names no store" },
@@ -246,12 +255,12 @@ const MISFIRES_ALLOWED: Array<{ c: string; why: string; refused?: boolean }> = [
   { c: "git -c core.pager=cat log --oneline", why: "a git config override — no longer this guard's subject" },
   { c: "git -C /repo/.git status --porcelain", why: "a repo-location selector at the OLD store directory" },
   {
-    c: corpusRow("ACCEPTANCE: a worktree selector chained to a read of the data file"),
-    why: "a worktree selector chained to a read of the data file (a path, so refused)",
+    c: refusedCorpusRow("ACCEPTANCE: a worktree selector chained to a read of the data file"),
+    why: "a worktree selector chained to a read of the store file (a path, so refused)",
     refused: true,
   },
   {
-    c: corpusRow("ACCEPTANCE: a worktree selector beside a pickaxe on the store module"),
+    c: refusedCorpusRow("ACCEPTANCE: a worktree selector beside a pickaxe on the store module"),
     why: "ACCEPTANCE: a git pickaxe naming the store module — source, not the data file",
   },
 ];

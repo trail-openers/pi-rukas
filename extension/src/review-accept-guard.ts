@@ -166,9 +166,7 @@ function eraseBackslashes(text: string): string {
   // `\\` + newline is a LINE CONTINUATION: the shell deletes both characters and
   // joins the halves, so the store's name can hide across a line break. Erasing
   // the backslash alone would leave the newline between the two halves.
-  return text
-    .replace(/\\[\r\n]/g, "")
-    .replace(/\\/g, "");
+  return text.replace(/\\[\r\n]/g, "").replace(/\\/g, "");
 }
 
 /** Does a piece of text name the store's location? Asked of the RAW text (quotes
@@ -202,12 +200,7 @@ function refusal(match: ReviewStateMatch): string {
     match.kind === "state-root"
       ? `the review findings state root (${match.matched})`
       : `the review findings store file name (${match.matched})`;
-  return (
-    `The review findings store is not agent-reachable: this call names ${what}. ` +
-    `Accepting a finding is an operator act — run ${ACCEPT_CLI} from a terminal. ` +
-    "This is a tripwire on the store's location, not a permission: an ordinary " +
-    "command is never refused for naming a tool, an expansion, or a heredoc."
-  );
+  return `The review findings store is not agent-reachable: this call names ${what}. Accepting a finding is an operator act — run ${ACCEPT_CLI} from a terminal. This is a tripwire on the store's location, not a permission: an ordinary command is never refused for naming a tool, an expansion, or a heredoc.`;
 }
 
 /** Edit tools whose `path` argument is checked against the store's location. */
