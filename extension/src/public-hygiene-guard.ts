@@ -84,6 +84,9 @@ import {
 } from "./public-hygiene-refusals.ts";
 import { trace, traceWarn } from "./trace.ts";
 
+/** Session diagnostics for the push path: written once, read by the trace. */
+const Probe = { scanned: false };
+
 /**
  * The refusal a driver-authored publish carries when the forge exec seam
  * rejects it (#1788).
@@ -121,17 +124,29 @@ function hygieneGuardDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
  * companion AND the full pi-rukas extension — must still hold one hook, so the
  * flag is the structural guarantee rather than a convention in a comment. The
  * push scan makes git calls per push, so a duplicate is not merely redundant.
+ *
+ * The flag lives in a process-wide global, not a module-local, so a second
+ * copy of this module (a test importing it by a different specifier, which
+ * bun's loader hands back as a separate instance) cannot let a double
+ * registration through. `Symbol.for` is the cross-instance key.
  */
-let installedInThisProcess = false;
+const INSTALLED_KEY = Symbol.for("pi-rukas.publicHygiene.installed");
+
+/** The process-wide record, created on first touch. */
+function installedFlag(): { value: boolean } {
+  const g = globalThis as Record<symbol, { value: boolean } | undefined>;
+  g[INSTALLED_KEY] ??= { value: false };
+  return g[INSTALLED_KEY] as { value: boolean };
+}
 
 /** Test seam: forget that this process registered the guard. */
 export function resetPublicHygieneRegistrationForTests(): void {
-  installedInThisProcess = false;
+  installedFlag().value = false;
 }
 
 /** Whether the hook is installed in this process (for the double-registration canary). */
 export function publicHygieneInstalled(): boolean {
-  return installedInThisProcess;
+  return installedFlag().value;
 }
 
 /** What the guard's git reads go through; tests inject a scripted executor. */
@@ -139,6 +154,12 @@ export interface PublicHygieneOpts {
   execFn?: ExecFn;
   /** Override for the denylist read (tests point it at a scratch file). */
   readDenylist?: (env?: NodeJS.ProcessEnv) => DenylistRead;
+  /**
+   * Override for `git remote get-url` (#1788). The offline smoke test pins the
+   * github.com trigger decision with it, because a real push against a real
+   * remote would reach the network — and a sandbox or CI runner refuses that.
+   */
+  remoteUrl?: (remote: string) => Promise<string>;
 }
 
 /** A verdict the guard reached, for the trace. Never carries text. */
@@ -160,19 +181,20 @@ export function registerPublicHygieneGuard(
     trace("public-hygiene-guard: PI_ENSEMBLE_PUBLIC_HYGIENE=0 — publish checks disabled");
     return;
   }
-  if (installedInThisProcess) {
+  if (installedFlag().value) {
     trace("public-hygiene-guard: already registered in this process — skipping the second hook");
     return;
   }
-  installedInThisProcess = true;
+  installedFlag().value = true;
   const exec = opts.execFn;
   const readDenylist = opts.readDenylist ?? readPublicDenylist;
+  const remoteUrl = opts.remoteUrl;
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
     if (command === "") return;
     const cwd = toolCwd(ctx);
-    const decision = await inspectCommand(command, cwd, exec, readDenylist);
+    const decision = await inspectCommand(command, cwd, exec, readDenylist, remoteUrl);
     if (!decision) return;
     const v = decision.verdict;
     // Categories, line numbers and lengths only — never the term, never a
@@ -228,6 +250,7 @@ export async function inspectCommand(
   cwd: string,
   exec?: ExecFn,
   readDenylist: (env?: NodeJS.ProcessEnv) => DenylistRead = readPublicDenylist,
+  remoteUrl?: (remote: string) => Promise<string>,
 ): Promise<Decision | undefined> {
   const deny = readDenylist();
   // A configured denylist nobody could read is not a denylist: refuse rather
@@ -249,9 +272,23 @@ export async function inspectCommand(
       // No executor to ask git: the push cannot be read, so it cannot pass.
       problems.push({ location: "push range", reason: "could not be read (no git executor)" });
     } else {
-      const pushed = await scanPushRange({ exec, cwd });
-      texts.push(...pushed.texts);
-      problems.push(...pushed.problems);
+      try {
+        // The remote-URL seam is threaded through, not left to
+        // `scanPushRange`'s own default: a caller that pins the trigger (the
+        // offline smoke test) must not have a second, unpinned git read
+        // re-resolve it behind its back.
+        const pushed = await scanPushRange({ exec, cwd, remoteUrl });
+        texts.push(...pushed.texts);
+        problems.push(...pushed.problems);
+      } catch (err) {
+        // A scan that throws is an unreadable range, never a clean one.
+        const code = (err as { code?: unknown })?.code;
+        problems.push({
+          location: "push",
+          reason: `the outgoing range could not be read (${typeof code === "string" ? code : "error"})`,
+        });
+      }
+      }
     }
   }
 
