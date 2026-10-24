@@ -19,7 +19,11 @@
  *     36 cases, 0 failed` contains the substring `fail`, matches a naive
  *     `/error|fail/i`, and was printed as the top evidence of a handoff. So every
  *     classifier asks `isSuccessLine` first, and a key that can also occur inside
- *     an ordinary word is anchored (`^\s*ok\s+\d`, never /ok/).
+ *     an ordinary word is anchored (`^\s*ok\s+\d`, never /ok/). ONE shape is
+ *     exempt: the runner's assertion mark, which {@link matchShape} asks BEFORE
+ *     that veto because a failing assertion is printed with the count it expected
+ *     (`✗ expected 0 failures`). See that function for why the exemption cannot
+ *     admit a passing tally.
  *   - One line, one shape. The table is tried in priority order and the first
  *     match wins, so `not ok 3 - x` reports `not-ok` and never `ok`.
  *   - One line, ONE scan window. Every classifier entry clips its argument with
@@ -104,11 +108,28 @@ export function isHarnessEchoLine(line: string): boolean {
  *     `[1-9]` keeps that true for a shape `isSuccessLine`'s patterns do not
  *     cover.
  */
+/**
+ * The assertion-mark shape, hoisted so the ONE definition serves both the table
+ * below and {@link matchShape}'s pre-veto exemption. Two copies of `^\s*✗\s` —
+ * one the table answers from, one the veto step asks — is a pair that can drift,
+ * and the drift is silent: exempt one and forget the other and a `✗` line either
+ * loses its shape or loses its exemption.
+ *
+ * The mark sits at the START of the line (after whitespace) and is the runner's
+ * FAILURE glyph — `✓` is its passing one — so it is a stronger signal than any
+ * tally the same line carries, which is why {@link matchShape} asks it before the
+ * success veto rather than after it.
+ */
+const ASSERTION_MARK_SHAPE: { shape: FailureShape; namesTest: boolean; re: RegExp } = {
+  shape: "assertion-mark",
+  namesTest: true,
+  re: /^\s*✗\s/,
+};
+
 const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegExp }> = [
   // `.pi/verify-cmd`'s smoke loop: the per-file marker and its count summary.
   { shape: "failed-marker", namesTest: false, re: FAILED_MARKER_RE },
-  // The loop's / biome's assertion mark — `✗`, never the passing `✓`.
-  { shape: "assertion-mark", namesTest: true, re: /^✗\s/ },
+  ASSERTION_MARK_SHAPE,
   // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
   {
     shape: "diagnostic",
@@ -317,13 +338,31 @@ export function classifyFailureLine(line: string): FailureLine | undefined {
 }
 
 /**
- * The plain table - no wrapper logic: the success veto, then the shapes in
- * priority order, first match wins. This is the NON-wrapper arm of
- * {@link classifyFailureLine} and the single line every wrapper path ends in; the
- * argument must already be bounded, which both callers guarantee.
+ * The plain table - no wrapper logic: the assertion mark first, then the success
+ * veto, then the remaining shapes in priority order, first match wins. This is
+ * the NON-wrapper arm of {@link classifyFailureLine} and the single line every
+ * wrapper path ends in; the argument must already be bounded, which both callers
+ * guarantee.
+ *
+ * THE ONE EXCEPTION TO "ASK `isSuccessLine` FIRST" IS THE ASSERTION MARK. A
+ * runner prints a FAILING assertion with the count it compared against
+ * (`✗ expected 0 failures`, `✗ got 0 errors, expected 3`, `✗ there were 0
+ * failures but should be 2`), so the success veto has to come AFTER that shape
+ * or the tally inside the assertion vetoes the line that names the defect — the
+ * exact #1762 symptom, arriving through the classifier rather than the store.
+ * The ordering stays sound for every other shape because the mark is the only
+ * pattern in the table that a line reports as its own VERDICT and can also carry
+ * a zero count in: a passing tally (`36 cases, 0 failed`, `0 failed`, `12
+ * passed`) is never printed with a leading `✗` — the mark is the runner's failure
+ * glyph and `✓` is its passing one — so no success line reaches the table
+ * through it.
  */
 export function matchShape(line: string): FailureLine | undefined {
-  if (line.length === 0 || isSuccessLine(line)) return undefined;
+  if (line.length === 0) return undefined;
+  // BEFORE the success veto, for the reason in the docblock above.
+  if (ASSERTION_MARK_SHAPE.re.test(line))
+    return { shape: ASSERTION_MARK_SHAPE.shape, namesTest: ASSERTION_MARK_SHAPE.namesTest };
+  if (isSuccessLine(line)) return undefined;
   for (const entry of SHAPES) {
     if (entry.re.test(line)) return { shape: entry.shape, namesTest: entry.namesTest };
   }

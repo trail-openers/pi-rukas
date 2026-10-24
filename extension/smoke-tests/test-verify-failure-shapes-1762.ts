@@ -20,6 +20,7 @@
 
 import {
   NO_SPECIFIC_ASSERTION,
+  classifyConsolidatedVerifyFailure,
   extractSpecificAssertion,
 } from "../src/work-driver-consolidation-classify.ts";
 import { decideCorrectiveRound } from "../src/work-driver-corrective-decide.ts";
@@ -29,7 +30,9 @@ import {
   FAILURE_LINE_SCAN_MAX,
   classifyFailureLine,
   failureLines,
+  isHarnessWrapper,
   isSuccessLine,
+  matchShape,
 } from "../src/work-driver-verify-failures.ts";
 import { depsHintStartFor } from "../src/work-driver-verify-inner-line.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
@@ -427,6 +430,99 @@ assert(failureLines(SUCCESS.join("\n")).length === 0, "negative: a passing strea
     `tap: only 'not ok' classifies (got ${JSON.stringify(lines)})`,
   );
   assert(classifyFailureLine("not ok 1 - x")?.shape === "tap-not-ok", "tap: shape is tap-not-ok");
+}
+
+// ── 4b. A1 (#1762 round 2) — the assertion mark is asked BEFORE the success veto ─
+// A runner prints its FAILING assertion with the count it compared against, so the
+// line carries a zero tally AND the failure glyph. Vetting the tally first threw
+// away the only line that names the defect, and the handoff quoted a stage that had
+// passed — #1762's symptom arriving through the classifier rather than the store.
+{
+  const ASSERTIONS = [
+    "✗ expected 0 failures",
+    "✗ got 0 errors, expected 3",
+    "✗ there were 0 failures but should be 2",
+    "   ✗ expected 0 failures",
+  ];
+  for (const line of ASSERTIONS) {
+    assert(
+      classifyFailureLine(line)?.shape === "assertion-mark",
+      `mark beats veto: ${JSON.stringify(line)} classifies as assertion-mark (got ${JSON.stringify(classifyFailureLine(line))})`,
+    );
+    assert(
+      classifyFailureLine(line)?.namesTest === true,
+      `mark beats veto: ${JSON.stringify(line)} names a test (it earns the corrective round)`,
+    );
+    assert(
+      matchShape(line.trim())?.shape === "assertion-mark",
+      `mark beats veto: matchShape alone answers ${JSON.stringify(line)} (got ${JSON.stringify(matchShape(line.trim()))})`,
+    );
+  }
+  // The other half of the rule: the exemption must not turn a PASSING tally into
+  // evidence. None of these carries the mark, so the veto still answers undefined.
+  for (const line of [
+    "36 cases, 0 failed",
+    "0 failed",
+    "12 passed",
+    "pack_release_test.sh: 36 cases, 0 failed",
+    "✓ 0 failures",
+  ]) {
+    assert(
+      classifyFailureLine(line) === undefined,
+      `passing tally never classifies: ${JSON.stringify(line)} (got ${JSON.stringify(classifyFailureLine(line))})`,
+    );
+    assert(
+      matchShape(line) === undefined,
+      `passing tally never classifies through matchShape: ${JSON.stringify(line)}`,
+    );
+  }
+}
+
+// ── 4c. A2 (#1762 round 2) — the wrapper is never the assertion, and the
+// assertion the extractor returns is redacted ───────────────────────────────────
+{
+  const SECRET = `ghp_${"a".repeat(36)}`;
+  const filler = "synthetic noise 1234567890 abcdefghij"; // 36 chars, no arm anchors on it
+  // A `✗` line carrying a credential, behind the harness wrapper. `ghp_…` is NOT
+  // keyword-shaped, so `LOOKS_LIKE_SECRET` lets it through: the arm that must catch
+  // it is `redactSecrets`, and it has to run on the value the extractor RETURNS.
+  const inner = `✗ token mismatch got ${SECRET}`;
+  const wrapped = `verify command \`${CMD}\` failed in ${WT}: ${inner}${filler}`;
+  const extracted = extractSpecificAssertion(wrapped);
+  assert(
+    !isHarnessWrapper(extracted),
+    `wrapper is never the assertion: the harness sentence is not returned (got ${JSON.stringify(extracted)})`,
+  );
+  assert(
+    extracted !== NO_SPECIFIC_ASSERTION && extracted.startsWith("✗"),
+    `wrapper: the gate's own line beneath the wrapper is the assertion (got ${JSON.stringify(extracted)})`,
+  );
+  assert(
+    !/ghp_[A-Za-z0-9]/.test(extracted),
+    `wrapper: no credential reaches the extracted assertion (got ${JSON.stringify(extracted)})`,
+  );
+  // The same line bare: the extractor's return value is redacted wherever it came
+  // from, not only on the wrapper path.
+  const bare = extractSpecificAssertion(`${inner}${filler}`);
+  assert(
+    !/ghp_[A-Za-z0-9]/.test(bare),
+    `bare: no credential reaches the extracted assertion (got ${JSON.stringify(bare)})`,
+  );
+  // And the verdict that carries the assertion in its `reason` — the field the
+  // handoff prints — cannot ship the token either.
+  const verdict = classifyConsolidatedVerifyFailure(2, ["a", "b"], `${inner}${filler}`, {});
+  assert(
+    !/ghp_[A-Za-z0-9]/.test(`${verdict.assertion}|${verdict.reason}`),
+    `verdict: neither the assertion nor the reason carries the token (got ${JSON.stringify([verdict.assertion, verdict.reason])})`,
+  );
+  // A wrapper whose inner stream the reader refuses answers ABSENCE, not the
+  // harness sentence: the round-1 fallback to the caller's line was #798 through
+  // this door.
+  const unreadable = `verify command \`${CMD}\` failed in ${WT}:`;
+  assert(
+    extractSpecificAssertion(unreadable) === NO_SPECIFIC_ASSERTION,
+    `empty wrapper: absence is reported, not the harness sentence (got ${JSON.stringify(extractSpecificAssertion(unreadable))})`,
+  );
 }
 
 console.log(failed() ? "\nFAILED" : "\nAll #1762 failure-table checks passed.");

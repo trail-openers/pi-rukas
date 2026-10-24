@@ -54,11 +54,13 @@
  * evidence line looks like, and neither can carry an unredacted line.
  */
 
+import { redactSecrets } from "./secret-patterns.ts";
 import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
 import {
   FAILED_MARKER_RE,
   classifyFailureLine,
   harnessInnerLine,
+  isHarnessWrapper,
 } from "./work-driver-verify-failures.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 
@@ -190,9 +192,41 @@ function assertionCandidate(line: string): string | undefined {
   const inner = harnessInnerLine(line);
   // Not a wrapper, or a wrapper carrying no stream that reports a failure
   // (#1667's exemption, which `classifyFailureLine` also answers undefined for).
-  if (inner === undefined || inner.length === 0) return line;
+  if (inner === undefined || inner.length === 0) {
+    // #1762 round 2 — a wrapper whose inner stream the reader refuses is NOT an
+    // assertion. The wrapper is prose the harness wrote (`verify command \`cmd\`
+    // failed in <cwd>: …`), and returning it is the #798 defect arriving through
+    // this door: the operator is sent to the harness sentence and the cycle's one
+    // corrective round is spent on it. Before the window work `harnessInnerLine`
+    // returned `undefined` for a wrapper the cut could not read, and this function
+    // fell back to the caller's line — which for a wrapper IS the harness
+    // sentence. A line the caller handed that is not a wrapper at all is still the
+    // caller's own line and is returned unchanged.
+    return isHarnessWrapper(line) ? undefined : line;
+  }
   if (inner.includes("\n")) return undefined;
   return inner;
+}
+
+/**
+ * #1762 round 2 — the value the extractor returns, REDACTED. Every field this
+ * module fills reaches a human-visible surface: `verdict.assertion` is printed
+ * into `consolidatedFailureMessage` and the `reason` strings below, and
+ * `gatePerAssertion` / `baselineRedMessage` quote the extracted line into a
+ * corrective-round prompt, a handoff and a forge comment. A failing assertion
+ * routinely ECHOES the value it compared, so a credential the gate printed rides
+ * home in that field. The pre-existing `LOOKS_LIKE_SECRET` veto is
+ * KEYWORD-shaped (`api_key = …`) and cannot name a bare token welded into prose
+ * (`✗ token mismatch got ghp_…`), which is the shape a test failure actually
+ * prints. `redactSecrets` is the arm that does — but it must run on the
+ * UNCLIPPED line, which is why this is a bare redact and not
+ * {@link redactThenBound}: a code-point clip that lands inside a token amputates
+ * the context the patterns are anchored on, and a half-token survives every arm.
+ * The width bound is applied once, at each reader that stores the line, by its
+ * own {@link redactThenBound} — see `work-driver-verify-record.ts`.
+ */
+function redactedAssertion(candidate: string): string {
+  return redactSecrets(candidate).text;
 }
 
 /**
@@ -234,7 +268,7 @@ export function extractSpecificAssertion(failureTail: string): string {
   for (const line of lines) {
     const candidate = assertionCandidate(line);
     if (candidate === undefined || isNonAssertionLine(candidate)) continue;
-    if (/^✗\s/.test(candidate)) return candidate;
+    if (/^✗\s/.test(candidate)) return redactedAssertion(candidate);
   }
   for (const line of lines) {
     const candidate = assertionCandidate(line);
@@ -242,7 +276,7 @@ export function extractSpecificAssertion(failureTail: string): string {
     // The count summary is the one marker-shaped line this reader KEEPS — the
     // marker veto below would otherwise drop it, and it carries the count.
     if (IS_MARKER_LINE.test(candidate) && !isCountSummary(candidate)) continue;
-    if (classifyFailureLine(candidate) !== undefined) return candidate;
+    if (classifyFailureLine(candidate) !== undefined) return redactedAssertion(candidate);
   }
   return NO_SPECIFIC_ASSERTION;
 }
