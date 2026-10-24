@@ -199,10 +199,15 @@ function tokenFor(root: string): string | undefined {
   } catch {
     /* EEXIST means somebody else minted it; anything else falls through to the read */
   }
-  // The second read is the retry: the first can land while the winning process
-  // is still writing, and a re-read is the only way to tell that apart from a
-  // token that is genuinely unreadable or malformed.
-  return readToken(tokenFile) ?? readToken(tokenFile);
+  // One NAMED retry, not a chain of reads that looks like two rules. The first
+  // read can land while the winning process is still writing its bytes, and a
+  // re-read is the only way to tell that apart from a token that is genuinely
+  // unreadable or malformed. Exactly one more attempt is made: an unreadable
+  // token file stays unreadable, and the caller falls back beside the ledger
+  // rather than minting a private token whose directory nobody can find again.
+  const raced = readToken(tokenFile);
+  if (raced) return raced;
+  return undefined;
 }
 
 /**

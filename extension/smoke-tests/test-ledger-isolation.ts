@@ -420,32 +420,60 @@ assert(
     // the fault, and the resolver must both fall back and say so on stderr rather
     // than relocate silently (or throw).
     statePath.resetFindingsStateCache();
-    process.env.PI_AGENT_DIR = mkdtempSync(path.join(root, "agent-fallback-"));
-    const agentDirPath = process.env.PI_AGENT_DIR!;
-    mkdirSync(path.join(agentDirPath, statePath.STATE_LEAF), { mode: 0o700 });
-    chmodSync(path.join(agentDirPath, statePath.STATE_LEAF), 0o500);    statePath.resetFindingsStateCache();
-    const warned: string[] = [];
-    const realWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-      warned.push(typeof chunk === "string" ? chunk : String(chunk));
-      return true;
-    }) as typeof process.stderr.write;
-    let fellBack;
-    try {
-      fellBack = await statePath.findingsStateDir(execp, repo);
-    } finally {
-      process.stderr.write = realWrite;
-      chmodSync(path.join(agentDirPath, statePath.STATE_LEAF), 0o700);
+    // The chmod probe: make the state root read-only and ask the resolver what
+    // it does. The WHOLE created agent dir is restored in the finally below —
+    // restoring only the leaf leaves the parent at 0500 and makes `rmSync` of
+    // the temp root fail for the next test in the pool.
+    const probeAgentDir = mkdtempSync(path.join(root, "agent-fallback-"));
+    const probeStateRoot = path.join(probeAgentDir, statePath.STATE_LEAF);
+    mkdirSync(probeStateRoot, { mode: 0o700 });
+    // The probe's agent dir is installed AFTER the fault is in place: the
+    // two relocated resolves above left a process cache keyed on this clone,
+    // and installing early would let a neighbour read a half-built fixture.
+    process.env.PI_AGENT_DIR = probeAgentDir;
+    statePath.resetFindingsStateCache();
+    if (process.getuid?.() === 0) {
+      // A 0500 directory does not stop root: open(2)/mkdir(2) succeed for the
+      // superuser whatever the mode bits say, so the probe would report a
+      // fallback that never happened (or none, depending on the filesystem).
+      // The property is not being tested then, and saying so beats a green
+      // line that proves nothing.
+      console.log(
+        "SKIP #1764 chmod probe: running as root, a 0500 state root is writable to root so the fallback cannot be provoked",
+      );
+      chmodSync(probeStateRoot, 0o700);
+    } else {
+      chmodSync(probeStateRoot, 0o500);
+      const warned: string[] = [];
+      const realWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+        warned.push(typeof chunk === "string" ? chunk : String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+      let fellBack;
+      try {
+        fellBack = await statePath.findingsStateDir(execp, repo);
+      } finally {
+        // The restore and the env/spy restore come BEFORE any assertion, so a
+        // failing assertion cannot leave the tree 0500 or stderr intercepted for
+        // the rest of the process.
+        process.stderr.write = realWrite;
+        chmodSync(probeStateRoot, 0o700);
+        chmodSync(probeAgentDir, 0o700);
+      }
+      assert(
+        fellBack?.fellBack === true,
+        "#1764: an uncreatable state dir falls back beside the ledger",
+      );
+      assert(
+        fellBack!.dir === commonDir,
+        "#1764: the ONE documented in-clone location is the fallback, beside the ledger",
+      );
+      assert(
+        warned.some((w) => w.includes("WARN") && w.includes("review-state")),
+        "#1764: the fallback traces, so an in-clone store is never silent",
+      );
     }
-    assert(fellBack?.fellBack === true, "#1764: an uncreatable state dir falls back beside the ledger");
-    assert(
-      fellBack!.dir === commonDir,
-      "#1764: the ONE documented in-clone location is the fallback, beside the ledger",
-    );
-    assert(
-      warned.some((w) => w.includes("WARN") && w.includes("review-state")),
-      "#1764: the fallback traces, so an in-clone store is never silent",
-    );
     git("worktree", "prune");
   } finally {
     if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
