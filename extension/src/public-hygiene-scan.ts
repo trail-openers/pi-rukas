@@ -61,6 +61,7 @@ import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
 import { admissibleRoots, within } from "./public-hygiene-cwd.ts";
+import { unreadableOperands } from "./public-hygiene-unreadable.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
 export type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
@@ -250,6 +251,29 @@ function readPublishFile(
 const OUTSIDE_ROOTS =
   "names a file outside this directory tree, the system temp dir and the repository";
 
+/** The `problems` reason for a text the shell assembles. Names no content. */
+const SHELL_BUILT_REASON =
+  "is built by the shell, so its text cannot be read from the command; write it to a file and pass that file";
+
+/**
+ * Does this argv carry a publish verb whose text flags matter? The scan's own
+ * noun/verb tables already decide which `gh` commands publish; this is the
+ * narrower question the unreadable-operand pass asks, and it admits `gh api`
+ * and `git commit` alongside the create/edit/comment/review verbs.
+ */
+function publishesText(argv: readonly string[]): boolean {
+  const at = argv.findIndex((w) => w === "gh" || w === "oo");
+  const words = argv[0] === "oo" || at === 0 ? argv : argv;
+  const prog = words.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+  if (prog === undefined) return false;
+  const base = prog.replace(/^.*\//, "");
+  if (base === "gh") {
+    return words.includes("issue") || words.includes("pr") || words.includes("release") || words.includes("api");
+  }
+  if (base === "git") return words.includes("commit");
+  return false;
+}
+
 /** `@file` and `file=@path` are gh api's ways of taking a field from a file. */
 function apiFileOperand(v: string): string | undefined {
   if (v.startsWith("@")) return v.slice(1);
@@ -429,6 +453,21 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
     scanGhPublish(argv, cwd, scan);
     scanGhApi(argv, cwd, scan);
     scanGitCommit(argv, cwd, scan);
+    // A publish-text flag whose value the shell builds (`--body "$(cat x)"`,
+    // `--body $BODY`, a backtick, a process substitution) is a surface this
+    // module cannot read, and the rule for one of those has never changed: it is
+    // a refusal, never a pass. Asked of every command's argv rather than only
+    // the ones already known to publish, because the flag itself is what names
+    // the publish here — `--body "$(…)"` on a `gh` command the noun table does
+    // not classify would otherwise publish an unchecked body.
+    if (publishesText(argv)) {
+      for (const operand of unreadableOperands(argv, command)) {
+        scan.problems.push({
+          location: operand.location,
+          reason: SHELL_BUILT_REASON,
+        });
+      }
+    }
     // `bash -c 'gh pr comment …'`: the body word IS a command line, so it is
     // scanned as one. `simpleCommands` already split it out of the outer layer,
     // and a publish reached through a shell is the same publish (the memory
@@ -439,6 +478,11 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
         scanGhPublish(inner, cwd, scan);
         scanGhApi(inner, cwd, scan);
         scanGitCommit(inner, cwd, scan);
+        if (publishesText(inner)) {
+          for (const operand of unreadableOperands(inner, nested)) {
+            scan.problems.push({ location: operand.location, reason: SHELL_BUILT_REASON });
+          }
+        }
       }
     }
   }
