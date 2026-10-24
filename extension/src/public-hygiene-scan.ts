@@ -43,18 +43,24 @@
  *
  * ## Where a body file may live
  *
- * Realpath must sit inside the tool call's cwd tree or the OS temp dir, and be
- * at most 1 MiB. Both bounds exist because the path is agent-named input. The
- * temp dir is admissible because that is where the forge adapter legitimately
- * writes a body (`forge.ts`'s `withBodyFile` → `mkdtempSync`), so a rule that
- * refused it would refuse a normal call.
+ * Realpath must sit inside the tool call's cwd tree, the OS temp dir, or the git
+ * top-level of that directory (the repository, whose `tmp/issue-<N>/` scratch the
+ * /work driver and its agents write PR and handoff bodies into), and be at most
+ * 1 MiB. All three bounds exist because the path is agent-named input. The temp
+ * dir is admissible because that is where the forge adapter legitimately writes a
+ * body (`forge.ts`'s `withBodyFile` → `mkdtempSync`), and the repository because
+ * the scratch convention in AGENTS.md §7 puts the driver's own body files there —
+ * a rule that admitted only the temp dir refused a normal handoff comment. A path
+ * outside every root is refused on its PATH alone and never opened. The roots are
+ * owned by `public-hygiene-cwd.ts` (`admissibleRoots`), which is also what decides
+ * which directory a chained command's push runs in.
  */
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
+import { admissibleRoots, within } from "./public-hygiene-cwd.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
 export type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
@@ -203,7 +209,7 @@ function readPublishFile(
       return {
         problem: {
           location,
-          reason: "names a file outside this directory tree and the system temp dir",
+          reason: OUTSIDE_ROOTS,
         },
       };
     }
@@ -215,7 +221,7 @@ function readPublishFile(
     return {
       problem: {
         location,
-        reason: "names a file outside this directory tree and the system temp dir",
+        reason: OUTSIDE_ROOTS,
       },
     };
   }
@@ -240,24 +246,9 @@ function readPublishFile(
   }
 }
 
-/** The directories a named body file may live in: the cwd tree and /tmp. */
-function admissibleRoots(cwd: string): string[] {
-  const roots: string[] = [];
-  for (const dir of [cwd, tmpdir()]) {
-    try {
-      roots.push(realpathSync(dir));
-    } catch {
-      roots.push(path.resolve(dir)); // a temp dir that cannot be resolved is still a root
-    }
-  }
-  return roots;
-}
-
-/** Is `target` `root` itself or below it? Compares realpaths, so `..` cannot escape. */
-function within(root: string, target: string): boolean {
-  const rel = path.relative(root, target);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
+/** What a refusal may say about a path it will not open — and the only thing it may say. */
+const OUTSIDE_ROOTS =
+  "names a file outside this directory tree, the system temp dir and the repository";
 
 /** `@file` and `file=@path` are gh api's ways of taking a field from a file. */
 function apiFileOperand(v: string): string | undefined {

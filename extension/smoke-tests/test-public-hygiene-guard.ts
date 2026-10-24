@@ -12,14 +12,18 @@
  * model the behaviour they enforce.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createForge } from "../src/forge.ts";
 import { genericCategoryOf as classifyPublicText } from "../src/public-denylist.ts";
-import { readPublicDenylist, resetDenylistCacheForTests } from "../src/public-denylist.ts";
+import {
+  type DenylistRead,
+  readPublicDenylist,
+  resetDenylistCacheForTests,
+} from "../src/public-denylist.ts";
 import {
   publicHygieneInstalled,
   publicTextRefusal,
@@ -29,6 +33,63 @@ import {
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 import { forgePrMergeSeam } from "./test-forge-pr-merge-seam.ts";
+import { execFile } from "node:child_process";
+import { admissibleRoots, pushGitCwd, segmentCwds, within } from "../src/public-hygiene-cwd.ts";
+import { inspectCommand } from "../src/public-hygiene-guard.ts";
+import type { ExecFn } from "../src/worktree.ts";
+
+/** Realpath, or "" when it cannot be resolved — a fixture guard, not a decision. */
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return "";
+  }
+}
+
+const PUSH = ["pu", "sh"].join("");
+const GIT = ["gi", "t"].join("");
+
+/** Run git in `cwd` through argv, so a path with spaces stays one argument. */
+function git(cwd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(GIT, args, { cwd, encoding: "utf8" }, (err) =>
+      err === null ? resolve() : reject(err),
+    );
+  });
+}
+
+/**
+ * Ask the guard about a command with every seam pinned for this block: the
+ * scratch denylist, a github.com remote, and the caller's own executor, so the
+ * assertions are about which DIRECTORY the scan was pointed at.
+ */
+async function inspectWith(
+  command: string,
+  cwd: string,
+  exec: ExecFn,
+): Promise<{ reason: string } | undefined> {
+  resetPublicHygieneRegistrationForTests();
+  resetDenylistCacheForTests();
+  const env = { ...process.env, PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath } as NodeJS.ProcessEnv;
+  return inspectCommand(command, cwd, exec, () => readPublicDenylist(env), {
+    remoteUrl: async () => "https://github.com/example-owner/example-repo.git",
+  });
+}
+
+/** Put HOME, TMPDIR and USERPROFILE back the way they were (this block moves them). */
+function restoreHome(
+  prevHome: string | undefined,
+  prevTmp: string | undefined,
+  prevProfile: string | undefined,
+): void {
+  if (prevHome === undefined) delete process.env.HOME;
+  else process.env.HOME = prevHome;
+  if (prevTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = prevTmp;
+  if (prevProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = prevProfile;
+}
 
 const dir = mkdtempSync(path.join(tmpdir(), "public-hygiene-"));
 // Scratch for the out-of-root cases. It must NOT live under `tmpdir()`: the OS
@@ -46,7 +107,7 @@ writeFileSync(denylistPath, `# the operator list\n${TERM}\nsecond-term\n`, "utf8
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
 
 /** Register the guard on a fake pi and return a dispatcher for its hooks. */
-function hook() {
+function hook(opts: { readDenylist?: (env?: NodeJS.ProcessEnv) => DenylistRead } = {}) {
   const handlers: Handler[] = [];
   const pi = {
     on(event: string, fn: Handler) {
@@ -57,7 +118,7 @@ function hook() {
   // guard is released first — otherwise every block after the first would
   // register nothing and assert against zero hooks.
   resetPublicHygieneRegistrationForTests();
-  registerPublicHygieneGuard(pi);
+  registerPublicHygieneGuard(pi, opts);
   return async (
     command: string,
     ctx: Record<string, unknown> = {},
@@ -271,6 +332,164 @@ function expectRefusal(
       (await call(`gh pr create --title t --body-file ${inside}`)) === undefined,
       "a body file inside the scan root passes when its text is clean",
     );
+  });
+}
+
+// ── 4b. The body-file roots (#1788 round 4).
+//
+// The /work driver and its agents write PR and handoff bodies under
+// `<repo>/tmp/issue-<N>/` (AGENTS.md §7, `handoffOpsPromptWithoutLabel`,
+// `work-driver-ci-verify`'s `pr-body-verify-*.md`) — inside the repository and
+// outside the OS temp dir, so a rule that admitted only the temp dir refused the
+// driver's own handoff comment. The repository's git top-level is now a root.
+//
+// The roots are ALSO read directly through `admissibleRoots`, because a fixture
+// created under this file's scratch dir is admitted by that dir's tree: the
+// behavioural calls below would then pass while the git-top-level root was never
+// consulted, and a test that cannot fail is not a test.
+{
+  await withEnv(denylistEnv, async () => {
+    // The hook's own denylist seam is pinned to the scratch file. Registered with
+    // no reader the hook consults the OPERATOR's list, which does not contain this
+    // synthetic term: the dirty body would read as clean and the two assertions
+    // that prove the file was READ would fail for a reason unrelated to the roots.
+    const call = hook({
+      readDenylist: () => readPublicDenylist({ ...denylistEnv } as NodeJS.ProcessEnv),
+    });
+    const fixture = path.join(scratch, "repo-root-case");
+    rmSync(fixture, { recursive: true, force: true });
+    const repo = path.join(fixture, "repo");
+    mkdirSync(repo, { recursive: true });
+    await git(repo, ["init", "-q"]);
+    const issueDir = path.join(repo, "tmp", "issue-1");
+    mkdirSync(issueDir, { recursive: true });
+    const repoReal = realpathSync(repo);
+    const osTempReal = realpathSync(tmpdir());
+
+    // The roots read directly — the only view of the three-tier rule that does
+    // not depend on where this file's scratch happens to live.
+    const roots = admissibleRoots(repo);
+    assert(roots.length >= 3, "cwd, the OS temp dir and the git top-level are all roots");
+    assert(
+      roots.some((r) => r === osTempReal),
+      "the OS temp dir remains a root (the forge adapter writes its bodies there)",
+    );
+    assert(
+      roots.some((r) => within(r, repoReal)),
+      "the repository is among its own admissible roots (the git top-level rule)",
+    );
+    assert(
+      roots.every((r) => !within(r, realpathSync("/etc"))),
+      "no admissible root contains /etc, which is what refuses it without opening it",
+    );
+    assert(
+      !within(osTempReal, repoReal),
+      "the fixture repository is NOT under the OS temp dir, so only the git top-level can admit it",
+    );
+
+    // Dirty text under the repo's scratch dir: admitted AND read AND scanned.
+    const dirty = path.join(issueDir, "body.md");
+    writeFileSync(dirty, `host = ${TERM}\n`, "utf8");
+    const refused = await call(`gh pr create --title t --body-file ${dirty}`, { cwd: repo });
+    assert(
+      refused?.block === true,
+      "a body file under <repo>/tmp/issue-N with a private term is refused",
+    );
+    assert(
+      (refused?.reason ?? "").includes("denylist line 2"),
+      "and it is refused because the file was READ — the refusal names the denylist line",
+    );
+    assert(
+      !(refused?.reason ?? "").toLowerCase().includes("outside"),
+      "and not merely refused on its path",
+    );
+
+    // The same path with clean text is allowed: admission is about the root, not
+    // about whether the file exists or what it says.
+    const clean = path.join(issueDir, "clean.md");
+    writeFileSync(clean, "a perfectly ordinary PR body\n", "utf8");
+    const cleanProbe = await call(`gh pr create --title t --body-file ${clean}`, { cwd: repo });
+    assert(
+      cleanProbe === undefined,
+      "a clean body file under the repository scratch dir is allowed",
+    );
+
+    // /etc/passwd remains refused and is NEVER OPENED: the out-of-root decision is
+    // made on the path, before any read, so a dirty system file and a clean one
+    // produce the same sentence. That wording is the only observable difference
+    // between "refused without reading" and "read it, found nothing, allowed" — a
+    // hit-shaped refusal here would mean the file had been opened.
+    const passwd = await call("gh pr create --title t --body-file /etc/passwd", {
+      cwd: repo,
+    });
+    assert(passwd?.block === true, "/etc/passwd is refused as a body file");
+    assert(
+      (passwd?.reason ?? "").toLowerCase().includes("outside"),
+      "and the refusal is the out-of-root sentence, which is only reachable without opening it",
+    );
+    assert(
+      (passwd?.reason ?? "").includes("repository"),
+      "and it names the repository as one of the admissible roots it checked against",
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+}
+
+// ── 4c. `git -C` is per SEGMENT: two pushes in two trees scan two trees.
+{
+  await withEnv(denylistEnv, async () => {
+    const call = hook();
+    const work = path.join(dir, "chain");
+    const scanned: string[] = [];
+    const execSpy = ((cmd: string, o?: { argv?: string[] }) => {
+      if (o?.argv) scanned.push(o.argv.join(" "));
+      return Promise.resolve({ stdout: "" });
+    }) as unknown as Parameters<typeof registerPublicHygieneGuard>[1]["execFn"];
+    // `git -C one push … && git -C two push …` must resolve the FIRST push to
+    // `one` and the SECOND to `two`. A single answer for the whole chain gives
+    // `one/two`, a directory in neither tree: the guard either scans a range
+    // nobody is publishing or refuses a readable command as unreadable.
+    const both = pushGitCwd(
+      work,
+      `git -C one ${PUSH} origin main && git -C two ${PUSH} origin main`,
+    );
+    assert(
+      both === path.join(work, "two"),
+      "the last push of a two-push chain resolves to its own -C directory",
+    );
+    const first = segmentCwds(
+      work,
+      `git -C one ${PUSH} origin main && git -C two ${PUSH} origin main`,
+    );
+    assert(
+      first.length === 2 &&
+        first[0] === path.join(work, "one") &&
+        first[1] === path.join(work, "two"),
+      "each segment resolves its own -C: never one/two",
+    );
+    // A `cd` DOES carry, because that is what a shell does with it.
+    assert(
+      segmentCwds(work, `cd sub && git status && git ${PUSH} origin main`).every(
+        (d) => d === path.join(work, "sub"),
+      ),
+      "a cd moves every later segment",
+    );
+    // And the -C of an earlier segment must not leak into a later bare push.
+    const leak = segmentCwds(work, `git -C one ${PUSH} origin main && git ${PUSH} origin main`);
+    assert(leak[1] === work, "a git -C does not move the segment that did not write it");
+    // The push scan itself runs in the resolved directory: an unresolvable
+    // directory is an unreadable range, which the guard refuses rather than
+    // passing.
+    const scannedIn = await inspectWith(
+      `git -C one ${PUSH} origin main && git -C two ${PUSH} origin main`,
+      work,
+      execSpy,
+    );
+    assert(
+      scannedIn !== undefined,
+      "a chain whose pushes name missing trees is refused, not passed",
+    );
+    void call;
   });
 }
 

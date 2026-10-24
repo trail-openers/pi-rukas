@@ -80,6 +80,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { execp } from "./exec.ts";
 import { type DenylistRead, publicTextProblem, readPublicDenylist } from "./public-denylist.ts";
+import { pushGitCwd } from "./public-hygiene-cwd.ts";
 import { scanPushRange } from "./public-hygiene-push.ts";
 import {
   type DenylistHitLocation,
@@ -225,7 +226,8 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     const command = (event.input as { command?: string })?.command ?? "";
     if (command === "") return;
     // The tool call's directory, moved to the repository the push runs in
-    // (`pushGitCwd` reads the `git -C <dir>` / `cd <dir> &&` shapes).
+    // (`pushGitCwd` reads the `git -C <dir>` / `cd <dir> &&` shapes PER SEGMENT,
+    // so a chain of two pushes in two trees resolves each on its own terms).
     const cwd = pushGitCwd(toolCwd(ctx), command);
     const decision = await inspectCommand(command, cwd, exec, readDenylist, { remoteUrl });
     if (!decision) return;
@@ -248,46 +250,6 @@ function toolCwd(_ctx: unknown): string {
   const maybeCtx = _ctx as { cwd?: unknown } | undefined;
   const fromCtx = typeof maybeCtx?.cwd === "string" ? maybeCtx.cwd : undefined;
   return fromCtx && fromCtx !== "" ? fromCtx : process.cwd();
-}
-
-/**
- * The directory the push's git reads must run in.
- *
- * `toolCwd` gives the best available directory, and for a chained command it is
- * the wrong one: `cd .worktrees/issue-9 && git push` runs in the worktree while
- * this process sits at the repo root. Scanning the wrong clone is worse than
- * scanning none — the range it prints is a real range unrelated to what is being
- * published, and it reads as clean. So the two shapes that MOVE the git are read
- * off the command and applied to the tool cwd; a relative one resolves against
- * it. `simpleCommands` splits on `&&`/`;`/pipes and honours quotes, so a chain
- * sees the words the shell does, and the LAST directory-assigning word wins.
- */
-export function pushGitCwd(toolCwdValue: string, command: string): string {
-  let dir = toolCwdValue;
-  for (const argv of simpleCommands(command)) {
-    for (let i = 0; i < argv.length; i++) {
-      const w = argv[i] ?? "";
-      const base = path.basename(w);
-      // `git -C <dir> push …` — git's one positional global, and the only one
-      // that moves the work tree: `--git-dir` names the `.git` DIRECTORY, so
-      // resolving the scan there points every git call at a tree that is not a
-      // checkout and turns a real push into an unreadable range.
-      if (w === "-C" && i === 1) {
-        const target = argv[i + 1];
-        if (target !== undefined && target !== "") {
-          dir = path.resolve(dir, target);
-          break;
-        }
-      }
-      // `cd <dir> && …` — a shell prefix that moves the rest of the chain.
-      if (base === "cd" && argv.length >= 2) {
-        const target = argv[1] ?? "";
-        if (target !== "" && !target.startsWith("-")) dir = path.resolve(dir, target);
-        break;
-      }
-    }
-  }
-  return dir;
 }
 
 /** A refusal and the trace label for it. */
