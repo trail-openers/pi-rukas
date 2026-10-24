@@ -248,7 +248,8 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
 {
   // The shared helper must keep its cwd option: the lens-fix fix only works
   // because the seam can express one.
-  const merged = read("work-driver-merged.ts");
+  // #1789 — the seam moved to work-driver-dispatch-seam.ts (size gate).
+  const merged = read("work-driver-dispatch-seam.ts");
   assert(
     // #1655: the opts type may be an intersection (`WriteFenceOpt & {...}`).
     /opts\?:\s*(?:\w+\s*&\s*)?\{[^}]*cwd\?:\s*string/.test(merged),
@@ -335,7 +336,9 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-driver-cycle-entry.ts",
     "work-driver-issue-images.ts",
     "work-driver-resume.ts",
+    // #1789 — runSingleDispatch moved here and still DEFINES the seam.
     "work-driver-merged.ts",
+    "work-driver-dispatch-seam.ts",
     "work-driver-adversarial-fanout.ts",
   ]);
   const allowlisted = new Set(ROOT_INTENTIONAL_SITES.map((s) => s.file));

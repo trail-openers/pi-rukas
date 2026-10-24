@@ -184,7 +184,7 @@ export function mintJobId(step: WorkStep, label: string, at: number): string {
  * documented `-(<role>|<tag>)[-<seq>]` suffix using the role it already knows —
  * see `runIdOfTranscript` in `work-driver-completion-event.ts`.
  */
-export function jobIdFor(step: WorkStep, label: string, pid: number, at: number): string {
+function jobIdFor(step: WorkStep, label: string, pid: number, at: number): string {
   return `${step}:${label}:${pid}:${at}`;
 }
 
