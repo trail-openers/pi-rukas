@@ -158,11 +158,21 @@ export async function runPlanUnfencePass(
   }
   const read = await readIssueBody(state);
   // #1250 change 1 — the N=1 docs/test rule, decided HERE rather than inside
-  // the pass, because this is where N is already computed (`defaultToSingle`)
-  // and where the escape hatch for the pass is read. Two workstreams means the
-  // fence is the #572 cross-declaration contract and stays exactly as written.
+  // the pass, because this is where N is already computed (`defaultToSingle`),
+  // where the issue body has just been read, and where the escape hatch for the
+  // pass is read. Two workstreams means the fence is the #572 cross-declaration
+  // contract and stays exactly as written.
+  //
+  // An UNREADABLE body switches the rule off entirely, and this is the reason:
+  // the rule's one hard precondition is that the issue must not forbid the
+  // path, and it judges that from the body's prose. A lost cache file leaves it
+  // unable to honour a prohibition it cannot read, so opening fences on an empty
+  // body would be a scope widening manufactured by a memory problem — the exact
+  // class of failure `readIssueBody` exists to refuse. The issue-named half of
+  // the pass still runs (an empty body extracts nothing, so it removes nothing),
+  // and the trace below says which rule did not run and why.
   const single = Object.keys(workstreams).length === 1;
-  const docsTestsOn = single && unfenceDocsTestsEnabled();
+  const docsTestsOn = single && !read.unreadable && unfenceDocsTestsEnabled();
   const result: UnfenceResult = await unfenceIssueNamedPaths(workstreams, read.body, {
     execFn: opts.execFn ?? execp,
     repoRoot: opts.repoRoot,
@@ -175,13 +185,19 @@ export async function runPlanUnfencePass(
   const opened: UnfenceResult = docsTestsOn
     ? unfenceDocsTestPaths(result.workstreams, read.body)
     : { workstreams: result.workstreams, notes: [], warnings: [], placed: [], removed: [] };
-  if (!single && unfenceDocsTestsEnabled()) {
-    trace("work-driver: plan unfence docs/test rule skipped — not a single-workstream plan");
-  }
-  if (!docsTestsOn && single) {
+  if (single && !docsTestsOn) {
+    // The two reasons a single-workstream plan keeps its docs/test fences are
+    // different facts an operator needs apart: an operator who turned the knob
+    // off wants to see that it was OFF, and one whose explore cache went missing
+    // wants to see that the rule declined to run without the issue. Read per
+    // call, like every other hatch in this file.
     trace(
-      "work-driver: plan unfence docs/test rule disabled by PI_ENSEMBLE_UNFENCE_DOCS_TESTS=0 — docs and test fences left as written",
+      read.unreadable
+        ? "work-driver: plan unfence docs/test rule skipped — the issue body could not be read, so the rule cannot honour a prohibition it cannot read; docs and test fences left as written"
+        : "work-driver: plan unfence docs/test rule disabled by PI_ENSEMBLE_UNFENCE_DOCS_TESTS=0 — docs and test fences left as written",
     );
+  } else if (!single && unfenceDocsTestsEnabled()) {
+    trace("work-driver: plan unfence docs/test rule skipped — not a single-workstream plan");
   }
   const merged: UnfenceResult = {
     workstreams: opened.workstreams,

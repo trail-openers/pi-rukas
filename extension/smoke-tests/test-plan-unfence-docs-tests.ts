@@ -17,6 +17,11 @@
  * artifact — so N, the escape hatch and the summary are all exercised through
  * the wiring that actually runs, not only through the unit.
  *
+ * The review-round cases (normalised fence entry, an unreadable issue body,
+ * restored records, the neutralised note) live in
+ * `test-plan-unfence-docs-tests-round2.ts` — the 500-line cap made the seam
+ * between "the rule's ACs" and "what the reviews caught" the natural split.
+ *
  * Paths are synthetic (`docs/`, `host/docs/`, `test/`, `src/`, `lib/`): this
  * repo is public and no real host path belongs in a fixture.
  */
@@ -118,8 +123,12 @@ process.env[HATCH] = "1";
     `the summary counts 4 docs/test openings (${out.summary?.docsTests})`,
   );
   assert(
-    (out.summary?.notes ?? []).some((n) => n.includes("docs-or-test path, N=1")),
+    (out.summary?.notes ?? []).some((n) => n.includes("docs path, N=1")),
     "each removal's note names the rule that made it",
+  );
+  assert(
+    (out.summary?.notes ?? []).some((n) => n.startsWith("unfenced test/helper.sh: test path, N=1")),
+    "a test fence's note reads 'test path', not 'test-or-test path'",
   );
 }
 
@@ -199,22 +208,40 @@ process.env[HATCH] = "1";
   // `DROPPED_ON_COPY` names the fields a copy must not inherit so this pass can
   // re-key them. An unlisted SECOND fence field would be copied stale — the
   // defect the copy exists to avoid — and nothing else would notice. So the
-  // list is asserted against the fence fields a Workstream really carries.
+  // list is asserted against the fence fields a Workstream really carries, and
+  // `DROPPED_ON_COPY` is typed `readonly (keyof Workstream)[]`, which makes the
+  // clip record below a REAL `OutOfScopeClip` rather than a cast fixture: a
+  // record shape the driver never writes is a type error here.
   const sample: Workstream = {
     id: "default",
     scope: "s",
     paths: ["src/a.ts"],
-    outOfScope: ["docs/guide.md"],
-    outOfScopeClipped: [{ entry: "docs/guide.md", kind: "clipped", clippedAt: 10 } as never],
+    outOfScope: ["docs/guide.md", "docs/notes.md"],
+    outOfScopeClipped: [
+      { entry: "docs/guide.md", kind: "clipped", originalLength: 40, keptLength: 12 },
+      { entry: "docs/notes.md", kind: "clipped", originalLength: 40, keptLength: 12 },
+      { entry: "docs/", kind: "dropped", reason: "cap", count: 1 },
+    ],
   };
   const out = unfenceDocsTestPaths({ default: sample }, PLAIN_BODY).workstreams.default;
   assert(
-    out?.outOfScopeClipped === undefined,
-    "the removed entry's clip record went with it — nothing stale is inherited",
+    out?.outOfScopeClipped?.every((r) => r.kind === "dropped") === true,
+    "both clip records went with their removed entries; the aggregate drop record stays",
+  );
+  assert(
+    (out?.outOfScopeClipped ?? []).length === 1,
+    `only the aggregated drop record survives (${(out?.outOfScopeClipped ?? []).length})`,
   );
   assert(
     DROPPED_ON_COPY.includes("outOfScopeClipped"),
     "the drop list names the fence-record field",
+  );
+  assert(
+    unfenceDocsTestPaths(
+      { default: { ...sample, outOfScope: ["docs/notes.md"], outOfScopeClipped: undefined } },
+      PLAIN_BODY,
+    ).workstreams.default?.outOfScopeClipped === undefined,
+    "a workstream with no clip record gets no key holding undefined",
   );
   const carried = Object.keys(out ?? {}).filter((k) => k !== "outOfScopeClipped");
   for (const k of ["id", "scope", "paths", "outOfScope"]) {

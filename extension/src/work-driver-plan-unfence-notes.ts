@@ -21,6 +21,7 @@
  * nobody declares is the only one that can be placed.
  */
 
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { fenceDirPrefix } from "./work-driver-declared-path.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
@@ -99,10 +100,16 @@ export function unfencedNote(path: string): string {
  * The wording names the RULE rather than an authority the issue never gave:
  * there is no issue statement behind this removal, so claiming one would be
  * the #1167 lie in reverse. The kind (`docs` / `test`) is the shape that made
- * it openable, from plan-docs-test-path.ts.
+ * it openable, from plan-docs-test-path.ts, and reads as one word — a note that
+ * said "test-or-test" for a test fence was a note nobody could parse.
+ *
+ * The ENTRY is neutralised before it reaches the string: an `outOfScope` entry
+ * is planner-derived text, and a note lands in the state file, the handoff and
+ * a trace line, so the same rule the developer prompt applies (#1744) applies
+ * here — one line, no backticks, no forged clip marker.
  */
-export function unfencedDocsTestNote(path: string, kind: "docs" | "test"): string {
-  return `unfenced ${path}: ${kind}-or-test path, N=1`;
+export function unfencedDocsTestNote(entry: string, kind: "docs" | "test"): string {
+  return `unfenced ${neutraliseFenceEntry(entry)}: ${kind} path, N=1`;
 }
 /** The note the operator sees when a symbol could not be resolved to one file. */
 export function unresolvedIdentifierNote(name: string, candidates: string[], ref: string): string {
@@ -197,13 +204,20 @@ export function unfenceSummary(
   // a single-workstream plan) and an operator reading a plan where 4 fences
   // went needs to know which of the two opened them. Absent rather than zero
   // for the same reason `kept`/`unresolved` are.
-  const docsTests = result.removed.filter((r) => r.docsTest !== undefined).length;
+  //
+  // BOTH counts come from one filter over one list, and neither counts a
+  // RESTORED record: an entry the pass put back is still fenced, so claiming it
+  // in either number would be the #1167 "left fenced" lie in the other
+  // direction — `removed` already excluded them, and `docsTests` counting them
+  // would report a docs/test opening the develop gate still enforces.
+  const outstanding = result.removed.filter((r) => r.restored === undefined);
+  const docsTests = outstanding.filter((r) => r.docsTest !== undefined).length;
   const kept = result.notes.filter((n) => n.startsWith("kept fence ")).length;
-  const rolledBack = result.removed.filter((r) => r.restored !== undefined).length;
+  const rolledBack = result.removed.length - outstanding.length;
   const unresolved = result.warnings.filter((w) => w.startsWith("unresolved identifier")).length;
   return {
     ran: true,
-    removed: result.removed.length - rolledBack,
+    removed: outstanding.length,
     kept,
     rolledBack,
     unresolved,

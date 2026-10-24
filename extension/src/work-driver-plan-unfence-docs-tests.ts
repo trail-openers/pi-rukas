@@ -13,7 +13,7 @@
  * `verify-failed:develop` with `touched out-of-scope path <file> — declared
  * fence violated (issue-fenced)` after 90 to 170 minutes of develop.
  *
- * The rule this module implements, and the four things that keep it narrow:
+ * The rule this module implements, and the six things that keep it narrow:
  *
  *   - **N=1 only.** With one workstream the fence fences nobody: there is no
  *     sibling the docs could belong to, so the entry can only ever mean "the
@@ -28,7 +28,11 @@
  *     entry named under a docs directory, under a test directory, or wearing a
  *     test-shaped basename is opened. That shape question is
  *     `docsOrTestReason` in plan-docs-test-path.ts; the containment half of the
- *     judgement is this module's, not the predicate's.
+ *     judgement is this module's, not the predicate's. Both halves are asked of
+ *     ONE normalised form — `fenceDirPrefix(entry)` — because the develop gate
+ *     reads a fence through that normaliser and a shape judgement made on the
+ *     raw entry disagrees with the gate about what one fence is: `docs/** (new)`
+ *     is the same fence as `docs/`, and a bare `docs` is a directory too.
  *   - **A protected path is never opened, whatever its extension.** The
  *     `.pi/`, `.github/` and `CODEOWNERS`/`agents.json` files are what decide
  *     what verification MEANS within a cycle (#406/#285), so the develop gate
@@ -40,8 +44,17 @@
  *     answers true for, before the shape question is even asked. `.pi/verify-cmd.md`,
  *     `.github/DEVELOPERS.md`, `.github/workflows/test-x.yml`, `docs/agents.json`
  *     and `docs/CODEOWNERS` all look like docs by shape and all stay fenced.
- *   - **The issue's explicit prohibition wins.** If the issue's prose forbids
- *     that path, the fence stays. The decision reuses `isProhibition` from
+ *     The predicate is asked of the raw entry, of `normaliseDeclaredPath(entry)`
+ *     and of the normalised fence key: an annotation or a directory glob hides
+ *     the protected basename from exactly one of those reads, and the entry is
+ *     kept if ANY of the three says protected.
+ *   - **The issue's explicit prohibition wins — and an unreadable issue body
+ *     disables the rule entirely.** If the issue's prose forbids that path, the
+ *     fence stays. That is why the caller (`work-driver-plan-coupling-pass.ts`)
+ *     refuses to run this rule at all when the cached body could not be read:
+ *     a rule that cannot read the prohibition cannot honour it, and opening a
+ *     fence the issue forbade is the one failure this pass must never make on a
+ *     lost cache file. The caller traces that it skipped, and why. The decision reuses `isProhibition` from
  *     work-driver-plan-unfence-extract.ts — the SAME grammar the issue-named
  *     pass uses, deliberately not a second one: two prohibition grammars drift
  *     apart, and the wider of the two silently re-fences what the narrower let
@@ -69,9 +82,9 @@
  */
 
 import { docsOrTestReason } from "./plan-docs-test-path.ts";
-import { keepClippedRecords } from "./plan-fence-record.ts";
+import { clippedField, keepClippedRecords } from "./plan-fence-record.ts";
 import { trace } from "./trace.ts";
-import { fenceDirPrefix } from "./work-driver-declared-path.ts";
+import { fenceDirPrefix, normaliseDeclaredPath } from "./work-driver-declared-path.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { isProhibition } from "./work-driver-plan-unfence-extract.ts";
 import { type UnfenceRecord, unfencedDocsTestNote } from "./work-driver-plan-unfence-notes.ts";
@@ -106,7 +119,7 @@ export function unfenceDocsTestsEnabled(): boolean {
  * The planner's trailing separator and the issue's bare directory name are the
  * same boundary for the same reason.
  */
-export function issueForbidsPath(body: string, path: string): boolean {
+function issueForbidsPath(body: string, path: string): boolean {
   const needle = fenceDirPrefix(path).toLowerCase();
   if (needle.length === 0) return false;
   for (const sentence of body.split(/(?<=[.!?])\s+|\n+/)) {
@@ -123,9 +136,12 @@ export function issueForbidsPath(body: string, path: string): boolean {
  * one today: it is re-keyed from the surviving entries below. Exported so the
  * smoke suite can assert the list still covers the fence fields a `Workstream`
  * actually carries — an unlisted second fence-record field would silently be
- * copied stale, which is the defect this block exists to prevent.
+ * copied stale, which is the defect this block exists to prevent. Typed as keys
+ * of `Workstream` so the canary is a real assertion rather than a string
+ * comparison: a name that stopped being a field is a type error, not a test that
+ * quietly stops meaning anything.
  */
-export const DROPPED_ON_COPY: readonly string[] = ["outOfScopeClipped"];
+export const DROPPED_ON_COPY: readonly (keyof Workstream)[] = ["outOfScopeClipped"];
 
 /**
  * Open every docs/test fence in a single-workstream plan that the issue does
@@ -151,12 +167,34 @@ export function unfenceDocsTestPaths(
     if (!ws) continue;
     const kept: string[] = [];
     for (const entry of ws.outOfScope) {
-      const reason = docsOrTestReason(entry);
-      if (reason === undefined || isProtectedPath(entry) || issueForbidsPath(body, entry)) {
+      // ONE normalised form for both halves of the judgement. `fenceDirPrefix`
+      // is the develop gate's own fence normaliser (paired markup, a planner
+      // annotation, `./` and the `dir/**` / `dir/*` directory spellings all
+      // collapse to the directory), so the three spellings of one fence get one
+      // verdict here exactly as they do at the gate — and a bare `docs` or
+      // `test` entry (no separator, no extension) is judged as the directory it
+      // names, which is how the gate fences it. Judging the RAW entry instead
+      // reads `docs/** (new)` as neither docs nor test while the gate fences the
+      // whole tree under it, and keeps `docs` fenced while opening `docs/`.
+      const key = fenceDirPrefix(entry);
+      const reason = docsOrTestReason(key);
+      // Asked three ways because each read sees a different text and an
+      // annotation hides the protected basename from exactly one of them:
+      // `docs/CODEOWNERS (keep)` deannotates to a protected basename the raw
+      // form does not end with, and the fence key strips the glob an annotated
+      // or directory entry carries. ANY of the three keeps the entry fenced.
+      const protectedEntry =
+        isProtectedPath(entry) ||
+        isProtectedPath(normaliseDeclaredPath(entry)) ||
+        isProtectedPath(key);
+      if (reason === undefined || protectedEntry || issueForbidsPath(body, entry)) {
         kept.push(entry);
         continue;
       }
       const note = unfencedDocsTestNote(entry, reason);
+      // The note is planner-derived text heading for a state file and a trace
+      // line, so the ENTRY inside it is neutralised (see plan-fence-render.ts);
+      // `path`/`entry` on the record stay the raw text the plan compares.
       removed.push({ workstream: id, path: entry, entry, note, docsTest: reason });
       if (!notes.includes(note)) notes.push(note);
     }
@@ -165,23 +203,30 @@ export function unfenceDocsTestPaths(
     // "nothing was bounded", indistinguishable from markers this pass just
     // re-keyed — and it cannot be dropped by destructuring it into an unused
     // binding (what a formatter removes) nor by `delete` (what
-    // `lint/performance/noDelete` refuses). So the excluded names are listed,
-    // and the canary in the smoke suite fails if the field list below ever
-    // drifts from the fields a Workstream actually carries. A clip marker is
-    // keyed by its ENTRY TEXT, so a removed entry takes its own record with it:
-    // the same rule `unfenceIssueNamedPaths` applies via `keepClippedRecords`.
-    const copy: Record<string, unknown> = { ...ws };
-    for (const dropped of DROPPED_ON_COPY) delete copy[dropped];
+    // `lint/performance/noDelete` refuses). So the excluded names are listed in
+    // `DROPPED_ON_COPY`, typed `keyof Workstream`, which doubles as the
+    // type-level statement of the same fact: `Pick<Workstream, …>` is exactly
+    // the fields this copy must supply itself, so the literal below is checked
+    // against the interface rather than waved through by a cast — add a fence
+    // field to `Workstream` and leave it out of the spread and this line stops
+    // compiling. The smoke-suite canary asserts the same list from the other
+    // side. A clip marker is keyed by its ENTRY TEXT, so a removed entry takes
+    // its own record with it: the same rule `unfenceIssueNamedPaths` applies via
+    // `keepClippedRecords`.
+    const carried: Pick<Workstream, (typeof DROPPED_ON_COPY)[number]> = { ...ws };
     const keep = ws.outOfScopeClipped ? keepClippedRecords(kept, ws.outOfScopeClipped) : [];
     next[id] = {
-      ...(copy as unknown as Workstream),
+      ...ws,
+      ...carried,
       paths: [...ws.paths],
       outOfScope: kept,
       ...(ws.dependsOn ? { dependsOn: [...ws.dependsOn] } : {}),
       ...(ws.introduces ? { introduces: [...ws.introduces] } : {}),
       ...(ws.consumes ? { consumes: [...ws.consumes] } : {}),
-      ...(keep.length > 0 ? { outOfScopeClipped: keep } : {}),
-    } as Workstream;
+      // The same shape the other three fence-list writers use, so an empty
+      // record list cannot leave a key holding `undefined` behind.
+      ...clippedField(keep),
+    };
   }
 
   if (removed.length > 0) {

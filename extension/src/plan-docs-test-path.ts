@@ -49,7 +49,7 @@ const DOC_EXT = /^(?:md|mdx|rst|adoc|txt)$/i;
 const DOC_DIR = /^(?:docs?|manual|man)$/i;
 
 /** Directory segments that mean "this is a test tree". */
-const TEST_DIR = /^(?:tests?|__tests__|spec|specification|smoke-tests)$/i;
+const TEST_DIR = /^(?:tests?|__tests__|spec|smoke-tests)$/i;
 
 /**
  * The path's directory segments, lower-cased-ready, with the filename dropped.
@@ -64,12 +64,6 @@ function segments(path: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** The basename of a path, or the whole string when it carries no separator. */
-function basename(path: string): string {
-  const segs = segments(path);
-  return segs.length > 0 ? (segs[segs.length - 1] as string) : "";
-}
-
 /** The extension of a basename, without the dot; empty when it has none. */
 function extension(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -77,20 +71,31 @@ function extension(name: string): string {
   return name.slice(dot + 1);
 }
 
+/**
+ * The segments that name DIRECTORIES for a fence entry: everything before the
+ * final segment, plus the final segment itself when that segment is a directory
+ * rather than a file. A trailing separator (`host/docs/`) says so outright, and
+ * so does carrying no extension at all (`docs`, `host/docs`) — the same reading
+ * `fenceDirPrefix` gives a bare directory entry at the develop gate, which
+ * fences `docs` and `docs/` identically. Two spellings of one fence must not
+ * get two verdicts here (#1725's rule).
+ */
+function directorySegments(path: string, segs: string[]): string[] {
+  if (path.endsWith("/")) return segs;
+  const last = segs[segs.length - 1] as string;
+  return extension(last) ? segs.slice(0, -1) : segs;
+}
+
 /** True when the path is documentation: a prose extension or a docs directory. */
 export function isDocsPathEntry(path: string): boolean {
   const segs = segments(path);
   if (segs.length === 0) return false;
   const last = segs[segs.length - 1] as string;
-  // A directory entry (`host/docs/`) has no extension on its final segment, so
-  // the directory rule below is what catches it; a file's own name is never a
-  // directory segment, so `docs.ts` is judged only by its extension.
+  // A directory entry (`host/docs/`, `docs`) has no extension on its final
+  // segment, so the directory rule below is what catches it; a file's own name
+  // is never a directory segment, so `docs.ts` is judged only by its extension.
   if (extension(last) && DOC_EXT.test(extension(last))) return true;
-  // Every segment EXCEPT the last is a directory; for a directory entry the
-  // last segment is a directory too, which is why the trailing separator is
-  // what decides it.
-  const dirSegs = path.endsWith("/") ? segs : segs.slice(0, -1);
-  return dirSegs.some((s) => DOC_DIR.test(s));
+  return directorySegments(path, segs).some((s) => DOC_DIR.test(s));
 }
 
 /** True when the path is a test: a test directory or a test-shaped basename. */
@@ -98,7 +103,9 @@ export function isTestPathEntry(path: string): boolean {
   const segs = segments(path);
   if (segs.length === 0) return false;
   const last = segs[segs.length - 1] as string;
-  const name = path.endsWith("/") ? "" : last;
+  // A directory entry has no basename to shape-match: `docs` is a directory,
+  // and so is `test-2024`, which a basename rule would otherwise open.
+  const name = path.endsWith("/") || !extension(last) ? "" : last;
   if (name) {
     const ext = extension(name);
     const stem = ext ? name.slice(0, name.length - ext.length - 1) : name;
@@ -110,18 +117,17 @@ export function isTestPathEntry(path: string): boolean {
     // separator is what makes the prefix a name part, not a substring).
     if (/^test[-_]/i.test(name)) return true;
   }
-  const dirSegs = path.endsWith("/") ? segs : segs.slice(0, -1);
-  return dirSegs.some((s) => TEST_DIR.test(s));
+  return directorySegments(path, segs).some((s) => TEST_DIR.test(s));
 }
 
 /**
  * The rule's answer in one call: does this fence entry's own shape say
  * "documentation" or "test"?
  *
- * Returns the reason fragment the plan note carries (`docs-or-test path, N=1`
- * is assembled by the caller), or `undefined` when the entry is neither. The
- * two kinds are reported apart because an operator reading a handoff wants to
- * know which fence the driver opened.
+ * Returns the reason fragment the plan note carries (`docs path, N=1` /
+ * `test path, N=1` is assembled by the caller), or `undefined` when the entry
+ * is neither. The two kinds are reported apart because an operator reading a
+ * handoff wants to know which fence the driver opened.
  */
 export function docsOrTestReason(path: string): "docs" | "test" | undefined {
   if (isDocsPathEntry(path)) return "docs";
