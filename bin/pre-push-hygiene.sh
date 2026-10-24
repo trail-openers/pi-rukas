@@ -51,13 +51,19 @@ while read -r local_ref local_oid remote_ref remote_oid; do
   fi
   [ -n "$range" ] || continue
 
+  # The outgoing text, bounded. `git log -p` on a large range is not a string
+  # any hook should hold in a variable: it is streamed into the scan through a
+  # `head -c` bound instead, so one enormous push cannot exhaust the hook's
+  # memory before it answers. The bound truncates the SAME way for every entry,
+  # so a match past 5 MiB is missed and the refusal for the rest still fires.
+  messages=$(git log --format=%B -- $range 2>/dev/null | head -c 5242880)
+  added=$(git log -p --format= -- $range 2>/dev/null | head -c 5242880)
+
   # One pass over the denylist, one git read for the messages and one for the
   # added lines, reused per entry. `nl -ba -w1 -s:` numbers every line (blank
   # and comment lines keep their numbers, so the line we name is the line the
   # operator sees in an editor).
   entries=$(nl -ba -w1 -s: "$DENYLIST" | grep -vE '^[0-9]+:[[:space:]]*(#.*)?$')
-  messages=$(git log --format=%B $range 2>/dev/null)
-  added=$(git log -p --format= $range 2>/dev/null)
 
   for numbered in $entries; do
     line=${numbered%%:*}

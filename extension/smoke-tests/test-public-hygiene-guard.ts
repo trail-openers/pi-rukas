@@ -17,6 +17,7 @@ import * as os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createForge } from "../src/forge.ts";
 import { genericCategoryOf as classifyPublicText } from "../src/public-denylist.ts";
 import {
   publicHygieneInstalled,
@@ -322,6 +323,61 @@ function expectRefusal(
         "the hatch disables the forge seam check as well",
       );
     });
+  });
+}
+
+// ── 7b. The same seam for a DRIVER-AUTHORED COMMIT MESSAGE (#1788, PM
+// decision 8). The driver's forge writes are in-process execs, so the
+// tool_call hook never sees them: `forge.ts`'s `checkPublicText` is what stops
+// a commit-message string the driver composes itself (a squash-subject, a
+// release note) from reaching the forge with a private term in it.
+{
+  await withEnv(denylistEnv, async () => {
+    const execed: string[] = [];
+    const det = {
+      forge: "github",
+      host: "github.com",
+      url: "https://github.com/example-owner/example-repo.git",
+      source: "remote",
+    } as const;
+    const forge = createForge(det as never, {
+      execFn: (async (_cmd: string, _opts?: unknown) => {
+        execed.push(_cmd);
+        return { stdout: "{}", exitCode: 0 };
+      }) as never,
+      cwd: dir,
+    });
+    const dirty = `feat(x): wire ${TERM} into the build`;
+    let thrown: unknown;
+    try {
+      await forge.issueCreate("release notes", `commit ${dirty} to the release`);
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown !== undefined, "a driver-authored commit message is refused at the forge seam");
+    assert(
+      (thrown as Error)?.name === "PublicHygieneError",
+      "as the hygiene error the driver's error paths already recognise",
+    );
+    const message = String((thrown as Error)?.message ?? "");
+    assert(message.length > 0 && !message.includes(TERM), "and its refusal carries no term");
+    assert(
+      execed.length === 0,
+      "nothing was execed: the check runs before the forge command, not after the post",
+    );
+    // And the clean counterpart, so the block is not satisfied by a seam that
+    // refuses everything. The assertion is on what reached the exec, not on the
+    // call resolving: a fake forge whose stdout is not a created-issue URL
+    // rejects for that reason AFTER the check passed, and conflating the two
+    // would report a passing seam as a refusing one.
+    execed.length = 0;
+    await forge
+      .issueCreate("release notes", "commit feat(x): wire the build")
+      .catch(() => undefined);
+    assert(
+      execed.length === 1,
+      "a clean driver-authored message reaches the exec — the seam did not refuse it",
+    );
   });
 }
 

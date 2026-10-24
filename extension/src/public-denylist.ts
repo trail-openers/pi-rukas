@@ -187,8 +187,7 @@ const CLOCK_TIME = /^\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?$/;
  * issue's acceptance criteria pin in both directions).
  */
 export function genericCategoryOf(text: string): GenericCategory | undefined {
-  if (text.includes("@")) return undefined; // an email, not a path
-  if (HOME_PATH.test(text)) return "home-path";
+  if (HOME_PATH.test(withoutEmailTokens(text))) return "home-path";
   if (!text.includes(".")) return undefined;
   IPV4_QUAD.lastIndex = 0;
   for (const m of text.matchAll(IPV4_QUAD)) {
@@ -199,11 +198,27 @@ export function genericCategoryOf(text: string): GenericCategory | undefined {
 }
 
 /**
+ * An absolute home directory, outside the email token it sits in. The rule is
+ * asked of the text with each email address blanked out rather than of the
+ * whole string: a bare `if (text.includes("@")) return undefined` let any
+ * address anywhere in a body switch the path rule off for the entire text, so
+ * one "contact us at ops@example.invalid" excused a `/home/alice/…` two
+ * sentences later. The address itself is exempt (its host part legitimately
+ * looks like a host), nothing else is.
+ */
+const EMAIL_TOKEN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
+/** Every email address in `text`, replaced by a neutral placeholder. */
+function withoutEmailTokens(text: string): string {
+  return text.replace(EMAIL_TOKEN, " email ");
+}
+
+/**
  * Absolute home directories. `/home/alice/` and `/Users/alice/` name a person;
  * `dev`, `user`, `example`, `ops` and `runner` are placeholders that appear in
  * every project's docs and fixtures and name nobody, so they pass. A mail
- * address (`user@host`) is not a path — the `@` guard above is what keeps it
- * out of this rule.
+ * address (`user@host`) is not a path — `withoutEmailTokens` is what keeps it
+ * out of this rule without silencing the rule for the rest of the text.
  */
 const HOME_PATH =
   /(?:^|[^\w./~-])(?:\/(?:home|Users)\/(?!dev\/|user\/|example\/|ops\/|runner\/)\w+\/?)/;

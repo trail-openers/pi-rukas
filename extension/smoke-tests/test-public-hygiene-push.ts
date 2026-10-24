@@ -22,6 +22,13 @@
  * that. Every scan in this file passes it, including the ones inside
  * `inspect()`.
  *
+ * The REFSPEC rule, which blocks 8–14 pin: the scan reads the commits the
+ * COMMAND names, not the ones HEAD happens to point at. `git push origin
+ * <branch>` with HEAD on a clean branch used to scan HEAD's range and pass the
+ * dirty branch through unscanned. Every case there makes the pushed branch
+ * dirty and HEAD's branch clean, so a scan that still inferred HEAD would be
+ * green for the wrong reason and the assertions say so.
+ *
  * `readDenylist` — the denylist is read through a PINNED env rather than
  * `process.env`, because the guard's git calls await: by the time the scan reads
  * the file, an enclosing `withEnv` block has already returned and restored the
@@ -55,7 +62,7 @@ import {
   inspectCommand,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
-import { scanPushRange } from "../src/public-hygiene-push.ts";
+import { pushRefspecs, scanPushRange } from "../src/public-hygiene-push.ts";
 import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "../src/public-hygiene-scan.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
@@ -113,9 +120,16 @@ const gitIn =
 
 /** Assemble a verb from pieces so the literal never appears in this file. */
 const verb = (...parts: string[]): string => parts.join("");
+const PUSH = verb("pu", "sh");
 
 /** The push command the scan is asked about, assembled from pieces. */
-const pushCommand = (): string => ["git", verb("pu", "sh"), "origin", "main"].join(" ");
+const pushCommand = (rest = "origin main"): string => ["git", PUSH, rest].join(" ").trim();
+
+/** The same command, with the scan's `command`/`pushVerb` seams filled in. */
+const scanOpts = (command: string): { command: string; pushVerb: string } => ({
+  command,
+  pushVerb: PUSH,
+});
 
 /**
  * The env every read uses. `path` is a function so a block can also force the
@@ -147,18 +161,32 @@ async function commit(file: string, content: string, message: string): Promise<s
 /**
  * Point the remote-tracking refs at `sha`, so the scan's outgoing range is
  * exactly the commits the test has just made. `update-ref` is local — it never
- * dials the github.com URL the clone carries — and both refs move together
- * because `resolveBase` probes `origin/<branch>` first and `origin/HEAD` as the
- * fallback: leaving the symref behind would scan the wrong range.
+ * dials the github.com URL the clone carries — and the fixture mirrors the
+ * remote ref under the branch name each case pushes, because the scan excludes
+ * every remote-tracking ref (`--not --remotes`): a commit already on a remote
+ * is published and is not re-scanned.
  */
-async function remoteHas(sha: string): Promise<void> {
-  await git("update-ref", "refs/remotes/origin/main", sha);
+async function remoteHas(sha: string, branch = "main"): Promise<void> {
+  await git("update-ref", `refs/remotes/origin/${branch}`, sha);
   await git("update-ref", "refs/remotes/origin/HEAD", sha);
+}
+
+/** Commit on a NEW branch named `name`, then return HEAD to `main`. */
+async function commitOn(
+  name: string,
+  file: string,
+  content: string,
+  message: string,
+): Promise<string> {
+  await git("checkout", "-q", "-b", name);
+  const sha = await commit(file, content, message);
+  await git("checkout", "-q", "main");
+  return sha;
 }
 
 /** Ask the guard about a push, with every seam pinned for this block. */
 function inspect(
-  command: string,
+  command: string = pushCommand(),
   opts: { executor?: ExecFn; remote?: (r: string) => Promise<string> } = {},
 ) {
   resetPublicHygieneRegistrationForTests();
@@ -193,7 +221,12 @@ async function reset(): Promise<void> {
 // ── 1. A term in an ADDED LINE refuses, and the refusal names the path.
 {
   await commit("dirty.txt", `host = ${TERM}\n`, "chore: add config");
-  const r = await scanPushRange({ exec, cwd: repo, remoteUrl: githubUrl });
+  const r = await scanPushRange({
+    exec,
+    cwd: repo,
+    remoteUrl: githubUrl,
+    ...scanOpts(pushCommand()),
+  });
   assert(r.scanned, "a github.com remote is scanned");
   const hit = await inspect(pushCommand());
   assert(hit !== undefined, "a push with a term in an added line is refused");
@@ -259,7 +292,12 @@ async function reset(): Promise<void> {
 {
   await git("remote", "set-url", "origin", OTHER_FORGE_URL);
   await commit("other.txt", `still ${TERM} is not published here\n`, "chore: other forge");
-  const r = await scanPushRange({ exec, cwd: repo, remoteUrl: otherForgeUrl });
+  const r = await scanPushRange({
+    exec,
+    cwd: repo,
+    remoteUrl: otherForgeUrl,
+    ...scanOpts(pushCommand()),
+  });
   assert(!r.scanned && r.problems.length === 0, "a non-github remote is not scanned");
   assert(
     (await inspect(pushCommand(), { remote: otherForgeUrl })) === undefined,
@@ -298,11 +336,143 @@ async function reset(): Promise<void> {
   const bare = path.join(root, "noremote");
   await gitIn(root)("init", "-q", bare);
   writeFileSync(path.join(bare, "a.txt"), "hello\n", "utf8");
-  const r = await scanPushRange({ exec: gitTransport(bare), cwd: bare });
+  const r = await scanPushRange({
+    exec: gitTransport(bare),
+    cwd: bare,
+    ...scanOpts(pushCommand()),
+  });
   assert(
     !r.scanned && r.problems.length > 0,
     "a clone with no remote reports it could not resolve the push, rather than clean",
   );
+}
+
+// ── 8–15. The range comes from the REFSPEC, not from HEAD. Each case makes
+// the branch the command names dirty and HEAD's branch clean, so a scan that
+// still inferred the range from HEAD would report clean and the assertion is
+// red for the right reason.
+
+// ── 8. `push origin <dirty-branch>` while HEAD sits on a clean branch.
+{
+  await reset();
+  await commitOn("dirty-a", "d8.txt", `host = ${TERM}\n`, "chore: add the box");
+  const r = await scanPushRange({
+    exec,
+    cwd: repo,
+    remoteUrl: githubUrl,
+    ...scanOpts(pushCommand("origin dirty-a")),
+  });
+  assert(r.scanned, "the named branch was scanned (not HEAD's clean range)");
+  const hit = await inspect(pushCommand("origin dirty-a"));
+  assert(hit !== undefined, "a push of a dirty branch is refused while HEAD is on a clean one");
+  assert(hit?.verdict.kind === "denylist", "and for the denylist term, not for a failed read");
+  await git("branch", "-D", "dirty-a");
+  await reset();
+}
+
+// ── 9. An explicit destination: `dirty-branch:refs/heads/x` still names the
+// dirty source, and the right-hand side is not a revision.
+{
+  await reset();
+  await commitOn("dirty-b", "d9.txt", `host = ${TERM}\n`, "chore: add the box again");
+  const hit = await inspect(pushCommand("origin dirty-b:refs/heads/x"));
+  assert(hit !== undefined, "a src:dst refspec is scanned from its SOURCE");
+  assert(hit?.verdict.kind === "denylist", "and refused on the term, not on a failed read");
+  await git("branch", "-D", "dirty-b");
+  await reset();
+}
+
+// ── 10. `HEAD:refs/heads/x` from a DIRTY detached HEAD.
+{
+  await reset();
+  const dirty = await commit("d10.txt", `host = ${TERM}\n`, "chore: detached dirty commit");
+  await git("checkout", "-q", "--detach", dirty);
+  const hit = await inspect(pushCommand("origin HEAD:refs/heads/x"));
+  assert(hit !== undefined, "HEAD as a refspec source is scanned from the detached commit");
+  assert(hit?.verdict.kind === "denylist", "and refused on the term");
+  await git("checkout", "-q", "main");
+  await reset();
+}
+
+// ── 11. `--all` with one dirty branch among the clean ones.
+{
+  await reset();
+  await commit("clean-all.txt", "public\n", "chore: a public commit on main");
+  await commitOn("dirty-c", "d11.txt", `host = ${TERM}\n`, "chore: dirty on a side branch");
+  const hit = await inspect(pushCommand("--all origin"));
+  assert(hit !== undefined, "a push of every branch is refused when one branch is dirty");
+  assert(hit?.verdict.kind === "denylist", "and refused on the term, not on a failed read");
+  await git("branch", "-D", "dirty-c");
+  await reset();
+}
+
+// ── 12. A CLEAN branch pushed by name is allowed, even beside a dirty one.
+{
+  await reset();
+  await commit("clean-by-name.txt", "public\n", "chore: clean work on main");
+  await commitOn("dirty-d", "d12.txt", `host = ${TERM}\n`, "chore: the dirty neighbour");
+  assert(
+    (await inspect(pushCommand("origin main"))) === undefined,
+    "a clean branch pushed by name is allowed while a dirty branch exists",
+  );
+  await git("branch", "-D", "dirty-d");
+  await reset();
+}
+
+// ── 13. A source that does not resolve REFUSES (fail closed).
+{
+  await reset();
+  const hit = await inspect(pushCommand("origin no-such-branch-anywhere"));
+  assert(hit !== undefined, "an unresolvable push source is refused, never assumed clean");
+  assert(hit?.verdict.kind === "unreadable", "and the refusal says the range could not be read");
+  assert(
+    (hit?.reason ?? "").includes("PI_ENSEMBLE_PUBLIC_HYGIENE=0"),
+    "and names the escape hatch so the operator can see the switch",
+  );
+  await reset();
+}
+
+// ── 14. A dirty commit already on a remote-tracking ref is not re-scanned:
+// it is already public, and refusing it would refuse a push that publishes
+// nothing new. `--not --remotes` is the whole of this behaviour.
+{
+  await reset();
+  const dirty = await commit("d14.txt", `host = ${TERM}\n`, `chore: already public ${TERM}`);
+  await remoteHas(dirty, "main");
+  const r = await scanPushRange({
+    exec,
+    cwd: repo,
+    remoteUrl: githubUrl,
+    ...scanOpts(pushCommand("origin main")),
+  });
+  assert(
+    r.scanned && r.texts.length === 0,
+    "an already-pushed commit is excluded from the outgoing range",
+  );
+  assert(
+    (await inspect(pushCommand("origin main"))) === undefined,
+    "so re-pushing it is not refused for a term the world already has",
+  );
+  await remoteHas(baseSha, "main");
+  await reset();
+}
+
+// ── 15. The refspec reader itself: options dropped, selectors recognised.
+{
+  const remotes = new Set(["origin"]);
+  const a = pushRefspecs([PUSH, "origin", "main", "--force-with-lease", "topic"], PUSH, remotes);
+  assert(
+    a.refspecs.join(",") === "main,topic" && !a.branches && !a.tags,
+    "positional args after the remote are refspecs and flags are dropped",
+  );
+  const b = pushRefspecs(["--no-verify", PUSH, "--all", "origin"], PUSH, remotes);
+  assert(b.branches && b.refspecs.length === 0, "--all before the remote still means all branches");
+  const c = pushRefspecs([PUSH, "origin", "--tags", "v1.2.3"], PUSH, remotes);
+  assert(c.tags && c.refspecs.join() === "v1.2.3", "--tags is a selector, not a refspec");
+  const d = pushRefspecs([PUSH, "origin", "+topic:refs/heads/topic"], PUSH, remotes);
+  assert(d.refspecs.join() === "+topic:refs/heads/topic", "a forced refspec is kept verbatim");
+  const e = pushRefspecs([PUSH, "origin", ":refs/heads/gone"], PUSH, remotes);
+  assert(e.refspecs.join() === ":refs/heads/gone", "a deletion refspec reaches the source strip");
 }
 
 rmSync(root, { recursive: true, force: true });

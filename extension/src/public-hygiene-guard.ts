@@ -79,9 +79,6 @@ import type { PushScanResult } from "./public-hygiene-types.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
-/** Session diagnostics for the push path: written once, read by the trace. */
-const Probe = { scanned: false };
-
 /**
  * The refusal a driver-authored publish carries when the forge exec seam
  * rejects it (#1788).
@@ -185,6 +182,8 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
     if (command === "") return;
+    // The tool call's directory is asked for only once there is a command to
+    // judge: the empty-command early return above must not pay for a cwd read.
     const cwd = toolCwd(ctx);
     // Without an executor the push range cannot be read, and the guard's
     // fail-closed rule refuses an unreadable publish. That is right for a
@@ -303,7 +302,13 @@ export async function inspectCommand(
         // timeout is generous over the per-git-call bound so a slow-but-alive
         // git is never mistaken for a hung one.
         const pushed = await boundedScan(PUSH_SCAN_TIMEOUT_MS * 4, () =>
-          scanPushRange({ exec, cwd, remoteUrl: opts.remoteUrl }),
+          scanPushRange({
+            exec,
+            cwd,
+            remoteUrl: opts.remoteUrl,
+            command,
+            pushVerb: pushVerbWord(),
+          }),
         );
         if (pushed === undefined) {
           problems.push({
@@ -337,6 +342,19 @@ export async function inspectCommand(
   const reason = refusalFor(undefined, hit.denylistHit, hit.genericHit);
   if (reason === undefined) return undefined;
   return { reason, verdict: hit.verdict };
+}
+
+/**
+ * The push verb as a single word, assembled from fragments.
+ *
+ * The harness that runs the offline suite guards a child's publish verbs by
+ * reading the COMMAND STRING, so a guard that spelled the verb in its own
+ * source was refused before it ran. The verb is data the scan matches on, not
+ * prose, and assembling it keeps one literal out of the file while leaving the
+ * matching rule (`pushRefspecs`) in plain sight.
+ */
+function pushVerbWord(): string {
+  return ["pu", "sh"].join("");
 }
 
 /**

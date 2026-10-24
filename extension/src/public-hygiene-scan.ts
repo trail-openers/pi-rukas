@@ -50,7 +50,7 @@
  * refused it would refuse a normal call.
  */
 
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
@@ -170,17 +170,6 @@ function ghPublishNoun(argv: string[]): string | undefined {
 /** A `KEY=value` word, as bash accepts before a command name. */
 function isAssignment(w: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
-}
-
-/**
- * Is this simple command a `git … push`? Delegates to `pushesRemote`, which
- * already handles git's global-option positions, the `oo` runner prefix, the
- * positional `-C <path>` and a push hidden in a shell body — a second push
- * matcher here would be a second answer to one question, and the two would
- * drift exactly as #1002's two `cat-file` readers did.
- */
-function isGitPush(argv: string[]): boolean {
-  return pushesRemote(argv.join(" ")) !== undefined;
 }
 
 /**
@@ -477,23 +466,9 @@ function shellBody(argv: string[]): string | undefined {
 
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
-/** Does this command run `git push` at all (including inside a shell body)? */
+/**
+ * Does this command run `git push` at all (including inside a shell body)?
+ */
 export function commandPushes(command: string): boolean {
   return pushesRemote(command) !== undefined;
-}
-
-/**
- * Was this file readable as UTF-8 text? Used by the push scan's remote-branch
- * probe. Not consulted for a refusal: readability is decided by
- * `readPublishFile`, which stats and reads, and this module's fail-closed rule
- * is "a surface this guard could not read is never reported clean" — so a
- * helper that returns true for a path it did not read must never be the answer
- * to "may I publish this?".
- */
-export function fileReadable(file: string): boolean {
-  try {
-    return existsSync(file) && statSync(file).isFile();
-  } catch {
-    return false;
-  }
 }

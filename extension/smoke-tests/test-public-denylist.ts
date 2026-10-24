@@ -230,7 +230,22 @@ const file = (name: string, content: string): string => {
   }
   assert(
     genericCategoryOf("user@example.com") === undefined,
-    "a mail address is not a home path (the @ guard)",
+    "a mail address is not a home path (the @ exemption applies to the token itself)",
+  );
+  // The exemption is scoped to the address, not the string: an earlier `@`
+  // anywhere switched the whole rule off, so one contact address excused a
+  // personal path two sentences later.
+  assert(
+    genericCategoryOf("contact ops@example.invalid, logs in /home/alice/x") === "home-path",
+    "an email address does NOT exempt a personal home path elsewhere in the text",
+  );
+  assert(
+    genericCategoryOf("mail me at someone.name+tag@sub.example.co.uk please") === undefined,
+    "a realistic address with dots, a plus and a multi-part TLD still passes",
+  );
+  assert(
+    genericCategoryOf("mail ops@example.invalid or read /Users/alice/notes") === "home-path",
+    "the exemption is scoped the same way for a macOS home path",
   );
 }
 
