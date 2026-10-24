@@ -329,7 +329,8 @@ export const SEAMS: Seam[] = [
       // Read by the plan step's conflict path and by the terminal steps; exported
       // so those callers batch one disk read across the workstreams rather than
       // one per cycle.
-      readClaims: "#1101 — batched read; work-driver-plan.ts + test-work-driver-cross-group-conflicts.ts",
+      readClaims:
+        "#1101 — batched read; work-driver-plan.ts + test-work-driver-cross-group-conflicts.ts",
       checkCrossGroupClaims: "#571 — the async entry to the overlap check; test-asserted",
       checkCrossGroupClaimsSync: "#571 — the pure core the batched read feeds; test-asserted",
       registerClaim: "#571 — registers a plan-declared claim; test-asserted",
@@ -458,7 +459,7 @@ export const SEAMS: Seam[] = [
     pending: {},
     testOnly: {
       splitLines:
-        "the one line-break split (\r\n, \r, \n) every verify reader shares; test-verify-failure-shapes-b-1762.ts pins the \r case that split(\"\\n\") used to miss",
+        'the one line-break split (\r\n, \r, \n) every verify reader shares; test-verify-failure-shapes-b-1762.ts pins the \r case that split("\\n") used to miss',
       // #1762 round 2 (B3) — the offsets variant, and the reason `splitLines`
       // cannot serve a reader that keeps its own offset: it discards the separator,
       // so the caller cannot see that `\r\n` is two characters and an advance of
@@ -484,6 +485,9 @@ export const SEAMS: Seam[] = [
       isNonAssertionLine:
         "the marker/echo/secret veto, applied by extractSpecificAssertion in-module AND by verify-record's assertionLines on every unwrapped inner line; test-verify-failure-shapes-b-1762.ts pins the inner-secret and inner-echo cases",
     },
-    canary: { symbol: "classifyConsolidatedVerifyFailure", importer: "work-driver-integrate-verify.ts" },
+    canary: {
+      symbol: "classifyConsolidatedVerifyFailure",
+      importer: "work-driver-integrate-verify.ts",
+    },
   },
 ];
