@@ -307,6 +307,9 @@ export function runScopeFanoutGate(
   }
   for (const [id, changedPaths] of changedPathsByWorkstream) {
     const workstream = workstreams[id];
+    // #1756 part b — the FULL declared list, deliberately: `pathsDropped` is a
+    // prompt-display count, so the denominator here must read every path the
+    // plan authorised, not the 50 a develop prompt prints.
     const declaredPaths = (workstream?.paths ?? [])
       .map(normaliseScopePath)
       .filter((p) => p.length > 0);

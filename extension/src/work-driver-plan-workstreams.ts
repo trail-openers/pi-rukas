@@ -12,6 +12,7 @@
 import { hostBudget } from "./host-resources.ts";
 import { boundOutOfScope, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
 import { clippedField } from "./plan-fence-record.ts";
+import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
 import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -31,6 +32,11 @@ import { foldTwo } from "./workstream-fold.ts";
  * closes. The warning counts clipped, cap-dropped and blank-dropped entries
  * SEPARATELY and measures `kept` against the expanded list, so the numbers add
  * up to what the planner actually wrote.
+ *
+ * `paths` is bounded by the same instinct and a different rule (#1756 part b):
+ * duplicates collapse and the excess is COUNTED, never removed, because the
+ * whole list is the authorised set the scope gates read. `pathsDropped` records
+ * what the develop prompt will not show.
  */
 export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const dependsOn = args.dependsOn ?? [];
@@ -41,10 +47,18 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   if (fenceWasBounded(fence)) {
     traceWarn(fenceBoundNotice(`plan workstream '${args.id}'`, fence));
   }
+  const boundedPaths = boundPaths(args.paths);
+  if (boundedPaths.duplicate > 0 || boundedPaths.dropped > 0) {
+    // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same
+    // reason (#1744) — an operator greps one channel for every bound the driver
+    // applied, and a display bound nobody sees is a bound nobody can audit.
+    traceWarn(pathsBoundNotice(`plan workstream '${args.id}'`, boundedPaths));
+  }
   return {
     id: args.id.slice(0, WORKSTREAM_ID_MAX),
     scope: args.scope,
-    paths: [...args.paths],
+    paths: boundedPaths.paths,
+    ...(boundedPaths.dropped > 0 ? { pathsDropped: boundedPaths.dropped } : {}),
     outOfScope: fence.entries,
     ...clippedField(fence.clipped),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),

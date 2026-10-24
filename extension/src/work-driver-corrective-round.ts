@@ -211,6 +211,7 @@ async function runCorrectiveRound(
               parallel: ids.length > 1 && t.id !== "default",
               scope: ws?.scope,
               paths: ws?.paths ?? [],
+              pathsDropped: ws?.pathsDropped,
               command,
               lines: t.lines,
               outOfScope: ws?.outOfScope ?? [],

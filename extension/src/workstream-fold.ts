@@ -9,7 +9,10 @@
  * diverged (out-of-scope handling, the dependsOn re-point, the scope
  * annotation). One helper:
  *
- *   - paths — UNION of both halves.
+ *   - paths — UNION of both halves, deduped on the normalised identity and
+ *     with the merged display count recomputed for `pathsDropped` (#1756 part
+ *     b). The union is never truncated: every file either half authorised stays
+ *     authorised.
  *   - outOfScope — union of both halves MINUS the merged paths: after the
  *     merge the absorbed half's files ARE this workstream's scope, so a
  *     fence entry naming one of them would fence the merged workstream's
@@ -35,6 +38,7 @@
 
 import { capFenceList, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
 import { clippedField } from "./plan-fence-record.ts";
+import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
 import { traceWarn } from "./trace.ts";
 import type { OutOfScopeClip } from "./workflow-state-schema-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -81,7 +85,17 @@ export function foldWorkstream(
  * yet) calls it directly; `foldWorkstream` composes it with the re-point.
  */
 export function foldTwo(a: Workstream, b: Workstream): Workstream {
-  const mergedPaths = [...new Set([...a.paths, ...b.paths])];
+  // #1756 part b — the union re-runs the paths bound (duplicates across the two
+  // halves collapse on the normalised identity) and RECOMPUTES the display
+  // count for the merged list: two halves of 40 are 80 paths and a prompt that
+  // shows 50 of them, so the count describes the fold's result, not either
+  // half's. It NEVER truncates — the merged workstream authorises every file
+  // either half did.
+  const merged = boundPaths([...a.paths, ...b.paths]);
+  if (merged.duplicate > 0 || merged.dropped > 0) {
+    traceWarn(pathsBoundNotice(`plan fold '${a.id}' + '${b.id}'`, merged));
+  }
+  const mergedPaths = merged.paths;
   const inScope = new Set(mergedPaths);
   const mergedList = [...new Set([...a.outOfScope, ...b.outOfScope])].filter(
     (p) => !inScope.has(p),
@@ -126,6 +140,7 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
     id: a.id,
     scope: `${a.scope} (+merged: ${b.id})`,
     paths: mergedPaths,
+    ...(merged.dropped > 0 ? { pathsDropped: merged.dropped } : {}),
     outOfScope: fence.entries,
     ...clippedField(fence.clipped),
     dependsOn: mergedDeps.size > 0 ? [...mergedDeps] : undefined,

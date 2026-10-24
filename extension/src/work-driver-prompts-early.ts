@@ -5,6 +5,7 @@
  * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { quotedPaths } from "./plan-path-shape.ts";
+import { inScopeFilesLine } from "./plan-paths-bound.ts";
 import { fenceLines } from "./work-driver-plan-fence.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
@@ -237,6 +238,12 @@ export function inlineDevelopPrompt(
     id: string;
     scope: string;
     paths: string[];
+    /**
+     * #1756 part b — declared paths the prompt does not print. A display count
+     * only: the scope gates read `workstream.paths` from state, never this
+     * prompt text, so nothing here authorises or unauthorises a file.
+     */
+    pathsDropped?: number;
     /** #679 — optional; presence is informational (sibling injection), not a gate input. */
     dependsOn?: string[];
     /** #679 — optional; plan-quality declaration, never executed by the develop step. */
@@ -328,7 +335,7 @@ export function inlineDevelopPrompt(
         : "**Scope for this dispatch** — stay inside it.",
       `Scope: ${workstream.scope}`,
       workstream.paths.length > 0
-        ? `In-scope files: ${quotedPaths(workstream.paths)}`
+        ? `In-scope files: ${inScopeFilesLine(workstream.paths, workstream.pathsDropped ?? 0)}`
         : "In-scope files: derive from the scope description above.",
       // Prior memory sits directly under the file list because it is ABOUT
       // those files; separating them invites the reader to skip it.
