@@ -43,6 +43,22 @@
  * exists to prevent. `test-public-hygiene-guard.ts` pins the double-registration
  * case; `test-child-guards-extension.ts` pins the exact set.
  *
+ * ## Public repositories only (#1788 round 1, PM design decision)
+ *
+ * The guard protects PUBLIC repositories. Before it asked, every repository was
+ * checked — so a private backlog or a downstream factory's private project had
+ * its commit messages, PR bodies and pushes refused on the operator's private
+ * list, which is not privacy and is exactly the friction that gets a guard
+ * disabled for the repositories that do publish. Each surface now resolves the
+ * repository it writes to (`public-hygiene-target.ts`: the pushed remote, the
+ * segment's `origin`, a `-R`/`--repo` flag, a `gh api` `repos/OWNER/REPO`
+ * endpoint, or the forge's own slug) and asks `gh api repos/OWNER/REPO --jq
+ * .private` — argv form, one bound, cached per process per repository. `true`
+ * skips that surface; `false` checks it. Anything else — no remote, no `gh`, a
+ * network failure, an unknown repo, an unparseable URL, a non-GitHub host —
+ * CHECKS. Failing closed here costs a checked private repo; failing the other
+ * way costs a leak, so there is no third answer.
+ *
  * ## Exemptions by construction
  *
  * - The driver's own forge posts do not pass through this hook (they are
@@ -89,8 +105,15 @@ import {
 } from "./public-hygiene-refusals.ts";
 import { PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
 import { commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
+import { type Target, isRepoTarget, resolveCommandTarget } from "./public-hygiene-target.ts";
 import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import type { PushScanResult } from "./public-hygiene-types.ts";
+import {
+  type VisibilityFn,
+  ghVisibility,
+  isPrivateTarget,
+  targetSlug,
+} from "./public-hygiene-visibility.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -167,6 +190,24 @@ export interface PublicHygieneOpts {
    * remote would reach the network — and a sandbox or CI runner refuses that.
    */
   remoteUrl?: (remote: string) => Promise<string>;
+  /**
+   * Override for the visibility question (#1788 round 1). Production asks
+   * `gh api`; every test hands in a function, so nothing in the offline suite
+   * can reach the network. A resolver that throws or never answers is read as
+   * PUBLIC (check), never as private.
+   */
+  visibility?: VisibilityFn;
+  /**
+   * The executor the DEFAULT visibility lookup runs `gh` through. Separate from
+   * `execFn` on purpose: an offline fixture injects a scripted git executor and
+   * must not have `gh` shells out through it, so a caller that pins one but not
+   * the other gets no lookup rather than an accidental network call. When
+   * neither is given, the guard makes no visibility call at all and every
+   * repository is checked — the same fail-closed shape as a failed lookup.
+   */
+  visibilityExecFn?: ExecFn;
+  /** The repository a driver-authored text will be published to (the forge slug). */
+  target?: Target;
 }
 
 /** A verdict the guard reached, for the trace. Never carries text. */
@@ -221,6 +262,12 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
   const exec: ExecFn = opts.execFn ?? execp;
   const readDenylist = opts.readDenylist ?? readPublicDenylist;
   const remoteUrl = opts.remoteUrl;
+  // The visibility question runs through its OWN executor: production wires the
+  // two together (both are `execp`), and an offline fixture that pins only the
+  // git executor is left with no lookup at all, which the guard reads as
+  // "public" and therefore checks. Injecting a scripted git executor must never
+  // hand `gh` to the same fake and have it answer `true`.
+  const visibility = opts.visibility ?? visibilityLookupFor(opts.visibilityExecFn ?? opts.execFn);
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
@@ -229,11 +276,30 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     // (`pushGitCwd` reads the `git -C <dir>` / `cd <dir> &&` shapes PER SEGMENT,
     // so a chain of two pushes in two trees resolves each on its own terms).
     const cwd = pushGitCwd(toolCwd(ctx), command);
-    const decision = await inspectCommand(command, cwd, exec, readDenylist, { remoteUrl });
+    const decision = await inspectCommand(command, cwd, exec, readDenylist, {
+      remoteUrl,
+      visibility,
+      pushVerb: pushVerbWord(),
+    });
     if (!decision) return;
     traceVerdict(decision.verdict);
     return { block: true, reason: decision.reason };
   });
+}
+
+/**
+ * The visibility question's own executor, resolved at registration.
+ *
+ * `undefined` means "do not ask": the guard then makes no visibility call and
+ * checks every repository, which is the same outcome as a failed lookup and the
+ * only honest answer for a process that never wired an executor. Splitting this
+ * from `execFn` is what keeps an offline fixture's scripted git — one that
+ * answers every command it is handed — from being asked `gh api` and replying
+ * `true` for every repository.
+ */
+function visibilityLookupFor(exec: ExecFn | undefined): VisibilityFn | undefined {
+  if (exec === undefined) return undefined;
+  return (target) => ghVisibility(target, exec, process.cwd());
 }
 
 /**
@@ -275,7 +341,15 @@ export async function inspectCommand(
   // "[object Object]" as a remote URL and reported it unreadable. Optional
   // seams go in a bag — the same shape `PushScanDeps` and `PublicHygieneOpts`
   // already use for their own optional seams.
-  opts: { remoteUrl?: (remote: string) => Promise<string> } = {},
+  opts: {
+    remoteUrl?: (remote: string) => Promise<string>;
+    /** The visibility seam — see `PublicHygieneOpts.visibility`. */
+    visibility?: VisibilityFn;
+    /** The push verb, threaded to the target resolver (never spelled here). */
+    pushVerb?: string;
+    /** A target the caller already knows (the forge slug); skips resolution. */
+    target?: Target;
+  } = {},
 ): Promise<Decision | undefined> {
   const deny = readDenylist();
   // A configured denylist nobody could read is not a denylist: refuse rather
@@ -289,6 +363,41 @@ export async function inspectCommand(
   const scan = scanPublishSurfaces(command, cwd);
   const push = commandPushes(command);
   if (!scan.publishes && !push) return undefined;
+
+  // Public repositories only. The guard exists to keep private text out of
+  // PUBLIC repositories, so the first question is which repository this surface
+  // writes to; a POSITIVE private answer skips the whole command. Every other
+  // answer — unknown repo, no remote, no `gh`, a failed lookup, a non-GitHub
+  // host — falls through to the checks below. The question is asked whenever a
+  // transport exists (the injected remote-URL seam or an executor); with neither
+  // there is no repository to name, and no name means the checks run.
+  const askTarget = exec !== undefined || opts.remoteUrl !== undefined;
+
+  let target: Target | undefined = opts.target;
+  if (target === undefined && askTarget) {
+    // The guard's `remoteUrl` seam takes only a remote name; the resolver also
+    // wants to know WHICH directory it asked from, so the adapter drops it. The
+    // non-optional local is what keeps the closure honest — an optional-chain on
+    // `opts.remoteUrl` would type the return as `string | undefined`.
+    const remoteUrl = opts.remoteUrl;
+    const viaRemote: ((name: string, dir: string) => Promise<string>) | undefined =
+      remoteUrl === undefined ? undefined : async (name: string) => await remoteUrl(name);
+    target = await resolveCommandTarget(command, cwd, exec, {
+      pushVerb: opts.pushVerb,
+      remoteUrl: viaRemote,
+    });
+  }
+  if (target !== undefined && isRepoTarget(target)) {
+    const privateRepo = await isPrivateTarget(target, {
+      lookup: opts.visibility,
+    }).catch(() => false);
+    if (privateRepo) {
+      trace(
+        `public-hygiene: ${targetSlug(target)} is a private repository — publish checks skipped`,
+      );
+      return undefined;
+    }
+  }
 
   const texts = [...scan.texts];
   const problems: ScanProblem[] = [...scan.problems];

@@ -602,6 +602,21 @@ switched off, which is the worse failure. The distinction is where the text came
 not whether it is a message: a `git commit -m` you typed is a publish surface, the
 messages an outgoing range already carries are git content.
 
+**Public repositories only.** The guard exists to keep private text out of *public* repositories, so
+before it reads a single word of your text it asks which repository the publish writes to, and skips
+the whole command when that repository is private. The target is resolved per surface: the remote a
+`git push` names (in the directory that push actually runs in), the `origin` remote of the clone a
+`git commit -m` runs in, gh's `-R`/`--repo` flag, the `repos/OWNER/REPO` path of a `gh api` endpoint,
+or the cwd repository's `origin` — and the driver's own forge posts ask the forge's own slug. The
+question is `gh api repos/OWNER/REPO --jq .private`, in argv form, bounded at 10 s and **cached per
+repository for the life of the process**, so a thirty-publish fan-out costs one lookup. Only a
+positive `true` skips. `false` checks. Anything else — no remote, an unparseable URL, a non-GitHub
+host (a GitLab or self-hosted project's visibility is not something `gh` can speak to), no `gh` on
+PATH, a network failure, an unknown repository, a lookup that never answered — **checks**, because
+for this guard "could not tell" has always meant "not clean". If a private repository is being
+refused, that is what the answer was: the lookup could not be made, and `gh api repos/OWNER/REPO
+--jq .private` run by hand is how you see why.
+
 **A surface the guard cannot read is refused, never assumed clean.** An unreadable denylist, a
 `--body-file` outside the working-directory tree, the OS temp dir and the repository, a body file
 over 1 MiB, a git range that fails or hangs: each is a refusal naming what it could not read. The
