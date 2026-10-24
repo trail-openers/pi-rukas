@@ -167,7 +167,25 @@ export function reattachPrompt(step: WorkStep, role: string): string {
  * same repo cannot mint the same id.
  */
 export function mintJobId(step: WorkStep, label: string, at: number): string {
-  return `${step}:${label}:${process.pid}:${at}`;
+  return jobIdFor(step, label, process.pid, at);
+}
+
+/**
+ * The jobId for one dispatch, in the shape `mintJobId` writes. Split out so the
+ * driver's single-dispatch seam can mint the id BEFORE `beginDispatch` and hand
+ * the SAME string to the child as its `runId` (#1789) — which is what lets a
+ * step prove that the `dispatch-failed` tail it is about to classify was written
+ * by its own dispatch and not by some earlier one.
+ *
+ * The label is deliberately NOT mangled: the id is the key a step compares tail
+ * events against, and rewriting its `-` to `_` made two mintings one millisecond
+ * apart collide (same step, same label, same pid, same ms once the digits were
+ * folded). Whoever recovers an id from a transcript path instead strips the
+ * documented `-(<role>|<tag>)[-<seq>]` suffix using the role it already knows —
+ * see `runIdOfTranscript` in `work-driver-completion-event.ts`.
+ */
+function jobIdFor(step: WorkStep, label: string, pid: number, at: number): string {
+  return `${step}:${label}:${pid}:${at}`;
 }
 
 /** Record the intent to dispatch, so a crash mid-flight is visible on disk.
@@ -220,12 +238,17 @@ export async function beginDispatch(
   label: string,
   at: number,
   transcriptPath?: string,
+  /** #1789 — a caller that already minted the id mints it HERE instead, so the
+   *  write-ahead marker, the completion event and whatever joins a tail back to
+   *  a dispatch all name one identity. `runSingleDispatch` mints its own and
+   *  passes it in; a step that just wants an id passes nothing. */
+  jobId?: string,
 ): Promise<{ state: WorkState; jobId: string }> {
-  const jobId = mintJobId(step, label, at);
-  if (!resumeEnabled()) return { state, jobId };
-  const next = markDispatchStarted(state, step, role, label, jobId, at, transcriptPath);
+  const id = jobId ?? mintJobId(step, label, at);
+  if (!resumeEnabled()) return { state, jobId: id };
+  const next = markDispatchStarted(state, step, role, label, id, at, transcriptPath);
   await persistCycle(ctx, next);
-  return { state: next, jobId };
+  return { state: next, jobId: id };
 }
 
 /** Clear the in-flight marker once the dispatch has settled, either way. */

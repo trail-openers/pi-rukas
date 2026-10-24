@@ -11,6 +11,7 @@ import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
+import { landLensFixAfterBoundKill, readTreeHead } from "./work-driver-lens-fix-bound-land.ts";
 import { parkLensFixOverrun, reviewFixDispatchBoundMs } from "./work-driver-lens-fix-budget.ts";
 import {
   countCommittedAhead,
@@ -89,11 +90,19 @@ export async function runLensFix(
   // #1742 — the fixer carries a caller ceiling of its own
   // (PI_ENSEMBLE_LENS_FIX_BOUND_MS, 45 min default) so one fixer can never
   // outlive the loop's memory of why it started, even when the wall clock
-  // leaves more than that. The loop bound still only ever shortens it.
+  // leaves more than that. The loop bound still only ever shortens it. The
+  // arming itself is traced once, by `reviewFixDispatchBoundMs`, including the
+  // case where nothing is armed (#1779 item (e)) — no second copy of the number
+  // is carried here for a later trace to re-derive or contradict.
   const dispatchBoundMs = reviewFixDispatchBoundMs(state, "lens-fix", now, lensFixBoundMs());
   // #654 — empty-diff shape: re-dispatch the fix ONCE with no-diff evidence
   // before re-flagging identical findings at escalating severity.
   const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
+  // #1789 (5) — ONE executor for this step's git reads. Resolved once (the
+  // cycle's injected verify executor, else the production one) so the round
+  // tip, the reposition gate and the bound-land classification cannot be run
+  // against three different executors.
+  const execFn: ExecFn = ctx.verifyExecFn ?? execp;
   const fixTree = lensWorktree(ctx, state);
   // #981 — hoisted: the round-2+ reposition gate below also needs the
   // branch name; a single read of pipelineState keeps both call sites in
@@ -111,7 +120,6 @@ export async function runLensFix(
     // count against the branch head before classifying.
     let porcelain: string | undefined;
     try {
-      const execFn = ctx.verifyExecFn ?? execp;
       const { stdout } = await execFn("git status --porcelain", {
         cwd: fixTree,
         maxBuffer: 64 * 1024,
@@ -131,7 +139,6 @@ export async function runLensFix(
       // Clean tree. Check committed work before declaring "no fix".
       let committedCount: number | undefined;
       if (branchName) {
-        const execFn = ctx.verifyExecFn ?? execp;
         committedCount = await countCommittedAhead(execFn, fixTree, branchName);
       }
       if (committedCount !== undefined && committedCount > 0) {
@@ -197,7 +204,6 @@ export async function runLensFix(
   if (branchName && fixTree !== ctx.repoRoot) {
     // `tree !== ctx.repoRoot`: legacy state without worktrees falls back to
     // repoRoot; the reposition gate only makes sense for a separate worktree.
-    const execFn: ExecFn = ctx.verifyExecFn ?? execp;
     // #1468 — the reposition fast-forwards onto origin's tip: never onto a foreign push.
     const moved = await continuedHeadMoved(execFn, ctx.repoRoot, state.pipelineState);
     if (moved) return headMovedCap(state, moved, "lens-fix");
@@ -223,12 +229,31 @@ export async function runLensFix(
     }
   }
 
-  return runSingleDispatch(
+  // The base the fixer writes on top of, snapshotted AFTER the reposition gate
+  // above (so it is the verified tip) and BEFORE the dispatch. The bound-land
+  // conversion compares the tree's HEAD against this to tell "the fixer
+  // committed" from "the tree already held this".
+  const roundTipSha = await readTreeHead(execFn, fixTree);
+
+  // #1789 (1) — THE CONVERSION MUST KNOW WHICH DISPATCH IT IS CLASSIFYING. It
+  // reads the LAST event of the log, so it needs the identity of the dispatch
+  // that wrote it, not a guess about which dispatch died. The id is the one
+  // `runSingleDispatch` mints — reported back through `onJobId` the moment it
+  // exists — and that same string goes to `beginDispatch`, to the child as its
+  // `runId` and to the completion event, so the probe compares the tail's
+  // `jobId` against the value that was actually written. Deriving a second id
+  // here from (step, label, now) was the bug: two `Date.now()` reads a
+  // millisecond apart produce different strings, and the join then rejected the
+  // cycle's own kill about one time in five.
+  const fixerLabel = `developer:lens-fix-${state.pipelineState.reviewRound}`;
+  let fixerJobId = "";
+
+  const dispatched = await runSingleDispatch(
     ctx,
     next,
     "lens-fix",
     "developer",
-    `developer:lens-fix-${state.pipelineState.reviewRound}`,
+    fixerLabel,
     now,
     () => prompt,
     // Fix the code where the code IS. This dispatch carried no cwd, so the
@@ -253,7 +278,25 @@ export async function runLensFix(
         scratch: scratchDir(ctx.repoRoot, ctx.issue),
       },
       ...(dispatchBoundMs !== undefined ? { timeoutMs: dispatchBoundMs } : {}),
+      // #1789 (1) — the id this round's dispatch is named by, taken from the
+      // seam that minted it, so the conversion can require the tail to be THIS
+      // dispatch's kill.
+      onJobId: (id) => {
+        fixerJobId = id;
+      },
     },
+  );
+  // #1779 — a fixer killed AT its bound that had already committed is a
+  // partial fix, not a failed step: classified HERE, before the router sees the
+  // tail, so the linear table takes `lens-fix` → `adversarial` with
+  // `lastCompletedStep: lens-fix` and `integrateLensFix` lands it through the
+  // normal gate. Every other kill cause falls through to today's HALT. The
+  // adversarial gate is not skipped and no completion is faked: the gate still
+  // reviews the diff before anything lands.
+  return landLensFixAfterBoundKill(
+    dispatched,
+    { tree: fixTree, tipSha: roundTipSha, jobId: fixerJobId },
+    execFn,
   );
 }
 

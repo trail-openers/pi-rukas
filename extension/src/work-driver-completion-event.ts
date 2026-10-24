@@ -68,6 +68,69 @@ export function overrideEnvForKillCause(
 }
 
 /**
+ * The driver dispatch id a result came back with, PROVEN against the transcript
+ * rather than trusted. `runSingleDispatch` hands the driver jobId to the child as
+ * its `runId`, and `transcriptPathFor` names the transcript
+ * `<runId>-<role>[-<seq>][_<tag>].json`; stripping that documented suffix off the
+ * basename must yield EXACTLY the claimed id, or the claim is refused and the
+ * basename stands. A fake or PM-shaped result therefore keeps reporting the same
+ * `jobId` it always reported, and a `dispatchJobId` whose transcript does not
+ * encode it never becomes the event identity.
+ */
+function driverJobIdOf(result: DispatchResult, role: string): string | undefined {
+  const claimed = result.dispatchJobId;
+  if (!claimed) return undefined;
+  // PROVEN, not believed: the child's transcript must carry the claimed id as
+  // its run-id component. A fake result that names some other transcript (or no
+  // transcript at all) cannot assert an identity the child did not encode, so it
+  // keeps reporting the basename it always reported.
+  return runIdOfTranscript(result, role) === claimed ? claimed : undefined;
+}
+
+/** Exported for the join's own tests: the proven driver id, or undefined when
+ *  the transcript does not carry the claim. */
+export const driverJobIdOfTranscript = driverJobIdOf;
+
+/** The transcript basename, spawn runId. What every caller saw before the driver
+ *  threaded its own id, and still the answer for a PM dispatch. */
+function transcriptJobId(result: DispatchResult): string {
+  return result.transcriptPath ? path.basename(result.transcriptPath, ".json") : "unknown";
+}
+
+/**
+ * Recover the run id a transcript was named with.
+ *
+ * `transcriptPathFor` writes `<runId>-<parts joined by '-'>.json` where the
+ * parts are `[role]`, then the batch tag when one was given, then the seq.
+ * The run id is therefore the basename minus that documented SUFFIX — stripped
+ * with the role the caller already knows, and with the whole `tag[-seq]` tail
+ * when the batch tagged its members. Stripping only `-(role|tag)[-seq]` is the
+ * bug this states: a tagged member (`dispatch_parallel` passes the PM label or
+ * the member index as the tag) left its own tag glued to the recovered id, so
+ * the driver's join refused the dispatch it had just run.
+ *
+ * That matters because the driver now hands the child its jobId as the run id
+ * (#1789), and a jobId is `<step>:<label>:<pid>:<ms>` where the label itself
+ * contains `-`: `developer:lens-fix-1`. A last-dash rule would eat a digit of
+ * the id whenever the role ended up as the tag part.
+ *
+ * `undefined` when the basename does not end in that suffix at all: the claim
+ * is then refused rather than guessed at.
+ */
+export function runIdOfTranscript(result: DispatchResult, role: string): string | undefined {
+  if (!result.transcriptPath) return undefined;
+  const base = path.basename(result.transcriptPath, ".json");
+  const suffix = `-${role}`;
+  if (base.endsWith(suffix)) return base.slice(0, -suffix.length) || undefined;
+  // A tagged batch member: `<runId>-<role>-<tag>[-<seq>]`. The tag is arbitrary
+  // display text, so the only sound rule is "the role starts the tail" — cut at
+  // the first `-<role>-` after the run id and require the remainder to be
+  // `tag` or `tag-seq` in the shape `transcriptPathFor` writes.
+  const tail = new RegExp(`-${role}(-.+)?(-\d+)?$`).exec(base);
+  return tail ? base.slice(0, base.length - tail[0].length) || undefined : undefined;
+}
+
+/**
  * Build a dispatch-completed (or dispatch-failed-provider / dispatch-
  * failed) event from a DispatchResult. Handles the claim-check threshold
  * for large summaries.
@@ -87,7 +150,16 @@ export async function buildCompletionEvent(
   >
 > {
   const at = Date.now();
-  const jobId = result.transcriptPath ? path.basename(result.transcriptPath, ".json") : "unknown";
+  // #1789 — a DRIVER dispatch's jobId is its own identity, and with `runId`
+  // threaded through `runSingleDispatch` the transcript's basename now ENCODES
+  // it (`<jobId>-<role>.json`), so the two agree. A bare `${jobId}-` prefix
+  // match is therefore the join; anything else (a PM job, a test result that
+  // hands in its own transcript path, a legacy path) falls back to the basename
+  // exactly as before. Preferring the driver's id is what lets a step prove a
+  // tail event is its own dispatch — `clearDispatch` clears the id
+  // `beginDispatch` wrote, and a completion whose `jobId` came from an
+  // unrelated transcript basename could never match it.
+  const jobId = driverJobIdOf(result, role) ?? transcriptJobId(result);
 
   if (result.killCause) {
     let detail: string;
@@ -155,6 +227,10 @@ export async function buildCompletionEvent(
         ...(result.killCause === "token-budget" && result.tokenBudget
           ? { tokenBudget: result.tokenBudget }
           : {}),
+        // #1593/#1789 — the caller's deadline, not the fixer's bound. Carried on
+        // the event so the lens-fix partial-fix conversion can refuse it (a cycle
+        // that is out of time parks) without reaching back into the child.
+        ...(result.killedAtCycleDeadline === true ? { killedAtCycleDeadline: true } : {}),
       },
       result.usage,
     );
