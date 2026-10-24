@@ -1,21 +1,24 @@
 #!/usr/bin/env bun
 /**
- * #1765 — the branch step asks the base commit BEFORE a developer is paid for.
+ * #1765 — the base-commit probe, and the rules that make it affordable; plus the
+ * change that took it OFF the branch step's critical path.
  *
  * Three /work attempts on one base each re-paid a develop round (4909 s,
  * 6883 s, 8211 s) before anything said "the gate is red at the base commit, no
- * change can pass it". The fix is the probe in `work-driver-verify-base-health.ts`
- * and the two rules that make it affordable: a GREEN verdict is cached across
- * cycles for the exact run it judged, and a RED is never cached — a cycle that
- * would park on a red re-probes first, so one flaky red cannot park cycles it
- * never ran in.
+ * change can pass it". The probe answers that question. Two rules make it
+ * affordable: a GREEN is cached across cycles for the exact run it judged, and a
+ * RED is never cached — each cycle re-probes, so one flaky red cannot speak for
+ * cycles it never ran in.
  *
- * Every case drives the REAL probe through the real branch-step entry against a
- * real git repo whose gate is the suite's own `verify-loop.sh` over its own
- * fixtures (see `lib/base-health-probe-fixture.ts`), and counts its OWN gate
- * executions and `git worktree add` calls: the cost rule is as load-bearing as
- * the park, and a case that asserts only what the state says cannot tell one
- * extra suite run from none.
+ * What changed since: awaiting that probe IN the branch step cost a median 711 s
+ * on every cycle of a busy mainline (the green cache is keyed on the exact
+ * base/command/bound triple and holds one record, so it is cold on essentially
+ * every cycle), in exchange for a zero-developer park on the ~2 % of runs whose
+ * base is red. So the branch step now REGISTERS the probe and returns; the develop
+ * gate consults it only when its own verify has failed, and a red base is
+ * attributed there as `verify-baseline-red:develop`. No case here expects a
+ * `:branch` cap — each one asserts its absence, and that a passing develop pays
+ * the probe nothing.
  *
  * Offline: temp git repos, no dispatch, no spawn.
  */
@@ -23,6 +26,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type HostBudget, __setHostBudget } from "../src/host-resources.ts";
+import { clearBaseHealthInflight } from "../src/work-driver-base-health-inflight.ts";
 import type { DriverExecFn } from "../src/work-driver-context.ts";
 import { synthesizeDriverCompletion } from "../src/work-driver-events.ts";
 import { aggregateVerifyOutcome } from "../src/work-driver-verify-aggregate.ts";
@@ -48,11 +52,23 @@ import {
   branchState,
   capsOf,
   execLine,
-  notesOf,
+  freshProbe,
+  keyFor,
   probe,
+  settled,
 } from "./lib/base-health-probe-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
 import { redGateFixture } from "./lib/verify-baseline-probe-harness.ts";
+
+/** Read the repo-level cache after a settled probe; undefined when absent/unreadable. */
+function readBaseHealthCacheSync(repo: string): BaseHealthVerdict | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(baseHealthCacheFile(repo), "utf8"));
+    return raw.verdict as BaseHealthVerdict;
+  } catch {
+    return undefined;
+  }
+}
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
@@ -90,36 +106,38 @@ const root = mkdtempSync(path.join(tmpdir(), "pi-base-health-"));
 /** The probe serialises behind `withVerifySlot`; unbounded keeps the suite fast. */
 __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
 
-// ── 1 — a red base parks at branch and NO developer is dispatched.
+// ── 1 — a red base raises NO cap at the branch step; the verdict travels to the
+// develop gate, which is where `verify-baseline-red:develop` is raised.
 {
   const f = await redGateFixture(root, "red", RED_GATE, { "notes.md": "x\n" });
   const r = await probe(f);
   const caps = capsOf(r.state);
   assert(
-    caps.length === 1 && caps[0]?.cap === "verify-baseline-red:branch",
-    `red base: the cycle parks at verify-baseline-red:branch (got ${JSON.stringify(caps.map((c) => c.cap))})`,
+    caps.length === 0 && !caps.some((c) => c.cap === "verify-baseline-red:branch"),
+    `red base: the branch step raises no cap at all (got ${JSON.stringify(caps.map((c) => c.cap))}) — a red base is attributed at develop`,
   );
-  assert(
-    caps[0]?.nextStep === "handoff",
-    `red base: the park routes to handoff, not develop (got ${caps[0]?.nextStep})`,
-  );
+  const out = await settled(r);
   assert(
     r.gateRuns.length === 1 && r.worktreeAdds === 1,
     `red base: exactly one gate run in one throwaway tree (got ${r.gateRuns.length} runs / ${r.worktreeAdds} adds)`,
   );
-  const evidence = caps[0]?.evidence ?? "";
+  const message = out.red?.message ?? "";
   assert(
-    evidence.includes(BASELINE_RED_MARKER) && evidence.includes(f.baseSha.slice(0, 12)),
+    out.verdict?.status === "red" && out.red !== undefined,
+    `red base: the outcome carries the red and its evidence (got ${out.verdict?.status})`,
+  );
+  assert(
+    message.includes(BASELINE_RED_MARKER) && message.includes(f.baseSha.slice(0, 12)),
     "red base: the evidence is the baseline-red finding and names the base sha",
   );
-  assert(evidence.includes(CMD), "red base: the evidence names the command the probe ran");
+  assert(message.includes(CMD), "red base: the evidence names the command the probe ran");
   assert(
     !r.state.eventLog.some((e) => e.kind === "dispatch-started"),
-    "red base: nothing dispatched — zero develop spend",
+    "red base: the step itself dispatched nothing",
   );
   assert(
     !r.state.eventLog.some((e) => e.step === "develop"),
-    "red base: no develop step entered before the park",
+    "red base: the branch step entered no develop step of its own",
   );
   const listed = (await realExec("git", { argv: ["worktree", "list"], cwd: f.repo })).stdout;
   assert(
@@ -127,11 +145,11 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     `red base: the probe tree is torn down (${listed.trim().replace(/\n/g, " | ")})`,
   );
   assert(
-    r.state.pipelineState.baseHealthProbe?.status === "red",
-    "red base: the state records the red verdict it parked on",
+    out.ms !== undefined && out.ms >= 0,
+    `red base: the probe reports its own measured ms for the develop gate's record (got ${out.ms})`,
   );
   assert(
-    r.cacheRaw === undefined,
+    readBaseHealthCacheSync(f.repo) === undefined,
     "red base: the repo-level cache stays empty — red is never cached",
   );
 }
@@ -141,20 +159,25 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   const f = await redGateFixture(root, "green", GREEN_GATE, { "notes.md": "x\n" });
   const r = await probe(f);
   assert(capsOf(r.state).length === 0, "green base: no cap — the cycle proceeds to develop");
+  // Cost and cache are read AFTER the probe settles: the branch step no longer
+  // waits, so counting before it would race the run it is meant to count.
+  const green = await settled(r);
   assert(
     r.gateRuns.length === 1 && r.worktreeAdds === 1,
     `green base: the gate ran exactly once (got ${r.gateRuns.length} runs / ${r.worktreeAdds} adds)`,
   );
   assert(
-    r.state.pipelineState.baseHealthProbe?.status === "green",
-    "green base: the verdict is recorded on the state",
+    green.verdict?.status === "green",
+    "green base: the probe's outcome is the verdict the develop gate would consult",
   );
+  // Read after the probe settled, like the cost counters above.
+  const cached = readBaseHealthCacheSync(f.repo);
   assert(
-    r.cacheRaw !== undefined && looksLikeGreenVerdict(JSON.parse(r.cacheRaw).verdict),
+    cached !== undefined && looksLikeGreenVerdict(cached),
     "green base: the green verdict is written to the repo-level cache",
   );
   assert(
-    notesOf(r.state).some((s) => s.includes("GREEN")),
+    green.notes.some((n) => n.includes("GREEN")),
     "green base: a note records what the probe established",
   );
   const again = await probe(f, { state: r.state });
@@ -173,7 +196,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "no verify command: nothing runs and nothing parks",
   );
   assert(
-    notesOf(r.state).some((s) => s.includes("no verify command")),
+    (await settled(r)).notes.some((n) => n.includes("no verify command")),
     "no verify command: the note says there was nothing to probe",
   );
 }
@@ -187,14 +210,14 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "worktree add fails: the cycle is NOT parked — unknown is never a verdict",
   );
   assert(
-    r.state.pipelineState.baseHealthProbe?.status === "unknown",
-    "worktree add fails: the state records the unknown verdict",
+    (await settled(r)).verdict?.status === "unknown",
+    "worktree add fails: the outcome carries the unknown verdict",
   );
   assert(
     r.gateRuns.length === 0,
     "worktree add fails: the gate never ran, so nothing was paid for",
   );
-  assert(r.cacheRaw === undefined, "worktree add fails: nothing cached");
+  assert(readBaseHealthCacheSync(f.repo) === undefined, "worktree add fails: nothing cached");
 }
 
 // ── 5 — `unknown` never parks: the base failed for want of dependencies.
@@ -212,10 +235,10 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   await realExec("git", { argv: ["commit", "-q", "-m", "chore: deps stub gate"], cwd: f.repo });
   const base = (await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: f.repo })).stdout.trim();
   const r = await probe(f, { state: branchState(base) });
-  const reason = r.state.pipelineState.baseHealthProbe?.reason ?? "none";
+  const reason = (await settled(r)).verdict?.reason ?? "none";
   assert(
     capsOf(r.state).length === 0 && reason.includes("dependencies"),
-    `missing deps at base: NOT parked, and the unknown verdict says so (reason ${reason})`,
+    `missing deps at base: no cap, and the unknown verdict says so (reason ${reason})`,
   );
 }
 
@@ -242,6 +265,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     { host: {}, repoRoot: f.repo, issue: 1765 } as never,
     branchState(f.baseSha),
     CMD,
+    await keyFor(f.repo, f.baseSha),
   );
   assert(sawGate === 1, "no stream: the gate really ran, so the case is not vacuous");
   assert(
@@ -250,143 +274,13 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   );
 }
 
-// ── 7 — the green verdict is cached across cycles, keyed by the run it judged.
-{
-  const f = await redGateFixture(root, "cache-green", GREEN_GATE, { "notes.md": "x\n" });
-  const first = await probe(f);
-  assert(first.gateRuns.length === 1, "cache: the first cycle pays for the probe");
-  const second = await probe(f);
-  assert(
-    second.gateRuns.length === 0 && second.worktreeAdds === 0,
-    `cache: a second cycle on the same base does NOT re-probe (got ${second.gateRuns.length})`,
-  );
-  assert(capsOf(second.state).length === 0, "cache: the cached green proceeds like a probed green");
-  await realExec("git", {
-    argv: ["commit", "-q", "--allow-empty", "-m", "chore: base moved"],
-    cwd: f.repo,
-  });
-  const moved = (await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: f.repo })).stdout.trim();
-  const third = await probe(f, { state: branchState(moved) });
-  assert(
-    third.gateRuns.length === 1,
-    `cache: a new baseSha re-probes (got ${third.gateRuns.length}) — a green is only a green for the commit it ran on`,
-  );
-  // The bound is the key's third part: a project that raises its suite budget
-  // has not been judged under the new one, so the cached verdict may not answer
-  // for it. `.pi/verify-timeout-ms` is the suite tier's own project file.
-  const bound = (await developTierTimeouts(f.repo)).suite;
-  const cached = await readBaseHealthCache(
-    async () => readFileSync(baseHealthCacheFile(f.repo), "utf8"),
-    f.repo,
-  );
-  assert(cached?.status === "green", "cache key: a green sits in the file to be judged");
-  assert(
-    matchingVerdict(cached, { baseSha: f.baseSha, command: CMD, tierBoundMs: bound + 1 }) ===
-      undefined,
-    "cache key: a different tier bound is a different run — re-probe",
-  );
-  await realExec("git", { argv: ["checkout", "-q", "--detach", f.baseSha], cwd: f.repo });
-  mkdirSync(path.join(f.repo, ".pi"), { recursive: true });
-  writeFileSync(path.join(f.repo, ".pi", "verify-timeout-ms"), `${bound + 60_000}\n`);
-  const raised = await probe(f);
-  assert(
-    raised.gateRuns.length === 1,
-    `cache key: a raised suite bound re-probes (got ${raised.gateRuns.length}) — the cached verdict judged a different budget`,
-  );
-  rmSync(path.join(f.repo, ".pi", "verify-timeout-ms"), { force: true });
-  const green: BaseHealthVerdict = {
-    status: "green",
-    baseSha: f.baseSha,
-    command: CMD,
-    tierBoundMs: bound,
-  };
-  assert(
-    matchingVerdict(green, {
-      baseSha: f.baseSha,
-      command: "sh other.sh",
-      tierBoundMs: bound,
-    }) === undefined,
-    "cache key: a different command is a different run — re-probe",
-  );
-  assert(
-    baseHealthKey(green) === baseHealthKey({ ...green }),
-    "cache key: the same run, the same key",
-  );
-  const hit = await cachedBaseHealth(initialState(1765), f.repo, {
-    baseSha: f.baseSha,
-    command: CMD,
-    tierBoundMs: bound + 60_000,
-  });
-  assert(hit.from === "cache" && hit.verdict?.status === "green", "cache: read back from the file");
-}
-
-// ── 8 — a RED is never cached across cycles.
-{
-  const f = await redGateFixture(root, "cache-red", RED_GATE, { "notes.md": "x\n" });
-  const first = await probe(f);
-  assert(capsOf(first.state).length === 1, "red cache: the first cycle parked");
-  const second = await probe(f);
-  assert(
-    second.gateRuns.length === 1 && capsOf(second.state).length === 1,
-    `red cache: the next cycle RE-PROBES before it parks (got ${second.gateRuns.length} runs) — one flaky red must not park cycles it never ran in`,
-  );
-  const red: BaseHealthVerdict = {
-    status: "red",
-    baseSha: f.baseSha,
-    command: CMD,
-    tierBoundMs: 1,
-  };
-  const read = await readBaseHealthCache(async () => JSON.stringify({ verdict: red }), f.repo);
-  assert(
-    read?.status === "red",
-    "red cache: a red CAN be read back, so refusing to reuse it is the policy, not the parser",
-  );
-  const held = branchState(f.baseSha);
-  held.pipelineState.baseHealthProbe = red;
-  const hit = await cachedBaseHealth(held, f.repo, {
-    baseSha: f.baseSha,
-    command: CMD,
-    tierBoundMs: 1,
-  });
-  assert(
-    hit.verdict?.status === "red",
-    "red cache: an in-state red is readable (the aggregate reuses it)",
-  );
-  const third = await probe(f, { state: held });
-  assert(
-    third.gateRuns.length === 1 && capsOf(third.state).length === 1,
-    "red cache: an in-state red does NOT let the branch step park without re-probing",
-  );
-}
-
-// ── 9 — a malformed cache file means re-probe, never green.
-{
-  const f = await redGateFixture(root, "cache-bad", GREEN_GATE, { "notes.md": "x\n" });
-  mkdirSync(path.dirname(baseHealthCacheFile(f.repo)), { recursive: true });
-  const cases: Array<[string, string]> = [
-    ["not JSON", "{ this is not json"],
-    ["a bare array", "[]"],
-    ["no verdict field", '{"other":1}'],
-    ["a green with no sha", '{"verdict":{"status":"green","command":"x","tierBoundMs":1,"at":0}}'],
-    [
-      "a green with a zero bound",
-      '{"verdict":{"status":"green","baseSha":"a","command":"x","tierBoundMs":0,"at":0}}',
-    ],
-    ["an unknown status", '{"verdict":{"status":"purple","baseSha":"a"}}'],
-  ];
-  for (const [label, body] of cases) {
-    writeFileSync(baseHealthCacheFile(f.repo), body);
-    const r = await probe(f);
-    assert(
-      r.gateRuns.length === 1 && capsOf(r.state).length === 0,
-      `malformed cache (${label}): re-probe, and never read as green`,
-    );
-  }
-  const healthy = JSON.parse(readFileSync(baseHealthCacheFile(f.repo), "utf8"));
-  assert(healthy.verdict?.status === "green", "malformed cache: the good probe rewrote the file");
-}
-
 // ── 10 — the post-failure comparison reuses the in-cycle verdict: no second tree.
+//
+// #1809 — the verdict arrives carrying `fromInFlightProbe`: it is the colour this
+// gate pass collected from the background probe, which is the only channel a RED
+// reuses through. A red sitting in `pipelineState` with no flag is NOT reusable and
+// re-probes, so one flaky red cannot speak for a round it did not run in; that
+// converse is pinned in `test-verify-base-health-channels.ts`.
 {
   const f = await redGateFixture(root, "reuse", RED_GATE, { "notes.md": "x\n" });
   const bound = (await developTierTimeouts(f.repo)).suite;
@@ -422,7 +316,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     perWorktreeVerifyFailures: [],
     failures,
     notes,
-    baseHealthProbe: red,
+    baseHealthProbe: { ...red, fromInFlightProbe: true as const },
   });
   assert(
     worktreeAdds === 0,
@@ -433,8 +327,13 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "reuse: the baseline-red finding still leads the failures",
   );
   assert(
-    notes.some((n) => n.includes("reused the branch step")),
-    "reuse: the note says the verdict came from the branch step, not a new run",
+    notes.some((n) => n.includes("reused the background base probe's RED")),
+    // #1809 fix round — the note names the CHANNEL the colour came from, and this
+    // case's channel is the background probe this gate pass awaited (it carries
+    // `fromInFlightProbe`). The in-state wording — a red an earlier round recorded,
+    // which the post-failure comparison will NOT reuse — is pinned in
+    // `test-verify-base-health-channels.ts` beside the flag that selects each arm.
+    "reuse: the note says the colour came from the background probe, not a new run",
   );
   assert(
     attributed === false,
@@ -453,18 +352,29 @@ for (const [label, env] of [
     saved[k] = process.env[k];
     process.env[k] = v;
   }
+  // The switch is read at the moment the probe runs, so it must be set for the
+  // WHOLE call: restoring it before the caller reads the notes let the previous
+  // label's probe (still registered for this repo) answer, and the note that came
+  // back was the other switch's.
+  // One probe per key per process, and the key here is the fixture's base, whose
+  // probe the PREVIOUS label left running: the registry joins it, and it is that
+  // probe's notes the case would read. A new cycle starts with an empty registry,
+  // so a switch case observes the effect of the switch it set only after dropping
+  // what another label registered.
+  clearBaseHealthInflight();
   const r = await probe(f);
+  const out = await settled(r);
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
   assert(
     capsOf(r.state).length === 0 && r.gateRuns.length === 0,
-    `${label}: no probe and no park — the develop gate answers for the base as before`,
+    `${label}: nothing registered and no cap — the develop gate answers for the base as before`,
   );
   assert(
-    notesOf(r.state).some((s) => s.includes("disabled")),
-    `${label}: the note names the switch that skipped the probe`,
+    out.notes.some((n) => n.includes("disabled") && n.includes(label.split("=")[0])),
+    `${label}: the note names the switch that skipped the probe (got ${JSON.stringify(out.notes)})`,
   );
 }
 

@@ -9,6 +9,8 @@
  * `workflow-state-events-widening.ts`: a pure event-type fragment referenced
  * by name in the composed `WorkEvent` union in `workflow-state-events.ts`.
  */
+import { synthesizeDriverCompletion } from "./work-driver-events.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
  * What happened during worktree provisioning.
@@ -114,5 +116,95 @@ export function makeWorktreeProvisionedEvent(
     worktreePath,
     outcome: via === "symlink" ? "symlink" : "none",
     problem,
+  };
+}
+
+/**
+ * The branch step's whole success record, in one call: the #844 reset event, the
+ * `driver:branch` completion, one #536 provision event per workstream, and the
+ * `pipelineState` fields the setup established.
+ *
+ * Lives beside `makeWorktreeProvisionedEvent` because that is the event whose
+ * shape it has to know, and the branch step's job is to REPORT a setup it did not
+ * perform — a step that rebuilt these events itself could drift from the provision
+ * payload without any test noticing which workstream lost its `depsHint`.
+ */
+export function recordMechanizedBranchSetup(
+  state: WorkState,
+  setup: BranchSetupRecord,
+  now: number,
+): WorkState {
+  return recordSetup(state, setup, now);
+}
+
+/** The shape `mechanizedBranchSetup` returns, narrowed to what the record reads. */
+export interface BranchSetupRecord {
+  branchName: string;
+  baseSha: string;
+  mainline: string;
+  worktrees: Record<string, string>;
+  provisions: Record<
+    string,
+    { via: "hook" | "symlink" | "none"; problem?: string; hookFailed?: boolean } | undefined
+  >;
+  resetFromSha?: string | undefined;
+  workstreamBaseShas: Record<string, string> | undefined;
+}
+
+function recordSetup(state: WorkState, setup: BranchSetupRecord, now: number): WorkState {
+  // #844 — the reset of a stale local branch is recorded in the event log (the
+  // recovery handle) so the audit trail carries the old tip even if a later step
+  // fails.
+  let baseState = appendEvent(
+    { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+    { kind: "step-started", step: "branch", at: now },
+  );
+  if (setup.resetFromSha !== undefined) {
+    baseState = appendEvent(baseState, {
+      kind: "branch-reset",
+      at: Date.now(),
+      branch: setup.branchName,
+      oldSha: setup.resetFromSha,
+      newSha: setup.baseSha,
+    });
+  }
+  // Via the shared builder (work-driver-events.ts): unique jobId — the old inline
+  // literal "mechanized" appeared twice per fan-out cycle, making jobId useless as
+  // a correlation key.
+  let withProvisions = appendEvent(
+    baseState,
+    synthesizeDriverCompletion({
+      step: "branch",
+      label: "driver:branch",
+      summary: `Mechanized branch setup: ${setup.branchName} @ ${setup.baseSha.slice(0, 8)} off origin/${setup.mainline}; ${Object.keys(setup.worktrees).length} worktree(s).`,
+      startedAt: now,
+      now: Date.now(),
+    }),
+  );
+  // #536 — per-workstream provision event for targeted depsHint in verify-develop.
+  for (const [id, cwd] of Object.entries(setup.worktrees)) {
+    const pr = setup.provisions[id];
+    if (pr) {
+      withProvisions = appendEvent(
+        withProvisions,
+        makeWorktreeProvisionedEvent(id, cwd, pr.via, pr.problem, pr.hookFailed),
+      );
+    }
+  }
+  return {
+    ...withProvisions,
+    pipelineState: {
+      ...withProvisions.pipelineState,
+      branchName: setup.branchName,
+      baseSha: setup.baseSha,
+      worktrees: setup.worktrees,
+      // #679 — record the per-workstream effective base as of the branch step.
+      // Every independent workstream maps to the global baseSha; dependent
+      // workstreams (deferred) are NOT in this map yet — their entry is added by
+      // runDevelop at deferred-creation time, when the dependency's post-commit
+      // SHA is known. Readers (applySafetyNet, verifyDevelopOutcome) fall back to
+      // the global baseSha for any workstream id absent from the map.
+      workstreamBaseShas: setup.workstreamBaseShas,
+    },
   };
 }

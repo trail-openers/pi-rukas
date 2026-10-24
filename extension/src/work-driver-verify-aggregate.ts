@@ -17,18 +17,42 @@
  * Import chain: work-driver-verify-verify-cmd.ts → this file →
  * work-driver-verify-baseline.ts (acyclic; the caller already imports that
  * module for the same call, so no new dependency edge is introduced).
+ *
+ * The base-health await: the branch step no longer waits for the base probe, so
+ * when THIS seam is about to pay for a base run it first collects the background
+ * verdict — the one place the probe is awaited, reached only under the same
+ * condition that already pays for `compareWithBaseline`, so a passing cycle never
+ * waits for it.
  */
 
+import { awaitInflightBaseHealth } from "./work-driver-base-health-inflight.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
+import type {
+  BaseHealthConsulted,
+  BaseHealthReport,
+} from "./work-driver-verify-base-health-channels.ts";
+import { baseHealthConsultedNote } from "./work-driver-verify-base-health-channels.ts";
 import { baselineExplainsChange, compareWithBaseline } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
-import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
-import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
+import { isValidSha, isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
+import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 
 /** #1765 — reports whether the probe established the base red for the gate's command. */
 export type BaselineRedEstablished = (established: boolean) => void;
+
+/**
+ * The consultation record and its operator note are declared ONCE, in
+ * `work-driver-verify-base-health-channels.ts` — the one shape every layer of the
+ * develop gate carries. Re-exported so the recorder and the gate results keep the
+ * name they already read, and so a second copy cannot grow in this module.
+ */
+export type {
+  BaseHealthConsulted,
+  BaseHealthReport,
+} from "./work-driver-verify-base-health-channels.ts";
+export { baseHealthConsultedNote } from "./work-driver-verify-base-health-channels.ts";
 
 /**
  * #1765 — the develop gate's tail rule, in one call so the two claims travel
@@ -48,6 +72,52 @@ export function reportBaselineLeg(
 ): void {
   if (leg.established) callbacks.onBaselineRedEstablished?.();
   if (leg.red) callbacks.onBaselineRedOnly?.();
+}
+
+/**
+ * Consult the background base probe for this gate's key, and report the verdict
+ * to the caller so it lands in state. Answers "nothing" — leave the cap exactly as
+ * the gate chose it and let `compareWithBaseline` re-probe — when nothing is
+ * registered for the key (the shape after a resume in a new process), when the
+ * probe did not answer inside its bound, or when its verdict is `unknown`.
+ *
+ * BOTH colours of an answer are reusable: a GREEN is what a resumed cycle must not
+ * pay a second suite run for, and a RED is the `verify-baseline-red:develop`
+ * attribution. `unknown` records nothing, which is why it is not passed on.
+ *
+ * The await is the whole point of this seam: the branch step used to block on the
+ * probe for the length of a full verify run (measured median 711 s on a busy
+ * mainline, where the green cache is cold on essentially every cycle). Here it is
+ * paid for only by a cycle whose own verify has already failed — the same condition
+ * that already pays for `compareWithBaseline` — and bounded by the same tier bound.
+ */
+async function collectBackgroundBaseHealth(
+  ctx: CycleContext,
+  cmd: string,
+  baseSha: string | undefined,
+  suiteTimeoutMs: number,
+  onConsulted?: (report: BaseHealthConsulted) => void,
+): Promise<BaseHealthVerdict | undefined> {
+  if (!isValidSha(baseSha)) return undefined;
+  const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: suiteTimeoutMs };
+  const consulted = await awaitInflightBaseHealth(key, suiteTimeoutMs);
+  // Nothing registered is not an error and not a verdict: it is the shape after a
+  // resume in a new process, or when the probe's switches were off. The gate then
+  // answers for the base on its own evidence, exactly as it did before #1765.
+  if (consulted === undefined) return undefined;
+  if (consulted.verdict.status === "unknown") return undefined;
+  // Carried into the record the gate writes: the ms is the probe's own measured
+  // wall clock, and it is the number the operator reads to judge what the probe
+  // cost. `ran` and "did this come from the registry" are NOT reported — the only
+  // producer of this record is the registry read, so the latter was a constant, and
+  // no renderer ever showed the former. Both were dead fields wearing documentation.
+  onConsulted?.({
+    status: consulted.verdict.status,
+    baseSha,
+    ...(consulted.outcome.ms === undefined ? {} : { ms: consulted.outcome.ms }),
+    ...(consulted.verdict.timedOut === true ? { timedOut: true as const } : {}),
+  });
+  return consulted.verdict;
 }
 
 /**
@@ -79,8 +149,23 @@ export async function aggregateVerifyOutcome(args: {
    * inside `verifyCapFor`, so a killed run is still the actionable timeout.
    */
   onBaselineRedEstablished?: BaselineRedEstablished;
-  /** #1765 — the branch step's in-cycle verdict, when the cycle holds one. */
+  /** #1765 — the cycle's own base verdict, when the cycle holds one. */
   baseHealthProbe?: BaseHealthVerdict;
+  /**
+   * The ONE channel this seam reports on (#1809 fix round): the collected verdict
+   * and the consultation record travel as the two optional halves of one
+   * `BaseHealthReport`, declared in
+   * `work-driver-verify-base-health-channels.ts` and carried unchanged through
+   * every layer above. Called once per consultation; a receiver that keeps both
+   * halves must fold them (`mergeBaseHealthReport`), never assign.
+   *
+   * #1809 fix round — a RED the gate read out of the registry is NOT carried in
+   * `collected`. A red is never cached across rounds, and
+   * `pipelineState.baseHealthProbe` is exactly the field that survives a round (and
+   * a resume), so persisting a consulted red would let the next develop pass reuse
+   * a verdict it never ran for. Only a GREEN is collected.
+   */
+  onBaseHealth?: (report: BaseHealthReport) => void;
 }): Promise<boolean> {
   const {
     execFn,
@@ -94,6 +179,7 @@ export async function aggregateVerifyOutcome(args: {
     notes,
     onBaselineAttributed,
     onBaselineRedEstablished,
+    onBaseHealth,
     baseHealthProbe,
   } = args;
 
@@ -124,6 +210,79 @@ export async function aggregateVerifyOutcome(args: {
     (cons.status === "failed" || perWorktreeVerifyFailures.length > 0) &&
     !failures.some(isHostExhaustionFailure)
   ) {
+    // The probe that used to stall the branch step is collected HERE, and only
+    // here: this is the one point in a cycle that was already going to pay for a
+    // run at base, and it is reached only when the change's own verify failed.
+    // A cycle that passed never waits for the probe. A verdict the cycle already
+    // holds in state wins — it is the same record, and reading the in-flight one
+    // over it could answer for a different run than the one the cycle recorded.
+    let inFlightRed = false;
+    let inFlightTimedOut = false;
+    // #1809 fix round — the ONE channel's payload. Both halves are optional
+    // properties and the callback fires ONCE, at the end, so no receiver on any
+    // layer can lose a half to a later `undefined`.
+    const report: BaseHealthReport = {};
+    const inflight =
+      baseHealthProbe === undefined
+        ? await collectBackgroundBaseHealth(ctx, cmd, baseSha, suiteTimeoutMs, (consulted) => {
+            // One consultation, one record: the note is the operator's record of
+            // the probe — written by the gate that consulted it, the only channel
+            // the probe itself is no longer allowed to touch — and the consultation
+            // record rides on the report below. A RED is the note exception:
+            // `compareWithBaseline` leads `notes` with the finding that names the
+            // base and its assertion, and a second line saying the same colour
+            // would be two records of one consultation. The consultation record
+            // still carries the red's colour and measured ms for the event log.
+            if (consulted.status !== "red") {
+              notes.push(baseHealthConsultedNote(baseSha ?? "", consulted));
+            }
+            report.consulted = consulted;
+            // #1809 fix round — a consulted RED is kept OUT of the report's
+            // `collected` half (the only writer of `pipelineState.baseHealthProbe`):
+            // the state field survives a develop round and a red is never cached
+            // across rounds. It still answers for THIS gate pass, which is what
+            // `fromInFlightProbe` on the reuse below says — without it
+            // `compareWithBaseline` would read this as an ordinary in-state verdict,
+            // an in-state red is unreusable there by design, and this cycle would
+            // silently pay for a second suite run it has already had judged.
+            // `baseSha` is non-null: the consultation only happens after
+            // `collectBackgroundBaseHealth` accepted the sha.
+            if (consulted.status === "red") {
+              inFlightRed = true;
+              inFlightTimedOut = consulted.timedOut === true;
+            }
+          })
+        : undefined;
+    // The report's `collected` half is what `recordDevelopGateEvents` writes to
+    // `pipelineState.baseHealthProbe`, so it carries a GREEN only: the
+    // consultation's own record already names a red's colour and cost, and the
+    // field it would land in survives a develop round, which is exactly where a
+    // red must not survive. The colour is read back from the consultation record,
+    // never from `inflight?.status`, so the two halves of one report cannot
+    // disagree about what the probe said.
+    if (!inFlightRed && inflight !== undefined) report.collected = inflight;
+    if (report.collected !== undefined || report.consulted !== undefined) {
+      onBaseHealth?.(report);
+    }
+
+    // A verdict the cycle already holds wins over the registry's: it is the record
+    // this cycle wrote, and a registry entry could answer for a different run. The
+    // registry's own RED is flagged as this gate pass's, which is the only channel
+    // `compareWithBaseline` accepts a red through.
+    const verdictForReuse =
+      baseHealthProbe ??
+      (inflight === undefined
+        ? undefined
+        : inFlightRed
+          ? {
+              status: "red" as const,
+              baseSha: baseSha as string,
+              command: cmd,
+              tierBoundMs: suiteTimeoutMs,
+              ...(inFlightTimedOut ? { timedOut: true as const } : {}),
+              fromInFlightProbe: true as const,
+            }
+          : inflight);
     const changeFailures = [
       ...(cons.status === "failed"
         ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]
@@ -145,9 +304,10 @@ export async function aggregateVerifyOutcome(args: {
       changeFailures,
       failures,
       notes,
-      // #1765 — the branch step's verdict for this key: no second suite run pays
-      // for a verdict this cycle already holds.
-      ...(baseHealthProbe !== undefined ? { cachedVerdict: baseHealthProbe } : {}),
+      // #1765 — the cycle's verdict for this key, in-state or collected from
+      // the background probe above: no second suite run pays for a verdict the
+      // cycle already holds.
+      ...(verdictForReuse !== undefined ? { cachedVerdict: verdictForReuse } : {}),
     });
     if (verdict === undefined) {
       onBaselineRedEstablished?.(false);
