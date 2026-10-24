@@ -22,6 +22,10 @@ import { trace, traceWarn } from "./trace.ts";
 import { foldPortPlan, mergeWithContract } from "./work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
 import {
+  unfenceDocsTestPaths,
+  unfenceDocsTestsEnabled,
+} from "./work-driver-plan-unfence-docs-tests.ts";
+import {
   type UnfenceResult,
   unfenceIssueNamedPaths,
   unfenceSummary,
@@ -153,16 +157,78 @@ export async function runPlanUnfencePass(
     return { workstreams };
   }
   const read = await readIssueBody(state);
+  // #1250 change 1 — the N=1 docs/test rule, decided HERE rather than inside
+  // the pass, because this is where N is already computed (`defaultToSingle`),
+  // where the issue body has just been read, and where the escape hatch for the
+  // pass is read. Two workstreams means the fence is the #572 cross-declaration
+  // contract and stays exactly as written.
+  //
+  // An UNREADABLE body switches the rule off entirely, and this is the reason:
+  // the rule's one hard precondition is that the issue must not forbid the
+  // path, and it judges that from the body's prose. A lost cache file leaves it
+  // unable to honour a prohibition it cannot read, so opening fences on an empty
+  // body would be a scope widening manufactured by a memory problem — the exact
+  // class of failure `readIssueBody` exists to refuse. The issue-named half of
+  // the pass still runs (an empty body extracts nothing, so it removes nothing),
+  // and the trace below says which rule did not run and why.
+  //
+  // A MISSING artifact is treated exactly like an unreadable one for THIS rule
+  // (#1250 round 4). `readIssueBody` reports it as `{ body: "", unreadable:
+  // false }` — honestly, because a cycle that cached no body never had a cache
+  // file to lose — and that `false` is what the issue-named half wants: an empty
+  // body extracts nothing, so it removes nothing, and the operator must not be
+  // told a file went missing when none did. But it is the SAME epistemic state
+  // for this rule — an absent artifact means the issue's refusals cannot be read
+  // either — so the precondition fails closed here too, with the same trace.
+  // `unfenceSummary` below still reports `issueBodyUnreadable` only for a real
+  // read failure, so the two facts stay apart for the operator.
+  const single = Object.keys(workstreams).length === 1;
+  const docsTestsBlocked = read.unreadable || !state.pipelineState.issueBodyArtifact;
+  const docsTestsOn = single && !docsTestsBlocked && unfenceDocsTestsEnabled();
   const result: UnfenceResult = await unfenceIssueNamedPaths(workstreams, read.body, {
     execFn: opts.execFn ?? execp,
     repoRoot: opts.repoRoot,
     ref: state.pipelineState.baseSha ?? "HEAD",
-    defaultToSingle: Object.keys(workstreams).length === 1,
+    defaultToSingle: single,
   });
-  for (const note of [...result.notes, ...result.warnings]) trace(`work-driver: ${note}`);
+  // The docs/test rule runs on the map the issue-named pass returned, so a
+  // fence that pass restored (the no-owner rollback) is still visible to it and
+  // a fence it already removed is not double-counted.
+  // #1250 change 1 round-2 — the rule's prohibition scan strips the issue's
+  // code blocks (an example block quotes a path to show what the change must
+  // NOT become; it is not a refusal) and matches the fence key on path-segment
+  // boundaries, both inside the rule. It reads the WHOLE body rather than only
+  // the extraction's three requirement sections, because a refusal lives
+  // precisely in the sections extraction drops — see the module header of
+  // work-driver-plan-unfence-docs-tests.ts.
+  const opened: UnfenceResult = docsTestsOn
+    ? unfenceDocsTestPaths(result.workstreams, read.body)
+    : { workstreams: result.workstreams, notes: [], warnings: [], placed: [], removed: [] };
+  if (single && !docsTestsOn) {
+    // Three reasons a single-workstream plan keeps its docs/test fences are
+    // different facts an operator needs apart: an operator who turned the knob
+    // off wants to see that it was OFF, and one whose explore cache went missing
+    // — or was never written — wants to see that the rule declined to run
+    // without the issue. Read per call, like every other hatch in this file.
+    trace(
+      docsTestsBlocked
+        ? "work-driver: plan unfence docs/test rule skipped — the issue body could not be read, so the rule cannot honour a prohibition it cannot read; docs and test fences left as written"
+        : "work-driver: plan unfence docs/test rule disabled by PI_ENSEMBLE_UNFENCE_DOCS_TESTS=0 — docs and test fences left as written",
+    );
+  } else if (!single && unfenceDocsTestsEnabled()) {
+    trace("work-driver: plan unfence docs/test rule skipped — not a single-workstream plan");
+  }
+  const merged: UnfenceResult = {
+    workstreams: opened.workstreams,
+    notes: [...result.notes, ...opened.notes],
+    warnings: [...result.warnings, ...opened.warnings],
+    placed: [...result.placed, ...opened.placed],
+    removed: [...result.removed, ...opened.removed],
+  };
+  for (const note of [...merged.notes, ...merged.warnings]) trace(`work-driver: ${note}`);
   return {
-    workstreams: result.workstreams,
-    summary: unfenceSummary(result, read.unreadable),
+    workstreams: merged.workstreams,
+    summary: unfenceSummary(merged, read.unreadable),
   };
 }
 

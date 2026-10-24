@@ -21,11 +21,43 @@
  * nobody declares is the only one that can be placed.
  */
 
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { fenceDirPrefix } from "./work-driver-declared-path.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
+
+/**
+ * The workstream a fence was removed from, with the reason the operator sees.
+ *
+ * #1250 — declared here, beside the note builders that produce its `note`, and
+ * imported by the pass (which used to own it) rather than the other way round:
+ * a record and the string that fills its `note` field are one contract, and
+ * spelling them in two files is how they drift. `UnfenceRecord` is re-exported
+ * from work-driver-plan-unfence.ts, so callers keep their import path.
+ */
+export interface UnfenceRecord {
+  workstream: string;
+  path: string;
+  /** The fence entry as the planner wrote it (annotation included). */
+  entry: string;
+  note: string;
+  /**
+   * Set when the pass could not place the path it had just removed and so put
+   * the entry BACK — the fence is still there, and `removed` must not claim
+   * otherwise. The adversarial review of #1167 caught a warning that read
+   * "left fenced" while the entry was already gone: the word was a lie about
+   * the plan the develop gate would read.
+   */
+  restored?: string;
+  /**
+   * #1250 — set when the N=1 docs/test rule opened this fence rather than the
+   * issue naming it. The shape that made it openable (`docs` / `test`), from
+   * plan-docs-test-path.ts, and the reason `unfenceSummary` counts apart.
+   */
+  docsTest?: "docs" | "test";
+}
 
 /**
  * #1167 round-3 — an issue-named token is only allowed to move a fence once it
@@ -62,6 +94,26 @@ export function fenceEntryMatching(entries: string[], path: string): string | un
 /** The note the operator sees when a fence the issue contradicts is removed. */
 export function unfencedNote(path: string): string {
   return `unfenced ${path}: named by the issue`;
+}
+/**
+ * #1250 — the note the operator sees when the N=1 docs/test rule opens a fence.
+ * The wording names the RULE rather than an authority the issue never gave:
+ * there is no issue statement behind this removal, so claiming one would be
+ * the #1167 lie in reverse. The kind (`docs` / `test`) is the shape that made
+ * it openable, from plan-docs-test-path.ts, and reads as one word — a note that
+ * said "test-or-test" for a test fence was a note nobody could parse.
+ *
+ * The ENTRY is neutralised before it reaches the string: an `outOfScope` entry
+ * is planner-derived text, and a note lands in the state file, the handoff and
+ * a trace line, so the same rule the developer prompt applies (#1744) applies
+ * here — one line, no backticks, no forged clip marker.
+ */
+export function unfencedDocsTestNote(entry: string, kind: "docs" | "test"): string {
+  // Quoted, as the sibling refusal notes in work-driver-plan-repair.ts quote
+  // the path they name: the neutralised entry can still contain a space or a
+  // colon, and an unquoted `unfenced docs/a: b: docs path, N=1` is two
+  // colons-deep prose where the boundary of the entry is guesswork.
+  return `unfenced ${JSON.stringify(neutraliseFenceEntry(entry))}: ${kind} path, N=1`;
 }
 /** The note the operator sees when a symbol could not be resolved to one file. */
 export function unresolvedIdentifierNote(name: string, candidates: string[], ref: string): string {
@@ -150,15 +202,30 @@ export function unfenceSummary(
   result: UnfenceResult,
   issueBodyUnreadable = false,
 ): PlanUnfenceSummary {
+  // #1250 — the N=1 docs/test removals are counted APART. `removed` stays the
+  // issue-contradicting count it has always been, because the two rules have
+  // different authorities (an issue that named a path vs. a docs/test shape in
+  // a single-workstream plan) and an operator reading a plan where 4 fences
+  // went needs to know which of the two opened them. Absent rather than zero
+  // for the same reason `kept`/`unresolved` are.
+  //
+  // BOTH counts come from one filter over one list, and neither counts a
+  // RESTORED record: an entry the pass put back is still fenced, so claiming it
+  // in either number would be the #1167 "left fenced" lie in the other
+  // direction — `removed` already excluded them, and `docsTests` counting them
+  // would report a docs/test opening the develop gate still enforces.
+  const outstanding = result.removed.filter((r) => r.restored === undefined);
+  const docsTests = outstanding.filter((r) => r.docsTest !== undefined).length;
   const kept = result.notes.filter((n) => n.startsWith("kept fence ")).length;
-  const rolledBack = result.removed.filter((r) => r.restored !== undefined).length;
+  const rolledBack = result.removed.length - outstanding.length;
   const unresolved = result.warnings.filter((w) => w.startsWith("unresolved identifier")).length;
   return {
     ran: true,
-    removed: result.removed.length - rolledBack,
+    removed: outstanding.length,
     kept,
     rolledBack,
     unresolved,
+    ...(docsTests > 0 ? { docsTests } : {}),
     ...(issueBodyUnreadable ? { issueBodyUnreadable: true } : {}),
     ...(result.notes.length > 0 ? { notes: result.notes.slice(0, 10) } : {}),
     ...(result.warnings.length > 0 ? { warnings: result.warnings.slice(0, 10) } : {}),

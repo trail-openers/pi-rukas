@@ -334,7 +334,7 @@ const OPTS = {
       id: "default",
       scope: "the seam",
       paths: ["extension/src/host.ts"],
-      outOfScope: ["extension/src/dispatch.ts", "docs/"],
+      outOfScope: ["extension/src/dispatch.ts", "docs/", "extension/src/spawn.ts"],
     },
   ]);
   const tmp = `${process.env.TMPDIR ?? "/tmp"}/plan-unfence-${process.pid}.md`;
@@ -370,8 +370,8 @@ const OPTS = {
     "runPlan places the removed path in the workstream's paths",
   );
   assert(
-    (ws?.outOfScope ?? []).includes("docs/"),
-    "the untouched part of the fence still reaches develop",
+    (ws?.outOfScope ?? []).includes("extension/src/spawn.ts"),
+    "the untouched part of the fence still reaches develop (#1250: `docs/` no longer survives it — a docs fence on an N=1 plan is opened by the docs/test rule, which this suite pins in test-plan-unfence-docs-tests.ts; a source fence the issue never named is the untouched case)",
   );
   assert(
     !(next.eventLog ?? []).some((e) => e.kind === "cap-hit"),
