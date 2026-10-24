@@ -60,6 +60,7 @@ import {
   isUnfenceablePath,
   keptBroaderFenceNote,
   ownerOf,
+  type UnfenceRecord,
   unfencedNote,
   unresolvedIdentifierNote,
 } from "./work-driver-plan-unfence-notes.ts";
@@ -86,23 +87,6 @@ export type UnfenceExecFn = (
   cmd: string,
   opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
 ) => Promise<{ stdout: string; stderr?: string }>;
-
-/** The workstream a fence was removed from, with the reason the operator sees. */
-export interface UnfenceRecord {
-  workstream: string;
-  path: string;
-  /** The fence entry as the planner wrote it (annotation included). */
-  entry: string;
-  note: string;
-  /**
-   * Set when the pass could not place the path it had just removed and so put
-   * the entry BACK — the fence is still there, and `removed` must not claim
-   * otherwise. The adversarial review of #1167 caught a warning that read
-   * "left fenced" while the entry was already gone: the word was a lie about
-   * the plan the develop gate would read.
-   */
-  restored?: string;
-}
 
 /** The verdict of the pass: the repaired plan plus what it did. */
 export interface UnfenceResult {
@@ -496,3 +480,4 @@ export async function unfenceIssueNamedPaths(
 // cap, and it reads those exact strings). Re-exported so the plan step keeps
 // one import path for the pass and its record.
 export { unfenceSummary } from "./work-driver-plan-unfence-notes.ts";
+export type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";

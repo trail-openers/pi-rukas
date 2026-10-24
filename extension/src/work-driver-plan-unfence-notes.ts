@@ -28,6 +28,37 @@ import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
 
 /**
+ * The workstream a fence was removed from, with the reason the operator sees.
+ *
+ * #1250 — declared here, beside the note builders that produce its `note`, and
+ * imported by the pass (which used to own it) rather than the other way round:
+ * a record and the string that fills its `note` field are one contract, and
+ * spelling them in two files is how they drift. `UnfenceRecord` is re-exported
+ * from work-driver-plan-unfence.ts, so callers keep their import path.
+ */
+export interface UnfenceRecord {
+  workstream: string;
+  path: string;
+  /** The fence entry as the planner wrote it (annotation included). */
+  entry: string;
+  note: string;
+  /**
+   * Set when the pass could not place the path it had just removed and so put
+   * the entry BACK — the fence is still there, and `removed` must not claim
+   * otherwise. The adversarial review of #1167 caught a warning that read
+   * "left fenced" while the entry was already gone: the word was a lie about
+   * the plan the develop gate would read.
+   */
+  restored?: string;
+  /**
+   * #1250 — set when the N=1 docs/test rule opened this fence rather than the
+   * issue naming it. The shape that made it openable (`docs` / `test`), from
+   * plan-docs-test-path.ts, and the reason `unfenceSummary` counts apart.
+   */
+  docsTest?: "docs" | "test";
+}
+
+/**
  * #1167 round-3 — an issue-named token is only allowed to move a fence once it
  * has the SHAPE the driver can verify. `normaliseDeclaredPath` alone strips a
  * planner annotation and returns whatever is left, so an absolute
@@ -62,6 +93,16 @@ export function fenceEntryMatching(entries: string[], path: string): string | un
 /** The note the operator sees when a fence the issue contradicts is removed. */
 export function unfencedNote(path: string): string {
   return `unfenced ${path}: named by the issue`;
+}
+/**
+ * #1250 — the note the operator sees when the N=1 docs/test rule opens a fence.
+ * The wording names the RULE rather than an authority the issue never gave:
+ * there is no issue statement behind this removal, so claiming one would be
+ * the #1167 lie in reverse. The kind (`docs` / `test`) is the shape that made
+ * it openable, from plan-docs-test-path.ts.
+ */
+export function unfencedDocsTestNote(path: string, kind: "docs" | "test"): string {
+  return `unfenced ${path}: ${kind}-or-test path, N=1`;
 }
 /** The note the operator sees when a symbol could not be resolved to one file. */
 export function unresolvedIdentifierNote(name: string, candidates: string[], ref: string): string {
@@ -150,6 +191,13 @@ export function unfenceSummary(
   result: UnfenceResult,
   issueBodyUnreadable = false,
 ): PlanUnfenceSummary {
+  // #1250 — the N=1 docs/test removals are counted APART. `removed` stays the
+  // issue-contradicting count it has always been, because the two rules have
+  // different authorities (an issue that named a path vs. a docs/test shape in
+  // a single-workstream plan) and an operator reading a plan where 4 fences
+  // went needs to know which of the two opened them. Absent rather than zero
+  // for the same reason `kept`/`unresolved` are.
+  const docsTests = result.removed.filter((r) => r.docsTest !== undefined).length;
   const kept = result.notes.filter((n) => n.startsWith("kept fence ")).length;
   const rolledBack = result.removed.filter((r) => r.restored !== undefined).length;
   const unresolved = result.warnings.filter((w) => w.startsWith("unresolved identifier")).length;
@@ -159,6 +207,7 @@ export function unfenceSummary(
     kept,
     rolledBack,
     unresolved,
+    ...(docsTests > 0 ? { docsTests } : {}),
     ...(issueBodyUnreadable ? { issueBodyUnreadable: true } : {}),
     ...(result.notes.length > 0 ? { notes: result.notes.slice(0, 10) } : {}),
     ...(result.warnings.length > 0 ? { warnings: result.warnings.slice(0, 10) } : {}),

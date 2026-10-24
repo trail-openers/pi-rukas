@@ -94,6 +94,14 @@ export interface PlanUnfenceSummary {
   /** Identifiers the pass could not resolve to exactly one file. */
   unresolved: number;
   /**
+   * #1250 change 1 — fences the N=1 docs/test rule opened, counted apart from
+   * `removed` because the two rules answer to different authorities (an issue
+   * that named a path vs. a docs/test shape in a single-workstream plan). An
+   * operator reading a plan where fences went needs to know which rule did it.
+   * Absent rather than zero, as the fields above.
+   */
+  docsTests?: number;
+  /**
    * The issue body was named by the explore cache but could not be read —
    * distinguishable from an EMPTY body, which is a real "nothing named".
    */

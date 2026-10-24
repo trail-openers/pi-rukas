@@ -26,6 +26,10 @@ import {
   unfenceIssueNamedPaths,
   unfenceSummary,
 } from "./work-driver-plan-unfence.ts";
+import {
+  unfenceDocsTestPaths,
+  unfenceDocsTestsEnabled,
+} from "./work-driver-plan-unfence-docs-tests.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { PlanUnfenceSummary } from "./workflow-state-schema.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
@@ -153,16 +157,43 @@ export async function runPlanUnfencePass(
     return { workstreams };
   }
   const read = await readIssueBody(state);
+  // #1250 change 1 — the N=1 docs/test rule, decided HERE rather than inside
+  // the pass, because this is where N is already computed (`defaultToSingle`)
+  // and where the escape hatch for the pass is read. Two workstreams means the
+  // fence is the #572 cross-declaration contract and stays exactly as written.
+  const single = Object.keys(workstreams).length === 1;
+  const docsTestsOn = single && unfenceDocsTestsEnabled();
   const result: UnfenceResult = await unfenceIssueNamedPaths(workstreams, read.body, {
     execFn: opts.execFn ?? execp,
     repoRoot: opts.repoRoot,
     ref: state.pipelineState.baseSha ?? "HEAD",
-    defaultToSingle: Object.keys(workstreams).length === 1,
+    defaultToSingle: single,
   });
-  for (const note of [...result.notes, ...result.warnings]) trace(`work-driver: ${note}`);
+  // The docs/test rule runs on the map the issue-named pass returned, so a
+  // fence that pass restored (the no-owner rollback) is still visible to it and
+  // a fence it already removed is not double-counted.
+  const opened: UnfenceResult = docsTestsOn
+    ? unfenceDocsTestPaths(result.workstreams, read.body)
+    : { workstreams: result.workstreams, notes: [], warnings: [], placed: [], removed: [] };
+  if (!single && unfenceDocsTestsEnabled()) {
+    trace("work-driver: plan unfence docs/test rule skipped — not a single-workstream plan");
+  }
+  if (!docsTestsOn && single) {
+    trace(
+      "work-driver: plan unfence docs/test rule disabled by PI_ENSEMBLE_UNFENCE_DOCS_TESTS=0 — docs and test fences left as written",
+    );
+  }
+  const merged: UnfenceResult = {
+    workstreams: opened.workstreams,
+    notes: [...result.notes, ...opened.notes],
+    warnings: [...result.warnings, ...opened.warnings],
+    placed: [...result.placed, ...opened.placed],
+    removed: [...result.removed, ...opened.removed],
+  };
+  for (const note of [...merged.notes, ...merged.warnings]) trace(`work-driver: ${note}`);
   return {
-    workstreams: result.workstreams,
-    summary: unfenceSummary(result, read.unreadable),
+    workstreams: merged.workstreams,
+    summary: unfenceSummary(merged, read.unreadable),
   };
 }
 
