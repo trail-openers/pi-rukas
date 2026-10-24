@@ -23,6 +23,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { execp } from "./exec.ts";
 import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
 
 /**
@@ -33,5 +34,8 @@ import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
 export function registerParentGuards(pi: ExtensionAPI): void {
   // #1788 — a publish whose text carries a private term is refused here. The
   // repository is public, and the modes this must fire in are the defaults.
-  registerPublicHygieneGuard(pi);
+  // The executor is named at the call site (#1788 round 2): without it the push
+  // scan silently never ran, because a guard with no executor reports the push
+  // range as "not read" and the pass-for-no-executor branch lets it through.
+  registerPublicHygieneGuard(pi, { execFn: execp });
 }

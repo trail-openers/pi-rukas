@@ -45,8 +45,9 @@
  * source into a commit with `rev-parse --verify --quiet <src>^{commit}`, and the
  * scan reads those commits' history minus everything already on a remote-
  * tracking ref. A source that does not resolve REFUSES: "I could not work out
- * what you are pushing" is not "what you are pushing is clean". A delete (an
- * empty source) publishes no commits and is skipped.
+ * what you are pushing" is not "what you are pushing is clean". A delete
+ * publishes no commits — an empty refspec source (`:refs/heads/x`) or a
+ * `-d`/`--delete` push — and is skipped rather than resolved.
  */
 
 import { parseRemoteUrl } from "./forge-detect.ts";
@@ -244,14 +245,42 @@ const ALL_BRANCHES_FLAGS = new Set(["--all", "--branches", "--mirror"]);
 const ALL_TAGS_FLAGS = new Set(["--tags"]);
 
 /**
+ * Push options that take a value as a SEPARATE word — the one case where the
+ * word after a flag is not a refspec, and the reason a flag cannot simply be
+ * "anything beginning with `-`". `-o`/`--push-option` carry an arbitrary
+ * string, `--repo` names the remote and `--receive-pack`/`--exec` name a
+ * program or path, so each swallows its operand and the scan must swallow it
+ * too or the value is resolved as a revision — and an unresolvable value is a
+ * refusal, which would refuse a routine `push -o ci.skip`.
+ *
+ * `--force-with-lease` and `--signed` are deliberately NOT here: git reads
+ * their value only in the `=`-attached form, so a following bare word is a
+ * refspec and must stay one.
+ */
+const VALUE_OPTIONS = new Set([
+  "-o",
+  "--push-option",
+  "--repo",
+  "--receive-pack",
+  "--exec",
+]);
+
+/** The deletion switches: a push that removes refs publishes no commits. */
+const DELETE_FLAGS = new Set(["-d", "--delete"]);
+
+/**
  * The refspecs of a `git push`, as the command wrote them.
  *
  * The push verb and the remote name are the two anchors a refspec sits after;
  * both arrive as data from the caller rather than as literals here (see
  * `PushScanDeps.pushVerb`). After the remote, a flag is dropped and anything
- * else is a refspec — a rule that needs no table of git's push options, because
- * a flag (including one whose value is a separate word) begins with `-` and a
- * refspec never does.
+ * else is a refspec — a rule that needs no table of git's push options except
+ * for one case: an option whose value is a SEPARATE word (`-o ci.skip`,
+ * `--repo origin2`) is a flag plus its operand, and treating that operand as a
+ * refspec makes the scan resolve `ci.skip` as a revision and refuse a push that
+ * publishes nothing dirty. `VALUE_OPTIONS` is that short table, kept short on
+ * purpose: `--force-with-lease` and `--signed` take their value only with `=`,
+ * so their follower stays a refspec and belongs to the general rule.
  *
  * `--all`/`--branches`/`--mirror` mean every local branch and `--tags` every
  * tag; they become category selectors rather than a refspec the scan would then
@@ -261,12 +290,13 @@ export function pushRefspecs(
   words: readonly string[],
   pushVerb: string,
   remoteNames: ReadonlySet<string>,
-): { refspecs: string[]; branches: boolean; tags: boolean } {
+): { refspecs: string[]; branches: boolean; tags: boolean; deletes: boolean } {
   const refspecs: string[] = [];
   let branches = false;
   let tags = false;
+  let deletes = false;
   const at = pushVerb === "" ? -1 : words.indexOf(pushVerb);
-  if (at < 0) return { refspecs, branches, tags };
+  if (at < 0) return { refspecs, branches, tags, deletes };
   // Two passes, because a selector can sit BEFORE the remote (`--all origin`,
   // the form git itself documents) and a refspec cannot: asking the selector
   // question of the whole tail and the refspec question only of the part after
@@ -276,17 +306,27 @@ export function pushRefspecs(
   for (const w of words.slice(at + 1)) {
     if (ALL_BRANCHES_FLAGS.has(w)) branches = true;
     else if (ALL_TAGS_FLAGS.has(w)) tags = true;
+    else if (DELETE_FLAGS.has(w)) deletes = true;
   }
   let seenRemote = false;
-  for (const w of words.slice(at + 1)) {
+  for (let i = at + 1; i < words.length; i++) {
+    const w = words[i] ?? "";
     if (!seenRemote) {
+      // The remote anchor never consumes a word, and an option's operand is
+      // never it: `git push --repo origin2 origin main` names `origin2` as a
+      // VALUE, and adopting it as the anchor would leave `origin` — a real
+      // remote name — to be scanned as the refspec.
       if (!w.startsWith("-") && remoteNames.has(w)) seenRemote = true;
       continue;
     }
-    if (w.startsWith("-")) continue;
+    if (w.startsWith("-")) {
+      // `-o ci.skip`: the option's operand is its value, not a refspec.
+      if (VALUE_OPTIONS.has(w)) i++;
+      continue;
+    }
     refspecs.push(w);
   }
-  return { refspecs, branches, tags };
+  return { refspecs, branches, tags, deletes };
 }
 
 /** The commit list the scan asks git for, plus why it could not be built. */
@@ -317,6 +357,14 @@ async function resolveSrcs(
   const parsed = pushRefspecs(words, pushVerb, new Set(names));
   if (words.indexOf(pushVerb) < 0) {
     return { commits: [], problem: "the push command could not be parsed" };
+  }
+  if (parsed.deletes) {
+    // `-d`/`--delete` removes refs on the remote: nothing leaves this clone,
+    // so its operands are names to delete and not revisions to read. Resolving
+    // them would refuse the deletion of a branch that is already gone — a
+    // routine `git push origin --delete stale` read as "could not resolve the
+    // push source" — so the scan asks no question and reports nothing.
+    return { commits: [] };
   }
   if (parsed.refspecs.length === 0 && !parsed.branches && !parsed.tags) {
     // No refspec at all: bare push / push <remote> publishes HEAD.

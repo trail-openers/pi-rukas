@@ -324,8 +324,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       );
     },
 
-    prMerge: (number, method: "squash" | "merge" | "rebase" = "squash", subject?: string) =>
-      run(cmds.prMergeCmd(forge, number, method, subject), (stdout) => stdout),
+    prMerge: (number, method: "squash" | "merge" | "rebase" = "squash", subject?: string) => {
+      // #1788 — the squash subject a driver composes from the issue title is
+      // published as the commit message on main, so it is a public text surface
+      // like a title or a body, and it is checked before the merge runs. A
+      // merge is the one forge write that cannot be undone from here.
+      if (subject !== undefined) checkPublicText("merge commit subject", subject);
+      return run(cmds.prMergeCmd(forge, number, method, subject), (stdout) => stdout);
+    },
 
     prReady: (number) => run(cmds.prReadyCmd(forge, number), () => undefined),
 

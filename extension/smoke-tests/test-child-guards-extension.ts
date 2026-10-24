@@ -348,10 +348,20 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   // The shared block contains EXACTLY the guards in `expected`.
   for (const name of expected) {
     assert(
-      new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
+      new RegExp(`(^|[^\\w])${name}\\s*\\(pi(,\\s*HYGIENE_OPTS)?\\)`).test(shared),
       `canary: the shared block registers ${name}(pi)`,
     );
   }
+  // #1788 round 2 — the hygiene guard's push scan reads git, and it can only do
+  // that if its call site hands it an executor. Registered as `register…(pi)`
+  // with no options it silently scanned nothing (the no-executor branch passes
+  // the push range), which is the exact shape of a guard that reports itself
+  // working while refusing nothing. So the executor is named at this call site.
+  assert(
+    /registerPublicHygieneGuard\(pi,\s*HYGIENE_OPTS\)/.test(shared) &&
+      /const HYGIENE_OPTS = \{ execFn: execp \}/.test(shared),
+      "canary: the shared block registers the hygiene guard WITH the production executor",
+  );
   // Fails in the other direction too: a guard added to the block without
   // joining `expected` is invisible to this test's refuse-table, which is how
   // a guard ships wired but untested.

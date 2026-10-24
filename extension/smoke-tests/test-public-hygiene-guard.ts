@@ -19,12 +19,17 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createForge } from "../src/forge.ts";
 import { genericCategoryOf as classifyPublicText } from "../src/public-denylist.ts";
+import { execp } from "../src/exec.ts";
+import { readPublicDenylist, resetDenylistCacheForTests } from "../src/public-denylist.ts";
 import {
   publicHygieneInstalled,
+  pushGitCwd,
   publicTextRefusal,
   registerPublicHygieneGuard,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
+import { forgePrMergeSeam } from "./forge-pr-merge-seam.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
@@ -381,6 +386,18 @@ function expectRefusal(
   });
 }
 
+// ── 7c. The same seam for a MERGE COMMIT SUBJECT (#1788 round 2). A squash
+// merge publishes the subject as the commit message on main, so it is a public
+// text surface like a title or a body — and the merge is the one forge write
+// the cycle cannot undo. The check must run BEFORE `run`, so a refused subject
+// merges nothing. The fixture lives in `forge-pr-merge-seam.ts` (the §12 file
+// size cap, split along the natural seam of one fixture per forge seam).
+{
+  await withEnv(denylistEnv, async () => {
+    await forgePrMergeSeam(TERM, dir, createForge);
+  });
+}
+
 // ── 8. The hook is registered exactly once per process (double-registration).
 {
   await withEnv(denylistEnv, async () => {
@@ -410,6 +427,127 @@ function expectRefusal(
     assert(r?.block === true, "the single installed hook is live");
     resetPublicHygieneRegistrationForTests();
   });
+}
+
+// ── 9. The PRODUCTION executor: a hook registered with NO options must still
+// read git (#1788 round 2). Both real registration sites — `subagent-guard-
+// guards.ts` and `parent-guards.ts` — call `registerPublicHygieneGuard(pi)`
+// with no options at all. Before the executor was defaulted to the repo's
+// standard `execp` (as `merge-guard.ts` does), `exec` was undefined there, the
+// push half of the guard never ran, and every push was judged on the words it
+// carried in its own argv. A push whose dirt is in a COMMIT would have gone
+// out unscanned while the guard reported itself as working. So this block
+// registers with no options, against a real temp repository and a temp list.
+//
+// `PI_ENSEMBLE_PUBLIC_DENYLIST` is pinned to the temp file for the whole block
+// (never the operator's real default path), and git children get `gitTestEnv()`'
+// isolated HOME so nothing on the host can be read.
+if (true) {
+  const root = mkdtempSync(path.join(tmpdir(), "hygiene-prod-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  const list = path.join(root, "public-denylist");
+  writeFileSync(list, `# synthetic terms\n${TERM}\n`, "utf8");
+  const gitEnv = gitTestEnv();
+  const gitRun = (...args: string[]): Promise<string> =>
+    execp("git", {
+      argv: args,
+      cwd: work,
+      env: { ...gitEnv, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid" },
+      timeout: 30_000,
+    } as never).then((r) => r.stdout);
+
+  await execp("git", { argv: ["init", "-q", "--bare", origin], cwd: root, env: gitEnv } as never);
+  await execp("git", { argv: ["clone", "-q", origin, "work"], cwd: root, env: gitEnv } as never);
+  await gitRun("config", "user.email", "t@example.invalid");
+  await gitRun("config", "user.name", "tester");
+  await gitRun("branch", "-m", "main");
+  await gitRun(
+    "remote",
+    "set-url",
+    "origin",
+    "https://github.com/example-owner/example-repo.git",
+  );
+  writeFileSync(path.join(work, "a.txt"), "seed\n", "utf8");
+  await gitRun("add", "a.txt");
+  await gitRun("commit", "-q", "-m", "chore: seed");
+  const seed = (await gitRun("rev-parse", "HEAD")).trim();
+  await gitRun("update-ref", "refs/remotes/origin/main", seed);
+  await gitRun("update-ref", "refs/remotes/origin/HEAD", seed);
+
+  /** A hook built exactly the way production builds it: no options. */
+  const prodHook = () => {
+    const handlers: Handler[] = [];
+    const pi = {
+      on(event: string, fn: Handler) {
+        if (event === "tool_call") handlers.push(fn);
+      },
+    } as unknown as ExtensionAPI;
+    resetPublicHygieneRegistrationForTests();
+    resetDenylistCacheForTests();
+    registerPublicHygieneGuard(pi);
+    return async (command: string) => {
+      for (const h of handlers) {
+        const r = (await h({ toolName: "bash", input: { command } }, { cwd: work })) as
+          | { block?: boolean; reason?: string }
+          | undefined;
+        if (r?.block) return r;
+      }
+      return undefined;
+    };
+  };
+  const PUSH = ["pu", "sh"].join("");
+
+  await withEnv({ ...gitEnv, PI_ENSEMBLE_PUBLIC_DENYLIST: list }, async () => {
+    // A dirty commit message in the outgoing range, pushed by name.
+    writeFileSync(path.join(work, "dirty.txt"), "public line\n", "utf8");
+    await gitRun("add", "dirty.txt");
+    await gitRun("commit", "-q", "-m", `chore: wire ${TERM} into the build`);
+    const dirty = await prodHook()(`git push origin main`);
+    assert(
+      dirty?.block === true,
+      "a hook registered with NO options reads git and refuses a dirty push",
+    );
+    assert(
+      (dirty?.reason ?? "").includes("commit message"),
+      "the refusal names the commit message as the surface, which only a real git read can say",
+    );
+    assert(
+      (dirty?.reason ?? "").includes("2"),
+      "and the denylist line, from the temp list rather than any host file",
+    );
+    assert(
+      !(dirty?.reason ?? "").includes(TERM),
+      "and the refusal carries no term, only its location",
+    );
+    // The clean counterpart, so the block is not satisfied by a hook that
+    // refuses every push.
+    await gitRun("reset", "-q", "--hard", seed);
+    await gitRun("update-ref", "refs/remotes/origin/main", seed);
+    writeFileSync(path.join(work, "clean.txt"), "public line\n", "utf8");
+    await gitRun("add", "clean.txt");
+    await gitRun("commit", "-q", "-m", "chore: a perfectly public note");
+    assert(
+      (await prodHook()(`git push origin main`)) === undefined,
+      "a clean push is allowed by the same hook — it is not refusing everything",
+    );
+    // And the directory rule the same hook applies: the two shapes that move
+    // the git are followed, so the scan reads the clone the push runs in.
+    assert(
+      pushGitCwd(work, `cd .worktrees/x && ${PUSH} origin main`) === path.join(work, ".worktrees/x"),
+      "a cd prefix moves the scan to the directory the push runs in",
+    );
+    assert(
+      pushGitCwd(work, `git -C ../other ${PUSH} origin main`) === path.join(root, "other"),
+      "git -C moves it too",
+    );
+    assert(
+      pushGitCwd(work, "gh pr comment 1 --body 'see git push elsewhere'") === work,
+      "a command that merely mentions the verb does not move it",
+    );
+    resetPublicHygieneRegistrationForTests();
+  });
+  rmSync(root, { recursive: true, force: true });
 }
 
 rmSync(dir, { recursive: true, force: true });

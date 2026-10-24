@@ -8,12 +8,27 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { execp } from "./exec.ts";
 import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
 import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
+
+/**
+ * The options the hygiene guard is registered with, in every process that loads
+ * a guard block (#1788 round 2).
+ *
+ * Passing NO options left `execFn` undefined and the push scan never asked git a
+ * single question: the guard saw only the text sitting in the command's own
+ * argv, so a private term in a commit message or an added diff line reached the
+ * remote while the guard reported itself as working. The executor is named HERE,
+ * at the registration site, rather than invented inside the guard: a guard whose
+ * production behaviour depends on a value its call site does not show is a
+ * guard nobody can audit by reading the call.
+ */
+const HYGIENE_OPTS = { execFn: execp };
 
 export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // BEFORE every bypass below. Trust mode is the default on an interactive
@@ -60,5 +75,5 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // by registerSubagentGuard (strict/headless children) and by the parent
   // through registerPermissionGuard, so one call here is one hook per process
   // — a second one would run the push scan's git calls twice per push.
-  registerPublicHygieneGuard(pi);
+  registerPublicHygieneGuard(pi, HYGIENE_OPTS);
 }

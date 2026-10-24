@@ -48,12 +48,22 @@
  * - The driver's own forge posts do not pass through this hook (they are
  *   in-process execs, like the #912 merge guard's mechanized merge). They are
  *   covered instead by `checkPublicText` at the `createForge` exec seam in
- *   `forge.ts`, which applies the same pure check to issue/PR titles and bodies
- *   before any command runs.
+ *   `forge.ts`, which applies the same pure check to issue/PR titles, bodies
+ *   and the squash-subject a merge publishes, before any command runs.
  * - A human typing `git push` in their own terminal is not a `tool_call`;
  *   `bin/pre-push-hygiene.sh` is the human-side counterpart, honouring the
  *   same escape hatch.
  * - Non-github.com remotes are not push-scanned (issue decision 3).
+ *
+ * ## The executor is defaulted, like `merge-guard.ts`
+ *
+ * Both registration sites call `registerPublicHygieneGuard(pi)` with NO options,
+ * so the executor is `opts.execFn ?? execp` rather than `opts.execFn` alone —
+ * the repo's standard argv-aware executor (#1279). The scan also runs git in the
+ * push's own directory: `toolCwd` adjusted by `pushGitCwd` for the two shapes
+ * that move the git (`git -C <dir>`, a `cd <dir> &&` prefix), because a
+ * detached-worktree push scanned from the repo root reads commits nobody is
+ * publishing.
  *
  * ## Escape hatch
  *
@@ -64,6 +74,9 @@
  * switch.
  */
 
+import { execp } from "./exec.ts";
+import { simpleCommands } from "./bash-destructive-write.ts";
+import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type DenylistRead, publicTextProblem, readPublicDenylist } from "./public-denylist.ts";
 import { scanPushRange } from "./public-hygiene-push.ts";
@@ -162,6 +175,29 @@ type Verdict =
   | { kind: "unreadable"; location: string; length: number };
 
 /**
+ * Trace a verdict the guard reached. Categories, line numbers and lengths
+ * only — never the term, never a surrounding excerpt: `traceWarn` is ungated
+ * stderr that reaches the transcript and the run log (#1417).
+ */
+function traceVerdict(v: Verdict): void {
+  if (v.kind === "denylist") {
+    traceWarn(
+      `public-hygiene: BLOCKED publish denylist line=${v.line} location=${v.location} textLength=${v.length}`,
+    );
+  } else if (v.kind === "generic") {
+    traceWarn(
+      `public-hygiene: BLOCKED publish category=${v.category} location=${v.location} textLength=${v.length}`,
+    );
+  } else if (v.kind === "unreadable") {
+    traceWarn(
+      `public-hygiene: BLOCKED publish unreadable location=${v.location} textLength=${v.length}`,
+    );
+  } else {
+    trace(`public-hygiene: publish clean (${v.texts} text surface(s) checked)`);
+  }
+}
+
+/**
  * Register the guard. Call from `registerModeIndependentGuards`, ahead of every
  * bypass, and exactly once per process.
  */
@@ -175,7 +211,7 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     return;
   }
   installedFlag().value = true;
-  const exec = opts.execFn;
+  const exec: ExecFn = opts.execFn ?? execp;
   const readDenylist = opts.readDenylist ?? readPublicDenylist;
   const remoteUrl = opts.remoteUrl;
   pi.on("tool_call", async (event, ctx) => {
@@ -184,37 +220,15 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     if (command === "") return;
     // The tool call's directory is asked for only once there is a command to
     // judge: the empty-command early return above must not pay for a cwd read.
-    const cwd = toolCwd(ctx);
-    // Without an executor the push range cannot be read, and the guard's
-    // fail-closed rule refuses an unreadable publish. That is right for a
-    // PUBLISH, which is what the guard exists to stop, and wrong for the git
-    // plumbing an @ops child does all day: it is the role that pushes, it runs
-    // with the companion's default executor, and refusing every one of its
-    // pushes for a reason unrelated to hygiene would train the operator to set
-    // the escape hatch — which switches off the check that matters. So a push
-    // this process cannot read is passed ONLY when no executor was ever wired
-    // in AND no publish surface was found; a command that also publishes text
-    // is still judged on the text it carries.
+    // `pushGitCwd` then moves it to the repository the push actually runs in.
+    const cwd = pushGitCwd(toolCwd(ctx), command);
+    // With an executor now defaulted (`execp`, as merge-guard.ts does) the push
+    // range is read in production. The fail-closed rule refuses an unreadable
+    // publish, which is right for a PUBLISH; the pass-for-no-executor branch in
+    // `inspectCommand` remains for a caller that deliberately injects none.
     const decision = await inspectCommand(command, cwd, exec, readDenylist, { remoteUrl });
     if (!decision) return;
-    const v = decision.verdict;
-    // Categories, line numbers and lengths only — never the term, never a
-    // surrounding excerpt.
-    if (v.kind === "denylist") {
-      traceWarn(
-        `public-hygiene: BLOCKED publish denylist line=${v.line} location=${v.location} textLength=${v.length}`,
-      );
-    } else if (v.kind === "generic") {
-      traceWarn(
-        `public-hygiene: BLOCKED publish category=${v.category} location=${v.location} textLength=${v.length}`,
-      );
-    } else if (v.kind === "unreadable") {
-      traceWarn(
-        `public-hygiene: BLOCKED publish unreadable location=${v.location} textLength=${v.length}`,
-      );
-    } else {
-      trace(`public-hygiene: publish clean (${v.texts} text surface(s) checked)`);
-    }
+    traceVerdict(decision.verdict);
     return { block: true, reason: decision.reason };
   });
 }
@@ -233,6 +247,54 @@ function toolCwd(_ctx: unknown): string {
   const maybeCtx = _ctx as { cwd?: unknown } | undefined;
   const fromCtx = typeof maybeCtx?.cwd === "string" ? maybeCtx.cwd : undefined;
   return fromCtx && fromCtx !== "" ? fromCtx : process.cwd();
+}
+
+/**
+ * The directory the push's git reads must run in.
+ *
+ * `toolCwd` gives the best available directory, and for a chained command it is
+ * the wrong one: `cd .worktrees/issue-9 && git push` runs in the worktree while
+ * this process sits at the repo root, and `git -C ../elsewhere push` names a
+ * tree no tool argument names either. Scanning the wrong clone is worse than
+ * scanning none — the range it prints is a real range that has nothing to do
+ * with the commits being published, and it reads as clean. So the two shapes
+ * that MOVE the git are read off the command and applied to the tool cwd; a
+ * relative one resolves against it (`cd .worktrees/x` is the shape an agent
+ * actually writes).
+ *
+ * `simpleCommands` splits on `&&`/`;`/pipes and honours quotes, so the scan of
+ * a chained command sees the same words the shell does, and the prefix rule
+ * takes the LAST directory-assigning word before the push: with `cd a && cd b
+ * && git push` the push runs in b.
+ */
+export function pushGitCwd(toolCwdValue: string, command: string): string {
+  let dir = toolCwdValue;
+  for (const argv of simpleCommands(command)) {
+    for (let i = 0; i < argv.length; i++) {
+      const w = argv[i] ?? "";
+      const base = path.basename(w);
+      // `git -C <dir> push …` — git's one positional global.
+      // `git -C <dir> push …` — git's one positional global. `--git-dir` is
+      // deliberately NOT folded in: it names the git DIRECTORY (`.git`), not
+      // the working tree, so resolving the scan there would point every git
+      // call at a tree that is not a checkout and turn a real push into an
+      // unreadable range. `-C` is the only one that moves the work tree.
+      if (w === "-C" && i === 1) {
+        const target = argv[i + 1];
+        if (target !== undefined && target !== "") {
+          dir = path.resolve(dir, target);
+          break;
+        }
+      }
+      // `cd <dir> && …` — a shell prefix that moves the rest of the chain.
+      if (base === "cd" && argv.length >= 2) {
+        const target = argv[1] ?? "";
+        if (target !== "" && !target.startsWith("-")) dir = path.resolve(dir, target);
+        break;
+      }
+    }
+  }
+  return dir;
 }
 
 /** A refusal and the trace label for it. */
