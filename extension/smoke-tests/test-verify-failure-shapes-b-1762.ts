@@ -30,7 +30,9 @@ import {
   isHarnessEchoLine,
   isSuccessLine,
 } from "../src/work-driver-verify-failures.ts";
-import { splitLines } from "../src/work-driver-verify-support.ts";
+import { separatorScanWindow } from "../src/work-driver-verify-inner-line.ts";
+import { isNonAssertionLine } from "../src/work-driver-consolidation-classify.ts";
+import { splitLines, splitLinesWithOffsets } from "../src/work-driver-verify-support.ts";
 import { assertionLines } from "../src/work-driver-verify-record.ts";
 import { runVerifyFull, VERIFY_FULL_OUTPUT_MAX } from "../src/work-driver-verify-full.ts";
 import type { WorkState } from "../src/workflow-state.ts";

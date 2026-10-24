@@ -45,7 +45,7 @@
 
 import { readFileSync } from "node:fs";
 import { FAILED_MARKER_RE, classifyFailureLine } from "./work-driver-verify-failures.ts";
-import { splitLines } from "./work-driver-verify-support.ts";
+import { splitLinesWithOffsets } from "./work-driver-verify-support.ts";
 
 /** Result of tail extraction: the text, and whether it's anchored evidence. */
 export interface AttributedTail {
@@ -124,11 +124,14 @@ function anchorReachable(text: string, anchorIndex: number, maxLen: number): boo
  * assertion beneath it. Undefined when the stream has no failure line.
  */
 function lastFailureIndex(text: string): number | undefined {
-  let offset = 0;
   let marker: number | undefined;
   let lastAny: number | undefined;
   let lastNamed: number | undefined;
-  for (const raw of splitLines(text)) {
+  // Offsets come from the splitter, not from a `+1` the caller assumes: on a
+  // `\r\n` stream a one-character advance drifts a character per line and the
+  // tail would start inside the line ABOVE the failure. See
+  // {@link splitLinesWithOffsets}.
+  for (const { line: raw, offset } of splitLinesWithOffsets(text)) {
     const line = raw.trim();
     const at = offset + (raw.length - raw.trimStart().length);
     if (FAILED_MARKER_RE.test(line)) marker = at;
@@ -137,7 +140,6 @@ function lastFailureIndex(text: string): number | undefined {
       lastAny = at;
       if (kind.namesTest) lastNamed = at;
     }
-    offset += raw.length + 1;
   }
   return marker ?? lastNamed ?? lastAny;
 }

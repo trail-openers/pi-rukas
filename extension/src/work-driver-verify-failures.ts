@@ -231,11 +231,23 @@ function matches(re: RegExp, text: string): boolean {
 
 /** The classifier's view of one line: trimmed, and bounded by {@link FAILURE_LINE_SCAN_MAX}.
  *
- * THE entry bound for the whole module. `classifyFailureLine` clips here and
- * then hands ONLY this text to everything it calls, so no regex, `indexOf` or
- * `split` in this file — or in the inner-line reader it delegates to — ever sees
- * a character past the window. Two properties make that safe rather than a
- * silent truncation:
+ * THE cut half of the TWO-STAGE ORDER the classifier runs in, stated once here
+ * because both halves are only visible from this file:
+ *
+ *   1. **The cut is decided over the FULL line, with a bounded walk.** Where a
+ *      harness wrapper ENDS is a fact about the wrapper, not about how much text a
+ *      judge may read, so {@link harnessVerifyStream} is asked over the unclipped
+ *      line; its own scan is bounded by `separatorScanWindow` in
+ *      `work-driver-verify-inner-line.ts`, which is what keeps that decision
+ *      constant-time on a pathological line.
+ *   2. **The table judges the CLIPPED gate stream.** What the cut returned — the
+ *      gate's own text, already past the wrapper — is clipped by this function and
+ *      only that text reaches {@link matchShape} and everything it calls, including
+ *      each line of {@link firstInnerFailure}.
+ *
+ * So the clip is applied ONCE per text, to the stream the gate printed, and no scan
+ * in this module is quadratic in a line the gate printed whole. Two properties make
+ * that safe rather than a silent truncation:
  *
  *   - **Monotone in the prefix.** Every classifier input is a whole-line match
  *     (`^…`/`$`-anchored or a token search) and every cut `harnessVerifyStream`
@@ -285,29 +297,6 @@ export function isSuccessLine(line: string): boolean {
 export { isHarnessWrapper } from "./work-driver-verify-inner-line.ts";
 
 /**
- * The gate's own view of one wrapper line (#1762 round 1).
- *
- * A line no longer than the scan window is answered from the cut's stream as it
- * stands: the caller's clip already covers it, and re-slicing would only re-derive a
- * fact the cut decided. A line LONGER than the window is re-read from where the
- * GATE'S OWN text begins, because clipping such a line at one window let the
- * wrapper's prefix — its command string, its cwd, its deps hint, all text the harness
- * wrote — consume the entire budget: a gate that printed an ordinary report behind a
- * long command string reported no failure at all, and the evidence named no failing
- * check. The re-anchored window is the same size, so a pathological line still costs
- * a constant; only its position moves, to where the truth is.
- */
-function gateView(found: HarnessStream): string {
-  // The stream the cut RETURNED *is* the gate's own view: already cut past the
-  // wrapper, already stripped of the harness's residue, already measured from the
-  // gate's first character. Re-slicing the caller's window from the cut's offset would
-  // re-derive that text from an offset the stripping does not have to agree with, and
-  // would answer "no view at all" for the common case where a gate's last line runs to
-  // the end of a long wrapper — exactly when the report matters most.
-  return found.stream;
-}
-
-/**
  * Classify one line. `undefined` when the line neither reports a failure nor
  * names one, and ALWAYS `undefined` for a line that reports success.
  *
@@ -332,7 +321,7 @@ export function classifyFailureLine(line: string): FailureLine | undefined {
   // The cut's stream is measured FROM the gate's first character, so a long harness
   // prefix can never consume the budget the report needs; clipping it here bounds the
   // table's scans without clipping away the report.
-  const gate = scanWindow(gateView(found));
+  const gate = scanWindow(found.stream);
   if (gate.length === 0) return undefined;
   return matchShape(gate) ?? firstInnerFailure(gate);
 }
@@ -377,10 +366,17 @@ export function matchShape(line: string): FailureLine | undefined {
  * and a passing tally cannot be rescued by a neighbour. Calls {@link matchShape},
  * NOT {@link classifyFailureLine}: the stream is already the cut gate output, so
  * unwrapping it again would re-enter the cut for a line it has already judged.
+ *
+ * #1762 round 2 — EVERY inner line is clipped before the table sees it. The caller
+ * clipped the STREAM, which bounds the whole `split`, but one inner line of that
+ * stream can itself be a document (a serialized fixture diff, a JSON dump) and
+ * `matchShape`'s `named-file` tally branch backtracks over every comma in it.
+ * Clipping here is the same bound one level down, so no unclipped line reaches a
+ * regex anywhere in this module.
  */
 function firstInnerFailure(stream: string): FailureLine | undefined {
   for (const raw of splitLines(stream)) {
-    const inner = matchShape(raw);
+    const inner = matchShape(scanWindow(raw));
     if (inner !== undefined) return inner;
   }
   return undefined;
@@ -398,7 +394,8 @@ function firstInnerFailure(stream: string): FailureLine | undefined {
  * specific assertion" and spend the cycle's one corrective round (#798's
  * shape, revived through the wrapper). Same rule `classifyFailureLine` follows;
  * one owner for both, and one text: this is {@link harnessVerifyStream}'s cut
- * verbatim, with the harness's residue removed at the cut.
+ * verbatim, with the harness's residue removed at the cut and the result clipped to
+ * the scan window — see {@link scanWindow} for the two-stage order.
  */
 export function harnessInnerLine(line: string): string | undefined {
   // The cut is asked over the UNCLIPPED line, for the classifier's own reason: the
@@ -406,7 +403,7 @@ export function harnessInnerLine(line: string): string | undefined {
   // the same window the classifier judges, so reader and classifier cannot disagree.
   const found = harnessVerifyStream(line);
   if (found === undefined) return undefined;
-  const view = scanWindow(gateView(found));
+  const view = scanWindow(found.stream);
   // An empty view is the same answer as no stream at all: a reader must never be shown
   // the harness's own sentence, which is the defect this window work exists to close.
   return view.length === 0 ? undefined : view;

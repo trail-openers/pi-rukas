@@ -26,3 +26,43 @@ export const LEADING_SEPARATOR = /^(?::\s+)+/;
 export function splitLines(text: string): string[] {
   return text.split(/\r\n|\r|\n/);
 }
+
+/**
+ * `splitLines` plus the offset each piece starts at in `text`.
+ *
+ * A reader that walks the pieces and keeps its own running offset has to advance
+ * by the width of the separator it just crossed, and `\r\n` is TWO characters
+ * while `\r` and `\n` are one. `splitLines` discards the separator, so the caller
+ * cannot see the width and the only honest advance available is `+1` — which on a
+ * `\r\n` stream drifts one character per line and reports an anchor one character
+ * early for every line above it. That is what `lastFailureIndex` did, so a gate
+ * that broke its output with `\r\n` (Windows, and any tool that writes progress
+ * lines with `\r`) anchored the evidence tail inside the line ABOVE the failure.
+ *
+ * The offset is the piece's own first character in `text`, so a caller that
+ * trims the piece still measures from where the piece begins (the harness's
+ * `lastFailureIndex` adds the leading-whitespace run itself).
+ */
+export function splitLinesWithOffsets(text: string): Array<{ line: string; offset: number }> {
+  const out: Array<{ line: string; offset: number }> = [];
+  let start = 0;
+  let i = 0;
+  for (;;) {
+    const c = text[i];
+    // The end of the string is a break with no separator: the last piece runs to it.
+    if (i === text.length) {
+      out.push({ line: text.slice(start, i), offset: start });
+      return out;
+    }
+    if (c === "\n" || c === "\r") {
+      out.push({ line: text.slice(start, i), offset: start });
+      // The WHOLE separator is crossed — `\r\n` is two characters, `\r` and `\n`
+      // are one — so the next piece begins after all of it. This is the width the
+      // caller cannot recover from `splitLines`, and the reason this exists.
+      start = c === "\r" && text[i + 1] === "\n" ? i + 2 : i + 1;
+      i = start;
+      continue;
+    }
+    i++;
+  }
+}

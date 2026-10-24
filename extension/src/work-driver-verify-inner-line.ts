@@ -27,7 +27,7 @@
  */
 
 import { DEPS_HINT_STARTS } from "./work-driver-deps-hint.ts";
-import { matchShape } from "./work-driver-verify-failures.ts";
+import { FAILURE_LINE_SCAN_MAX, matchShape } from "./work-driver-verify-failures.ts";
 import { LEADING_SEPARATOR, splitLines } from "./work-driver-verify-support.ts";
 
 /** The harness sentence's own words, up to and including `failed in `. */
@@ -84,9 +84,32 @@ export function depsHintStartFor(line: string): number | undefined {
 const STREAM_CANDIDATES_MAX = 16;
 
 /**
+ * The exclusive end of the candidate WALK, measured from where the walk starts: the
+ * classifier's own per-line bound ({@link FAILURE_LINE_SCAN_MAX}) plus the allowance
+ * the deps hint gets for its own prose ({@link HINT_PROSE_MAX}). That is exactly how
+ * far the cut can usefully look for the stream — a separator further out sits past
+ * the window the TABLE reads, so walking to it can only produce candidates whose
+ * stream the judge cannot reach. Exported so the cost test pins the window against
+ * the bound it is derived from rather than a second literal that can drift.
+ */
+export function separatorScanWindow(): number {
+  return FAILURE_LINE_SCAN_MAX + HINT_PROSE_MAX;
+}
+
+/**
  * Every offset in `line` at or after `from` where the builder could have put the
  * stream, in order: the `: ` it appends, and the newline that separates the harness
  * sentence from a multi-line tail.
+ *
+ * TWO bounds, and the second is the one that makes the first sufficient. The
+ * candidate cap bounds what the CALLER does per candidate (each one slices and
+ * classifies); {@link walkEnd} bounds what THIS scan reads. A cap on the RESULT of
+ * an `indexOf` loop is not a cost bound while the loop still walks to the end of the
+ * line hunting for a candidate that never arrives: on the 1 MB wrapper line #1762
+ * round 3 measured, the unbounded scan found 131 000 candidates and the harness
+ * prefix's lazy `\.+?` backtracked over every one of them (249 s unbounded), because
+ * breaking at the 16th separator still meant scanning for a 17th through every
+ * remaining character. With both bounds the cost is constant in the line's length.
  */
 function streamSeparators(line: string, from: number): number[] {
   const candidates: number[] = [];
@@ -95,20 +118,20 @@ function streamSeparators(line: string, from: number): number[] {
       candidates.push(at);
     }
   };
-  // A BOUNDED WALK, not `indexOf` over the whole line: on the 1 MB wrapper line
-  // #1762 round 3 measured, an unbounded scan found 131 000 candidates and the
-  // harness prefix's lazy `\.+?` backtracked over every one of them (249 s unbounded
-  // The walk runs to the end of the line it is given — the caller has already
-  // bounded that line, so the walk is bounded with it — and the candidate cap below is
-  const scanTo = line.length;
-  for (let at = line.indexOf(STREAM_SEPARATOR, from); at !== -1 && at < scanTo; ) {
+  // The exclusive end of the walk, clamped to the line the caller handed over (which
+  // the classifier has already clipped, so this is the tighter bound in practice —
+  // computed here rather than assumed, because the cost bound is a property of THIS
+  // scan and a caller-side clip it merely trusts is the shape that cost 249 s).
+  const walkEnd = Math.min(line.length, from + separatorScanWindow());
+  for (let at = line.indexOf(STREAM_SEPARATOR, from); at !== -1 && at < walkEnd; ) {
     push(at);
     if (candidates.length >= STREAM_CANDIDATES_MAX) break;
     at = line.indexOf(STREAM_SEPARATOR, at + STREAM_SEPARATOR_LEN);
   }
-  // The first line break at or after `from`, found without copying the tail: a
-  // 1 MB line's `slice(from)` is a megabyte of allocation per candidate scan.
-  for (let k = from; k < line.length && k < scanTo; k++) {
+  // The first line break at or after `from` and inside the walk window, found
+  // without copying the tail: a 1 MB line's `slice(from)` is a megabyte of
+  // allocation per candidate scan.
+  for (let k = from; k < walkEnd; k++) {
     const c = line[k];
     if (c === "\r" || c === "\n") {
       push(k);
@@ -263,10 +286,10 @@ export interface HarnessStream {
  * This function does NOT re-clip the LINE: a second bound would be applied to the
  * streams and still leave the caller's unbounded text to this function's own scans,
  * which is the quadratic cost #1762 round 3 removed. The stream a cut produces, on
- * the other hand, is asked to the END of the line it was cut from, which is what
- * makes the 8 KiB window a window on THE GATE'S OWN STREAM rather than on the whole
- * line: a wrapper whose command string runs long does not get to eat the gate's
- * report out of the window.
+ * the other hand, is asked to the END of the walk window it was cut from, which is
+ * what makes the 8 KiB window a window on THE GATE'S OWN STREAM rather than on the
+ * whole line: a wrapper whose command string runs long does not get to eat the
+ * gate's report out of the window.
  *
  * One classification per candidate line. Each later candidate's stream is a SUFFIX
  * of every earlier one, so scanning candidate N+1 re-scanned every line candidate N
