@@ -55,6 +55,27 @@
  */
 
 import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
+import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+  isNonAssertionLine,
+  looksLikeCredential,
+  sharesAssertion,
+} from "./work-driver-verify-assertion.ts";
+import { FAILED_MARKER_RE, classifyFailureLine } from "./work-driver-verify-failures.ts";
+
+// The assertion-extraction seam lives in `work-driver-verify-assertion.ts` (the
+// file-size split, AGENTS.md §12) and is re-exported here so every existing reader
+// keeps importing the vocabulary from the module it already knows. A second copy of
+// the predicates was exactly the #1762 round-1 defect, so there is ONE definition
+// and this is a forwarding export, not a re-spelling.
+export {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+  isNonAssertionLine,
+  looksLikeCredential,
+  sharesAssertion,
+} from "./work-driver-verify-assertion.ts";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -106,97 +127,6 @@ export interface ConsolidationFailureVerdict {
    * Human-readable, not machine-parsed.
    */
   reason: string;
-}
-
-/**
- * #807 — the honest-absence sentinel. A tail with NO assertion-shaped line
- * (a bare `FAILED: <file>` marker, an echoed command, a truncated stream)
- * used to fall back to the first non-empty line — which is exactly how #746
- * reported `$ cd extension && bun run check` (an echoed, PASSING command)
- * as "the specific assertion". An explicit absence the operator can
- * recognise beats a confidently wrong specific; the tail is still shown
- * next to it by `consolidatedFailureMessage`.
- */
-export const NO_SPECIFIC_ASSERTION = "(no specific assertion could be extracted)";
-
-/**
- * #807 — a line that merely NAMES a failure, not an assertion: the smoke
- * loop's per-failure marker (`FAILED: smoke-tests/test-cancel.ts` — #798
- * reported this as the assertion, sending operators to a filename) and its
- * post-#804 summary (`FAILED: 2 test(s) — a.ts, b.ts`). The real assertion
- * sits beneath the marker; the summary carries the count.
- */
-const IS_MARKER_LINE = /^FAILED:/;
-/** #807 — an ECHOED shell command (the verify-cmd chain's `$ …` output, #746). */
-const IS_ECHOED_COMMAND = /^\$ /;
-/** #807 — a line that carries ACTUAL failure content (priority: `✗` first). */
-const IS_ASSERTION_LINE =
-  /^✗\s|^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b|exit 0 \(got 1\)|zero findings \(got 1\)/;
-
-/**
- * #807 — a token-shape secret guard: the extracted assertion reaches a
- * GitHub comment (cap evidence + handoff body), so a line that looks like
- * credential material is skipped in favour of the next qualifying line.
- */
-const LOOKS_LIKE_SECRET =
-  /(api[_-]?key|access[_-]?token|bearer\s|password|passwd|secret[_-]?key)\s*[=:]\s*\S{8,}/i;
-
-/** #807 — a line that is neither an assertion nor usable evidence. */
-function isNonAssertionLine(line: string): boolean {
-  return IS_MARKER_LINE.test(line) || IS_ECHOED_COMMAND.test(line) || LOOKS_LIKE_SECRET.test(line);
-}
-
-/**
- * Extract the specific failing assertion from a consolidated-verify failure
- * tail. The tail comes from `extractAttributedTail` — when `attributed:
- * true` it starts at a `FAILED:` marker (post-#804 the LAST one, the
- * summary, which is why a marker alone is never a valid answer); when
- * `false` it is the last 800 chars of the combined output (the biome/tsc
- * chain-stage shape, which emits no marker and may carry an echoed `$ …`
- * command line from a passing earlier stage).
- *
- * #807 — the assertion is the FIRST line of the tail that carries actual
- * failure content, preferring a `✗` assertion (smoke loop / biome /
- * scaffold), then a compiler/linter error (tsc `error TS…`, biome
- * diagnostic, `error:`/`Error:`/`error[E…]:`). Marker lines (`FAILED: …`,
- * including the `FAILED: <n> test(s) — …` summary), echoed shell command
- * lines (`$ …`), and secret-shaped lines are NEVER selected. When no line
- * qualifies, `NO_SPECIFIC_ASSERTION` is returned instead of the first
- * non-empty line (the #746 defect): a field that reports absence honestly
- * beats one that sometimes holds a filename and sometimes a command echo.
- *
- * Multi-failure (post-#804) decision, pinned in test-work-driver-verify-
- * extract-assertion.ts: "the specific assertion" is the FIRST real
- * assertion; the count is the summary marker's job, so it is not
- * duplicated into the extracted field.
- */
-export function extractSpecificAssertion(failureTail: string): string {
-  const lines = failureTail
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  for (const line of lines) {
-    if (isNonAssertionLine(line)) continue;
-    if (/^✗\s/.test(line)) return line;
-  }
-  for (const line of lines) {
-    if (isNonAssertionLine(line)) continue;
-    if (IS_ASSERTION_LINE.test(line)) return line;
-  }
-  return NO_SPECIFIC_ASSERTION;
-}
-
-/**
- * #807 — true when `per` is a genuine assertion that also appears verbatim
- * in `consolidated`, for the classifier's root-cause match. Extracted
- * assertions are compared (the #798 fix): both sides reduced to a marker
- * or an echo used to make a marker-vs-marker match (or a marker-vs-text
- * miss) where the identical `✗ …` line sat invisibly underneath. The
- * sentinel never matches — absence on either side is not evidence of a
- * shared cause.
- */
-export function sharesAssertion(consolidated: string, per: string): boolean {
-  return per !== NO_SPECIFIC_ASSERTION && consolidated.includes(per);
 }
 
 /**
@@ -333,14 +263,25 @@ export function classifyConsolidatedVerifyFailure(
  * The classifier's view of the shared named-failure reader: which of the lines
  * `namedFailureLines` matches count as evidence HERE.
  *
- * The shared reader accepts every `FAILED:` / `✗` line, because at the cap site a
- * per-file marker still tells the operator which file went red. The classifier is
+ * #1762 lens round — this used to carry its own shape test (`/^✗\s/` plus an
+ * explicit summary branch), a fifth hardwired dialect list. `tailLines` and
+ * `namedFailureLines` now both answer from the shared table, so a predicate
+ * that did not would disagree with the readers it feeds: a TAP `not ok`, a
+ * pytest `FAILED path::name` or a script's `failed checks (1)` block would be
+ * accepted by the shared reader and then dropped here, so the #1064 recovery
+ * silently returned nothing for a runner this repo does not own. It is now
+ * DERIVED from the table: the line must be one the table recognises and that
+ * NAMES a check, and must not be one of the three kinds of non-evidence below.
+ *
+ * The shared reader accepts every line its failure table recognises, because at
+ * the cap site a per-file marker still tells the operator which file went red. The classifier is
  * stricter — `consolidatedFailureMessage` joins what it recovers into the field
  * labelled "specific assertion", and a bare `FAILED: smoke-tests/test-x.ts` names a
  * FILE, not an assertion. That is the #798 defect (an operator sent to a filename)
  * and `extractSpecificAssertion` refuses such lines, so the recovery must not put
- * them back through the side door. A `✗` line, or the `FAILED: <n> test(s) — a, b`
- * summary that carries the names, is what counts.
+ * them back through the side door. `namesTest` is what encodes that rule now: a
+ * bare tally does not name a check and stays out, a `✗` line or a named script
+ * tally does.
  *
  * #1702 — the #807 secret guard the deleted `namedFailureLinesFrom` carried is composed
  * in here, so merging the two readers did not quietly drop it. The shared reader REDACTS
@@ -352,13 +293,15 @@ export function classifyConsolidatedVerifyFailure(
  * `LOOKS_LIKE_SECRET`) is DROPPED here, not masked.
  *
  * The count summary is the one marker-shaped line this predicate must still keep —
- * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the deleted reader matched
- * the summary explicitly. It is matched explicitly here too, and carries the same secret
- * guard.
+ * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the summary is
+ * matched explicitly before the marker rule can drop it. It carries the same
+ * secret guard.
  */
 function isNamedFailureLine(line: string): boolean {
-  if (/^FAILED:\s*\d+\s+test\(s\)/.test(line)) return !LOOKS_LIKE_SECRET.test(line);
-  return !isNonAssertionLine(line) && /^✗\s/.test(line);
+  if (/^FAILED:\s*\d+\s+test\(s\)/.test(line))
+    return FAILED_MARKER_RE.test(line) && !looksLikeCredential(line);
+  if (isNonAssertionLine(line)) return false;
+  return classifyFailureLine(line)?.namesTest === true;
 }
 
 /**

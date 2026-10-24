@@ -27,7 +27,7 @@ import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
-import { isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
+import { UNATTRIBUTED_NOTE, isTimedOutKill } from "./work-driver-verify-develop-helpers.ts";
 import {
   combinedExecFailureStream,
   rawOutputClause,
@@ -377,12 +377,14 @@ export async function runConsolidatedVerifyUnlocked(
       // can splice a passing sub-command's tail onto a later failure.
       const { tail, attributed } = extractAttributedTail(verifyFailure, 800);
       if (!attributed && tail) {
-        trace("work-driver: consolidated verify tail is unattributed (no FAILED: marker found)");
+        trace(
+          "work-driver: consolidated verify tail is unattributed (the shared failure-line table named no line)",
+        );
       }
       const detail = tail
         ? attributed
           ? tail
-          : `${tail} (unattributed — best-effort tail)`
+          : `${tail} ${UNATTRIBUTED_NOTE}`
         : "verify command exited non-zero";
       // #841 — the log that matters for THIS failure is run2 when a retry
       // fired (run2 is the run the classifier reads), run1 otherwise.

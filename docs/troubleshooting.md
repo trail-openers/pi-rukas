@@ -2462,6 +2462,7 @@ The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override
 - **`exceeded its <N>-min timeout on the CONSOLIDATED tree`** — the run was killed at the bound, so it says nothing about the code (this used to render as `specific assertion: (no specific assertion could be extracted)`). When every failure is a timeout, the cap is `verify-timeout:develop`; see "`verify-timeout:<step>`: the gate did not finish" above. If the `[baseline-red]` finding reports a timeout at the base commit as well, the gate does not fit the bound on this host: raise the suite tier's budget (`PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS`, or a `.pi/verify-timeout-ms` that ships with the project) or make the gate faster.
 - **Verify command too slow / needs services** — put a cheaper command in `.pi/verify-cmd` (typecheck-only is the intent; full test suites belong to CI).
 - **False alarm you need to bypass right now** — `PI_ENSEMBLE_VERIFY=0` disables the gate entirely (not recommended as a steady state; it re-opens the phantom-handoff class the gate exists to catch).
+- **The park names no failing test although your gate printed one, or it quotes a stage that PASSED** — the driver recognised only this repo's own runner dialect (`FAILED: <file>`, `✗ <assertion>`, tsc/biome) and nothing your gate prints. Since #1762 every reader of verify output asks one table (`extension/src/work-driver-verify-failures.ts`), which also recognises a script's `test.sh: failed checks (1)` block, a `<file>: N failed` tally, TAP `not ok`, pytest `FAILED path::name`, and go `--- FAIL:`. A line that reports success (`36 cases, 0 failed`, `12 passed`, `ok 24 - …`) is never selected as a failure line, and the harness's own wrapper sentence — `verify command \`cmd\` failed in <cwd>: …` — is judged by the gate line behind it, never as the assertion itself.
 
 ### Why this exists
 
@@ -2503,6 +2504,24 @@ A non-fast-forward is classified the same way (the remote would need a force-pus
 **Symptom (pre-fix).** The consolidated gate went red on many tests and the park carried `evidence: null` — the operator saw a cap name with no failing test, no assertion, no log path, while the gate had already extracted all three and dropped them.
 
 **Fix.** Every terminal commit-pr cap now carries the gate's own failure lines (`FAILED: <n> test(s) …`, `✗ <test>`) and the persisted log paths, and `consolidatedFailureMessage` prefers those names over the `(no specific assertion could be extracted)` sentinel when the bounded 800-char window elided the summary. Absence stays honest: with no lines extracted, nothing is invented and the reason text stands as the evidence.
+
+### A park on a project gate quoted a passing stage, and the developer was dispatched blind (#1762, #1770)
+
+**Symptom.** A cycle on a project whose verify command is not this repo's `smoke-tests/lib/verify-loop.sh` parked with a cap that named no failing test, and the evidence line it did carry quoted a stage that had **passed** — a `… 36 cases, 0 failed` tally. The corrective round went to the developer with nothing actionable, so the one round a cycle gets was spent blind.
+
+**Cause.** Four recognisers each hardwired the same two shapes (`FAILED: <x>`, `✗ <x>`, plus the driver's own tsc/biome dialect), and a line was matched on substring — so `0 failed` matched `/fail/` and a gate printing anything outside that dialect matched nothing at all. The evidence window then fell back to the last N characters, which is where a passing tail stage lives.
+
+**Fix — one table, one scan window.** `extension/src/work-driver-verify-failures.ts` is now the only place failure-line shapes are declared, and every verify-evidence reader asks it: the attributed-tail anchor, the classifier's assertion extraction, the cap's named-failure recovery, the cause verdict's evidence lines, and the corrective-round prompt's assertion lines. Three rules the table enforces, all learned from that misquote:
+
+- A line reporting **success** is never a failure line (`0 failed`, `N passed`, `ok 24 - …`, `PASS`), and a passing half of a tally never cancels a failing half — `test.sh: 36 cases, 1 failed` is still a failure.
+- A **failure token in a status position**, not a substring: `a.ts: error` classifies, `index.ts: fatal error` is prose. A line that classifies becomes the evidence anchor with `attributed: true` and can earn the corrective round, so prose must not.
+- The **harness wrapper** (`verify command \`cmd\` failed in <cwd>: …`) is judged by the gate's line behind it, never as the assertion. `work-driver-verify-inner-line.ts` strips the wrapper's residue (separator padding, deps-hint diagnosis) from what a human is shown; classification never sees that stripping.
+
+One scan window (`FAILURE_LINE_SCAN_MAX`, 8 KiB) is applied once, at the classifier entry, so a gate that prints a whole document on one line costs a constant rather than minutes (a 1 MB line measured 249 s before, 15 ms after).
+
+**The ci tier's evidence tail (#1770).** The full-verify tier read 8 MiB per stream and stored the **head** of the combined output into the `verify-full-status` event's `evidenceTail` — so a suite that streamed build noise and then failed kept the noise and threw the failure away, and a gate that reports on **stdout** recorded nothing but `Command failed: <cmd>`. The tier now concatenates `stdout`/`stderr` like every other verify tier, redacts secrets across the **whole** stream, then keeps the **tail**, bounded at 4 000 code points (`VERIFY_FULL_OUTPUT_MAX`). Redaction happens before the cut, so a credential is never clipped into an unrecognisable fragment on its way to the state file and the forge comment.
+
+**What it does not change.** An unattributable stream still reports absence — `NO_SPECIFIC_ASSERTION` stands, and the corrective round is not earned on a wrapper sentence. Widening the shape set never moved an anchor that was already sound: a stream holding a plain `FAILED:` marker still anchors there.
 
 ## Invariant-removal guard memories (#280 C)
 

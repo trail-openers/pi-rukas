@@ -24,6 +24,7 @@ import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
 import { foldVerifyAttribution } from "./work-driver-verify-events.ts";
 import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
+import { keepEvidenceHead } from "./work-driver-verify-full.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -232,10 +233,33 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
         // failing tail (what the flake looked like); the re-run passed so its
         // output has no diagnostic value. For a genuine failure, carry the
         // most recent tail (the re-run's, if we ran one).
-        evidenceTail: (result.outcome === "success" && result.recovered
-          ? (result.firstRunOutput ?? result.output)
-          : result.output
-        ).slice(-500), // Last 500 chars for handoff
+        //
+        // #1762 round 2 (C2) — the cut keeps the ANCHORED head. The producer
+        // already chose where the failure sits and says so with `anchorOffset`: an
+        // excerpt whose failure opens it must be cut from there, because a blind
+        // `slice(-500)` of a 4 KB excerpt that starts at the failure keeps the 500
+        // characters of PASSING output that follow it and throws the failure away —
+        // #1762's symptom re-created by the reader after the producer fixed it. An
+        // excerpt with no anchor at all is a positional tail, and its last words are
+        // its tail.
+        // #1762 round 3 — the offset is the PRODUCER'S, not a guess about the shape
+        // the excerpt happens to be in.
+        // #1762 round 4 — and each excerpt carries its OWN offset. `firstRunOutput`
+        // is a different string than `output` (for a recovered run it is the first,
+        // failing run's stored excerpt, stored by the same `storeTierOutput`), so
+        // borrowing `output`'s offset cut the recovered excerpt at a position that
+        // describes the other run: when the failure sat in the last excerpt-width of
+        // the stream, the window started before it and the head cut from 0 dropped
+        // the failure line again. So the recovered branch cuts with the FIRST run's
+        // own offset, or none at all when that excerpt has no anchor.
+        evidenceTail: keepEvidenceHead(
+          result.outcome === "success" && result.recovered
+            ? (result.firstRunOutput ?? result.output)
+            : result.output,
+          result.outcome === "success" && result.recovered
+            ? result.firstRunAnchorOffset
+            : result.anchorOffset,
+        ),
       });
 
       if (result.outcome === "failure") {
