@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * #1756 part (b) — a crowded `paths` list is BOUNDED for display, never a
- * reason to refuse a whole workstream's `report_workstream` call.
+ * #1756 part (b) — a crowded `paths` list is never a reason to refuse a whole
+ * workstream's `report_workstream` call, and NOTHING is removed from it.
  *
  * The defect (five field parks, all `plan-spec-mismatch`): the schema
  * carried `maxItems: WORKSTREAM_LIST_MAX` (50) on `paths`, so one path over
@@ -12,27 +12,26 @@
  *
  * This file judges that the fix holds in the only direction that matters:
  * NOTHING is removed from `paths`, and everything downstream still reads the
- * whole list.
+ * whole list. What the prompts PRINT of that list is the companion file,
+ * `test-plan-paths-display-1756.ts`.
  *
  *   1. the schema accepts 51 and 500 declared paths and refuses only 501 (the
- *      abuse ceiling), while a 301-character path is still refused per entry;
- *   2. `workstreamFromArgs` keeps all 80, prints all 80, collapses duplicates on
- *      the normalised key, and the call is not refused;
+ *      abuse ceiling) with a legible message, while a 301-character path is
+ *      still refused per entry;
+ *   2. `workstreamFromArgs` keeps all 80, records no display count, collapses
+ *      duplicates on the normalised key, says so on ONE trace line, and the
+ *      call is not refused;
  *   3. the fanout gate's denominator is the FULL list — 80 declared paths buy
  *      a limit of 240, and undeclared files past that still fail;
  *   4. a collision in the tail (paths 51-80) still fires
  *      `findPathCollisions`;
  *   5. a deferred protected path in the tail is still removed by
  *      `withDeferredProtectedFence`;
- *   6. a fold of 40 + 40 keeps all 80 and never truncates, and a crowded fold
- *      pass emits at most ONE aggregate line;
- *   7. the develop, corrective and commit prompts print EVERY declared path —
- *      no `+N`, no "not shown", no pointer to a list the developer cannot read.
+ *   6. a fold of 40 + 40 keeps all 80 and never truncates.
  */
 
 import { Value } from "@sinclair/typebox/value";
-import { quotedPaths } from "../src/plan-path-shape.ts";
-import { boundPaths, inScopeFilesLine, pathsBoundNotice } from "../src/plan-paths-bound.ts";
+import { boundPaths, pathsBoundNotice } from "../src/plan-paths-bound.ts";
 import {
   WORKSTREAM_LIST_MAX,
   WORKSTREAM_PARAMETERS,
@@ -41,14 +40,10 @@ import {
   workstreamCallRefusal,
   workstreamPathProblem,
 } from "../src/plan-workstream-schema.ts";
-import { correctiveDevelopPrompt } from "../src/work-driver-corrective-prompt.ts";
 import { normaliseDeclaredPath } from "../src/work-driver-declared-path.ts";
 import { withDeferredProtectedFence } from "../src/work-driver-plan-fence.ts";
 import { findPathCollisions } from "../src/work-driver-plan-paths.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
-import { foldToCeiling } from "../src/work-driver-plan-workstreams.ts";
-import { inlineCommitPrPrompt } from "../src/work-driver-prompts-late.ts";
-import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { foldTwo } from "../src/workstream-fold.ts";
@@ -226,7 +221,7 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
   );
 }
 
-// ── 4. the fanout denominator is the FULL list, not the displayed 50 ────────
+// ── 4. the fanout denominator is the FULL declared list ───────────────
 {
   const declared = pathList(80);
   const gate = (changed: string[]) => {
@@ -334,151 +329,7 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
   assert(
     selfFenced.outOfScope.includes(tailFile) === false &&
       selfFenced.outOfScope.includes("the docs folder") === true,
-      "the fold still drops a self-fence that names a merged path from the tail",
-  );
-}
-
-// ── 8. every prompt prints EVERY declared path ─────────────────────────────
-{
-  const eighty = pathList(80);
-  const crowded = workstreamFromArgs(crowdedArgs("task-a", eighty));
-  const prompt = inlineDevelopPrompt([1756], "/tmp/scratch", crowded, "task-a");
-  const inScopeLine = prompt.split("\n").find((l) => l.startsWith("In-scope files:")) ?? "";
-  assert(
-    eighty.every((p) => inScopeLine.includes(JSON.stringify(p))),
-    "the develop prompt contains all 80 declared paths",
-  );
-  const shownCount = (inScopeLine.match(/"src\/mod-/g) ?? []).length;
-  assert(shownCount === 80, `all 80 paths are printed, none hidden (got ${shownCount})`);
-  assert(
-    !/\+\d+/.test(inScopeLine) &&
-      !inScopeLine.toLowerCase().includes("not shown") &&
-      !inScopeLine.toLowerCase().includes("read the plan list"),
-    `no truncation notice and no pointer to a list the developer cannot read (got: ${inScopeLine.slice(-120)})`,
-  );
-
-  const small = workstreamFromArgs(crowdedArgs("task-b", pathList(5)));
-  const smallLine =
-    inlineDevelopPrompt([1756], "/tmp/scratch", small, "task-b")
-      .split("\n")
-      .find((l) => l.startsWith("In-scope files:")) ?? "";
-  assert(
-    smallLine === `In-scope files: ${quotedPaths(small.paths)}`,
-    "with a short list the line is byte-identical to the previous rendering",
-  );
-  assert(
-    inScopeFilesLine(small.paths) === quotedPaths(small.paths),
-    "inScopeFilesLine is quotedPaths exactly — no second grammar for the line",
-  );
-  assert(inScopeFilesLine([]) === "", "an empty list renders the empty string");
-}
-
-{
-  // The commit-pr prompt prints the same list — for a multi-workstream cycle,
-  // which is the only shape that renders per-workstream path lines at all (the
-  // N=1 prompt tells ops to stage from the reviewed diff, so a single
-  // workstream's paths are deliberately not listed there).
-  const eighty = pathList(80);
-  const commitPrompt = inlineCommitPrPrompt(
-    [1756],
-    [],
-    { "task-a": "/tmp/wt/task-a", "task-b": "/tmp/wt/task-b" },
-    {
-      "task-a": { id: "task-a", scope: "the fix", paths: eighty, outOfScope: [] },
-      "task-b": { id: "task-b", scope: "the rest", paths: pathList(3, "src/other"), outOfScope: [] },
-    },
-    "feature/issue-1756-x",
-    undefined,
-    [],
-    "/tmp/scratch",
-  );
-  assert(
-    eighty.every((p) => commitPrompt.includes(JSON.stringify(p))),
-    "the commit-pr prompt lists all 80 in-scope paths for staging",
-  );
-  assert(
-    !/\+\d+/.test(commitPrompt),
-    "and carries no truncation notice either",
-  );
-}
-
-{
-  // The corrective round prints the same list, so a repair round is not told a
-  // shorter scope than the first pass was.
-  const eighty = pathList(80);
-  const corrective = correctiveDevelopPrompt({
-    issues: [1756],
-    scratchDirAbs: "/tmp/scratch",
-    workstreamId: "task-a",
-    parallel: false,
-    scope: "the fix",
-    paths: eighty,
-    command: "bun test",
-    lines: ["assertion failed"],
-    outOfScope: [],
-  });
-  assert(
-    eighty.every((p) => corrective.includes(JSON.stringify(p))) && !/\+\d+/.test(corrective),
-    "the corrective prompt prints all 80 paths and no note",
-  );
-  const plain = correctiveDevelopPrompt({
-    issues: [1756],
-    scratchDirAbs: "/tmp/scratch",
-    workstreamId: "task-b",
-    parallel: false,
-    scope: "the fix",
-    paths: pathList(3),
-    command: "bun test",
-    lines: ["assertion failed"],
-    outOfScope: [],
-  });
-  assert(
-    plain.includes(`In-scope files: ${quotedPaths(pathList(3))}`) &&
-      !plain.includes("more declared paths in scope"),
-    "and stays as it was for a workstream whose paths all fit on the line",
-  );
-}
-
-// ── 8b. a crowded fold pass emits AT MOST ONE aggregate line ────────────────
-{
-  // Ten workstreams, all folded into one by the ceiling. The fold itself is
-  // silent and the pass says the duplicate total once: ten lines for one plan
-  // event is the shape this replaces. Each workstream declares 5 unique paths
-  // plus 3 shared ones, so the pass collapses 27 duplicates (the shared trio is
-  // first stored by task-0 and collapsed nine times afterwards, plus the three
-  // duplicates inside every workstream's own list).
-  const entries: Workstream[] = [];
-  for (let i = 0; i < 10; i++) {
-    entries.push(
-      workstreamFromArgs(
-        crowdedArgs(`task-${i}`, [...pathList(5, `src/t${i}`), ...pathList(3, "src/shared")]),
-      ),
-    );
-  }
-  const { value: folded, traces } = captureTracesSync(() => {
-    process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "1";
-    try {
-      return foldToCeiling(entries);
-    } finally {
-      delete process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
-    }
-  });
-  const notices = traces.filter((t) => t.includes("paths bounded"));
-  assert(
-    notices.length <= 1,
-    `a crowded fold of 10 workstreams produces at most ONE bound line (got ${notices.length})`,
-  );
-  assert(
-    Object.keys(folded).length === 1,
-    `the pass really folded (got ${Object.keys(folded).length} workstreams)`,
-  );
-  assert(
-    notices.length === 0 || notices[0]?.includes("duplicates collapsed") === true,
-    `the one line reports duplicates collapsed (got: ${notices[0]?.trim()})`,
-  );
-  assert(
-    Object.values(folded)[0]?.paths.length === 53,
-    `and no path was lost to the fold (got ${Object.values(folded)[0]?.paths.length})`,
+    "the fold still drops a self-fence that names a merged path from the tail",
   );
 }
 
