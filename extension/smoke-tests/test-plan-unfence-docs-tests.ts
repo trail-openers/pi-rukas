@@ -270,6 +270,87 @@ process.env[HATCH] = "1";
   );
 }
 
+// -------------------------------- AC: a protected path is never unfenced
+
+{
+  // Five entries that ALL look like docs or tests by shape, and all name a
+  // path the develop gate HALTS the cycle for touching (#406/#285): `.pi/` and
+  // `.github/` are protected directories, `agents.json` and `CODEOWNERS`
+  // protected files wherever they live. Unfencing one buys a developer a
+  // 90-minute round that ends in a halt, so the rule must not open it — the
+  // guard is `isProtectedPath`, the same predicate the develop fence seam uses.
+  const plan: Record<string, Workstream> = {
+    default: WS("default", ["src/app.ts"], [
+      ".pi/verify-cmd.md",
+      ".github/DEVELOPERS.md",
+      ".github/workflows/test-x.yml",
+      "docs/agents.json",
+      "docs/CODEOWNERS",
+      "docs/guide.md",
+    ]),
+  };
+  const out = await runPass(plan, PLAIN_BODY);
+  const fence = out.workstreams.default?.outOfScope ?? [];
+  for (const protected_ of [
+    ".pi/verify-cmd.md",
+    ".github/DEVELOPERS.md",
+    ".github/workflows/test-x.yml",
+    "docs/agents.json",
+    "docs/CODEOWNERS",
+  ]) {
+    assert(
+      fence.includes(protected_),
+      `protected path ${protected_} keeps its fence despite its docs/test shape`,
+    );
+  }
+  assert(
+    !fence.includes("docs/guide.md"),
+    "an ordinary docs page in the same plan still opens — the guard is not a blanket stop",
+  );
+  assert(
+    out.summary?.docsTests === 1,
+    `only the ordinary docs page is recorded as opened (${out.summary?.docsTests})`,
+  );
+}
+
+// ------------------- AC: every spelling of a forbidden docs fence is kept
+
+{
+  // The issue forbids a path UNDER docs. The develop gate reads `docs/`,
+  // `docs/*` and `docs/**` as one fence (fenceDirPrefix), so the prohibition
+  // check must — otherwise the pass opens two of the three spellings and the
+  // developer hits the gate that still fences them.
+  const plan: Record<string, Workstream> = {
+    default: WS("default", ["src/app.ts"], ["docs/", "docs/*", "docs/**", "lib/x.sh"]),
+  };
+  const body = `${PLAIN_BODY}\n## Out of scope\n\nThe docs/help.md page is not part of this change.\n`;
+  const out = await runPass(plan, body);
+  const fence = out.workstreams.default?.outOfScope ?? [];
+  assert(fence.includes("docs/"), "docs/ kept when the issue forbids a path under docs");
+  assert(fence.includes("docs/*"), "docs/* — same fence, same spelling-independent verdict");
+  assert(fence.includes("docs/**"), "docs/** — same fence, same spelling-independent verdict");
+  assert(fence.includes("lib/x.sh"), "the unrelated fence is untouched by the rule either way");
+  assert(
+    out.summary?.docsTests === undefined,
+    "nothing opened, so the summary records no docs/test openings",
+  );
+}
+
+// ------------------- AC: a forbidden fence does not keep an unrelated one
+
+{
+  // Symmetry: the prohibition must be per-fence. `docs/**` is forbidden, the
+  // test directory is not, so the test fence still opens.
+  const plan: Record<string, Workstream> = {
+    default: WS("default", ["src/app.ts"], ["docs/**", "test/"]),
+  };
+  const body = `${PLAIN_BODY}\nDo not edit docs/help.md.\n`;
+  const out = await runPass(plan, body);
+  const fence = out.workstreams.default?.outOfScope ?? [];
+  assert(fence.includes("docs/**"), "the forbidden docs fence is kept");
+  assert(!fence.includes("test/"), "the unrelated test fence still opens");
+}
+
 // ------------------------------------------- the predicates: positives
 
 for (const [p, want] of [

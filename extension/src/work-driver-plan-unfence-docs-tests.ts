@@ -29,12 +29,26 @@
  *     test-shaped basename is opened. That shape question is
  *     `docsOrTestReason` in plan-docs-test-path.ts; the containment half of the
  *     judgement is this module's, not the predicate's.
+ *   - **A protected path is never opened, whatever its extension.** The
+ *     `.pi/`, `.github/` and `CODEOWNERS`/`agents.json` files are what decide
+ *     what verification MEANS within a cycle (#406/#285), so the develop gate
+ *     halts the cycle when a developer touches one. A plan-time rule that
+ *     quietly removes their fence would hand the developer a 90-minute round
+ *     ending in a halt, and would read as a docs unfence to whoever audits the
+ *     note. So `isProtectedPath` — the SAME predicate the develop gate's fence
+ *     seam consults (`work-develop-scope-fence-seam.ts`) — keeps any entry it
+ *     answers true for, before the shape question is even asked. `.pi/verify-cmd.md`,
+ *     `.github/DEVELOPERS.md`, `.github/workflows/test-x.yml`, `docs/agents.json`
+ *     and `docs/CODEOWNERS` all look like docs by shape and all stay fenced.
  *   - **The issue's explicit prohibition wins.** If the issue's prose forbids
  *     that path, the fence stays. The decision reuses `isProhibition` from
  *     work-driver-plan-unfence-extract.ts — the SAME grammar the issue-named
  *     pass uses, deliberately not a second one: two prohibition grammars drift
  *     apart, and the wider of the two silently re-fences what the narrower let
- *     go.
+ *     go. The comparison runs on `fenceDirPrefix` (work-driver-declared-path.ts),
+ *     the develop gate's own fence normaliser, so `docs/`, `docs/*` and
+ *     `docs/**` are one fence: a refusal that names the directory keeps every
+ *     spelling of it.
  *   - **No placement, and no `paths` grant.** #1167 refuses to unfence a path
  *     it cannot place, because for an issue-named path the unfence IS a scope
  *     grant and an unowned file is a scope fanout. Here the question does not
@@ -57,6 +71,8 @@
 import { docsOrTestReason } from "./plan-docs-test-path.ts";
 import { keepClippedRecords } from "./plan-fence-record.ts";
 import { trace } from "./trace.ts";
+import { fenceDirPrefix } from "./work-driver-declared-path.ts";
+import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { isProhibition } from "./work-driver-plan-unfence-extract.ts";
 import { type UnfenceRecord, unfencedDocsTestNote } from "./work-driver-plan-unfence-notes.ts";
 import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
@@ -83,12 +99,15 @@ export function unfenceDocsTestsEnabled(): boolean {
  * whole thing. And only sentences that NAME the path are consulted, so an
  * unrelated refusal about some other file cannot keep a docs page fenced.
  *
- * The comparison tolerates the two ways a directory fence is written: the
- * planner's trailing separator and the issue's bare directory name are the same
- * boundary.
+ * The comparison runs through `fenceDirPrefix` — the develop gate's OWN fence
+ * normaliser, not a local one — so the three spellings of a directory fence
+ * (`docs/`, `docs/*`, `docs/**`) are one boundary: an issue that forbids a path
+ * under `docs` keeps all three fenced, exactly as the develop gate fences them.
+ * The planner's trailing separator and the issue's bare directory name are the
+ * same boundary for the same reason.
  */
 export function issueForbidsPath(body: string, path: string): boolean {
-  const needle = path.replace(/\/+$/, "").toLowerCase();
+  const needle = fenceDirPrefix(path).toLowerCase();
   if (needle.length === 0) return false;
   for (const sentence of body.split(/(?<=[.!?])\s+|\n+/)) {
     const normalized = sentence.replace(/\/+/g, "/").toLowerCase();
@@ -133,7 +152,7 @@ export function unfenceDocsTestPaths(
     const kept: string[] = [];
     for (const entry of ws.outOfScope) {
       const reason = docsOrTestReason(entry);
-      if (reason === undefined || issueForbidsPath(body, entry)) {
+      if (reason === undefined || isProtectedPath(entry) || issueForbidsPath(body, entry)) {
         kept.push(entry);
         continue;
       }
