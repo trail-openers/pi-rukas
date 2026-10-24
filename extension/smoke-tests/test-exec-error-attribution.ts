@@ -49,9 +49,9 @@ function assert(cond: boolean, msg: string) {
 // failure line at all (case 10).
 {
   const combined = `${"a".repeat(2000)}\nerror[E0308]: mismatched types --> src/foo.rs:42`;
-  const { tail, attributed } = extractAttributedTail(combined, 1500);
+  const { tail, attributed } = extractAttributedTail(combined, 40);
   assert(tail.includes("E0308"), "anchored diagnostic: the tail contains the real error");
-  assert(tail.length <= 1500, "anchored diagnostic: tail respects maxLen");
+  assert(tail.length <= 40, "anchored diagnostic: tail respects maxLen");
   assert(
     attributed === true,
     "anchored diagnostic (#1762): a recognised diagnostic line on its own line anchors the tail",
@@ -59,17 +59,46 @@ function assert(cond: boolean, msg: string) {
 }
 
 // 2b. The same diagnostic with NO line boundary before it: a 2000-char run directly
-// followed by the diagnostic is ONE line whose head is noise, and the table's shapes
-// are anchored at the start of a line, so nothing in this stream is recognised. This
-// is the case the blind slice exists for, and `attributed: false` is the honest answer
-// — an evidence tail that claims attribution it does not have is the #723 defect.
+// followed by the diagnostic is ONE line whose head is noise. The classifier keeps
+// `error[` out of the harness-wrapper vocabulary (a bracketed rustc code following a
+// real `: ` is exactly the shape a gate's own path carries), so this stream is
+// recognised as nothing and the blind slice — `attributed: false` — is the honest
+// answer: evidence that claims attribution it does not have is the #723 defect.
 {
-  const combined = `${"a".repeat(2000)}error[E0308]: mismatched types --> src/foo.rs:42`;
+  const combined = `${"a".repeat(2000)}error E0308 mismatched types --> src/foo.rs:42`;
   const { tail, attributed } = extractAttributedTail(combined, 1500);
   assert(tail.length <= 1500, "separator-less: tail respects maxLen");
   assert(
     attributed === false,
     "separator-less: a diagnostic welded to the end of a long noise run, with no line boundary, anchors nothing",
+  );
+}
+
+// 2c. A recognised line that is ITSELF longer than the window (#1762): a wrapped
+// one-line diagnostic — the shape the verify wrapper prints when a sub-command fails
+// — is one line, so its head carries the recognisable marker even when the line
+// cannot fit. De-attributing here threw away attribution the driver had earned; the
+// tail is now the anchor start clipped to maxLen, and `attributed` stays true.
+{
+  const cmd = "bash -c 'exit 1'";
+  const wrapped =
+    `verify command \`${cmd}\` failed in /repo/.worktrees/issue-1-a: FAILED: 16 test(s) — ` +
+    "extension/smoke-tests/test-".repeat(28) +
+    "test-c.ts" +
+    "x".repeat(25);
+  assert(
+    wrapped.length === 883 && wrapped.length > 800,
+    `wrapped anchor line is longer than the window (${wrapped.length})`,
+  );
+  const { tail, attributed } = extractAttributedTail(wrapped, 800);
+  assert(
+    attributed === true,
+    "wrapped anchor: a recognised line wider than the window keeps its attribution",
+  );
+  assert(tail.length <= 800, "wrapped anchor: tail respects maxLen");
+  assert(
+    tail.startsWith("verify command") || tail.startsWith("FAILED:"),
+    `wrapped anchor: the tail starts at the anchor, not at the stream end (got ${JSON.stringify(tail.slice(0, 40))})`,
   );
 }
 

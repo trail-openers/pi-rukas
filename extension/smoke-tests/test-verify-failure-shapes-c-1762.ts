@@ -223,12 +223,27 @@ const { assert, failed } = makeAssert();
     run.output.length <= VERIFY_FULL_OUTPUT_MAX,
     `c3: the stored excerpt is bounded (${run.output.length})`,
   );
-  // (a) The excerpt STARTS with the failure line (within 200 characters, allowing
-  // for the redaction marker a credential-shaped payload could leave behind).
-  const at = run.output.indexOf(FAIL_LINE);
+  // (a) The excerpt STARTS with the failure line — exactly, not "somewhere near the
+  // top". A trailing-whitespace or CRLF stream used to shift the anchor right by the
+  // trimmed length and open the excerpt mid-word.
   assert(
-    at >= 0 && at <= 200,
-    `c3: the stored excerpt starts at the failure line (found at ${at} of ${JSON.stringify(run.output.slice(0, 60))})`,
+    run.output.startsWith(FAIL_LINE),
+    `c3: the stored excerpt starts at the failure line (got ${JSON.stringify(run.output.slice(0, 60))})`,
+  );
+  // (a2) The same stream with the failure line padded by trailing spaces and broken
+  // with CRLF: the anchor offset counts LEADING whitespace only, so trailing blanks
+  // and carriage returns must not push `at` past the line's first character.
+  const PADDED = `${FAIL_LINE}        \r\n${AFTER.replace(/\n/g, "\r\n")}`;
+  const paddedFailing = Object.assign(
+    new Error("Command failed: bash scripts/verify.sh --full"),
+    { stdout: PADDED, stderr: "" },
+  );
+  const padded = await runVerifyFull("bash scripts/verify.sh --full", "/w", 5000, async () => {
+    throw paddedFailing;
+  });
+  assert(
+    padded.output.startsWith(FAIL_LINE),
+    `c3: trailing spaces and CRLF breaks still anchor at the line start (got ${JSON.stringify(padded.output.slice(0, 60))})`,
   );
   // (b) It DIFFERS from the positional tail of the same width — the tail is all
   // passing output and contains no failure at all.
@@ -263,27 +278,89 @@ const { assert, failed } = makeAssert();
     TOKEN.length === 40 && /^ghp_[A-Za-z0-9]{36}$/.test(TOKEN),
     `c3: the evidence fixture is a token plus 36 alphanumerics (${TOKEN.length})`,
   );
-  for (const anchored of [true, false]) {
-    // The token sits within the first 500 characters either way, so BOTH cuts see
-    // it: a head keeps its head, and a tail of a 1200-character line would not —
-    // this is the cut the assertion must actually exercise, not the choice of end.
-    const leaked = keepEvidenceHead(`a line that echoes ${TOKEN} and keeps going`, anchored);
+  // The token sits INSIDE the 500 characters each cut keeps — so close to the edge
+  // that the REDACTED marker itself runs past the budget. `redactThenBound` redacts
+  // the WHOLE string before it clips, so the marker survives whichever end is kept;
+  // the positional form each cut would have made without the arms is what makes the
+  // assertions below discriminating. The old fixtures were a 60-character line that
+  // both ends stored whole, so the head/tail comparison asserted nothing.
+  // The evidence budget is 500 code points and the REDACTED marker is 10, so a token
+  // whose head sits in `[budget-10, budget)` is masked by the arms and then clipped
+  // away by the bound: its replacement falls past the edge and the kept window holds
+  // neither the token NOR the marker. That is what `600 filler characters` buys —
+  // each fixture puts its token in that band for its own cut, so the anchored (head)
+  // and anchorless (tail) cuts really differ, and each proves a different half of the
+  // contract: the head cut masks a token it keeps whole, the tail cut masks one that
+  // straddles its edge. The old fixtures were a 60-character line both ends stored
+  // whole, so the head/tail comparison asserted nothing.
+  // Each fixture is WIDER than the 500-code-point evidence budget on both sides of
+  // its token, so the anchored (head) and anchorless (tail) cuts keep visibly
+  // different text — the old fixtures were a 60-character line both ends stored
+  // whole, which made that comparison assert nothing. The token itself sits inside
+  // the 500 characters its own cut keeps, so the arms see it whole and must mask it.
+  const FILLER = "filler that carries no token at all. ".repeat(11); // ~407 chars
+  assert(
+    FILLER.length > 300,
+    `c3: the filler puts each token past the middle of the evidence budget (${FILLER.length})`,
+  );
+  const headCase = `a line that echoes ${FILLER}${TOKEN} and goes on for a while yet`
+    .padEnd(VERIFY_FULL_EVIDENCE_MAX + 200, ".");
+  const tailCase = `the run ended before ${FILLER}${TOKEN} and goes on for a while yet`
+    .padEnd(VERIFY_FULL_EVIDENCE_MAX + 200, ",");
+  const headCaseOffset = headCase.indexOf(TOKEN);
+  const tailCaseOffset = tailCase.indexOf(TOKEN);
+  assert(
+    headCaseOffset > VERIFY_FULL_EVIDENCE_MAX / 2 &&
+      headCaseOffset + TOKEN.length < VERIFY_FULL_EVIDENCE_MAX &&
+      tailCaseOffset > VERIFY_FULL_EVIDENCE_MAX / 2 &&
+      tailCaseOffset + TOKEN.length < VERIFY_FULL_EVIDENCE_MAX,
+    `c3: each token lies wholly inside the 500 code points its own cut keeps (head@${headCaseOffset}, tail@${tailCaseOffset})`,
+  );
+  let headResult = "";
+  let tailResult = "";
+  for (const [anchored, leakedSource] of [
+    [true, headCase],
+    [false, tailCase],
+  ] as const) {
+    // The cut the OLD reader was — a positional bound with no redaction — is what
+    // makes these assertions discriminating: on the anchored fixture it carries the
+    // token whole, and on the anchorless one it carries the `ghp_` prefix of a token
+    // the redacting cut never shows at all.
+    const positional = Array.from(leakedSource)
+      .slice(anchored ? 0 : -VERIFY_FULL_EVIDENCE_MAX)
+      .join("");
+    assert(
+      positional.includes("ghp_"),
+      `c3: the fixture really does carry the token before the cut, anchored=${anchored}`,
+    );
+    const leaked = keepEvidenceHead(leakedSource, anchored);
+    if (anchored) headResult = leaked;
+    else tailResult = leaked;
+    // Where the token has to sit for each cut: inside the 500 code points the cut
+    // keeps, so the arms see it whole and mask it. `headCase` places its token past
+    // the head cut's midpoint and `tailCase` past the tail cut's, which is what makes
+    // the two results different text.
+    const tokenStart = anchored ? headCaseOffset : tailCaseOffset;
+    assert(
+      tokenStart > VERIFY_FULL_EVIDENCE_MAX / 2,
+      `c3: the token sits past the middle of the region this cut keeps (starts at ${tokenStart}), anchored=${anchored}`,
+    );
     assert(
       !leaked.includes("ghp_") && !leaked.includes(TOKEN),
       `c3: a token in the excerpt is redacted by the evidence cut, anchored=${anchored} (got ${JSON.stringify(leaked.slice(0, 60))})`,
     );
+    // A token that reaches this width is rendered straight into the handoff, so the
+    // cut must MASK it: `redactThenBound` redacts the whole string before it clips,
+    // so the marker survives the clip and no fragment of the key reaches the reader.
     assert(
       leaked.includes("[REDACTED]"),
       `c3: the token is replaced, not dropped, anchored=${anchored}`,
     );
-    // The un-redacted positional form is what the old `boundByCodePoints` returned,
-    // so the assertion above is discriminating rather than vacuous.
-    const positional = Array.from(`a line that echoes ${TOKEN}`).slice(anchored ? 0 : -500).join("");
-    assert(
-      positional.includes("ghp_"),
-      "c3: the fixture really does carry the token before the cut",
-    );
   }
+  assert(
+    headResult !== tailResult,
+    "c3: the head and tail evidence cuts really differ on a fixture wider than the budget",
+  );
   // The negative control: with no anchor anywhere in the scanned tail the producer
   // stores the positional tail and says so, and the evidence keeps its tail. The
   // stream is built to be WIDER than one excerpt, which is the only case where

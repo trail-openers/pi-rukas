@@ -77,7 +77,7 @@ const timed = (line: string): number => {
   runs.sort((a, b) => a - b);
   return runs[1] ?? runs[0] ?? 0;
 };
-const CONTROL_BUDGET = (control: number): number => control * 20 + 50;
+const CONTROL_BUDGET = (control: number): number => Math.max(control, 1) * 20 + 50;
 {
   // A ~1 KB line of the same shape, median of 3 runs: the baseline the two
   // pathological cases are compared against.

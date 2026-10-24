@@ -63,7 +63,7 @@ const { assert, failed } = makeAssert();
     return runs[1] ?? runs[0] ?? 0;
   };
   const control = timed(wrapperOf(": ".repeat(256))); // ~1 KB
-  const budget = (): number => control * 20 + 50;
+  const budget = (): number => Math.max(control, 1) * 20 + 50;
   console.log(`  control (~1 KB) median: ${control.toFixed(2)} ms`);
   for (const [label, payload, size] of [
     ["8 KiB", ": ".repeat(4 * 1024), 8 * 1024],

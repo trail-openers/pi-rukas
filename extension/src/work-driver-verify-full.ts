@@ -139,18 +139,23 @@ function lastFailureLineIn(text: string): FailureAnchor | undefined {
     if (c === "\n" && i > 0 && text[i - 1] === "\r") continue;
     const start = i + 1;
     if (start < lineEnd) {
-      const line = text.slice(start, lineEnd).trim();
+      // The offset is the LEADING whitespace only. Subtracting the fully trimmed
+      // length counts trailing spaces too and lands the anchor past the line's
+      // first character, so the stored excerpt opens mid-word.
+      const rawSlice = text.slice(start, lineEnd);
+      const line = rawSlice.trim();
       if (line.length > 0 && classifyFailureLine(line) !== undefined) {
-        return { line, at: start + (text.slice(start, lineEnd).length - line.length) };
+        return { line, at: start + (rawSlice.length - rawSlice.trimStart().length) };
       }
     }
     lineEnd = i;
   }
   // The head of the scanned region is a line with no break before it.
   if (lineEnd > from) {
-    const head = text.slice(from, lineEnd).trim();
+    const rawSlice = text.slice(from, lineEnd);
+    const head = rawSlice.trim();
     if (head.length > 0 && classifyFailureLine(head) !== undefined) {
-      return { line: head, at: from + (text.slice(from, lineEnd).length - head.length) };
+      return { line: head, at: from + (rawSlice.length - rawSlice.trimStart().length) };
     }
   }
   return undefined;

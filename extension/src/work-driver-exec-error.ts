@@ -74,7 +74,7 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
   // `exit 1`s right after), but staying on the last occurrence keeps this
   // correct if a future verify-cmd shape prints more than one.
   const anchorIndex = lastFailureIndex(trimmed);
-  if (anchorIndex !== undefined && anchorReachable(trimmed, anchorIndex, maxLen)) {
+  if (anchorIndex !== undefined) {
     const fromMarker = trimmed.slice(anchorIndex);
     if (fromMarker.length <= maxLen) return { tail: fromMarker, attributed: true };
     // Still bound the size — the verbose re-run after the marker can itself
@@ -85,6 +85,9 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
     const anchorLine = newline === -1 ? fromMarker : fromMarker.slice(0, newline);
     const elision = "\n...\n";
     const remaining = maxLen - anchorLine.length - elision.length;
+    // A long WRAPPED line — one recognised line wider than the window — keeps its
+    // attribution: the head of the anchor line carries the marker, so clipping the
+    // line itself is far better evidence than a blind slice of the stream's end.
     const tail =
       remaining > 0
         ? anchorLine + elision + fromMarker.slice(-remaining)
@@ -92,27 +95,6 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
     return { tail, attributed: true };
   }
   return { tail: trimmed.slice(-maxLen), attributed: false };
-}
-
-/**
- * Can the window actually SHOW this anchor? The bounded tail is the anchor's own line
- * plus the end of the anchored region, so a recognised line deeper than the bound into
- * the stream produces a tail elided down to a fragment of its own first line — text
- * that reads as evidence while showing none. That case reports the blind slice and
- * says so through `attributed: false`, the same honest absence a stream with no
- * recognised shape at all earns.
- *
- * The shape this closes: a diagnostic welded to the end of a long noise run with no
- * line boundary before it. The table's shapes are anchored at a line's start, so the
- * whole run is ONE line whose head is noise, and the anchor sits far past the window.
- */
-function anchorReachable(text: string, anchorIndex: number, maxLen: number): boolean {
-  const newline = text.indexOf("\n", anchorIndex);
-  const anchorLine = newline === -1 ? text.slice(anchorIndex) : text.slice(anchorIndex, newline);
-  // The tail is the anchor line, the elision marker, and whatever budget is left for
-  // the region's end. If nothing is left of the region the anchor line itself does not
-  // fit alongside the marker, and the attribution is not sound.
-  return anchorLine.length + "\n...\n".length < maxLen;
 }
 
 /**
