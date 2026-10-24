@@ -371,4 +371,28 @@ export const SEAMS: Seam[] = [
     },
     canary: { symbol: "backlogReminderSection", importer: "commands.ts" },
   },
+  {
+    // #1762 — the ONE table of failure-line shapes, read by every verify-evidence
+    // reader in the driver (`exec-error`, `cause-class`,
+    // `consolidation-classify`, `commit-verify-evidence`, `verify-record`).
+    // Registered because two exports have no production CALLER even though they
+    // have production READERS: the scan bound is a cost contract that only a
+    // test measures, and `isSuccessLine` is asked by `classifyFailureLine` in
+    // this same module — the only reason the gate treats a `0 failed` tally as
+    // passing — while the test asserts the arm directly so a change that keeps
+    // `classifyFailureLine` green while inverting the count guard still fails.
+    // `depsHintStartFor` and `splitLines` are NOT declared here: both are called
+    // from `work-driver-verify-inner-line.ts` (and `splitLines` from
+    // `work-driver-exec-error.ts` too), so labelling them test-only would let a
+    // declaration stand in for a caller that exists.
+    file: "work-driver-verify-failures.ts",
+    pending: {},
+    testOnly: {
+      FAILURE_LINE_SCAN_MAX:
+        "the per-line scan bound; test-verify-failure-shapes-1762.ts times a 200 KB line against it",
+      isSuccessLine:
+        "the passing arm of the classifier, called in-module by classifyFailureLine and asserted directly by test-verify-failure-shapes-1762.ts: every passing veto in the table rests on it, so a change that keeps classifyFailureLine green while inverting the count guard must still fail here",
+    },
+    canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
+  },
 ];

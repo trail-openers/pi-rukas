@@ -55,6 +55,7 @@
  */
 
 import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
+import { classifyFailureLine, harnessInnerLine } from "./work-driver-verify-failures.ts";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -130,8 +131,12 @@ const IS_MARKER_LINE = /^FAILED:/;
 /** #807 — an ECHOED shell command (the verify-cmd chain's `$ …` output, #746). */
 const IS_ECHOED_COMMAND = /^\$ /;
 /** #807 — a line that carries ACTUAL failure content (priority: `✗` first). */
-const IS_ASSERTION_LINE =
-  /^✗\s|^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b|exit 0 \(got 1\)|zero findings \(got 1\)/;
+// #1762 — this used to be a second hardwired shape list (`/^✗\s|^error:?\s|
+// \bTS\d{4,}\b|exit 0 \(got 1\)|.../`), which recognised only this repo's own
+// smoke/biome/tsc dialect: every other runner answered
+// `NO_SPECIFIC_ASSERTION`. It now asks the shared failure-line table, which
+// keeps every shape it matched before and adds the runners this repo does not
+// own (TAP/bats, pytest, go, a script's own `failed checks (N)` block).
 
 /**
  * #807 — a token-shape secret guard: the extracted assertion reaches a
@@ -141,9 +146,48 @@ const IS_ASSERTION_LINE =
 const LOOKS_LIKE_SECRET =
   /(api[_-]?key|access[_-]?token|bearer\s|password|passwd|secret[_-]?key)\s*[=:]\s*\S{8,}/i;
 
-/** #807 — a line that is neither an assertion nor usable evidence. */
-function isNonAssertionLine(line: string): boolean {
+/**
+ * #807 — a line that is neither an assertion nor usable evidence.
+ *
+ * #1762 round 3 — EXPORTED. The same predicate must refuse the same text on
+ * both routes into a developer prompt: `extractSpecificAssertion` applies it to
+ * the line it judges, but it only ever judges a SINGLE-LINE stream, and
+ * `work-driver-verify-record.ts` unwraps a multi-line stream itself — so
+ * without one shared owner, a credential printed inside a harness wrapper was
+ * offered as "an assertion the developer can act on" and reached the handoff
+ * and the forge comment.
+ */
+export function isNonAssertionLine(line: string): boolean {
   return IS_MARKER_LINE.test(line) || IS_ECHOED_COMMAND.test(line) || LOOKS_LIKE_SECRET.test(line);
+}
+
+/**
+ * #1762 — the line whose CONTENT decides whether `line` is an assertion, and
+ * the line returned when it is. For a harness-wrapped failure
+ * (`verify command `cmd` failed in <cwd>: <stream>`) that is the gate's own
+ * line behind the wrapper, not the wrapper: a `FAILED:` marker is never a
+ * specific assertion whether bare or wrapped, and the wrapper is prose the
+ * harness wrote, so judging (or returning) it is exactly the #798 defect — an
+ * operator sent to the harness sentence, and the cycle's one corrective round
+ * spent on it. `undefined` when the wrapper carries no stream that reports a
+ * failure, which is #1667's no-assertion exemption.
+ *
+ * Only a SINGLE-LINE stream is substituted. A multi-line stream is not one
+ * line, and the caller is scanning line by line: substituting the whole stream
+ * here would return harness wrapper text plus gate output as one "assertion".
+ * `assertionLines` / `failureLines` reach every inner line separately. A
+ * multi-line stream therefore yields `undefined` rather than the wrapper: the
+ * wrapper is harness prose and can never be the answer, whether or not a line
+ * beneath it is.
+ */
+function assertionCandidate(line: string): string | undefined {
+  if (IS_MARKER_LINE.test(line)) return undefined;
+  const inner = harnessInnerLine(line);
+  // Not a wrapper, or a wrapper carrying no stream that reports a failure
+  // (#1667's exemption, which `classifyFailureLine` also answers undefined for).
+  if (inner === undefined || inner.length === 0) return line;
+  if (inner.includes("\n")) return undefined;
+  return inner;
 }
 
 /**
@@ -157,8 +201,10 @@ function isNonAssertionLine(line: string): boolean {
  *
  * #807 — the assertion is the FIRST line of the tail that carries actual
  * failure content, preferring a `✗` assertion (smoke loop / biome /
- * scaffold), then a compiler/linter error (tsc `error TS…`, biome
- * diagnostic, `error:`/`Error:`/`error[E…]:`). Marker lines (`FAILED: …`,
+ * scaffold), then any other line the shared failure-line table recognises as
+ * naming a failure — a compiler/linter error, a TAP `not ok`, a pytest
+ * `FAILED path::name`, a go `--- FAIL:`, or a script's `failed checks (N)`
+ * block. Marker lines (`FAILED: …`,
  * including the `FAILED: <n> test(s) — …` summary), echoed shell command
  * lines (`$ …`), and secret-shaped lines are NEVER selected. When no line
  * qualifies, `NO_SPECIFIC_ASSERTION` is returned instead of the first
@@ -176,12 +222,15 @@ export function extractSpecificAssertion(failureTail: string): string {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
   for (const line of lines) {
-    if (isNonAssertionLine(line)) continue;
-    if (/^✗\s/.test(line)) return line;
+    const candidate = assertionCandidate(line);
+    if (candidate === undefined || isNonAssertionLine(candidate)) continue;
+    if (/^✗\s/.test(candidate)) return candidate;
   }
   for (const line of lines) {
-    if (isNonAssertionLine(line)) continue;
-    if (IS_ASSERTION_LINE.test(line)) return line;
+    const candidate = assertionCandidate(line);
+    if (candidate === undefined || isNonAssertionLine(candidate)) continue;
+    if (IS_MARKER_LINE.test(candidate)) continue;
+    if (classifyFailureLine(candidate) !== undefined) return candidate;
   }
   return NO_SPECIFIC_ASSERTION;
 }
@@ -333,14 +382,25 @@ export function classifyConsolidatedVerifyFailure(
  * The classifier's view of the shared named-failure reader: which of the lines
  * `namedFailureLines` matches count as evidence HERE.
  *
- * The shared reader accepts every `FAILED:` / `✗` line, because at the cap site a
- * per-file marker still tells the operator which file went red. The classifier is
+ * #1762 lens round — this used to carry its own shape test (`/^✗\s/` plus an
+ * explicit summary branch), a fifth hardwired dialect list. `tailLines` and
+ * `namedFailureLines` now both answer from the shared table, so a predicate
+ * that did not would disagree with the readers it feeds: a TAP `not ok`, a
+ * pytest `FAILED path::name` or a script's `failed checks (1)` block would be
+ * accepted by the shared reader and then dropped here, so the #1064 recovery
+ * silently returned nothing for a runner this repo does not own. It is now
+ * DERIVED from the table: the line must be one the table recognises and that
+ * NAMES a check, and must not be one of the three kinds of non-evidence below.
+ *
+ * The shared reader accepts every line its failure table recognises, because at
+ * the cap site a per-file marker still tells the operator which file went red. The classifier is
  * stricter — `consolidatedFailureMessage` joins what it recovers into the field
  * labelled "specific assertion", and a bare `FAILED: smoke-tests/test-x.ts` names a
  * FILE, not an assertion. That is the #798 defect (an operator sent to a filename)
  * and `extractSpecificAssertion` refuses such lines, so the recovery must not put
- * them back through the side door. A `✗` line, or the `FAILED: <n> test(s) — a, b`
- * summary that carries the names, is what counts.
+ * them back through the side door. `namesTest` is what encodes that rule now: a
+ * bare tally does not name a check and stays out, a `✗` line or a named script
+ * tally does.
  *
  * #1702 — the #807 secret guard the deleted `namedFailureLinesFrom` carried is composed
  * in here, so merging the two readers did not quietly drop it. The shared reader REDACTS
@@ -352,13 +412,14 @@ export function classifyConsolidatedVerifyFailure(
  * `LOOKS_LIKE_SECRET`) is DROPPED here, not masked.
  *
  * The count summary is the one marker-shaped line this predicate must still keep —
- * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the deleted reader matched
- * the summary explicitly. It is matched explicitly here too, and carries the same secret
- * guard.
+ * `IS_MARKER_LINE` rejects every `FAILED:` line, which is why the summary is
+ * matched explicitly before the marker rule can drop it. It carries the same
+ * secret guard.
  */
 function isNamedFailureLine(line: string): boolean {
   if (/^FAILED:\s*\d+\s+test\(s\)/.test(line)) return !LOOKS_LIKE_SECRET.test(line);
-  return !isNonAssertionLine(line) && /^✗\s/.test(line);
+  if (isNonAssertionLine(line)) return false;
+  return classifyFailureLine(line)?.namesTest === true;
 }
 
 /**

@@ -12,7 +12,14 @@
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
+  isNonAssertionLine,
 } from "./work-driver-consolidation-classify.ts";
+import {
+  classifyFailureLine,
+  harnessInnerLine,
+  isHarnessWrapper,
+  splitLines,
+} from "./work-driver-verify-failures.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** One verify run the gate actually made. */
@@ -47,16 +54,47 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  * Every line of `text` a developer can act on: the lines the extractor accepts
  * as an assertion (a `✗` line, a compiler or linter error). Uncapped — the
  * dependency check must read every line, not the bounded subset given out.
+ *
+ * #1762 round 3 — two rules the wrapper's inner lines used to skip:
+ *
+ *   - **The #807 non-assertion / secret guard applies to every line offered,
+ *     inner or not.** `extractSpecificAssertion` refuses a line that
+ *     `isNonAssertionLine` rejects (a marker, an echoed `$ ` command, a
+ *     credential-shaped line), but it only ever judges the SINGLE-LINE stream a
+ *     wrapper carries — a multi-line inner stream yields `undefined` there and
+ *     this reader unwrapped it itself, so a secret printed inside a wrapper
+ *     reached the corrective-round prompt, the handoff and the forge comment
+ *     unmasked. Same predicate, same text, both loops.
+ *   - **`splitLines`, not `split("\n")`.** The harness flattens a multi-line
+ *     gate stream into one line with `\n`, but a gate that printed `\r` line
+ *     breaks leaves `\r` behind here, and an unsplit `\r` makes the trimmed
+ *     line differ from what the extractor and the classifier both saw.
  */
 export function assertionLines(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (line.length === 0 || seen.has(line)) continue;
-    if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) continue;
+  const push = (line: string): void => {
+    if (line.length === 0 || seen.has(line)) return;
+    if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) return;
+    // An UNWRAPPED inner line never passes through `extractSpecificAssertion`'s
+    // own guard, because the extractor refuses a multi-line stream and this
+    // function unwraps it. The guard is applied here so both routes answer the
+    // same way for the same text.
+    if (isNonAssertionLine(line)) return;
     seen.add(line);
     out.push(line);
+  };
+  for (const raw of splitLines(text)) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    // The wrapper is not by itself an assertion candidate —
+    // `extractSpecificAssertion` refuses it, and this reader must agree with
+    // it — but the gate's own lines sit inside it as line-separated text, and
+    // each of those is offered below.
+    if (!isHarnessWrapper(line)) push(line);
+    const inner = harnessInnerLine(line);
+    if (inner === undefined) continue;
+    for (const raw2 of splitLines(inner)) push(raw2.trim());
   }
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis.

@@ -8,7 +8,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { withVerifySlot } from "./host-resources.ts";
+import { redactSecrets } from "./secret-patterns.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
+import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 
 /** Read the first non-empty, non-comment line from a config file. */
 function readFirstConfigLine(content: string): string | undefined {
@@ -70,6 +72,54 @@ interface VerifyRun {
  */
 export const VERIFY_FULL_MAX_BUFFER = 8 * 1024 * 1024;
 
+/**
+ * #1770 — how much of a tier's output the driver STORES.
+ *
+ * The ci tier's `VerifyRun.output` is not a transient: it becomes the
+ * `verify-full-status` event's `evidenceTail`, which is appended to the event
+ * log, written to the state file, and rendered into the handoff comment the
+ * driver posts to the forge. The tier reads 8 MiB per stream because the RUN
+ * must survive a chatty suite; nothing downstream reads more than a tail. The
+ * bound is where the producer stops, so the unbounded stream never reaches a
+ * stored field at all.
+ */
+export const VERIFY_FULL_OUTPUT_MAX = 4000;
+
+/**
+ * The one normaliser for tier output before the driver keeps it: redact the
+ * WHOLE stream, then keep the TAIL (#1770). Two rules, in this order:
+ *
+ *   - **Redact first.** A clip that cuts a credential in half leaves a fragment
+ *     no pattern recognises, and this is the project's own gate output, which
+ *     prints whatever the suite prints (a connection string, a token echoed by
+ *     an assertion). Every other store-side reader of verify output redacts
+ *     before it bounds for exactly this reason.
+ *   - **Keep the last {@link VERIFY_FULL_OUTPUT_MAX} code points, not the
+ *     first.** Every reader of this field wants the failure, and a gate prints
+ *     its report at the END of its stream: a suite that streams 50 KB of build
+ *     noise and then fails kept the noise and threw the failure away, which is
+ *     the #1770 symptom this field exists to fix. Code-point safe — via
+ *     `Array.from` — so a surrogate pair is never split into a lone half.
+ */
+function storeTierOutput(text: string): string {
+  const redacted = redactSecrets(text).text;
+  const chars = Array.from(redacted);
+  return chars.length > VERIFY_FULL_OUTPUT_MAX
+    ? chars.slice(-VERIFY_FULL_OUTPUT_MAX).join("")
+    : redacted;
+}
+
+/**
+ * #1770 — narrow a caught value before it is read as an exec error. `catch`
+ * hands back `unknown`; the gate's rejection is a Node exec error carrying
+ * `stdout`/`stderr`, but anything else the executor throws (a string, a
+ * validation object) has no such fields, and reading them off it would report
+ * an empty evidence tail for a run whose only information was the thrown value.
+ */
+function asExecError(err: unknown): Error & { stdout?: string; stderr?: string } {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 async function execVerifyOnce(
   cmd: string,
   cwd: string,
@@ -94,11 +144,16 @@ async function execVerifyOnce(
     );
     const ms = Date.now() - startedAt;
     const output = (stdout || stderr || "").trim();
-    return { ms, ok: true, output };
+    return { ms, ok: true, output: storeTierOutput(output) };
   } catch (err) {
     const ms = Date.now() - startedAt;
-    const output = ((err as Error).message || (err as { stderr?: string }).stderr || "").trim();
-    return { ms, ok: false, output };
+    // #1770 — the same concatenation every other verify tier uses. Reading
+    // `err.message` first meant a gate that fails with its report on stdout
+    // recorded an evidenceTail of nothing but `Command failed: <cmd>`, which
+    // is what two measured cycles showed: a 21-minute full gate whose
+    // failure said nothing, and a developer dispatched to fix it blind.
+    const output = combinedExecFailureStream(asExecError(err));
+    return { ms, ok: false, output: storeTierOutput(output) };
   }
 }
 
