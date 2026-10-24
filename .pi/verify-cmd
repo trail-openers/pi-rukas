@@ -16,9 +16,11 @@
 # tier is governed by PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS (default 30 min, or
 # .pi/verify-timeout-ms), NOT the 10-minute fast/smoke number it used to share.
 # It is a flag rather than an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf
-# …)}"` prefix because review-accept-guard A5 admits `bash …/verify-loop.sh` only
-# when every following word is `--digest` or a test path (see
-# test-review-accept-guard-hardened.ts, which checks each arm here against A5).
+# …)}"` prefix for a historical reason: until #1764 phase 2 the accept guard's A5
+# arm admitted `bash …/verify-loop.sh` only when every following word was
+# `--digest` or a test path, and an expansion-word was neither. The guard is now a
+# path tripwire with no argv rules at all, so the flag spelling stays because it
+# works, not because a guard requires it.
 # See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TEST_JOBS`).
 #
 # The typecheck names the compiler by PATH, not by alias (#1414/#1118). The

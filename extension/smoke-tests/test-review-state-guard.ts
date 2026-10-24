@@ -251,7 +251,6 @@ for (const src of [
   `extension/src/${ACCEPT_SCRIPT}-scope.ts`,
   `extension/src/${ACCEPT_SCRIPT}-verb.ts`,
   `extension/scripts/${ACCEPT_SCRIPT}.ts`,
-  `extension/smoke-tests/${ACCEPT_SCRIPT}-guard-cases.ts`,
 ]) {
   for (const tool of ["edit", "write", "multiedit"]) {
     assert(
