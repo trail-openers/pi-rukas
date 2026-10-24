@@ -57,13 +57,14 @@
  *
  * ## The executor is defaulted, like `merge-guard.ts`
  *
- * Both registration sites call `registerPublicHygieneGuard(pi)` with NO options,
- * so the executor is `opts.execFn ?? execp` rather than `opts.execFn` alone —
- * the repo's standard argv-aware executor (#1279). The scan also runs git in the
- * push's own directory: `toolCwd` adjusted by `pushGitCwd` for the two shapes
- * that move the git (`git -C <dir>`, a `cd <dir> &&` prefix), because a
- * detached-worktree push scanned from the repo root reads commits nobody is
- * publishing.
+ * The executor is `opts.execFn ?? execp`, the repo's standard argv-aware one
+ * (#1279). With an injected-only executor the push scan asked git nothing and
+ * the guard judged a push on the text in its own argv alone, which let a private
+ * term in a commit message reach the remote while the guard reported itself as
+ * working. The scan also runs git in the push's own directory: `toolCwd`
+ * adjusted by `pushGitCwd` for the shapes that move the git (`git -C <dir>`, a
+ * `cd <dir> &&` prefix), because a detached-worktree push scanned from the repo
+ * root reads commits nobody is publishing.
  *
  * ## Escape hatch
  *
@@ -74,10 +75,10 @@
  * switch.
  */
 
-import { execp } from "./exec.ts";
-import { simpleCommands } from "./bash-destructive-write.ts";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { simpleCommands } from "./bash-destructive-write.ts";
+import { execp } from "./exec.ts";
 import { type DenylistRead, publicTextProblem, readPublicDenylist } from "./public-denylist.ts";
 import { scanPushRange } from "./public-hygiene-push.ts";
 import {
@@ -175,9 +176,9 @@ type Verdict =
   | { kind: "unreadable"; location: string; length: number };
 
 /**
- * Trace a verdict the guard reached. Categories, line numbers and lengths
- * only — never the term, never a surrounding excerpt: `traceWarn` is ungated
- * stderr that reaches the transcript and the run log (#1417).
+ * Trace a verdict the guard reached: categories, line numbers and lengths
+ * only, never the term (`traceWarn` is ungated stderr that reaches the
+ * transcript and the run log — #1417).
  */
 function traceVerdict(v: Verdict): void {
   if (v.kind === "denylist") {
@@ -211,6 +212,11 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     return;
   }
   installedFlag().value = true;
+  // The executor and the denylist reader are defaulted HERE rather than at the
+  // call sites: the registration sites live in guard blocks that every mode
+  // loads, and naming `execp` in each of them is a second place that can forget
+  // it — which is precisely how the push scan came to run no git at all
+  // (#1788 round 2). `merge-guard.ts` defaults the same way.
   const exec: ExecFn = opts.execFn ?? execp;
   const readDenylist = opts.readDenylist ?? readPublicDenylist;
   const remoteUrl = opts.remoteUrl;
@@ -218,14 +224,9 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
     if (command === "") return;
-    // The tool call's directory is asked for only once there is a command to
-    // judge: the empty-command early return above must not pay for a cwd read.
-    // `pushGitCwd` then moves it to the repository the push actually runs in.
+    // The tool call's directory, moved to the repository the push runs in
+    // (`pushGitCwd` reads the `git -C <dir>` / `cd <dir> &&` shapes).
     const cwd = pushGitCwd(toolCwd(ctx), command);
-    // With an executor now defaulted (`execp`, as merge-guard.ts does) the push
-    // range is read in production. The fail-closed rule refuses an unreadable
-    // publish, which is right for a PUBLISH; the pass-for-no-executor branch in
-    // `inspectCommand` remains for a caller that deliberately injects none.
     const decision = await inspectCommand(command, cwd, exec, readDenylist, { remoteUrl });
     if (!decision) return;
     traceVerdict(decision.verdict);
@@ -254,18 +255,12 @@ function toolCwd(_ctx: unknown): string {
  *
  * `toolCwd` gives the best available directory, and for a chained command it is
  * the wrong one: `cd .worktrees/issue-9 && git push` runs in the worktree while
- * this process sits at the repo root, and `git -C ../elsewhere push` names a
- * tree no tool argument names either. Scanning the wrong clone is worse than
- * scanning none — the range it prints is a real range that has nothing to do
- * with the commits being published, and it reads as clean. So the two shapes
- * that MOVE the git are read off the command and applied to the tool cwd; a
- * relative one resolves against it (`cd .worktrees/x` is the shape an agent
- * actually writes).
- *
- * `simpleCommands` splits on `&&`/`;`/pipes and honours quotes, so the scan of
- * a chained command sees the same words the shell does, and the prefix rule
- * takes the LAST directory-assigning word before the push: with `cd a && cd b
- * && git push` the push runs in b.
+ * this process sits at the repo root. Scanning the wrong clone is worse than
+ * scanning none — the range it prints is a real range unrelated to what is being
+ * published, and it reads as clean. So the two shapes that MOVE the git are read
+ * off the command and applied to the tool cwd; a relative one resolves against
+ * it. `simpleCommands` splits on `&&`/`;`/pipes and honours quotes, so a chain
+ * sees the words the shell does, and the LAST directory-assigning word wins.
  */
 export function pushGitCwd(toolCwdValue: string, command: string): string {
   let dir = toolCwdValue;
@@ -273,12 +268,10 @@ export function pushGitCwd(toolCwdValue: string, command: string): string {
     for (let i = 0; i < argv.length; i++) {
       const w = argv[i] ?? "";
       const base = path.basename(w);
-      // `git -C <dir> push …` — git's one positional global.
-      // `git -C <dir> push …` — git's one positional global. `--git-dir` is
-      // deliberately NOT folded in: it names the git DIRECTORY (`.git`), not
-      // the working tree, so resolving the scan there would point every git
-      // call at a tree that is not a checkout and turn a real push into an
-      // unreadable range. `-C` is the only one that moves the work tree.
+      // `git -C <dir> push …` — git's one positional global, and the only one
+      // that moves the work tree: `--git-dir` names the `.git` DIRECTORY, so
+      // resolving the scan there points every git call at a tree that is not a
+      // checkout and turns a real push into an unreadable range.
       if (w === "-C" && i === 1) {
         const target = argv[i + 1];
         if (target !== undefined && target !== "") {

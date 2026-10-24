@@ -8,8 +8,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execp } from "./exec.ts";
 import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
+import { execp } from "./exec.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";

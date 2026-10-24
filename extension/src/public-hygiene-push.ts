@@ -257,13 +257,7 @@ const ALL_TAGS_FLAGS = new Set(["--tags"]);
  * their value only in the `=`-attached form, so a following bare word is a
  * refspec and must stay one.
  */
-const VALUE_OPTIONS = new Set([
-  "-o",
-  "--push-option",
-  "--repo",
-  "--receive-pack",
-  "--exec",
-]);
+const VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 
 /** The deletion switches: a push that removes refs publishes no commits. */
 const DELETE_FLAGS = new Set(["-d", "--delete"]);
