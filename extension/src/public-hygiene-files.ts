@@ -34,6 +34,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { admissibleRoots, within } from "./public-hygiene-cwd.ts";
+import { STDIN_TEXT_REASON } from "./public-hygiene-operands.ts";
 import type { ScanProblem } from "./public-hygiene-types.ts";
 
 /** A body file this large is not a body. */
@@ -60,6 +61,14 @@ export function readPublishFile(
   location: string,
 ): { text?: string; problem?: ScanProblem } {
   if (file === "") return { problem: { location, reason: "named an empty file" } };
+  // A file flag whose operand is exactly `-` is a stdin publish, not a file named
+  // `-`: gh documents "use `-` to read from standard input" on `--body-file`,
+  // `--notes-file` and their short forms alike, and git does the same for `-F -`.
+  // Without this the operand resolves to a path under the scan's cwd and the
+  // refusal says "could not read the named file (ENOENT)" — the right verdict for
+  // the wrong reason, and a command that publishes bytes the guard cannot see is
+  // explained as a missing file rather than as stdin.
+  if (file === "-") return { problem: { location, reason: STDIN_TEXT_REASON } };
   const abs = path.resolve(cwd, file);
   const roots = admissibleRoots(cwd);
   let real: string;

@@ -11,6 +11,14 @@
  *    body the guard never saw. All three shapes are refused (`--body -`,
  *    `--body=-`, the glued short `-b -`), in `gh`'s text flags, in `gh api`'s
  *    field flags and in git's `-m`.
+ * 2b. `gh release create|edit -F <file>` — the SHORT form of `--notes-file`, absent
+ *     from the release row of the file-flag table, so a notes file (or `-F -`, a
+ *     stdin publish) matched neither the file reader nor the text reader and
+ *     published unread.
+ * 2c. `git commit --squash <commit>` / `--fixup [amend:|reword:]<commit>` take the
+ *     message from ANOTHER commit, exactly as `-c`/`-C` do. They are refused by
+ *     the same owner ({@link commitMessageReuse}) with the same reason, so the
+ *     reuse rule has one place to be wrong.
  * 2. `git commit -F=x.md` / `-m=x` published unscanned. `commitCluster` declined
  *    any word containing `=` and `namesCommitMessageFlag` never set
  *    `textSurfaceNamed`, so the reader claimed nothing, the fail-closed invariant
@@ -25,12 +33,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  commitCluster,
-  commitMessageReuse,
-  namesCommitMessageFlag,
-} from "../src/public-hygiene-commit-flags.ts";
 import { readPublicDenylist, resetDenylistCacheForTests } from "../src/public-denylist.ts";
+import { commitCluster, namesCommitMessageFlag } from "../src/public-hygiene-commit-flags.ts";
+import { commitMessageReuse } from "../src/public-hygiene-commit-reuse.ts";
 import {
   inspectCommand,
   resetPublicHygieneRegistrationForTests,
@@ -264,6 +269,104 @@ await withEnv(env, async () => {
       `${command}: the refusal names the OTHER COMMIT as where the message comes from`,
     );
     assert(scan.texts.length === 0, `${command}: no text is claimed for a reused message`);
+  }
+
+  // 3c. THE `gh release` NOTES FILE, SHORT FORM. gh 2.102.0 gives BOTH
+  //     `release create` and `release edit` `-F, --notes-file file` (with `-`
+  //     meaning stdin). The release row of the file-flag table had no `-F`, so
+  //     none of `readPublishFile`'s policy ran for it: no roots test, no size
+  //     bound, no fail-closed unreadable refusal, and no denylist read of the
+  //     bytes that actually publish.
+  const releaseNotes: readonly { label: string; command: string; verdict: string }[] = [
+    { label: "create -F dirty", command: `gh release create 1.0 -F dirty.md`, verdict: "denylist" },
+    {
+      label: "create -F glued dirty",
+      command: `gh release create 1.0 -Fdirty.md`,
+      verdict: "denylist",
+    },
+    { label: "create -F -", command: `gh release create 1.0 -F -`, verdict: "unreadable" },
+    { label: "edit -F -", command: `gh release edit 1.0 -F -`, verdict: "unreadable" },
+    {
+      label: "create -F missing",
+      command: `gh release create 1.0 -F no-such.md`,
+      verdict: "unreadable",
+    },
+  ];
+  for (const { label, command, verdict } of releaseNotes) {
+    const d = await ask(command);
+    assert(
+      blocked(d) && d?.verdict.kind === verdict,
+      `${label} (${command}) is BLOCKED as ${verdict} (got ${d?.verdict.kind})`,
+    );
+  }
+  // The two stdin forms refuse naming standard input, and the dirty forms read
+  // the FILE rather than the path — the policy the long flag already had.
+  assert(
+    scanOf("gh release create 1.0 -F -").problems.some((p) => p.reason === STDIN_TEXT_REASON),
+    "gh release create -F - names standard input as where the notes come from",
+  );
+  assert(
+    scanOf("gh release edit 1.0 -F -").problems.some((p) => p.reason === STDIN_TEXT_REASON),
+    "gh release edit -F - names standard input as where the notes come from",
+  );
+  assert(
+    scanOf("gh release create 1.0 -F dirty.md").texts.some((t) => t.text.includes(TERM)),
+    "gh release create -F reads the notes FILE, not the path",
+  );
+  assert(
+    !scanOf("gh release create 1.0 -F dirty.md").texts.some((t) => t.text.endsWith("dirty.md")),
+    "gh release create -F does not scan the path as the published text",
+  );
+  // The control: a clean notes file through the short flag stays allowed.
+  const cleanReleaseNotes = await ask("gh release create 1.0 -F clean.md");
+  assert(
+    !blocked(cleanReleaseNotes),
+    `gh release create 1.0 -F clean.md is ALLOWED (got ${cleanReleaseNotes?.reason?.slice(0, 60)})`,
+  );
+  assert(
+    scanOf("gh release create 1.0 -F clean.md").texts.some((t) => t.text.includes("clean message")),
+    "the clean notes file is still READ, not skipped",
+  );
+
+  // 3d. THE SQUASH / FIXUP REUSE FORMS: git composes the message from ANOTHER
+  //     commit, so nothing in the command is the text that lands in the log.
+  //     Each form is refused through the ONE owner of the reuse rule, with the
+  //     same reason `-c`/`-C` already carried.
+  const reuseForms: readonly string[] = [
+    "git commit --squash abc123",
+    "git commit --squash=abc123",
+    "git commit --fixup abc123",
+    "git commit --fixup=abc123",
+    "git commit --fixup=amend:abc123",
+    "git commit --fixup=reword:abc123",
+    "git commit -m 'a clean message' --squash HEAD~1",
+  ];
+  for (const command of reuseForms) {
+    assert(
+      commitMessageReuse(["git", ...command.split(" ").slice(1)]),
+      `${command} is a message-reuse form`,
+    );
+    const d = await ask(command);
+    assert(
+      blocked(d) && d?.verdict.kind === "unreadable",
+      `${command} is REFUSED as unreadable (got ${d?.verdict.kind})`,
+    );
+    const scan = scanOf(command);
+    assert(
+      scan.problems.some((p) => p.reason.toLowerCase().includes("another commit")),
+      `${command}: the refusal names the OTHER COMMIT as where the message comes from`,
+    );
+    assert(scan.texts.length === 0, `${command}: no text is claimed for a reused message`);
+  }
+  // The controls: an ordinary commit, and a `--no-*` switch that merely shares a
+  // prefix shape with the reuse flags, stay allowed.
+  for (const command of [
+    "git commit -m 'a clean message'",
+    "git commit --amend --no-edit",
+    "git commit --no-verify -m 'clean message'",
+  ]) {
+    const d = await ask(command);
+    assert(!blocked(d), `${command} is ALLOWED (got ${d?.reason?.slice(0, 60)})`);
   }
 
   // 4. THE GLUED FILE-VALUED FLAGS — the regression table for the CRITICAL #1792

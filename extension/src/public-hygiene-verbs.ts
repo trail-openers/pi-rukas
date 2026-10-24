@@ -14,9 +14,9 @@ import {
   REUSED_MESSAGE_REASON,
   STDIN_MESSAGE_REASON,
   commitCluster,
-  commitMessageReuse,
   namesCommitMessageFlag,
 } from "./public-hygiene-commit-flags.ts";
+import { commitMessageReuse } from "./public-hygiene-commit-reuse.ts";
 import { apiFileOperand, readPublishFile } from "./public-hygiene-files.ts";
 import {
   STDIN_TEXT_REASON,
@@ -52,7 +52,11 @@ const GH_TEXT_FLAGS: Record<string, string> = {
 const GH_BODY_FILE_FLAGS: Record<string, Record<string, string>> = {
   issue: { "--body-file": "body", "-F": "body" },
   pr: { "--body-file": "body", "-F": "body" },
-  release: { "--notes-file": "release notes", "-n": "release notes" },
+  // `-F` is the short form of `--notes-file` for BOTH `gh release create` and
+  // `gh release edit` (gh 2.102.0: `-F, --notes-file file`, `-` meaning stdin).
+  // Without it a notes file named by the short flag matched no reader at all —
+  // neither the file table nor the text table — and published unread (#1792).
+  release: { "--notes-file": "release notes", "-n": "release notes", "-F": "release notes" },
 };
 
 /** gh subcommands whose text reaches the forge. `edit` is in scope because a

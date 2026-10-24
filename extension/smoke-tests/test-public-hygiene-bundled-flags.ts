@@ -29,18 +29,18 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { readPublicDenylist, resetDenylistCacheForTests } from "../src/public-denylist.ts";
+import { commitCluster, namesCommitMessageFlag } from "../src/public-hygiene-commit-flags.ts";
+import { commitMessageReuse } from "../src/public-hygiene-commit-reuse.ts";
 import {
   inspectCommand,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
-import { GIT_COMMIT_MESSAGE_SHAPE, looksLikePublish } from "../src/public-hygiene-publish-shapes.ts";
+import {
+  GIT_COMMIT_MESSAGE_SHAPE,
+  looksLikePublish,
+} from "../src/public-hygiene-publish-shapes.ts";
 import { scanPublishSurfaces } from "../src/public-hygiene-scan.ts";
 import { resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
-import {
-  commitCluster,
-  commitMessageReuse,
-  namesCommitMessageFlag,
-} from "../src/public-hygiene-commit-flags.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
@@ -136,10 +136,19 @@ await withEnv(env, async () => {
   assert(commitMessageReuse(["git", "commit", "-c", "HEAD~1", "--amend"]), "-c reuses a message");
   assert(commitMessageReuse(["git", "commit", "-C", "abc123"]), "-C <ref> reuses a message");
   assert(commitMessageReuse(["git", "commit", "-Ca"]), "-C<a> glued reuses a message");
-  assert(commitMessageReuse(["git", "commit", "--reuse-message=HEAD~1"]), "--reuse-message= reuses");
-  assert(!commitMessageReuse(["git", "commit", "--amend", "--no-edit"]), "--no-edit reuses nothing");
+  assert(
+    commitMessageReuse(["git", "commit", "--reuse-message=HEAD~1"]),
+    "--reuse-message= reuses",
+  );
+  assert(
+    !commitMessageReuse(["git", "commit", "--amend", "--no-edit"]),
+    "--no-edit reuses nothing",
+  );
   assert(namesCommitMessageFlag(["git", "commit", "-amx"]), "-amx names a message flag");
-  assert(!namesCommitMessageFlag(["git", "commit", "--amend", "--no-edit"]), "--amend --no-edit names none");
+  assert(
+    !namesCommitMessageFlag(["git", "commit", "--amend", "--no-edit"]),
+    "--amend --no-edit names none",
+  );
 
   // ─────────────────────────────────────────────────────────────────────────
   // 2. UNREADABLE: the message is not in the command at all.
@@ -196,18 +205,46 @@ await withEnv(env, async () => {
   writeFileSync(path.join(dir, "dirty.md"), `mentions ${TERM} here`, "utf8");
   writeFileSync(path.join(dir, "clean.md"), "a clean body\n", "utf8");
   const fileForms: readonly { label: string; command: string; dirty: boolean }[] = [
-    { label: "gh --body-file separate", command: "gh pr comment 3 --body-file dirty.md", dirty: true },
+    {
+      label: "gh --body-file separate",
+      command: "gh pr comment 3 --body-file dirty.md",
+      dirty: true,
+    },
     { label: "gh --body-file=", command: "gh pr comment 3 --body-file=dirty.md", dirty: true },
     { label: "gh -F glued", command: "gh pr comment 3 -Fdirty.md", dirty: true },
     { label: "gh -F separate", command: "gh pr comment 3 -F dirty.md", dirty: true },
     { label: "gh -F glued clean", command: "gh pr comment 3 -Fclean.md", dirty: false },
-    { label: "gh release --notes-file=", command: "gh release create 1.0 --notes-file=dirty.md", dirty: true },
+    {
+      label: "gh release --notes-file=",
+      command: "gh release create 1.0 --notes-file=dirty.md",
+      dirty: true,
+    },
     { label: "gh release -n (notes file)", command: "gh release edit 1.0 -ndirty.md", dirty: true },
-    { label: "gh api -F glued @file", command: "gh api repos/o/r/issues/1/comments -Fbody=@dirty.md", dirty: true },
-    { label: "gh api --input separate", command: "gh api repos/o/r/issues/1/comments --input dirty.json", dirty: true },
-    { label: "gh api --input=", command: "gh api repos/o/r/issues/1/comments --input=dirty.json", dirty: true },
-    { label: "gh api -i glued", command: "gh api repos/o/r/issues/1/comments -idrty.json", dirty: true },
-    { label: "gh api --input=@", command: "gh api repos/o/r/issues/1/comments --input=@dirty.md", dirty: true },
+    {
+      label: "gh api -F glued @file",
+      command: "gh api repos/o/r/issues/1/comments -Fbody=@dirty.md",
+      dirty: true,
+    },
+    {
+      label: "gh api --input separate",
+      command: "gh api repos/o/r/issues/1/comments --input dirty.json",
+      dirty: true,
+    },
+    {
+      label: "gh api --input=",
+      command: "gh api repos/o/r/issues/1/comments --input=dirty.json",
+      dirty: true,
+    },
+    {
+      label: "gh api -i glued",
+      command: "gh api repos/o/r/issues/1/comments -idrty.json",
+      dirty: true,
+    },
+    {
+      label: "gh api --input=@",
+      command: "gh api repos/o/r/issues/1/comments --input=@dirty.md",
+      dirty: true,
+    },
     { label: "git commit -F separate", command: "git commit -F dirty.md", dirty: true },
     { label: "git commit -F glued", command: "git commit -Fdirty.md", dirty: true },
     { label: "git commit --file=", command: "git commit --file=dirty.md", dirty: true },
@@ -218,8 +255,10 @@ await withEnv(env, async () => {
   for (const f of fileForms) {
     // `dirty.json`/`clean.json` are the same bytes under the name the --input
     // forms use (their content is the request body, not markdown).
-    if (f.command.includes("dirty.json")) writeFileSync(path.join(dir, "dirty.json"), `{"body":"${TERM}"}`);
-    if (f.command.includes("-idrty.json")) writeFileSync(path.join(dir, "drty.json"), `{"body":"${TERM}"}`);
+    if (f.command.includes("dirty.json"))
+      writeFileSync(path.join(dir, "dirty.json"), `{"body":"${TERM}"}`);
+    if (f.command.includes("-idrty.json"))
+      writeFileSync(path.join(dir, "drty.json"), `{"body":"${TERM}"}`);
     const d = await ask(f.command);
     if (f.dirty) {
       assert(
@@ -236,7 +275,10 @@ await withEnv(env, async () => {
         `${f.label}: the PATH is not scanned as the published text`,
       );
     } else {
-      assert(!blocked(d), `${f.label}: a clean file's contents are ALLOWED (got ${d?.reason?.slice(0, 60)})`);
+      assert(
+        !blocked(d),
+        `${f.label}: a clean file's contents are ALLOWED (got ${d?.reason?.slice(0, 60)})`,
+      );
     }
   }
   // An unreadable glued file flag keeps its fail-closed refusal.
@@ -257,7 +299,10 @@ await withEnv(env, async () => {
   //    left alone, because the guard never had anything to read.
   // ──────────────────────────────────────────────────────────────────────
   const noSurface = await ask("git commit --amend --no-edit");
-  assert(!blocked(noSurface), `git commit --amend --no-edit is ALLOWED (got ${noSurface?.reason?.slice(0, 50)})`);
+  assert(
+    !blocked(noSurface),
+    `git commit --amend --no-edit is ALLOWED (got ${noSurface?.reason?.slice(0, 50)})`,
+  );
   assert(
     scanPublishSurfaces("git commit --amend --no-edit", dir).problems.length === 0,
     "a commit that names no message flag records no problem",
@@ -279,7 +324,7 @@ await withEnv(env, async () => {
   // 6. THE DELETED QUOTE RULE (item 3): bash never runs a command whose quotes
   //    do not pair, and an apostrophe inside a PAIRED quote is ordinary prose.
   // ──────────────────────────────────────────────────────────────────────
-  const apostrophe = await ask("gh pr comment 3 --body \"don't do this\"");
+  const apostrophe = await ask('gh pr comment 3 --body "don\'t do this"');
   assert(
     !blocked(apostrophe),
     `a body with an apostrophe is ALLOWED (got ${apostrophe?.reason?.slice(0, 60)})`,

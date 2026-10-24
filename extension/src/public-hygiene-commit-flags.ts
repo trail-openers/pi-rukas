@@ -25,6 +25,15 @@
  * publish is never a pass. Guessing "the tail is probably the message" for a word
  * git would have rejected is the confident-wrong-answer shape this guard has
  * repeatedly been asked not to take.
+ *
+ * ## Where the reuse rule lives
+ *
+ * A commit whose message comes from ANOTHER commit is not a message shape at all
+ * — there is no text in the command to read — so `--squash` / `--fixup` /
+ * `--reuse-message` / `--reedit-message` and the `-c`/`-C` clusters are decided in
+ * `public-hygiene-commit-reuse.ts`, which owns that refusal. The cluster grammar
+ * below still has to *recognise* `c`/`C` as switches (they are, to git), and
+ * reports the answer through {@link CommitCluster.reuses} for that module to ask.
  */
 
 import { GIT_COMMIT_MESSAGE_SHAPE } from "./public-hygiene-publish-shapes.ts";
@@ -119,42 +128,11 @@ export function commitCluster(w: string): CommitCluster | undefined {
 
 /** The reason for a commit whose message comes from a commit the guard will not read. */
 export const REUSED_MESSAGE_REASON =
-  "comes from another commit (-c/-C/--reuse-message/--reedit-message), so its text is not in this command";
+  "comes from another commit (-c/-C/--reuse-message/--reedit-message/--squash/--fixup), so its text is not in this command";
 
 /** The reason for `-F -`: the message arrives on stdin, which this guard cannot see. */
 export const STDIN_MESSAGE_REASON =
   "is read from stdin (-F -), so its text is not in this command; pass a message file instead";
-
-/**
- * A `git commit` message-reuse form: `-c`/`-C`/`--reuse-message`/
- * `--reedit-message` (and their glued long forms) take a commit whose message
- * the guard does not read, so the text that gets published exists only in that
- * other commit. `git commit -c HEAD~1 --amend` is the shape this names.
- *
- * A BUNDLED cluster (`-ac`, `-aC`, `-qc`) is NOT re-derived here — the cluster
- * grammar above is the single owner of what a bundled word means, and it answers
- * through `CommitCluster.reuses`. A second hand-rolled letter test here is what
- * let `-ac HEAD` slip past both halves of the guard: this function's own glued
- * branch demanded every letter be a switch, and `c` inside `-ac` is the cluster
- * reader's problem, not this loop's.
- */
-export function commitMessageReuse(argv: readonly string[]): boolean {
-  for (const w of argv) {
-    // `--reuse-message=<ref>` / `--reedit-message=<ref>` are reuse; `--no-edit`
-    // and every other `--no-*` switch are not, and are excluded by NAME — an
-    // ordinary `git commit --amend --no-edit` reuses the CURRENT message the
-    // guard has no reason to refuse, and a substring test would refuse it.
-    if (/^--(?:no-)?(?:reuse|reedit)-message(?:=|$)/.test(w) && !w.startsWith("--no-")) return true;
-    if (w === "-c" || w === "-C") return true;
-    // `-c<ref>` glued is the one shape the cluster grammar does NOT reach: it is
-    // shorter than a cluster (`-c` is two characters) and its tail is a REF, not a
-    // message. Every other bundled word is answered by the cluster reader, so
-    // this function asks it once instead of re-deriving what letters mean.
-    if (w.length > 2 && (w.startsWith("-c") || w.startsWith("-C"))) return true;
-    if (commitCluster(w)?.reuses === true) return true;
-  }
-  return false;
-}
 
 /**
  * Does this argv name a flag that carries a commit message or names a message
