@@ -2,7 +2,8 @@
  * public-hygiene-verbs — the per-verb publish readers (#1788), split out of
  * `public-hygiene-scan.ts` along the seam AGENTS.md §12 asks for: the scan owns
  * the word split and the aggregate verdict, this module owns what each command
- * SHAPE contributes to it.
+ * SHAPE contributes to it. The gh flag tables it reads are data, and live in
+ * `public-hygiene-gh-flags.ts`.
  *
  * Each reader sets `scan.publishes` and `scan.publishKind` BEFORE it reads a
  * single operand, so the scan's substitution rule still has a surface to name
@@ -18,6 +19,7 @@ import {
 } from "./public-hygiene-commit-flags.ts";
 import { commitMessageReuse } from "./public-hygiene-commit-reuse.ts";
 import { apiFileOperand, readPublishFile } from "./public-hygiene-files.ts";
+import { GH_PUBLISH_FLAGS, ghFlagKey } from "./public-hygiene-gh-flags.ts";
 import {
   STDIN_TEXT_REASON,
   isAssignment,
@@ -26,38 +28,6 @@ import {
 } from "./public-hygiene-operands.ts";
 import { commandPrefixLength, commandWord } from "./public-hygiene-prefix.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
-
-/** Flags whose value is prose the forge publishes, and what to call it. */
-const GH_TEXT_FLAGS: Record<string, string> = {
-  "--title": "title",
-  "-t": "title",
-  "--body": "body",
-  "-b": "body",
-  "--notes": "release notes",
-  // `-n` is `gh release create`'s notes TEXT flag and `gh issue create`'s
-  // "no-body" switch. It is read ONLY for the release noun, where it is the
-  // notes, and never for an issue or a pr, where treating it as text would
-  // refuse a boolean switch's own name.
-  "-n": "release notes",
-  "--subject": "commit message",
-};
-
-/**
- * Flags whose value is a PATH whose contents get published. `-F` is
- * `gh issue create`'s `--body-file`; `-n` is `gh release create`'s
- * `--notes-file` (where `--notes` takes text instead). Each is read as a file
- * ONLY for the noun where it names one, so a boolean switch's own name is
- * never mistaken for prose.
- */
-const GH_BODY_FILE_FLAGS: Record<string, Record<string, string>> = {
-  issue: { "--body-file": "body", "-F": "body" },
-  pr: { "--body-file": "body", "-F": "body" },
-  // `-F` is the short form of `--notes-file` for BOTH `gh release create` and
-  // `gh release edit` (gh 2.102.0: `-F, --notes-file file`, `-` meaning stdin).
-  // Without it a notes file named by the short flag matched no reader at all —
-  // neither the file table nor the text table — and published unread (#1792).
-  release: { "--notes-file": "release notes", "-n": "release notes", "-F": "release notes" },
-};
 
 /** gh subcommands whose text reaches the forge. `edit` is in scope because a
  * title or body edit publishes text exactly as a create does. */
@@ -86,7 +56,7 @@ const COMMIT_MESSAGE_FILE_FLAGS = new Set(["-F", "--file"]);
  * `timeout`, … by `unwrap`) and had their `oo`/`KEY=value` prefix skipped, by
  * `publishArgv` — the one place that rule lives.
  */
-function ghPublishNoun(argv: string[]): string | undefined {
+export function ghPublishNoun(argv: string[]): string | undefined {
   const i = commandPrefixLength(argv);
   // The program word is path-stripped (`/usr/local/bin/gh` IS `gh`) so a
   // path-prefixed gh is SCANNED rather than falling to the backstop unreadable.
@@ -162,30 +132,31 @@ export function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): v
   if (noun === undefined) return;
   scan.publishes = true;
   scan.publishKind ??= noun === "release" ? "release notes" : "body";
-  const textFlags =
-    noun === "release"
-      ? GH_TEXT_FLAGS
-      : Object.fromEntries(
-          Object.entries(GH_TEXT_FLAGS).filter(
-            ([flag]) => flag !== "-n" && flag !== "--notes" && flag !== "--subject",
-          ),
-        );
-  const fileFlags = GH_BODY_FILE_FLAGS[noun] ?? {};
   // `-n` means two things to `gh release`: the NOTES text for
   // `release create`, and the NOTES FILE for `release edit`. Which one it is
-  // decides who reads the word, so it is settled here from the verb — a word
+  // decides who reads the word, so it is part of the table's key — a word
   // claimed by neither reader would publish its notes unchecked, and one claimed
-  // by both would read a PATH as prose and never open the file.
+  // by both would read a PATH as prose and never open the file. The pair for
+  // this (noun, verb) is built ONCE at module load in `public-hygiene-gh-flags.ts`
+  // rather than filtered from the source sets on every publish.
   const verb = argv[commandPrefixLength(argv) + 2] ?? "";
-  const notesIsFile = noun === "release" && verb === "edit";
-  const readFileFlags = notesIsFile
-    ? fileFlags
-    : Object.fromEntries(Object.entries(fileFlags).filter(([flag]) => flag !== "-n"));
-  const readTextFlags = notesIsFile
-    ? Object.fromEntries(
-        Object.entries(textFlags).filter(([flag]) => flag !== "-n" && flag !== "--notes-file"),
-      )
-    : textFlags;
+  // The pair the reader asked for. A MISSING pair is the fail-closed case, not a
+  // pass with empty tables: a `gh <noun> <verb>` the verb set admits but no table
+  // covers would otherwise collect no text, name no surface, and sail through the
+  // scan's fail-closed invariant, which fires only on a NAMED surface. The
+  // `test-public-hygiene-gh-flags.ts` canary pins that a table exists for every
+  // pair the verb set admits; this is the backstop for one that does not.
+  const pair = GH_PUBLISH_FLAGS[ghFlagKey(noun, verb)];
+  if (pair === undefined) {
+    scan.textSurfaceNamed = true;
+    scan.problems.push({
+      location: scan.publishKind ?? "body",
+      reason: `is a gh ${noun} publish this guard has no flag table for, so its text was not read`,
+    });
+    return;
+  }
+  const readFileFlags = pair.file;
+  const readTextFlags = pair.text;
   // A FILE flag's word is claimed FIRST and read as a FILE. The text reader
   // below consumes a glued short word (`-Fsecret`) as inline prose, and letting it
   // do that for a FILE flag (`-Fnotes.md`, `--body-file=notes.md`) published the
@@ -199,7 +170,7 @@ export function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): v
       scan.textSurfaceNamed = true;
       const v = flagValueOf(w, fileFlag, argv, i);
       if (!v) continue;
-      const label = fileFlags[fileFlag] ?? "body";
+      const label = readFileFlags[fileFlag] ?? "body";
       const read = readPublishFile(v.value, cwd, label);
       if (read.problem) scan.problems.push(read.problem);
       else if (read.text !== undefined)
