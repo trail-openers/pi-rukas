@@ -406,6 +406,47 @@ export const SEAMS: Seam[] = [
     canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
   },
   {
+    // #1762 — the marker's internal grammar, split out of the table for the
+    // 500-line cap. `payloadDetail` is the single judge of the payload shape and
+    // has no production CALLER outside the two modules that wrap it (the table's
+    // shape entry and `isBareFailedMarker`), so the reachability gate needs the
+    // declaration to see it; the shape suite asserts it directly.
+    file: "work-driver-verify-marker.ts",
+    pending: {},
+    testOnly: {
+      payloadDetail:
+        "the one judge of what makes a FAILED: marker payload-bearing; the table's shape entry and isBareFailedMarker both wrap it, and test-verify-failure-shapes-g-1762.ts asserts the token, path and count-summary cases directly",
+    },
+    canary: { symbol: "isBareFailedMarker", importer: "work-driver-verify-failures.ts" },
+  },
+  {
+    // #1762 — the failure-line TABLE itself (its shape entries, their priority
+    // order, and the pre-veto exemption pair), split out of the classifier for the
+    // 500-line cap. The classifier imports all four exports, which its own file is
+    // excluded from, so each is declared here and asserted by the shape suite.
+    file: "work-driver-verify-shapes.ts",
+    pending: {},
+    testOnly: {
+      SHAPES:
+        "the table in priority order; asserted as a whole by test-verify-failure-shapes-1762.ts, which pins the payload marker sitting ahead of the bare marker",
+      SUCCESS_LINE:
+        "the passing-line veto, reached only through isSuccessLine in the classifier; test-verify-failure-shapes-1762.ts asks the arms directly",
+      ShapeEntry:
+        "the table entry shape, named so a re-ordering that drops a field fails rather than type-checking into a wider entry",
+      matchPreVetoShapes:
+        "the two shapes asked BEFORE the success veto (the assertion mark and, since #1762, the payload-bearing marker); the exemption lives here alone, so a change that keeps matchShape green while re-ordering the veto must still fail here",
+    },
+    canary: { symbol: "matchPreVetoShapes", importer: "work-driver-verify-failures.ts" },
+  },
+  {
+    // #1762 — the CONSOLIDATED-only tally harvest (a script's `failed checks (N)`
+    // block with its names indented beneath it). `assertionLines` in
+    // `work-driver-verify-record.ts` is its production caller.
+    file: "work-driver-verify-tally.ts",
+    pending: {},
+    canary: { symbol: "harvestConsolidatedTallies", importer: "work-driver-verify-record.ts" },
+  },
+  {
     // #1762 round 1 — the vocabulary the two verify readers share, hoisted out of
     // the classifier/strip pair so neither imports the other (the module graph is a
     // DAG). `splitLines` is called in-module by `failureLines` and `firstInnerFailure`

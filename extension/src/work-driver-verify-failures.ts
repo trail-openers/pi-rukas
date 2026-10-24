@@ -79,36 +79,13 @@ export interface FailureLine {
  */
 export { FAILED_MARKER_RE } from "./work-driver-verify-marker.ts";
 
+import { FAILED_MARKER_RE, isBareFailedMarker } from "./work-driver-verify-marker.ts";
 import {
-  FAILED_MARKER_RE,
-  isBareFailedMarker,
-  payloadDetail,
-} from "./work-driver-verify-marker.ts";
-
-/**
- * The table's regex form of the payload shape, derived from the ONE judge
- * ({@link payloadDetail}) instead of a second pattern: the table wants an
- * `entry.re` to test, and a regex spelled out here would be a second definition of
- * "which marker names an assertion" — precisely the drift this layer exists to
- * forbid. It agrees with {@link ASSERTION_MARKER_SHAPE}'s `matches` by
- * construction, since both wrap the same function over the same line.
- */
-const MARKER_PAYLOAD_RE: RegExp = {
-  test: (line: unknown) => payloadDetail(String(line)) !== undefined,
-} as unknown as RegExp;
-
-/**
- * The `failed-marker` entry, hoisted so the ONE definition serves the table and,
- * through {@link isBareFailedMarker}, every veto site that used to keep its own
- * blanket `/^FAILED:/`. Two copies of that regex (one the table answers from, one
- * the veto asks) is a pair that drifts silently: exempt one and forget the other
- * and a payload marker either loses its shape or loses its exemption.
- */
-const FAILED_MARKER_SHAPE: { shape: FailureShape; namesTest: boolean; re: RegExp } = {
-  shape: "failed-marker",
-  namesTest: false,
-  re: FAILED_MARKER_RE,
-};
+  SHAPES,
+  SUCCESS_LINE,
+  type ShapeEntry,
+  matchPreVetoShapes,
+} from "./work-driver-verify-shapes.ts";
 
 /**
  * The harness's OWN kill/echo lines — `Command failed: …`, `Exit code: N`, the
@@ -138,150 +115,6 @@ export function isHarnessEchoLine(line: string): boolean {
  * reader that could import a private copy instead.
  */
 export { isBareFailedMarker, scriptTallyCount } from "./work-driver-verify-marker.ts";
-
-/**
- * The table, in priority order: the bare `failed-marker` and its count summary
- * first, then the assertion mark, the driver's own tsc/cargo dialect, the project
- * runner's tally and the rest. The FIRST match wins, so the two pi-rukas literals
- * (which a generic rule also contains) sit ahead of `diagnostic`, and every
- * success-adjacent key is anchored. Three rules every key obeys:
- *
- *   - A FAILURE TOKEN in its own position, not a substring. A word that also
- *     occurs inside ordinary prose (`error`, `cannot`, `not found`) is matched
- *     only where a runner prints it as a status - `a.ts: error`, never
- *     `index.ts: fatal error` - because a line that classifies becomes the
- *     evidence anchor with `attributed: true` and can earn a corrective round.
- *   - One line, one shape: the table stops at the first match, so `not ok 3 - x`
- *     reports `not-ok` and never `ok`.
- *   - A count, where the shape has one, is a NON-ZERO count. `isSuccessLine`
- *     already settles the `0 failed` tally before the table is asked; the
- *     `[1-9]` keeps that true for a shape `isSuccessLine`'s patterns do not
- *     cover.
- *
- * The payload-bearing marker is NOT an entry here: matchShape answers it ahead of
- * the success veto (a failing marker printed with the counts it compared is vetoed
- * as a passing tally otherwise), which is the position it needs and cannot get from
- * table order alone.
- */
-/**
- * The assertion-mark shape, hoisted so the ONE definition serves both the table
- * below and {@link matchShape}'s pre-veto exemption. Two copies of `^\s*✗\s` —
- * one the table answers from, one the veto step asks — is a pair that can drift,
- * and the drift is silent: exempt one and forget the other and a `✗` line either
- * loses its shape or loses its exemption.
- *
- * The mark sits at the START of the line (after whitespace) and is the runner's
- * FAILURE glyph — `✓` is its passing one — so it is a stronger signal than any
- * tally the same line carries, which is why {@link matchShape} asks it before the
- * success veto rather than after it.
- */
-const ASSERTION_MARK_SHAPE: { shape: FailureShape; namesTest: boolean; re: RegExp } = {
-  shape: "assertion-mark",
-  namesTest: true,
-  re: /^\s*✗\s/,
-};
-
-/**
- * The payload-bearing marker shape — the #1762 half of the marker dialect the
- * table used to answer for only as a bare filename. A validated form rather than
- * a bare regex: {@link payloadDetail} is the single judge of what it is, and it is
- * what {@link matchShape}'s pre-veto exemption asks, so the shape and the veto
- * cannot drift apart. Its table entry sits ahead of the bare `failed-marker` one —
- * first match wins, and this one names a check.
- */
-const ASSERTION_MARKER_SHAPE: {
-  shape: FailureShape;
-  namesTest: boolean;
-  matches: (line: string) => boolean;
-} = {
-  shape: "failed-marker-payload",
-  namesTest: true,
-  matches: (line: string) => payloadDetail(line) !== undefined,
-};
-
-/**
- * The table's own marker pair: the payload-bearing form FIRST (the first match
- * wins, and it is the one that names a check), then the bare marker and its count
- * summary. `matchShape` answers the payload form before the success veto as well,
- * which is the position it actually needs - table order alone would let
- * `isSuccessLine` veto `FAILED: a_test.sh: expected 0 failures, got 3`.
- */
-const MARKER_SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegExp }> = [
-  {
-    shape: ASSERTION_MARKER_SHAPE.shape,
-    namesTest: ASSERTION_MARKER_SHAPE.namesTest,
-    re: MARKER_PAYLOAD_RE,
-  },
-  FAILED_MARKER_SHAPE,
-];
-
-const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegExp }> = [
-  // `.pi/verify-cmd`'s smoke loop: payload marker, then bare marker / count summary.
-  ...MARKER_SHAPES,
-  ASSERTION_MARK_SHAPE,
-  // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
-  {
-    shape: "diagnostic",
-    namesTest: true,
-    re: /^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b/,
-  },
-  // The project-runner shape: a script's own summary block naming its failing checks.
-  {
-    shape: "script-tally",
-    namesTest: true,
-    re: /[\w./-]+\.(?:sh|bash|py|js|ts|go|rs)\s*:\s*(?:failed|failing)\s+checks?\s*\(\s*[1-9]\d*\s*\)/i,
-  },
-  // A script/file line that says it failed, in the shapes a runner actually
-  // prints: `<file>: failed|FAILED|FAIL|ERROR`, `<file> … FAILED`, `<file>: N
-  // failed` / a comma tally `<cases>, N failed` with N >= 1, and a leading
-  // `FAIL <file>`.
-  //
-  // Prose that merely contains the word error, `cannot` or `not found`
-  // (`index.ts: fatal error`, `index.ts: cannot parse`,
-  // `src/a.ts: consider this error case`) is NOT one of them — it names no
-  // failed check, and classifying it would make that prose the anchor. The
-  // status must sit DIRECTLY after the file's colon (`:\s*`, never a lazy
-  // `.*?`), or after a comma inside a tally (`,\s*`): `index.ts: fatal error`
-  // puts a word between them, so `error` there is prose, not the status the
-  // line reports. The `(?<=\s)FAILED(?=\W|$)`
-  // branch is the `<file> … FAILED` shape (go's `foo_test.go  FAILED`), and the
-  // two `[1-9]` branches are the counted tallies — one directly after the
-  // file's colon (`test.sh: 2 errors`) and one as the failing half of a
-  // comma-separated tally that starts at that colon
-  // (`pack_release_test.sh: 36 cases, 1 failed`, whose colon is taken by the
-  // passing half, so the count is reached through `[^\r\n]*,` rather than by
-  // matching a bare comma — a bare comma would let prose like
-  // `index.ts: not found in the fixture, which is fine` in). `isSuccessLine`
-  // settles the zero case of both.
-  {
-    shape: "named-file",
-    namesTest: true,
-    re: /^\s*FAIL\s+[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b/i,
-  },
-  {
-    shape: "named-file",
-    namesTest: true,
-    re: /[\w./-]+\.(?:sh|bash|py|js|jsx|ts|tsx|mjs|go|rs|rb|java|c|cpp|kt)\b\s*(?::\s*(?:failed|failing|fail|error)\b|(?<=\s)FAILED(?=\W|$)|:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b)/i,
-  },
-  // TAP / bats. Anchored with a number so `book`, `token` and `lookup` never match.
-  { shape: "tap-not-ok", namesTest: true, re: /^\s*not\s+ok\b/i },
-  // pytest's own failing lines (pytest also prints `path::name` tallies).
-  { shape: "pytest-failed", namesTest: true, re: /^FAILED\s+\S+::/ },
-  { shape: "pytest-error", namesTest: true, re: /^ERROR\s+\S+::/ },
-  // go test.
-  { shape: "go-fail", namesTest: true, re: /^\s*---\s+FAIL:\s+\S+/ },
-];
-
-/**
- * Lines that report SUCCESS. Checked before the table: a passing tally is not a
- * failure line, whatever substring it contains. Every key is anchored or counted,
- * because a bare `/ok/` also matches book, token, lookup and OK — and every
- * passing-tally veto is conditional on the line carrying no NON-ZERO failure
- * count ({@link hasCountedTally}), because a tally that reports both halves
- * (`1 failed, 3 passed`) is a failure.
- */
-const SUCCESS_LINE =
-  /^\s*✓|^\s*ok\s|\b0\s+(?:failed|failures|errors|fail)\b|\b\d+\s+(?:passed|passed,)\b|^\s*PASS\b|^\s*PASS\s|:?\s*\d+\s+cases,\s*0\s+failed|\bfailed\s+checks?\s*\(\s*0\s*\)|\b0\s+(?:failed|failing)\s+checks?\b/i;
 
 /**
  * A NON-ZERO failure count in a status position: right after the file's colon
@@ -475,13 +308,8 @@ export function matchShape(line: string): FailureLine | undefined {
   // a passing tally (`36 cases, 0 failed`, `0 failed`, `12 passed`) prints
   // neither, so no success line reaches the table through it. Both exemptions are
   // keyed to the shape object itself, so re-ordering SHAPES cannot re-veto one.
-  if (ASSERTION_MARK_SHAPE.re.test(line))
-    return { shape: ASSERTION_MARK_SHAPE.shape, namesTest: ASSERTION_MARK_SHAPE.namesTest };
-  if (ASSERTION_MARKER_SHAPE.matches(line))
-    return {
-      shape: ASSERTION_MARKER_SHAPE.shape,
-      namesTest: ASSERTION_MARKER_SHAPE.namesTest,
-    };
+  const preVeto = matchPreVetoShapes(line);
+  if (preVeto !== undefined) return preVeto;
   if (isSuccessLine(line)) return undefined;
   for (const entry of SHAPES) {
     if (entry.re.test(line)) return { shape: entry.shape, namesTest: entry.namesTest };
