@@ -253,6 +253,37 @@ const { assert, failed } = makeAssert();
     evidence.includes(FAIL_LINE),
     `c3: the 500-char evidence contains the failure line (got ${JSON.stringify(evidence.slice(0, 80))})`,
   );
+  // (d) The evidence cut REDACTS (#1762 residual a). The excerpt it cuts was
+  // redacted once over the whole stream, but this reader cannot verify that about a
+  // string it was handed — the field is persisted and re-read — so the bound runs
+  // the arms again rather than trusting its producer. A token that reaches this
+  // width is rendered straight into the handoff.
+  const TOKEN = `ghp_${"Ab1".repeat(12)}`; // `ghp_` + 36 alphanumerics
+  assert(
+    TOKEN.length === 40 && /^ghp_[A-Za-z0-9]{36}$/.test(TOKEN),
+    `c3: the evidence fixture is a token plus 36 alphanumerics (${TOKEN.length})`,
+  );
+  for (const anchored of [true, false]) {
+    // The token sits within the first 500 characters either way, so BOTH cuts see
+    // it: a head keeps its head, and a tail of a 1200-character line would not —
+    // this is the cut the assertion must actually exercise, not the choice of end.
+    const leaked = keepEvidenceHead(`a line that echoes ${TOKEN} and keeps going`, anchored);
+    assert(
+      !leaked.includes("ghp_") && !leaked.includes(TOKEN),
+      `c3: a token in the excerpt is redacted by the evidence cut, anchored=${anchored} (got ${JSON.stringify(leaked.slice(0, 60))})`,
+    );
+    assert(
+      leaked.includes("[REDACTED]"),
+      `c3: the token is replaced, not dropped, anchored=${anchored}`,
+    );
+    // The un-redacted positional form is what the old `boundByCodePoints` returned,
+    // so the assertion above is discriminating rather than vacuous.
+    const positional = Array.from(`a line that echoes ${TOKEN}`).slice(anchored ? 0 : -500).join("");
+    assert(
+      positional.includes("ghp_"),
+      "c3: the fixture really does carry the token before the cut",
+    );
+  }
   // The negative control: with no anchor anywhere in the scanned tail the producer
   // stores the positional tail and says so, and the evidence keeps its tail. The
   // stream is built to be WIDER than one excerpt, which is the only case where

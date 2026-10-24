@@ -242,11 +242,22 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
         // follow it and throws the failure away — #1762's symptom re-created by
         // the reader after the producer fixed it. A positional tail (no anchor)
         // still keeps its tail, which is where its last words are.
+        // #1762 round 3 — the flag is the PRODUCER'S, not a guess about the shape
+        // the excerpt happens to be in. `firstRunOutput` is stored by the same
+        // `storeTierOutput` as `output` and carries the same `anchored` decision, so
+        // `result.anchored` says which end of EITHER excerpt opens at the failure
+        // line. Passing `true` unconditionally here claimed an anchor the producer
+        // never granted whenever the first run was unanchored — and unanchored means
+        // the stream's ONLY recognised failure sits past the window the producer
+        // scanned, which is exactly the region a head-cut excerpt never contains: the
+        // handoff then kept 500 characters of preamble and dropped the tail the
+        // failure was in. A positional excerpt keeps its tail, which is where its
+        // last words are, anchored or recovered.
         evidenceTail: keepEvidenceHead(
           result.outcome === "success" && result.recovered
             ? (result.firstRunOutput ?? result.output)
             : result.output,
-          result.outcome === "success" && result.recovered ? true : (result.anchored ?? false),
+          result.anchored ?? false,
         ),
       });
 

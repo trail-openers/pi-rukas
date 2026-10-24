@@ -72,7 +72,8 @@ const { assert, failed } = makeAssert();
     const line = wrapperOf(payload);
     assert(line.length >= size, `walk bound (${label}): the line is at least ${label}`);
     const ms = timed(line);
-    assert(classifyFailureLine(line) === undefined, `walk bound (${label}): padding alone reports no failure`);
+    const got = classifyFailureLine(line);
+    assert(got === undefined, `walk bound (${label}): padding alone reports no failure`);
     // A generous relative bound: the point is that the cost is CONSTANT in the
     // line's length, and the unbounded scan measured 249 s on a 1 MB line against a
     // control of 0.2 ms — six orders of magnitude above this. A regression that
@@ -96,6 +97,7 @@ const { assert, failed } = makeAssert();
   // is one pathological line must not hand `matchShape` an unclipped document.
   {
     const wide = wrapperOf(`${CHECKS_BLOCK}\n${"a, failed ".repeat(200_000)}`);
+    const got = classifyFailureLine(wide);
     const ms = timed(wide);
     assert(
       got?.shape === "script-tally",

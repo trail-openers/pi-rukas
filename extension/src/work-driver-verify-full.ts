@@ -316,9 +316,18 @@ export const VERIFY_FULL_EVIDENCE_MAX = 500;
  *
  * Code points, for the same reason every other bound in this file uses them: a
  * surrogate pair is never left as a lone half.
+ *
+ * It goes through {@link redactThenBound}, NOT {@link boundByCodePoints}: the
+ * excerpt this cuts is the tier's stored text, which was redacted once over the
+ * WHOLE stream, but a reader cannot verify that about a string it was handed — the
+ * field is persisted and re-read, and an `evidenceTail` that still carries a token
+ * renders it straight into the handoff. Re-running the arms over a window that opens
+ * mid-token is the risk the comment on {@link boundByCodePoints} warns about, and it
+ * is the lesser one: an arm that matches a fragment redacts it, and an arm that does
+ * not match anything costs an extra pass over 500 characters.
  */
 export function keepEvidenceHead(output: string, anchored: boolean): string {
-  return boundByCodePoints(output, VERIFY_FULL_EVIDENCE_MAX, anchored ? "head" : "tail").text;
+  return redactThenBound(output, VERIFY_FULL_EVIDENCE_MAX, anchored ? "head" : "tail").text;
 }
 
 /**
