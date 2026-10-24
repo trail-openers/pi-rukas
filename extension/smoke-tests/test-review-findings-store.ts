@@ -42,7 +42,7 @@ function assert(cond: boolean, msg: string) {
 // ── store, in a real temp clone ─────────────────────────────────────────────
 // The pure identity half (anchor / titleClass / Jaccard / snippetHash / pickMatch)
 // moved to test-review-findings-identity.ts with the fixture source it cites.
-import { SRC } from "./test-review-findings-identity.ts";
+import { SRC } from "./lib/review-findings-src-fixture.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();

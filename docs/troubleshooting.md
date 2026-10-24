@@ -2746,7 +2746,7 @@ branch, ~260 lines with its documentation):
   is the store file. A source file is never a target: `extension/src/review-findings-store.ts`
   and every `review-accept-*.ts` module are ordinary code, and an agent edits them routinely.
 
-A command that names **any file whose basename is the store file name (`review.findings.json`) is
+A command that names **any file whose basename is the store file name (`review-findings.json`) is
 refused even when it sits outside the state root** — a copy in `/tmp`, a fixture under
 `smoke-tests/`, a backup beside the ledger. That is by design: the basename is what makes the
 data file the data file, and a tripwire that only knew the root would let the name be written

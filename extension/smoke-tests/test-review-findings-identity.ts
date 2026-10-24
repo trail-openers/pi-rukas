@@ -21,6 +21,7 @@ import {
   titleClassOf,
   titleTokens,
 } from "../src/review-findings-match.ts";
+import { SRC } from "./lib/review-findings-src-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -33,22 +34,6 @@ function assert(cond: boolean, msg: string) {
 
 // ── pure identity ───────────────────────────────────────────────────────────
 
-// The fixture source the identity assertions cite, and the same lines the
-// store half commits as `src/a.ts` — one copy, exported, so the two files
-// cannot disagree about what line 4 of the fixture is.
-export const SRC = [
-  "// header", // 1
-  "export function alpha(x: number) {", // 2
-  "  const a = x + 1;", // 3
-  "  return a * 2;", // 4
-  "}", // 5
-  "", // 6
-  "export class Beta {", // 7
-  "  run() {", // 8
-  "    return 1;", // 9
-  "  }", // 10
-  "}", // 11
-];
 
 assert(
   anchorAt(SRC, 4) === "alpha",
