@@ -59,10 +59,13 @@
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
-import { apiFileOperand, codeOf, readPublishFile } from "./public-hygiene-files.ts";
-import { publishSegmentsWithSubstitution } from "./public-hygiene-substitution.ts";
+import { codeOf } from "./public-hygiene-files.ts";
+import { isAssignment, operandlessTextFlag, unpairedQuote } from "./public-hygiene-operands.ts";
+import { commandPrefixLength } from "./public-hygiene-prefix.ts";
+import { containsShellExpansion, shellExpansionProblem } from "./public-hygiene-substitution.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import { unreadableOperands } from "./public-hygiene-unreadable.ts";
+import { scanGhApi, scanGhPublish, scanGitCommit } from "./public-hygiene-verbs.ts";
 
 export type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 export { MAX_BODY_FILE_BYTES, OUTSIDE_ROOTS, readPublishFile } from "./public-hygiene-files.ts";
@@ -73,113 +76,18 @@ export const PUSH_SCAN_TIMEOUT_MS = 10_000;
 /** Bound on the git output the push scan reads (PM decision). */
 export const PUSH_SCAN_MAX_BUFFER = 5 * 1024 * 1024;
 
-/** A `git push` in this command, as written, or undefined. */
-
-/** Flags whose value is prose the forge publishes, and what to call it. */
-const GH_TEXT_FLAGS: Record<string, string> = {
-  "--title": "title",
-  "-t": "title",
-  "--body": "body",
-  "-b": "body",
-  "--notes": "release notes",
-  // `-n` is `gh release create`'s notes TEXT flag and `gh issue create`'s
-  // "no-body" switch. It is read ONLY for the release noun, where it is the
-  // notes, and never for an issue or a pr, where treating it as text would
-  // refuse a boolean switch's own name.
-  "-n": "release notes",
-  "--subject": "commit message",
-};
-
-/**
- * Flags whose value is a PATH whose contents get published. `-F` is
- * `gh issue create`'s `--body-file`; `-n` is `gh release create`'s
- * `--notes-file` (where `--notes` takes text instead). Each is read as a file
- * ONLY for the noun where it names one, so a boolean switch's own name is
- * never mistaken for prose.
- */
-const GH_BODY_FILE_FLAGS: Record<string, Record<string, string>> = {
-  issue: { "--body-file": "body", "-F": "body" },
-  pr: { "--body-file": "body", "-F": "body" },
-  release: { "--notes-file": "release notes", "-n": "release notes" },
-};
-
-/** gh subcommands whose text reaches the forge. `edit` is in scope because a
- * title or body edit publishes text exactly as a create does. */
-const GH_PUBLISH_VERBS: Record<string, Set<string>> = {
-  issue: new Set(["create", "edit", "comment"]),
-  pr: new Set(["create", "edit", "comment", "review"]),
-  release: new Set(["create", "edit"]),
-};
-
-/** The gh api path segments that carry public prose. */
-const API_PUBLIC_PATH =
-  /(?:^|\/)(?:issues|pulls|releases|comments|notes)(?:[/?#]|$)|\/pull\/\d+\/(?:comments|reviews)\b/;
-
-/** gh api flags whose value is a published field. */
-const API_FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
-const API_FIELD_FILE_FLAGS = new Set(["-F", "--raw-field"]);
-const API_WRITE_METHODS = new Set(["POST", "PATCH", "PUT"]);
-
-/** git commit flags whose value is the message. */
-const COMMIT_MESSAGE_FLAGS = new Set(["-m", "--message"]);
-const COMMIT_MESSAGE_FILE_FLAGS = new Set(["-F", "--file"]);
-
-/** The command words that reach a remote (`git push`, `oo git push`). */
-
-/** What `--flag value` / `--flag=value` / a glued short form resolve to. */
-function valueAfter(words: string[], i: number): { value: string; used: number } | undefined {
-  const w = words[i] ?? "";
-  const eq = w.indexOf("=");
-  if (eq > 0) return { value: w.slice(eq + 1), used: 0 };
-  const next = words[i + 1];
-  if (next === undefined) return undefined;
-  return { value: next, used: 1 };
-}
-
-/**
- * Does the word `w` use text flag `flag`, with the flag ENDED by a delimiter?
- * Accepts `--body`, `--body=…` and a glued short form (`-b…`), and refuses a
- * long flag that merely prefixes a longer one (`--body` vs `--body-file`).
- */
-function flagEndsAt(w: string, flag: string): boolean {
-  if (w === flag) return true;
-  if (!w.startsWith(flag)) return false;
-  if (flag.length > 2) return w[flag.length] === "=";
-  return w.length > flag.length;
-}
-
-/** Glued short form: `-bfoo` is `-b` with value `foo` (getopt accepts it). */
-function glued(w: string, flag: string): string | undefined {
-  if (flag.length !== 2 || !flag.startsWith("-")) return undefined;
-  if (!w.startsWith(flag) || w.length <= flag.length) return undefined;
-  return w.slice(flag.length);
-}
-
-/**
- * Is `argv` a `gh <noun> <publish-verb> …`? Returns the noun, or undefined.
- * A leading `oo` (the verbose runner this harness rewrites to) is skipped.
- */
-function ghPublishNoun(argv: string[]): string | undefined {
-  let i = 0;
-  while (i < argv.length && (argv[i] === "oo" || isAssignment(argv[i] ?? ""))) i++;
-  if (argv[i] !== "gh") return undefined;
-  i++;
-  while (i < argv.length && (argv[i] ?? "").startsWith("-")) {
-    i += ["-R", "--repo"].includes(argv[i] ?? "") ? 2 : 1;
-  }
-  const noun = argv[i] ?? "";
-  const verb = argv[i + 1] ?? "";
-  return GH_PUBLISH_VERBS[noun]?.has(verb) ? noun : undefined;
-}
-
-/** A `KEY=value` word, as bash accepts before a command name. */
-function isAssignment(w: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(w);
-}
-
 /** The `problems` reason for a text the shell assembles. Names no content. */
 const SHELL_BUILT_REASON =
-  "is built by the shell, so its text cannot be read from the command; write it to a file and pass that file";
+  "is built by the shell, so its text cannot be read from the command; pass the text with --body-file (or, for gh api, -F field=@file)";
+
+/**
+ * The reason an operand that never survived the word split is refused. Kept
+ * separate from `SHELL_BUILT_REASON` because it names a different cause: there
+ * the shell assembles the text, here the guard's own reader could not finish
+ * reading it.
+ */
+const UNSPLIT_OPERAND_REASON =
+  "could not be read (an unmatched quote leaves the operand's text unknown); pass the text with --body-file (or, for gh api, -F field=@file)";
 
 /**
  * Does this argv carry a publish verb whose text flags matter? The scan's own
@@ -188,168 +96,20 @@ const SHELL_BUILT_REASON =
  * and `git commit` alongside the create/edit/comment/review verbs.
  */
 export function publishesText(argv: readonly string[]): boolean {
-  const prog = argv.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+  const body = argv.slice(commandPrefixLength(argv));
+  const prog = body.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
   if (prog === undefined) return false;
   const base = prog.replace(/^.*\//, "");
   if (base === "gh") {
     return (
-      argv.includes("issue") ||
-      argv.includes("pr") ||
-      argv.includes("release") ||
-      argv.includes("api")
+      body.includes("issue") ||
+      body.includes("pr") ||
+      body.includes("release") ||
+      body.includes("api")
     );
   }
-  if (base === "git") return argv.includes("commit");
+  if (base === "git") return body.includes("commit");
   return false;
-}
-
-/** The text an `--input` file contributes, or the problem reading it. */
-function inputValue(v: string): string {
-  return v.startsWith("@") ? v.slice(1) : v;
-}
-
-/** One argument's worth of a command word list, with quotes already removed. */
-function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): void {
-  const noun = ghPublishNoun(argv);
-  if (noun === undefined) return;
-  scan.publishes = true;
-  const textFlags =
-    noun === "release"
-      ? GH_TEXT_FLAGS
-      : Object.fromEntries(
-          Object.entries(GH_TEXT_FLAGS).filter(
-            ([flag]) => flag !== "-n" && flag !== "--notes" && flag !== "--subject",
-          ),
-        );
-  const fileFlags = GH_BODY_FILE_FLAGS[noun] ?? {};
-  for (let i = 0; i < argv.length; i++) {
-    const w = argv[i] ?? "";
-    for (const [flag, location] of Object.entries(textFlags)) {
-      // A text flag must END at a delimiter. Without this, `--body` matched
-      // `--body-file` as a prefix (a `-` is not a delimiter), the path was
-      // collected as inline body text, and `--body-file` never reached the
-      // file reader — so the file was never read, its size bound never applied,
-      // and its out-of-root path was never checked. Prefix-matching a flag set
-      // is how a flag's whole policy quietly stops running.
-      if (flagEndsAt(w, flag)) {
-        const v = valueAfter(argv, i);
-        if (v) {
-          scan.texts.push({ location, text: v.value, generic: true });
-          i += v.used;
-        }
-        continue;
-      }
-      // A glued short form (`-bfoo`, `-tfoo`) carries its value inline; a long
-      // flag never glues, so `--bodyfile` is not `--body` with a value.
-      const gluedValue = flag.length === 2 ? glued(w, flag) : undefined;
-      if (gluedValue !== undefined) scan.texts.push({ location, text: gluedValue, generic: true });
-    }
-    for (const [flag, label] of Object.entries(fileFlags)) {
-      if (w !== flag && !w.startsWith(`${flag}=`)) continue;
-      const v = valueAfter(argv, i);
-      if (!v) continue;
-      const read = readPublishFile(v.value, cwd, label);
-      if (read.problem) scan.problems.push(read.problem);
-      else if (read.text !== undefined)
-        scan.texts.push({ location: label, text: read.text, generic: true });
-      i += v.used;
-    }
-  }
-}
-
-/** `gh api` writing to a public path: the field values are the published text. */
-function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void {
-  let i = 0;
-  while (i < argv.length && (argv[i] === "oo" || isAssignment(argv[i] ?? ""))) i++;
-  if (argv[i] !== "gh" || argv[i + 1] !== "api") return;
-  const rest = argv.slice(i + 2);
-  let method: string | undefined;
-  let endpoint = "";
-  let fields = 0;
-  const texts: PublishText[] = [];
-  const problems: ScanProblem[] = [];
-  for (let k = 0; k < rest.length; k++) {
-    const w = rest[k] ?? "";
-    if (w === "-X" || w === "--method") {
-      method = (rest[k + 1] ?? "").toUpperCase();
-      k++;
-      continue;
-    }
-    if (w.startsWith("--method=")) {
-      method = w.slice(9).toUpperCase();
-      continue;
-    }
-    if (API_FIELD_FLAGS.has(w)) {
-      const v = valueAfter(rest, k);
-      if (v) {
-        fields++;
-        const file = apiFileOperand(v.value);
-        const fieldFile = API_FIELD_FILE_FLAGS.has(w);
-        if (file !== undefined && (fieldFile || file !== v.value)) {
-          const read = readPublishFile(file, cwd, "comment");
-          if (read.problem) problems.push(read.problem);
-          else if (read.text !== undefined)
-            texts.push({ location: "comment", text: read.text, generic: true });
-        } else {
-          texts.push({ location: "comment", text: v.value, generic: true });
-        }
-        k += v.used;
-      }
-      continue;
-    }
-    if (w === "--input" || w === "-i") {
-      const v = valueAfter(rest, k);
-      if (v) {
-        const read = readPublishFile(inputValue(v.value), cwd, "body");
-        if (read.problem) problems.push(read.problem);
-        else if (read.text !== undefined)
-          texts.push({ location: "body", text: read.text, generic: true });
-        k += v.used;
-      }
-      continue;
-    }
-    if (!w.startsWith("-") && endpoint === "") endpoint = w;
-  }
-  // gh api defaults to POST when it carries fields; an explicit verb wins.
-  const writes = method === undefined ? fields > 0 : API_WRITE_METHODS.has(method);
-  if (!writes || !API_PUBLIC_PATH.test(endpoint)) return;
-  scan.publishes = true;
-  scan.texts.push(...texts);
-  scan.problems.push(...problems);
-}
-
-/** `git commit -m …` / `-F file`: the message the commit will carry. */
-function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): void {
-  const head = argv.find((w) => !isAssignment(w) && !w.startsWith("-"));
-  if (path.basename(head ?? "") !== "git") return;
-  if (!argv.includes("commit")) return;
-  scan.publishes = true;
-  for (let i = 0; i < argv.length; i++) {
-    const w = argv[i] ?? "";
-    for (const flag of COMMIT_MESSAGE_FLAGS) {
-      if (flagEndsAt(w, flag)) {
-        const v = valueAfter(argv, i);
-        if (v) {
-          scan.texts.push({ location: "commit message", text: v.value, generic: true });
-          i += v.used;
-        }
-        continue;
-      }
-      const gluedValue = glued(w, flag);
-      if (gluedValue !== undefined)
-        scan.texts.push({ location: "commit message", text: gluedValue, generic: true });
-    }
-    for (const flag of COMMIT_MESSAGE_FILE_FLAGS) {
-      if (w !== flag && !w.startsWith(`${flag}=`)) continue;
-      const v = valueAfter(argv, i);
-      if (!v) continue;
-      const read = readPublishFile(v.value, cwd, "commit message");
-      if (read.problem) scan.problems.push(read.problem);
-      else if (read.text !== undefined)
-        scan.texts.push({ location: "commit message", text: read.text, generic: true });
-      i += v.used;
-    }
-  }
 }
 
 /**
@@ -362,6 +122,10 @@ function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): void {
  */
 export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
   const scan: PublishScan = { publishes: false, texts: [], problems: [] };
+  // Asked ONCE of the raw command, not per simple command: `simpleCommands` ends
+  // a command at `$(` and throws the rest of the operand away, so an argv cut
+  // that way can be missing the very flag that names the publish.
+  const substitutes = containsShellExpansion(command);
   const words = simpleCommands(command);
   for (const argv of words) {
     if (argv.length === 0) continue;
@@ -376,7 +140,11 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
     // the publish here — `--body "$(…)"` on a `gh` command the noun table does
     // not classify would otherwise publish an unchecked body.
     if (publishesText(argv)) {
-      for (const operand of unreadableOperands(argv, command)) {
+      // `raw` is asked because the word splitter ENDS a command at `$(` and at a
+      // backtick: for `--body $(cat f)` the operand half is gone from `argv`, so
+      // the per-word test sees a flag with nothing after it and reports nothing
+      // to refuse.
+      for (const operand of unreadableOperands(argv, substitutes ? command : undefined)) {
         scan.problems.push({
           location: operand.location,
           reason: SHELL_BUILT_REASON,
@@ -394,7 +162,7 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
         scanGhApi(inner, cwd, scan);
         scanGitCommit(inner, cwd, scan);
         if (publishesText(inner)) {
-          for (const operand of unreadableOperands(inner, nested)) {
+          for (const operand of unreadableOperands(inner, substitutes ? nested : undefined)) {
             scan.problems.push({ location: operand.location, reason: SHELL_BUILT_REASON });
           }
         }
@@ -408,8 +176,37 @@ export function scanPublishSurfaces(command: string, cwd: string): PublishScan {
   // refused on the same "could not read the text" rule as the glued form.
   // Nested `bash -c` bodies are covered by the same call: the outer scan already
   // sees the whole raw text, and a publish one layer down is the same publish.
-  for (const _segment of publishSegmentsWithSubstitution(command)) {
-    scan.problems.push({ location: "body", reason: SHELL_BUILT_REASON });
+  // QUOTE-FREE RULE (#1788). A command that BOTH publishes and contains a shell
+  // expansion is refused outright, whoever the expansion belongs to: modelling
+  // which quotes a `$(…)` sat behind is the defect class this module's first
+  // shape could not get right (see `public-hygiene-substitution.ts`), so the rule
+  // looks at no quotes at all. The location is `scan.publishes`'s own label — set
+  // by each verb reader BEFORE it reads an operand — because a word list cut at a
+  // `$(` can leave no text to name, and a command that publishes nothing has no
+  // surface and stays allowed (`echo $(date)`).
+  const surface = scan.publishes
+    ? (scan.texts[0]?.location ?? scan.problems[0]?.location ?? scan.publishKind)
+    : undefined;
+  const expansion = substitutes
+    ? shellExpansionProblem(command, surface, SHELL_BUILT_REASON)
+    : undefined;
+  if (expansion !== undefined) {
+    scan.problems.push(expansion);
+  }
+  // An UNMATCHED QUOTE is the other shape of "the guard could not read it".
+  // `simpleCommands` closes an unterminated quote at end of input, so the quote
+  // does not drop the operand — it ABSORBS every word after it, flags included:
+  // in `--body 'oops --title "x $(cat f)"` the reader saw one operand and lost the
+  // title and its substituted value, while bash publishes both. That is an
+  // unreadable publish and this guard's rule for one has never changed — a
+  // refusal, never a pass. It is a parity count over the quotes, not a word
+  // model (`unpairedQuote`), and a closed quoted body (`--body 'cost 100
+  // dollars'`) pairs up and is judged as prose.
+  if (scan.publishes && (operandlessTextFlag(words) || unpairedQuote(command))) {
+    scan.problems.push({
+      location: scan.publishKind ?? "publish",
+      reason: UNSPLIT_OPERAND_REASON,
+    });
   }
   return scan;
 }

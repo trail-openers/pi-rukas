@@ -75,7 +75,7 @@ export function unreadableRefusal(what: string, reason: string): string {
   return [
     "Refused: this publish could not be checked, and an unchecked publish is not a clean one.",
     `The ${what} ${reason}.`,
-    `Fix why it could not be read and run the command again — put the body in a file under the working directory or the system temp dir, or retry the git read. If this publish is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`,
+    `Fix why it could not be read and run the command again — put the body in a file under the working directory or the system temp dir and pass it with --body-file (for gh api, -F field=@file), or retry the git read. If this publish is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`,
   ].join("\n");
 }
 

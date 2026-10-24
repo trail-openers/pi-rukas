@@ -30,6 +30,14 @@ export interface ScanProblem {
 export interface PublishScan {
   /** True when the command runs a forge publish verb at all. */
   publishes: boolean;
+  /**
+   * The kind of publish the scan recognised ("body", "comment", "commit
+   * message", …), from the first scan function that claimed the command — set
+   * BEFORE any operand was read, so it survives the word splitter cutting a
+   * `$(…)` operand in half. Only the substitution rule uses it, to name the text
+   * at risk in its refusal when no operand survived to carry a location.
+   */
+  publishKind?: string;
   texts: PublishText[];
   problems: ScanProblem[];
 }

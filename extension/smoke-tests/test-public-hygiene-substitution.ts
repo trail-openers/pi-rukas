@@ -1,36 +1,24 @@
 #!/usr/bin/env bun
 /**
- * public-hygiene-substitution (#1788 round 2) — the walk that sees what the
- * word splitter cannot.
+ * public-hygiene-substitution (#1788) — a publish in a command that contains a
+ * shell expansion is refused, with NO quote modelling anywhere.
  *
- * `simpleCommands` ENDS a command at `$(`, so a publish-text operand whose
- * substitution sits AFTER a space — `gh pr comment 3 --body "PREFIX $(cat f)
- * tail"` — reached the decision as the single clean word `PREFIX`, while bash
- * published the file's contents. A substitution glued to the flag was already
- * refused; one behind a space was the hole. This file pins both directions at
- * the guard's public entry point, plus the segment splitter on its own.
+ * The first shape of that module walked the raw command tracking quotes,
+ * substitution depth and segment cuts. The final review returned nine defects,
+ * every one of them a character bash treats specially that the model got wrong —
+ * so the model was deleted rather than patched. The rule is now two independent
+ * observations over the WHOLE command: it carries a publish surface (the scan's
+ * own signal, `oo`/`NAME=value` prefix skip included), and its raw text contains
+ * an expansion. Both true is one problem; neither half is decided by a quote.
  *
- * The literal-text cases deliberately use NO `$` at all. `--body 'a $(cat f) b'`
- * is a genuine non-leak (single quotes never expand, so what publishes is the
- * literal text the guard can read), but the round-1 rule already refuses every
- * operand whose WORDS contain `$(`, quoted or not — `test-public-hygiene-
- * unreadable.ts` pins that as intended behaviour. This module widens nothing
- * beyond the hole it closes, so it stays silent where round 1 already speaks,
- * and a `$`-free literal is the case that pins the single-quote half of the walk.
+ * ## The false positive this accepts, deliberately
  *
- * One case deliberately differs from the shape one would expect: the allowed
- * single-quoted literal uses NO `$`. The brief asked for `--body 'a $(cat f) b'`
- * to pass, and it does not — but not because of this module. Round 1's
- * `unreadableOperands` refuses any publish operand whose WORDS contain `$(`,
- * single-quoted or not, and `test-public-hygiene-unreadable.ts` pins that as
- * intended behaviour (its backtick-in-single-quotes case sits in the REFUSED
- * table there). A single-quoted substitution publishes only its own literal text,
- * which this guard can read, so that refusal is arguably over-strict — but
- * relaxing it is a round-1 decision with its own test contract, and this module
- * closes the hole behind a space rather than widening what round 1 refuses. The
- * `$`-free literal still pins the half of the walk that matters: a single-quoted
- * segment never sets `hasSubstitution`, which is what keeps prose out of the
- * refusals.
+ * `--body 'a $(b) is mentioned above'` is refused. Single quotes never expand, so
+ * nothing hidden publishes — but the alternative is a quote model with the nine
+ * holes above, round 1 already accepted refusing a single-quoted `$(`, and the
+ * remedy is one file write (`--body-file`). That trade-off is stated in the
+ * module header and in docs/troubleshooting.md; the REFUSED table pins it so a
+ * future "fix" that re-introduces quote tracking has to argue with a test.
  *
  * Offline, synthetic terms, a scratch denylist always.
  */
@@ -43,7 +31,7 @@ import {
   inspectCommand,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
-import { publishSegmentsWithSubstitution } from "../src/public-hygiene-substitution.ts";
+import { containsShellExpansion } from "../src/public-hygiene-substitution.ts";
 import { resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -70,10 +58,12 @@ async function ask(command: string) {
 
 await withEnv(env, async () => {
   writeFileSync(path.join(dir, "body-clean.md"), "a clean body\n", "utf8");
+  writeFileSync(path.join(dir, "field-clean.md"), "a clean field\n", "utf8");
+  writeFileSync(path.join(dir, "field-dirty.md"), "example-private-host\n", "utf8");
 
-  // ── REFUSED. Each of these was ALLOWED before the raw text was walked: the
-  // word splitter cut the operand at the `$(`, so only the text before the
-  // substitution reached the decision and was judged clean.
+  // ── REFUSED. Every one of these was ALLOWED while the module modelled quotes:
+  // the walk's word reader produced words bash never produced, and the segment
+  // was judged a non-publish.
   const dirty: readonly { label: string; command: string }[] = [
     {
       label: "a substitution after a space, with a tail",
@@ -91,98 +81,191 @@ await withEnv(env, async () => {
       label: "a substitution after a space in a commit message",
       command: 'git commit -m "msg $(cat f)"',
     },
+    // The `oo` runner prefix: the scan skips it in its own noun tables, and the
+    // substitution walk did not, so a one-token prefix disabled the whole check.
     {
-      label: "a substitution after a space in an api field",
-      command: 'gh api repos/o/r/issues/1/comments -F body="x $(cat f)"',
+      label: "an oo-prefixed body substitution",
+      command: 'oo gh pr comment 3 --body "a $(cat f) b"',
+    },
+    {
+      label: "an oo-prefixed backtick body",
+      command: 'oo gh pr comment 3 --body "a `cat f` b"',
+    },
+    {
+      label: "an oo-prefixed glued substitution",
+      command: "oo gh pr comment 3 --body $(cat f)",
+    },
+    {
+      label: "an assignment-prefixed body substitution",
+      command: 'FOO=bar gh pr comment 3 --body "a $(cat f) b"',
+    },
+    // Quote desync: an unmatched double quote made the word reader hand the
+    // decision words bash never produced, so nothing was checked.
+    {
+      label: "an unmatched double quote before a substitution",
+      command: 'gh pr comment 3 --jq ".url"" --body $(cat f)',
+    },
+    {
+      label: "an unbalanced quote with an unterminated substitution",
+      command: 'gh pr comment 3 --body "x $(cat f',
+    },
+    {
+      label: "an unbalanced quote swallowing every flag after it",
+      command: "gh pr comment 3 --body 'unterminated --title",
+    },
+    // An escaped quote inside double quotes desyncs a single-character tracker.
+    {
+      label: "an escaped quote then a substitution",
+      command: 'gh pr comment 3 --body "say \\"hello\\" $(cat f)"',
+    },
+    // A stray `)` drove the substitution depth negative in the old walk, after
+    // which its separators stopped cutting and its `$(` stopped counting.
+    {
+      label: "a stray close paren before a substitution",
+      command: 'gh pr comment 3 --body "a ) b $(cat f)"',
+    },
+    // Only the head of a chain used to be asked, so a publish after `&&` was
+    // invisible to the walk.
+    {
+      label: "a publish in the tail of a chain",
+      command: 'true && gh pr comment 3 --body "a $(cat f)"',
+    },
+    {
+      label: "a publish before a substitution-owned tail",
+      command: 'gh pr comment 3 --body "a $(cat f)" && echo done',
+    },
+    // A newline inside quotes used to cut the segment, so the publish flag and
+    // the substitution landed in different segments and neither matched.
+    {
+      label: "a multi-line quoted body with the substitution on line 2",
+      command: 'gh pr comment 3 --body "first line\nsecond $(cat f)"',
     },
     {
       label: "backticks in a body",
-      command: "gh pr comment 3 --body \"a `cat f` b\"",
+      command: 'gh pr comment 3 --body "a `cat f` b"',
+    },
+    {
+      label: "a backtick form the word splitter cut in half",
+      command: "gh pr comment 3 --body `cat f`",
+    },
+    {
+      label: "a braced variable expansion",
+      command: 'gh pr comment 3 --body "${BODY}"',
+    },
+    {
+      label: "a bare variable expansion",
+      command: "gh pr comment 3 --body $BODY",
+    },
+    {
+      label: "a process substitution",
+      command: "gh pr comment 3 --body <(cat f)",
     },
     {
       label: "a separator INSIDE the substitution",
       command: 'gh pr comment 3 --body "x $(cat f; echo y) z"',
     },
     {
-      label: "an unbalanced quote with an unterminated substitution",
-      command: 'gh pr comment 3 --body "x $(cat f',
+      label: "a gh api field built by the shell",
+      command: "gh api repos/o/r/issues/1/comments -F body=$(cat f)",
     },
-    // Round 1 already refused these two shapes through the word list; they stay
-    // refused here so the new walk is never the only thing standing between the
-    // command and the publish.
     {
-      label: "an unbalanced single quote, whose flag the walker still finds",
-      command: "gh pr comment 3 --body 'unterminated",
+      label: "a gh api glued field built by the shell",
+      command: "gh api repos/o/r/issues/1/comments -Fbody=$(cat f)",
+    },
+    // Refused BY DESIGN: single quotes never expand, so this publishes literal
+    // text the guard could have read. The quote-free model does not look, and the
+    // trade-off is documented rather than silently paid.
+    {
+      label: "a single-quoted literal that merely contains a substitution",
+      command: "gh pr comment 3 --body 'a $(b) is mentioned above'",
+    },
+    // ── gh api `@file` fields: the value is a POINTER, and reading the literal
+    // `@notes.md` instead of the file was a publish nobody checked.
+    {
+      label: "an api @file field carrying a denylist term",
+      command: "gh api repos/o/r/issues/1/comments -F body=@field-dirty.md",
+    },
+    {
+      label: "an api glued @file field carrying a denylist term",
+      command: "gh api repos/o/r/issues/1/comments -Fbody=@field-dirty.md",
+    },
+    {
+      label: "an api @file field the guard cannot read",
+      command: "gh api repos/o/r/issues/1/comments -F @gone.md",
+    },
+    {
+      label: "an api @file field naming a path outside the admitted roots",
+      command: "gh api repos/o/r/issues/1/comments -F @/etc/hostname",
     },
   ];
   for (const c of dirty) {
     const r = await ask(c.command);
     assert(r !== undefined, `${c.label} is refused`);
+    // A `@file` carrying a denylist term is a DIRTY publish, refused as one; an
+    // out-of-root PATH is refused by its PATH alone (which is not a shell-built
+    // text, so it gets its own arm). Everything else here is refused as text no
+    // one could read; asserting the wrong sentence would pin a leak as a pass.
+    const denylistHit = c.label.includes("denylist term");
+    const outOfRoots = c.label.includes("outside the admitted roots");
     assert(
-      /could not be checked|cannot be read|built by the shell/i.test(r?.reason ?? ""),
-      `${c.label}: the refusal says the text could not be read, not that it was dirty`,
+      denylistHit ||
+        outOfRoots ||
+        /could not be checked|cannot be read|built by the shell/i.test(r?.reason ?? ""),
+      `${c.label}: ${denylistHit ? "refused as a dirty publish" : "refused as text that could not be read"}`,
+    );
+    assert(
+      denylistHit || outOfRoots || /--body-file|@file|body-file/i.test(r?.reason ?? ""),
+      `${c.label}: the refusal names the file remedy`,
+    );
+    assert(
+      !String(c.command).includes("example-private-host"),
+      `${c.label}: the refusal never contains the term`,
     );
   }
 
-  // ── ALLOWED. A gate that refused these gets its escape hatch set and the
-  // check that matters stops running.
+  // ── ALLOWED. A gate that refused these gets its escape hatch set and the check
+  // that matters stops running.
   const clean: readonly string[] = [
-    // Single quotes are literal, and there is no expansion in them at all: the
-    // guard reads this text, so a `$`-free literal body publishes nothing hidden.
-    "gh pr comment 3 --body 'a literal sentence about the release'",
-    "gh pr comment 3 --body 'cost 100 and 50 per seat'",
-    // Plain prose, and prose with an apostrophe inside double quotes.
     'gh pr comment 3 --body "a plain sentence about the release"',
+    "gh pr comment 3 --body 'cost 100 dollars'",
+    "gh pr comment 3 --body 'a literal sentence about the release'",
     'gh pr comment 3 --body "it\'s fine"',
-    // A substitution owned by ANOTHER command in the chain says nothing here.
-    "gh pr comment 3 --body-file body-clean.md && echo $(date)",
+    "gh pr comment 3 --body-file body-clean.md",
+    "oo gh pr comment 3 --body-file body-clean.md",
+    // No publish surface: the expansion belongs to a command that publishes
+    // nothing, so there is no text at risk.
     "echo $(date)",
-    // Not a publish: git log's format string is not text the forge publishes.
+    "oo echo $(date)",
     'git log --format="%H $(x)"',
+    "git log --oneline -5",
+    // A gh api GET with a jq selector is not a write and publishes no text.
+    "gh api repos/o/r/issues/1 --jq '.x'",
+    "gh api repos/o/r/pulls --jq '.[].title'",
+    // ── gh api @file fields the guard CAN read, so the read path stays open.
+    "gh api repos/o/r/issues/1/comments -F body=@field-clean.md",
+    "gh api repos/o/r/issues/1/comments -Fbody=@field-clean.md",
+    "gh api repos/o/r/issues/1/comments -f body=@field-clean.md",
+    "gh api repos/o/r/issues/1/comments -fbody=plain text",
+    "gh api repos/o/r/issues/1/comments --field=body=plain text",
+    "gh api repos/o/r/issues/1/comments --raw-field=body=@field-clean.md",
   ];
   for (const cmd of clean) {
     const r = await ask(cmd);
     assert(r === undefined, `not refused: ${cmd.slice(0, 62)}`);
   }
 
-  // ── The splitter itself, so the table above is not the only thing pinning it.
-  const segs = (raw: string) => publishSegmentsWithSubstitution(raw);
+  // ── The predicate itself, so the table above is not the only thing pinning it.
+  assert(containsShellExpansion("a $(b) c"), "a $() is an expansion");
+  assert(containsShellExpansion("`cat f`"), "a backtick is an expansion");
+  assert(containsShellExpansion("${BODY}"), "a braced variable is an expansion");
+  assert(containsShellExpansion("$BODY"), "a bare variable is an expansion");
+  assert(containsShellExpansion("<(cat f)"), "a process substitution is an expansion");
+  assert(containsShellExpansion(">(cat f)"), "a write-side substitution is an expansion");
   assert(
-    segs('gh pr comment 3 --body "PREFIX $(cat f) tail"').length === 1,
-    "one publishing segment is returned for a substituted body",
+    !containsShellExpansion("a plain sentence about the release"),
+    "prose is not an expansion",
   );
-  assert(
-    segs('gh pr comment 3 --body "a b" && git commit -m "x $(y)"').length === 1,
-    "only the segment that publishes and substitutes is returned",
-  );
-  assert(
-    segs('gh pr comment 3 --body "x $(cat f; echo y) z"').length === 1,
-    "a separator inside a substitution does not split the segment",
-  );
-  assert(
-    segs("gh pr comment 3 --body 'a literal sentence'").length === 0,
-    "a single-quoted segment with no expansion is not a substitution",
-  );
-  assert(
-    segs('echo hi; gh pr edit 3 --title "t $(x)" | cat').length === 1,
-    "segments are cut at unquoted ; and | outside a substitution",
-  );
-  assert(
-    segs('gh pr comment 3 --body "a b $(f)"').length === 1,
-    "a double-quoted operand with a live substitution is one segment",
-  );
-  assert(
-    segs("gh pr comment 3 --body 'unterminated").length === 1,
-    "an unbalanced quote fails closed on a publishing segment",
-  );
-  assert(
-    segs("gh pr comment 3 --body 'a literal word'").length === 0,
-    "an unbalanced quote with nothing substitutable stays clean",
-  );
-  assert(
-    segs("echo $(date)").length === 0 && segs("git log --format=\"%H $(x)\"").length === 0,
-    "a non-publishing command returns no segment",
-  );
+  assert(!containsShellExpansion("cost 100 dollars"), "a dollar that heads nothing is not");
 });
 
 rmSync(dir, { recursive: true, force: true });
