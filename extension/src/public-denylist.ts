@@ -215,9 +215,35 @@ const withoutEmailTokens = blankEmailTokens;
  * every project's docs and fixtures and name nobody, so they pass. A mail
  * address (`user@host`) is not a path — `withoutEmailTokens` is what keeps it
  * out of this rule without silencing the rule for the rest of the text.
+ *
+ * ## The username is BOUNDED, and the bound is not a guess at a username
+ *
+ * `\w+` is an unbounded leading-length quantifier on a class that overlaps
+ * nothing here but sits behind an optional prefix, which is the shape
+ * `public-hygiene-email.ts` documents as exponential: an engine that retries
+ * the quantifier at every start position — rather than memoising the failure
+ * like the ones measured below — turns a long run of word characters into
+ * O(n²) work, and this regex runs on every publish surface of every agent turn.
+ * `\w{1,255}` makes the per-start work a constant, so the scan is linear
+ * whatever the engine does.
+ *
+ * HOME_PATH_BOUND — measured honesty about the reason. On the engine this suite
+ * runs on, the unbounded `\w+` did NOT reproduce the quadratic blow-up the brief
+ * described: every shape up to 200,000 characters classified in single-digit
+ * milliseconds, both before and after the bound. So the bound is insurance
+ * against an engine that retries the quantifier per start position rather than
+ * memoising it — a real engine difference, and the reason
+ * `test-public-hygiene-performance.ts` asserts the measured cost of the input
+ * instead of asserting that the bound made something faster it never was.
+ *
+ * 255 is the length a POSIX username or a macOS home directory name can reach,
+ * so no real `/home/<name>` or `/Users/<name>` is shorter than the bound allows
+ * or longer than it sees: the rule matches the same strings on realistic input
+ * it matched before. It is a documented accepted limit rather than a silent
+ * one, stated here and pinned at the boundary by the same test.
  */
 const HOME_PATH =
-  /(?:^|[^\w./~-])(?:\/(?:home|Users)\/(?!dev\/|user\/|example\/|ops\/|runner\/)\w+\/?)/;
+  /(?:^|[^\w./~-])(?:\/(?:home|Users)\/(?!dev\/|user\/|example\/|ops\/|runner\/)\w{1,255}\/?)/;
 
 /** The first entry whose test matches, or undefined. Never returns the term. */
 export function matchDenylist(
