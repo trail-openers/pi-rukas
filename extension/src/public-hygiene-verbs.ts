@@ -18,7 +18,12 @@ import {
   namesCommitMessageFlag,
 } from "./public-hygiene-commit-flags.ts";
 import { apiFileOperand, readPublishFile } from "./public-hygiene-files.ts";
-import { isAssignment, textFlagValue, valueAfter } from "./public-hygiene-operands.ts";
+import {
+  STDIN_TEXT_REASON,
+  isAssignment,
+  textFlagValue,
+  valueAfter,
+} from "./public-hygiene-operands.ts";
 import { commandPrefixLength, commandWord } from "./public-hygiene-prefix.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
@@ -214,8 +219,12 @@ export function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): v
       // argument as the text.
       const v = textFlagValue(argv, i, flag);
       if (v !== undefined) {
-        scan.texts.push({ location, text: v.value, generic: true });
         scan.textSurfaceNamed = true;
+        // `-` is not the text: gh takes the operand from standard input, so the
+        // literal `-` is a stand-in for bytes this scan never sees. Pushing it as
+        // text would let a stdin publish PASS on a one-character body.
+        if (v.value === "-") scan.problems.push({ location, reason: STDIN_TEXT_REASON });
+        else scan.texts.push({ location, text: v.value, generic: true });
         i += v.used;
       }
     }
@@ -303,6 +312,11 @@ export function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void 
           if (read.problem) problems.push(read.problem);
           else if (read.text !== undefined)
             texts.push({ location: "comment", text: read.text, generic: true });
+        } else if (half === "-") {
+          // `-F body=-` / `-Fbody=-`: gh reads the field's value from standard
+          // input, so the literal `-` would be scanned as a one-character comment
+          // and PASS. Same rule as the text flags and the file flags.
+          problems.push({ location: "comment", reason: STDIN_TEXT_REASON });
         } else {
           // The literal that publishes: the value half, which is what `gh` sends
           // for a `key=value` field (`body=x` publishes `x`, not `body=x`).
@@ -378,10 +392,20 @@ export function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): v
     const cluster = commitCluster(w);
     if (cluster !== undefined) {
       scan.textSurfaceNamed = true;
-      // A bundled cluster (`-am`, `-qmx`, `-aF<file>`) carries its value in the
-      // rest of the word after the last `m`/`F`, or in the next word when that
-      // tail is empty. Letters after the `m`/`F` belong to the VALUE, exactly as
-      // getopt parses them, which is why `-amq SECRET` publishes `q SECRET`.
+      // A cluster carrying a reuse letter (`-ac HEAD`, `-qc HEAD`, `-amc`) takes
+      // its message from ANOTHER commit, so the tail is not prose and no text this
+      // guard can read is in the command — the same refusal as a bare `-c`/`-C`,
+      // asked BEFORE the file/text branches so a bundled `-amc` is never read as
+      // a message of `c`.
+      if (cluster.reuses === true) {
+        scan.problems.push({ location: "commit message", reason: REUSED_MESSAGE_REASON });
+        continue;
+      }
+      // A bundled cluster (`-am`, `-qmx`, `-aF<file>`, `-F=x.md`) carries its
+      // value in the rest of the word after the last `m`/`F`, or in the next word
+      // when that tail is empty. Everything after the letter belongs to the VALUE
+      // — with at most one `=` consumed as getopt's argument separator — which is
+      // why `-amq SECRET` publishes `q SECRET` and `-F=x.md` opens `x.md`.
       if (cluster.kind === "commit message file") {
         const file = cluster.tail === "" ? (argv[i + 1] ?? "") : cluster.tail;
         if (cluster.tail === "") i++;
@@ -396,11 +420,17 @@ export function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): v
         continue;
       }
       if (cluster.tail !== "") {
+        if (cluster.tail === "-") {
+          scan.problems.push({ location: "commit message", reason: STDIN_TEXT_REASON });
+          continue;
+        }
         scan.texts.push({ location: "commit message", text: cluster.tail, generic: true });
         continue;
       }
       const next = argv[i + 1];
-      if (next !== undefined)
+      if (next === "-")
+        scan.problems.push({ location: "commit message", reason: STDIN_TEXT_REASON });
+      else if (next !== undefined)
         scan.texts.push({ location: "commit message", text: next, generic: true });
       i++;
       continue;
@@ -411,8 +441,12 @@ export function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): v
       // message as nothing while the term sat in `-msecret` itself.
       const v = textFlagValue(argv, i, flag);
       if (v !== undefined) {
-        scan.texts.push({ location: "commit message", text: v.value, generic: true });
         scan.textSurfaceNamed = true;
+        // `-m -` / `-m=-`: git reads the message from standard input, so the
+        // literal `-` is no message at all and scanning it would be a pass.
+        if (v.value === "-")
+          scan.problems.push({ location: "commit message", reason: STDIN_TEXT_REASON });
+        else scan.texts.push({ location: "commit message", text: v.value, generic: true });
         i += v.used;
       }
     }

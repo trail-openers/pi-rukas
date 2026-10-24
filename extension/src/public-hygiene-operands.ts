@@ -71,14 +71,33 @@ export function textFlagValue(
   if (!flagEndsAt(w, flag)) return undefined;
   if (w !== flag) {
     // Glued: everything after the flag characters is the value — never the next
-    // word, which is a separate argument and belongs to whatever follows. A
-    // LONG flag got here only because the character right after it is `=` (that
-    // is `flagEndsAt`'s rule), so the `=` itself is dropped; a SHORT flag glues
-    // with no delimiter, so everything after the two characters is the value.
-    return { value: w.slice(flag.length + (flag.length > 2 ? 1 : 0)), used: 0 };
+    // word, which is a separate argument and belongs to whatever follows. A LONG
+    // flag got here only because the character right after it is `=` (that is
+    // `flagEndsAt`'s rule), so the `=` itself is dropped. A SHORT flag glues with
+    // no delimiter, so everything after the two characters is the value — and
+    // getopt lets the same argument separator be written there, so `-m=x` means
+    // what `-m x` means and its `=` is dropped too. Leaving it would report
+    // `-m=-` as the message `=-`, a string git never commits, and miss the stdin
+    // operand the word actually names.
+    const glued = w.slice(flag.length).replace(/^=/, "");
+    return { value: glued, used: 0 };
   }
   return valueAfter(words, i);
 }
+
+/**
+ * The reason a text flag whose resolved value is exactly `-` contributes to the
+ * scan instead of the literal `-`.
+ *
+ * `gh pr comment 3 --body -` (in any of its three shapes — `--body -`,
+ * `--body=-`, `-b -`) does not publish the character `-`: gh reads the operand
+ * from standard input. Scanning the literal is a PASS for a body the guard never
+ * saw, which is the same defect the FILE flags already refuse (`-F -`,
+ * `STDIN_MESSAGE_REASON`) on the other side of the same command. The refusal
+ * lives here so every text reader — gh's flags, `gh api`'s fields and git's
+ * message flags — refuses it with one rule rather than each inventing its own.
+ */
+export const STDIN_TEXT_REASON = "is read from standard input, so its text is not in this command";
 
 /** A `KEY=value` word, as bash accepts before a command name. */
 export { isAssignment } from "./public-hygiene-prefix.ts";

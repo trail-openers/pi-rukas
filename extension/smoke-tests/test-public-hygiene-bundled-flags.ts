@@ -123,12 +123,14 @@ await withEnv(env, async () => {
 
   // The cluster reader's own contract, fail-closed: a letter that is no git
   // commit option makes the whole cluster unrecognised (the backstop then
-  // catches it as an unreadable publish), and a word with `=` is never one.
+  // catches it as an unreadable publish). An `=` is NOT what unrecognises a word
+  // — getopt takes everything after the letter as the value, so `-am=x` IS a
+  // cluster whose message is `=x` (the `-F=` fix, PR #1792 follow-up).
   assert(commitCluster("-am")?.kind === "commit message", "-am is a message cluster");
   assert(commitCluster("-aF")?.kind === "commit message file", "-aF is a file cluster");
   assert(commitCluster("-amq")?.tail === "q", "-amq glues q onto the message");
   assert(commitCluster("-ao") === undefined, "-ao is not a cluster (-o takes an operand)");
-  assert(commitCluster("-am=x") === undefined, "-am=x is not a cluster");
+  assert(commitCluster("-am=x")?.tail === "x", "-am=x is a cluster whose message is x");
   // The reuse reader names the forms whose message lives in ANOTHER commit, and
   // excludes by name the `--no-*` switches that merely re-state the current one.
   assert(commitMessageReuse(["git", "commit", "-c", "HEAD~1", "--amend"]), "-c reuses a message");
