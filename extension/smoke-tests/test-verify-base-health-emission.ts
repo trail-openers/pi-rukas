@@ -97,10 +97,16 @@ const mkCtx = (
   }) as unknown as DriverContext;
 
 /** The later gates each execute project commands; keep them off this path —
- * except where a case names one explicitly as the gate the ordering reads. */
-process.env.PI_ENSEMBLE_SKIP_RATCHET = "1";
-process.env.PI_ENSEMBLE_SMOKE = "0";
-process.env.PI_ENSEMBLE_COMMENT_RETENTION = "0";
+ * except where a case names one explicitly as the gate the ordering reads.
+ * Assigning `undefined` to an env key is forbidden by the env-clear ratchet
+ * (test-env-clear-gate.ts): on bun 1.4 it stores the literal string, so the
+ * knobs are set and cleared through the delete form `withEnv` uses. */
+const savedEnv: Record<string, string | undefined> = {
+  PI_ENSEMBLE_SKIP_RATCHET: "1",
+  PI_ENSEMBLE_SMOKE: "0",
+  PI_ENSEMBLE_COMMENT_RETENTION: "0",
+};
+for (const [k, v] of Object.entries(savedEnv)) process.env[k] = v;
 
 /**
  * Drive one gate pass. `throwAfterChain` makes the skip-ratchet gate's git read
@@ -231,10 +237,20 @@ assert(
   // Re-enable the gates whose commands would otherwise be skipped: the ratchet's
   // `git diff <base> -U0` is the FIRST command the chain does not make, so a throw
   // from it is the fault that used to take the consultation down; the smoke gate's
-  // command is the marker the ordering in case 3 is read against.
-  process.env.PI_ENSEMBLE_SKIP_RATCHET = undefined;
-  process.env.PI_ENSEMBLE_SMOKE = undefined;
+  // command is the marker the ordering in case 3 is read against. `delete`, never
+  // `= undefined` — the latter stores the literal string "undefined" on bun 1.4
+  // (test-env-clear-gate.ts is the ratchet).
+  const off: Record<string, string | undefined> = {
+    PI_ENSEMBLE_SKIP_RATCHET: undefined,
+    PI_ENSEMBLE_SMOKE: undefined,
+  };
+  for (const [k, v] of Object.entries(off)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   writeFileSync(path.join(worktree, ".pi", "smoke-cmd"), "sh smoke.sh\n");
+  savedEnv.PI_ENSEMBLE_SKIP_RATCHET = "0";
+  savedEnv.PI_ENSEMBLE_SMOKE = "0";
   await verifyDevelopOutcome(mkCtx(execFn, worktree), mkState(worktree), execFn, [], [], options);
   const atBase = seq.indexOf("base-health");
   const atSmoke = seq.findIndex((l) => l.includes("sh smoke.sh"));
@@ -246,7 +262,6 @@ assert(
     atSmoke >= 0 && atBase < atSmoke,
     `ordering: the report lands BEFORE the smoke gate's command (base-health@${atBase}, smoke@${atSmoke}; seq ${JSON.stringify(seq)}) — a throw in any later gate cannot take it down`,
   );
-  process.env.PI_ENSEMBLE_SMOKE = "0";
 }
 
 console.log(`\nexit ${exit}`);
