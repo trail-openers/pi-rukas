@@ -118,6 +118,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     if (refusal !== undefined) throw new PublicHygieneError(refusal);
   };
 
+  /**
+   * The explicit no-op the READ seams pass. `CommentSeamDeps.checkPublicText`
+   * is REQUIRED so a post seam cannot arrive without one; a read seam has
+   * nothing to publish, so it says so at the call site rather than leaving the
+   * field out and letting the type decide what absent meant.
+   */
+  const NO_PUBLIC_TEXT_CHECK = (): void => {};
+
   const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
     const { stdout } = await execFn(cmd, {
       cwd,
@@ -231,7 +239,11 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       );
     },
 
-    issueComments: (number) => listIssueComments({ forge, run, withBodyFile }, number),
+    issueComments: (number) =>
+      listIssueComments(
+        { forge, run, withBodyFile, checkPublicText: NO_PUBLIC_TEXT_CHECK },
+        number,
+      ),
 
     issueSearch: (query, opts) =>
       run(cmds.issueSearchCmd(forge, query, opts), (stdout) => {
@@ -343,7 +355,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     prDiff: (number) => run(cmds.prDiffCmd(forge, number), (stdout) => stdout),
 
-    prComments: (number) => listPrComments({ forge, run, withBodyFile }, number),
+    prComments: (number) =>
+      listPrComments({ forge, run, withBodyFile, checkPublicText: NO_PUBLIC_TEXT_CHECK }, number),
 
     // #775 — post a comment on a PR (the in-process handoff fallback seam).
     prComment: (number, body) =>

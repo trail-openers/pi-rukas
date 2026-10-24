@@ -471,6 +471,49 @@ async function attempt(
     ghWith(() => bodyOf(`x\n${ATTRIBUTION_BEGIN}\nno end`), edits7),
   );
   assert(!halfMarked.ok && edits7.length === 0, "unpaired attribution markers are refused");
+
+  // #1788 — the disclosure write is a PUBLIC publish the tool_call guard cannot
+  // see (an in-process exec), so the same matcher judges the body before the
+  // file is written. A dirty body is refused and `gh pr edit` never runs; a
+  // clean one still writes, so the block is not satisfied by a gate that refuses
+  // everything. Synthetic term; this repository is public.
+  const dirtyTerm = "example-private-host";
+  const dirtyList = path.join(root, "denylist");
+  writeFileSync(dirtyList, `# synthetic\n${dirtyTerm}\n`, "utf8");
+  const prevDenylist = process.env.PI_ENSEMBLE_PUBLIC_DENYLIST;
+  process.env.PI_ENSEMBLE_PUBLIC_DENYLIST = dirtyList;
+  try {
+    // The record must be non-empty, or the write is a no-op (`next === current`)
+    // and the check under test is never reached at all.
+    const recordState = foldVerifyAttribution(state, { flaky: [T2], baselineRed: [] });
+    const dirtyBody = `Intro mentioning ${dirtyTerm} and nothing else`;
+    const edits8: string[] = [];
+    const execSpy = ghWith(() => bodyOf(dirtyBody), edits8);
+    let seenCmd = "";
+    const spying: ExecFn = (async (cmd: string, opts?: { argv?: string[] }) => {
+      if (cmd === "git") seenCmd = (opts?.argv ?? []).join(" ");
+      return execSpy(cmd, opts);
+    }) as unknown as ExecFn;
+    const dirty = await discloseInPrBody(ctx, recordState, spying);
+    assert(
+      !dirty.ok &&
+        edits8.length === 0 &&
+        /private/.test(dirty.reason) &&
+        seenCmd.startsWith("remote get-url"),
+      `a dirty disclosure body is refused before the PR is edited, and nothing is written (reason ${dirty.ok ? "ok" : dirty.reason.slice(0, 40)}, git saw ${seenCmd || "nothing"})`,
+    );
+    // The same command with a clean body writes, so the check above is a filter
+    // and not a wall.
+    const edits9: string[] = [];
+    const clean = await discloseInPrBody(ctx, recordState, ghWith(() => bodyOf("Intro about the public build"), edits9));
+    assert(
+      clean.ok && edits9.length === 1,
+      "a clean disclosure body still reaches gh pr edit — the check refuses nothing it should not",
+    );
+  } finally {
+    if (prevDenylist === undefined) delete process.env.PI_ENSEMBLE_PUBLIC_DENYLIST;
+    else process.env.PI_ENSEMBLE_PUBLIC_DENYLIST = prevDenylist;
+  }
 }
 rmSync(attrRoot, { recursive: true, force: true });
 

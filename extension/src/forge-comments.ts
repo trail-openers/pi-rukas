@@ -40,11 +40,16 @@ export interface CommentSeamDeps {
   /**
    * #1788 — the forge's public-text check, threaded from `createForge` so a
    * comment posted through this seam is held to the same rule as one posted
-   * through `issueComment`. Optional so a caller that has no forge (a bare
-   * read seam) compiles; a post without it is unchecked, which is why the
-   * three production call sites in `forge.ts` all pass it.
+   * through `issueComment`.
+   *
+   * REQUIRED, and called unconditionally: an optional seam is a seam a caller
+   * can forget, and a forgotten one posts an unchecked comment while the module
+   * still reads as covered. A caller with no forge of its own (a bare read seam,
+   * or a residuals poster whose repository is not a forge target) passes an
+   * explicit no-op, which says in the call site what the type used to allow
+   * silently.
    */
-  checkPublicText?: (label: string, text: string) => void;
+  checkPublicText: (label: string, text: string) => void;
 }
 
 /** List an issue's comments (the idempotency check for the handoff fallback).
@@ -115,8 +120,10 @@ export async function postPrComment(
 ): Promise<string> {
   // #1788 — a PR comment is public text like any other publish, and the
   // driver's in-process handoff fallback reaches the forge through this seam
-  // rather than a `tool_call`, so the check has to be here too.
-  deps.checkPublicText?.("pull request comment", body);
+  // rather than a `tool_call`, so the check has to be here too. Not optional:
+  // see `CommentSeamDeps.checkPublicText` for why the type refuses a caller
+  // that never thought about it.
+  deps.checkPublicText("pull request comment", body);
   return deps.withBodyFile(`pr-comment-${number}`, body, (file) =>
     deps.run(cmds.prCommentCmd(deps.forge, number, file), (stdout) => {
       if (deps.forge === "github") return stdout.trim();
