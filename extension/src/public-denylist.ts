@@ -124,8 +124,7 @@ export type GenericCategory = "private-ipv4" | "home-path";
  * spelled out, it is a list a reviewer has to count, and a miscounted entry is
  * a silent hole in the only check between a private address and a public repo.
  */
-const IPV4_QUAD =
-  /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])/g;
+const IPV4_QUAD = /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])/g;
 
 /** The blocks that make an address private (issue decision 2). */
 const PRIVATE_CIDR: ReadonlyArray<[string, number]> = [
@@ -206,7 +205,8 @@ export function genericCategoryOf(text: string): GenericCategory | undefined {
  * address (`user@host`) is not a path — the `@` guard above is what keeps it
  * out of this rule.
  */
-const HOME_PATH = /(?:^|[^\w./~-])(?:\/(?:home|Users)\/(?!dev\/|user\/|example\/|ops\/|runner\/)\w+\/?)/;
+const HOME_PATH =
+  /(?:^|[^\w./~-])(?:\/(?:home|Users)\/(?!dev\/|user\/|example\/|ops\/|runner\/)\w+\/?)/;
 
 /** The first entry whose test matches, or undefined. Never returns the term. */
 export function matchDenylist(
@@ -356,10 +356,9 @@ export function readPublicDenylist(env: NodeJS.ProcessEnv = process.env): Denyli
     after = undefined; // deleted after the read: the content we hold is what was there
   }
   const result: DenylistRead = { state: "ok", entries: parseDenylist(raw) };
-  cache =
-    after && after.isFile()
-      ? { path: file, mtimeMs: after.mtimeMs, size: after.size, result }
-      : undefined;
+  cache = after?.isFile()
+    ? { path: file, mtimeMs: after.mtimeMs, size: after.size, result }
+    : undefined;
   return result;
 }
 

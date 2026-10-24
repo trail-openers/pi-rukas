@@ -34,6 +34,7 @@ import {
 } from "./bash-command-parser.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
+import { registerParentGuards } from "./parent-guards.ts";
 import type { BrokerDeps, PermissionRequest } from "./permission-broker.ts";
 import {
   findProjectConfigPath,
@@ -59,7 +60,6 @@ import {
 } from "./permission-decision-cache.ts";
 import { registerSubagentGuard } from "./permission-subagent-guard.ts";
 import { registerPmBashGuard } from "./pm-bash-guard.ts";
-import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
 import { ROLE_NAMES } from "./roles.js";
 import { trace } from "./trace.js";
 
@@ -268,31 +268,22 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   // `gh api` POST-to-issues-collection second door) is gated behind
   // start_plan_driver (#598); the driver files via direct execp and never
   // passes through this hook.
-  // Mode-independent guards: registered BEFORE the sandbox short-circuit,
-  // the subagent branch, and the trust-mode early return in the main handler.
-  // A hook placed after any of those would, in practice, never run. #926: children get these via the child-guards companion.
+  // Mode-independent guards: registered BEFORE the sandbox short-circuit, the
+  // subagent branch, and the trust-mode early return in the main handler — a
+  // hook placed after any of those would, in practice, never run. #926: children
+  // get these via the child-guards companion.
   registerIssueCreationGuard(pi);
-  // #912 — mode-independent merge guard: fires in ALL modes (trust, strict,
-  // headless, sandbox) for ALL roles. A PR merge on a developer's
-  // self-report plus CI is exactly the incident this guard closes; the
-  // review ledger (review-ledger.ts) is the structural floor that the
-  // prompt-layer doctrine (adversarial_loop + dispatch_lens_review) alone
-  // could not enforce.
+  // #912 — mode-independent merge guard, in ALL modes for ALL roles: a PR merge
+  // on a developer's self-report plus CI is the incident it closes; the review
+  // ledger (review-ledger.ts) is the floor the prompt doctrine could not hold.
   registerMergeGuard(pi);
-  // #600 — PM bash allowlist guard: fires in ALL modes (trust, strict,
-  // headless, sandbox) for consistency. PM-only: gated on isPmModeActive
-  // inside the hook; registered here (the parent path) only — subagent
-  // processes go through registerSubagentGuard and never see it.
+  // #600 — PM bash allowlist guard: fires in ALL modes for consistency, but is
+  // PM-only (gated on isPmModeActive inside the hook) and parent-path only —
+  // subagent processes go through registerSubagentGuard and never see it.
   registerPmBashGuard(pi);
-  // #1788 — the public hygiene guard on the PARENT path. The parent session is
-  // the PM, and the PM is the role that typed the three non-trivial issues
-  // #598 closed and is the role that writes PR bodies by hand, so a guard the
-  // parent never loaded would guard every child and nothing else. It is NOT
-  // added to the shared block's caller list here: `registerModeIndependentGuards`
-  // already registers it for children, and `registerPublicHygieneGuard` is
-  // idempotent per process, so a process that reaches both sites still holds
-  // exactly one hook (see its header).
-  registerPublicHygieneGuard(pi);
+  // #1788 — the parent-path guards (parent-guards.ts), including the public
+  // hygiene guard. Idempotent per process.
+  registerParentGuards(pi);
 
   // Sandbox-mode short-circuit (PR #197). Inside the Docker sandbox (set by
   // the `pi-rukas` wrapper / .devcontainer.json) the container fence IS

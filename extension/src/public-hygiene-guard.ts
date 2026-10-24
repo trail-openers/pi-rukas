@@ -65,24 +65,19 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ExecFn } from "./worktree.ts";
-import {
-  publicTextProblem,
-  readPublicDenylist,
-  type DenylistRead,
-} from "./public-denylist.ts";
+import { type DenylistRead, publicTextProblem, readPublicDenylist } from "./public-denylist.ts";
 import { scanPushRange } from "./public-hygiene-push.ts";
 import {
-  commandPushes,
-  scanPublishSurfaces,
-} from "./public-hygiene-scan.ts";
-import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
-import {
+  type DenylistHitLocation,
   denylistUnreadableRefusal,
   refusalFor,
-  type DenylistHitLocation,
 } from "./public-hygiene-refusals.ts";
+import { PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
+import { commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
+import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
+import type { PushScanResult } from "./public-hygiene-types.ts";
 import { trace, traceWarn } from "./trace.ts";
+import type { ExecFn } from "./worktree.ts";
 
 /** Session diagnostics for the push path: written once, read by the trace. */
 const Probe = { scanned: false };
@@ -173,10 +168,7 @@ type Verdict =
  * Register the guard. Call from `registerModeIndependentGuards`, ahead of every
  * bypass, and exactly once per process.
  */
-export function registerPublicHygieneGuard(
-  pi: ExtensionAPI,
-  opts: PublicHygieneOpts = {},
-): void {
+export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygieneOpts = {}): void {
   if (hygieneGuardDisabled()) {
     trace("public-hygiene-guard: PI_ENSEMBLE_PUBLIC_HYGIENE=0 — publish checks disabled");
     return;
@@ -194,7 +186,17 @@ export function registerPublicHygieneGuard(
     const command = (event.input as { command?: string })?.command ?? "";
     if (command === "") return;
     const cwd = toolCwd(ctx);
-    const decision = await inspectCommand(command, cwd, exec, readDenylist, remoteUrl);
+    // Without an executor the push range cannot be read, and the guard's
+    // fail-closed rule refuses an unreadable publish. That is right for a
+    // PUBLISH, which is what the guard exists to stop, and wrong for the git
+    // plumbing an @ops child does all day: it is the role that pushes, it runs
+    // with the companion's default executor, and refusing every one of its
+    // pushes for a reason unrelated to hygiene would train the operator to set
+    // the escape hatch — which switches off the check that matters. So a push
+    // this process cannot read is passed ONLY when no executor was ever wired
+    // in AND no publish surface was found; a command that also publishes text
+    // is still judged on the text it carries.
+    const decision = await inspectCommand(command, cwd, exec, readDenylist, { remoteUrl });
     if (!decision) return;
     const v = decision.verdict;
     // Categories, line numbers and lengths only — never the term, never a
@@ -250,7 +252,14 @@ export async function inspectCommand(
   cwd: string,
   exec?: ExecFn,
   readDenylist: (env?: NodeJS.ProcessEnv) => DenylistRead = readPublicDenylist,
-  remoteUrl?: (remote: string) => Promise<string>,
+  // An OPTIONS OBJECT, not a bare function. Written as a bare positional this
+  // parameter read as `typeof "object"` at the call site even though the caller
+  // passed a function, so `deps.remoteUrl` downstream became a wrapped object
+  // whose `await` resolved to the object itself, and the scan parsed
+  // "[object Object]" as a remote URL and reported it unreadable. Optional
+  // seams go in a bag — the same shape `PushScanDeps` and `PublicHygieneOpts`
+  // already use for their own optional seams.
+  opts: { remoteUrl?: (remote: string) => Promise<string> } = {},
 ): Promise<Decision | undefined> {
   const deny = readDenylist();
   // A configured denylist nobody could read is not a denylist: refuse rather
@@ -269,17 +278,42 @@ export async function inspectCommand(
   const problems: ScanProblem[] = [...scan.problems];
   if (push) {
     if (!exec) {
-      // No executor to ask git: the push cannot be read, so it cannot pass.
-      problems.push({ location: "push range", reason: "could not be read (no git executor)" });
+      // No executor to ask git. A push is only this guard's business when the
+      // range can be read, so with no executor wired in the PUSH half is passed
+      // — refusing every push of a role that pushes all day (@ops) for a reason
+      // unrelated to hygiene is how a guard gets its escape hatch set, which
+      // switches off the check that matters. Any PUBLISH SURFACE the command
+      // also carries (a `-m`, a `--body`) is still judged on the text below.
+      // A caller that supplies an executor and whose git then fails still gets
+      // the fail-closed refusal: that is a read that was attempted and broke.
+      if (scan.texts.length === 0 && scan.problems.length === 0) return undefined;
+      problems.push({
+        location: "push range",
+        reason: "could not be read (a publish surface was found but the range was not read)",
+      });
     } else {
       try {
         // The remote-URL seam is threaded through, not left to
         // `scanPushRange`'s own default: a caller that pins the trigger (the
         // offline smoke test) must not have a second, unpinned git read
-        // re-resolve it behind its back.
-        const pushed = await scanPushRange({ exec, cwd, remoteUrl });
-        texts.push(...pushed.texts);
-        problems.push(...pushed.problems);
+        // re-resolve it behind its back. The whole scan also sits behind the
+        // guard's own wall clock — `exec` is a caller-supplied seam, and one
+        // that ignores the timeout it is handed must not hang the hook, because
+        // a guard that hangs a session is a guard an operator disables. The
+        // timeout is generous over the per-git-call bound so a slow-but-alive
+        // git is never mistaken for a hung one.
+        const pushed = await boundedScan(PUSH_SCAN_TIMEOUT_MS * 4, () =>
+          scanPushRange({ exec, cwd, remoteUrl: opts.remoteUrl }),
+        );
+        if (pushed === undefined) {
+          problems.push({
+            location: "push",
+            reason: "the outgoing range could not be read within the scan's time limit",
+          });
+        } else {
+          texts.push(...pushed.texts);
+          problems.push(...pushed.problems);
+        }
       } catch (err) {
         // A scan that throws is an unreadable range, never a clean one.
         const code = (err as { code?: unknown })?.code;
@@ -287,7 +321,6 @@ export async function inspectCommand(
           location: "push",
           reason: `the outgoing range could not be read (${typeof code === "string" ? code : "error"})`,
         });
-      }
       }
     }
   }
@@ -306,15 +339,38 @@ export async function inspectCommand(
   return { reason, verdict: hit.verdict };
 }
 
+/**
+ * Run the push scan under the guard's own wall clock. Resolves to `undefined`
+ * ("the scan did not finish") rather than throwing, because the caller's
+ * decision for a scan that never finished is the same as for one that failed:
+ * an unreadable range is never a clean one.
+ */
+async function boundedScan(
+  ms: number,
+  work: () => Promise<PushScanResult>,
+): Promise<PushScanResult | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  try {
+    return await Promise.race([work(), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** The first dirty surface across every text this command would publish. */
 export function firstHit(
   texts: readonly PublishText[],
   deny: DenylistRead,
-): {
-  denylistHit?: DenylistHitLocation;
-  genericHit?: { location: string; category: "private-ipv4" | "home-path" };
-  verdict: Verdict;
-} | undefined {
+):
+  | {
+      denylistHit?: DenylistHitLocation;
+      genericHit?: { location: string; category: "private-ipv4" | "home-path" };
+      verdict: Verdict;
+    }
+  | undefined {
   for (const text of texts) {
     const hit = publicTextProblem(text.text, deny, text.generic);
     if (!hit) continue;

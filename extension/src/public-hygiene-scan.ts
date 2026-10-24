@@ -55,11 +55,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
-import type {
-  PublishScan,
-  PublishText,
-  ScanProblem,
-} from "./public-hygiene-types.ts";
+import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
 export type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
@@ -73,9 +69,6 @@ export const PUSH_SCAN_TIMEOUT_MS = 10_000;
 export const PUSH_SCAN_MAX_BUFFER = 5 * 1024 * 1024;
 
 /** A `git push` in this command, as written, or undefined. */
-export function pushVerbOf(command: string): string | undefined {
-  return pushesRemote(command);
-}
 
 /** Flags whose value is prose the forge publishes, and what to call it. */
 const GH_TEXT_FLAGS: Record<string, string> = {
@@ -138,6 +131,18 @@ function valueAfter(words: string[], i: number): { value: string; used: number }
   return { value: next, used: 1 };
 }
 
+/**
+ * Does the word `w` use text flag `flag`, with the flag ENDED by a delimiter?
+ * Accepts `--body`, `--body=…` and a glued short form (`-b…`), and refuses a
+ * long flag that merely prefixes a longer one (`--body` vs `--body-file`).
+ */
+function flagEndsAt(w: string, flag: string): boolean {
+  if (w === flag) return true;
+  if (!w.startsWith(flag)) return false;
+  if (flag.length > 2) return w[flag.length] === "=";
+  return w.length > flag.length;
+}
+
 /** Glued short form: `-bfoo` is `-b` with value `foo` (getopt accepts it). */
 function glued(w: string, flag: string): string | undefined {
   if (flag.length !== 2 || !flag.startsWith("-")) return undefined;
@@ -190,15 +195,33 @@ function readPublishFile(
 ): { text?: string; problem?: ScanProblem } {
   if (file === "") return { problem: { location, reason: "named an empty file" } };
   const abs = path.resolve(cwd, file);
+  // The admissible-root test comes BEFORE anything is opened. Reading first and
+  // checking after would decide by CONTENT which files this guard is allowed to
+  // read: a file outside the cwd tree and the temp dir that happened to carry a
+  // denylist term was reported as a hit and its refusal named the term's line,
+  // which is a confirmation that the private string occurs at that path in a
+  // directory the guard had just said it would not read. A file outside the
+  // roots is refused on its PATH alone, whatever — and whoever — is in it.
+  const roots = admissibleRoots(cwd);
   let real: string;
   try {
     real = realpathSync(abs);
   } catch (err) {
+    // A path that does not resolve is still a path, and the roots question is
+    // answerable for it: an unreadable file under an admissible root is a
+    // problem the agent can fix, so it is reported where it was named.
+    if (!roots.some((root) => within(root, path.resolve(abs)))) {
+      return {
+        problem: {
+          location,
+          reason: "names a file outside this directory tree and the system temp dir",
+        },
+      };
+    }
     return {
       problem: { location, reason: `could not read the named file (${codeOf(err)})` },
     };
   }
-  const roots = admissibleRoots(cwd);
   if (!roots.some((root) => within(root, real))) {
     return {
       problem: {
@@ -229,7 +252,7 @@ function readPublishFile(
 }
 
 /** The directories a named body file may live in: the cwd tree and /tmp. */
-export function admissibleRoots(cwd: string): string[] {
+function admissibleRoots(cwd: string): string[] {
   const roots: string[] = [];
   for (const dir of [cwd, tmpdir()]) {
     try {
@@ -276,7 +299,13 @@ function scanGhPublish(argv: string[], cwd: string, scan: PublishScan): void {
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i] ?? "";
     for (const [flag, location] of Object.entries(textFlags)) {
-      if (w === flag || (w.startsWith(`${flag}=`) && w.length > flag.length + 1)) {
+      // A text flag must END at a delimiter. Without this, `--body` matched
+      // `--body-file` as a prefix (a `-` is not a delimiter), the path was
+      // collected as inline body text, and `--body-file` never reached the
+      // file reader — so the file was never read, its size bound never applied,
+      // and its out-of-root path was never checked. Prefix-matching a flag set
+      // is how a flag's whole policy quietly stops running.
+      if (flagEndsAt(w, flag)) {
         const v = valueAfter(argv, i);
         if (v) {
           scan.texts.push({ location, text: v.value, generic: true });
@@ -333,7 +362,8 @@ function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void {
         if (file !== undefined && (fieldFile || file !== v.value)) {
           const read = readPublishFile(file, cwd, "comment");
           if (read.problem) problems.push(read.problem);
-          else if (read.text !== undefined) texts.push({ location: "comment", text: read.text, generic: true });
+          else if (read.text !== undefined)
+            texts.push({ location: "comment", text: read.text, generic: true });
         } else {
           texts.push({ location: "comment", text: v.value, generic: true });
         }
@@ -346,7 +376,8 @@ function scanGhApi(argv: string[], cwd: string, scan: PublishScan): void {
       if (v) {
         const read = readPublishFile(inputValue(v.value), cwd, "body");
         if (read.problem) problems.push(read.problem);
-        else if (read.text !== undefined) texts.push({ location: "body", text: read.text, generic: true });
+        else if (read.text !== undefined)
+          texts.push({ location: "body", text: read.text, generic: true });
         k += v.used;
       }
       continue;
@@ -370,7 +401,7 @@ function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): void {
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i] ?? "";
     for (const flag of COMMIT_MESSAGE_FLAGS) {
-      if (w === flag || (w.startsWith(`${flag}=`) && w.length > flag.length + 1)) {
+      if (flagEndsAt(w, flag)) {
         const v = valueAfter(argv, i);
         if (v) {
           scan.texts.push({ location: "commit message", text: v.value, generic: true });
@@ -394,7 +425,6 @@ function scanGitCommit(argv: string[], cwd: string, scan: PublishScan): void {
     }
   }
 }
-
 
 /** An exec/fs error's `code`, for a refusal that names why without quoting content. */
 function codeOf(err: unknown): string {
@@ -452,7 +482,14 @@ export function commandPushes(command: string): boolean {
   return pushesRemote(command) !== undefined;
 }
 
-/** Whether a file exists — used by the push scan's remote-branch probe. */
+/**
+ * Was this file readable as UTF-8 text? Used by the push scan's remote-branch
+ * probe. Not consulted for a refusal: readability is decided by
+ * `readPublishFile`, which stats and reads, and this module's fail-closed rule
+ * is "a surface this guard could not read is never reported clean" — so a
+ * helper that returns true for a path it did not read must never be the answer
+ * to "may I publish this?".
+ */
 export function fileReadable(file: string): boolean {
   try {
     return existsSync(file) && statSync(file).isFile();

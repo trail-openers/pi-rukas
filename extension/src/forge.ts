@@ -12,7 +12,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
-import { PublicHygieneError, publicTextRefusal } from "./public-hygiene-guard.ts";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
@@ -41,6 +40,7 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
+import { PublicHygieneError, publicTextRefusal } from "./public-hygiene-guard.ts";
 export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
 import type {
   CiWatchOpts,

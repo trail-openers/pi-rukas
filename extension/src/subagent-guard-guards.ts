@@ -12,8 +12,8 @@ import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
-import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
+import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
 
 export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // BEFORE every bypass below. Trust mode is the default on an interactive

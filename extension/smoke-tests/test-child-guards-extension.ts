@@ -143,8 +143,8 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers["tool_call"]?.length ?? 0;
   assert(
-    n === 6,
-    `registers exactly 6 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push and #1666 vipune-write, oo-rewrite excluded; got ${n})`,
+    n === 7,
+    `registers exactly 7 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write and #1788 public-hygiene, oo-rewrite excluded; got ${n})`,
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");
@@ -324,6 +324,11 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     "registerDeveloperPushGuard",
     // #1666 — the destructive vipune write refusal, which trust children never got from agents.json.
     "registerMemoryWriteGuard",
+    // #1788 — the public repository hygiene guard. Same placement reasoning as
+    // the merge guard: the repository is public and the modes this must fire in
+    // are the defaults, so a trust or sandbox child that got only this block
+    // would otherwise publish private text unguarded.
+    "registerPublicHygieneGuard",
   ];
   // The companion delegates to the shared block — the single list.
   assert(

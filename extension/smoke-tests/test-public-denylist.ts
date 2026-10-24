@@ -25,8 +25,8 @@ import {
   readPublicDenylist,
   resetDenylistCacheForTests,
 } from "../src/public-denylist.ts";
-import { assert, exit } from "./merge-guard-helpers.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { assert, exit } from "./merge-guard-helpers.ts";
 
 const dir = mkdtempSync(path.join(tmpdir(), "public-denylist-"));
 const file = (name: string, content: string): string => {
@@ -98,7 +98,10 @@ const file = (name: string, content: string): string => {
     process.exit(1);
   }
   assert(r.entries.length === 2, "comments and blank lines produce no entries");
-  assert(r.entries[0]?.line === 4, "the line number names the line in the file, not the entry index");
+  assert(
+    r.entries[0]?.line === 4,
+    "the line number names the line in the file, not the entry index",
+  );
   assert(
     matchDenylist(r.entries, "see the EXAMPLE-private-host box")?.line === 4,
     "a literal matches case-insensitively as a substring and reports its line only",
@@ -117,7 +120,7 @@ const file = (name: string, content: string): string => {
   const p = file("regex", "regex:example-PRIVATE-host\nregex:[unclosed(\nregex:\nplain-entry\n");
   const entries = parseDenylist(
     // A comment-only read keeps the line numbers the guard will name.
-    `regex:example-PRIVATE-host\nregex:[unclosed(\nregex:\nplain-entry\n`,
+    "regex:example-PRIVATE-host\nregex:[unclosed(\nregex:\nplain-entry\n",
   );
   assert(entries.length === 2, "an invalid regex and an empty one are skipped, not fatal");
   assert(
@@ -140,7 +143,7 @@ const file = (name: string, content: string): string => {
 // ── 7. Regex evaluation is bounded by slices, and still finds a late match.
 {
   const entries = parseDenylist("regex:needle-at-the-end\n");
-  const long = "x".repeat(REGEX_SLICE_BYTES * 3) + "needle-at-the-end";
+  const long = `${"x".repeat(REGEX_SLICE_BYTES * 3)}needle-at-the-end`;
   assert(
     entries[0]?.test(long) === true,
     "a match past the slice boundary is still found (slicing must not truncate the scan)",
@@ -208,9 +211,21 @@ const file = (name: string, content: string): string => {
 
 // ── 10. The generic set: home paths, with the documented placeholders exempt.
 {
-  assert(genericCategoryOf("/home/alice/secrets") === "home-path", "a personal home path is refused");
-  assert(genericCategoryOf("/Users/alice/x") === "home-path", "a macOS personal home path is refused");
-  for (const ok of ["/home/dev/x", "/home/user/x", "/home/example/x", "/home/ops/x", "/home/runner/x"]) {
+  assert(
+    genericCategoryOf("/home/alice/secrets") === "home-path",
+    "a personal home path is refused",
+  );
+  assert(
+    genericCategoryOf("/Users/alice/x") === "home-path",
+    "a macOS personal home path is refused",
+  );
+  for (const ok of [
+    "/home/dev/x",
+    "/home/user/x",
+    "/home/example/x",
+    "/home/ops/x",
+    "/home/runner/x",
+  ]) {
     assert(genericCategoryOf(ok) === undefined, `the placeholder \`${ok}\` passes`);
   }
   assert(

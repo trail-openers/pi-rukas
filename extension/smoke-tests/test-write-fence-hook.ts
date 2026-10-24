@@ -185,8 +185,8 @@ for (const [tool, input] of directAllowed) {
   const trust = fakePi();
   childGuards(trust);
   assert(
-    (trust.handlers.tool_call ?? []).length === 7,
-    `D: trust mode: the six mode-independent guards plus the fence (got ${trust.handlers.tool_call?.length ?? 0}, want 7)`,
+    (trust.handlers.tool_call ?? []).length === 8,
+    `D: trust mode: the seven mode-independent guards plus the fence (got ${trust.handlers.tool_call?.length ?? 0}, want 8)`,
   );
   const refusal = await toolCall(trust, {
     toolName: "write",

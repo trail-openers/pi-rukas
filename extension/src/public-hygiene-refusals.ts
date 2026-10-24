@@ -45,18 +45,13 @@ export interface DenylistHitLocation {
  * rather than a copy-paste into the next public comment.
  */
 function remedy(line: number): string {
-  return (
-    `Rewrite the text without that term. The private denylist is at ${publicDenylistPath()} ` +
-    `(the entry that fired is line ${line}); the term itself is deliberately not repeated ` +
-    `here, because this message reaches the transcript and the run log. If this publish is ` +
-    `genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`
-  );
+  return `Rewrite the text without that term. The private denylist is at ${publicDenylistPath()} (the entry that fired is line ${line}); the term itself is deliberately not repeated here, because this message reaches the transcript and the run log. If this publish is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`;
 }
 
 /** A denylist entry matched in a piece of public text. */
 export function denylistRefusal(hit: DenylistHitLocation): string {
   return [
-    `Refused: this publish would put private text in a public repository.`,
+    "Refused: this publish would put private text in a public repository.",
     `A private-denylist entry matched the ${hit.location} (denylist line ${hit.line}).`,
     remedy(hit.line),
   ].join("\n");
@@ -69,35 +64,28 @@ export function genericRefusal(location: string, category: GenericCategory): str
       ? "a private network address (10/8, 172.16/12, 192.168/16 or 100.64/10)"
       : "a personal home directory path";
   return [
-    `Refused: this publish would put private text in a public repository.`,
-    `The ${location} contains ${what}. This check is built in — it applies whether or not a ` +
-      `denylist file exists, so there is no line to look up.`,
-    `Rewrite the ${location} to name the thing instead of the address or the path (an ` +
-      `example address from RFC 5737 such as 192.0.2.10, or a placeholder like /home/dev/). ` +
-      `If this publish is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`,
+    "Refused: this publish would put private text in a public repository.",
+    `The ${location} contains ${what}. This check is built in — it applies whether or not a denylist file exists, so there is no line to look up.`,
+    `Rewrite the ${location} to name the thing instead of the address or the path (an example address from RFC 5737 such as 192.0.2.10, or a placeholder like /home/dev/). If this publish is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`,
   ].join("\n");
 }
 
 /** A publish whose text this guard could not read. */
 export function unreadableRefusal(what: string, reason: string): string {
   return [
-    `Refused: this publish could not be checked, and an unchecked publish is not a clean one.`,
+    "Refused: this publish could not be checked, and an unchecked publish is not a clean one.",
     `The ${what} ${reason}.`,
-    `Fix why it could not be read and run the command again — put the body in a file under ` +
-      `the working directory or the system temp dir, or retry the git read. If this publish ` +
-      `is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`,
+    `Fix why it could not be read and run the command again — put the body in a file under the working directory or the system temp dir, or retry the git read. If this publish is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`,
   ].join("\n");
 }
 
 /** The denylist file is configured but unreadable, so the private check cannot run. */
 export function denylistUnreadableRefusal(reason: string): string {
   return [
-    `Refused: the private denylist could not be checked, and a publish without that check is ` +
-      `not a checked one.`,
+    "Refused: the private denylist could not be checked, and a publish without that check is " +
+      "not a checked one.",
     `Reason: ${reason}.`,
-    `Fix the file (its path is ${publicDenylistPath()}), or remove it to fall back to the ` +
-      `built-in generic set. If this publish is genuinely fine, an operator can set ` +
-      `${HYGIENE_ESCAPE_HATCH}=0.`,
+    `Fix the file (its path is ${publicDenylistPath()}), or remove it to fall back to the built-in generic set. If this publish is genuinely fine, an operator can set ${HYGIENE_ESCAPE_HATCH}=0.`,
   ].join("\n");
 }
 

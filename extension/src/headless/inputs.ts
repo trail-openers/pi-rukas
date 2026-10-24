@@ -280,6 +280,17 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // Sorted after PROVIDER_LENS_*: "PROVIDER_R" > "PROVIDER_L".
   ms("PROVIDER_RETRY_FLOOR_MS", 60_000),
   ms("PROVIDER_RETRY_MAX_WAIT_MS", 1_800_000),
+  // #1788 — the path of the PRIVATE denylist the hygiene guard matches public
+  // text against. Outside every repository on purpose (a cycle that could edit
+  // the list could delete its own entry); absent is a normal state, because the
+  // guard's generic set applies whether or not the file exists.
+  dir("PUBLIC_DENYLIST", null),
+  // #1788 — the public repository hygiene guard. `0` disables the `tool_call`
+  // hook that refuses a publish carrying a private term; only `0` is an off
+  // switch. Documented in docs/configuration.md and docs/troubleshooting.md.
+  // Sorted here because the name comparator folds `_` to a space, so "PUBLIC "
+  // (space, not underscore) sorts after every "PROVIDER_" prefix.
+  flag("PUBLIC_HYGIENE", true),
   // #1101 — how long a group may wait on a sibling it depends on before the
   // queue caps the wait (`dependency-timeout`).
   ms("QUEUE_DEFER_CAP_MS", 1_800_000),

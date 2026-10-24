@@ -543,6 +543,100 @@ Also outside the rule: a command name that is itself an expansion, `cd -`, `GIT_
 
 **Where the count lives:** Each refusal is one line in `<scratch>/write-fence-<pid>.jsonl`. The driver recounts them at each step boundary and at the terminal line, and stores the total as `pipelineState.writeFenceRefusals`. Anything the count cannot account for is kept apart: a log the driver cannot read, a refusal the child could not log (it leaves a `write-fence-unaccounted-*` marker), and a log a `--restart` could not remove. The handoff then says *"Count unknown"* and gives the number (`pipelineState.writeFenceUnreadable`); it is never a silent zero. The count is advisory, not a gate: the scratch dir is child-writable, so a child can delete its own log. A write the hook itself cannot judge (an internal fault, or a path or command that is not text) is refused as *"could not be judged"* and counted like any refusal. A `--restart` clears the logs.
 
+## Public repository hygiene (#1788)
+
+### An agent's `gh` / `git commit` / `git push` was refused for "private text"
+
+**Symptom:** A tool call is blocked with:
+
+```
+Refused: this publish would put private text in a public repository.
+A private-denylist entry matched the body (denylist line 4).
+```
+
+or, for a push, `the ADDED diff lines of commit 1a2b3c4d (path/to/file.rs) …`. The command
+never ran — a `tool_call` hook refuses it before anything is published.
+
+**Cause:** The public hygiene guard (`public-hygiene-guard.ts`) refuses a command whose **public
+text** carries a term from the operator's private denylist, or an address/path from its built-in
+generic set. It is registered in the mode-independent guard block, so it fires in trust, sandbox,
+strict and headless modes alike — the modes where the permission layer is off and would otherwise
+check nothing. What it inspects:
+
+| Command | Surfaces |
+|---|---|
+| `gh issue\|pr\|release create\|edit\|comment\|review` | `--title`, `--body`, `--body-file`/`-F`, `--notes`/`--notes-file` (also inside `bash -c`) |
+| `gh api` writing to an `/issues`, `/pulls`, `/releases` or `/comments` path | `-f`/`-F` values, `@file` and `file=` operands, `--input` files |
+| `git commit` | `-m`/`--message`/`-F`/`--file` |
+| `git push` to a **github.com** remote | the outgoing commits' messages **and** their added diff lines |
+
+The driver's own forge posts bypass the hook (they are in-process execs) and are checked at the
+`createForge` seam in `forge.ts` instead; a human `git push` in their own terminal is covered by
+`bin/pre-push-hygiene.sh`.
+
+**Fix (the normal case):** the refusal is correct — the publish really does name something private.
+Rewrite the text to describe the thing instead of naming it (`the staging host`, an RFC 5737 address
+such as `192.0.2.10`, `/home/dev/` rather than a personal home path). The refusal names a
+**denylist line number, a path, or a category** and never the matched term, so open the denylist at
+the line it cites to see what matched.
+
+**Where the denylist lives:** `~/.config/pi-rukas/public-denylist`, or `$PI_ENSEMBLE_PUBLIC_DENYLIST`
+when set. One term per line, `#` comments, blank lines ignored, literal matches are case-insensitive.
+A line beginning `regex:` is treated as a regular expression. The file lives **outside every repository
+and outside every worktree** on purpose: a cycle that could edit the list could delete its own entry,
+and a list inside the repo would be pushed to the public remote by the very commits it polices. It is
+never read at a write position, and its path is never printed.
+
+**The generic set needs no file.** Private IPv4 in `10/8`, `172.16/12`, `192.168/16` and `100.64/10`,
+and personal home paths, are refused whether or not the denylist exists — so a fresh install with no
+denylist file is not an unguarded install. `192.0.2.0/24`, `127.0.0.1`, `::1` and `/home/dev/` are
+exempt, because docs and tests name those.
+
+**Two tiers, on purpose.** A publish (a title, a body, a comment, a commit message) is checked against
+**both** the private denylist and the generic set. A `git push`'s **added diff lines** are checked
+against the **private denylist only** — diff bodies legitimately contain IPs and home paths in test
+fixtures, and a guard that refused those gets switched off, which is the worse failure.
+
+**A surface the guard cannot read is refused, never assumed clean.** An unreadable denylist, a
+`--body-file` outside the working-directory tree and the OS temp dir, a body file over 1 MiB, a git
+range that fails or hangs: each is a refusal naming what it could not read. The out-of-root check runs
+**before** the file is opened, so a file outside the roots is refused on its path alone and its content
+is neither read nor quoted.
+
+**Escape hatch:** `PI_ENSEMBLE_PUBLIC_HYGIENE=0` disables the guard (only `0`; `false` and `off` are
+not off switches). Set it for one command (`PI_ENSEMBLE_PUBLIC_HYGIENE=0 gh pr create …`) rather than
+in the shell rc — the guard's value is that it runs on every publish, and an rc-level disable is
+permanent and silent. The hook logs one `WARN public-hygiene: BLOCKED …` line per refusal; that line
+carries a category, a line number and a length, never content.
+
+### A push was refused but the commits look fine
+
+**Cause:** The scan reads the **outgoing range** (`<remote>/<branch>..HEAD`), so it sees every commit
+the push would publish — including one someone else committed onto the branch, and including commit
+**messages**, which are easy to forget. Non-github.com remotes are not push-scanned (a private remote
+is not the public forge).
+
+**Fix:** `git log --format=%B <remote>/<branch>..HEAD` and read the messages; the refusal names the
+short sha and the path, so `git show <sha>` finds the line. Amend or rebase the offending commit and
+push again. If the refusal instead says the range *could not be read*, the cause is git (an unreadable
+remote URL, a hung `git log`) and the fix is to make that read work — a range nobody read is not a
+clean range.
+
+### `bin/pre-push-hygiene.sh` does nothing on a human push
+
+**Cause:** it is not installed. It is a git `pre-push` hook, and git runs hooks from
+`.git/hooks/` (or `core.hooksPath`) — placing the file in the repo does not activate it.
+
+**Fix:**
+
+```bash
+ln -s "$PWD/bin/pre-push-hygiene.sh" .git/hooks/pre-push
+```
+
+It honours the same denylist path and the same `PI_ENSEMBLE_PUBLIC_HYGIENE=0` escape hatch, so a
+human and an agent are judged against one list. It reads the pushed range from stdin the way git
+hands it to a `pre-push` hook, and it prints locations, never terms.
+
 ## Image acquisition
 
 ### `./install.sh` takes 10+ minutes (cold local build)

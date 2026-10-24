@@ -37,11 +37,8 @@
 
 import { parseRemoteUrl } from "./forge-detect.ts";
 import { execGit, refResolves } from "./git-range.ts";
+import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
 import type { PublishText, PushScanResult, ScanProblem } from "./public-hygiene-types.ts";
-import {
-  PUSH_SCAN_MAX_BUFFER,
-  PUSH_SCAN_TIMEOUT_MS,
-} from "./public-hygiene-scan.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** The host whose pushes publish to the public forge (issue decision 3). */
@@ -72,10 +69,28 @@ export interface PushScanDeps {
 export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult> {
   const timeout = deps.timeoutMs ?? PUSH_SCAN_TIMEOUT_MS;
   const maxBuffer = deps.maxBuffer ?? PUSH_SCAN_MAX_BUFFER;
-  const git = (args: string[]) =>
-    execGit(deps.exec, deps.cwd, args, { timeout, maxBuffer });
-  const remotes = await git(["remote"]).catch(() => undefined);
-  const names = (remotes ?? "")
+  const git = (args: string[]) => execGit(deps.exec, deps.cwd, args, { timeout, maxBuffer });
+  // "This clone has no remote" and "git could not be asked" are DIFFERENT facts
+  // and must not share a sentence — they send the agent to different things to
+  // fix. A `.catch(() => undefined)` collapsed both, so a git that never
+  // returned reported itself as a clone with no remote. The probe's failure is
+  // tracked by its own marker, and the whole scan carries a wall clock of its
+  // own: an executor that ignores the timeout it is handed must still not hang
+  // the hook, because a hung guard is a guard an operator switches off.
+  const askFailed = Symbol("ask-failed");
+  const remotes = await bounded(
+    timeout,
+    askFailed,
+    git(["remote"]).catch(() => askFailed),
+  );
+  if (remotes === askFailed) {
+    return {
+      scanned: false,
+      texts: [],
+      problems: [{ location: "push", reason: "this clone's remotes could not be read" }],
+    };
+  }
+  const names = remotes
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
@@ -87,18 +102,35 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
     };
   }
   let target: { remote: string; host: string } | undefined;
+  // Read once, before the loop, into a binding the branches below test. Optional
+  // seams arrive as a bag (`opts`), so this is a plain local read and there is
+  // exactly one place that decides whether a transport was pinned.
+  const transport = deps.remoteUrl;
   for (const name of names) {
     let url: string;
-    try {
-      url = deps.remoteUrl
-        ? await deps.remoteUrl(name)
-        : await git(["remote", "get-url", name]);
-    } catch {
-      return {
-        scanned: false,
-        texts: [],
-        problems: [{ location: "push", reason: `the ${name} remote URL could not be read` }],
-      };
+    // A pinned transport and an unreadable `git remote get-url` are different
+    // facts and must not be reportable as the same sentence, so their failures
+    // are separate branches rather than one shared catch.
+    if (transport === undefined) {
+      try {
+        url = await git(["remote", "get-url", name]);
+      } catch {
+        return {
+          scanned: false,
+          texts: [],
+          problems: [{ location: "push", reason: `the ${name} remote URL could not be read` }],
+        };
+      }
+    } else {
+      try {
+        url = await transport(name);
+      } catch {
+        return {
+          scanned: false,
+          texts: [],
+          problems: [{ location: "push", reason: `the ${name} remote URL could not be read` }],
+        };
+      }
     }
     const parsed = parseRemoteUrl(url.trim());
     if (parsed?.host === PUBLIC_GITHUB_HOST) {
@@ -153,7 +185,7 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
     if (tab < 0) continue;
     const sha = shortSha(record.slice(0, tab));
     const message = record.slice(tab + 1);
-    texts.push({ location: `commit message (${sha})`, text: message, generic: false });
+    texts.push({ location: `commit message (${sha})`, text: message, generic: true });
   }
   try {
     patch = await git(["log", "--patch", "--format=", `${base}..HEAD`]);
@@ -217,6 +249,27 @@ async function resolveBase(
     if (state.state === "unknown") return undefined;
   }
   return undefined;
+}
+
+/**
+ * Resolve `work`, or `fallback` once `ms` has passed. The guard's own wall
+ * clock: `exec` is a seam the caller supplies, and an executor that ignores the
+ * timeout it was handed would otherwise hang the `tool_call` hook forever — a
+ * hung guard is a guard an operator switches off, which is the failure mode the
+ * issue's criteria name. The losing promise is left to settle; nothing in this
+ * module holds state that a late resolution can corrupt, and the scan is
+ * read-only against git.
+ */
+async function bounded<T>(ms: number, fallback: T, work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** A short SHA for the refusal's location. */

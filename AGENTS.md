@@ -543,6 +543,8 @@ This file enforces principles, conventions, and load-bearing constraints. It's n
 
 This repository and its issues, pull requests, comments and releases are public. Never include the maintainers private hosts, networks, addresses, private projects, personal paths, or field-run identifiers in files, commit messages, PR or issue text. Field evidence is summarised generically; detail lives outside this repository.
 
+**This rule is enforced, not just stated (#1788).** AGENTS.md prose is what failed: agent-written issues, PR bodies, comments and commit messages carried private names while this section said not to. The `public-hygiene-guard.ts` `tool_call` hook refuses a `gh` publish, a `git commit` message, or a github.com `git push` (commit messages plus added diff lines) whose text matches an entry in the operator's private denylist at `~/.config/pi-rukas/public-denylist` (`$PI_ENSEMBLE_PUBLIC_DENYLIST`), or an address/path from its built-in generic set — private IPv4 in `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, and personal home paths. It is registered in the mode-independent guard block, so it fires in trust, sandbox, strict and headless modes, where the permission layer checks nothing. It **never** prints the matched term: a refusal names a denylist line, a path, or a category. A surface it cannot read is refused, never assumed clean. `bin/pre-push-hygiene.sh` is the human-side counterpart for a `git push` typed in a terminal. Escape hatch `PI_ENSEMBLE_PUBLIC_HYGIENE=0`; mechanism in [docs/troubleshooting.md](docs/troubleshooting.md) → "Public repository hygiene".
+
 ---
 
 ## 12. Code style

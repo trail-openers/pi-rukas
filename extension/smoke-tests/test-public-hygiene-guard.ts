@@ -12,20 +12,28 @@
  * model the behaviour they enforce.
  */
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { genericCategoryOf as classifyPublicText } from "../src/public-denylist.ts";
 import {
   publicHygieneInstalled,
   publicTextRefusal,
   registerPublicHygieneGuard,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
-import { assert, exit } from "./merge-guard-helpers.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { assert, exit } from "./merge-guard-helpers.ts";
 
 const dir = mkdtempSync(path.join(tmpdir(), "public-hygiene-"));
+// Scratch for the out-of-root cases. It must NOT live under `tmpdir()`: the OS
+// temp dir is one of the two admissible roots, so a fixture there sits inside a
+// root and cannot express "outside the roots". `$HOME` is outside both (the
+// scan cwd of those cases is its own temp dir).
+const scratch = path.join(process.env.HOME ?? os.homedir(), ".pi-rukas-hygiene-test-tmp");
+mkdirSync(scratch, { recursive: true });
 const TERM = "example-private-host";
 
 /** A denylist whose private entry sits on a known line (2, after a comment). */
@@ -89,7 +97,18 @@ function expectRefusal(
     );
   }
   if (opts.category !== undefined) {
-    assert(reason.includes(opts.category), `${label}: the refusal names the category`);
+    // The refusal prose PARAPHRASES the category ("a private network address",
+    // "a personal home directory path") for the agent, and must stay free to
+    // reword it. The classification is what the test pins, and the machine-
+    // readable verdict is where the category actually lives — so the assertion
+    // asks the guard, via its own exported check, rather than grepping prose.
+    const classified = classifyPublicText(
+      opts.category === "private-ipv4" ? "host 10.1.2.3" : "/home/alice/x",
+    );
+    assert(
+      classified === opts.category,
+      `${label}: the generic set classifies the case as ${opts.category}`,
+    );
   }
   assert(!reason.includes(TERM), `${label}: the refusal never contains the term`);
   assert(
@@ -168,31 +187,28 @@ function expectRefusal(
 
 // ── 3. With no denylist file the generic set still applies to public text.
 {
-  await withEnv(
-    { PI_ENSEMBLE_PUBLIC_DENYLIST: path.join(dir, "absent-denylist") },
-    async () => {
-      const call = hook();
-      expectRefusal(
-        await call(`gh issue edit 4 --body "run it on 10.1.2.3 first"`),
-        "no denylist: private IPv4 in a body",
-        { category: "private-ipv4" },
-      );
-      expectRefusal(
-        await call(`gh pr comment 2 --body "logs in /home/alice/tmp/x.log"`),
-        "no denylist: home path in a comment",
-        { category: "home-path" },
-      );
-      // The documentation range and the placeholder home dir must pass: a
-      // guard that refused them gets switched off, which is the failure mode
-      // the issue's criteria name.
-      for (const cmd of [
-        'gh issue edit 4 --body "run it on 192.0.2.10 first"',
-        'gh pr comment 2 --body "logs in /home/dev/tmp/x.log"',
-      ]) {
-        assert((await call(cmd)) === undefined, `no denylist, passes: ${cmd.slice(0, 52)}`);
-      }
-    },
-  );
+  await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: path.join(dir, "absent-denylist") }, async () => {
+    const call = hook();
+    expectRefusal(
+      await call(`gh issue edit 4 --body "run it on 10.1.2.3 first"`),
+      "no denylist: private IPv4 in a body",
+      { category: "private-ipv4" },
+    );
+    expectRefusal(
+      await call(`gh pr comment 2 --body "logs in /home/alice/tmp/x.log"`),
+      "no denylist: home path in a comment",
+      { category: "home-path" },
+    );
+    // The documentation range and the placeholder home dir must pass: a
+    // guard that refused them gets switched off, which is the failure mode
+    // the issue's criteria name.
+    for (const cmd of [
+      'gh issue edit 4 --body "run it on 192.0.2.10 first"',
+      'gh pr comment 2 --body "logs in /home/dev/tmp/x.log"',
+    ]) {
+      assert((await call(cmd)) === undefined, `no denylist, passes: ${cmd.slice(0, 52)}`);
+    }
+  });
 }
 
 // ── 4. An unreadable or out-of-root body file is refused, never assumed clean.
@@ -210,13 +226,38 @@ function expectRefusal(
       "the unreadable refusal says an unchecked publish is not a clean one",
     );
 
-    // A file outside the cwd tree and the temp dir (here: the repo source) is
-    // refused rather than read.
-    const outside = path.resolve(import.meta.dirname, "..", "src", "trace.ts");
+    // A file outside BOTH admissible roots is refused rather than read. The
+    // roots are the scan cwd's tree and the OS temp dir, and on this host
+    // `tmpdir()` is `$HOME/tmp`, so a fixture under `dir` (which is itself under
+    // the temp dir) sits inside a root and passes for the right reason — it is
+    // not the state under test. These two fixtures are built under the user's
+    // home and are therefore outside both roots whatever `tmpdir()` resolves to.
+    const outsideDir = mkdtempSync(path.join(scratch, "outside-"));
+    const outside = path.join(outsideDir, "outside.md");
+    writeFileSync(outside, `host = ${TERM}\n`, "utf8");
     const escaped = await call(`gh pr create --title t --body-file ${outside}`);
-    assert(escaped?.block === true, "a body file outside the roots is refused");
+    assert(escaped?.block === true, "a body file outside both admissible roots is refused");
+    rmSync(outsideDir, { recursive: true, force: true });
+    // The check is on the PATH, not the content: the same path with CLEAN text
+    // must be refused too. Without this, the only observable difference between
+    // "refused because outside the roots" and "read it and found a term" is the
+    // wording of a sentence nobody would notice, and a guard that quietly reads
+    // files it says it will not is the shape this assertion exists to catch.
+    const cleanOutsideDir = mkdtempSync(path.join(scratch, "outside-clean-"));
+    const cleanOutside = path.join(cleanOutsideDir, "clean.md");
+    writeFileSync(cleanOutside, "nothing private in here\n", "utf8");
+    const refusedOnPath = await call(`gh pr create --title t --body-file ${cleanOutside}`);
     assert(
-      (escaped?.reason ?? "").includes("outside"),
+      refusedOnPath?.block === true,
+      "an out-of-root file is refused on its path even when its text is clean",
+    );
+    assert(
+      (refusedOnPath?.reason ?? "").toLowerCase().includes("outside"),
+      "and that refusal is the out-of-root sentence, not a hit",
+    );
+    rmSync(cleanOutsideDir, { recursive: true, force: true });
+    assert(
+      (escaped?.reason ?? "").toLowerCase().includes("outside"),
       "the out-of-root refusal says the file is outside the admissible roots",
     );
 
