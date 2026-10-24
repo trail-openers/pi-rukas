@@ -47,6 +47,7 @@ import { type ForgeDetection, detectForge } from "./forge-detect.ts";
 import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { commitMessageRefusal } from "./work-driver-commit-hygiene.ts";
 import {
   classifyRootDirt,
   probeIgnored,
@@ -55,13 +56,13 @@ import {
 import { detectMainline, resolveRestoreTarget } from "./work-driver-git.ts";
 import { countAheadOfBase } from "./work-driver-handoff-ahead.ts";
 import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
+import { restoreConsolidationFor } from "./work-driver-handoff-consolidate-restore.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
   type VerifiedRestoreResult,
   restoreClaim,
   restoreRootToRef,
-  restoreRootToRefPreserving,
 } from "./work-driver-restore.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -103,6 +104,16 @@ export interface ConsolidateOutcome {
  * integration lock itself misbehaving. The caller degrades to the
  * accurate-worktree-paths fallback and lets the handoff complete.
  */
+/**
+ * Thrown, from INSIDE the integration lock, when the commit message the
+ * consolidation would write carries private text. The lock callback has no
+ * failure channel of its own — every degradation in this routine is a `throw`
+ * that the outer `catch` turns into `{ ok: false, reason }` — so the refusal
+ * travels as an error the catch recognises and quotes verbatim instead of
+ * prefixing with "consolidation failed".
+ */
+class PublishRefusal extends Error {}
+
 export async function consolidateWorktreesToBranch(
   ctx: {
     repoRoot: string;
@@ -258,23 +269,14 @@ export async function consolidateWorktreesToBranch(
         // #750 — the verified restore (cherry-pick.ts already attempted
         // `--abort`; this one resets the staged/unmerged index the refusal
         // leaves behind and verifies the root is actually clean).
-        const restore = originalRef
-          ? await restoreRootToRefPreserving(execFn, {
-              repoRoot: ctx.repoRoot,
-              ref: originalRef,
-              scratchDir: ctx.scratchDir,
-              label: "handoff consolidation",
-              dirtyRootExempt: ctx.dirtyRootExempt,
-              dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
-            })
-          : undefined;
+        const restore = await restoreConsolidationFor(execFn, ctx, originalRef);
         // A conflict means the worktrees still hold their commits verbatim —
         // the accurate per-worktree recovery (which names the paths and
         // HEAD SHAs) is the honest fallback, and the worktrees are retained.
         // #750 — the claim goes through the shared builder: the restored
         // variant is the verified post-condition, the not-restored variant
         // is loud and tells the operator where to look.
-        const claim = restoreClaim(restore, { trailing: "run git status at the repo root" });
+        const claim = restore.restoreClaim;
         return {
           ok: false as const,
           reason: `cherry-pick conflict — ${claim}; the work remains on its worktree detached HEADs (per-worktree recovery below)`,
@@ -282,17 +284,8 @@ export async function consolidateWorktreesToBranch(
       }
       if (orch._applyConflict !== undefined) {
         const { id, reason, patchFile } = orch._applyConflict;
-        const restore = originalRef
-          ? await restoreRootToRefPreserving(execFn, {
-              repoRoot: ctx.repoRoot,
-              ref: originalRef,
-              scratchDir: ctx.scratchDir,
-              label: "handoff consolidation",
-              dirtyRootExempt: ctx.dirtyRootExempt,
-              dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
-            })
-          : undefined;
-        const claim = restoreClaim(restore === undefined ? undefined : restore);
+        const restore = await restoreConsolidationFor(execFn, ctx, originalRef);
+        const claim = restore.restoreClaim;
         return {
           ok: false as const,
           reason: `patch-apply failed for workstream '${id}': ${reason} (patch preserved at ${patchFile}); ${claim}; the work remains in its worktree (per-worktree recovery below)`,
@@ -343,6 +336,21 @@ export async function consolidateWorktreesToBranch(
         const subject =
           (await deriveConsolidationSubjectFor(ctx)) ??
           `chore(handoff): consolidate parked work onto ${branchName}`;
+        // #1788 — the subject carries the ISSUE TITLE, so this commit is a
+        // publish the `tool_call` guard cannot see: the message is composed in
+        // process and reaches git through this exec. It goes through the same
+        // commit-message seam `work-driver-commit.ts` uses. A refusal means NO
+        // commit, and it degrades the way this module already promises —
+        // `{ ok: false, reason }`, no throw, the branch left without the
+        // consolidation the handoff would otherwise claim.
+        const messageRefusal = await commitMessageRefusal(subject, commitBody, {
+          cwd: ctx.repoRoot,
+          issue: ctx.issue,
+          exec: execFn,
+        });
+        if (messageRefusal !== undefined) {
+          throw new PublishRefusal(messageRefusal);
+        }
         await execFn(`git commit -m ${JSON.stringify(subject)} -m ${JSON.stringify(commitBody)}`, {
           cwd: ctx.repoRoot,
           maxBuffer: 256 * 1024,
@@ -398,29 +406,25 @@ export async function consolidateWorktreesToBranch(
     // destroyed; #750 also restores the root (which the throw may have
     // left mid-`checkout`) and reports that honestly.
     const msg = (err as Error & { stderr?: string }).stderr ?? (err as Error).message ?? "unknown";
-    trace(`handoff-consolidate: failed: ${msg.toString().slice(0, 200)}`);
-    if (originalRef) {
-      // #968 — the failure path now carries the claim too, so a failed
-      // throw-path restore is as loud as a failed success-path restore
-      // (pre-#968 this call was fire-and-forget: the operator heard about
-      // the consolidation failure but not that their checkout did not come
-      // back). verifiedRestoreRoot never throws, so this cannot lose the
-      // outcome.
-      const restore = await restoreRootToRefPreserving(execFn, {
-        repoRoot: ctx.repoRoot,
-        ref: originalRef,
-        scratchDir: ctx.scratchDir,
-        label: "handoff consolidation",
-        dirtyRootExempt: ctx.dirtyRootExempt,
-        dirtyRootExemptBaseline: ctx.dirtyRootExemptBaseline,
-      });
-      const claim = restoreClaim(restore, { trailing: "run git status at the repo root" });
-      return {
-        ok: false,
-        reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${claim}`,
-      };
+    // #1788 — a refused commit message is not a git failure: the reason is the
+    // guard's own (it names the denylist line and the remedy), so it is carried
+    // verbatim rather than wrapped as "consolidation failed: <message>".
+    if (err instanceof PublishRefusal) {
+      trace("handoff-consolidate: commit message refused by the public hygiene guard");
+      const { restoreClaim: claim } = await restoreConsolidationFor(execFn, ctx, originalRef);
+      return { ok: false, reason: `${err.message} ${claim}` };
     }
-    return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}` };
+    trace(`handoff-consolidate: failed: ${msg.toString().slice(0, 200)}`);
+    // #968 — the failure path carries the restore claim too, so a failed
+    // throw-path restore is as loud as a failed success-path restore (pre-#968
+    // this call was fire-and-forget: the operator heard about the consolidation
+    // failure but not that their checkout did not come back). One call now,
+    // for the `originalRef` and the no-ref case alike.
+    const restore = await restoreConsolidationFor(execFn, ctx, originalRef);
+    return {
+      ok: false,
+      reason: `consolidation failed: ${msg.toString().slice(0, 200)}; ${restore.restoreClaim}`,
+    };
   }
 }
 

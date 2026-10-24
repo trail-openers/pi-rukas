@@ -58,6 +58,12 @@ const LISTED = [
   // "-e", treeish]`) and this module's own timeout. Its test fakes assert on
   // `argv`, not on a command string.
   "lens-evidence.ts",
+  // #1788 — the push scan reads the outgoing range (`git remote`, `rev-parse`,
+  // `log --patch`) to decide whether a push publishes private text. Every call
+  // is argv-form under `PUSH_SCAN_TIMEOUT_MS` / `PUSH_SCAN_MAX_BUFFER`, and
+  // test-public-hygiene-push.ts asserts on `argv` — including that a git which
+  // never returns is a refusal rather than a hang or a pass.
+  "public-hygiene-push.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */

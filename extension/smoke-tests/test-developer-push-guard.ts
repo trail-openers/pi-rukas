@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import childGuards from "../src/child-guards.ts";
+import { resetPublicHygieneRegistrationForTests } from "../src/public-hygiene-guard.ts";
 import { registerDeveloperPushGuard } from "../src/developer-push-guard.ts";
 import { executedBodies, pushRunsCommand, pushesRemote } from "../src/git-push-command.ts";
 
@@ -246,24 +247,38 @@ else process.env.PI_ENSEMBLE_ROLE = prevRole;
 //     test-child-guards-extension.ts, so the two files stay independent.
 // ============================================================
 {
-  const fake = makeFakePi();
-  childGuards(fake as unknown as ExtensionAPI);
+  const fake2 = makeFakePi();
   const prevRole = process.env.PI_ENSEMBLE_ROLE;
+  // #1788 round 2 — the companion also installs the public hygiene guard, and
+  // that guard's push scan now reads git for real (it used to be registered
+  // with no executor, so it asked nothing). This fixture's cwd is not a clone
+  // with a github.com remote, so the scan reports an unreadable range — which
+  // is the hygiene guard doing its job, not the role ban, and left alone it
+  // would read as "ops may not push". The role question is what this block
+  // asserts, so the publish check is switched off for these four calls only
+  // (the same escape hatch an operator uses), on a scratch denylist path that
+  // can never reach the operator's real list.
+  process.env.PI_ENSEMBLE_PUBLIC_DENYLIST = "/nonexistent/pi-rukas-test-denylist";
+  process.env.PI_ENSEMBLE_PUBLIC_HYGIENE = "0";
+  resetPublicHygieneRegistrationForTests();
+  childGuards(fake2 as unknown as ExtensionAPI);
   process.env.PI_ENSEMBLE_ROLE = "developer";
-  const pushed = await refuse(fake, "git push origin feature/issue-1113");
+  const pushed = await refuse(fake2, "git push origin feature/issue-1113");
   assert(pushed?.block === true, "companion: a developer's `git push` is refused end to end");
   assert(
     pushed?.reason !== undefined && /@ops/.test(pushed.reason),
     "companion: the refusal names @ops as the owner of the push",
   );
-  const committed = await refuse(fake, "git commit -m 'fix(x): y'");
+  const committed = await refuse(fake2, "git commit -m 'fix(x): y'");
   assert(
     committed === undefined,
     "companion: a developer's `git commit` still passes (the develop gate requires it)",
   );
   process.env.PI_ENSEMBLE_ROLE = "ops";
-  const opsPush = await refuse(fake, "git push -u origin feature/issue-1113");
+  const opsPush = await refuse(fake2, "git push -u origin feature/issue-1113");
   assert(opsPush === undefined, "companion: the same push is allowed for role=ops");
+  delete process.env.PI_ENSEMBLE_PUBLIC_HYGIENE;
+  delete process.env.PI_ENSEMBLE_PUBLIC_DENYLIST;
   if (prevRole === undefined) delete process.env.PI_ENSEMBLE_ROLE;
   else process.env.PI_ENSEMBLE_ROLE = prevRole;
 }
