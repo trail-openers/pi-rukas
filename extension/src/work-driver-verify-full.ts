@@ -7,8 +7,9 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { redactThenBound } from "./text-flatten.ts";
 import { withVerifySlot } from "./host-resources.ts";
-import { redactSecrets } from "./secret-patterns.ts";
+import { failureLines } from "./work-driver-verify-failures.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 
@@ -86,27 +87,53 @@ export const VERIFY_FULL_MAX_BUFFER = 8 * 1024 * 1024;
 export const VERIFY_FULL_OUTPUT_MAX = 4000;
 
 /**
- * The one normaliser for tier output before the driver keeps it: redact the
- * WHOLE stream, then keep the TAIL (#1770). Two rules, in this order:
+ * The one normaliser for tier output before the driver keeps it (#1770, #1762
+ * round 1). Three rules, in this order:
  *
- *   - **Redact first.** A clip that cuts a credential in half leaves a fragment
- *     no pattern recognises, and this is the project's own gate output, which
- *     prints whatever the suite prints (a connection string, a token echoed by
- *     an assertion). Every other store-side reader of verify output redacts
- *     before it bounds for exactly this reason.
- *   - **Keep the last {@link VERIFY_FULL_OUTPUT_MAX} code points, not the
- *     first.** Every reader of this field wants the failure, and a gate prints
- *     its report at the END of its stream: a suite that streams 50 KB of build
- *     noise and then fails kept the noise and threw the failure away, which is
- *     the #1770 symptom this field exists to fix. Code-point safe — via
- *     `Array.from` — so a surrogate pair is never split into a lone half.
+ *   - **Redact the WHOLE stream first.** A clip that cuts a credential in half
+ *     leaves a fragment no pattern recognises, and this is the project's own gate
+ *     output, which prints whatever the suite prints (a connection string, a token
+ *     echoed by an assertion). Every other store-side reader of verify output
+ *     redacts before it bounds for exactly this reason, and this field is stored
+ *     and rendered, so it goes through {@link redactThenBound} — the one
+ *     redact-then-clip the whole driver shares — rather than a hand-rolled slice.
+ *   - **Anchor on the table's LAST recognised failure line.** The ci tier's
+ *     `evidenceTail` is what a handoff quotes and what a developer is dispatched
+ *     with, and #1762's defect was precisely that the stored window's top line was
+ *     a stage that had PASSED. So when the redacted stream contains any line the
+ *     shared failure-line table recognises, the stored excerpt starts no later than
+ *     the last such line — the failure is never cut off its top — and otherwise runs
+ *     to the end of the stream, where the verbose re-run, the diff and the stack
+ *     trace a failure announces all live. The positional tail is only the fallback
+ *     when nothing in the stream names a failure.
+ *   - **Bound it.** {@link VERIFY_FULL_OUTPUT_MAX} code points, whichever end
+ *     survives. Code points, never chars, so a surrogate pair is never split.
  */
 function storeTierOutput(text: string): string {
-  const redacted = redactSecrets(text).text;
-  const chars = Array.from(redacted);
-  return chars.length > VERIFY_FULL_OUTPUT_MAX
-    ? chars.slice(-VERIFY_FULL_OUTPUT_MAX).join("")
-    : redacted;
+  // Redact the whole stream BEFORE any cut — see the first rule above. The bound
+  // below is applied to that text alone, so no window is ever redacted from a
+  // stream that was clipped first. The cap is a safety bound on a gate that printed
+  // megabytes, not the window this function keeps, so it is well above the excerpt
+  // size and what actually lands in the stored field is the anchored excerpt.
+  const { text: redacted } = redactThenBound(text, VERIFY_FULL_MAX_BUFFER);
+  const named = failureLines(redacted);
+  // The LAST recognised failure line is the anchor, but the stream's own tail is
+  // stored too: the loop's verbose re-run, the diff and the stack trace a failure
+  // line announces all print AFTER it, and dropping them is the same "the evidence
+  // says nothing" symptom this field exists to close. So the window ends at the end
+  // of the stream and the anchor line is what guarantees it is IN the window — the
+  // excerpt is never cut so short that the failure itself falls off its top.
+  const last = named[named.length - 1];
+  const at = last === undefined ? -1 : redacted.lastIndexOf(last);
+  if (last !== undefined && at !== -1) {
+    // Never start the window past the anchor's own first character: whatever the
+    // budget, the failure line survives, and the lines around it fill the rest.
+    const from = Math.min(at, Math.max(0, redacted.length - VERIFY_FULL_OUTPUT_MAX));
+    return redactThenBound(redacted.slice(from), VERIFY_FULL_OUTPUT_MAX).text;
+  }
+  // Nothing in the stream names a failure: fall back to the positional tail, so an
+  // unrecognised gate still gets its last words stored rather than nothing.
+  return redactThenBound(redacted, VERIFY_FULL_OUTPUT_MAX, "tail").text;
 }
 
 /**

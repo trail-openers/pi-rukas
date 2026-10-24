@@ -63,7 +63,7 @@ import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { UNGRANTED_PROTECTED_MARK } from "./work-driver-doctrine.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
-import { failureLines } from "./work-driver-verify-failures.ts";
+import { failureLines, isHarnessEchoLine } from "./work-driver-verify-failures.ts";
 import { INTEGRATE_CREATE_FAILED_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -94,13 +94,6 @@ const TAIL_LINES = 3;
  * while the runner's real `failed checks (1)` block sat above it.
  */
 const ERROR_MARK = /error|fail|✗|cannot|exception|not found|refused/i;
-/**
- * The harness's own echo, never evidence about the project. `Command failed:`
- * and `Exit code: N` are what the executor prints when a command died; on a
- * stream that says nothing else they are all there is, so they survive as the
- * last resort — but a real failure line always outranks them.
- */
-const HARNESS_ECHO = /^\s*(Command failed:|Exit code:|killed|\$\s)/i;
 /** The mark a verify command puts before a check it names. */
 const CHECK_MARK = "\u2717";
 /** The `question:` line of a plumb block, bold or plain. */
@@ -140,7 +133,7 @@ function tailLines(tail: string | undefined): string[] {
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
     .slice(-TAIL_LINES);
-  const marked = last.filter((l) => ERROR_MARK.test(l) && !HARNESS_ECHO.test(l));
+  const marked = last.filter((l) => ERROR_MARK.test(l) && !isHarnessEchoLine(l));
   return marked.length > 0 ? marked : last.slice(-1);
 }
 

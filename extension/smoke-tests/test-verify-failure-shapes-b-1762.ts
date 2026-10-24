@@ -23,11 +23,14 @@ import type { CorrectiveGateView } from "../src/work-driver-corrective-decide.ts
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import { formatExecError } from "../src/work-driver-verify-develop-helpers.ts";
 import {
+  FAILURE_LINE_SCAN_MAX,
+  classifyFailureLine,
   failureLines,
   harnessInnerLine,
+  isHarnessEchoLine,
   isSuccessLine,
-  splitLines,
 } from "../src/work-driver-verify-failures.ts";
+import { splitLines } from "../src/work-driver-verify-support.ts";
 import { assertionLines } from "../src/work-driver-verify-record.ts";
 import { runVerifyFull, VERIFY_FULL_OUTPUT_MAX } from "../src/work-driver-verify-full.ts";
 import type { WorkState } from "../src/workflow-state.ts";

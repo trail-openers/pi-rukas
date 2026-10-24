@@ -300,7 +300,7 @@ export function formatExecError(
   // composition and not on gate output: an untrusted stream cannot silence a
   // driver diagnostic it never wrote (see the constant's note on full matching).
   if (!attributed && tail && !tail.includes(UNATTRIBUTED_NOTE))
-    trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
+    trace("work-driver: exec error tail is unattributed (the shared failure-line table named no line)");
   const suffix = tail ? (attributed ? tail : `${tail} ${UNATTRIBUTED_NOTE}`) : undefined;
   if (e.killed) return timeoutMsg;
   const detail = suffix ?? e.message?.slice(0, 300) ?? "";

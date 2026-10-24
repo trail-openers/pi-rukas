@@ -18,9 +18,10 @@ import {
   classifyFailureLine,
   harnessInnerLine,
   isHarnessWrapper,
-  splitLines,
 } from "./work-driver-verify-failures.ts";
+import { splitLines } from "./work-driver-verify-support.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
+import { redactThenBound } from "./text-flatten.ts";
 
 /** One verify run the gate actually made. */
 export interface RanVerifyRecord {
@@ -40,6 +41,13 @@ export interface RanVerifyRecord {
 }
 
 export type VerifyCommandRecord = { status: "not-run" } | RanVerifyRecord;
+
+/**
+ * How long one extracted assertion line may be on its way out. The table's own
+ * scan window is 8 KiB, so an evidence line longer than this is a serialized
+ * payload rather than an assertion, and the handoff does not need it whole.
+ */
+const ASSERTION_LINE_MAX = 500;
 
 /** The out-parameter the gate fills in place. Starts as "not-run". */
 export interface VerifyRecordSlot {
@@ -69,20 +77,29 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  *     gate stream into one line with `\n`, but a gate that printed `\r` line
  *     breaks leaves `\r` behind here, and an unsplit `\r` makes the trimmed
  *     line differ from what the extractor and the classifier both saw.
+ *
+ *   - **What comes back is REDACTED.** These lines are the evidence of a park:
+ *     they reach the corrective-round prompt, the handoff and the forge comment.
+ *     A failing assertion routinely ECHOES the value it compared, so every line is
+ *     passed through the same redact-then-bound the commit-pr evidence reader
+ *     ({@link namedFailureLines}) uses — one ordering rule for every stored verify
+ *     line, so a bound cannot be applied in one reader and forgotten in another.
  */
 export function assertionLines(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const push = (line: string): void => {
-    if (line.length === 0 || seen.has(line)) return;
+    if (line.length === 0) return;
     if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) return;
     // An UNWRAPPED inner line never passes through `extractSpecificAssertion`'s
     // own guard, because the extractor refuses a multi-line stream and this
     // function unwraps it. The guard is applied here so both routes answer the
     // same way for the same text.
     if (isNonAssertionLine(line)) return;
-    seen.add(line);
-    out.push(line);
+    const redacted = redactThenBound(line, ASSERTION_LINE_MAX).text;
+    if (redacted.length === 0 || seen.has(redacted)) return;
+    seen.add(redacted);
+    out.push(redacted);
   };
   for (const raw of splitLines(text)) {
     const line = raw.trim();

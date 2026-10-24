@@ -55,7 +55,12 @@
  */
 
 import { namedFailureLines } from "./work-driver-commit-verify-evidence.ts";
-import { classifyFailureLine, harnessInnerLine } from "./work-driver-verify-failures.ts";
+import {
+  FAILED_MARKER_RE,
+  classifyFailureLine,
+  harnessInnerLine,
+} from "./work-driver-verify-failures.ts";
+import { splitLines } from "./work-driver-verify-support.ts";
 
 /** The three-way classification a consolidated-tree verify failure maps to. */
 export type ConsolidationClassification =
@@ -217,6 +222,11 @@ function assertionCandidate(line: string): string | undefined {
  * duplicated into the extracted field.
  */
 export function extractSpecificAssertion(failureTail: string): string {
+  // `FAILED:` and its `FAILED: 1 test(s) — …` summary are ONE regex, and
+  // `FAILED_MARKER_RE` demands a non-empty payload: an empty marker is not a
+  // marker, it is an empty line, and it must not be kept as the count summary.
+  const isCountSummary = (line: string): boolean =>
+    /^FAILED:\s*\d+\s+test\(s\)/.test(line) && FAILED_MARKER_RE.test(line);
   const lines = failureTail
     .split("\n")
     .map((l) => l.trim())
@@ -229,7 +239,9 @@ export function extractSpecificAssertion(failureTail: string): string {
   for (const line of lines) {
     const candidate = assertionCandidate(line);
     if (candidate === undefined || isNonAssertionLine(candidate)) continue;
-    if (IS_MARKER_LINE.test(candidate)) continue;
+    // The count summary is the one marker-shaped line this reader KEEPS — the
+    // marker veto below would otherwise drop it, and it carries the count.
+    if (IS_MARKER_LINE.test(candidate) && !isCountSummary(candidate)) continue;
     if (classifyFailureLine(candidate) !== undefined) return candidate;
   }
   return NO_SPECIFIC_ASSERTION;
@@ -417,7 +429,8 @@ export function classifyConsolidatedVerifyFailure(
  * secret guard.
  */
 function isNamedFailureLine(line: string): boolean {
-  if (/^FAILED:\s*\d+\s+test\(s\)/.test(line)) return !LOOKS_LIKE_SECRET.test(line);
+  if (/^FAILED:\s*\d+\s+test\(s\)/.test(line))
+    return FAILED_MARKER_RE.test(line) && !LOOKS_LIKE_SECRET.test(line);
   if (isNonAssertionLine(line)) return false;
   return classifyFailureLine(line)?.namesTest === true;
 }

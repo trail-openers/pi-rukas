@@ -381,10 +381,12 @@ export const SEAMS: Seam[] = [
     // this same module — the only reason the gate treats a `0 failed` tally as
     // passing — while the test asserts the arm directly so a change that keeps
     // `classifyFailureLine` green while inverting the count guard still fails.
-    // `depsHintStartFor` and `splitLines` are NOT declared here: both are called
-    // from `work-driver-verify-inner-line.ts` (and `splitLines` from
-    // `work-driver-exec-error.ts` too), so labelling them test-only would let a
-    // declaration stand in for a caller that exists.
+    // `depsHintStartFor` is NOT declared here: it is called from
+    // `work-driver-verify-failures.ts`'s own cut and from the residue strip in
+    // `work-driver-verify-inner-line.ts`, so labelling it test-only would let a
+    // declaration stand in for a caller that exists. `splitLines` moved to
+    // `work-driver-verify-support.ts` (#1762 round 1, to break the cycle between
+    // the classifier and the strip), where it is registered.
     file: "work-driver-verify-failures.ts",
     pending: {},
     testOnly: {
@@ -394,5 +396,39 @@ export const SEAMS: Seam[] = [
         "the passing arm of the classifier, called in-module by classifyFailureLine and asserted directly by test-verify-failure-shapes-1762.ts: every passing veto in the table rests on it, so a change that keeps classifyFailureLine green while inverting the count guard must still fail here",
     },
     canary: { symbol: "classifyFailureLine", importer: "work-driver-exec-error.ts" },
+  },
+  {
+    // #1762 round 1 — the vocabulary the two verify readers share, hoisted out of
+    // the classifier/strip pair so neither imports the other (the module graph is a
+    // DAG). `splitLines` is called in-module by `failureLines` and `firstInnerFailure`
+    // and has production readers in `exec-error`, `consolidation-classify` and
+    // `verify-record`; `LEADING_SEPARATOR` is read by the residue strip. Both are
+    // declared test-only because their reachability is a wiring fact the seam gate
+    // cannot see through a re-export, and each is pinned by the shape suite.
+    file: "work-driver-verify-support.ts",
+    pending: {},
+    testOnly: {
+      splitLines:
+        "the one line-break split (\r\n, \r, \n) every verify reader shares; test-verify-failure-shapes-b-1762.ts pins the \r case that split(\"\\n\") used to miss",
+      LEADING_SEPARATOR:
+        "the stream-separator padding both the cut and the residue strip remove; pinned by test-verify-failure-shapes-b-1762.ts (the `: : : ` padding case)",
+    },
+    canary: { symbol: "splitLines", importer: "work-driver-exec-error.ts" },
+  },
+  {
+    // #1762 round 3 — the non-assertion predicate, now exported because the
+    // wrapper's inner lines used to bypass it: `extractSpecificAssertion` applies
+    // it only to the SINGLE-LINE stream it judges, and `verify-record`'s
+    // `assertionLines` unwraps a multi-line stream itself. Without one shared
+    // owner, a credential printed inside a harness wrapper reached the corrective
+    // round, the handoff and the forge comment. Registered the way the table above
+    // is: production readers exist, so the gate needs the declaration to see them.
+    file: "work-driver-consolidation-classify.ts",
+    pending: {},
+    testOnly: {
+      isNonAssertionLine:
+        "the marker/echo/secret veto, applied by extractSpecificAssertion in-module AND by verify-record's assertionLines on every unwrapped inner line; test-verify-failure-shapes-b-1762.ts pins the inner-secret and inner-echo cases",
+    },
+    canary: { symbol: "classifyConsolidatedVerifyFailure", importer: "work-driver-integrate-verify.ts" },
   },
 ];

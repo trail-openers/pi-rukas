@@ -35,8 +35,11 @@
  * and stays false so an honest absence still reports absence.
  */
 
-import { DEPS_HINT_STARTS } from "./work-driver-deps-hint.ts";
-import { stripHarnessResidue } from "./work-driver-verify-inner-line.ts";
+import {
+  type HarnessStream,
+  harnessVerifyStream,
+} from "./work-driver-verify-inner-line.ts";
+import { splitLines } from "./work-driver-verify-support.ts";
 
 /** The shape a line was recognised as. Stable strings: tests pin them. */
 export type FailureShape =
@@ -55,6 +58,35 @@ export interface FailureLine {
   shape: FailureShape;
   /** True when the line carries a specific assertion or named check. */
   namesTest: boolean;
+}
+
+/**
+ * The exact marker `.pi/verify-cmd`'s smoke-test loop emits on failure
+ * (`FAILED: <file>`, and its `FAILED: <n> test(s) — …` summary). Exported so the
+ * three readers that must agree on what a marker IS — this table, the evidence-tail
+ * anchor in `work-driver-exec-error.ts`, and the assertion veto in
+ * `work-driver-consolidation-classify.ts` — share one regex rather than each
+ * keeping a copy that can drift.
+ */
+export const FAILED_MARKER_RE = /^FAILED: .+$/;
+
+/**
+ * The harness's OWN kill/echo lines — `Command failed: …`, `Exit code: N`, the
+ * driver's own `killed` verdict and an echoed `$ ` command. These are what the
+ * executor prints when a run died; on a stream that says nothing else they are all
+ * there is, so a last-resort reader may keep them. They are never evidence about
+ * the project, so a recognised failure line always outranks them.
+ *
+ * EXPORTED (#1762 round 1) because a second reader kept its own copy of this list
+ * and the two drifted: `work-driver-cause-class.ts` had the same words, and its
+ * unanchored `killed` also vetoed any gate line that merely USED the word (a test
+ * named `test-killed-child.ts: 1 failed` is a failure line, not the harness). The
+ * `killed` branch is therefore anchored to the harness's own sentence — the whole
+ * line, or the line opening with `killed by signal` — and a line about a killed
+ * process is left to the table.
+ */
+export function isHarnessEchoLine(line: string): boolean {
+  return /^\s*(?:Command failed:|Exit code:|\$\s|killed(?:\s+by\s+signal\b)?)/i.test(line);
 }
 
 /**
@@ -77,7 +109,7 @@ export interface FailureLine {
  */
 const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegExp }> = [
   // `.pi/verify-cmd`'s smoke loop: the per-file marker and its count summary.
-  { shape: "failed-marker", namesTest: false, re: /^FAILED: .+$/ },
+  { shape: "failed-marker", namesTest: false, re: FAILED_MARKER_RE },
   // The loop's / biome's assertion mark — `✗`, never the passing `✓`.
   { shape: "assertion-mark", namesTest: true, re: /^✗\s/ },
   // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
@@ -201,15 +233,11 @@ function matches(re: RegExp, text: string): boolean {
  *     the caller's full line reach `NONZERO_FAILURE_COUNT`, whose `[^\r\n]*`
  *     tally branch backtracks over every `: ` in it — measured 249 s on a 1 MB
  *     line, against 15 ms bounded. That is the cost this entry clip removes.
+ *
  */
 function scanWindow(line: string): string {
   const t = line.trim();
   return t.length > FAILURE_LINE_SCAN_MAX ? t.slice(0, FAILURE_LINE_SCAN_MAX) : t;
-}
-
-/** Split a combined stream into lines: `\r\n`, `\r` and `\n` are all breaks. */
-export function splitLines(text: string): string[] {
-  return text.split(/\r\n|\r|\n/);
 }
 
 /**
@@ -230,202 +258,68 @@ export function isSuccessLine(line: string): boolean {
 }
 
 /**
- * The harness's wrapper around a failing verify run —
- * `verify command `cmd` failed in <cwd>[: <stream>]`.
- *
- * Two rules, both from #1762:
- *
- *   - The wrapper itself is never a failure line. #1667's corrective-round
- *     exemption depends on this staying UNclassified when nothing behind it
- *     does: the harness saying a run exited non-zero is not a line of the
- *     gate's output naming a failure, and the whole no-assertion suite
- *     (`… failed in <cwd>: something went wrong` earns no round) rests on that.
- *   - What sits BEHIND the wrapper is classified normally, so a TAP, pytest or
- *     `✗` line wrapped by the harness reports what it reports unwrapped. The
- *     first version of this used the inner stream only as an existence veto and
- *     then matched the WHOLE wrapped line against the table, which silently
- *     dropped every anchored shape (`^✗\s`, `^ERROR \S+::`, `^--- FAIL:`) and
- *     let the loose `named-file` rule classify the wrapper's own prose.
- *
- * What the builder actually emits, read from the call site that composes it
- * (`work-driver-verify-per-worktree.ts`, which calls `formatExecError` with
- * `failMsg = "verify command \`<cmd>\` failed in <cwd>" + depsHint`, and the
- * helper then appends the extracted tail after `: ` — and a stream that spans
- * several lines may carry no `: ` at all. So a candidate is the builder's `: `
- * OR the first line break after `failed in`, and one is chosen as soon as what
- * follows it reports a failure — EXCEPT the separators that sit inside the deps
- * hint, which is why {@link depsHintStartFor} exists rather than a bare scan: a
- * hint whose problem text reads `hook failed during provisioning: Cannot find
- * module 'x'` is the harness's own diagnosis, and cutting inside it promotes
- * that diagnosis to "the gate's output", which is the #1667 suppression made
- * backwards. The ONE separator inside the hint that stays a candidate is the
- * hint's own `: ` — `formatExecError` appends the gate's tail after the whole
- * `failMsg` including the hint, so that is where the builder's separator sits. With a clean gate output no candidate reports a failure and the
- * wrapper stays unclassified (#1667's exemption), and with a hint that carries
- * its own `: ` the earlier cut yields a stream whose first lines carry no
- * failure, so the scan moves on. Cutting at the LAST `: ` instead would make a
- * hinted line report no failure at all, because the tail after the hint's colon
- * is a single line. project-runner's
- * `…failed in /w: test.sh: failed checks (1)` still names its file.
+ * The harness's own wrapper sentence — owned by `work-driver-verify-inner-line.ts`
+ * and re-exported here so every verify reader imports the failure-line vocabulary
+ * from ONE module and cannot keep a private copy of it (the #1762 round-1 defect was
+ * readers that disagreed about what a wrapper IS, and so disagreed about which lines
+ * a developer may act on).
  */
-/** The harness sentence's own words, up to and including `failed in `. */
-const HARNESS_PROSE = /^verify command\s.+?\sfailed in\s/i;
-/** The builder's stream separator, and its width — the offset a cut skips. */
-const STREAM_SEPARATOR = ": ";
-const STREAM_SEPARATOR_LEN = STREAM_SEPARATOR.length;
+export { isHarnessWrapper } from "./work-driver-verify-inner-line.ts";
 
 /**
- * Where this line's deps hint begins, or `undefined` when it carries none.
+ * The gate's own view of one wrapper line (#1762 round 1).
  *
- * The hint is what `provisionDepsHint` appends to the harness's own sentence
- * before `formatExecError` appends the gate's tail, and each of its shapes
- * opens with one of `DEPS_HINT_STARTS` — the same phrase list
- * `work-driver-cause-scrub.ts` strips, so the cut and the scrub agree on what
- * the hint is instead of each guessing.
- *
- * EXPORTED because the reader that must not mistake the harness's diagnosis for
- * the gate's output is a different function from the one that cuts: a wrapper
- * whose hint says `hook failed during provisioning: Cannot find module 'x'`
- * would otherwise answer "the stream is `Cannot find module 'x'`" — the hint's
- * own problem text presented as a failure the gate printed, which is what makes
- * `depsHintApplies` keep a hint that #1667 exists to suppress.
+ * A line no longer than the scan window is answered from the cut's stream as it
+ * stands: the caller's clip already covers it, and re-slicing would only re-derive a
+ * fact the cut decided. A line LONGER than the window is re-read from where the
+ * GATE'S OWN text begins, because clipping such a line at one window let the
+ * wrapper's prefix — its command string, its cwd, its deps hint, all text the harness
+ * wrote — consume the entire budget: a gate that printed an ordinary report behind a
+ * long command string reported no failure at all, and the evidence named no failing
+ * check. The re-anchored window is the same size, so a pathological line still costs
+ * a constant; only its position moves, to where the truth is.
  */
-export function depsHintStartFor(line: string): number | undefined {
-  let start: number | undefined;
-  for (const opener of DEPS_HINT_STARTS) {
-    const at = line.indexOf(opener);
-    if (at !== -1 && (start === undefined || at < start)) start = at;
-  }
-  return start;
-}
-
-/**
- * The harness's own wrapper sentence, recognised. Exported so every reader
- * agrees on what a wrapper IS: `work-driver-verify-record.ts` used to keep its
- * own copy of this regex, and a reader that disagrees about the wrapper
- * disagrees about which lines a developer can act on.
- */
-export function isHarnessWrapper(line: string): boolean {
-  return HARNESS_PROSE.test(line);
-}
-
-/**
- * How many candidate separators one wrapper line is scanned for. The builder
- * appends exactly ONE stream separator and at most one line break, and the deps
- * hint can add a couple of its own, so the real candidate set is tiny; the cap
- * is what makes a pathological 8 KiB of `: ` inside a command string cost a
- * constant.
- */
-const STREAM_CANDIDATES_MAX = 16;
-
-/**
- * Every offset in `line` at or after `from` where the builder could have put
- * the stream, in order: the `: ` it appends, and the newline that separates the
- * harness sentence from a multi-line tail.
- */
-function streamSeparators(line: string, from: number): number[] {
-  const candidates: number[] = [];
-  const push = (at: number): void => {
-    if (at !== -1 && (candidates.length === 0 || candidates[candidates.length - 1] !== at)) {
-      candidates.push(at);
-    }
-  };
-  for (let at = line.indexOf(STREAM_SEPARATOR, from); at !== -1; ) {
-    push(at);
-    if (candidates.length >= STREAM_CANDIDATES_MAX) break;
-    at = line.indexOf(STREAM_SEPARATOR, at + STREAM_SEPARATOR.length);
-  }
-  const brk = /\r\n|\r|\n/.exec(line.slice(from));
-  if (brk !== null) push(from + brk.index);
-  return candidates;
-}
-
-/**
- * A cut {@link harnessVerifyStream} accepted: the gate's stream and the offset
- * in the (already trimmed) line at which it was cut. Returned only for the
- * reader that must know where the stream began — {@link harnessInnerLine} — so
- * the classifier's own path keeps its old `string | undefined` answer.
- */
-interface HarnessStream {
-  stream: string;
-  /** -1 when no separator reported a failure (the #1667 exemption). */
-  cut: number;
-  /** Where `stream` begins in `line`, after the separator the cut landed on. */
-  streamStart: number;
-}
-
-/**
- * Where the gate's own output begins inside a harness line, or `undefined`
- * when the line is not the harness's wrapper. `""` means the wrapper carries
- * no stream that reports a failure — it asserts only that a run exited
- * non-zero, which is not a line of the gate's output naming anything.
- *
- * INTERNAL: the text this returns is what the table classifies and must stay
- * verbatim. The exported {@link harnessInnerLine} is the same cut with the
- * harness's own residue removed for a human-facing field.
- *
- * PRECONDITION: `line` is already a {@link scanWindow} of the caller's line —
- * {@link classifyFailureLine} and {@link harnessInnerLine} both clip before
- * calling. This function does NOT re-clip: a second bound would be applied to
- * the streams and still leave the caller's unbounded text to this function's own
- * scans, which is the quadratic cost #1762 round 3 removed.
- */
-function harnessVerifyStream(line: string, withCut = false): HarnessStream | string | undefined {
-  const matched = HARNESS_PROSE.exec(line);
-  if (matched === null) return undefined;
-
-  // The prefix is anchored and matched against the same trimmed line, so
-  // `failed in ` sits at a fixed offset from the start: everything before it is
-  // the wrapper's own wording, never the gate's.
-  const afterFailedIn = matched[0].length;
-  // Where the harness's own diagnostic begins, when the run carried one. Every
-  // separator from there on belongs to the hint — EXCEPT the hint's own `: `, on
-  // which `formatExecError` appended the gate's tail: that is the builder's
-  // separator and the only cut that reaches a multi-line tail sitting behind a
-  // hint. Treating it as hint text too would make a hinted wrapper report no
-  // failure at all, which is the opposite defect from the one it prevents.
-  const hintAt = depsHintStartFor(line);
-  const hintColon =
-    hintAt === undefined ? -1 : line.indexOf(STREAM_SEPARATOR, hintAt + STREAM_SEPARATOR_LEN);
-  // Each candidate is a separator the builder could have appended. Everything
-  // before the chosen one belongs to the command, the cwd or the deps hint — all
-  // three may legitimately contain a colon or a newline.
-  for (const at of streamSeparators(line, afterFailedIn)) {
-    if (hintAt !== undefined && at >= hintAt && at !== hintColon) continue;
-    // The separator is a `: ` or a line break, so its width is either two or
-    // three — measure it rather than assume, or a newline cut leaks an `r`.
-    const width = line.startsWith(STREAM_SEPARATOR, at)
-      ? STREAM_SEPARATOR_LEN
-      : line[at] === "\r" && line[at + 1] === "\n"
-        ? 2
-        : 1;
-    // No clip here: `line` is the window already, so this slice cannot exceed
-    // it, and the bound must not be applied a second time.
-    const stream = line.slice(at + width).trim();
-    if (stream.length > 0 && classifyStream(stream) !== undefined)
-      return withCut ? { stream, cut: at, streamStart: at + width } : stream;
-  }
-  return withCut ? { stream: "", cut: -1, streamStart: -1 } : "";
-}
-
-/** The first classified line of a stream, whole-line first, then line by line. */
-function classifyStream(stream: string): FailureLine | undefined {
-  return classifyFailureLine(stream) ?? firstInnerFailure(stream);
+function gateView(line: string, found: HarnessStream): string {
+  const t = line.trim();
+  if (t.length <= FAILURE_LINE_SCAN_MAX || found.streamStart < 0) return found.stream;
+  return t.slice(found.streamStart, found.streamStart + FAILURE_LINE_SCAN_MAX);
 }
 
 /**
  * Classify one line. `undefined` when the line neither reports a failure nor
  * names one, and ALWAYS `undefined` for a line that reports success.
+ *
+ * Two steps, in this order: unwrap a harness wrapper (the wrapper is never a
+ * failure line; what sits behind it is), then the plain table. The wrapper path
+ * ends in {@link matchShape} on the already-cut stream, so it terminates by
+ * construction: the stream is the gate's own text, and the cut never builds a new
+ * stream out of one it has already built.
  */
 export function classifyFailureLine(line: string): FailureLine | undefined {
+  // The line is bounded ONCE, here, so no scan below can be quadratic in what the gate
+  // printed whole. A line no longer than the window — every line a real harness
+  // composes — is handed on UNCLIPPED.
   const t = scanWindow(line);
-  if (t.length === 0 || isSuccessLine(t)) return undefined;
-  // Ask about the gate's own output, not the wrapper around it: the wrapper is
-  // never a failure line, and the first classified line behind it is the answer.
-  const stream = harnessVerifyStream(line);
-  if (typeof stream === "string") return stream.length === 0 ? undefined : classifyStream(stream);
+  if (t.length === 0) return undefined;
+  // Ask about the gate's own output, never the wrapper around it: the wrapper is not a
+  // failure line (#1667), and the first line behind it that reports a failure is the
+  // answer. A line that is not a wrapper at all goes straight to the table.
+  const found = harnessVerifyStream(line);
+  if (found === undefined) return matchShape(t);
+  if (found.stream.length === 0) return undefined;
+  return matchShape(gateView(line, found)) ?? firstInnerFailure(gateView(line, found));
+}
+
+/**
+ * The plain table - no wrapper logic: the success veto, then the shapes in
+ * priority order, first match wins. This is the NON-wrapper arm of
+ * {@link classifyFailureLine} and the single line every wrapper path ends in; the
+ * argument must already be bounded, which both callers guarantee.
+ */
+export function matchShape(line: string): FailureLine | undefined {
+  if (line.length === 0 || isSuccessLine(line)) return undefined;
   for (const entry of SHAPES) {
-    if (entry.re.test(t)) return { shape: entry.shape, namesTest: entry.namesTest };
+    if (entry.re.test(line)) return { shape: entry.shape, namesTest: entry.namesTest };
   }
   return undefined;
 }
@@ -435,11 +329,13 @@ export function classifyFailureLine(line: string): FailureLine | undefined {
  * stream may be several lines the wrapper swallowed (a per-worktree failure
  * string is one line of `… failed in <cwd>: <output>` where the output was
  * newline-flattened), so the first one that reports a failure is the answer,
- * and a passing tally cannot be rescued by a neighbour.
+ * and a passing tally cannot be rescued by a neighbour. Calls {@link matchShape},
+ * NOT {@link classifyFailureLine}: the stream is already the cut gate output, so
+ * unwrapping it again would re-enter the cut for a line it has already judged.
  */
 function firstInnerFailure(stream: string): FailureLine | undefined {
   for (const raw of splitLines(stream)) {
-    const inner = classifyFailureLine(raw);
+    const inner = matchShape(raw);
     if (inner !== undefined) return inner;
   }
   return undefined;
@@ -453,26 +349,19 @@ function firstInnerFailure(stream: string): FailureLine | undefined {
  * Exported for the readers that must judge WHAT the line says, not merely
  * whether it reports a failure: `extractSpecificAssertion` asks whether a line
  * is a `FAILED:` marker, and a marker wrapped by the harness is still a marker
- * — judging the wrapper instead lets the harness sentence be returned as "the
+ * - judging the wrapper instead lets the harness sentence be returned as "the
  * specific assertion" and spend the cycle's one corrective round (#798's
  * shape, revived through the wrapper). Same rule `classifyFailureLine` follows;
- * one owner for both.
- *
- * On the way out, two pieces of the HARNESS's own writing are removed from the
- * returned text (see {@link stripHarnessResidue}): the separator padding a
- * command or cwd containing `: ` leaves in front of the gate's output, and the
- * deps hint's diagnosis in front of it when the cut landed on the hint's own
- * colon. Classification never sees either removal — `classifyFailureLine` reads
- * the stream through {@link harnessVerifyStream} directly.
+ * one owner for both, and one text: this is {@link harnessVerifyStream}'s cut
+ * verbatim, with the harness's residue removed at the cut.
  */
 export function harnessInnerLine(line: string): string | undefined {
-  // The other entry into `harnessVerifyStream`, clipped to the same window, so
-  // both callers hand it text that is already bounded and it need not clip.
-  const trimmed = scanWindow(line);
-  const found = harnessVerifyStream(trimmed, true);
-  if (found === undefined) return undefined;
-  if (typeof found === "string") return stripHarnessResidue(found, trimmed, -1, 0);
-  return stripHarnessResidue(found.stream, trimmed, found.cut, found.streamStart);
+  // The other entry into `harnessVerifyStream`, clipped to the same window and
+  // re-anchored the same way, so the reader is shown exactly the text the classifier
+  // judged and neither re-derives the other's view.
+  const t = scanWindow(line);
+  const found = harnessVerifyStream(t);
+  return found === undefined ? undefined : gateView(line, found);
 }
 
 /** The lines of `text` that report a failure, in stream order, trimmed. */

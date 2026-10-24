@@ -44,10 +44,11 @@
  */
 
 import { readFileSync } from "node:fs";
-import { classifyFailureLine, splitLines } from "./work-driver-verify-failures.ts";
-
-/** The exact marker `.pi/verify-cmd`'s smoke-test loop emits on failure. */
-const FAILED_MARKER_RE = /^FAILED: .+$/;
+import {
+  FAILED_MARKER_RE,
+  classifyFailureLine,
+} from "./work-driver-verify-failures.ts";
+import { splitLines } from "./work-driver-verify-support.ts";
 
 /** Result of tail extraction: the text, and whether it's anchored evidence. */
 export interface AttributedTail {

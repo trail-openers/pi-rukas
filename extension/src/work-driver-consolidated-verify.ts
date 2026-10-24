@@ -377,7 +377,9 @@ export async function runConsolidatedVerifyUnlocked(
       // can splice a passing sub-command's tail onto a later failure.
       const { tail, attributed } = extractAttributedTail(verifyFailure, 800);
       if (!attributed && tail) {
-        trace("work-driver: consolidated verify tail is unattributed (no FAILED: marker found)");
+        trace(
+          "work-driver: consolidated verify tail is unattributed (the shared failure-line table named no line)",
+        );
       }
       const detail = tail
         ? attributed
