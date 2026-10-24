@@ -79,6 +79,16 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  *     breaks leaves `\r` behind here, and an unsplit `\r` makes the trimmed
  *     line differ from what the extractor and the classifier both saw.
  *
+ *   - **The tally harvest is NOT part of this reader.** See
+ *     {@link consolidatedAssertionLines}: the harvest is applied on the CONSOLIDATED
+ *     route alone, by the caller that holds a raw gate stream. A per-worktree
+ *     record's text is `formatExecError`'s wrapper, and when the tail fits the
+ *     window that wrapper keeps its newlines and indentation — so an unconditional
+ *     harvest here read the tally block out of a per-worktree stream, joined the
+ *     harness's own sentence into a SECOND evidence line (`verify command … failed
+ *     in <cwd>: test.sh: failed checks (2), not run (0): lint, test/b_test.sh`)
+ *     and spent a `CORRECTIVE_MAX_LINES` slot on harness prose.
+ *
  *   - **What comes back is REDACTED.** These lines are the evidence of a park:
  *     they reach the corrective-round prompt, the handoff and the forge comment.
  *     A failing assertion routinely ECHOES the value it compared, so every line is
@@ -123,18 +133,40 @@ export function assertionLines(text: string): string[] {
     if (inner === undefined) continue;
     for (const raw2 of splitLines(inner)) push(raw2.trim());
   }
-  // #1762 - a consolidated tally block (`test.sh: failed checks (2)` with the names
-  // indented beneath it) joins into ONE evidence line. Appended AFTER the stream's
-  // own lines, so an assertion the gate printed outranks a tally; and
-  // CONSOLIDATED-ONLY for the reason stated in `work-driver-verify-tally.ts`: a
-  // per-worktree record's text is the harness's ONE-LINE wrapper, in which the
-  // indentation the harvest reads cannot exist - so the per-worktree path never
-  // produces a joined tally line. One joined line per tally, so it costs ONE
-  // `CORRECTIVE_MAX_LINES` slot and is cut at `CORRECTIVE_LINE_MAX` like any other
-  // evidence line. Names are never emitted on their own.
-  for (const joined of harvestConsolidatedTallies(text)) push(joined);
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis.
+  const marked = out.filter((l) => l.startsWith("\u2717"));
+  return marked.length > 0 ? marked : out;
+}
+
+/**
+ * The evidence lines of a CONSOLIDATED verify run: {@link assertionLines} plus the
+ * tally harvest appended after them. Appended AFTER, so an assertion the gate
+ * printed outranks a tally, and one joined line per tally block (`test.sh: failed
+ * checks (2)` with the names indented beneath it) — so the joined tally costs ONE
+ * `CORRECTIVE_MAX_LINES` slot and is cut at `CORRECTIVE_LINE_MAX` like any other
+ * evidence line. Names are never emitted on their own.
+ *
+ * The harvest lives HERE rather than inside {@link assertionLines} because "is this
+ * text a raw consolidated stream?" is a fact only the caller knows. The gate builds
+ * a per-worktree record through `formatExecError`, and that wrapper keeps the tail's
+ * newlines and indentation whenever the tail fits its window - so a harvest on the
+ * per-worktree path read a tally block out of harness prose and emitted a second
+ * line opening with the wrapper sentence. A per-worktree stream therefore never
+ * harvests, and {@link assertionLines} - the reader every per-worktree route goes
+ * through, including the deps-hint check - cannot grow the tally back in.
+ */
+export function consolidatedAssertionLines(raw: string): string[] {
+  const out = assertionLines(raw);
+  const seen = new Set(out);
+  for (const joined of harvestConsolidatedTallies(raw)) {
+    const redacted = redactThenBound(joined, ASSERTION_LINE_MAX).text;
+    if (redacted.length === 0 || seen.has(redacted)) continue;
+    seen.add(redacted);
+    out.push(redacted);
+  }
+  // A `✗` line outranks everything else, the harvest included: the tally names the
+  // stage, the assertion names the defect.
   const marked = out.filter((l) => l.startsWith("\u2717"));
   return marked.length > 0 ? marked : out;
 }

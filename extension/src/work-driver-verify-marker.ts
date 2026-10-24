@@ -36,6 +36,13 @@ const FAILED_COUNT_SUMMARY_RE = /^FAILED:\s*\d+\s+test\(s\)/;
  * boundary — and a real detail carries colons of its own (`a first run writes the
  * settings: expected '0', got '1'`), which is why the token is searched for only
  * in the capture and never in the whole line.
+ *
+ * PRECONDITION: a SINGLE trimmed line. A path that contains whitespace (`FAILED:
+ * my test/a test.sh: expected 0, got 1`) is not recognised as such — `\S+` cannot
+ * span the space, so the whole line reads as a BARE marker and no detail is
+ * captured. Passing a multi-line stream is likewise meaningless: the regexes are
+ * anchored per call and `.` does not cross a line break, so at most the first
+ * line is ever judged.
  */
 const MARKER_DETAIL_RE = /^FAILED: \S+: (.+)$/;
 
@@ -74,6 +81,10 @@ export function payloadDetail(line: string): string | undefined {
  * cycle's one corrective round on nothing. The count summary is NOT bare (it is
  * the tally form, kept explicitly by the count-summary readers); a marker whose
  * detail carries no assertion token IS bare.
+ *
+ * PRECONDITION: a SINGLE trimmed line — both predicates trim before matching, so
+ * leading/trailing whitespace costs nothing, but a multi-line stream is judged as
+ * its first line only and a path containing whitespace reads as a bare marker.
  */
 export function isBareFailedMarker(line: string): boolean {
   const t = line.trim();

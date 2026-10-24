@@ -36,6 +36,7 @@ import {
   scriptTallyCount,
 } from "../src/work-driver-verify-failures.ts";
 import { assertionLines } from "../src/work-driver-verify-record.ts";
+import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts";
 import { harvestConsolidatedTallies } from "../src/work-driver-verify-tally.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 import {
@@ -223,6 +224,73 @@ function consolidatedGate(raw: string): CorrectiveGateView {
   );
 }
 
+// ── 3b. the per-worktree route, TALLY-LAST: the wrapper keeps its indentation ─
+{
+  // The adversarial reproduction. `formatExecError` keeps the tail's newlines and
+  // indentation whenever the tail fits its window, so a per-worktree stream whose
+  // tally block sits at the END of the gate output (and carries no payload marker
+  // after it) survives inside the wrapper with its indentation INTACT — the exact
+  // shape the tally harvest reads. A harvest inside `assertionLines` therefore read
+  // the block here too, and the developer was handed a SECOND line opening with the
+  // harness's own sentence, for a `CORRECTIVE_MAX_LINES` slot.
+  const tallyLast = [
+    "ok 1 - a passing check",
+    TALLY_LINE,
+    `    ${TALLY_NAMES[0]}`,
+    `    ${TALLY_NAMES[1]}`,
+  ].join("\n");
+  const ex = Object.assign(new Error("Command failed: sh check.sh"), {
+    stdout: tallyLast,
+    stderr: "",
+  });
+  const wrapper = formatExecError(ex, "timed out", `verify command \`${CMD}\` failed in ${WT}`);
+  assert(
+    wrapper.includes("verify command") && wrapper.includes(TALLY_LINE),
+    `tally-last: the wrapper keeps its own sentence AND the indented tally (${JSON.stringify(wrapper.slice(0, 70))}…)`,
+  );
+  // The premise the fix rests on: this wrapper really is multi-line, which is why
+  // the unconditional harvest could see a tally block inside a per-worktree record.
+  assert(
+    wrapper.includes("\n    "),
+    "tally-last: the tail's indentation survives into the per-worktree record",
+  );
+  const lines = assertionLines(wrapper);
+  assert(
+    !lines.some((l) => l.includes("verify command")),
+    `tally-last per-worktree: no evidence line contains the harness wrapper sentence (got ${JSON.stringify(lines)})`,
+  );
+  assert(
+    !lines.some((l) => l.includes(`: ${TALLY_NAMES.join(", ")}`)),
+    `tally-last per-worktree: no joined tally line is produced here (got ${JSON.stringify(lines)})`,
+  );
+  const d = decideCorrectiveRound(perWtGate(WT, wrapper), {
+    eventLog: NO_EVENTS,
+    worktrees: { default: WT },
+  });
+  assert(
+    d.round === true && d.source === "per-workstream",
+    `tally-last: the round is still earned (got ${JSON.stringify(d)})`,
+  );
+  if (d.round) {
+    const given = d.targets[0]?.lines ?? [];
+    assert(
+      !given.some((l) => l.includes("verify command")),
+      `tally-last: the developer is never given the harness sentence (got ${JSON.stringify(given)})`,
+    );
+    assert(
+      !given.some((l) => l.includes(`: ${TALLY_NAMES.join(", ")}`)),
+      `tally-last: the developer is never given a joined tally (got ${JSON.stringify(given)})`,
+    );
+  }
+  // And the consolidated route still harvests the very same raw stream — the fix
+  // moved the harvest to the caller that holds a raw stream, it did not remove it.
+  const cons = consolidatedAssertionLines(tallyLast);
+  assert(
+    cons.includes(`${TALLY_LINE}: ${TALLY_NAMES.join(", ")}`),
+    `tally-last consolidated: the joined tally is still present (got ${JSON.stringify(cons)})`,
+  );
+}
+
 // ── 4. the consolidated route: the tally harvest, ONE line ───────────────────
 {
   const harvested = harvestConsolidatedTallies(EXAMPLE_STREAM);
@@ -231,7 +299,7 @@ function consolidatedGate(raw: string): CorrectiveGateView {
       harvested[0] === `${TALLY_LINE}: ${TALLY_NAMES[0]}, ${TALLY_NAMES[1]}`,
     `harvest: the tally joins its names into ONE line (got ${JSON.stringify(harvested)})`,
   );
-  const lines = assertionLines(EXAMPLE_STREAM);
+  const lines = consolidatedAssertionLines(EXAMPLE_STREAM);
   assert(
     lines.includes(PAYLOAD_MARKER),
     `consolidated: the payload marker is among the target lines (got ${JSON.stringify(lines)})`,

@@ -441,8 +441,10 @@ export const SEAMS: Seam[] = [
   },
   {
     // #1762 — the CONSOLIDATED-only tally harvest (a script's `failed checks (N)`
-    // block with its names indented beneath it). `assertionLines` in
-    // `work-driver-verify-record.ts` is its production caller.
+    // block with its names indented beneath it). `consolidatedAssertionLines` in
+    // `work-driver-verify-record.ts` is its production caller — the ONLY one, since
+    // the #1808 fix round moved the harvest out of `assertionLines`, which every
+    // per-worktree route reads.
     file: "work-driver-verify-tally.ts",
     pending: {},
     canary: { symbol: "harvestConsolidatedTallies", importer: "work-driver-verify-record.ts" },
