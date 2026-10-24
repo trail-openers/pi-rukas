@@ -2691,6 +2691,29 @@ The acceptance boundary is layered:
 
 Layers 1 and 3 are **advisory in trust mode**. They are environment and string checks, so an agent with a shell can still bypass them. They stop an agent that is not trying to bypass them; the operator's terminal is the real boundary.
 
+#### Where the findings store lives (#1764)
+
+**Symptom you may be reading this for:** an agent's ordinary bash — a `grep` whose pattern holds a `$`, a heredoc with a quoted tag — was refused with *"Accepting a review finding is an operator act"*, even though the command had nothing to do with a finding. On one measured host that refusal fired ~6,400 times across 421 of 576 children, because the guard's whole job was to notice a command naming the store's fixed basename **inside the repository**.
+
+**Now:** the store is not in the repository. It resolves through `findingsStateDir` (`extension/src/review-state-path.ts`) to
+
+```
+<agentDir>/review-state/<repo-key>/<token>/review-findings.json
+```
+
+- `<agentDir>` is `$PI_AGENT_DIR`, else `~/.pi/agent` — the same root as transcripts and models config.
+- `<repo-key>` is the first 16 hex chars of sha256 over the **realpath** of the clone's git common dir, so the main checkout and every linked worktree of one clone share one store (the property the old beside-the-ledger layout had).
+- `<token>` is 32 hex chars minted once per clone with an exclusive `open`. Two processes that race mint the same directory rather than two: the loser reads what the winner wrote.
+- Directories are created 0700 and files 0600, so the store is readable by your own tools and by nobody else's.
+
+**What did not move:** the review **ledger** and its lock still live under the git common dir (`git rev-parse --git-common-dir` + `review-ledger.json`), which is what the #912 merge guard reads. Only the findings file was relocated.
+
+**Migration:** the first resolve for a clone whose `review-findings.json` still sits under the git common dir copies it in, writes a `MIGRATED` marker, then removes the old file — copy before delete, so a migration cannot lose rows. If the state dir already holds rows, the old bytes are set aside beside them as `review-findings.json.pre-migration` instead of being overwritten. To start a clone's memory clean, remove its `review-state/<repo-key>/` directory.
+
+**Fallback:** if the state directory cannot be created (an unwritable `PI_AGENT_DIR`, a git that cannot answer), the store falls back to its **old** location — beside the ledger, under the git common dir — traced, and nothing throws. A store that cannot relocate is still a working store; the trace line says `review-state: cannot create the state dir …`.
+
+**Override:** `PI_ENSEMBLE_REVIEW_LEDGER_FILE` keeps its old meaning for the findings file too — with it set, the findings file stays **beside the override**, in that file's own directory. That is what every offline smoke test isolates on, so a fixture never writes a real store. Note the asymmetry the #1449 misdirection check relies on: the override moves the findings file and the ledger, but `cloneLedgerPathFor` still reports the clone's own ledger under the git common dir.
+
 #### An ordinary git/gh read got blocked by the accept guard (#1125)
 
 Layer 3 hardening closed three routes, and a legitimate command can be caught by the shape test. It now refuses:
@@ -2707,7 +2730,7 @@ Remedy: drop the write-capable argument — `git show HEAD:x` without `--output`
 
 Three shapes are refused **on purpose** and have no workaround inside the guard, because a string match cannot tell them from a command: a fenced `bun run build` line followed by prose naming the store, a quoted markdown table whose cells hold `|` and name the store, and a regex literal `/bun|node|deno/` beside a store path. Write the prose without naming the file, or run the read separately. All three are asserted as refusals in `test-review-accept-guard-hardened.ts`. What the guard does not cover at all is in the module header — most load-bearing: it does not guard writes to the store module's own **source** (`sed -i`, `cp`, `tee`, a redirect, `edit`/`write`), only the findings data file and its `.tmp` / `.corrupt` siblings.
 
-A corrupt `review-findings.json` is never overwritten. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
+A corrupt `review-findings.json` is never overwritten — wherever it lives, the state dir or (as the fallback) beside the ledger. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
 
 ## The offline smoke suite
 

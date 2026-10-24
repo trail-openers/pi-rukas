@@ -71,8 +71,8 @@ import {
 } from "./review-findings-read.ts";
 import { applyFindingRound } from "./review-findings-round.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
-import { trace } from "./trace.ts";
 import { type FindingsLocation, findingsStateDir } from "./review-state-path.ts";
+import { trace } from "./trace.ts";
 
 /**
  * What a round decided for one finding, aligned by index with the findings it

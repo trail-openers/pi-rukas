@@ -102,34 +102,34 @@ try {
     assert(main !== undefined && work !== undefined, "both checkouts resolve a store");
     assert(main?.dir === work?.dir, "a linked worktree shares the main checkout's store dir");
     assert(main?.file === work?.file, "…and the same findings file");
-    assert(!main!.fellBack, "the store is relocated, not left beside the ledger");
+    assert(!main.fellBack, "the store is relocated, not left beside the ledger");
     assert(
-      main!.dir.startsWith(path.join(agent, "review-state")),
+      main.dir.startsWith(path.join(agent, "review-state")),
       "the store lives under <agentDir>/review-state",
     );
     assert(
-      !main!.file.startsWith(repo) && !main!.dir.includes(`${path.sep}.git`),
+      !main.file.startsWith(repo) && !main.dir.includes(`${path.sep}.git`),
       "the store is neither in the repository nor under the git dir",
     );
     assert(
-      /^[0-9a-f]{16}$/.test(path.basename(path.dirname(main!.dir))),
+      /^[0-9a-f]{16}$/.test(path.basename(path.dirname(main.dir))),
       "the per-clone key is 16 hex chars of the common dir's digest",
     );
     assert(
-      /^[0-9a-f]{32}$/.test(path.basename(main!.dir)),
+      /^[0-9a-f]{32}$/.test(path.basename(main.dir)),
       "the leaf is a 32-hex random token nobody can derive",
     );
     assert(
-      modeOf(path.dirname(main!.dir)) === 0o700 && modeOf(main!.dir) === 0o700,
-      `state dirs are 0700 (got ${modeOf(path.dirname(main!.dir)).toString(8)} / ${modeOf(main!.dir).toString(8)})`,
+      modeOf(path.dirname(main.dir)) === 0o700 && modeOf(main.dir) === 0o700,
+      `state dirs are 0700 (got ${modeOf(path.dirname(main.dir)).toString(8)} / ${modeOf(main.dir).toString(8)})`,
     );
     // A file written by the store lands 0600 — the resolver owns the directory,
     // so this asserts the dir it created is not world-readable and a token file
     // is not world-readable either.
-    assert(modeOf(path.join(path.dirname(main!.dir), "token")) === 0o600, "the token file is 0600");
-    const tokenFile = path.join(path.dirname(main!.dir), "token");
+    assert(modeOf(path.join(path.dirname(main.dir), "token")) === 0o600, "the token file is 0600");
+    const tokenFile = path.join(path.dirname(main.dir), "token");
     assert(
-      readFileSync(tokenFile, "utf8").trim() === path.basename(main!.dir),
+      readFileSync(tokenFile, "utf8").trim() === path.basename(main.dir),
       "the token on disk is the directory name (a racing process re-reads it)",
     );
     git("worktree", "remove", "--force", wt);
@@ -149,21 +149,21 @@ try {
     const loc = await findingsStateDir(execp, repo);
     assert(loc !== undefined && !loc.fellBack, "the relocated store was created");
     assert(!existsSync(oldFile), "the old file under the git common dir is gone");
-    assert(existsSync(path.join(loc!.dir, "MIGRATED")), "MIGRATED is written");
+    assert(existsSync(path.join(loc.dir, "MIGRATED")), "MIGRATED is written");
     assert(
-      JSON.parse(readFileSync(loc!.file, "utf8")).rows[0].title === "a stored finding",
+      JSON.parse(readFileSync(loc.file, "utf8")).rows[0].title === "a stored finding",
       "the rows survived the move",
     );
-    assert(modeOf(loc!.file) === 0o600, `the migrated file is 0600 (got ${modeOf(loc!.file).toString(8)})`);
+    assert(modeOf(loc.file) === 0o600, `the migrated file is 0600 (got ${modeOf(loc.file).toString(8)})`);
 
     // Idempotence: put a file back and resolve again — the marker means the
     // second resolve does nothing at all.
-    const before = readFileSync(loc!.file, "utf8");
+    const before = readFileSync(loc.file, "utf8");
     writeFileSync(oldFile, '{"rows":[{"id":"cafe0000","title":"a second round"}]}\n', "utf8");
     const again = await findingsStateDir(execp, repo);
-    assert(again!.dir === loc!.dir, "a second resolve returns the same directory");
+    assert(again.dir === loc.dir, "a second resolve returns the same directory");
     assert(existsSync(oldFile), "a second resolve does NOT migrate again (MIGRATED honoured)");
-    assert(readFileSync(again!.file, "utf8") === before, "…and does not touch the live store");
+    assert(readFileSync(again.file, "utf8") === before, "…and does not touch the live store");
 
     git("worktree", "prune");
     rmSync(path.dirname(repo), { recursive: true, force: true });
@@ -181,17 +181,17 @@ try {
     const first = await findingsStateDir(execp, repo);
     // The first resolve migrated; simulate a round having written the live store
     // and an old file reappearing (a restore from a stale worktree, a checkout).
-    writeFileSync(first!.file, JSON.stringify(ROWS, null, 2), "utf8");
+    writeFileSync(first.file, JSON.stringify(ROWS, null, 2), "utf8");
     writeFileSync(oldFile, '{"rows":[{"id":"0dd1e5d1","title":"the old row"}]}\n', "utf8");
-    rmSync(path.join(first!.dir, "MIGRATED"));
+    rmSync(path.join(first.dir, "MIGRATED"));
     resetFindingsStateCache();
     const second = await findingsStateDir(execp, repo);
     assert(
-      JSON.parse(readFileSync(second!.file, "utf8")).rows[0].title === "a stored finding",
+      JSON.parse(readFileSync(second.file, "utf8")).rows[0].title === "a stored finding",
       "the live store's rows are kept when both files exist",
     );
     assert(!existsSync(oldFile), "the old file is still removed from the git dir");
-    const aside = `${second!.file}.pre-migration`;
+    const aside = `${second.file}.pre-migration`;
     assert(existsSync(aside), "the old bytes are set aside beside the live store");
     assert(
       JSON.parse(readFileSync(aside, "utf8")).rows[0].title === "the old row",
@@ -220,12 +220,12 @@ try {
     chmodSync(agent, 0o700);
     assert(!threw, "an unwritable state root does not throw");
     assert(loc !== undefined, "…and still answers with a location");
-    assert(loc!.fellBack, "…flagged as the fallback");
+    assert(loc.fellBack, "…flagged as the fallback");
     assert(
-      path.dirname(loc!.file) === commonDir,
+      path.dirname(loc.file) === commonDir,
       "the fallback is the old location, beside the ledger",
     );
-    assert(loc!.file === path.join(commonDir, FINDINGS_FILE), "…with the store's basename");
+    assert(loc.file === path.join(commonDir, FINDINGS_FILE), "…with the store's basename");
     rmSync(path.dirname(repo), { recursive: true, force: true });
     rmSync(agent, { recursive: true, force: true });
   }

@@ -32,6 +32,7 @@ import {
   recordFindingRunOutcome,
 } from "../src/review-findings-store.ts";
 import { decide } from "./lib/review-findings-fixtures.ts";
+import { FINDINGS_FILE, findingsStateDir, resetFindingsStateCache } from "../src/review-state-path.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -197,7 +198,18 @@ for (const c of ["git diff HEAD -- extension/src/review-accept-guard.ts", "gh pr
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 const dir = mkdtempSync(path.join(os.tmpdir(), "review-accept-layers-"));
-const findingsFile = path.join(dir, ".git", "review-findings.json");
+// #1764 — the store no longer lives under the clone's .git: it resolves through
+// the state-dir resolver, whose path nobody can derive. Pin PI_AGENT_DIR at a
+// temp dir so this fixture never touches the operator's real one (RESOLVING
+// BEFORE THE CLONE EXISTS would answer "no git common dir" and silently fall
+// back to the old beside-the-ledger spelling, which is what the assertions here
+// would then be pinning). The path is read out of the resolver itself rather
+// than from a spelling the store no longer uses.
+const agentDir = mkdtempSync(path.join(os.tmpdir(), "review-accept-layers-agent-"));
+process.env.PI_AGENT_DIR = agentDir;
+resetFindingsStateCache();
+let findingsFile = "";
+let stateDir = "";
 const SRC = [
   "export function alpha() {",
   "  const a = x + 1;",
@@ -219,6 +231,11 @@ try {
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "c");
   const head = git(dir, "rev-parse", "HEAD");
+  // The clone now exists, so the resolver answers with the real state dir.
+  const stateLoc = await findingsStateDir((await import("../src/exec.ts")).execp, dir);
+  if (!stateLoc) throw new Error("the fixture clone resolved no findings store");
+  findingsFile = stateLoc.file;
+  stateDir = stateLoc.dir;
 
   // CRITICAL: refused by acceptRow, and never suppressed on a delta.
   const crit = await decide({
@@ -320,8 +337,7 @@ try {
     "corrupt row: the valid rows and the acceptance survive",
   );
   assert(
-    readdirSync(path.join(dir, ".git")).filter((f) => f.startsWith("review-findings.json.corrupt-"))
-      .length === 1,
+    readdirSync(stateDir).filter((f) => f.startsWith(`${FINDINGS_FILE}.corrupt-`)).length === 1,
     "corrupt row: exactly one .corrupt copy holds the malformed row",
   );
 
@@ -383,6 +399,9 @@ try {
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });
+  rmSync(agentDir, { recursive: true, force: true });
+  delete process.env.PI_AGENT_DIR;
+  resetFindingsStateCache();
 }
 
 // ── capRows never evicts an accepted row ────────────────────────────────────
