@@ -488,24 +488,4 @@ export const SEAMS: Seam[] = [
       importer: "work-driver-integrate-verify.ts",
     },
   },
-  {
-    // #1765 / #1809 — the single-flight registry that keeps the base-health probe
-    // off the branch step's critical path. `startBaseHealthProbe`,
-    // `awaitInflightBaseHealth` and `peekBaseHealthProbe` are production callers'
-    // entry points (the branch step registers, the develop gate consults); the two
-    // below exist only so a test can observe and reset the Map the probe lives in.
-    // The suite shares one module instance, and a probe left registered by one case
-    // would be JOINED by the next and answer for a base it never checked out — so
-    // the counter and the clear are not conveniences, they are what makes the
-    // registry observable at all.
-    file: "work-driver-base-health-inflight.ts",
-    pending: {},
-    testOnly: {
-      inflightBaseHealthCount:
-        "#1809 — test-base-health-inflight.ts (registration, settle, single-flight, identity, the redact and no-sentinel cases) asserts the Map holds what it should and nothing else",
-      clearBaseHealthInflight:
-        "#1809 — test-base-health-inflight.ts and test-verify-base-health-channels.ts reset the registry between cases; test-verify-base-health-probe.ts between fixtures",
-    },
-    canary: { symbol: "awaitInflightBaseHealth", importer: "work-driver-verify-aggregate.ts" },
-  },
 ];

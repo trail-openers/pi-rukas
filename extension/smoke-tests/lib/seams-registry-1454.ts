@@ -5,6 +5,10 @@ import type { Seam } from "./seams-registry.ts";
  * `seams-registry.ts` for the 500-line gate (AGENTS.md §12).
  * `test-seams-wired.ts` concatenates this with `SEAMS`; the assertions are
  * unchanged and still live in the test.
+ *
+ * Later entries moved here for the same cap: #1765/#1809's
+ * `work-driver-base-health-inflight.ts`, which main pushed `seams-registry.ts`
+ * past 500 lines to accommodate.
  */
 export const SEAMS_1454: Seam[] = [
   {
@@ -154,5 +158,26 @@ export const SEAMS_1454: Seam[] = [
     pending: {},
     testOnly: {},
     canary: { symbol: "explainClaimsLock", importer: "work-driver-explain.ts" },
+  },
+  {
+    // #1765 / #1809 — the single-flight registry that keeps the base-health probe
+    // off the branch step's critical path. `startBaseHealthProbe`,
+    // `awaitInflightBaseHealth` and `peekBaseHealthProbe` are production callers'
+    // entry points (the branch step registers, the develop gate consults); the two
+    // below exist only so a test can observe and reset the Map the probe lives in.
+    // The suite shares one module instance, and a probe left registered by one case
+    // would be JOINED by the next and answer for a base it never checked out — so
+    // the counter and the clear are not conveniences, they are what makes the
+    // registry observable at all. Split from seams-registry.ts for the 500-line
+    // gate (AGENTS.md §12); nothing about the seam changed.
+    file: "work-driver-base-health-inflight.ts",
+    pending: {},
+    testOnly: {
+      inflightBaseHealthCount:
+        "#1809 — test-base-health-inflight.ts (registration, settle, single-flight, identity, the redact and no-sentinel cases) asserts the Map holds what it should and nothing else",
+      clearBaseHealthInflight:
+        "#1809 — test-base-health-inflight.ts and test-verify-base-health-channels.ts reset the registry between cases; test-verify-base-health-probe.ts between fixtures",
+    },
+    canary: { symbol: "awaitInflightBaseHealth", importer: "work-driver-verify-aggregate.ts" },
   },
 ];
