@@ -56,8 +56,17 @@ while read -r local_ref local_oid remote_ref remote_oid; do
   # `head -c` bound instead, so one enormous push cannot exhaust the hook's
   # memory before it answers. The bound truncates the SAME way for every entry,
   # so a match past 5 MiB is missed and the refusal for the rest still fires.
-  messages=$(git log --format=%B -- $range 2>/dev/null | head -c 5242880)
-  added=$(git log -p --format= -- $range 2>/dev/null | head -c 5242880)
+  #
+  # The revision range sits BEFORE `--`. Everything after `--` is a PATHSPEC:
+  # written as `git log --format=%B -- $range`, git looked for commits that
+  # touched a path literally named after a commit sha, found none, printed
+  # nothing and exited 0 — so the hook reported every push clean, including one
+  # carrying the denylist term, which is the one thing this script exists to
+  # catch. `--not --remotes` stays after the range (it modifies the revisions,
+  # not the paths) and no `--` separator is needed at all: every word here is a
+  # revision, so there is no pathspec to delimit.
+  messages=$(git log --format=%B "$range" --not --remotes=origin 2>/dev/null | head -c 5242880)
+  added=$(git log -p --format= "$range" --not --remotes=origin 2>/dev/null | head -c 5242880)
 
   # One pass over the denylist, one git read for the messages and one for the
   # added lines, reused per entry. `nl -ba -w1 -s:` numbers every line (blank

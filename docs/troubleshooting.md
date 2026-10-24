@@ -611,15 +611,30 @@ carries a category, a line number and a length, never content.
 
 ### A push was refused but the commits look fine
 
-**Cause:** The scan reads the **outgoing range** (`<remote>/<branch>..HEAD`), so it sees every commit
-the push would publish — including one someone else committed onto the branch, and including commit
-**messages**, which are easy to forget. Non-github.com remotes are not push-scanned (a private remote
-is not the public forge).
+**Cause:** The scan reads the **outgoing range**, and the range comes from the
+command's own REFSPECS, not from what this clone has checked out. `pushRefspecs`
+reads the words after the remote (dropping flags, and swallowing the operand of
+an option that takes a value as a separate word — `-o`, `--push-option`,
+`--repo`, `--receive-pack`, `--exec`), each source is resolved with `git
+rev-parse --verify --quiet <src>^{commit}`, and the scan reads those commits'
+history minus everything already on a remote-tracking ref: `git log <srcs> --not
+--remotes`. So `git push origin some-branch` with HEAD elsewhere scans
+`some-branch`, and a commit already on any remote is not re-scanned (it is
+already public). `--all`/`--branches`/`--mirror` and `--tags` are listed by
+category. A `-d`/`--delete` push, or a refspec with an empty source, publishes no
+commits and is scanned clean. A source that does not resolve is a refusal, never
+a clean range. Non-github.com remotes are not push-scanned (a private remote is
+not the public forge).
 
-**Fix:** `git log --format=%B <remote>/<branch>..HEAD` and read the messages; the refusal names the
-short sha and the path, so `git show <sha>` finds the line. Amend or rebase the offending commit and
-push again. If the refusal instead says the range *could not be read*, the cause is git (an unreadable
-remote URL, a hung `git log`) and the fix is to make that read work — a range nobody read is not a
+The scan runs git in the push's own directory: the tool call's cwd, adjusted for
+the two shapes that move the git (`git -C <dir>`, a `cd <dir> &&` prefix), so a
+detached-worktree push is not judged against the repo root's commits.
+
+**Fix:** `git log --format=%B <srcs> --not --remotes` and read the messages; the
+refusal names the short sha and the path, so `git show <sha>` finds the line.
+Amend or rebase the offending commit and push again. If the refusal instead says
+the range *could not be read*, the cause is git (an unreadable remote URL, a hung
+`git log`) and the fix is to make that read work — a range nobody read is not a
 clean range.
 
 ### `bin/pre-push-hygiene.sh` does nothing on a human push
