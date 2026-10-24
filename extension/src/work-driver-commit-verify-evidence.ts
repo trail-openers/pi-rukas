@@ -30,19 +30,24 @@
 
 import { redactThenBound } from "./text-flatten.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
+import { classifyFailureLine } from "./work-driver-verify-failures.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
 /** The cap a terminal commit-pr park records — the cap union, not a free string. */
 export type CommitPrTerminalCap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
 
 /**
- * The lines of the gate's failure text that name an actual failure: the verify
- * loop's per-test `FAILED:` markers (including the `FAILED: <n> test(s) — a, b`
- * summary, which carries the names) and its `✗` assertion lines. Both come from the
- * same stream the classifier read, so the cap and the classification describe one
- * run.
+ * The lines of the gate's failure text that name an actual failure: #1762 —
+ * this used to be `/^\s*(FAILED:|✗)/`, the third site hardwired to this repo's
+ * own loop dialect, so a jest/pytest/go/bats or shell-tally failure never
+ * reached the PR body's named-failure list. It now asks the shared failure-line
+ * table, which admits the shapes it admitted before plus the runners this repo
+ * does not own. Both come from the same stream the classifier read, so the cap
+ * and the classification describe one run.
  */
-const NAMED_FAILURE_LINE = /^\s*(FAILED:|✗)/;
+function namedFailureShape(line: string): boolean {
+  return classifyFailureLine(line) !== undefined;
+}
 
 /**
  * Per-line bound for a recovered failure line. A verify assertion can print a whole
@@ -106,7 +111,7 @@ export function namedFailureLines(
   const out: string[] = [];
   for (const raw of text.split("\n")) {
     const line = raw.trim();
-    if (line.length === 0 || !NAMED_FAILURE_LINE.test(line)) continue;
+    if (line.length === 0 || !namedFailureShape(line)) continue;
     if (accept !== undefined && !accept(line)) continue;
     // #1702 — a `FAILED:` / `✗` line is a line of the project's own output, and a
     // failing assertion commonly ECHOES the value it compared: a test that asserts on

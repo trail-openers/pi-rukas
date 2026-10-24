@@ -16,7 +16,9 @@
  *
  * `redactThenBound` is the sibling for text that is STORED as well as rendered:
  * one redact-then-clip, so a length cap can never cut a credential into a fragment
- * no pattern recognises.
+ * no pattern recognises. Its `keep` option says which END survives — the head is
+ * the default, and `"tail"` is for text whose point is at the end (a gate's output,
+ * a stack trace), where keeping the head kept the noise and threw away the failure.
  */
 
 import { redactSecrets } from "./secret-patterns.ts";
@@ -48,12 +50,23 @@ export function flattenIssueText(text: string): string {
  * the returned length against its own bound re-derives a fact the function already
  * decided, and on this runtime that comparison does not survive inlining — the clipped
  * case silently loses its marker. The flag is the return value; nothing re-tests it.
+ *
+ * `keep` chooses the END that survives a clip. The default is `"head"`, which is what
+ * a flattened one-line field wants; `"tail"` is for stored stream text, where the
+ * failure sits at the end and the head is build noise. Both are code-point safe for
+ * the same reason: `Array.from` first, slice second, so a surrogate pair is never
+ * left as a lone half.
  */
-export function redactThenBound(text: string, max: number): { text: string; clipped: boolean } {
+export function redactThenBound(
+  text: string,
+  max: number,
+  keep: "head" | "tail" = "head",
+): { text: string; clipped: boolean } {
   const chars = Array.from(redactSecrets(text).text);
-  return chars.length > max
-    ? { text: chars.slice(0, max).join(""), clipped: true }
-    : { text: chars.join(""), clipped: false };
+  if (chars.length <= max) return { text: chars.join(""), clipped: false };
+  return keep === "tail"
+    ? { text: chars.slice(-max).join(""), clipped: true }
+    : { text: chars.slice(0, max).join(""), clipped: true };
 }
 
 /**
