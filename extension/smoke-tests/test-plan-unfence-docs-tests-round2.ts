@@ -28,6 +28,7 @@ import { runPlanUnfencePass } from "../src/work-driver-plan-coupling-pass.ts";
 import { unfenceDocsTestPaths } from "../src/work-driver-plan-unfence-docs-tests.ts";
 import type { UnfenceRecord } from "../src/work-driver-plan-unfence-notes.ts";
 import { unfenceSummary } from "../src/work-driver-plan-unfence-notes.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -62,9 +63,12 @@ const measuredPlan = (): Record<string, Workstream> => ({
   ]),
 });
 
-// The hatch is read per call; pin it for this process so a leaked `0` from
-// another file in the batch cannot make this suite assert nothing.
-process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
+// The hatch is read per call. `withEnv` pins it for the whole suite and puts
+// back EXACTLY what was there — a bare assignment leaked the pin into every
+// later file in the same verify-loop batch, which is how a batch failure reads
+// as a flake (the driver's own verify scrub cannot reach a sibling file).
+const HATCH = "PI_ENSEMBLE_UNFENCE_DOCS_TESTS";
+await withEnv({ [HATCH]: "1" }, async () => {
 
 // ----------------- AC: an annotated protected entry keeps its fence whatever the spelling
 
@@ -240,5 +244,98 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
     `a test fence's note reads "test path", never "test-or-test" (${JSON.stringify(testNote)})`,
   );
 }
+
+
+// ------- AC (round 2): the rule enforces its own N=1 precondition when called directly
+
+{
+  // The caller refuses to call this for a multi-workstream plan, but a rule
+  // whose only guard is a caller's `if` opens a sibling's test fence the first
+  // time anything else calls it. With N>1 a test fence IS the #572/#1137
+  // cross-declaration contract, so the map must come back UNCHANGED — the same
+  // object identity, no removals, no records.
+  const two: Record<string, Workstream> = {
+    a: WS("a", ["docs/guide.md", "test/helper.sh", "src/a_test.go", "lib/x.sh"]),
+    b: WS("b", ["host/docs/"]),
+  };
+  const res = unfenceDocsTestPaths(two, PLAIN_BODY);
+  assert(res.workstreams === two, "N=2 called directly: the map is returned unchanged (same object)");
+  assert(res.removed.length === 0, `N=2 called directly: no removal records (${res.removed.length})`);
+  assert(res.notes.length === 0, `N=2 called directly: no notes (${res.notes.length})`);
+  assert(
+    res.workstreams.a?.outOfScope.includes("test/helper.sh") === true,
+    "N=2 called directly: the sibling test fence is untouched",
+  );
+  assert(
+    unfenceDocsTestPaths({}, PLAIN_BODY).workstreams !== undefined,
+    "an empty map is returned as-is rather than throwing",
+  );
+}
+
+// ------- AC (round 2): a protected entry carrying BOTH a glob and an annotation
+
+{
+  // `docs/agents.json/** (new)` is the spelling the three earlier reads all
+  // miss: `fenceDirPrefix` deannotates before it strips the glob, so no read
+  // ever holds `…/agents.json` alone. The canonical form is now asked twice —
+  // annotation stripped, then the trailing glob stripped from THAT.
+  const plan: Record<string, Workstream> = {
+    default: WS("default", [
+      "docs/agents.json/** (new)",
+      ".github/x.md/* (keep)",
+      "docs/CODEOWNERS/**(keep)",
+      "docs/guide.md",
+    ]),
+  };
+  const res = unfenceDocsTestPaths(plan, PLAIN_BODY);
+  const fence = res.workstreams.default?.outOfScope ?? [];
+  for (const e of ["docs/agents.json/** (new)", ".github/x.md/* (keep)", "docs/CODEOWNERS/**(keep)"]) {
+    assert(fence.includes(e), `glob + annotation keeps the protected fence: ${e}`);
+  }
+  assert(!fence.includes("docs/guide.md"), "the ordinary docs page beside them still opens");
+}
+
+// ------- AC (round 2): the prohibition scan reads stripped prose, on boundaries
+
+{
+  // (a) A prohibition inside a fenced code block is an example, not a refusal:
+  // the same strip the issue-named pass applies removes it, so the docs fence
+  // opens. (b) `docs/x` in prose must not forbid the `doc/` fence — the key is
+  // matched on path-segment boundaries, never as a substring.
+  const inCodeBlock = `${PLAIN_BODY}\n\`\`\`\nDo not touch docs/guide.md.\n\`\`\`\n`;
+  const res = unfenceDocsTestPaths(
+    { default: WS("default", ["docs/guide.md", "lib/x.sh"]) },
+    inCodeBlock,
+  );
+  assert(
+    !res.workstreams.default?.outOfScope.includes("docs/guide.md"),
+    "a prohibition inside a fenced code block does not keep the fence",
+  );
+  // The substring trap is `docs/x` in prose against a fence whose name is a
+  // SUBSTRING of what the prose says: `docs/x` must not forbid the `doc/`
+  // fence (`doc` is not at a segment boundary there), while the `docs/` fence
+  // the sentence really names stays fenced.
+  const nearMiss = unfenceDocsTestPaths(
+    { default: WS("default", ["doc/", "docs/"]) },
+    `${PLAIN_BODY}\nDo not touch docs/x and lib/y.\n`,
+  ).workstreams.default?.outOfScope;
+  assert(
+    nearMiss?.includes("doc/") === false,
+    "`docs/x` in prose does not forbid the `doc/` fence (segment boundaries, not substrings)",
+  );
+  assert(
+    nearMiss?.includes("docs/") === true,
+    "the sentence forbids the docs/ fence it names, and only that one",
+  );
+  const subTrap = unfenceDocsTestPaths(
+    { default: WS("default", ["docs/guide.md"]) },
+    `${PLAIN_BODY}\nDo not touch docs/guide.md-extra.\n`,
+  ).workstreams.default?.outOfScope;
+  assert(
+    subTrap?.includes("docs/guide.md") === false,
+    "`docs/guide.md-extra` is another file — it does not forbid the docs/guide.md fence",
+  );
+}
+});
 
 process.exit(exit);

@@ -198,7 +198,12 @@ function namesPathBoundary(text: string, key: string): boolean {
   // nothing or by a `/`-opened remainder, never by a character that only makes
   // the name longer.
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w./-])${escaped}(?![\\w-]|\\.\\w)`).test(text);
+  // Arm 1 — the key as a whole token (`docs`, `docs/guide.md`).
+  if (new RegExp(`(?<![\\w./-])${escaped}(?![\\w-]|\\.\\w)`).test(text)) return true;
+  // Arm 2 — the key names a DIRECTORY and some path under it appears: the `/`
+  // after the key is REQUIRED, so `docs/x` never names the `doc` fence (`doc`
+  // is only ever present inside the longer `docs`, never at a segment start).
+  return new RegExp(`(?<![\\w./-])${escaped}/[\\w.@-]+`).test(text);
 }
 
 /**
