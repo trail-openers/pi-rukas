@@ -52,21 +52,49 @@ const { assert, failed } = makeAssert();
 }
 
 // ── 2f. a pathological single line costs a constant, not the square ────────
-// The classifier is quadratic in line length: the wrapper prefix's lazy `.+?`
-// backtracks once per `: ` it finds and the tally branches' `[^\r\n]*` does the
+// The classifier was quadratic in line length: the wrapper prefix's lazy `.+?`
+// backtracked once per `: ` it finds and the tally branches' `[^\r\n]*` did the
 // same. A gate that prints a serialized fixture on one line used to cost
 // seconds per line, and a whole suite of them stops the gate. The scan window
 // makes the cost of one line constant.
+//
+// The bound is RELATIVE — measured against a ~1 KB control line in this same
+// process — because an absolute millisecond bound is a machine-speed bound: the
+// 500 ms and 1 s that stood here failed deterministically on CI while the same
+// code ran in ~200 ms locally. What is claimed is that the cost does not GROW with
+// the line, and a ratio proves that without caring how fast the runner is. The
+// absolute ceiling stays, at 10 s, purely as a hang guard.
+// `timed`/`control`/`budget` are shared with the block below (2f-2) and live ABOVE
+// both, so they are in scope for each: a helper declared inside a block is not
+// visible to its sibling, and the second block measures the same thing.
+const timed = (line: string): number => {
+  const runs: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const started = performance.now();
+    classifyFailureLine(line);
+    runs.push(performance.now() - started);
+  }
+  runs.sort((a, b) => a - b);
+  return runs[1] ?? runs[0] ?? 0;
+};
+const CONTROL_BUDGET = (control: number): number => control * 20 + 50;
 {
+  // A ~1 KB line of the same shape, median of 3 runs: the baseline the two
+  // pathological cases are compared against.
+  const control = timed(`${"x".repeat(1200)}: `.repeat(2));
+  const budget = CONTROL_BUDGET(control);
+  console.log(`  control (~1 KB) median: ${control.toFixed(2)} ms`);
+
   const huge = `${"x".repeat(1200)}: `.repeat(1500); // 200 KB, 1500 `: ` candidates
-  const started = Date.now();
+  assert(huge.length > 100_000, `bound: the line is ~200 KB (got ${huge.length})`);
+  const ms = timed(huge);
   const got = classifyFailureLine(huge);
-  const ms = Date.now() - started;
   assert(got === undefined, `bound: a 200 KB line of separators classifies as nothing`);
   assert(
-    ms < 500,
-    `bound: a 200 KB single line classifies in under 500 ms (took ${ms} ms; window ${FAILURE_LINE_SCAN_MAX})`,
+    ms <= budget,
+    `bound: a 200 KB single line costs ${ms.toFixed(1)} ms, within 20x the ${control.toFixed(1)} ms control + 50 ms (budget ${budget.toFixed(1)} ms; window ${FAILURE_LINE_SCAN_MAX})`,
   );
+  assert(ms < 10_000, `bound: a 200 KB single line classified in ${ms.toFixed(1)} ms (< 10 s hang guard)`);
   assert(
     FAILURE_LINE_SCAN_MAX === 8 * 1024,
     `bound: the scan window is the exported 8 KiB (got ${FAILURE_LINE_SCAN_MAX})`,
@@ -89,16 +117,24 @@ const { assert, failed } = makeAssert();
 // lazy `.+?` backtracks over all of them: measured over 30 s unbounded, and a
 // verify gate that prints one such line stops. The whole line now goes through
 // one window, so every scan below it is bounded by construction and the cost of
-// one line is constant whatever it holds.
+// one line is constant whatever it holds. The cost uses the same RELATIVE budget as
+// 2f above — a ~1 KB control line measured in this process, 20x + 50 ms — for the
+// same reason: the absolute bound was a machine-speed bound.
 {
   const wrapperPrefix = `verify command \`${CMD}\` failed in ${WT}`;
+  const control = timed(`${wrapperPrefix}: ${": ".repeat(500)}`); // ~1 KB
+  const budget = CONTROL_BUDGET(control);
+  console.log(`  control (~1 KB) median: ${control.toFixed(2)} ms`);
   const huge = `${wrapperPrefix}${": ".repeat(500_000)}`; // ~1 MB, 500 000 `: ` candidates
   assert(huge.length > 1_000_000, `bound: the wrapper line is ~1 MB (got ${huge.length})`);
-  const started = Date.now();
+  const ms = timed(huge);
   const got = classifyFailureLine(huge);
-  const ms = Date.now() - started;
   assert(got === undefined, "bound: a 1 MB wrapper line of separators classifies as nothing");
-  assert(ms < 1000, `bound: a 1 MB wrapper line classifies in under 1 s (took ${ms} ms)`);
+  assert(
+    ms <= budget,
+    `bound: a 1 MB wrapper line costs ${ms.toFixed(1)} ms, within 20x the ${control.toFixed(1)} ms control + 50 ms (budget ${budget.toFixed(1)} ms)`,
+  );
+  assert(ms < 10_000, `bound: a 1 MB wrapper line classified in ${ms.toFixed(1)} ms (< 10 s hang guard)`);
   // The window is a bound on COST, not on what a real line says: a normal line
   // — one separator, the gate's own report behind it — answers exactly as it
   // did before the clip moved, and the same report 200 KB deeper in does not.

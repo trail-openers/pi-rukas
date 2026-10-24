@@ -31,7 +31,10 @@
  *     classifier then calls (`harnessVerifyStream`, `classifyStream`, the
  *     wrapper's inner-line pass) works on THAT text, never the caller's
  *     unclipped line — so the bound is applied once, at the entry, and no scan
- *     in this module is quadratic in a line the gate printed whole.
+ *     in this module is quadratic in a line the gate printed whole. The bound is a
+ *     ceiling on ONE text, and a candidate walk that produces sixteen cuts of that
+ *     text pays the ceiling sixteen times, which is why `harnessVerifyStream` clips
+ *     each cut it is about to judge rather than trusting its caller's window.
  *
  * `namesTest` is the stricter half of the answer — the line that carries a
  * specific assertion or a named check, which is what `extractSpecificAssertion`
@@ -188,7 +191,7 @@ const SHAPES: ReadonlyArray<{ shape: FailureShape; namesTest: boolean; re: RegEx
  * failure line, whatever substring it contains. Every key is anchored or counted,
  * because a bare `/ok/` also matches book, token, lookup and OK — and every
  * passing-tally veto is conditional on the line carrying no NON-ZERO failure
- * count (`NONZERO_FAILURE_COUNT`), because a tally that reports both halves
+ * count ({@link hasCountedTally}), because a tally that reports both halves
  * (`1 failed, 3 passed`) is a failure.
  */
 const SUCCESS_LINE =
@@ -196,15 +199,42 @@ const SUCCESS_LINE =
 
 /**
  * A NON-ZERO failure count in a status position: right after the file's colon
- * (`test.sh: 1 failed`), as the failing half of a comma-separated tally that
- * starts at that colon (`pack_release_test.sh: 36 cases, 1 failed`), or bare
- * after whitespace (`1 failed, 3 passed` at the head of a summary). `isSuccessLine` applies its
- * passing vetoes only when a line carries none of these — the passing half of a
+ * (`test.sh: 1 failed`), as the failing half of a comma-separated tally that starts
+ * at that colon (`pack_release_test.sh: 36 cases, 1 failed`), or bare after
+ * whitespace (`1 failed, 3 passed` at the head of a summary). `isSuccessLine` applies
+ * its passing vetoes only when a line carries none of these — the passing half of a
  * tally does not cancel the failing half — and prose that merely uses the words
  * (`index.ts: not found, which is fine`) matches none of the three positions.
+ *
+ * Written WITHOUT a pattern that backtracks per candidate.
+ *
+ * The tally position used to be the branch `:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|...)`:
+ * a comma after a colon, then a non-zero count. The wildcard does not have to SEARCH
+ * for that comma. For each colon the branch tries, only the comma CLOSEST to it can
+ * complete the match it describes: any comma further out is preceded, inside the
+ * wildcard's own space, by an earlier comma the wildcard could have stopped at, and a
+ * run that has already passed a comma can never satisfy `\s*[1-9]\d*\s+failed`. So
+ * the position is a conjunction over ONE anchored quantifier — a colon, a comma-free
+ * run, a comma, then the count — which recognises exactly the same strings while its
+ * inner quantifier is a single character class with no alternation to re-enter, and
+ * costs linear in the text it scans. `\s` stays out of the run because whitespace
+ * after the count is part of what the branch matches; the other two positions keep
+ * their own direct patterns, so the conjunction never widens the contract.
+ *
+ * Measured: the `:[^\r\n]*,` form cost 16 ms on an 8 KiB line of `": "` — one
+ * backtracking step per separator — against 0.05 ms here, and the classifier asks it
+ * once per candidate cut, so sixteen candidates turned a constant bound into 240 ms
+ * (#1762 CI failure).
  */
-const NONZERO_FAILURE_COUNT =
-  /:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|:[^\r\n]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|(?<![\d.])[1-9]\d*\s+(?:failed|errors?|failures?)\b/i;
+function hasCountedTally(text: string): boolean {
+  if (
+    /:\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b|(?<![\d.])[1-9]\d*\s+(?:failed|errors?|failures?)\b/i.test(
+      text,
+    )
+  )
+    return true;
+  return /:[^,\r\n\s]*,\s*[1-9]\d*\s+(?:failed|errors?|failures?)\b/i.test(text);
+}
 
 /**
  * #1762 lens round — the longest line the classifier inspects.
@@ -283,7 +313,7 @@ function scanWindow(line: string): string {
 export function isSuccessLine(line: string): boolean {
   const t = scanWindow(line);
   if (t.length === 0) return false;
-  if (matches(NONZERO_FAILURE_COUNT, t)) return false;
+  if (hasCountedTally(t)) return false;
   return matches(SUCCESS_LINE, t);
 }
 

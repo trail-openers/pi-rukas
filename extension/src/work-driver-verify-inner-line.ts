@@ -156,9 +156,12 @@ function hintColonPositions(line: string, from: number): number[] {
   const first = Math.max(0, from);
   const last = Math.min(line.length, first + HINT_PROSE_MAX);
   const cols: number[] = [];
-  for (let at = line.indexOf(STREAM_SEPARATOR, Math.max(0, first - SEPARATOR_LEN)); at !== -1; ) {
-    if (at < last) cols.push(at);
-    if (at >= last || cols.length >= COLON_SCAN_MAX) break;
+  for (
+    let at = line.indexOf(STREAM_SEPARATOR, Math.max(0, first - SEPARATOR_LEN));
+    at !== -1 && at < last;
+  ) {
+    cols.push(at);
+    if (cols.length >= COLON_SCAN_MAX) break;
     at = line.indexOf(STREAM_SEPARATOR, at + SEPARATOR_LEN);
   }
   return cols;
@@ -329,9 +332,13 @@ export function harnessVerifyStream(line: string): HarnessStream | undefined {
       : line[at] === "\r" && line[at + 1] === "\n"
         ? 2
         : 1;
-    // No clip here: the caller clipped the text it hands this function, so this slice
-    // cannot exceed that window and the bound is never applied a second time.
-    const raw = line.slice(at + width).trim();
+    // One bound, one coordinate space. The caller clips the LINE it hands this
+    // function, and each cut is clipped to the same window before the table judges
+    // it: a window is a ceiling on ONE text, and a candidate walk that produces
+    // sixteen cuts of an 8 KiB window pays the ceiling sixteen times. Clipping here
+    // is the same bound one level down — the cut's own text, never a second bound
+    // applied to the caller's line.
+    const raw = line.slice(at + width, at + width + separatorScanWindow()).trim();
     if (raw.length === 0) continue;
     const judged = new Map<string, boolean>();
     const judge = (l: string): boolean => {

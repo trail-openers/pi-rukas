@@ -39,25 +39,50 @@ const { assert, failed } = makeAssert();
 {
   // B1 — the candidate WALK is bounded, not just the candidate COUNT. A single line
   // of `": "` repeated is the pathological input: `streamSeparators` walks it with
-  // `indexOf`, and a cap on the RESULT still scans for one more. The classifier
-  // must answer a line of any size in well under 200 ms.
+  // `indexOf`, and a cap on the RESULT still scans for one more. The cost is
+  // asserted RELATIVE to a control line measured IN THIS PROCESS — an absolute
+  // millisecond bound is a machine-speed bound, and this one failed deterministically
+  // on CI at 2000 ms while the same code took 200 ms locally, because the slow part
+  // was never the walk: it was the table being asked once per candidate cut over an
+  // UNCLIPPED stream (16 × the window). A relative bound says what is actually
+  // claimed — the cost does not grow with the line — and cannot fail for being on a
+  // slower runner. The hang guard stays absolute and very loose: 10 s.
   const wrapperOf = (payload: string): string =>
     `verify command \`${CMD}\` failed in ${WT}: ${payload}`;
-  for (const [label, payload] of [
-    ["8 KiB", ": ".repeat(4 * 1024)],
-    ["1 MB", ": ".repeat(512 * 1024)],
+  // A ~1 KB line of the same shape: same wrapper, same `": "` padding, one-sixteenth
+  // the candidate window. Median of 3 — a single run measures whatever else the
+  // machine did in that instant, not the classifier.
+  const timed = (line: string): number => {
+    const runs: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now();
+      classifyFailureLine(line);
+      runs.push(performance.now() - started);
+    }
+    runs.sort((a, b) => a - b);
+    return runs[1] ?? runs[0] ?? 0;
+  };
+  const control = timed(wrapperOf(": ".repeat(256))); // ~1 KB
+  const budget = (): number => control * 20 + 50;
+  console.log(`  control (~1 KB) median: ${control.toFixed(2)} ms`);
+  for (const [label, payload, size] of [
+    ["8 KiB", ": ".repeat(4 * 1024), 8 * 1024],
+    ["1 MB", ": ".repeat(512 * 1024), 1024 * 1024],
   ] as const) {
     const line = wrapperOf(payload);
-    const started = performance.now();
-    const got = classifyFailureLine(line);
-    const ms = performance.now() - started;
-    assert(got === undefined, `walk bound (${label}): padding alone reports no failure`);
-    // A generous wall bound: the point is that the cost is CONSTANT in the line's
-    // length, and the unbounded scan measured 249 s on a 1 MB line — three orders
-    // of magnitude above this. A slow machine must not fail this for being slow, so
-    // the bound is loose on purpose; a regression that restores an unbounded scan
-    // cannot hide under it.
-    assert(ms < 2000, `walk bound (${label}): classified in ${ms.toFixed(1)} ms (< 2000 ms)`);
+    assert(line.length >= size, `walk bound (${label}): the line is at least ${label}`);
+    const ms = timed(line);
+    assert(classifyFailureLine(line) === undefined, `walk bound (${label}): padding alone reports no failure`);
+    // A generous relative bound: the point is that the cost is CONSTANT in the
+    // line's length, and the unbounded scan measured 249 s on a 1 MB line against a
+    // control of 0.2 ms — six orders of magnitude above this. A regression that
+    // restores a per-candidate or per-character scan cannot hide under it, and a
+    // slow CI cannot fail this for being slow.
+    assert(
+      ms <= budget(),
+      `walk bound (${label}): ${ms.toFixed(1)} ms is within 20x the ${control.toFixed(1)} ms control + 50 ms (budget ${budget().toFixed(1)} ms)`,
+    );
+    assert(ms < 10_000, `walk bound (${label}): classified in ${ms.toFixed(1)} ms (< 10 s hang guard)`);
   }
   // The window itself is derived from the classifier's bound, so the two cannot
   // drift: a walk window below `FAILURE_LINE_SCAN_MAX` would let a harness prefix
@@ -71,14 +96,16 @@ const { assert, failed } = makeAssert();
   // is one pathological line must not hand `matchShape` an unclipped document.
   {
     const wide = wrapperOf(`${CHECKS_BLOCK}\n${"a, failed ".repeat(200_000)}`);
-    const started = performance.now();
-    const got = classifyFailureLine(wide);
-    const ms = performance.now() - started;
+    const ms = timed(wide);
     assert(
       got?.shape === "script-tally",
       `inner clip: the gate's own line still classifies behind a pathological neighbour (got ${JSON.stringify(got)})`,
     );
-    assert(ms < 2000, `inner clip: classified in ${ms.toFixed(1)} ms (< 2000 ms)`);
+    assert(
+      ms <= budget(),
+      `inner clip: ${ms.toFixed(1)} ms is within 20x the ${control.toFixed(1)} ms control + 50 ms`,
+    );
+    assert(ms < 10_000, `inner clip: classified in ${ms.toFixed(1)} ms (< 10 s hang guard)`);
   }
 
   // B3 — offsets survive `\r\n`. The evidence tail must START at the failure line,
