@@ -29,6 +29,7 @@
  * behaviour rather than putting the string "undefined" in front of a reviewer.
  */
 
+import { boundDiffForPrompt } from "./adversarial-diff-cap.ts";
 import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
 
 /** Keeps a pathological issue body from crowding out the diff. */
@@ -133,6 +134,12 @@ export function buildAdversarialPrompt(opts: {
    * `adversarial_loop` tool path, where nobody has run anything.
    */
   gateCmd?: string;
+  /**
+   * The command that reproduces this diff (`git diff <base>...<head>`). Only
+   * used when the diff exceeds the inline cap: the truncation notice names it
+   * so the reviewer can read the files the bound cut. Absent for a pasted diff.
+   */
+  diffRereadCommand?: string;
 }): string {
   const commentSection = opts.commentEvidence
     ? `\n\n${opts.commentEvidence}\n\n${COMMENT_JUDGEMENT_PROSE}`
@@ -156,7 +163,7 @@ Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the
 
 Diff:
 \`\`\`diff
-${opts.diff}
+${boundDiffForPrompt(opts.diff, opts.diffRereadCommand)}
 \`\`\``;
 }
 
@@ -167,6 +174,8 @@ export function buildFixPrompt(opts: {
   round: number;
   issueBody?: string;
   priorFindings?: string[];
+  /** See `buildAdversarialPrompt.diffRereadCommand`. */
+  diffRereadCommand?: string;
 }): string {
   const prior = (opts.priorFindings ?? []).filter((p) => p.trim());
   const priorSection = prior.length
@@ -182,6 +191,6 @@ Make the minimal changes needed to address every finding. Run local quality gate
 
 Current diff of the work so far:
 \`\`\`diff
-${opts.diff}
+${boundDiffForPrompt(opts.diff, opts.diffRereadCommand)}
 \`\`\``;
 }
