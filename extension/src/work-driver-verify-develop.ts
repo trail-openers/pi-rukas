@@ -436,11 +436,25 @@ export async function verifyDevelopOutcome(
     },
   });
 
+  // The one state write the background probe earns: a verdict the develop gate
+  // actually read, plus the record of the consultation itself. The CALLER owns the
+  // state it lands on (this function takes it by value and mutates only
+  // `failures`/`notes`), so both halves travel out on the result as `baseHealthProbe`
+  // / `baseHealthConsulted` and are recorded by `recordDevelopGateEvents`.
+  //
+  // #1809 fix round — emitted IMMEDIATELY after the chain, before the gates below
+  // it: the two channels are filled by the chain's own callbacks, so this is the
+  // first place either half is complete and the last place a later gate cannot
+  // skip. The ratchet, comment-evidence, smoke and continue-pr gates contribute
+  // nothing to the base-health report, so emitting here means a throw in one of
+  // them cannot lose a consultation the chain already made. Exactly one emission.
   // --- Skip-ratchet + product smoke gates (PR277) --- #451: they live in
   // work-driver-verify-develop-gates.ts (AGENTS.md §12 file-size cap).
   // #1012 — these gates run UNCONDITIONALLY: the frontend-only skip above
   // gates only the verifyCmdFor → runVerifyCommandGate chain, never the
   // ratchet/smoke/comment-retention checks.
+  options.onBaseHealth?.(baseHealthOut.report ?? {});
+
   await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
   // #948 — comment-retention gate. Threaded like runFalsilyGreenCheck: per
   // worktree, against that workstream's effective base.
@@ -456,12 +470,5 @@ export async function verifyDevelopOutcome(
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
   await runContinuePrGate(execFn, state, worktrees, failures);
   reportBaselineLeg(baselineLeg, { onBaselineRedOnly, onBaselineRedEstablished });
-  // The one state write the background probe earns: a verdict the develop gate
-  // actually read. The CALLER owns the state it lands on (this function takes it
-  // by value and mutates only `failures`/`notes`), so it travels out on the
-  // result as `baseHealthProbe` and is recorded by `recordDevelopGateEvents`.
-  // #1809 fix round — read AFTER the chain: the two channels are filled by the
-  // chain's own callbacks, so this is the only place either half is complete.
-  options.onBaseHealth?.(baseHealthOut.report ?? {});
   return undefined;
 }
