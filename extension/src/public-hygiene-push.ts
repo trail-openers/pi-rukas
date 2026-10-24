@@ -47,7 +47,11 @@
  * tracking ref. A source that does not resolve REFUSES: "I could not work out
  * what you are pushing" is not "what you are pushing is clean". A delete
  * publishes no commits — an empty refspec source (`:refs/heads/x`) or a
- * `-d`/`--delete` push — and is skipped rather than resolved.
+ * `-d`/`--delete` push — and is skipped rather than resolved. The one delete
+ * shape that is NOT skipped is `--delete` alongside a selector (`--all`,
+ * `--branches`, `--mirror`, `--tags`): git refuses that combination outright,
+ * and the scan reads it anyway — a flag must not come before the truth about
+ * the commits. `DELETE_FLAGS` carries the git semantics and the reasoning.
  */
 
 import { parseRemoteUrl } from "./forge-detect.ts";
@@ -259,7 +263,24 @@ const ALL_TAGS_FLAGS = new Set(["--tags"]);
  */
 const VALUE_OPTIONS = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 
-/** The deletion switches: a push that removes refs publishes no commits. */
+/**
+ * The deletion switches: a push that removes refs publishes no commits.
+ *
+ * Git's own semantics, cited because the scan has to agree with them rather
+ * than guess: under `-d`/`--delete` EVERY listed ref is deleted — the option is
+ * the same as prefixing each refspec with a colon — so its operands are names
+ * to remove, never revisions to resolve. And git REFUSES to combine `--delete`
+ * with `--all`/`--branches`/`--mirror`/`--tags` ("cannot use --all with
+ * --delete"), so the two can never mean one push.
+ *
+ * The scan takes the conservative reading of both facts: `--delete <refs...>`
+ * publishes nothing and is skipped, but `--delete` appearing TOGETHER with a
+ * selector does not short-circuit — the selector is still scanned. A command
+ * git would refuse publishes nothing either way, so the extra read costs a git
+ * call and can only ever refuse something that was never going to publish;
+ * short-circuiting on `--delete` first would hide a dirty branch behind a flag
+ * combination that merely has not been typed yet.
+ */
 const DELETE_FLAGS = new Set(["-d", "--delete"]);
 
 /**
@@ -352,17 +373,57 @@ async function resolveSrcs(
   if (words.indexOf(pushVerb) < 0) {
     return { commits: [], problem: "the push command could not be parsed" };
   }
-  if (parsed.deletes) {
-    // `-d`/`--delete` removes refs on the remote: nothing leaves this clone,
-    // so its operands are names to delete and not revisions to read. Resolving
-    // them would refuse the deletion of a branch that is already gone — a
-    // routine `git push origin --delete stale` read as "could not resolve the
-    // push source" — so the scan asks no question and reports nothing.
+  const selector = parsed.branches || parsed.tags;
+  if (parsed.deletes && !selector) {
+    // `-d`/`--delete` removes refs on the remote: under git's rules EVERY
+    // listed ref is deleted (the option is the same as a leading colon on each
+    // refspec), so nothing leaves this clone and its operands are names to
+    // delete rather than revisions to read. Resolving them would refuse the
+    // deletion of a branch that is already gone — a routine `git push origin
+    // --delete stale` read as "could not resolve the push source" — so the scan
+    // asks no question and reports nothing.
     return { commits: [] };
   }
   if (parsed.refspecs.length === 0 && !parsed.branches && !parsed.tags) {
-    // No refspec at all: bare push / push <remote> publishes HEAD.
+    // No refspec and no selector: the three shapes that take their range from
+    // HEAD. A `--delete` with an operand is NOT one of them — `origin --delete
+    // gone` carries `gone`, and treating it as “nothing named” would resolve
+    // HEAD and scan commits this push does not publish, which is a range nobody
+    // is sending read as if it were. Bare push and `push <remote>` are the
+    // cases that publish HEAD because the command names no range at all.
     return resolveOne(git, "HEAD", "the commits to be pushed could not be resolved");
+  }
+  // With `--delete` AND a selector this is a command git itself refuses (it
+  // will not delete every branch), so the push cannot happen — but the scan
+  // still reads what the selector names. That is defence in depth, not a
+  // second opinion on the verdict: a delete publishes no commit either way, so
+  // scanning can only ever refuse what was never going out, while short-
+  // circuiting on `--delete` would put a flag before the truth about the
+  // commits — the same shape that let a dirty branch out unscanned when the
+  // range was inferred rather than read (see the module header).
+  //
+  // The operands are dropped here because under `--delete` git reads EVERY
+  // listed ref as a deletion — the option is the same as a leading colon on
+  // each refspec — and `--not --remotes` in the caller subtracts the already
+  // published half of what the selector lists.
+  if (parsed.deletes && selector) {
+    const deleted: string[] = [];
+    for (const sel of [parsed.branches ? "--branches" : "", parsed.tags ? "--tags" : ""]) {
+      if (sel === "") continue;
+      try {
+        const out = await git(["rev-list", sel]);
+        for (const line of out.split("\n")) {
+          const sha = line.trim();
+          if (/^[0-9a-f]{40,64}$/.test(sha)) deleted.push(sha);
+        }
+      } catch {
+        return { commits: [], problem: "the push sources could not be listed" };
+      }
+    }
+    if (deleted.length === 0) {
+      return { commits: [], problem: "the push sources could not be listed" };
+    }
+    return { commits: deleted };
   }
   const sources = parsed.refspecs.map(refspecSource);
   const selectors: string[] = [];
@@ -400,7 +461,7 @@ async function resolveSrcs(
 }
 
 /** The left half of a refspec, force flag stripped; "" for a deletion. */
-function refspecSource(refspec: string): string {
+export function refspecSource(refspec: string): string {
   const left = refspec.split(":")[0] ?? "";
   return left.startsWith("+") ? left.slice(1) : left;
 }
