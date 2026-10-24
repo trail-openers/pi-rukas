@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.14](https://github.com/trail-openers/pi-rukas/compare/v0.14.13...v0.14.14) (2026-10-24)
+
+
+### Bug Fixes
+
+* **work:** stop fencing docs and tests out of a single-workstream plan ([#1811](https://github.com/trail-openers/pi-rukas/issues/1811)) ([8b1e003](https://github.com/trail-openers/pi-rukas/commit/8b1e003e757081cb8a4cc960d5a376e5134f4c26))
+
 ## [0.14.13](https://github.com/trail-openers/pi-rukas/compare/v0.14.12...v0.14.13) (2026-10-24)
 
 

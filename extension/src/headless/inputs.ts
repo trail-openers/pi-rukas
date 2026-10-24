@@ -377,6 +377,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("TRUST_MODE", false, "internal"),
   // 0 = off; 1 = nudge at turn 80; any other positive integer is the turn.
   int("TURN_NUDGE", 0, "cycle", { unit: "turns" }),
+  // #1250 — 0 disables ONLY the N=1 docs/test unfence, so a single-workstream
+  // plan keeps the planner's docs and test fences and the develop gate parks on
+  // them as it did before #1250. Distinct from PLAN_UNFENCE, which turns off
+  // the whole pass including the issue-named half.
+  flag("UNFENCE_DOCS_TESTS", true),
   str("USER_EXTENSION", null),
   flag("VERIFY", true),
   // Unset: derived from the host budget (CPUs, memory, cgroup limits); 0 = unbounded.
