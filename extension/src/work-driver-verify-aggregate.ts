@@ -116,7 +116,11 @@ async function collectBackgroundBaseHealth(
   if (!isValidSha(baseSha)) return undefined;
   const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: suiteTimeoutMs };
   const consulted = await awaitInflightBaseHealth(key, suiteTimeoutMs);
-  if (consulted === undefined || consulted.verdict.status === "unknown") return undefined;
+  // Nothing registered is not an error and not a verdict: it is the shape after a
+  // resume in a new process, or when the probe's switches were off. The gate then
+  // answers for the base on its own evidence, exactly as it did before #1765.
+  if (consulted === undefined) return undefined;
+  if (consulted.verdict.status === "unknown") return undefined;
   // Carried into the record the gate writes: the ms is the probe's own measured
   // wall clock, and it is the number the operator reads to judge what the probe cost.
   onConsulted?.({
@@ -167,8 +171,15 @@ export async function aggregateVerifyOutcome(args: {
    * probe's verdict ever reaches `pipelineState.baseHealthProbe`. Called only
    * when a probe was actually running for this cycle's key, and never on a
    * cycle whose verify passed.
+   *
+   * #1809 fix round — a RED the gate read out of the registry is NOT passed here.
+   * A red is never cached across rounds, and `pipelineState.baseHealthProbe` is
+   * exactly the field that survives a round (and a resume), so persisting a
+   * consulted red would let the next develop pass reuse a verdict it never ran
+   * for. Only a GREEN is collected, and the callback's parameter is deliberately
+   * non-optional so a red cannot be passed by omission.
    */
-  onBaseHealthCollected?: (verdict: BaseHealthVerdict) => void;
+  onBaseHealthCollected?: (verdict: BaseHealthVerdict | undefined) => void;
   /** Reports the verdict this gate consulted from the background probe. */
   onBaseHealthConsulted?: (report: BaseHealthConsulted) => void;
 }): Promise<boolean> {
@@ -222,20 +233,67 @@ export async function aggregateVerifyOutcome(args: {
     // A cycle that passed never waits for the probe. A verdict the cycle already
     // holds in state wins — it is the same record, and reading the in-flight one
     // over it could answer for a different run than the one the cycle recorded.
+    let inFlightRed = false;
+    let inFlightTimedOut = false;
     const inflight =
       baseHealthProbe === undefined
         ? await collectBackgroundBaseHealth(ctx, cmd, baseSha, suiteTimeoutMs, (report) => {
-            // One report, two consumers: the caller records the verdict into
-            // state, and this note is the operator's record of the probe —
-            // written by the gate that consulted it, the only channel the probe
-            // itself is no longer allowed to touch.
-            notes.push(baseHealthConsultedNote(baseSha ?? "", report));
+            // One report, three consumers: the note is the operator's record of the
+            // probe — written by the gate that consulted it, the only channel the
+            // probe itself is no longer allowed to touch; the consultation record
+            // travels to the caller; and a GREEN is additionally collected into
+            // state by the call below. A RED is the note exception: `compareWithBaseline`
+            // leads `notes` with the finding that names the base and its assertion,
+            // and a second line saying the same colour would be two records of one
+            // consultation. The consultation record (`onBaseHealthConsulted`) still
+            // carries the red's colour and measured ms for the state's event log.
+            if (report.status !== "red") {
+              notes.push(baseHealthConsultedNote(baseSha ?? "", report));
+            }
             onBaseHealthConsulted?.(report);
+            // #1809 fix round — a consulted RED is kept OUT of the collected
+            // channel (`onBaseHealthCollected` below, the only writer of
+            // `pipelineState.baseHealthProbe`): the state field survives a round and
+            // a red is never cached across rounds. It still answers for THIS gate
+            // pass, which is what `fromInFlightProbe` on the reuse below says —
+            // without it `compareWithBaseline` would read this as an ordinary
+            // in-state verdict, an in-state red is unreusable there by design, and
+            // this cycle would silently pay for a second suite run it has already
+            // had judged. `baseSha` is non-null: the consultation only happens after
+            // `collectBackgroundBaseHealth` accepted the sha.
+            if (report.status === "red") {
+              inFlightRed = true;
+              inFlightTimedOut = report.timedOut === true;
+            }
           })
         : undefined;
+    // #1809 fix round — the collected channel is what `recordDevelopGateEvents`
+    // writes to `pipelineState.baseHealthProbe`, so it carries a GREEN only: the
+    // consultation's own record already names a red's colour and cost, and the
+    // field it would land in survives a develop round, which is exactly where a
+    // red must not survive. `inFlightRed` is the consulted colour, read back from
+    // the consultation report rather than from `inflight?.status`, so the two
+    // channels cannot disagree about what the probe said.
+    onBaseHealthCollected?.(inFlightRed ? undefined : inflight);
+
     // A verdict the cycle already holds wins over the registry's: it is the record
-    // this cycle wrote, and a registry entry could answer for a different run.
-    const verdictForReuse = baseHealthProbe ?? inflight;
+    // this cycle wrote, and a registry entry could answer for a different run. The
+    // registry's own RED is flagged as this gate pass's, which is the only channel
+    // `compareWithBaseline` accepts a red through.
+    const verdictForReuse =
+      baseHealthProbe ??
+      (inflight === undefined
+        ? undefined
+        : inFlightRed
+          ? {
+              status: "red" as const,
+              baseSha: baseSha as string,
+              command: cmd,
+              tierBoundMs: suiteTimeoutMs,
+              ...(inFlightTimedOut ? { timedOut: true as const } : {}),
+              fromInFlightProbe: true as const,
+            }
+          : inflight);
     const changeFailures = [
       ...(cons.status === "failed"
         ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]

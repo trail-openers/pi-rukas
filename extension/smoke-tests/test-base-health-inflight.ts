@@ -29,6 +29,7 @@ import {
   startBaseHealthProbe,
 } from "../src/work-driver-base-health-inflight.ts";
 import type { BaseHealthKey } from "../src/workflow-state-schema-base-health.ts";
+import type { BaseHealthProbeOutcome } from "../src/work-driver-verify-base-health.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -180,6 +181,52 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   assert(inflightBaseHealthCount() === 0, "identity: the settled run cleared its own key");
   const again = await awaitInflightBaseHealth(KEY, 20);
   assert(again === undefined, "identity: a cleared key is a fresh cycle's own probe, not a stale answer");
+}
+
+// ── 9 — a probe thunk that THROWS SYNCHRONOUSLY reaches the caller as nothing.
+//
+// `start()` is called on `startBaseHealthProbe`'s own stack, so a thunk that throws
+// before its first `await` — a fixture gate that throws on the way in, an `fs` read
+// that faults while resolving the project's command — used to escape this function
+// as an exception, and through `startBaseHealthProbeAtBranch`'s `.then` (which runs
+// the thunk off its own `catch`) as a rejection on the promise the branch step DROPS.
+// That is the unhandled rejection rule 1 of this module's header exists to prevent,
+// and the caller that started the probe is the one that would have died for it.
+{
+  clearBaseHealthInflight();
+  let unhandled = 0;
+  const onUnhandled = (e: unknown) => {
+    unhandled += 1;
+    console.error(`✗ a synchronous throw escaped the registry: ${String(e)}`);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  let threw = false;
+  let p: ReturnType<typeof startBaseHealthProbe> | undefined;
+  try {
+    p = startBaseHealthProbe(otherKey("d".repeat(40)), (() => {
+      throw new Error("read .pi/verify-cmd: EIO");
+    }) as () => Promise<BaseHealthProbeOutcome>);
+  } catch (err) {
+    threw = true;
+    console.error(`✗ sync-throw: startBaseHealthProbe threw at the caller (${String(err)})`);
+  }
+  assert(!threw, "sync-throw: the registering caller is never handed the exception");
+  assert(p !== undefined, "sync-throw: the call still returned the probe's promise");
+  // The branch step drops it; nothing awaits this one except the assertions below.
+  const settledSync = p === undefined ? undefined : await p;
+  assert(
+    settledSync !== undefined && settledSync.ran === false && settledSync.verdict === undefined,
+    `sync-throw: the dropped promise RESOLVES to the unknown shape (ran=${String(settledSync?.ran)}, verdict=${settledSync?.verdict?.status ?? "absent"})`,
+  );
+  const consultedSync = await awaitInflightBaseHealth(otherKey("d".repeat(40)), 50);
+  assert(
+    consultedSync === undefined,
+    "sync-throw: the develop gate reads a probe that threw on the way in as NOTHING",
+  );
+  await sleep(10);
+  process.off("unhandledRejection", onUnhandled);
+  assert(unhandled === 0, "sync-throw: no unhandled rejection reached the process");
+  assert(inflightBaseHealthCount() === 0, "sync-throw: the entry is cleared even on a sync fault");
 }
 
 console.log(`\nexit ${exit}`);

@@ -271,7 +271,14 @@ for (const timedOut of [false, true]) {
     perWorktreeVerifyFailures: [],
     failures,
     notes,
-    baseHealthProbe: held.pipelineState.baseHealthProbe,
+    // #1809 — the arm under test is the reuse of a RED this gate pass collected
+    // from the background probe, which is the ONLY channel a red reuses through.
+    // The same verdict sitting in `pipelineState` alone is NOT reusable (an
+    // in-state red must re-probe, so one flaky red cannot speak for rounds it did
+    // not run in); that rule is pinned in
+    // `test-verify-base-health-channels.ts`, and by `compareWithBaseline`'s
+    // `fromInFlightProbe` flag in the type.
+    baseHealthProbe: { ...held.pipelineState.baseHealthProbe, fromInFlightProbe: true },
     onBaselineRedEstablished: (est) => established.push(est),
   });
   assert(

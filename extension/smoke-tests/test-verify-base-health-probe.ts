@@ -275,6 +275,12 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
 }
 
 // ── 10 — the post-failure comparison reuses the in-cycle verdict: no second tree.
+//
+// #1809 — the verdict arrives carrying `fromInFlightProbe`: it is the colour this
+// gate pass collected from the background probe, which is the only channel a RED
+// reuses through. A red sitting in `pipelineState` with no flag is NOT reusable and
+// re-probes, so one flaky red cannot speak for a round it did not run in; that
+// converse is pinned in `test-verify-base-health-channels.ts`.
 {
   const f = await redGateFixture(root, "reuse", RED_GATE, { "notes.md": "x\n" });
   const bound = (await developTierTimeouts(f.repo)).suite;
@@ -310,7 +316,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     perWorktreeVerifyFailures: [],
     failures,
     notes,
-    baseHealthProbe: red,
+    baseHealthProbe: { ...red, fromInFlightProbe: true as const },
   });
   assert(
     worktreeAdds === 0,
@@ -321,8 +327,13 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "reuse: the baseline-red finding still leads the failures",
   );
   assert(
-    notes.some((n) => n.includes("reused the branch step")),
-    "reuse: the note says the verdict came from the branch step, not a new run",
+    notes.some((n) => n.includes("reused the background base probe's RED")),
+    // #1809 fix round — the note names the CHANNEL the colour came from, and this
+    // case's channel is the background probe this gate pass awaited (it carries
+    // `fromInFlightProbe`). The in-state wording — a red an earlier round recorded,
+    // which the post-failure comparison will NOT reuse — is pinned in
+    // `test-verify-base-health-channels.ts` beside the flag that selects each arm.
+    "reuse: the note says the colour came from the background probe, not a new run",
   );
   assert(
     attributed === false,

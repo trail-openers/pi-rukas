@@ -30,7 +30,8 @@
  * state-mutating form the branch step used to await is gone, because a background
  * task appending to the cycle's state would race the develop step's own writes. The
  * operator-visible record of a probe therefore lives where the verdict is consumed:
- * `recordBaseHealthConsulted` appends the note/event at the develop gate, and a
+ * `recordDevelopGateEvents` (in `work-driver-verify-events.ts`) appends the note and
+ * the driver-completed event for the consultation the develop gate performed, and a
  * probe nobody consulted is reported by a trace line.
  *
  * Mixed failure sets (#1765, unchanged). A `[baseline-red]` entry that names the
@@ -255,7 +256,9 @@ export async function applyBaseHealthProbe(
   // flight, so its verdict — the same one the cache read below would have returned
   // once it landed — is awaited instead of a second suite run.
   const shared = peekBaseHealthProbe(key);
-  if (shared !== undefined) return await shared;
+  if (shared !== undefined) {
+    return await shared;
+  }
   const hit = await cachedBaseHealth(state, ctx.repoRoot, key);
   if (hit.verdict !== undefined && hit.verdict.status === "green") {
     // Only a GREEN verdict crosses cycles. A cached red never answers for a cycle

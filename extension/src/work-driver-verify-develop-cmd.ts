@@ -1,6 +1,3 @@
-import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
 /**
  * work-driver-verify-develop-cmd — the develop gate's verify-command chain.
  *
@@ -21,6 +18,9 @@ import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
  *     a concurrent task, and a second writer of `pipelineState` would race the
  *     develop step.
  */
+import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import type { BaseHealthConsulted } from "./work-driver-verify-aggregate.ts";
 import type { VerifyCommandGateBaseHealth } from "./work-driver-verify-base-health-channels.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
 import { shouldSkipVerifyForFrontendOnly } from "./work-driver-verify-cmd.ts";
@@ -148,8 +148,14 @@ export async function runDevelopVerifyCommandChain(opts: {
           baselineLeg.red = true;
         },
         baseHealthChannels: {
+          // #1809 fix round — BOTH channels reported on one call. These two fire
+          // for one consultation and must not clear each other: the caller keeps a
+          // half it was not given, so `undefined` means "this channel said nothing",
+          // never "forget the other one". One call, one report — a green is reported
+          // with its verdict and a red with its consultation record, and neither
+          // arrival overwrites the other.
           onBaseHealthCollected: (verdict) => {
-            onBaseHealth(verdict, undefined);
+            if (verdict !== undefined) onBaseHealth(verdict, undefined);
           },
           onBaseHealthConsulted: (report) => {
             onBaseHealth(undefined, report);

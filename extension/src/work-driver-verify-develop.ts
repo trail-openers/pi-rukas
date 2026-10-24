@@ -427,9 +427,18 @@ export async function verifyDevelopOutcome(
     notes,
     options,
     baselineLeg,
+    // #1809 fix round — each half is assigned ONLY when the chain actually
+    // reported it, never overwritten with `undefined`.
+    // `runDevelopVerifyCommandChain` fires this callback once PER CHANNEL (collected,
+    // then consulted), each call passing `undefined` for the channel it is not about.
+    // Assigning unconditionally made the second call erase the first, so a gate that
+    // consulted a RED reported `{status:"red"}` and then collected `undefined` — and
+    // the consultation the operator's `driver:base-health` event is built from was
+    // gone. `undefined` means "not this channel", the only reading under which two
+    // callbacks can describe one consultation.
     onBaseHealth: (verdict, consulted) => {
-      collectedBaseHealth = verdict;
-      consultedBaseHealth = consulted;
+      if (verdict !== undefined) collectedBaseHealth = verdict;
+      if (consulted !== undefined) consultedBaseHealth = consulted;
     },
   });
 
@@ -457,6 +466,8 @@ export async function verifyDevelopOutcome(
   // actually read. The CALLER owns the state it lands on (this function takes it
   // by value and mutates only `failures`/`notes`), so it travels out on the
   // result as `baseHealthProbe` and is recorded by `recordDevelopGateEvents`.
+  // #1809 fix round — read AFTER the chain: the two channels are filled by the
+  // chain's own callbacks, so this is the only place either half is complete.
   options.onBaseHealthCollected?.(collectedBaseHealth, consultedBaseHealth);
   return undefined;
 }

@@ -36,6 +36,7 @@ import {
   type BaseHealthVerdict,
   baseHealthKey,
 } from "./workflow-state-schema-base-health.ts";
+import type { WorkState } from "./workflow-state.ts";
 
 /** The probe's answer, with every failure already folded into `unknown`. */
 export type BaseHealthInFlight = Promise<BaseHealthProbeOutcome>;
@@ -51,6 +52,20 @@ const registry = new Map<string, InFlightEntry>();
 /** The shape a probe that never answered is reported as. Never a park. */
 function unanswered(notes: string): BaseHealthProbeOutcome {
   return { ran: false, notes: [`base-health: ${notes}`] };
+}
+
+/**
+ * A probe that FAULTED, reported as the same `unknown` as a probe that reached no
+ * verdict: it established nothing, so it must neither park a cycle nor leak a
+ * rejection to the caller that dropped the promise. `start()`'s synchronous throw
+ * and its asynchronous rejection both land here, which is what keeps rule 1 of
+ * this module's header true whatever the shape of the fault (#1809 fix round).
+ * The message is bounded because it is child output that reaches a trace line.
+ */
+function unexpected(err: unknown): BaseHealthProbeOutcome {
+  const message = String((err as Error)?.message ?? err).slice(0, 200);
+  trace(`work-driver: base-health in-flight probe faulted (${message}) — read as unknown`);
+  return unanswered(`the background probe could not run (${message})`);
 }
 
 /**
@@ -77,14 +92,29 @@ export function startBaseHealthProbe(
   // Built inline so the clear-on-settle guard below can compare promise IDENTITY:
   // an entry a newer run replaced must not be deleted by the run it replaced (the
   // same rule `sharedFetch`'s `?.p === p` enforces).
-  const owner: BaseHealthInFlight = start()
-    .catch((err: unknown) => {
-      // Unreachable in practice — the probe wraps its own seam — but this is the
-      // last line, and the alternative is an unhandled rejection.
-      const message = String((err as Error)?.message ?? err).slice(0, 200);
-      trace(`work-driver: base-health in-flight probe rejected (${message}) — read as unknown`);
-      return unanswered(`the background probe could not run (${message})`);
-    })
+  //
+  // #1809 fix round — `start()` is called inside `attempt()`, not on this thread.
+  // A thunk that THROWS SYNCHRONOUSLY (a fixture whose gate throws before its
+  // first `await`, an `fs` read that faults while resolving the command) would
+  // otherwise escape `startBaseHealthProbe` as an exception on the branch step's
+  // stack, and — reached through `startBaseHealthProbeAtBranch`'s `.then`, which
+  // runs the thunk off its own `catch` — as a rejection on the promise the branch
+  // step DROPS: an unhandled rejection, which is precisely the fault rule 1 of
+  // this module says a probe cannot produce. Routing the call through a try/catch
+  // folds both shapes into the same `unknown` verdict `start().catch` already
+  // gives an async fault.
+  const attempt = (): BaseHealthInFlight => {
+    try {
+      return start();
+    } catch (err) {
+      return Promise.resolve(unexpected(err));
+    }
+  };
+  const owner: BaseHealthInFlight = attempt()
+    // The async half of the same rule: a probe whose promise rejects (the probe
+    // wraps its own seam, so this is the last line rather than the common case)
+    // is the same `unknown` as one that threw on the way in.
+    .catch((err: unknown) => unexpected(err))
     .finally(() => {
       if (registry.get(k)?.p === owner) registry.delete(k);
     });
