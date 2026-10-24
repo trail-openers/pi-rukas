@@ -99,6 +99,16 @@ export function issueForbidsPath(body: string, path: string): boolean {
 }
 
 /**
+ * The fields a copy this pass builds must NOT inherit from the planner's
+ * workstream, because it rewrites them itself. `outOfScopeClipped` is the only
+ * one today: it is re-keyed from the surviving entries below. Exported so the
+ * smoke suite can assert the list still covers the fence fields a `Workstream`
+ * actually carries — an unlisted second fence-record field would silently be
+ * copied stale, which is the defect this block exists to prevent.
+ */
+export const DROPPED_ON_COPY: readonly string[] = ["outOfScopeClipped"];
+
+/**
  * Open every docs/test fence in a single-workstream plan that the issue does
  * not forbid.
  *
@@ -131,17 +141,21 @@ export function unfenceDocsTestPaths(
       removed.push({ workstream: id, path: entry, entry, note, docsTest: reason });
       if (!notes.includes(note)) notes.push(note);
     }
-    // The original `outOfScopeClipped` is destructured away and NOT spread into
-    // the copy: `rest` still carries it if this line is made conditional, and
-    // then a plan whose every fence survived kept markers the caller could not
-    // distinguish from markers that had just been re-keyed — a stale field is a
-    // second shape for "nothing was bounded". A clip marker is keyed by its
-    // ENTRY TEXT, so a removed entry takes its own record with it: the same
-    // rule `unfenceIssueNamedPaths` applies via `keepClippedRecords`.
-    const { outOfScopeClipped: _droppedClipped, ...rest } = ws;
-    const keep = outOfScopeClipped ? keepClippedRecords(kept, outOfScopeClipped) : [];
+    // Copied WITHOUT the fence-record field. `outOfScopeClipped` must not reach
+    // the copy through a spread — a stale marker set is a second shape for
+    // "nothing was bounded", indistinguishable from markers this pass just
+    // re-keyed — and it cannot be dropped by destructuring it into an unused
+    // binding (what a formatter removes) nor by `delete` (what
+    // `lint/performance/noDelete` refuses). So the excluded names are listed,
+    // and the canary in the smoke suite fails if the field list below ever
+    // drifts from the fields a Workstream actually carries. A clip marker is
+    // keyed by its ENTRY TEXT, so a removed entry takes its own record with it:
+    // the same rule `unfenceIssueNamedPaths` applies via `keepClippedRecords`.
+    const copy: Record<string, unknown> = { ...ws };
+    for (const dropped of DROPPED_ON_COPY) delete copy[dropped];
+    const keep = ws.outOfScopeClipped ? keepClippedRecords(kept, ws.outOfScopeClipped) : [];
     next[id] = {
-      ...(rest as Workstream),
+      ...(copy as unknown as Workstream),
       paths: [...ws.paths],
       outOfScope: kept,
       ...(ws.dependsOn ? { dependsOn: [...ws.dependsOn] } : {}),

@@ -26,7 +26,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { docsOrTestReason, isDocsPathEntry, isTestPathEntry } from "../src/plan-docs-test-path.ts";
 import { runPlanUnfencePass } from "../src/work-driver-plan-coupling-pass.ts";
-import { unfenceDocsTestPaths } from "../src/work-driver-plan-unfence-docs-tests.ts";
+import {
+  DROPPED_ON_COPY,
+  unfenceDocsTestPaths,
+} from "../src/work-driver-plan-unfence-docs-tests.ts";
 import { unfenceSummary } from "../src/work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -78,6 +81,12 @@ async function runPass(
 
 const PLAIN_BODY = "## Resolved decisions\n\nThe change adds a flag to the entry point.\n";
 
+// The escape hatch is read per call, so the suite pins it for its own process
+// and each block sets what it needs. A leaked `0` from the hatch case below
+// would silently run the NEXT test file in the same verify-loop batch with the
+// rule off, which is how a batch failure reads as a flake.
+const HATCH = "PI_ENSEMBLE_UNFENCE_DOCS_TESTS";
+
 // The five entries the brief names, in one plan — the measured shape.
 const measuredPlan = (): Record<string, Workstream> => ({
   default: WS(
@@ -87,7 +96,7 @@ const measuredPlan = (): Record<string, Workstream> => ({
   ),
 });
 
-process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
+process.env[HATCH] = "1";
 
 // ------------------------------------------- AC: N=1 opens docs and tests
 
@@ -152,7 +161,7 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
 // --------------------------------------------- AC: the escape hatch
 
 {
-  process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "0";
+  process.env[HATCH] = "0";
   const out = await runPass(measuredPlan(), PLAIN_BODY);
   const fence = out.workstreams.default?.outOfScope ?? [];
   assert(fence.length === 5, `hatch off: all five fences are exactly as written (${fence.length})`);
@@ -167,7 +176,50 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
     out.summary?.docsTests === undefined,
     "hatch off: the summary claims no docs/test openings",
   );
-  process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
+  process.env[HATCH] = "1";
+}
+
+// --------------------------------- AC: the hatch is read per call, not cached
+
+{
+  // If the hatch were read once at module load, the block above would have
+  // turned it off for every case after it and the suite would pass against
+  // wiring the driver never consults. The immediately-following call must see
+  // the rule on again.
+  const onAgain = await runPass(measuredPlan(), PLAIN_BODY);
+  assert(
+    (onAgain.workstreams.default?.outOfScope ?? []).length === 1,
+    "the rule is back on for the next call — the hatch is read per call, not cached",
+  );
+}
+
+// ------------------------------ AC: the copy drops no fence field it should keep
+
+{
+  // `DROPPED_ON_COPY` names the fields a copy must not inherit so this pass can
+  // re-key them. An unlisted SECOND fence field would be copied stale — the
+  // defect the copy exists to avoid — and nothing else would notice. So the
+  // list is asserted against the fence fields a Workstream really carries.
+  const sample: Workstream = {
+    id: "default",
+    scope: "s",
+    paths: ["src/a.ts"],
+    outOfScope: ["docs/guide.md"],
+    outOfScopeClipped: [{ entry: "docs/guide.md", kind: "clipped", clippedAt: 10 } as never],
+  };
+  const out = unfenceDocsTestPaths({ default: sample }, PLAIN_BODY).workstreams.default;
+  assert(
+    out?.outOfScopeClipped === undefined,
+    "the removed entry's clip record went with it — nothing stale is inherited",
+  );
+  assert(
+    DROPPED_ON_COPY.includes("outOfScopeClipped"),
+    "the drop list names the fence-record field",
+  );
+  const carried = Object.keys(out ?? {}).filter((k) => k !== "outOfScopeClipped");
+  for (const k of ["id", "scope", "paths", "outOfScope"]) {
+    assert(carried.includes(k), `the copy still carries ${k} — the drop list is not over-broad`);
+  }
 }
 
 // ------------------------------------ AC: a broader fence is not opened

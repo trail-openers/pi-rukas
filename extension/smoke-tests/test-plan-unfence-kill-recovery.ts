@@ -81,7 +81,7 @@ try {
       id: "default",
       scope: "the fix",
       paths: ["extension/src/dispatch-core.ts"],
-      outOfScope: ["extension/src/dispatch.ts", "docs/"],
+      outOfScope: ["extension/src/dispatch.ts", "docs/", "extension/src/spawn.ts"],
     },
   ]);
 
@@ -137,8 +137,8 @@ try {
     "AC: the kill-recovered plan has no fence on the path the issue names (it is normalised like the primary's)",
   );
   assert(
-    (ws?.default?.outOfScope ?? []).includes("docs/"),
-    "and the fence the issue never named survives the recovery pass too",
+    (ws?.default?.outOfScope ?? []).includes("extension/src/spawn.ts"),
+    "and the fence the issue never named survives the recovery pass too (#1250: the fixture's `docs/` entry is now OPENED by the N=1 docs/test rule — which this file must not also pin — so the surviving-fence case here is a source entry the issue never named)",
   );
   assert(
     next.pipelineState.planQuality?.unfence?.ran === true,
@@ -165,9 +165,22 @@ try {
   // proof: a second pass over the already-unfenced map has no fence left to
   // remove, so it reports `removed: 0` — the `1` here can only be the kill
   // branch's own record of the fence it removed.
+  //
+  // #1250 changed what `removed` counts on THIS fixture: `removed` is the union
+  // of both unfence rules and the fixture's `docs/` entry is now opened by the
+  // N=1 docs/test rule as well, so it is 2. The distinguishing property is
+  // preserved by reading the ISSUE-NAMED count apart — `removed - docsTests` is
+  // the #1167 count, still exactly 1, and still cannot be produced by a second
+  // pass over an already-unfenced map.
   assert(
-    next.pipelineState.planQuality?.unfence?.removed === 1,
-    "the recorded unfence summary is the kill branch's own record of the fence it removed",
+    (next.pipelineState.planQuality?.unfence?.removed ?? 0) -
+      (next.pipelineState.planQuality?.unfence?.docsTests ?? 0) ===
+      1,
+    "the recorded unfence summary is the kill branch's own record of the fence it removed (issue-named count, #1250-adjusted)",
+  );
+  assert(
+    next.pipelineState.planQuality?.unfence?.docsTests === 1,
+    "the same record shows the N=1 docs/test rule opened the fixture's docs fence",
   );
   await Bun.write(tmp, "");
   await Bun.$`rm -f ${tmp}`.quiet();
