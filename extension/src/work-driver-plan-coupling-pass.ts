@@ -22,14 +22,14 @@ import { trace, traceWarn } from "./trace.ts";
 import { foldPortPlan, mergeWithContract } from "./work-driver-plan-contract.ts";
 import { mergeCoupledWorkstreams } from "./work-driver-plan-coupling.ts";
 import {
+  unfenceDocsTestPaths,
+  unfenceDocsTestsEnabled,
+} from "./work-driver-plan-unfence-docs-tests.ts";
+import {
   type UnfenceResult,
   unfenceIssueNamedPaths,
   unfenceSummary,
 } from "./work-driver-plan-unfence.ts";
-import {
-  unfenceDocsTestPaths,
-  unfenceDocsTestsEnabled,
-} from "./work-driver-plan-unfence-docs-tests.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { PlanUnfenceSummary } from "./workflow-state-schema.ts";
 import type { Workstream } from "./workflow-state-schema.ts";

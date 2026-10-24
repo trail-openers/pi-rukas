@@ -55,12 +55,12 @@ import { placeUnplacedPath, rankIdentifiers } from "./work-driver-plan-unfence-p
 // path callers know, as the other fragments of this module are.
 export { placeUnplacedPath } from "./work-driver-plan-unfence-place.ts";
 import {
+  type UnfenceRecord,
   fenceCoveringBroader,
   fenceEntryMatching,
   isUnfenceablePath,
   keptBroaderFenceNote,
   ownerOf,
-  type UnfenceRecord,
   unfencedNote,
   unresolvedIdentifierNote,
 } from "./work-driver-plan-unfence-notes.ts";

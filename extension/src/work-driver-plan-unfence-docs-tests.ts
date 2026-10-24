@@ -54,14 +54,11 @@
  * `PI_ENSEMBLE_PLAN_UNFENCE=0` still disables the whole pass.
  */
 
-import { keepClippedRecords } from "./plan-fence-record.ts";
 import { docsOrTestReason } from "./plan-docs-test-path.ts";
+import { keepClippedRecords } from "./plan-fence-record.ts";
 import { trace } from "./trace.ts";
 import { isProhibition } from "./work-driver-plan-unfence-extract.ts";
-import {
-  type UnfenceRecord,
-  unfencedDocsTestNote,
-} from "./work-driver-plan-unfence-notes.ts";
+import { type UnfenceRecord, unfencedDocsTestNote } from "./work-driver-plan-unfence-notes.ts";
 import type { UnfenceResult } from "./work-driver-plan-unfence.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 
@@ -134,21 +131,17 @@ export function unfenceDocsTestPaths(
       removed.push({ workstream: id, path: entry, entry, note, docsTest: reason });
       if (!notes.includes(note)) notes.push(note);
     }
-    const { outOfScopeClipped, ...rest } = ws;
-    // A clip marker is keyed by its ENTRY TEXT, so a removed entry takes its
-    // own record with it — the same rule `unfenceIssueNamedPaths` applies via
-    // `keepClippedRecords`. The reassignment below is UNCONDITIONAL rather than
-    // conditional on the destructured field, for the reason that pass states:
-    // a present-but-empty (or stale, spread-through) field is a second shape
-    // for "nothing was bounded", and `rest` still carries the original array if
-    // this line is made conditional — so a plan whose every fence survived kept
-    // markers the caller could not distinguish from markers that had just been
-    // re-keyed.
-    const restWithoutClipped = rest as Workstream;
-    delete restWithoutClipped.outOfScopeClipped;
+    // The original `outOfScopeClipped` is destructured away and NOT spread into
+    // the copy: `rest` still carries it if this line is made conditional, and
+    // then a plan whose every fence survived kept markers the caller could not
+    // distinguish from markers that had just been re-keyed — a stale field is a
+    // second shape for "nothing was bounded". A clip marker is keyed by its
+    // ENTRY TEXT, so a removed entry takes its own record with it: the same
+    // rule `unfenceIssueNamedPaths` applies via `keepClippedRecords`.
+    const { outOfScopeClipped: _droppedClipped, ...rest } = ws;
     const keep = outOfScopeClipped ? keepClippedRecords(kept, outOfScopeClipped) : [];
     next[id] = {
-      ...restWithoutClipped,
+      ...(rest as Workstream),
       paths: [...ws.paths],
       outOfScope: kept,
       ...(ws.dependsOn ? { dependsOn: [...ws.dependsOn] } : {}),

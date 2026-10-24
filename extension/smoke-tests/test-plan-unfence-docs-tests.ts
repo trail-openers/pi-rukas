@@ -24,14 +24,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  docsOrTestReason,
-  isDocsPathEntry,
-  isTestPathEntry,
-} from "../src/plan-docs-test-path.ts";
+import { docsOrTestReason, isDocsPathEntry, isTestPathEntry } from "../src/plan-docs-test-path.ts";
 import { runPlanUnfencePass } from "../src/work-driver-plan-coupling-pass.ts";
-import { unfenceSummary } from "../src/work-driver-plan-unfence-notes.ts";
 import { unfenceDocsTestPaths } from "../src/work-driver-plan-unfence-docs-tests.ts";
+import { unfenceSummary } from "../src/work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -84,13 +80,11 @@ const PLAIN_BODY = "## Resolved decisions\n\nThe change adds a flag to the entry
 
 // The five entries the brief names, in one plan — the measured shape.
 const measuredPlan = (): Record<string, Workstream> => ({
-  default: WS("default", ["src/app.ts"], [
-    "docs/guide.md",
-    "host/docs/",
-    "test/helper.sh",
-    "src/a_test.go",
-    "lib/x.sh",
-  ]),
+  default: WS(
+    "default",
+    ["src/app.ts"],
+    ["docs/guide.md", "host/docs/", "test/helper.sh", "src/a_test.go", "lib/x.sh"],
+  ),
 });
 
 process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
@@ -110,7 +104,10 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
     (out.workstreams.default?.paths ?? []).length === 1,
     "the pass adds no docs/test path to the workstream's declared paths",
   );
-  assert(out.summary?.docsTests === 4, `the summary counts 4 docs/test openings (${out.summary?.docsTests})`);
+  assert(
+    out.summary?.docsTests === 4,
+    `the summary counts 4 docs/test openings (${out.summary?.docsTests})`,
+  );
   assert(
     (out.summary?.notes ?? []).some((n) => n.includes("docs-or-test path, N=1")),
     "each removal's note names the rule that made it",
@@ -129,7 +126,10 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
     (out.summary?.notes ?? []).some((n) => n.startsWith("unfenced host/docs/")),
     "the kept entry's siblings are still recorded as opened",
   );
-  assert(out.summary?.docsTests === 3, `three openings recorded, not four (${out.summary?.docsTests})`);
+  assert(
+    out.summary?.docsTests === 3,
+    `three openings recorded, not four (${out.summary?.docsTests})`,
+  );
 }
 
 // ------------------------------------------------ AC: N>1 changes nothing
@@ -163,7 +163,10 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
       fence.includes("src/a_test.go"),
     "hatch off: today's behaviour — docs and test fences untouched",
   );
-  assert(out.summary?.docsTests === undefined, "hatch off: the summary claims no docs/test openings");
+  assert(
+    out.summary?.docsTests === undefined,
+    "hatch off: the summary claims no docs/test openings",
+  );
   process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
 }
 
@@ -189,7 +192,12 @@ process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "1";
   const kinds = res.removed.map((r) => `${r.docsTest}:${r.entry}`).sort();
   assert(
     JSON.stringify(kinds) ===
-      JSON.stringify(["docs:docs/guide.md", "docs:host/docs/", "test:src/a_test.go", "test:test/helper.sh"]),
+      JSON.stringify([
+        "docs:docs/guide.md",
+        "docs:host/docs/",
+        "test:src/a_test.go",
+        "test:test/helper.sh",
+      ]),
     `each record names its kind and entry (${kinds.join(", ")})`,
   );
   assert(
