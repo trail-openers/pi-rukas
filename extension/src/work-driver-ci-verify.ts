@@ -15,7 +15,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { driverPublicTextRefusal } from "./public-hygiene-driver.ts";
+import { driverPublicTextCheck } from "./public-hygiene-driver.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { createVerifyChannel } from "./work-driver-integrate-verify-flake.ts";
@@ -183,27 +183,31 @@ export async function discloseInPrBody(
       return { ok: false, reason: "the PR body could not be read as text, so it was not edited" };
     }
     const current = parsed.body ?? "";
-    const next = replaceAttributionBlock(current, block);
-    if (next === current) return { ok: true };
+    const composed = replaceAttributionBlock(current, block);
+    if (composed === current) return { ok: true };
     // #1788 — this is a public publish: it writes the PR body with `gh`, in
     // process, so the tool_call guard that refuses an agent's `gh pr edit` never
     // sees it. The same pure matcher judges it, on the same public-repositories-
     // only rule, BEFORE the file is written and before the command runs, so a
     // refused body posts nothing and leaves the reason in the ci tier's own
-    // failure rather than on the forge.
-    const refusal = await driverPublicTextRefusal(
+    // failure rather than on the forge. The matcher also rewrites this host's
+    // paths to `<repo>`/`~` on a public target, and the bytes written below are
+    // the bytes it judged — `next` is the CHECKED text, never the composed one.
+    const checked = await driverPublicTextCheck(
       "pull request body",
-      next,
+      composed,
       "gh pr edit",
       ctx.repoRoot,
-      { exec: execFn },
+      { exec: execFn, repoRoot: ctx.repoRoot },
     );
-    if (refusal !== undefined) {
+    if (checked.refusal !== undefined) {
+      const refusal = checked.refusal;
       trace(
         `work-driver: ci step — the attribution block was not written: ${refusal.slice(0, 160)}`,
       );
       return { ok: false, reason: refusal };
     }
+    const next = checked.text;
     const dir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
     await fs.mkdir(dir, { recursive: true });
     const bodyFile = path.join(dir, `pr-body-verify-${prNumber}.md`);

@@ -53,7 +53,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { mergeIdentity } from "./merge-guard-reads.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { PublicHygieneError } from "./public-hygiene-config.ts";
-import { driverPublishRefusal } from "./public-hygiene-driver.ts";
+import { driverPublishCheck } from "./public-hygiene-driver.ts";
 import { remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -310,7 +310,7 @@ async function doPost(
         ]
       : []),
   ];
-  const body = [
+  let body = [
     "## Six-pass review — residual findings (round disclosure)",
     "",
     `The lens review verdict is **${summary.verdict}**; nothing listed here has been fixed.`,
@@ -348,12 +348,16 @@ async function doPost(
   // #1788 — the whole body, on the public-repositories-only rule, before
   // anything is written: this is a publish the tool_call guard cannot see (an
   // in-process exec), and its text is quoted off the branch by six reviewers.
-  const refusal = await driverPublishRefusal("pull request comment", body, {
+  // The check also rewrites this host's paths on a public target; `body` is
+  // reassigned so the seam below writes the bytes this matcher judged.
+  const precheck = await driverPublishCheck("pull request comment", body, {
     command: "gh pr comment",
     cwd,
+    repoRoot: cwd,
     exec: (cmd, opts) => execFn(cmd, opts ?? {}),
   });
-  if (refusal !== undefined) throw new PublicHygieneError(refusal);
+  if (precheck.refusal !== undefined) throw new PublicHygieneError(precheck.refusal);
+  body = precheck.text;
   await postPrComment(
     {
       forge: detection.forge,
@@ -367,12 +371,14 @@ async function doPost(
       // copy of the pure matcher here would be a second owner of a decision the
       // seam already makes with more information than this call has.
       checkPublicText: async (label, text) => {
-        const refusal = await driverPublishRefusal(label, text, {
+        const checked = await driverPublishCheck(label, text, {
           command: "gh pr comment",
           cwd,
+          repoRoot: cwd,
           exec: (cmd, opts) => execFn(cmd, opts ?? {}),
         });
-        if (refusal !== undefined) throw new PublicHygieneError(refusal);
+        if (checked.refusal !== undefined) throw new PublicHygieneError(checked.refusal);
+        return { text: checked.text, rewritten: checked.rewritten };
       },
       run: (cmd, map) =>
         execFn(cmd, { cwd, maxBuffer: 256 * 1024, timeout: 30_000 }).then(({ stdout }) =>

@@ -23,7 +23,7 @@ import {
   terminalCommitPrFailure,
   withPatchNote,
 } from "./work-driver-commit-helpers.ts";
-import { commitMessageRefusal } from "./work-driver-commit-hygiene.ts";
+import { commitMessageForPublish } from "./work-driver-commit-hygiene.ts";
 
 import { ensureIntegrateWorktreeOrHalt } from "./work-driver-commit-fallback.ts";
 import {
@@ -72,6 +72,7 @@ import {
   preExistingFailuresSectionOf,
   tldrSectionOf,
   unmeasurablePathsSectionOf,
+  workstreamLinesOf,
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { carried, eventLogSections } from "./work-driver-pr-sections.ts";
@@ -201,28 +202,26 @@ export async function mechanizedCommitPr(
       (d) =>
         `Companion to #${d.issue} (${d.verdict}: ${d.reason || "no reason given"}; left untouched).`,
     );
-    const workstreamLines =
-      ids.length > 1
-        ? [
-            "",
-            `Consolidated ${ids.length} workstreams: ${ids
-              .map((id) => `${id} (${ps.workstreams?.[id]?.scope ?? "no scope"})`)
-              .join(", ")}`,
-          ]
-        : [];
+    const workstreamLines = workstreamLinesOf(
+      ids,
+      (id) => ps.workstreams?.[id]?.scope ?? "no scope",
+    );
     const commitBody = [...fixesLines, ...companionLines, ...workstreamLines].join("\n");
     // #1788 — the commit message is a publish, and the `tool_call` guard cannot
     // see it: the message is assembled here and reaches git inside
-    // `integrate()`'s own exec. The rule and its reason live in
-    // work-driver-commit-hygiene.ts.
-    const messageRefusal = await commitMessageRefusal(title, commitBody, {
+    // `integrate()`'s own exec. The rule, the rewrite and its reason live in
+    // work-driver-commit-hygiene.ts; the message COMMITTED is the message that
+    // was judged.
+    const messageCheck = await commitMessageForPublish(title, commitBody, {
       cwd: ctx.repoRoot,
       issue: ctx.issue,
       exec: execFn,
     });
-    if (messageRefusal !== undefined) {
-      return { ok: false, reason: messageRefusal };
+    if (messageCheck.refusal !== undefined) {
+      return { ok: false, reason: messageCheck.refusal };
     }
+    const commitTitle = messageCheck.title;
+    const commitBodyChecked = messageCheck.body;
     // #287 — consolidation, commit and push all happen inside `integrate()`,
     // the single writer to repoRoot. It creates the branch at the recorded
     // baseSha rather than at whatever repoRoot's HEAD is, and refuses a dirty
@@ -243,8 +242,8 @@ export async function mechanizedCommitPr(
       // #1362 — the repoRoot dirty-root preflight and restore claims honour the
       // project's exemption list; the worktree staging inside does not.
       dirtyRootExempt: ctx.dirtyRootExempt,
-      commitTitle: title,
-      commitBody,
+      commitTitle: commitTitle,
+      commitBody: commitBodyChecked,
       // #1788 — the fast-forward path re-checks the message on its own; the
       // issue number is only what its refusal names.
       issue: ctx.issue,

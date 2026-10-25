@@ -16,6 +16,7 @@ import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-termin
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
 import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
+import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
 import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
 import {
@@ -41,7 +42,7 @@ import {
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
-import { forgePublishRefusal } from "./work-driver-commit-hygiene.ts";
+import { forgePublishCheck, forgePublishRefusal } from "./work-driver-commit-hygiene.ts";
 export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
 import type {
   CiWatchOpts,
@@ -111,29 +112,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
   /**
    * #1788 — the driver's own publishes are checked here, not by the tool_call
-   * hook: every issue and PR write below goes through `run`, which is an
-   * in-process exec, exactly like the #912 merge guard's mechanized merge, so
-   * it never reaches a `tool_call`. Passing the text check through the same
-   * pure matcher keeps the driver and the guard from disagreeing about what is
-   * publishable, and the throw lands in the driver's existing error handling
-   * (`plan-filing.ts`, `work-driver-commit.ts`), which already reports a failed
-   * forge write.
-   *
-   * ASYNC, and on the SAME public-only rule the tool_call guard uses (#1788
-   * round 2). The synchronous version of this check asked nothing about the
-   * repository it was publishing to, so a downstream factory working in a
-   * PRIVATE project had its PR bodies, comments and merge subjects refused on
-   * the operator's private list — the friction that gets a guard switched off
-   * for the repositories that do publish. This adapter knows its own owner,
-   * repo and host, so it hands them to the one driver-side seam
-   * (`driverPublicTextRefusal`), which resolves visibility the same way the
-   * guard does: a POSITIVE private answer skips, and public, unknown or a
-   * failed lookup all check.
-   *
-   * Checked BEFORE the command runs, so nothing is posted and then noticed.
+   * hook: every issue and PR write below goes through `run`, an in-process exec
+   * the `tool_call` hook never sees. The rule, the public-only gate and the
+   * path rewrite (`~` / `<repo>`, so the posted bytes are the judged bytes) all
+   * live in `work-driver-commit-hygiene.ts`'s `forgePublishCheck`, which this
+   * adapter calls with its own slug, cwd and exec bound.
    */
-  const checkPublicText = async (label: string, text: string): Promise<void> => {
-    await forgePublishRefusal(label, text, forgeCommand(label), {
+  const checkPublicText = (label: string, text: string): Promise<PublicTextCheck> =>
+    forgePublishCheck(label, text, forgeCommand(label), {
       cwd,
       exec: (cmd, execOpts) => execFn(cmd, { ...execOpts, cwd }),
       visibility: opts.visibility,
@@ -143,7 +129,6 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       // adapter was built from that repository's remote.
       target: owner !== "" && repo !== "" ? { owner, repo, host: det.host } : undefined,
     });
-  };
 
   /**
    * A command shape for the target resolver, built from the label. The text is
@@ -157,10 +142,11 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   /**
    * The explicit no-op the READ seams pass. `CommentSeamDeps.checkPublicText`
    * is REQUIRED so a post seam cannot arrive without one; a read seam has
-   * nothing to publish, so it says so at the call site rather than leaving the
-   * field out and letting the type decide what absent meant.
+   * nothing to publish, so it says so at the call site rather than letting the
+   * type decide what absent meant.
    */
-  const NO_PUBLIC_TEXT_CHECK = async (): Promise<void> => {};
+  const NO_PUBLIC_TEXT_CHECK = (): Promise<PublicTextCheck> =>
+    Promise.resolve({ text: "", rewritten: false });
 
   const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
     const { stdout } = await execFn(cmd, {
@@ -216,11 +202,12 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     issueCreate: async (title, body, createOpts) => {
       // #1788 — title and body are checked before the temp file is even
       // written, so a refused publish writes nothing anywhere. A throw here
-      // reaches the driver's existing forge-error handling.
-      await checkPublicText("issue title", title);
-      await checkPublicText("issue body", body);
-      return withBodyFile(`create-${title.slice(0, 16)}`, body, (file) =>
-        run(cmds.issueCreateCmd(forge, title, file, createOpts?.labels ?? []), (stdout) => {
+      // reaches the driver's existing forge-error handling. The body written to
+      // the file is the CHECKED body, so the bytes posted are the bytes judged.
+      const checkedTitle = (await checkPublicText("issue title", title)).text;
+      const checkedBody = (await checkPublicText("issue body", body)).text;
+      return withBodyFile(`create-${checkedTitle.slice(0, 16)}`, checkedBody, (file) =>
+        run(cmds.issueCreateCmd(forge, checkedTitle, file, createOpts?.labels ?? []), (stdout) => {
           if (forge === "github") {
             // `gh issue create` has no `--json` — it prints the created issue's URL
             // as plain text. `parsePrNumberFromResponse` handles both the plain
@@ -259,8 +246,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     },
 
     issueEdit: async (number, body) => {
-      await checkPublicText("issue body", body);
-      return withBodyFile(`edit-${number}`, body, (file) =>
+      const checkedBody = (await checkPublicText("issue body", body)).text;
+      return withBodyFile(`edit-${number}`, checkedBody, (file) =>
         run(cmds.issueEditCmd(forge, number, file), (stdout) => {
           if (forge === "github") return mapGhIssue(asRecord(stdout));
           return mapGlIssue(asRecord(stdout));
@@ -269,8 +256,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     },
 
     issueComment: async (number, body) => {
-      await checkPublicText("issue comment", body);
-      return withBodyFile(`comment-${number}`, body, (file) =>
+      const checkedBody = (await checkPublicText("issue comment", body)).text;
+      return withBodyFile(`comment-${number}`, checkedBody, (file) =>
         run(cmds.issueCommentCmd(forge, number, file), (stdout) => stdout),
       );
     },
@@ -345,10 +332,10 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       }),
 
     prCreate: async (title, headBranch, body, opts) => {
-      await checkPublicText("pull request title", title);
-      await checkPublicText("pull request body", body);
-      return withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
-        run(cmds.prCreateCmd(forge, title, headBranch, file, opts ?? {}), (stdout) => {
+      const checkedTitle = (await checkPublicText("pull request title", title)).text;
+      const checkedBody = (await checkPublicText("pull request body", body)).text;
+      return withBodyFile(`pr-${headBranch.slice(0, 16)}`, checkedBody, (file) =>
+        run(cmds.prCreateCmd(forge, checkedTitle, headBranch, file, opts ?? {}), (stdout) => {
           // Tolerate both JSON (from --json flag) and plain-text URL responses.
           const parsed = parsePrNumberFromResponse(stdout);
           if (!parsed) {
@@ -377,8 +364,11 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       // published as the commit message on main, so it is a public text surface
       // like a title or a body, and it is checked before the merge runs. A
       // merge is the one forge write that cannot be undone from here.
-      if (subject !== undefined) await checkPublicText("merge commit subject", subject);
-      return run(cmds.prMergeCmd(forge, number, method, subject), (stdout) => stdout);
+      const mergeSubject =
+        subject === undefined
+          ? undefined
+          : (await checkPublicText("merge commit subject", subject)).text;
+      return run(cmds.prMergeCmd(forge, number, method, mergeSubject), (stdout) => stdout);
     },
 
     prReady: (number) => run(cmds.prReadyCmd(forge, number), () => undefined),

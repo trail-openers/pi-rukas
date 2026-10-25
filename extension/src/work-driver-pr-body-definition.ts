@@ -77,6 +77,37 @@ export function companionLinesOf(
 }
 
 /**
+ * The `Consolidated N workstreams: …` block, empty for a single workstream.
+ * `scopeOf` is the caller's lookup (a workstream with no recorded scope prints
+ * `no scope`), injected so this module stays free of the pipeline-state shape.
+ */
+export function workstreamLinesOf(ids: string[], scopeOf: (id: string) => string): string[] {
+  if (ids.length <= 1) return [];
+  return [
+    "",
+    `Consolidated ${ids.length} workstreams: ${ids.map((id) => `${id} (${scopeOf(id)})`).join(", ")}`,
+  ];
+}
+
+/**
+ * The commit body the mechanized commit-pr step writes: the fixes lines, the
+ * companion lines, and the workstream block — the same three blocks the PR body
+ * interleaves, joined as one commit message.
+ */
+export function commitBodyOf(
+  issues: number[],
+  droppedIssues: Array<{ issue: number; verdict: string; reason: string }>,
+  ids: string[],
+  scopeOf: (id: string) => string,
+): string {
+  return [
+    ...fixesLinesOf(issues),
+    ...companionLinesOf(droppedIssues),
+    ...workstreamLinesOf(ids, scopeOf),
+  ].join("\n");
+}
+
+/**
  * Generate the assumptions block from a pipeline state normalised spec.
  * Returns empty string if no assumptions.
  */
