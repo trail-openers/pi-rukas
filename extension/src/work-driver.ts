@@ -19,7 +19,7 @@ import {
 import { enterCycle } from "./work-driver-cycle-entry.ts";
 import { parkAtDeadlineBoundary, withCycleClock } from "./work-driver-deadline.ts";
 import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
-import { countPriorStepStarts } from "./work-driver-diff.ts";
+import { countPriorStepStarts } from "./work-driver-diff-replies.ts";
 import {
   noticeDirtyRootExemptReadFailure,
   withDirtyRootExemptReadFailure,

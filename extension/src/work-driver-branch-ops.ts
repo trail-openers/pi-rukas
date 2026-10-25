@@ -38,7 +38,7 @@ import { execp } from "./exec.ts";
 import { trace } from "./trace.ts";
 import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { parseBranchName } from "./work-driver-diff.ts";
+import { parseBranchName } from "./work-driver-diff-replies.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
 import {

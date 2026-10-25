@@ -41,7 +41,8 @@ import {
 } from "./claim-scan.ts";
 import type { Finding } from "./lens-review.ts";
 import { trace } from "./trace.ts";
-import { pathsInDiff, readFileAtBranch } from "./work-driver-diff.ts";
+import { readFileAtBranch } from "./work-driver-diff-branch-file.ts";
+import { pathsInDiff } from "./work-driver-diff.ts";
 
 type ExecFn = (
   cmd: string,

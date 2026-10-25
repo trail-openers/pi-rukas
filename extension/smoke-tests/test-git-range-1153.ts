@@ -43,6 +43,9 @@ function assert(cond: boolean, msg: string) {
 const LISTED = [
   "git-range.ts",
   "work-driver-diff.ts",
+  // #1634 — readFileAtBranch moved here out of work-driver-diff.ts (file-size
+  // cap); it reads git at `origin/<branch>:<path>` and keeps the argv discipline.
+  "work-driver-diff-branch-file.ts",
   "work-driver-verify.ts",
   "work-driver-verify-pr17.ts",
   "comment-retention.ts",

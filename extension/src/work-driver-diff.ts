@@ -1,14 +1,14 @@
 /**
- * work-driver-diff — git-shell diff fetchers and reply-parsing leaves.
- *
- * Extracted from work-driver.ts (issue #171 file-size hygiene). Pure git-
- * shell + text-parsing helpers with no DriverContext dependency, used
- * throughout the step handlers (still in work-driver.ts, moving to their
- * own files in a later pass) to resolve worktree diffs and parse ops/
- * branch subagent replies.
+ * work-driver-diff — git-shell diff reads.
+ * Extracted from work-driver.ts (issue #171 file-size hygiene). Pure git-shell
+ * diff helpers with no DriverContext dependency, used throughout the step
+ * handlers to resolve worktree diffs.
+ * The reply-parsing leaves that used to sit here (countPriorStepStarts /
+ * parseAbort / parseBranchName) now live in work-driver-diff-replies.ts, and the
+ * branch-file read (readFileAtBranch) in work-driver-diff-branch-file.ts: both
+ * moved out when #1634's diff gate pushed this module past the 500-line cap.
  */
 
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
@@ -16,7 +16,6 @@ import { aheadOfBase, execGit, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import { isExactDriverArtefact } from "./work-develop-git.ts";
 import { resolveMainline } from "./work-driver-git.ts";
-import type { WorkState, WorkStep } from "./workflow-state.ts";
 
 /** Validate a git SHA before shell interpolation. */
 const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
@@ -46,7 +45,6 @@ export const MERGED_DIFF_TRUNCATED_AT_TOTAL = MERGED_DIFF_MARKERS.truncatedAtTot
 
 /**
  * Resolve a diff for the given working directory.
- *
  * PR2 (post-#553 live test): the v1 stub returned "" unconditionally,
  * which meant adversarial-developer reviewed nothing and trivially
  * approved every cycle ("VERDICT: APPROVED — no code changes to review"
@@ -54,7 +52,6 @@ export const MERGED_DIFF_TRUNCATED_AT_TOTAL = MERGED_DIFF_MARKERS.truncatedAtTot
  * `git -C <cwd> diff` for both staged and unstaged changes (`git diff
  * HEAD` covers both) so the orchestrator's subagents work against the
  * actual worktree state.
- *
  * #451 — the bare `git diff HEAD` is DELIBERATE pre-commit semantics, not
  * a ref-resolution bug, and is the fallback for backwards compatibility.
  * The preferred primary path when `baseSha` is provided is
@@ -65,7 +62,6 @@ export const MERGED_DIFF_TRUNCATED_AT_TOTAL = MERGED_DIFF_MARKERS.truncatedAtTot
  *      If the result is non-empty, return it — this is the committed work.
  *   2. Fall back to `git diff HEAD` for uncommitted changes (pre-commit
  *      compat, or when baseSha is absent / the baseSha range is empty).
- *
  * `fetchDiff` is always per-worktree (`cwd` is one of the cycle's
  * worktrees, or the last-resort repoRoot fallback recorded by the branch
  * step). The load-bearing discipline is which cwd the caller scopes it to —
@@ -73,16 +69,13 @@ export const MERGED_DIFF_TRUNCATED_AT_TOTAL = MERGED_DIFF_MARKERS.truncatedAtTot
  * is what the grep canary in test-work-driver-diff-head-canary.ts
  * protects: no new bare `git diff HEAD` in a REPO-ROOT verification or
  * diff-fetch path, and this per-worktree call stays documented.
- *
  * Failure modes return "":
  *  - cwd is undefined (no worktree resolved yet — early steps before
  *    branch creation)
  *  - cwd isn't a git repo
  *  - `git diff` returned non-zero or threw (e.g., permissions)
- *
  * The hard cap on diff size (1 MiB) prevents a runaway worktree state
  * from bloating the dispatch prompt.
- *
  * #1634 — this is the BEST-EFFORT projection. Every failure above answers `""`,
  * which is exactly what "there is nothing to review" answers too, and the
  * adversarial gate's empty-diff short-circuit (#286) treats that value as
@@ -97,20 +90,17 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
 /**
  * #1634 — `fetchDiff` with the failure case preserved: the per-worktree twin
  * of #384's `readIntegratedDiff`.
- *
  * The plain `fetchDiff` cannot say "I could not tell", and its consumers render
  * `""` as "nothing to review": the adversarial gate records
  * `adversarial-skipped-empty-diff` with `rounds: 0` and passes the workstream,
  * so a worktree whose diff could not be read cleared the pre-commit gate
  * without a review. A gate whose no-signal answer is approval is a gate that
  * cannot fail — the same shape #384 removed from the lens path.
- *
  * `empty` is established POSITIVELY, by the two porcelain probes below: no
  * tracked change against the range's head AND no untracked file. A diff that
  * comes back blank with dirt in the tree is NOT reported as empty. A missing
  * `cwd` is unreadable too — "no worktree resolved yet" is a driver state the
  * gate must see, not an approval.
- *
  * The dirt probe SPARES the DRIVER's own records: the cycle's state file, queue
  * index and scratch all live under `.pi/` / `tmp/` INSIDE the worktree it reads,
  * so a naive porcelain check finds dirt in every cycle and no genuinely-clean
@@ -211,12 +201,10 @@ export async function readWorktreeDiff(
  * Does the tree hold no changes against `range`? `true` = proven clean, `false`
  * = dirt found, `undefined` = the probe itself failed (never a `false`-as-
  * "unknown": the caller must be able to tell "clean" from "could not tell").
- *
  * Two probes because porcelain covers what git can lose: `--untracked-files=all
  * --ignored=no` also reports an untracked file `git diff HEAD` never shows, and
  * a developer who wrote files without staging anything would otherwise read as
  * an empty diff.
- *
  * Read with `-z` so a path containing a newline, a quote or a control byte
  * arrives verbatim instead of C-quoted: a payload the reader cannot parse is
  * `undefined` ("could not tell"), never a `true` that approves the review.
@@ -243,7 +231,6 @@ async function worktreeProvesClean(cwd: string, range: string): Promise<boolean 
  * to read at all? True for a normal clone, a linked worktree and a submodule
  * checkout (the last two carry `.git` as a gitfile pointing at the admin dir);
  * false for a plain directory, a scratch `mkdtemp` fixture, or a vanished path.
- *
  * Deliberately a filesystem probe rather than `git rev-parse --git-dir`: the
  * question is "is there a tree here to read", and a fork per blank diff is
  * worth paying for a gate that cannot be fooled by an empty-string answer.
@@ -260,7 +247,6 @@ function treeHasGitDir(cwd: string): boolean {
  * Is this working tree clean, judged from a `-z` `status --porcelain` payload?
  * `true` = proven clean, `false` = work found, `undefined` = unparseable —
  * and an answer the reader cannot parse is never evidence of a clean tree.
- *
  * `-z` terminates each record with NUL and puts the path last, so a record
  * never contains a newline and parsing stays on the record boundary. Porcelain
  * v1 is `XY<path>`: at least 4 chars with a space at index 2.
@@ -280,25 +266,19 @@ function porcelainRecordsProveClean(porcelain: string): boolean | undefined {
 /**
  * PR3 multi-worktree variant of `fetchDiff`. Resolves the diff(s) for
  * the current /work cycle's workstreams:
- *
  *  - N=1 (default workstream): single `git diff <baseSha>..HEAD` from the
  *    recorded worktree path, OR `ctx.repoRoot` as fallback when the
  *    worktrees map is empty (the B2 cwd-fallback, restored to working
  *    order by populating the map in Step 3 — single-task /work writes
  *    `{default: ctx.repoRoot}`).
- *
  *  - N>1: one diff per worktree, concatenated with `## workstream: <id>`
  *    headers so reviewers (adversarial-developer + lens code-review-
  *    specialists) see one merged document with provenance. Per-branch
  *    fetch failures contribute an empty section rather than aborting
  *    the whole gather.
- *
  * Total budget capped at 1 MiB cumulative; once exceeded the function
  * returns what it has plus a `[... truncated for size]` marker so
  * downstream prompts don't silently lose context.
- *
- * The three marker strings are the exported constants above, not literals here:
- * `adversarial-diff-cap.ts` recognises exactly these lines as belonging to no
  * file, so the producer and the reader cannot drift apart.
  */
 async function fetchAllDiffs(
@@ -386,9 +366,12 @@ export async function fetchIntegratedDiff(repoRoot: string, branchName: string):
   return r.ok ? r.diff : "";
 }
 
+function errText(err: unknown): string {
+  return ((err as Error).message ?? String(err)).slice(0, 200);
+}
+
 /**
  * The same read, but able to say "I could not tell" — #384.
- *
  * `fetchIntegratedDiff` swallowed every error and returned `""`, and
  * `runLens` treats an empty diff as APPROVED. So a transient git failure, a
  * stale `origin/<branch>` ref, or a `maxBuffer` overrun on a large diff all
@@ -396,7 +379,6 @@ export async function fetchIntegratedDiff(repoRoot: string, branchName: string):
  * that value meant approve, then merge. A gate whose no-signal answer is
  * approval is a gate that cannot fail, the same defect #380 removed from the
  * merge step.
- *
  * `empty` is established POSITIVELY, by counting commits ahead of base,
  * rather than inferred from the absence of output. Proving the green is the
  * whole difference between a gate and a formality.
@@ -463,48 +445,6 @@ export async function readIntegratedDiff(
   }
 }
 
-function errText(err: unknown): string {
-  return ((err as Error).message ?? String(err)).slice(0, 200);
-}
-
-/** A path that is safe to interpolate into a git command. */
-const SAFE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
-
-/**
- * Read a file as it stands ON THE BRANCH, not in the working tree.
- *
- * This distinction is the whole reason the function exists. The reviewed diff
- * is built from `origin/<base>..origin/<branch>` (see `readIntegratedDiff`),
- * but lens children run with `cwd` set to a worktree, and under always-worktree
- * those "stay DETACHED at baseSha" — the invariant recorded at the bottom of
- * `readAllMergedDiffs`. (#1134: that range is now three-dot, from the merge base.)
- * A reviewer that opens a changed file from its own cwd
- * therefore reads the version from BEFORE the change.
- *
- * That is not a hypothetical. A real cycle shipped a documentation paragraph
- * contradicting another paragraph 70 lines further down the same file, and no
- * lens reported it: the contradicting line was outside the diff, so it was
- * never in any reviewer's context, and opening the file would have shown the
- * pre-change text anyway.
- *
- * Returns undefined rather than throwing — an unreadable file means the
- * reviewer gets less evidence, never a fabricated finding.
- */
-export async function readFileAtBranch(
-  repoRoot: string,
-  branchName: string,
-  filePath: string,
-): Promise<string | undefined> {
-  if (!SAFE_PATH.test(filePath) || !SAFE_PATH.test(branchName)) return undefined;
-  try {
-    return await execGit(execp, repoRoot, ["show", `origin/${branchName}:${filePath}`], {
-      maxBuffer: 4 * 1024 * 1024,
-    });
-  } catch {
-    return undefined;
-  }
-}
-
 /** Paths a unified diff touches, in order, deduplicated. */
 export function pathsInDiff(diff: string): string[] {
   const out: string[] = [];
@@ -521,7 +461,6 @@ export function pathsInDiff(diff: string): string[] {
 
 /**
  * #384 — `fetchAllMergedDiffs` with the failure case preserved.
- *
  * The plain version cannot distinguish "nothing to review" from "could not
  * find out", and `runLens` approves on both. Lens review is the last gate
  * before merge, so it is the one place that distinction has to survive.
@@ -556,70 +495,4 @@ export async function readAllMergedDiffs(
   // A confirmed-empty diff (branch exists, nothing ahead) is different —
   // it means there is genuinely nothing to review.
   return { ok: false, reason: "no branch name and no worktrees to diff" };
-}
-
-/**
- * Count prior `step-started` events for this step in the event log.
- * Used by the driver loop (PR4) to compute a `(round N)` suffix for the
- * scrollback lifecycle line on steps that iterate during a fix loop
- * (adversarial / lens-review / lens-fix / re-entered develop). First
- * entry returns 0 — the emit sites add 1 and pass `round` to lifecycle;
- * `formatLine` suppresses the suffix for `round <= 1` so single-entry
- * steps stay terse.
- */
-export function countPriorStepStarts(state: WorkState, step: WorkStep): number {
-  let n = 0;
-  for (const e of state.eventLog) {
-    if (e.kind === "step-started" && e.step === step) n++;
-  }
-  return n;
-}
-
-/** Hash a diff for change-detection across rounds. SHA1 is fine — not a security boundary. */
-function hashDiff(diff: string): string {
-  return createHash("sha1").update(diff, "utf8").digest("hex").slice(0, 16);
-}
-
-/**
- * Detect subagent ABORT markers.
- *
- * Ops's branch and commit-pr step prompts instruct the subagent to write
- * `ABORT: <reason>` (or `**ABORT...**` for markdown emphasis) when a
- * precondition fails (dirty working tree, --ff-only refusal, etc). The
- * subagent's PROCESS still exits 0 — it ran successfully, just refused
- * the requested action — so the driver can't rely on exit code. This
- * scans the LAST ~800 chars of the reply for the marker; that's the
- * "verdict zone" where ops doctrine places it.
- *
- * Returns the matched abort line trimmed if found, or undefined.
- *
- * On issue #553's live cycle: ops's branch step replied with
- * "**ABORT: Working tree is not clean**" but PR #239 recorded ok:true
- * and the driver continued develop without a feature branch. The fix:
- * treat an ABORT marker as a dispatch-failed regardless of exit code.
- */
-export function parseAbort(text: string | undefined): string | undefined {
-  if (!text) return undefined;
-  const tail = text.slice(-800);
-  // Multiline scan — markers may be in their own paragraph or inside a
-  // markdown ** bold ** wrapper. Match conservative: must START with the
-  // word "ABORT" (or **ABORT) and be a fresh line, to avoid false
-  // positives on prose discussing aborts.
-  const m = tail.match(/^[ \t]*\*{0,2}ABORT[:\s].*$/m);
-  return m ? m[0].replace(/^\*+|\*+$/g, "").trim() : undefined;
-}
-
-/**
- * Parse a `branch: <name>` line from an ops reply (Step 3 doctrine asks
- * for this verbatim). Used by runBranch to capture the feature branch
- * into pipelineState.branchName so downstream step prompts can reference
- * it without re-discovering via `git rev-parse`.
- *
- * Lenient: accepts surrounding whitespace, optional backticks, optional
- * `**branch**` markdown emphasis. Returns undefined if no marker line.
- */
-export function parseBranchName(text: string | undefined): string | undefined {
-  if (!text) return undefined;
-  const m = text.match(/^[ \t]*\*{0,2}branch\*{0,2}\s*:\s*`?([^\s`]+)`?\s*$/m);
-  return m?.[1]?.trim();
 }

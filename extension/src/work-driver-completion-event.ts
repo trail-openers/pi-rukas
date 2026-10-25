@@ -17,7 +17,7 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { parseAbort } from "./work-driver-diff.ts";
+import { parseAbort } from "./work-driver-diff-replies.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkStep, type appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
 
