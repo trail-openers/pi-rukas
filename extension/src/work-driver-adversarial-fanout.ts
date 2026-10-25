@@ -21,6 +21,7 @@ import {
   capKillOutcomeFields,
   retryLadderKillCause,
 } from "./work-driver-adversarial-fanout-capkill.ts";
+import { emptyDiffOutcome, emptyDiffSkipDisabled } from "./work-driver-adversarial-fanout-empty.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
 import {
   interpretReview,
@@ -44,7 +45,7 @@ import {
   unreadableDiffOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { fetchDiff, readWorktreeDiff } from "./work-driver-diff.ts";
+import { readWorktreeDiff } from "./work-driver-diff.ts";
 import {
   jitteredMs,
   providerRetryWaitMs,
@@ -82,17 +83,15 @@ export async function fanOutAdversarial(
   parkedInfra: boolean;
 }> {
   const retries = state.pipelineState.adversarialTransientRetries ?? {};
-  // #486 — mutable retry map seeded from the prior run's budget so the
-  // candidates filter below observes in-step increments (a permanently
-  // failing workstream must stop being a candidate after its budget runs
-  // out, rather than being re-selected forever from the immutable
-  // `retries` snapshot). Re-entry preserves the prior budget: seeding from
-  // `retries` (which a resumed cycle reads from its state file) keeps the
-  // bound intact across restarts.
+  // #486 — mutable retry map seeded from the prior run's budget so the candidates
+  // filter below sees in-step increments (a permanently failing workstream must stop
+  // being a candidate once its budget is spent, not be re-selected forever from the
+  // immutable `retries` snapshot). Seeding from `retries` keeps the bound intact for a
+  // resumed cycle, which reads that map back from its state file.
   const localRetries: Record<string, number> = { ...retries };
-  // #799 F2 — the fan-out's wall-clock span, keyed on the STEP (not any
-  // child), matching the develop-path notice. Fires once, above the healthy
-  // band; a cancel is returned and invoked on every exit below.
+  // #799 F2 — the fan-out's wall-clock span, keyed on the STEP (not any child),
+  // matching the develop-path notice. Fires once, above the healthy band; the
+  // cancel it returns is invoked on every exit below.
   const stepStartedAt = Date.now();
   const cancelStepNotice = armStepNotice({
     state,
@@ -114,15 +113,11 @@ export async function fanOutAdversarial(
     ...state,
     pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
   };
-  // #485/#486 — on re-entry, the previous pass's per-workstream records are
-  // REPLACED where the re-run workstreams produced a fresh batch (R1): the
-  // fresh batch is spliced over the previous batch's span (below), so each
-  // workstream's rounds and outcome appear exactly once, and a recovered
-  // workstream's stale failure outcome does not sit side-by-side with its
-  // fresh APPROVED outcome (W1). The stale failure stays auditable through
-  // the preserved dispatch event and the per-workstream outcome's
-  // errorTail. The span is captured by the caller on the ORIGINAL event
-  // log — BEFORE this pass's events are appended.
+  // #485/#486 — on re-entry the previous pass's per-workstream records are REPLACED
+  // where the re-run workstreams produced a fresh batch (R1): spliced over the
+  // prior span below, so each workstream appears exactly once and a recovered
+  // one does not sit beside its stale failure. The span comes from the caller,
+  // taken off the ORIGINAL event log, before this pass appends anything.
   const passStart = priorBatchSpan ? priorBatchSpan[0] : state.eventLog.length;
   const runOne = async (id: string): Promise<AdversarialOutcome> => {
     const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
@@ -162,35 +157,16 @@ export async function fanOutAdversarial(
     // #286 — empty-diff short-circuit (a full reviewer spawn on an empty
     // diff is pure waste; lens review has had this guard since PR6). Reached
     // only when the read SUCCEEDED: `empty` here is positively proven by the
-    // tree being clean, never inferred from a blank string (#1634).
-    const emptySkipDisabled = process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP === "0";
-    if (!emptySkipDisabled && !diff.trim()) {
+    // tree being clean, never inferred from a blank string (#1634). The outcome
+    // shape lives in work-driver-adversarial-fanout-empty.ts (§12 size cap).
+    if (!emptyDiffSkipDisabled() && !diff.trim()) {
       trace(`work-driver: adversarial[${id}] skipped — empty diff`);
-      return {
+      return emptyDiffOutcome({
         id,
-        ok: true,
-        rounds: 0,
-        records: [],
-        infra: false,
-        threw: false,
-        skipped: true,
+        multi,
+        startedAt,
         priorInfra: priorOutcomes.get(id) === "infra-failure",
-        completionEvent: {
-          kind: "adversarial-skipped-empty-diff",
-          at: Date.now(),
-          workstreamId: id,
-        },
-        branchEvent: multi
-          ? {
-              kind: "branch-completed",
-              step: "adversarial",
-              workstreamId: id,
-              ok: true,
-              ms: Date.now() - startedAt,
-              at: Date.now(),
-            }
-          : undefined,
-      };
+      });
     }
 
     const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
@@ -350,20 +326,13 @@ export async function fanOutAdversarial(
   const isTransient = (o: AdversarialOutcome): boolean => isTransientAdversarialOutcome(o);
   const classify = (o: AdversarialOutcome) => classifyAdversarialOutcome(o);
 
-  // #486 — workstreams that produced a VERDICT (approved / rejected /
-  // skipped-empty-diff) on the prior pass are final and NOT re-run. Their
-  // per-workstream events are re-emitted from this prior-outcome record
-  // (see the `outcomes` seed below), so the log stays complete after the
-  // splice replaces the prior pass's batch.
-  // #486 — the workstreams that run on THIS pass. First entry: everything.
-  // Re-entry (the previous fan-out recorded a NO-VERDICT outcome): only the
-  // infra-failed ones re-run while their per-workstream budget holds — a
-  // permanent failure therefore stops the retry loop rather than re-running
-  // siblings forever, and their preserved outcomes keep the aggregate
-  // honest.
-  // #1114 — "everything" on a first entry means whatever still needs a review;
-  // re-entry also re-runs a workstream whose fix pass was applied since its
-  // routed review. The rest are survivors.
+  // #486 — a workstream whose PRIOR pass produced a VERDICT (approved / rejected /
+  // skipped-empty-diff) is final and NOT re-run; its per-workstream events are
+  // re-emitted from the prior-outcome record (see the `outcomes` seed below), so the
+  // log stays complete after the splice. On THIS pass: first entry runs everything
+  // still needing a review; a re-entry re-runs only the infra-failed workstreams
+  // while their per-workstream budget holds, so a permanent failure stops the retry
+  // loop instead of re-running siblings forever.
   const runSet = priorHadInfraFailure
     ? ids.filter((id) => {
         const prev = priorOutcomes.get(id);
