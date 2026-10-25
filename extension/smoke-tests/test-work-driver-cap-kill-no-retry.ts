@@ -19,6 +19,9 @@ import type { DispatchResult, ExtensionAPI } from "../src/types.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+// #1634 — the fixture worktrees under `.worktrees/` must be real trees: the
+// gate reads a missing tree as UNREADABLE and parks instead of reviewing.
+import { driverWorktrees } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -77,7 +80,7 @@ for (const [killCause, cap] of [
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: driverWorktrees(tree),
       workstreams: streams,
       branchName: "feature/issue-543",
       adversarialTransientRetries: { "task-a": 3 },

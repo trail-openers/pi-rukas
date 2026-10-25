@@ -15,6 +15,8 @@ import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { appendEvent, initialState, readState, writeState } from "../src/workflow-state.ts";
+// #1634 — fixture trees the adversarial gate must be able to read.
+import { driverWorktree } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -90,6 +92,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the adversarial gate reads this tree; a bare `.git` ENTRY is the
+    // UNREADABLE class and parks the cycle instead of running the review.
+    driverWorktree(dir);
     let s = initialState(956, 1_000_000);
     s = {
       ...s,
@@ -196,6 +201,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — same: the gate must be able to read the tree it is gating.
+    driverWorktree(dir);
     const { runAdversarial } = await import("../src/work-driver-adversarial.ts");
     let s = initialState(957, 1_000_000);
     s = {

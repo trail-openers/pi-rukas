@@ -17,6 +17,9 @@ import { __setSleepFn } from "../src/work-driver-step-router.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
+// #1634 — the fixture worktrees under `.worktrees/` must be real trees: the
+// gate reads a missing tree as UNREADABLE and parks instead of reviewing.
+import { driverWorktree, driverWorktrees } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -77,6 +80,9 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-rejected-"));
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — a `.git` ENTRY alone is not a tree: the gate reads it as
+    // UNREADABLE and routes an infra failure instead of running the review.
+    driverWorktree(dir);
     let s = initialState(954, 1_000_000);
     s = {
       ...s,
@@ -156,7 +162,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: driverWorktrees(tree),
       workstreams: streams,
       branchName: `feature/issue-${issue}`,
     },

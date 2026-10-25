@@ -47,6 +47,8 @@ import {
 } from "../src/work-driver-failure-taxonomy.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+// #1634 — fixture trees the adversarial gate must be able to read.
+import { driverWorktree } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -250,6 +252,9 @@ async function driverRun(issue: number, script: (string | undefined)[]) {
   const dir = mkdtempSync(path.join(tmpdir(), `adv-provider-cause-${issue}-`));
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the adversarial gate reads this tree; a bare `.git` ENTRY is the
+    // UNREADABLE class and parks the cycle instead of running the review.
+    driverWorktree(dir);
     let s = initialState(issue, 1_000_000);
     s = {
       ...s,

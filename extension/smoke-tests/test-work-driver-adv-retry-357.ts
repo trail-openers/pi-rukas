@@ -39,6 +39,8 @@ import { ADVERSARIAL_PER_WS_MAX_RETRIES } from "../src/work-driver-adversarial-t
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+// #1634 — fixture trees the adversarial gate must be able to read.
+import { driverWorktree } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -158,6 +160,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-357-t8-"));
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the adversarial gate reads this tree; a bare `.git` ENTRY is the
+    // UNREADABLE class, which would retry instead of running the review.
+    driverWorktree(dir);
     let s = initialState(357, 1_000_000);
     s = {
       ...s,

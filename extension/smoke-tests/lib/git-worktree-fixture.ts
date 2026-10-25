@@ -87,11 +87,33 @@ export async function makeBaseWorktrees(
  * still reads as a POSITIVELY proven empty diff.
  */
 export function driverWorktree(dir: string): string {
-  const gitDir = path.join(dir, ".git");
   // The `.git/info` path is what the callers created; some build it with
   // `fs/promises.mkdir` and have no sync mkdir at the call site, so this
   // guarantees it rather than depending on the call order. `git init` writes
   // into `.git` and needs the parent to exist.
-  mkdirSync(path.join(gitDir, "info"), { recursive: true });
+  mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
   return makeFakeGitDirReal(dir);
+}
+
+/**
+ * #1634 — the same repair for a whole `pipelineState.worktrees` map, in place.
+ *
+ * Every driver smoke fixture that reaches the adversarial gate declares worktree
+ * paths it never creates (`${dir}/.worktrees/task-a`), which was harmless while
+ * `fetchDiff` answered `""` for everything and the gate read `""` as approved with
+ * zero rounds. It is no longer harmless: a missing tree is the UNREADABLE class,
+ * the gate now routes that as an infrastructure failure, and a test written to
+ * assert a verdict ends up asserting a retry ladder. Creating the directories and
+ * making each a one-commit repo costs nothing and returns the fixture to the path
+ * it names. Idempotent, and it leaves a path that is already a repository alone.
+ */
+export function driverWorktrees(
+  worktrees: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!worktrees) return worktrees;
+  for (const wt of Object.values(worktrees)) {
+    mkdirSync(wt, { recursive: true });
+    driverWorktree(wt);
+  }
+  return worktrees;
 }

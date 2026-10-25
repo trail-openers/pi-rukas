@@ -19,6 +19,10 @@ import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
+// #1634 — the fixture worktrees this file names under `.worktrees/` are paths it
+// never created, which the adversarial gate now reads as UNREADABLE (an infra
+// failure) rather than the empty diff it used to answer. Make them real trees.
+import { driverWorktrees } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -72,7 +76,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: driverWorktrees(tree),
       workstreams: streams,
       branchName: "feature/issue-961",
       // Seeded as post-step persistence would leave it (1 initial + 2 in-step
@@ -203,7 +207,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: driverWorktrees(tree),
       workstreams: streams,
       branchName: "feature/issue-962",
     };
@@ -378,7 +382,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       ...s.pipelineState,
       currentStep: "adversarial",
       lastCompletedStep: "develop",
-      worktrees: tree,
+      worktrees: driverWorktrees(tree),
       workstreams: streams,
       branchName: "feature/issue-963",
     };
