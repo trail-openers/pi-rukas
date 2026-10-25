@@ -24,8 +24,17 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { ExecFn } from "./worktree.ts";
 
-/** What the disclosure post may do: post this text, or refuse. */
-export type DisclosureCheck = { text: string; rewritten: boolean } | { refusal: string };
+/**
+ * What the disclosure post may do: post `text`, or refuse.
+ *
+ * The refusal branch carries `text` too — the bytes the matcher REJECTED. Callers
+ * must gate the publish on `refusal`, never on `text`, but a caller that has to
+ * report the refusal (the host channel's result body, the trace) needs the judged
+ * bytes to say anything specific about it.
+ */
+export type DisclosureCheck =
+  | { text: string; rewritten: boolean; refusal?: undefined }
+  | { text: string; refusal: string };
 
 /**
  * Check (and normalise) a driver-authored comment before it is written.
@@ -70,5 +79,5 @@ export async function residualDisclosureBody(
   });
   return checked.refusal === undefined
     ? { text: checked.text, rewritten: checked.rewritten }
-    : { refusal: checked.refusal };
+    : { text: checked.text, refusal: checked.refusal };
 }

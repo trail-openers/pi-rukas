@@ -60,10 +60,18 @@ import { residualDisclosureBody } from "./work-driver-lens-cap-hygiene.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
-/** What the render produced: the bytes to publish, or the reason it may not. */
-export type HandoffBodyOutcome =
-  | { body: string; refusal?: undefined }
-  | { body?: undefined; refusal: string };
+/**
+ * What the render produced.
+ *
+ * `refusal` alone says the comment may NOT be posted. `body` is the text the
+ * matcher judged — on a refusal, the text the matcher REJECTED — and it is carried
+ * on both branches on purpose: the host channel posts nothing and its result body
+ * is the only carrier of the report, so a refusal that dropped the text would lose
+ * the park entirely (#1743) while telling the operator nothing about what was
+ * refused. A caller must gate every publish on `refusal === undefined`, never on
+ * `body !== undefined`.
+ */
+export type HandoffBodyOutcome = { body: string; refusal?: string };
 
 /**
  * The handoff comment body for this state: rendered, its host paths normalised
@@ -93,7 +101,12 @@ export async function handoffCommentBody(
     forge,
     visibility,
   );
-  if ("refusal" in checked) return { refusal: checked.refusal };
+  if (checked.refusal !== undefined) {
+    // Carry the refused bytes with the refusal. The marker is added to the
+    // judged text so a reader who recovers the text sees the same first line the
+    // comment would have had; nothing here publishes it.
+    return { body: withHandoffMarker(checked.text, state), refusal: checked.refusal };
+  }
   return {
     body: withPathNormalisationNote(withHandoffMarker(checked.text, state), checked.rewritten),
   };

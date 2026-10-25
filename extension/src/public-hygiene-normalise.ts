@@ -51,6 +51,15 @@ import path from "node:path";
 /** A path segment that cannot continue a path: what must follow a root. */
 const PATH_BREAK = /[^A-Za-z0-9._~+-]/;
 
+/**
+ * What makes the character AFTER a root part of a longer name. A word
+ * character continues it outright; `-` and `.` do too, because they are exactly
+ * what distinguishes the sibling directory `/srv/myrepo-backup` from the root
+ * `/srv/myrepo` — rewriting that would claim a path no reader could resolve.
+ */
+const PATH_WORD = /[A-Za-z0-9_]/;
+const CONTINUES_NAME = /[-.]/;
+
 /** The marker spans whose bytes a rewrite may not touch. */
 const MARKER = /<!--\s*pi-rukas:.*?-->/gs;
 
@@ -234,11 +243,25 @@ function realpathOf(dir: string): string {
 
 /**
  * Replace every occurrence of `root` used AS a path — one that starts at a
- * boundary and is followed by `/` or is at the end of the text — with
- * `placeholder`. A root that merely PRECEDES other text (`/srv/myrepo-backup`
- * for a root of `/srv/myrepo`, or `/srv/myrepo.old`) is not a path under that
- * root and is left alone: rewriting it would claim a path that does not exist
- * under the repository, and a reader could not resolve it.
+ * boundary and ENDS there, i.e. is followed by a path separator or by anything
+ * that cannot continue its name — with `placeholder`. A root that merely
+ * PRECEDES other text (`/srv/myrepo-backup` for a root of `/srv/myrepo`, or
+ * `/srv/myrepo.old`) is not a path under that root and is left alone: rewriting
+ * it would claim a path that does not exist under the repository, and a reader
+ * could not resolve it.
+ *
+ * ## Why a trailing separator is not the only terminator
+ *
+ * A root that ends a WORD also ends a path: `git status in /home/me/repo: fatal
+ * to run` and a markdown close-tick after the path both name the root itself,
+ * with nothing but punctuation after it. Requiring a `/` there did not keep
+ * anything safe — it just left the root standing. And leaving it standing is
+ * what BROKE a handoff: the fold only rewrites roots it recognises, so an
+ * unfolded repository root that sits inside the operator's home keeps the host
+ * home visible in the very text the denylist check then refuses for naming a
+ * personal directory — a handoff the driver rendered and could not publish
+ * (#1820). The sibling-root rule is untouched: a root followed by more word
+ * characters is a DIFFERENT directory and still never matches.
  */
 function replaceRoot(text: string, root: string, placeholder: string): string {
   if (root === "" || !text.includes(root)) return text;
@@ -249,7 +272,15 @@ function replaceRoot(text: string, root: string, placeholder: string): string {
     const beforeOk = cursor === 0 || PATH_BREAK.test(text[cursor - 1] as string);
     const after = cursor + root.length;
     const next = text[after];
-    const afterOk = next === undefined || next === "/";
+    // `next === undefined` — the root ended the text — and `next === "/"` — a
+    // path under it — were both accepted. A root followed by PUNCTUATION was
+    // not, and that was wrong: `… in /home/me/repo: fatal` names the root
+    // itself, so requiring a separator left it standing (#1820). But `-` and `.`
+    // are what make `/srv/myrepo-backup` and `/srv/myrepo.old` a DIFFERENT
+    // directory than `/srv/myrepo`, and the rule's whole purpose is not to
+    // rewrite those. So the character after the root must neither continue the
+    // root's name (a word character, `-` or `.`) nor be a path separator.
+    const afterOk = next === undefined || !(PATH_WORD.test(next) || CONTINUES_NAME.test(next));
     if (beforeOk && afterOk) {
       out += text.slice(from, cursor) + placeholder;
       from = after;

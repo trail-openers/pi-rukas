@@ -361,7 +361,7 @@ async function discloseResidualFindings(
   // no `ci` route. The disclosure marker survives: the rewrite never touches a
   // `<!-- pi-rukas: … -->` span.
   const checked = await residualDisclosureBody(ctx, body, execFn);
-  if ("refusal" in checked) return { ok: false, reason: checked.refusal };
+  if (checked.refusal !== undefined) return { ok: false, reason: checked.refusal };
   const bodyToPost = checked.text;
   const file = path.join(
     scratchDir(ctx.repoRoot, ctx.issue),
