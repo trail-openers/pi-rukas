@@ -20,6 +20,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../src/forge.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { projectIssue } from "../src/headless/result.ts";
+import { PATH_NORMALISATION_NOTE } from "../src/public-hygiene-normalise.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import {
@@ -178,9 +179,25 @@ function mkCtx(dir: string, issue: number, forge: Forge, dispatched: string[]): 
       },
       "github",
     );
+    // What the seam guarantees about the posted text, asserted as properties
+    // rather than as equality with a fresh render: the marker line comes first,
+    // and the body is the renderer's output with the host paths folded away and
+    // the disclosure note that says so. Byte-equality with a re-render cannot
+    // hold once the fold fires — the fold is a REWRITE of the render, and the
+    // state mutates between the step's render and this one — so a test that
+    // demanded it was really asserting "no rewrite happened" (#1788, #1820).
+    assert(posted.startsWith(`${marker}\n`), "forge: the body carries the marker line first");
     assert(
-      posted === `${marker}\n${rendered}`,
-      "forge: the body is the renderer's output with only the marker line added",
+      posted.includes(PATH_NORMALISATION_NOTE),
+      "forge: a public handoff carries the disclosure note the fold adds",
+    );
+    assert(
+      !posted.includes(dir),
+      "forge: no host repository-root path survives into the published comment",
+    );
+    assert(
+      rendered.startsWith("## ") && posted.includes("Cap hit"),
+      "forge: the body still carries the rendered handoff's own sections",
     );
     const r = projectIssue(next, "state.json");
     assert(r.handoff?.channel === "forge", "forge: the result's handoff channel is forge");
