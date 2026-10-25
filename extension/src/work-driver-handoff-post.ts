@@ -105,7 +105,15 @@ export async function postHandoffToForge(opts: {
   issue: number;
   prNumber: number | undefined;
   handoffBodyPath: string;
-  /** When set, the comment URL is already known — skip issueComment. */
+  /**
+   * #1788 follow-up — the normalised body the step rendered. When present it is
+   * what gets posted; the file is the fallback. A caller that passes it keeps
+   * the posted bytes identical to the bytes the step judged and compared.
+   */
+  body?: string;
+  /**
+   * When set, the comment URL is already known — skip issueComment.
+   */
   knownCommentUrl?: string;
   /** Injected in tests so a 1s/2s backoff does not take 1s/2s. */
   sleep?: (ms: number) => Promise<void>;
@@ -124,7 +132,7 @@ export async function postHandoffToForge(opts: {
       // get their handoff comment via the ops dispatch's raw `gh` prompt.
       // For the in-process path, the forge covers the issue-comment shape.
       if (objType === "issue") {
-        const body = await fs.readFile(handoffBodyPath, "utf8").catch(() => "");
+        const body = opts.body ?? (await fs.readFile(handoffBodyPath, "utf8").catch(() => ""));
         const out = await forge.issueComment(issue, body);
         const parsedUrl = parseHandoffCommentUrl(out) ?? out.trim();
         if (parsedUrl) commentUrl = parsedUrl;

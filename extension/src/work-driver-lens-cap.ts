@@ -46,8 +46,10 @@ import { type CycleContext, type DriverContext, MAX_REVIEW_ROUNDS } from "./work
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { type PatchIdentity, currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import { residualDisclosureBody } from "./work-driver-lens-cap-hygiene.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
+import type { ExecFn } from "./worktree.ts";
 
 /**
  * The PR comment a round-capped cycle leaves behind.
@@ -331,8 +333,21 @@ async function discloseResidualFindings(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const prNumber = state.pipelineState.prNumber;
   if (!prNumber) return { ok: false, reason: "no PR number was captured at commit-pr" };
+  const execFn = (ctx.verifyExecFn ?? execp) as unknown as ExecFn;
   const body = renderResidualFindings(findingsBlob, round, verdict, marker, shape.wording);
   if (!body) return { ok: false, reason: "the review recorded no renderable findings" };
+  // #1788 follow-up — this post is a publish the `tool_call` guard cannot see
+  // (an in-process `gh pr comment`), and its text quotes findings off the branch
+  // and names paths. It goes through the same driver seam as every other
+  // driver-authored publish: the target is resolved on the forge's own slug, the
+  // public-or-unknown branch rewrites this host's paths to `~`/`<repo>`, and the
+  // body WRITTEN below is the body the matcher judged. A refusal is handled
+  // exactly as a failed post already was — `{ ok: false }`, so no disclosure and
+  // no `ci` route. The disclosure marker survives: the rewrite never touches a
+  // `<!-- pi-rukas: … -->` span.
+  const checked = await residualDisclosureBody(ctx, body, execFn);
+  if ("refusal" in checked) return { ok: false, reason: checked.refusal };
+  const bodyToPost = checked.text;
   if (!marker) {
     // item 1 — a body with no marker discloses nothing the guard or the draft
     // gate can see, so it is a failed disclosure and the cycle parks rather than
@@ -354,12 +369,11 @@ async function discloseResidualFindings(
   );
   try {
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, body, "utf8");
+    await fs.writeFile(file, bodyToPost, "utf8");
     // The adapter has no PR-comment method (S2 named issue-comment, not
     // PR-comment), so this is one of the sites that stays a direct command:
     // the GitHub-shaped one the test suite pins, with the GitLab MR-note
     // equivalent as the forge-agnostic sibling.
-    const execFn = ctx.verifyExecFn ?? execp;
     const forge = await forgeForCycle(ctx, execFn);
     const cmd =
       forge?.forge === "gitlab"

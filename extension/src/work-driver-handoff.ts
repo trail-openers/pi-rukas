@@ -5,8 +5,9 @@ import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { settleDraftPrAtHandoff } from "./work-driver-draft-pr.ts";
+import { handoffCommentBody } from "./work-driver-handoff-body.ts";
 import { openDraftPrForCappedWork } from "./work-driver-handoff-capped-pr.ts";
-import { handoffChannel, withHandoffMarker } from "./work-driver-handoff-channel.ts";
+import { handoffChannel } from "./work-driver-handoff-channel.ts";
 import {
   handoffConsolidateWorktrees,
   lastConsolidatedEvent,
@@ -169,12 +170,15 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // #1292 — a concluded review marks a draft PR ready; a cut-short one leaves it
   // a draft. Before the render, so the comment states the outcome.
   next = await settleDraftPrAtHandoff(ctx, next);
-  // Build the handoff markdown body. Now consumes handoffSnapshot via
-  // the additive sections in renderHandoffMarkdown (PR5 refinements). The
-  // forge type picks the draft's real ready command (GitLab: glab mr update).
-  const handoffForgeType = (ctx.forge ?? (await handoffForge(ctx.repoRoot)))?.forge;
-  // #1327 — the marker lets a host find this comment and extend it.
-  const handoffMd = withHandoffMarker(renderHandoffMarkdown(next, handoffForgeType), next);
+  // Build the handoff markdown body: rendered, host paths normalised, marker
+  // prefixed — one call in work-driver-handoff-body.ts, which owns why the
+  // rewrite happens exactly once, before the file is written: `handoffMd` is the
+  // bytes the file carries, the bytes the in-process fallback posts and compares,
+  // and the bytes the handoff-emitted event records (#1788 follow-up, #1327).
+  // The forge is resolved here and passed down, so the visibility question and
+  // the render share one read.
+  const resolvedForge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
+  const handoffMd = await handoffCommentBody(next, ctx, resolvedForge);
   const handoffBodyPath = path.join(scratchDir(ctx.repoRoot, ctx.issue), "handoff-comment.md");
   try {
     await fs.mkdir(path.dirname(handoffBodyPath), { recursive: true });
@@ -281,6 +285,7 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
         prNumber,
         forge,
         handoffBodyPath,
+        body: handoffMd,
         commentUrl,
         labelApplied,
         issueLabelApplied,

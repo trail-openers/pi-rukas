@@ -86,7 +86,19 @@ export async function deliverHandoff(args: {
   issue: number;
   prNumber?: number;
   forge: Forge | undefined;
+  /**
+   * The body file on disk — the ops child's post surface, and the fallback's
+   * last resort when the caller has no text to hand over.
+   */
   handoffBodyPath: string;
+  /**
+   * #1788 follow-up — the handoff body the step rendered and normalised, when
+   * the caller holds it. Passing it is what keeps the comment the driver posts
+   * and the comment the idempotency check compares against ONE string: reading
+   * the file here would compare a normalised comment against a raw render and
+   * post a duplicate.
+   */
+  body?: string;
   commentUrl?: string;
   labelApplied: boolean;
   issueLabelApplied?: boolean;
@@ -99,7 +111,9 @@ export async function deliverHandoff(args: {
   if (forge) {
     const objType = prNumber ? "pr" : "issue";
     const targetId = prNumber ?? issue;
-    const body = !commentUrl ? await fs.readFile(handoffBodyPath, "utf8").catch(() => "") : "";
+    const body = !commentUrl
+      ? (args.body ?? (await fs.readFile(handoffBodyPath, "utf8").catch(() => "")))
+      : "";
     // #775 — idempotency check: fetch the target's existing comments
     // BEFORE posting so a comment the ops dispatch already posted (whose
     // URL was lost) is not re-posted. A failed dispatch leaves no such

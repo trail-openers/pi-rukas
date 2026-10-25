@@ -101,8 +101,6 @@ export async function driverPublishCheck(
     timeoutMs?: number;
     /** The repository root whose paths collapse to `<repo>`; defaults to `cwd`. */
     repoRoot?: string;
-    /** This cycle's worktree, when the publish composes from one. */
-    worktreePath?: string;
     /**
      * The home directory the `~` rewrite is relative to. Production leaves it
      * out and the current user's home answers; the offline suite builds its own
@@ -119,7 +117,6 @@ export async function driverPublishCheck(
     target: opts.target,
     timeoutMs: opts.timeoutMs,
     repoRoot: opts.repoRoot,
-    worktreePath: opts.worktreePath,
     homeDir: opts.homeDir,
     realpath: opts.realpath,
   });
@@ -161,8 +158,6 @@ export interface DriverTextCheckOpts {
   timeoutMs?: number;
   /** The repository root whose paths collapse to `<repo>`; defaults to `cwd`. */
   repoRoot?: string;
-  /** This cycle's worktree, when the publish composes from one. */
-  worktreePath?: string;
   /** The home directory the `~` rewrite is relative to (a test seam). */
   homeDir?: string;
   /** The realpath seam that derives each root's second spelling (a test seam). */
@@ -204,7 +199,6 @@ export async function driverPublicTextCheck(
   }
   const normalised = normaliseDriverPublishPaths(text, {
     repoRoot: opts.repoRoot ?? cwd,
-    worktreePath: opts.worktreePath,
     homeDir: opts.homeDir,
     realpath: opts.realpath,
   });

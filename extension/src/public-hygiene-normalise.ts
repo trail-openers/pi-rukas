@@ -161,9 +161,10 @@ function unmaskMarkers(
 
 /**
  * The rewrite every driver-side publish check applies, with the roots derived
- * from the caller's knowledge: the repository root it is publishing from, its
- * realpath, the cycle's worktree, and the current user's home and its realpath.
- * Each spelling is looked up best-effort — a root that cannot be stat'd has
+ * from the caller's knowledge: the repository root it is publishing from and its
+ * realpath, and the current user's home and its realpath. A cycle's worktrees sit
+ * under the repository root, so the root's spelling already covers them. Each
+ * spelling is looked up best-effort — a root that cannot be stat'd has
  * nothing further to rewrite, exactly as in `consolidationNote`.
  *
  * `homeDir` and `realpath` are seams for the offline suite, which builds its
@@ -176,7 +177,6 @@ export function normaliseDriverPublishPaths(
   text: string,
   opts: {
     repoRoot?: string;
-    worktreePath?: string;
     env?: NodeJS.ProcessEnv;
     homeDir?: string;
     realpath?: (dir: string) => string;
@@ -184,8 +184,8 @@ export function normaliseDriverPublishPaths(
 ): NormaliseResult {
   const realpath = opts.realpath ?? realpathOf;
   const roots: string[] = [];
-  for (const dir of [opts.repoRoot, opts.worktreePath]) {
-    if (dir !== undefined && dir !== "") roots.push(dir, ...realpathsOf(dir, realpath));
+  if (opts.repoRoot !== undefined && opts.repoRoot !== "") {
+    roots.push(opts.repoRoot, ...realpathsOf(opts.repoRoot, realpath));
   }
   const home = opts.homeDir ?? homeFromEnv(opts.env ?? process.env);
   return normalisePublishPaths(
@@ -240,10 +240,11 @@ function realpathOf(dir: string): string {
 
 /**
  * Replace every occurrence of `root` used AS a path — one that starts at a
- * boundary and is followed by `/`, a non-path character, or the end of the
- * text — with `placeholder`. A word that merely contains the root as a
- * substring (`/srv/myrepo-root-backup` for a root of `/srv/myrepo`) is not a
- * path under it and is left alone.
+ * boundary and is followed by `/` or is at the end of the text — with
+ * `placeholder`. A root that merely PRECEDES other text (`/srv/myrepo-backup`
+ * for a root of `/srv/myrepo`, or `/srv/myrepo.old`) is not a path under that
+ * root and is left alone: rewriting it would claim a path that does not exist
+ * under the repository, and a reader could not resolve it.
  */
 function replaceRoot(text: string, root: string, placeholder: string): string {
   if (root === "" || !text.includes(root)) return text;
@@ -254,7 +255,7 @@ function replaceRoot(text: string, root: string, placeholder: string): string {
     const beforeOk = cursor === 0 || PATH_BREAK.test(text[cursor - 1] as string);
     const after = cursor + root.length;
     const next = text[after];
-    const afterOk = next === undefined || next === "/" || PATH_BREAK.test(next);
+    const afterOk = next === undefined || next === "/";
     if (beforeOk && afterOk) {
       out += text.slice(from, cursor) + placeholder;
       from = after;
