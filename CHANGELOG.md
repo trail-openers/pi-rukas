@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.16](https://github.com/trail-openers/pi-rukas/compare/v0.14.15...v0.14.16) (2026-10-25)
+
+
+### Bug Fixes
+
+* **review:** bound the diff the adversarial prompts inline ([#1817](https://github.com/trail-openers/pi-rukas/issues/1817)) ([2f7e755](https://github.com/trail-openers/pi-rukas/commit/2f7e7553029929bdee02f46b92587d63fc2f28ef))
+
 ## [0.14.15](https://github.com/trail-openers/pi-rukas/compare/v0.14.14...v0.14.15) (2026-10-24)
 
 
