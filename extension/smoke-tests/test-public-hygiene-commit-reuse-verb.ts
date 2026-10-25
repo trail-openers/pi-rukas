@@ -158,9 +158,6 @@ await withEnv(env, async () => {
     ["git", "-C", "/tmp"],
     ["git", "-c"],
     ["git", "--git-dir=/x/.git"],
-    // Not a commit at all: today's answer for anything the reuse reader cannot
-    // place is REUSE. The scan is what turns "not a git commit" into "nothing to
-    // judge", and the control below pins that it still does.
     // A git command that is not a commit: a NON-git argv and an argv whose globals
     // never terminate have no publish to judge, so they answer REUSE and any scan
     // that reached them refuses. A recognized non-commit answers the same way today

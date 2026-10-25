@@ -387,10 +387,10 @@ fi
 # this is one informational line and never a failure and never a mkdir.
 hygiene_list="${PI_ENSEMBLE_PUBLIC_DENYLIST:-$HOME/.config/pi-rukas/public-denylist}"
 if [ ! -f "$hygiene_list" ]; then
-  echo "==> Privacy guard: no private denylist yet at $hygiene_list"
-  echo "    Optional — one term per line (internal hostnames, addresses, paths) keeps them"
-  echo "    out of public PRs, issues and commit messages. See docs/troubleshooting.md →"
-  echo "    \"Public repository hygiene\". The guard's built-in generic set runs without it."
+  # At most two lines: the path, and where the rest of the story lives. A notice
+  # this long reads as a failure and gets skimmed.
+  echo "==> Privacy guard: no private denylist yet at $hygiene_list (optional; the built-in generic set runs without it)"
+  echo "    To add one: one term per line at that path — see docs/troubleshooting.md → \"Public repository hygiene\"."
 fi
 
 cat <<EOF

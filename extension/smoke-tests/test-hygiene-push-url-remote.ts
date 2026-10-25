@@ -87,9 +87,6 @@ const gitTransport =
       env: opts?.env ?? gitChildEnv,
     }) as Promise<{ stdout: string }>;
 const exec: ExecFn = (cmd, opts) => gitTransport(repo)(cmd, opts);
-/** Fixture git: the transport with the env pinned explicitly rather than left
- * to its default, so the fixture's own git children never inherit whichever
- * HOME the isolation helper happened to export at that moment (#1145). */
 /**
  * Fixture git, with the directory named by every call.
  *
