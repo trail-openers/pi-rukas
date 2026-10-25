@@ -172,6 +172,60 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
   });
   assert(bareRoot.text === "the root is <repo>", "…while a root at the end of the text is");
 
+  // ── 4b. BOTH flanks are judged, by one class (#1820 round 3).
+  //
+  // The two flanks used to be judged by two different rules, so a path whose
+  // before-character satisfied rule A and whose after-character satisfied rule B
+  // could still go unfolded — and an unfolded repository root inside the operator's
+  // home keeps the host home in the text the denylist check then refuses. Each case
+  // below has ONE boundary character that git would not accept in a pathname, on
+  // the side named, and must fold.
+  const HOME_REPO = `${home}/repo`;
+  const flank = (text: string) =>
+    normaliseDriverPublishPaths(text, { repoRoot: HOME_REPO, homeDir: home });
+  const FOLD_BOUNDARIES: Array<[string, string, string]> = [
+    ["backslash before", `git -C \\${HOME_REPO} status`, "backslash"],
+    ["comma before", `logs, ${HOME_REPO}: ok`, "comma"],
+    ["open paren before", `(${HOME_REPO}/src)`, "open paren"],
+    ["close paren after", `see (${HOME_REPO})`, "close paren"],
+    ["comma after", `${HOME_REPO}, and the build`, "comma"],
+    ["quote after", `\`'${HOME_REPO}'\``, "quote"],
+    ["colon after", `git status in ${HOME_REPO}: fatal to run`, "colon"],
+    ["whitespace after", `path was ${HOME_REPO} today`, "whitespace"],
+  ];
+  for (const [label, probe, name] of FOLD_BOUNDARIES) {
+    const got = flank(probe);
+    assert(
+      !got.text.includes(HOME_REPO) && got.rewritten === true,
+      `a ${name} ${label} of the root ENDS the path and folds it (${label}: ${JSON.stringify(got.text)})`,
+    );
+  }
+  // The two rules the class replaces, kept exactly: a sibling that continues the
+  // root's NAME is a different directory, and a separator means a path under it.
+  const kept = flank("backup at ~/repo-old/ and ~/repo.bak/ and ~/other");
+  assert(
+    kept.text === "backup at ~/repo-old/ and ~/repo.bak/ and ~/other",
+    `…and a sibling that continues the name is never folded (${JSON.stringify(kept.text)})`,
+  );
+  assert(
+    !flank(`see ${HOME_REPO}/src/index.ts`).text.includes(HOME_REPO),
+    "a separator after the root is a path under it, which folds",
+  );
+
+  // The handoff case that started this: a host path that would not fold became text
+  // the denylist refused, so the driver had a rendered handoff it could not publish
+  // and — before round 2 — an operator who could not tell why. The fold is the fix;
+  // the refusal reason below is what makes the residual case diagnosable.
+  const wouldRefuse = normaliseDriverPublishPaths(`trace at ${HOME_REPO}/tmp/x`, {
+    repoRoot: HOME_REPO,
+    homeDir: home,
+    denylist: { lines: ["tmp-host-mark"], skipped: [] },
+  });
+  assert(
+    wouldRefuse.refusal === undefined && !wouldRefuse.text.includes(HOME_REPO),
+    `the fold removes the host root before the denylist sees it (${JSON.stringify(wouldRefuse.text)})`,
+  );
+
   // ── 5. the note.
   const noted = withPathNormalisationNote("body text", true);
   assert(

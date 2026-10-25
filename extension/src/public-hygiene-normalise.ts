@@ -48,17 +48,37 @@ import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-/** A path segment that cannot continue a path: what must follow a root. */
-const PATH_BREAK = /[^A-Za-z0-9._~+-]/;
-
 /**
- * What makes the character AFTER a root part of a longer name. A word
- * character continues it outright; `-` and `.` do too, because they are exactly
- * what distinguishes the sibling directory `/srv/myrepo-backup` from the root
- * `/srv/myrepo` — rewriting that would claim a path no reader could resolve.
+ * The SINGLE class that decides whether a root ended, at either flank (#1820
+ * round 3).
+ *
+ * This is one question — "did the root end here?" — and it used to be answered by
+ * two unrelated tests: the character before the root against one class, the
+ * character after it against another. A host path whose boundary characters were
+ * each individually fine could still go unfolded, and because the fold only
+ * rewrites roots it RECOGNISES, an unfolded repository root inside the operator's
+ * home kept the host home visible in the very text the denylist check then
+ * refused — a handoff the driver rendered and could not publish.
+ *
+ * Both sides now ask the same class, and the class is what git itself will not put
+ * in a pathname: a word character, `-`, `.`, or `~`. Anything else — whitespace,
+ * `/`, `:`, `,`, `(`, `'`, `"`, a backslash — ENDS a path as far as git is
+ * concerned, so both flanks of the root must be non-path characters for the root
+ * to be a path on its own. `~/myrepo` is still a sibling (it continues the name)
+ * and `~/myrepo/` still lies inside the root (a separator ends it), so the two
+ * rules this class replaces are kept exactly — they are just no longer two rules.
  */
-const PATH_WORD = /[A-Za-z0-9_]/;
-const CONTINUES_NAME = /[-.]/;
+const NAME_CHAR = /[A-Za-z0-9_~.-]/;
+
+/** Did the root stand as its own path at this position in `text`? */
+function isStandalonePath(text: string, start: number, end: number): boolean {
+  const before = start === 0 ? undefined : text[start - 1];
+  const after = text[end];
+  return (
+    (before === undefined || !NAME_CHAR.test(before)) &&
+    (after === undefined || !NAME_CHAR.test(after))
+  );
+}
 
 /** The marker spans whose bytes a rewrite may not touch. */
 const MARKER = /<!--\s*pi-rukas:.*?-->/gs;
@@ -269,21 +289,12 @@ function replaceRoot(text: string, root: string, placeholder: string): string {
   let from = 0;
   let cursor = text.indexOf(root, from);
   while (cursor >= 0) {
-    const beforeOk = cursor === 0 || PATH_BREAK.test(text[cursor - 1] as string);
-    const after = cursor + root.length;
-    const next = text[after];
-    // `next === undefined` — the root ended the text — and `next === "/"` — a
-    // path under it — were both accepted. A root followed by PUNCTUATION was
-    // not, and that was wrong: `… in /home/me/repo: fatal` names the root
-    // itself, so requiring a separator left it standing (#1820). But `-` and `.`
-    // are what make `/srv/myrepo-backup` and `/srv/myrepo.old` a DIFFERENT
-    // directory than `/srv/myrepo`, and the rule's whole purpose is not to
-    // rewrite those. So the character after the root must neither continue the
-    // root's name (a word character, `-` or `.`) nor be a path separator.
-    const afterOk = next === undefined || !(PATH_WORD.test(next) || CONTINUES_NAME.test(next));
-    if (beforeOk && afterOk) {
+    // One question, one class: both flanks must be characters a pathname cannot
+    // contain. See `isStandalonePath` for why the two flanks may not be judged by
+    // two rules, and what an unfolded root costs.
+    if (isStandalonePath(text, cursor, cursor + root.length)) {
       out += text.slice(from, cursor) + placeholder;
-      from = after;
+      from = cursor + root.length;
       cursor = text.indexOf(root, from);
       continue;
     }
