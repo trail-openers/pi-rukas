@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { rangeRereadCommand } from "./adversarial-diff-cap.ts";
+import { rereadCommandForRound } from "./adversarial-diff-cap.ts";
 import {
   type FenceRecord,
   type FencedRound,
@@ -234,7 +234,7 @@ export async function runAdversarialLoop(
       );
     }
     diff = initial.diff;
-    diffRereadCommand = rangeRereadCommand(range.base, headRef ?? range.head);
+    diffRereadCommand = rereadCommandForRound(range.base, headRef ?? range.head);
     // Rounds 2+ re-compute the SAME range, so a fix round's changes are
     // reviewed (same rule as the driver's per-round getDiff re-read).
     getDiff = async () => {
@@ -300,10 +300,10 @@ export async function runAdversarialLoop(
         // both halves of the range. A failed re-read keeps the previous diff,
         // so it keeps the previous round's head too.
         headRef = roundHeadRef(headRef, { isRefRangeRound: range !== null, freshDiff: fresh });
-        if (fresh.trim()) {
-          diff = fresh;
-          if (range) diffRereadCommand = rangeRereadCommand(range.base, headRef ?? range.head);
-        }
+        // Minted HERE, beside the head it describes: the notice must print the
+        // command for the range this round actually reviewed.
+        if (range) diffRereadCommand = rereadCommandForRound(range.base, headRef ?? range.head);
+        if (fresh.trim()) diff = fresh;
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
         // diff plus the live worktree is what the reviewer had before this.
