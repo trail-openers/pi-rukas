@@ -124,6 +124,7 @@ export const LENS_MEMBERS: readonly string[] = [...new Set(LENS_ROSTER.map((e) =
 /** Every honoured `PI_ENSEMBLE_*` environment input, sorted by name. */
 export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("ACCEPTANCE_COVERAGE", true),
+  flag("ADVERSARIAL_DIFF_CAP", true),
   flag("ADVERSARIAL_EMPTY_SKIP", true),
   ms("ADVERSARIAL_PHASE_BUDGET_MS", 1_800_000),
   flag("ALLOW_DESTRUCTIVE_GIT", false),

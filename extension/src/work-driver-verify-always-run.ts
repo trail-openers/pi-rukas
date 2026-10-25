@@ -14,6 +14,7 @@
  */
 
 export const ALWAYS_RUN: readonly string[] = [
+  "smoke-tests/test-adversarial-diff-cap-note.ts",
   "smoke-tests/test-adversarial-ledger-row-identity.ts",
   "smoke-tests/test-adversarial-range-recompute.ts",
   "smoke-tests/test-adversarial-reread-failure.ts",
@@ -214,6 +215,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-step-notice.ts",
   "smoke-tests/test-subagent-git-guard.ts",
   "smoke-tests/test-troubleshooting-cap-entries.ts",
+  "smoke-tests/test-verify-base-health-cache.ts",
   "smoke-tests/test-verify-base-health-probe-failures.ts",
   "smoke-tests/test-verify-base-health-probe.ts",
   "smoke-tests/test-verify-baseline-attribution.ts",

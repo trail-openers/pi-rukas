@@ -1,24 +1,21 @@
 /**
- * work-driver-verify-base-park — #1765: the branch step's park on a red base,
- * and the failure-list rules that read a probe entry's prose.
+ * work-driver-verify-base-park — #1765: the prose rules that read a probe
+ * entry, and the record a probe leaves for the develop gate.
  *
  * Split out of `work-driver-verify-base-health.ts` for the AGENTS.md §12
  * 500-line cap. It is a LEAF: the probe imports it and nothing here imports the
  * probe, so the module graph the round-1 import cycle was made of stays closed.
  *
- * `baseHealthPark` is the park itself: `verify-baseline-red:branch`, cause class
- * environment (the cause table routes on the marker in the evidence), and NO
- * develop dispatch. The probe builds it and `probeBaseAtBranch` returns it as
- * the step's state, so the router reads the trailing cap-hit as its own routing
- * to `handoff`. The probe tree is already gone — `probeBaselineVerify` removes
- * it in its own `finally`. The evidence carries the gate's own tally when the
- * loop printed one, so the operator sees which suite broke rather than only
- * that it did.
+ * The park on a red base no longer happens at the branch step. A red base is
+ * attributed at the develop gate as `verify-baseline-red:develop`, which already
+ * carries correct handoff prose, so this module builds no cap-hit event: the
+ * probe keeps the `red` arm it earned (via `BaseHealthProbeOutcome.park`'s
+ * replacement, `BaseHealthRedEvidence`) so the verdict's own colour and tally
+ * survive to the seam that does the attributing.
  */
 import { type RedBaselineVerdict, baselineRedMessage } from "./work-driver-verify-baseline.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** Leads a probe entry that attributes a failure to the base commit. */
 const BASELINE_RED_MARKER = "[baseline-red]";
@@ -54,25 +51,33 @@ export function baselineRedForCmd(failures: readonly string[], cmd: string): boo
   return failures.some((f) => baselineRedForCommand(f, cmd));
 }
 
-/** The branch step's park on an established red base, as the step's own state. */
-export function baseHealthPark(
-  state: WorkState,
+/**
+ * The evidence an established RED carries out of the probe: the message the
+ * develop gate's handoff renders, and the gate's own tally when it printed one
+ * (so the operator sees which suite broke rather than only that it did). Built
+ * from the arm the probe itself earned, which is why a verdict cannot be
+ * attributed to a run nobody performed.
+ */
+export interface BaseHealthRedEvidence {
+  /** The `[baseline-red]` prose, as the cap's evidence renders it. */
+  message: string;
+  /** The loop's own `FAILED: <n> test(s)` tally, when the stream carried one. */
+  tally?: number;
+}
+
+/** The red evidence a probe hands to the develop gate, or nothing for no red. */
+export function baseHealthRedEvidence(
   verdict: BaseHealthVerdict,
   arm: RedBaselineVerdict,
-): WorkState {
-  const message = baselineRedMessage(arm, {
-    cmd: verdict.command,
-    baseSha: verdict.baseSha,
-    timeoutMs: verdict.tierBoundMs,
-    changeFailure: "",
-  });
+): BaseHealthRedEvidence {
   const tally = arm.status === "red" ? summaryCount(arm.rawStream) : undefined;
-  return appendEvent(state, {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap: "verify-baseline-red:branch",
-    reviewRound: state.pipelineState.reviewRound,
-    nextStep: "handoff",
-    evidence: `${message}${tally === undefined ? "" : `\nFailing at base: ${tally} test(s)`}`,
-  });
+  return {
+    message: baselineRedMessage(arm, {
+      cmd: verdict.command,
+      baseSha: verdict.baseSha,
+      timeoutMs: verdict.tierBoundMs,
+      changeFailure: "",
+    }),
+    ...(tally === undefined ? {} : { tally }),
+  };
 }

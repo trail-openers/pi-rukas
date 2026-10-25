@@ -19,6 +19,8 @@ import { makeRunPhase } from "./adversarial-phase.ts";
 import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
+import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
+import { createUsageTally } from "./adversarial-usage.ts";
 import {
   decideLoopAction,
   fixRefusedResult,
@@ -70,16 +72,11 @@ export async function runAdversarialLoop(
   // abandons a round); the loop itself never reviews the STALE diff on a
   // failed re-read, and the final result must say so.
   const diffRereadNotes: string[] = [];
-  const usage = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    cost: 0,
-    turns: 0,
-  };
-  let lastTranscript: string | undefined;
-  let lastModel: string | undefined;
+  // The loop's cost tally and the transcript/model of its LAST dispatch
+  // (adversarial-usage.ts): every result this loop synthesises reads through it,
+  // so a partial loop reports what it actually spent.
+  const tally = createUsageTally();
+  const { usage } = tally;
 
   // #980 — resolve the branch ONCE before the loop (shared helper: explicit
   // `branch` → branch-named `head` ref → rev-parse). The VISIBLE not-recorded
@@ -125,6 +122,8 @@ export async function runAdversarialLoop(
     note: withLedgerNote,
   });
 
+  const reportTerminal = params.reportVerdict === "terminal";
+
   // #1161 — the reportOnly verdict policy is checked and resolved ONCE, at
   // loop entry. An untyped caller with no recognised policy gets an infra
   // failure, never a verdict judged as a routed round.
@@ -137,12 +136,11 @@ export async function runAdversarialLoop(
         text: policyInfraFailureText(policyError),
         ms: Date.now() - start,
         usage,
-        transcriptPath: lastTranscript,
-        model: lastModel,
+        transcriptPath: tally.lastTranscript,
+        model: tally.lastModel,
       }),
     );
   }
-  const reportTerminal = params.reportVerdict === "terminal";
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
@@ -151,6 +149,16 @@ export async function runAdversarialLoop(
   // what `getDiff` then diffs against (the range's head half), so the loop and
   // the writer never disagree about which commit a round judged.
   let headRef: string | undefined = params.head;
+  /**
+   * The diff the CURRENT round reviews, and the range its truncation notice may
+   * name — ONE value, updated in ONE place (#1816). The builders mint the reread
+   * command from `range` only when the diff exceeds the inline cap
+   * (adversarial-diff-cap.ts), and `range` is set only where THIS loop ran
+   * `rangeDiffFn`, so the /work fan-out's pasted diff keeps the "not available"
+   * wording. A round whose re-read FAILED has none: the diff under review is a
+   * previous round's, so the notice must not name a range it never read.
+   */
+  let review: RoundReview = { diff: "" };
 
   // #948 / #1040 — the comment check runs ONCE per round, on the diff that round
   // reviews; that single result feeds both the reviewer's prompt and the
@@ -168,9 +176,18 @@ export async function runAdversarialLoop(
   const infraCtxNow = (): InfraCtx => ({
     start,
     usage,
-    lastTranscript,
-    lastModel,
+    lastTranscript: tally.lastTranscript,
+    lastModel: tally.lastModel,
     toRoundRecords,
+  });
+  /** The result-state shape the fix-phase failures carry: the same tally, read
+   * at call time (adversarial-usage.ts), plus the rounds completed so far. */
+  const roundStateNow = (completed: typeof rounds) => ({
+    start,
+    usage,
+    lastTranscript: tally.lastTranscript,
+    lastModel: tally.lastModel,
+    rounds: completed,
   });
 
   // #859 — resolve the diff: a pasted string wins over a ref range (traced);
@@ -178,7 +195,6 @@ export async function runAdversarialLoop(
   // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
   // overflow) is returned AS the result — never a fallback to an empty
   // string, which the loop would review as "nothing to change" and approve.
-  let diff: string;
   let getDiff = params.getDiff;
   /** #1360 — capture what THIS round is about to review, before its reviewer
    * dispatch, so the identity is the tree the reviewer's prompt carried and not
@@ -204,17 +220,17 @@ export async function runAdversarialLoop(
         text,
         ms: Date.now() - start,
         usage,
-        transcriptPath: lastTranscript,
-        model: lastModel,
+        transcriptPath: tally.lastTranscript,
+        model: tally.lastModel,
       }),
     );
   if (params.diff && range) {
     trace(
       `adversarial: diff string supplied alongside base=${range.base} head=${range.head} — the diff string wins`,
     );
-    diff = params.diff;
+    review = { diff: params.diff };
   } else if (params.diff) {
-    diff = params.diff;
+    review = { diff: params.diff };
   } else if (range) {
     const cwd = params.workCwd ?? process.cwd();
     // Round 1 uses the diff computed once here at tool entry.
@@ -224,7 +240,7 @@ export async function runAdversarialLoop(
         `Adversarial loop could not compute the diff for ${range.base}...${range.head}: ${initial.reason}`,
       );
     }
-    diff = initial.diff;
+    review = roundAfterReread(review, range, headRef, true, initial.diff);
     // Rounds 2+ re-compute the SAME range, so a fix round's changes are
     // reviewed (same rule as the driver's per-round getDiff re-read).
     getDiff = async () => {
@@ -250,32 +266,23 @@ export async function runAdversarialLoop(
   // can resolve the orchestrator jobId to its active inner child instead of
   // returning "no such job". Active child is updated below in runPhase.
   markOrchestrator(orchestratorJobId);
-  const accumulate = (r: DispatchResult) => {
-    if (r.usage) {
-      usage.input += r.usage.input;
-      usage.output += r.usage.output;
-      usage.cacheRead += r.usage.cacheRead;
-      usage.cacheWrite += r.usage.cacheWrite;
-      usage.cost += r.usage.cost;
-      usage.turns += r.usage.turns;
-    }
-    if (r.transcriptPath) lastTranscript = r.transcriptPath;
-    if (r.model && !lastModel) lastModel = r.model;
-  };
+  // Re-read before every review. `fetchDiff` used to run once, before the loop,
+  // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had to
+  // notice the staleness itself.
+  const priorFindings: string[] = [];
 
   const runPhase = makeRunPhase({
     runId,
     signal,
     orchestratorJobId,
+    // An absent optional stays absent rather than becoming `undefined`: the
+    // spread drops the key entirely, so the phase options are exactly what the
+    // caller supplied.
     ...(params.onSlow ? { onSlow: params.onSlow } : {}),
     ...(params.pi ? { pi: params.pi } : {}),
     processGroup: params.processGroup,
     workCycleTrust: params.workCycleTrust,
   });
-  // Re-read before every review. `fetchDiff` used to run once, before the loop,
-  // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had to
-  // notice the staleness itself.
-  const priorFindings: string[] = [];
 
   const firstRound = params.reportRound ?? 1;
   for (let round = firstRound; round <= MAX_ROUNDS; round++) {
@@ -290,7 +297,10 @@ export async function runAdversarialLoop(
         // both halves of the range. A failed re-read keeps the previous diff,
         // so it keeps the previous round's head too.
         headRef = roundHeadRef(headRef, { isRefRangeRound: range !== null, freshDiff: fresh });
-        if (fresh.trim()) diff = fresh;
+        // #1816 — the range is minted HERE, beside the head it describes, and
+        // TOGETHER with the diff it produced: the notice must print the command
+        // for the range this round actually reviewed.
+        review = roundAfterReread(review, range, headRef, true, fresh);
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
         // diff plus the live worktree is what the reviewer had before this.
@@ -298,13 +308,17 @@ export async function runAdversarialLoop(
         // of the operator having to notice it.
         const reason = (err as Error).message;
         trace(`adversarial: diff re-read failed for round ${round}: ${reason}`);
+        // #1816 — and no range for this round either: the diff under review is
+        // a previous round's, so the notice may not name a range this round
+        // never read.
+        review = roundAfterReread(review, range, headRef, false, undefined);
         diffRereadNotes.push(
           `note: round ${round} diff re-read failed (${reason}) — reviewed the previous diff`,
         );
       }
     }
     lastComments = await roundComments(
-      diff,
+      review.diff,
       headRef,
       params.workCwd,
       params.commentTimeoutMs,
@@ -319,7 +333,7 @@ export async function runAdversarialLoop(
       "adversarial-developer",
       `round${round}-review`,
       buildAdversarialPrompt({
-        diff,
+        diff: review.diff,
         context: params.context,
         round,
         maxRounds: MAX_ROUNDS,
@@ -329,10 +343,15 @@ export async function runAdversarialLoop(
         // #1040 — comments this round's diff removed, for the reviewer to judge.
         commentEvidence: renderCommentEvidence(lastComments),
         // #1137 — scope the review to this workstream (N>1 only; absent on N=1).
-        ...(params.scope !== undefined ? { scope: params.scope } : {}),
+        // A plain pass-through now that the value is optional: an absent scope
+        // leaves the key undefined, exactly as the conditional spread did, and
+        // the builder already branches on `opts.scope`.
+        scope: params.scope,
+        // Only non-undefined on the ref-range path; a pasted diff keeps today's prompt.
+        diffRange: review.range,
       }),
       params.workCwd,
-      { runPhase, accumulate, signal },
+      { runPhase, accumulate: tally.accumulate, signal },
     );
     const advCls = classifyDispatchOutcome(adv);
     if (advCls.cause !== "success") {
@@ -365,8 +384,8 @@ export async function runAdversarialLoop(
           text: verdict.findings,
           ms: Date.now() - start,
           usage,
-          transcriptPath: lastTranscript,
-          model: lastModel,
+          transcriptPath: tally.lastTranscript,
+          model: tally.lastModel,
           adversarialRounds: toRoundRecords(rounds),
         }),
       );
@@ -408,16 +427,15 @@ export async function runAdversarialLoop(
         }),
         ms: Date.now() - start,
         usage,
-        transcriptPath: lastTranscript,
-        model: lastModel,
+        transcriptPath: tally.lastTranscript,
+        model: tally.lastModel,
         adversarialRounds: toRoundRecords(rounds),
       });
       return ledgerWrite(r);
     }
     if (action === "reject") break;
     if (!params.workCwd) {
-      const state = { start, usage, lastTranscript, lastModel, rounds };
-      return ledgerWrite(workCwdRequiredResult(round, verdict, state));
+      return ledgerWrite(workCwdRequiredResult(round, verdict, roundStateNow(rounds)));
     }
     // #1104 — the fence checks workCwd (a worktree of the caller's repo) before
     // the first fix round, and runs the caller-repo check after every round,
@@ -431,24 +449,23 @@ export async function runAdversarialLoop(
           buildFixPrompt({
             findings: verdict.findings,
             context: params.context,
-            diff,
+            diff: review.diff,
             round,
             issueBody: params.issueBody,
             priorFindings: [...priorFindings],
+            diffRange: review.range,
           }),
           params.workCwd,
-          { runPhase, accumulate, signal },
+          { runPhase, accumulate: tally.accumulate, signal },
         ),
       );
     } catch (err) {
       // A throwing dispatch must not lose the fence's records: the ledger write
       // carries them (the check ran in the fence's finally before this throw).
-      const state = { start, usage, lastTranscript, lastModel, rounds };
-      return ledgerWrite(fixThrewResult(round, err, state));
+      return ledgerWrite(fixThrewResult(round, err, roundStateNow(rounds)));
     }
     if (!fixRun.ran) {
-      const state = { start, usage, lastTranscript, lastModel, rounds };
-      return ledgerWrite(fixRefusedResult(fixRun.outcome, fixRun.reason, state));
+      return ledgerWrite(fixRefusedResult(fixRun.outcome, fixRun.reason, roundStateNow(rounds)));
     }
     const fix = fixRun.value;
     // Record what this round asked for, so the next fixer does not undo it.
@@ -475,8 +492,8 @@ export async function runAdversarialLoop(
     }),
     ms: Date.now() - start,
     usage,
-    transcriptPath: lastTranscript,
-    model: lastModel,
+    transcriptPath: tally.lastTranscript,
+    model: tally.lastModel,
     adversarialRounds: toRoundRecords(rounds),
   });
   return ledgerWrite(r);
