@@ -72,6 +72,13 @@ export interface HandoffResult {
   body?: string;
   /** Present instead of `body` when the cycle recorded no body. */
   bodyError?: "not-recorded" | "refused";
+  /**
+   * #1820 round 3 — WHY the body was refused, present next to
+   * `bodyError: "refused"`: the matcher's category or denylist line, never the
+   * term. Without it a host sees a post failure that reads exactly like a
+   * transport outage and retries a publish the guard will refuse again.
+   */
+  bodyRefusalReason?: string;
   /** Diagnostic path for a person, like `stateFile`. */
   bodyFile?: string;
   /** Forge channel: the comment pi-rukas posted (or an earlier identical park's). */
@@ -399,8 +406,12 @@ export function handoffOf(state: WorkState, cap: string | undefined): HandoffRes
   if (e.bodyRefusal !== undefined) {
     // A refused body means NO comment was posted. Publish nothing as the handoff
     // text (the refusal is matcher output, not prose for a host) and say why
-    // rather than printing an empty body as if it were the comment.
+    // rather than printing an empty body as if it were the comment. The reason is
+    // the matcher's category/line, which is the only part of a refusal that is
+    // not itself the private text (#1820 round 3): a host needs to be able to
+    // tell "remove the term from the issue" from "the forge was unreachable".
     h.bodyError = "refused";
+    h.bodyRefusalReason = e.bodyRefusal;
   } else if (e.body !== undefined) h.body = e.body;
   else h.bodyError = "not-recorded";
   if (e.handoffBodyPath) h.bodyFile = e.handoffBodyPath;

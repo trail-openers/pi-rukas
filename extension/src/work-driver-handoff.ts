@@ -12,6 +12,7 @@ import {
   handoffConsolidateWorktrees,
   lastConsolidatedEvent,
 } from "./work-driver-handoff-consolidate-step.ts";
+import { consolidationClaim } from "./work-driver-handoff-consolidation-claim.ts";
 import {
   HOST_PARK_RECORD_BOUND_MS,
   boundedBestEffort,
@@ -21,19 +22,19 @@ import {
   priorHandoffCommentUrl,
 } from "./work-driver-handoff-deliver.ts";
 import { handoffForge } from "./work-driver-handoff-forge.ts";
+import { applyIssueLabelAndVerify, labelPrAfterBodyRefusal } from "./work-driver-handoff-labels.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import {
-  applyIssueLabelDualTarget,
   captureCommittedWork,
   declinedLabelSeed,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
 } from "./work-driver-handoff-post.ts";
-import { providerParkResumeStep } from "./work-driver-handoff-provider-resume.ts";
 import { renderHandoffBody } from "./work-driver-handoff-render.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
+import { terminaliseHandoff } from "./work-driver-handoff-terminal.ts";
 import { recordHostPark } from "./work-driver-park-memory-host.ts";
 import {
   REPEAT_PARK_REFUSAL_COUNT,
@@ -44,12 +45,7 @@ import { releaseClaim } from "./work-driver-path-claims.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { foldWriteFenceCount } from "./work-driver-write-fence.ts";
-import {
-  type WorkEvent,
-  type WorkState,
-  appendEvent,
-  parkProviderInterrupt,
-} from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 // #1263 test seam — module-level handoff-step throw injection (offline tests
 // only), called in runHandoff just before the terminal-status write. A
@@ -175,7 +171,6 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // driver seam, marker-prefixed, and written to the scratch dir — one call in
   // work-driver-handoff-render.ts, which owns why the rewrite happens exactly
   // once, before the file is written (#1788 follow-up, #1327, #1820).
-  const resolvedForge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
   const rendered = await renderHandoffBody(ctx, next);
   const handoffMd = rendered.body;
   const handoffBodyPath = rendered.bodyPath;
@@ -199,10 +194,19 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   const host = handoffChannel() === "host";
   const park = await readParkMemory(ctx, next, host);
   const reusedComment = park.repeatOf?.commentUrl !== undefined;
-  const dispatchResult =
-    reusedComment || host || rendered.refusal !== undefined
-      ? { next, opsReplyText: "" }
-      : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
+  // #1820 round 3 — a REFUSED body still arms the repeat-park guard. Nothing is
+  // posted (the ops dispatch and the in-process fallback are both gated on
+  // `rendered.refusal` below), but the `needs-human-attention` label carries no
+  // text: it is a name the forge already has, and the pre-loop attention gate
+  // (`work-driver-attention.ts`) reads exactly that label. A park that refused to
+  // publish had no label, so the guard never armed and `/work N` on the same
+  // unchanged issue re-ran the whole pipeline, refused again, and produced another
+  // handoff nobody had been asked to look at — the label exists to reach a human
+  // through a channel the refused text cannot travel.
+  const opsGated = host || reusedComment || rendered.refusal !== undefined;
+  const dispatchResult = opsGated
+    ? { next, opsReplyText: "" }
+    : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
   next = dispatchResult.next;
   const opsReplyText = dispatchResult.opsReplyText;
   // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
@@ -232,6 +236,11 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
     next.pipelineState,
     prNumber,
   );
+  // #1820 round 3 — a refused body posts nothing, so nothing verified it. Start
+  // the fallback's label bookkeeping at "not applied" for the comment target too
+  // (the `!labelApplied` below is what runs the apply); the issue-target leg
+  // further down is untouched because it is already gated on `!issueLabelApplied`.
+  const bodyRefused = rendered.refusal !== undefined;
   // #775 — provenance of the recorded state. "dispatch" is asserted only
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
@@ -240,6 +249,15 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // so the fallback can be gated correctly: if the dispatch succeeded and
   // the URL parsed, the fallback is skipped entirely (idempotent).
   const dispatchFailed = handoffDispatchFailed(next);
+  // #1820 round 3 — the delivery legs are gated on the COMMENT having posted, not
+  // on both artefacts together, so a body the hygiene seam refused still gets its
+  // label. `needsLabel` below is the only thing the refused case needs, and
+  // `deliverHandoff`/`postHandoffWithRetry` refuse to post an empty body, so
+  // labelling cannot smuggle the text out.
+  //
+  // The comment-verified read stays under `!host` exactly as before: a host-owned
+  // channel applies nothing by contract (#1696), so a false label there is a
+  // decline and must not be chased with a forge read.
   if (!host) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (commentUrl) delivery = "dispatch";
@@ -270,7 +288,15 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // delivery half lives in work-driver-handoff-deliver.ts (§12 file-size
   // split); the try/catch stays HERE because the whole point of the leg is
   // that a forge write must never stop a handoff from completing.
-  if (!host && rendered.refusal === undefined && (!commentUrl || !labelApplied)) {
+  //
+  // #1820 round 3 — a refused body runs this leg LABEL-ONLY. `body` arrives empty
+  // so `postHandoffWithRetry`'s comment half posts nothing (it is already gated on
+  // a non-empty body, and an empty expected body matches nothing, so the idempotency
+  // read cannot mistake an earlier comment for this one), and the label half runs
+  // exactly as it would for a comment that posted. That is the whole of the fix:
+  // the label is a name, not text, and it is the only carrier the repeat-park
+  // guard reads when the comment cannot be written.
+  if (!host && !commentUrl && !labelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
       const delivered = await deliverHandoff({
@@ -278,7 +304,11 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
         prNumber,
         forge,
         handoffBodyPath,
-        body: handoffMd,
+        // The bytes the seam judged. On a refusal those bytes may NOT be posted,
+        // and `deliverHandoff`'s own rule is that an empty body posts no comment —
+        // which is what makes "label only, comment never" one code path rather
+        // than a flag the forge layer has to understand.
+        body: bodyRefused ? "" : handoffMd,
         commentUrl,
         labelApplied,
         issueLabelApplied,
@@ -297,6 +327,25 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
       );
     }
   }
+  // #1820 round 3 — a REFUSED body still arms the repeat-park guard. Nothing is
+  // posted (the ops dispatch is gated on `rendered.refusal` above, and
+  // `postHandoffWithRetry` never posts an empty body), but the
+  // `needs-human-attention` label carries no text: it is a name the forge already
+  // has, and the pre-loop attention gate (`work-driver-attention.ts`) reads
+  // exactly that label. A park that refused to publish had no label, so the guard
+  // never armed and `/work N` on the same unchanged issue re-ran the whole
+  // pipeline, refused again, and produced another handoff nobody had been asked to
+  // look at — the label reaches a human through a channel the refused text cannot
+  // travel. It stays inside `!host`: on the host channel the label is the host's
+  // to apply and the event records the decline instead (#1696).
+  if (!host && bodyRefused && prNumber && !prLabelApplied) {
+    const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
+    if (forge) {
+      const outcome = await labelPrAfterBodyRefusal(forge, prNumber, issueLabelApplied);
+      prLabelApplied = outcome.prLabelApplied;
+      labelApplied = outcome.labelApplied;
+    }
+  }
   // #798 — when prNumber is set, the fallback above applies the label to the
   // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
   // separately here because the retry only targets one object.
@@ -308,45 +357,26 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   if (!host && prNumber && !issueLabelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (forge) {
-      // #798 — the helper APPLIES the issue label (its return is the
-      // immediately-following read-back, which can be stale/false when the
-      // server-side write has not settled). The authoritative state is a
-      // FRESH read — never trust the helper's first read for the record.
-      const ok = await applyIssueLabelDualTarget(forge, ctx.issue);
-      const verified = ok || (await verifyHandoffLabel(forge, "issue", ctx.issue));
-      issueLabelApplied = verified;
-      // Both targets or nothing: the issue label alone must not report the
-      // PR's failed label as applied (#1219).
-      labelApplied = verified && prLabelApplied === true;
+      const outcome = await applyIssueLabelAndVerify(forge, ctx.issue, prLabelApplied);
+      issueLabelApplied = outcome.issueLabelApplied;
+      labelApplied = outcome.labelApplied;
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
   // renderers can print either the branch-contains-the-work path or the accurate
   // per-worktree fallback. The `handoff-consolidated` event is the audit trail.
   const consEvent = lastConsolidatedEvent(next.eventLog);
-  // #1421 — WHY consolidation did not happen. The event carried a single
-  // fixed sentence, "consolidation infeasible (work remains on its worktree
-  // detached HEADs)", for every failure including one where the only thing in
-  // the root was cargo's `target/`: the operator was told the work was
-  // unreachable, with no cause named and nothing saying where the commits
-  // actually are. The real reason is traced by runHandoffConsolidate; read
-  // it back from the trace-carrying event log entry when present, and always
-  // name the worktrees and their HEADs. The work's location was already in
-  // the recovery steps — the reason line now says so too.
+  // #1421 — WHY consolidation did not happen, composed by
+  // `work-driver-handoff-consolidation-claim.ts` from the snapshot's committed
+  // work and the driver's own `degradedReason`. The rule lives there; the reason
+  // it is a rule at all (one fixed sentence told every failure, including the
+  // cargo-`target/` case, as "the work is unreachable") is in that module.
   const consolidationReason = consEvent
     ? undefined
-    : snap.committedWork?.length
-      ? `consolidation did not run — the committed work is NOT lost: ${snap.committedWork
-          .map(
-            (w) =>
-              `worktree ${w.worktreeId} at ${w.path} (HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} commit(s) ahead of the base)`,
-          )
-          .join("; ")}. See the recovery steps below for the cherry-pick commands${
-          consolidated.degradedReason !== undefined
-            ? `; driver's reason: ${consolidated.degradedReason}`
-            : ""
-        }`
-      : undefined;
+    : consolidationClaim({
+        committedWork: snap.committedWork,
+        degradedReason: consolidated.degradedReason,
+      });
   // #1743 — the park record is written BEFORE the event is built, so the
   // repeat count the event carries is the count this write produced rather
   // than a number read back later. Returns undefined when nothing was
@@ -435,48 +465,10 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // the terminal-status write so a thrown error escapes runHandoff and the
   // driver's one-shot guard (abort, no re-route to handoff) is exercised.
   handoffThrowForTest?.();
-  const lastCapHit = [...next.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : undefined;
-  const capKilledCap =
-    capShape === "loop-detected" || capShape === "token-budget" ? capShape : undefined;
-  const isMidFlightHalt =
-    capShape === "spawn-backstop" ||
-    // #754 — a plan-timeout kill is a mid-flight halt like spawn-backstop:
-    // the cycle parked on a bound we chose, and the terminal status says so.
-    capShape === "plan-timeout" ||
-    // #1560 — the per-child run bound ended a child: the same kind of halt.
-    (capShape?.startsWith("child-timeout:") ?? false) ||
-    Boolean(capKilledCap) ||
-    (capShape?.startsWith("step-failed:") ?? false);
-  if (capShape === "provider-unavailable") {
-    // #1243 — the endpoint caused this park, and the advice on every surface
-    // (explainCap, `humanActionFor`, docs/troubleshooting.md) tells the caller
-    // to re-run `/work N` so the halted step re-enters. A `handoff` status
-    // REFUSES exactly that (`already terminated as handoff … re-run with
-    // --restart`), and `--restart` wipes the state file and rebuilds finished
-    // steps — the opposite of the advice, and a re-run that pays for steps the
-    // cycle already completed. So the provider park terminalises as the one
-    // status the driver re-enters without a fight: `interrupted` with reason
-    // `provider`, carrying the step that halted as its resume point. The
-    // handoff comment + label were delivered above, and the exit code is
-    // unchanged (`EXIT.handoff`, see headless/exit-code.ts).
-    //
-    // The resume point is the step the cap names when the cap names one
-    // (`step-failed:<step>` / `verify-failed:<step>` carry it in the literal),
-    // else the last `step-started` that was not this handoff — the same reading
-    // `headless/result.ts::failedStepOf` uses, so the two surfaces cannot
-    // disagree about where the cycle stopped. It is never `handoff` itself:
-    // re-entry would then re-run the delivery, not the step that failed.
-    next = parkProviderInterrupt(next, providerParkResumeStep(next), Date.now());
-  } else {
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        status: isMidFlightHalt ? "aborted" : "handoff",
-      },
-    };
-  }
+  // The terminal status (handoff / aborted / provider-interrupted) is decided by
+  // `work-driver-handoff-terminal.ts` from the cap that ended the cycle; the
+  // rules and the #1243 provider re-entry argument live there.
+  next = terminaliseHandoff(next, Date.now());
   trace(
     `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "NOT POSTED"} label=${labelApplied}${prNumber ? ` (issue=${issueLabelApplied === true} pr=${prLabelApplied === true})` : ""}`,
   );

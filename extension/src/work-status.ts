@@ -232,6 +232,17 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       "GitHub handoff:",
       `  target:  ${te.targetType ? `${te.targetType} #${te.targetNumber ?? "?"}` : "?"} (explicit, #798)`,
       `  comment: ${te.commentUrl ?? "WARNING: NOT POSTED — see recovery #4 below"}`,
+      // #1820 round 3 — a body the publish guard REFUSED is not a post that
+      // failed: recovery #4 tells the operator to run `gh … --body-file
+      // <path>`, which would re-offer the very text the guard refused (and the
+      // body file was never even written). Say which it is, and say why in the
+      // matcher's own words — category or denylist line, never the term.
+      ...(te.bodyRefusal !== undefined
+        ? [
+            `  body:    handoff comment refused by the publish guard: ${te.bodyRefusal.slice(0, 200)}`,
+            "           nothing was posted and the body file was not written — the fix is the issue text, not a retry",
+          ]
+        : []),
       labelLine,
       // #1421 fix round — the jsdoc for `degradedReason` claimed the renderers
       // print the driver's decline reason; nothing read the field, so an

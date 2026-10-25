@@ -240,9 +240,13 @@ export function makeHandoffEmittedEvent(opts: {
     commentUrl,
     labelApplied,
     handoffBodyPath,
+    // #1820 round 3 — assigned in the literal, because the field is required on
+    // the type and this is the only producer. The host channel's entire delivery
+    // is this string, so it is not one of the fields that may be conditionally
+    // absent.
+    body: opts.body,
   };
   if (opts.bodyRefusal !== undefined) ev.bodyRefusal = opts.bodyRefusal;
-  ev.body = opts.body;
   if (delivery) ev.delivery = delivery;
   if (opts.labelSkipped) ev.labelSkipped = opts.labelSkipped;
   if (opts.targetType) ev.targetType = opts.targetType;
@@ -301,14 +305,39 @@ export function declinedLabelSeed(
 }
 
 export async function applyIssueLabelDualTarget(forge: Forge, issue: number): Promise<boolean> {
+  return applyAttentionLabel(
+    forge,
+    "issue",
+    issue,
+    "issue label fallback failed (#798 dual-target)",
+  );
+}
+
+/**
+ * Create the attention label if absent and add it to ONE target, then read it
+ * back. The shape both #798's issue leg and #1820's refused-body PR leg need;
+ * `applyIssueLabelDualTarget` is the issue-facing name callers already use.
+ *
+ * The add is idempotent server-side and every failure is swallowed into `false`:
+ * an attention label is a request for a human, and a forge write that cannot
+ * complete must not be the thing that stops a handoff from finishing.
+ *
+ * EXPORTED because the refused-body leg in `work-driver-handoff.ts` labels the
+ * PR through it — the comment target the handoff would have carried the comment,
+ * which is where the label belongs when there is no comment.
+ */
+export async function applyAttentionLabel(
+  forge: Forge,
+  objType: "issue" | "pr",
+  targetId: number,
+  traceLabel: string,
+): Promise<boolean> {
   try {
     await forge.labelCreate(HANDOFF_LABEL, "FFAA00").catch(() => {});
-    await forge.labelAdd("issue", issue, HANDOFF_LABEL);
-    return await verifyHandoffLabel(forge, "issue", issue);
+    await forge.labelAdd(objType === "pr" ? "mr" : "issue", targetId, HANDOFF_LABEL);
+    return await verifyHandoffLabel(forge, objType, targetId);
   } catch (err) {
-    trace(
-      `work-driver: issue label fallback failed (#798 dual-target): ${(err as Error).message?.slice(0, 160)}`,
-    );
+    trace(`work-driver: ${traceLabel}: ${(err as Error).message?.slice(0, 160)}`);
     return false;
   }
 }
