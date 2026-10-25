@@ -719,7 +719,9 @@ decision 3 puts the forge boundary at github.com). `merge-guard.ts` is the guard
 `glab mr merge`; nothing else in this area knows glab.
 
 **Escape hatch:** `PI_ENSEMBLE_PUBLIC_HYGIENE=0` disables the guard (only `0`; `false` and `off` are
-not off switches). Set it for one command (`PI_ENSEMBLE_PUBLIC_HYGIENE=0 gh pr create …`) rather than
+not off switches) — and with it the host-path rewrite described above, so a disabled guard changes
+nobody's text rather than applying a fold no check judged. Set it for one command
+(`PI_ENSEMBLE_PUBLIC_HYGIENE=0 gh pr create …`) rather than
 in the shell rc — the guard's value is that it runs on every publish, and an rc-level disable is
 permanent and silent. The hook logs one `WARN public-hygiene: BLOCKED …` line per refusal; that line
 carries a category, a line number and a length, never content.

@@ -147,11 +147,16 @@ export function normalisePublishPaths(
   };
   for (const root of repo) out = record(replaceRoot(out, root, "<repo>"), "repo");
   for (const root of userHome) out = record(replaceRoot(out, root, "~"), "home");
-  return {
-    text: unmaskMarkers(out, spans),
-    rewritten: kinds.length > 0,
-    kinds,
-  };
+  const restored = unmaskMarkers(out, spans);
+  // A mask that cannot be found means the buffer the rewrites ran on is not the
+  // buffer `maskMarkers` built — it has a hole where a marker's bytes were. That
+  // buffer must never be published: it is the input with the marker's bytes
+  // deleted, which for a `<!-- pi-rukas: … -->` span is a marker the driver's own
+  // reader can no longer parse. So the caller hands back the ORIGINAL text and
+  // claims no rewrite: the generic rules then judge bytes that exist, and a
+  // suspicious body is refused rather than silently mangled.
+  if (restored === undefined) return { text, rewritten: false, kinds: [] };
+  return { text: restored, rewritten: kinds.length > 0, kinds };
 }
 
 /** One control character outside every publish body: the mask for a marker. */
@@ -172,17 +177,21 @@ function maskMarkers(
   return out + text.slice(from);
 }
 
-/** Put each marker back, in order, over the masks that replaced it. */
+/**
+ * Put each marker back, in order, over the masks that replaced it. Returns
+ * undefined when a mask is missing — the caller treats that as "the rewrite did
+ * not happen" and publishes the original text, never the masked buffer.
+ */
 function unmaskMarkers(
   text: string,
   spans: readonly { start: number; end: number; raw: string }[],
-): string {
+): string | undefined {
   if (spans.length === 0) return text;
   let out = "";
   let i = 0;
   for (const s of spans) {
     const at = text.indexOf(MASK, i);
-    if (at < 0) return text;
+    if (at < 0) return undefined;
     out += text.slice(i, at) + s.raw;
     i = at + MASK.length;
   }
