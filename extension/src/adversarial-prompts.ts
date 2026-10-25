@@ -29,10 +29,23 @@
  * behaviour rather than putting the string "undefined" in front of a reviewer.
  */
 
+import { type DiffRange, boundDiffForPrompt } from "./adversarial-diff-cap.ts";
 import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
 
 /** Keeps a pathological issue body from crowding out the diff. */
 const MAX_ISSUE_CHARS = 6000;
+
+/** The fence that opens/closes the prompt's diff block.
+ *
+ * `String.fromCharCode` keeps the backticks out of the source: the formatter
+ * rewrites an escaped-backtick run inside a template literal and can turn a
+ * fence into a terminator — the shape that silently truncated both prompts
+ * before. One code point (0x60) repeated three times. */
+const FENCE = String.fromCharCode(0x60, 0x60, 0x60);
+
+/** Blank line separating the closing fence from the bound's truncation note,
+ * which is prose printed AFTER the fence, never inside it (`boundDiffForPrompt`). */
+const NOTE_SEP = "\n\n";
 
 /**
  * #1137 — one workstream's declared scope as the per-workstream reviewer sees
@@ -133,6 +146,13 @@ export function buildAdversarialPrompt(opts: {
    * `adversarial_loop` tool path, where nobody has run anything.
    */
   gateCmd?: string;
+  /**
+   * The ref range this diff came from. Only used when the diff exceeds the
+   * inline cap: the truncation notice mints `git diff <base>...<head>` from it
+   * so the reviewer can read the files the bound cut. Absent for a pasted diff
+   * or a round whose diff re-read failed.
+   */
+  diffRange?: DiffRange;
 }): string {
   const commentSection = opts.commentEvidence
     ? `\n\n${opts.commentEvidence}\n\n${COMMENT_JUDGEMENT_PROSE}`
@@ -140,6 +160,8 @@ export function buildAdversarialPrompt(opts: {
   const scopeSection = opts.scope
     ? buildWorkstreamScopeSection(opts.scope.own, opts.scope.siblings)
     : "";
+  const bounded = boundDiffForPrompt(opts.diff, opts.diffRange);
+  const note = bounded.note ? NOTE_SEP + bounded.note : "";
   const checks = opts.gateCmd
     ? `Do NOT run the project's full gate — \`${opts.gateCmd}\` — or anything that wraps it or the whole test suite: the driver runs that exact command itself. Its verify gate had to clear this tree before you were dispatched, and it runs again on the consolidated tree before the pull request opens, so a re-run here costs the whole gate's wall-clock and proves nothing new. Run only targeted checks — the single test file, lint or type check that exercises the behaviour you are attacking.`
     : "Run lint/type/test if any.";
@@ -155,9 +177,9 @@ Attack this implementation. Find edge cases, security holes, race conditions, AP
 Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issueSection(opts.issueBody)}${commentSection}${opts.fixDelta ?? ""}
 
 Diff:
-\`\`\`diff
-${opts.diff}
-\`\`\``;
+${FENCE}diff
+${bounded.diff}
+${FENCE}${note}`;
 }
 
 export function buildFixPrompt(opts: {
@@ -167,11 +189,16 @@ export function buildFixPrompt(opts: {
   round: number;
   issueBody?: string;
   priorFindings?: string[];
+  /** See `buildAdversarialPrompt.diffRange` — the ref range this diff came from,
+   * which the truncation notice names when the diff is over the inline cap. */
+  diffRange?: DiffRange;
 }): string {
   const prior = (opts.priorFindings ?? []).filter((p) => p.trim());
   const priorSection = prior.length
     ? `\n\nAlready addressed in prior rounds — do not re-open or undo these; they are here so you do not regress them:\n${prior.map((p) => `- ${p}`).join("\n")}`
     : "";
+  const bounded = boundDiffForPrompt(opts.diff, opts.diffRange);
+  const note = bounded.note ? NOTE_SEP + bounded.note : "";
   return `Fix the following adversarial review findings. Original context: ${opts.context}
 Round ${opts.round} fix.
 
@@ -181,7 +208,7 @@ ${opts.findings}${priorSection}${issueSection(opts.issueBody)}
 Make the minimal changes needed to address every finding. Run local quality gates before returning.
 
 Current diff of the work so far:
-\`\`\`diff
-${opts.diff}
-\`\`\``;
+${FENCE}diff
+${bounded.diff}
+${FENCE}${note}`;
 }

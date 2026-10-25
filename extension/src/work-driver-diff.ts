@@ -19,6 +19,29 @@ import type { WorkState, WorkStep } from "./workflow-state.ts";
 const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
 
 /**
+ * The markers the merged-diff producer below writes BETWEEN per-workstream
+ * sections. Exported because `adversarial-diff-cap.ts` has to recognise exactly
+ * these lines as belonging to no file: a generic `^(## |\[)` prefix there would
+ * also swallow a real diff body line that happens to start with `##` or `[`
+ * (common in markdown, TOML tables and log fixtures) and count it as unattributed
+ * prose. One producer, one set of constants, so the reader cannot drift from the
+ * writer.
+ */
+/** The three markers `fetchAllDiffs` writes between/after workstream sections. */
+export const MERGED_DIFF_MARKERS = {
+  /** Opens each workstream's section. */
+  workstreamPrefix: "## workstream: ",
+  /** Appended to a workstream body the 1 MiB budget cut mid-piece. */
+  pieceTruncated: "[... truncated]",
+  /** Appended when whole workstreams were dropped for size. */
+  truncatedAtTotal: "[... merged diff truncated at 1 MiB total]",
+} as const;
+
+export const MERGED_DIFF_WORKSTREAM_PREFIX = MERGED_DIFF_MARKERS.workstreamPrefix;
+export const MERGED_DIFF_PIECE_TRUNCATED = MERGED_DIFF_MARKERS.pieceTruncated;
+export const MERGED_DIFF_TRUNCATED_AT_TOTAL = MERGED_DIFF_MARKERS.truncatedAtTotal;
+
+/**
  * Resolve a diff for the given working directory.
  *
  * PR2 (post-#553 live test): the v1 stub returned "" unconditionally,
@@ -113,6 +136,10 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
  * Total budget capped at 1 MiB cumulative; once exceeded the function
  * returns what it has plus a `[... truncated for size]` marker so
  * downstream prompts don't silently lose context.
+ *
+ * The three marker strings are the exported constants above, not literals here:
+ * `adversarial-diff-cap.ts` recognises exactly these lines as belonging to no
+ * file, so the producer and the reader cannot drift apart.
  */
 async function fetchAllDiffs(
   worktrees: Record<string, string>,
@@ -152,17 +179,20 @@ async function fetchAllDiffs(
   let truncated = false;
   for (const { id, body: piece } of fetched) {
     if (truncated) break;
-    const header = `## workstream: ${id}\n`;
+    const header = `${MERGED_DIFF_WORKSTREAM_PREFIX}${id}\n`;
     const remaining = TOTAL_CAP - totalBytes - header.length;
     if (remaining <= 0) {
       truncated = true;
       break;
     }
-    const body = piece.length > remaining ? `${piece.slice(0, remaining)}\n[... truncated]` : piece;
+    const body =
+      piece.length > remaining
+        ? `${piece.slice(0, remaining)}\n${MERGED_DIFF_PIECE_TRUNCATED}`
+        : piece;
     sections.push(header + body);
     totalBytes += header.length + body.length;
   }
-  if (truncated) sections.push("\n[... merged diff truncated at 1 MiB total]");
+  if (truncated) sections.push(`\n${MERGED_DIFF_TRUNCATED_AT_TOTAL}`);
   return sections.join("\n");
 }
 
