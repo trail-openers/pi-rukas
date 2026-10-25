@@ -26,6 +26,7 @@
 import { simpleCommands, unwrap } from "./bash-destructive-write.ts";
 import { parseRemoteUrl } from "./forge-detect.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
+import { parsePushUrlTarget, pushRemoteName } from "./public-hygiene-remote.ts";
 import type { RepoTarget } from "./public-hygiene-visibility.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -184,39 +185,17 @@ function segmentCwd(words: readonly string[], cwd: string): string {
 }
 
 /**
- * The remote a `git push` writes to, as the command wrote it: the first word
- * after the verb that names a remote this clone actually has (git resolves a
- * remote before a refspec, so a real remote name in that slot is the remote),
- * defaulting to `origin` — git's own default when the command names none.
+ * The remote a `git push` writes to, as the command wrote it.
  *
- * `pushVerb` arrives from the caller the way the push scan receives it: this
- * module never spells the verb, because the harness that runs the offline suite
- * reads command strings for publish verbs.
+ * The rule lives in `public-hygiene-remote.ts`, the module that owns the push
+ * command's remote slot; this module re-exports it so the callers that resolved
+ * a push's remote here keep one import. `origin` is git's own default when the
+ * command names none, a URL in the remote slot is returned verbatim for
+ * {@link parsePushUrlTarget} to read, and an option's separate-word operand
+ * never occupies the slot — `git push --repo other origin main` pushes to
+ * `origin`.
  */
-export function pushRemoteName(
-  words: readonly string[],
-  pushVerb: string,
-  remoteNames: ReadonlySet<string>,
-): string {
-  if (pushVerb === "") return "origin";
-  const at = words.indexOf(pushVerb);
-  if (at < 0) return "origin";
-  for (let i = at + 1; i < words.length; i++) {
-    const w = words[i] ?? "";
-    // An option whose value is a separate word does not lend that operand to the
-    // remote slot: `git push --repo other origin main` pushes to `origin`.
-    if (w === "-o" || w === "--push-option" || w === "--repo" || w === "--receive-pack") {
-      i += 1;
-      continue;
-    }
-    if (w.startsWith("-")) continue;
-    // Only a name this clone really has. A refspec (`main`, `HEAD:refs/heads/x`,
-    // a URL) is not a remote, and guessing which of them to read as one is how a
-    // scan ends up asking about the wrong repository.
-    if (remoteNames.has(w)) return w;
-  }
-  return "origin";
-}
+export { pushRemoteName } from "./public-hygiene-remote.ts";
 
 /** This clone's remote names, or an empty set when git cannot say. */
 async function remoteList(exec: ExecFn | undefined, cwd: string): Promise<ReadonlySet<string>> {
@@ -346,7 +325,16 @@ export async function resolveCommandTarget(
       if (opts.pushVerb !== undefined && verb === opts.pushVerb) {
         const dir = segmentCwd(words, cwd);
         const remotes = await remoteList(exec, dir);
-        const t = await ask(pushRemoteName(words, opts.pushVerb, remotes), dir);
+        const remote = pushRemoteName(words, opts.pushVerb, remotes);
+        // A URL in the remote slot names the repository itself, and the clone's
+        // own remotes can say nothing about it: a clone whose `origin` is a
+        // private forge can push straight to the public host, and reading
+        // `origin` would answer the wrong question with confidence. Parse the URL
+        // the command carries; when it is not a repository URL the command named
+        // no target, which is `unknown` and therefore checked.
+        const direct = parsePushUrlTarget(remote);
+        if (direct !== undefined) return direct;
+        const t = await ask(remote, dir);
         if (isRepoTarget(t)) return t;
         last = t;
       }

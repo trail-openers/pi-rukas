@@ -38,6 +38,7 @@
  */
 
 import type { PushScanDeps } from "./public-hygiene-push.ts";
+import { looksLikeRemoteUrl } from "./public-hygiene-remote.ts";
 
 /** How a push names "every local branch" / "every tag". */
 const ALL_BRANCHES_FLAGS = new Set(["--all", "--branches", "--mirror"]);
@@ -108,8 +109,10 @@ export function pushRefspecs(
       // The remote anchor never consumes a word, and an option's operand is
       // never it: `git push --repo origin2 origin main` names `origin2` as a
       // VALUE, and adopting it as the anchor would leave `origin` — a real
-      // remote name — to be scanned as the refspec.
-      if (!w.startsWith("-") && remoteNames.has(w)) seenRemote = true;
+      // remote name — to be scanned as the refspec. A URL anchors it too: the
+      // push-to-URL form publishes just as much as a named remote does, and the
+      // words after it are its refspecs.
+      if (!w.startsWith("-") && (remoteNames.has(w) || looksLikeRemoteUrl(w))) seenRemote = true;
       continue;
     }
     if (w.startsWith("-")) {
