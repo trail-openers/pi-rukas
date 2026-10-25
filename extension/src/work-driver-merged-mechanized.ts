@@ -15,12 +15,16 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ShellExecFn } from "./exec.ts";
 import { prMergeSubjectFlag } from "./forge-commands.ts";
+import { PublicHygieneError } from "./public-hygiene-config.ts";
+import { driverPublishRefusal } from "./public-hygiene-driver.ts";
+import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { mergeSubjectForState } from "./work-driver-merge-subject.ts";
 import type { WorkState } from "./workflow-state.ts";
+import type { ExecFn } from "./worktree.ts";
 
 /**
  * The SHELL-ONLY seam of this module (#1279). `ShellExecFn` declares no `argv`,
@@ -31,6 +35,25 @@ import type { WorkState } from "./workflow-state.ts";
  * An argv-form call added on this path needs the argv-aware `execp` first.
  */
 const execp: ShellExecFn = promisify(exec);
+
+/**
+ * The hygiene refusal, recognised without importing a class across a forge
+ * adapter that may be a test's own fake: the forge seam throws
+ * `PublicHygieneError`, and `publicHygiene === true` is the stable marker the
+ * class carries for exactly this question.
+ */
+function isPublicHygieneRefusal(err: unknown): boolean {
+  return (
+    err instanceof PublicHygieneError ||
+    (err as { publicHygiene?: unknown } | null)?.publicHygiene === true
+  );
+}
+
+/** The refusal text, never anything the guard would not have printed itself. */
+function refusalMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return msg.slice(0, 400);
+}
 
 /** Valid merge methods — maps to the forge adapter's `prMerge` method argument. */
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -127,13 +150,31 @@ export async function executeAndVerifyMerge(
   execFn: VerifyExecFn,
   repoRoot: string,
   subject?: string,
+  // The forge-resolution seam. Production leaves it undefined and the adapter
+  // path is chosen by `forgeForCycle`, exactly as before; a test that exists to
+  // cover the DIRECT-exec fallback passes `() => undefined` rather than hoping a
+  // scratch directory has no forge above it — the probe asks `git remote`, so a
+  // fixture nested inside any clone resolves a forge and the merge silently
+  // takes the adapter path, which is the path that already had the check.
+  resolveForge?: typeof forgeForCycle,
+  // The visibility seam for the DIRECT-exec fallback's own public-only gate
+  // (#1788 round 2). Production leaves it undefined and the fallback asks `gh`;
+  // a test passes a stub so the case that a PRIVATE repository is not refused
+  // can be stated without a forge. The adapter path gets its visibility from
+  // the adapter itself.
+  visibility?: VisibilityFn,
 ): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
-  const forge = await forgeForCycle({ repoRoot }, execFn);
+  const forge = resolveForge
+    ? await resolveForge({ repoRoot }, execFn)
+    : await forgeForCycle({ repoRoot }, execFn);
   if (!forge) {
     // Forge undetermined — fall back to the direct `gh` exec seam so the
     // test fakes (which mock `gh pr view` / `gh pr merge` by substring)
-    // keep working unchanged.
-    return executeAndVerifyMergeDirect(prNumber, method, execFn, repoRoot);
+    // keep working unchanged. The subject travels as an argument to that
+    // fallback and is checked there, on the single path that builds the
+    // command — checking it here as well would state the same rule twice,
+    // in two places that can then disagree.
+    return executeAndVerifyMergeDirect(prNumber, method, execFn, repoRoot, subject, visibility);
   }
   // First check: is the PR already merged? (idempotent on resume)
   try {
@@ -148,9 +189,22 @@ export async function executeAndVerifyMerge(
   }
 
   // Execute the merge.
+  //
+  // #1788 round 1 — the subject check must not escape this function's contract.
+  // `executeAndVerifyMerge` promises a discriminated result and `runMerged`
+  // routes on it; a throw past here (the shape the forge adapter's `prMerge`
+  // uses, where a `PublicHygieneError` is the caller's own error to catch) would
+  // have left the merge step with an exception instead of a reason, and the
+  // cycle would die instead of parking with the reason the guard gave. Same
+  // shape as every other refusal in this function: `{ ok: false, reason }`.
   try {
     await forge.prMerge(prNumber, method, subject);
   } catch (err) {
+    if (isPublicHygieneRefusal(err)) {
+      const reason = refusalMessage(err);
+      trace(`work-driver: merge subject refused for PR #${prNumber}: ${reason.slice(0, 200)}`);
+      return { ok: false, reason };
+    }
     const e = err as Error & { stderr?: string };
     const message = (e.stderr ?? e.message ?? "").toString();
     // If the error indicates the PR is already merged, treat as success.
@@ -220,6 +274,7 @@ async function executeAndVerifyMergeDirect(
   execFn: VerifyExecFn,
   repoRoot: string,
   subject?: string,
+  visibility?: VisibilityFn,
 ): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
   // First check: is the PR already merged? (idempotent on resume)
   try {
@@ -233,6 +288,33 @@ async function executeAndVerifyMergeDirect(
     }
   } catch (err) {
     trace(`work-driver: pre-check gh pr view failed: ${(err as Error).message?.slice(0, 120)}`);
+  }
+
+  // The subject a squash merge writes to main is public text, and this is the
+  // one forge write a cycle cannot undo. The forge adapter's `prMerge` checks it
+  // through `checkPublicText`; this direct-exec fallback builds the same command
+  // itself and reaches no adapter, so it goes through the SAME driver seam —
+  // one rule, one owner, one public-only gate, and a fallback that cannot become
+  // the way past either. The pure `publicTextRefusal` it used to call asked
+  // nothing about the repository, so a private project had its merge subject
+  // refused here while the adapter path skipped the same text (#1788 round 2).
+  // It returns the function's OWN failure shape rather than throwing, for the
+  // reason spelled out on the adapter path above: `runMerged` routes on the
+  // result, and a merge the guard refused is a merge that parks with a reason,
+  // not an exception that escapes the step.
+  if (subject !== undefined) {
+    const refusal = await driverPublishRefusal("merge commit subject", subject, {
+      command: "gh pr merge",
+      cwd: repoRoot,
+      // `VerifyExecFn` and the guard's `ExecFn` differ only in optionality of
+      // the options bag; the seam accepts either shape and passes it through.
+      exec: execFn as unknown as ExecFn,
+      visibility,
+    });
+    if (refusal !== undefined) {
+      trace(`work-driver: merge subject refused for PR #${prNumber}: ${refusal.slice(0, 200)}`);
+      return { ok: false, reason: refusal };
+    }
   }
 
   // Execute the merge.

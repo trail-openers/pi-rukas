@@ -5,6 +5,7 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
+import { cherryPickCommitGate } from "./work-driver-integrate-commit-gate.ts";
 import { isCommitOnBranch } from "./work-driver-integrate-commit.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
 import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.ts";
@@ -58,6 +59,8 @@ export interface IntegrateOpts {
   dirtyRootExempt?: readonly string[];
   commitTitle: string;
   commitBody: string;
+  /** #1788 — the issue the commit message derives from; named in a refusal. */
+  issue?: number;
   mode: "create" | "followup";
   /**
    * #1468 — step 3 fast-forwards the branch to the worktree HEAD instead of
@@ -259,11 +262,18 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       ffFrom = (await execFn("git", { argv: ["rev-parse", "HEAD"], cwd: repoRoot })).stdout.trim();
     }
     const orchResult = opts.fastForward
-      ? await fastForwardOnto(execFn, repoRoot, ids, worktrees, {
-          title: opts.commitTitle,
-          body: opts.commitBody,
-          exempt: dirtyRootExempt,
-        })
+      ? await fastForwardOnto(
+          execFn,
+          repoRoot,
+          ids,
+          worktrees,
+          {
+            title: opts.commitTitle,
+            body: opts.commitBody,
+            exempt: dirtyRootExempt,
+          },
+          opts.issue,
+        )
       : await orchestrateCherryPick(execFn, {
           repoRoot,
           branchName,
@@ -273,6 +283,18 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           requireAllNonEmpty: opts.requireAllNonEmpty,
           pickScope,
         });
+
+    // A commit-message publish the guard refused (#1788): nothing was
+    // committed, so there is no half-applied batch to undo — restore the
+    // checkout the way the conflict path does and park with the reason.
+    if ("_publishRefusal" in orchResult) {
+      const restore = await restoreRoot();
+      return {
+        ok: false,
+        failure: "apply",
+        reason: `${orchResult._publishRefusal.reason} ${claimFor(restore)}.`,
+      };
+    }
 
     // Handle cherry-pick conflict — caller must abort and restore branch.
     // #750 — the claim states the VERIFIED post-condition only.
@@ -325,6 +347,8 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       maxBuffer: 64 * 1024,
     });
     if (hasStaged.trim()) {
+      const refused = await cherryPickCommitGate(execFn, opts, repoRoot, restoreRoot, claimFor);
+      if (refused !== undefined) return refused;
       await execFn(
         `git commit -m ${JSON.stringify(opts.commitTitle)} -m ${JSON.stringify(opts.commitBody)}`,
         { cwd: repoRoot, maxBuffer: 256 * 1024 },

@@ -561,6 +561,186 @@ Also outside the rule: a command name that is itself an expansion, `cd -`, `GIT_
 
 **Where the count lives:** Each refusal is one line in `<scratch>/write-fence-<pid>.jsonl`. The driver recounts them at each step boundary and at the terminal line, and stores the total as `pipelineState.writeFenceRefusals`. Anything the count cannot account for is kept apart: a log the driver cannot read, a refusal the child could not log (it leaves a `write-fence-unaccounted-*` marker), and a log a `--restart` could not remove. The handoff then says *"Count unknown"* and gives the number (`pipelineState.writeFenceUnreadable`); it is never a silent zero. The count is advisory, not a gate: the scratch dir is child-writable, so a child can delete its own log. A write the hook itself cannot judge (an internal fault, or a path or command that is not text) is refused as *"could not be judged"* and counted like any refusal. A `--restart` clears the logs.
 
+## Public repository hygiene (#1788)
+
+### An agent's `gh` / `git commit` / `git push` was refused for "private text"
+
+**Symptom:** A tool call is blocked with:
+
+```
+Refused: this publish would put private text in a public repository.
+A private-denylist entry matched the body (denylist line 4).
+```
+
+or, for a push, `the ADDED diff lines of commit 1a2b3c4d (path/to/file.rs) …`. The command
+never ran — a `tool_call` hook refuses it before anything is published.
+
+**Cause:** The public hygiene guard (`public-hygiene-guard.ts`) refuses a command whose **public
+text** carries a term from the operator's private denylist, or an address/path from its built-in
+generic set. It is registered in the mode-independent guard block, so it fires in trust, sandbox,
+strict and headless modes alike — the modes where the permission layer is off and would otherwise
+check nothing. What it inspects:
+
+| Command | Surfaces |
+|---|---|
+| `gh issue\|pr\|release create\|edit\|comment\|review` | `--title`, `--body`, `--body-file`/`-F`, `--notes`/`--notes-file` (also inside `bash -c`) |
+| `gh api` writing to an `/issues`, `/pulls`, `/releases` or `/comments` path | `-f`/`-F` values, `@file` and `file=` operands, `--input` files |
+| `git commit` | `-m`/`--message`/`-F`/`--file` |
+| `git push` to a **github.com** remote | the outgoing commits' messages **and** their added diff lines |
+
+The driver's own forge posts bypass the hook (they are in-process execs) and are checked at the
+`createForge` seam in `forge.ts` instead; a human `git push` in their own terminal is covered by
+`bin/pre-push-hygiene.sh`.
+
+**Fix (the normal case):** the refusal is correct — the publish really does name something private.
+Rewrite the text to describe the thing instead of naming it (`the staging host`, an RFC 5737 address
+such as `192.0.2.10`, `/home/dev/` rather than a personal home path). The refusal names a
+**denylist line number, a path, or a category** and never the matched term, so open the denylist at
+the line it cites to see what matched.
+
+**Where the denylist lives:** `~/.config/pi-rukas/public-denylist`, or `$PI_ENSEMBLE_PUBLIC_DENYLIST`
+when set. One term per line, `#` comments, blank lines ignored, literal matches are case-insensitive.
+A line beginning `regex:` is treated as a regular expression. The file lives **outside every repository
+and outside every worktree** on purpose: a cycle that could edit the list could delete its own entry,
+and a list inside the repo would be pushed to the public remote by the very commits it polices. It is
+never read at a write position, and its path is never printed.
+
+**The generic set needs no file.** Private IPv4 in `10/8`, `172.16/12`, `192.168/16` and `100.64/10`,
+and personal home paths, are refused whether or not the denylist exists — so a fresh install with no
+denylist file is not an unguarded install. `192.0.2.0/24`, `127.0.0.1`, `::1` and `/home/dev/` are
+exempt, because docs and tests name those.
+
+**Two tiers, on purpose.** A publish (a title, a body, a comment, an inline commit
+message) is checked against **both** the private denylist and the generic set. What a
+`git push` reads **out of git** — its outgoing commit messages and its **added diff
+lines** — is checked against the **private denylist only**: diff bodies legitimately
+contain IPs and home paths in test fixtures, and so does a commit message that
+describes one ("point the build at 10.1.2.3"), and a guard that refused those gets
+switched off, which is the worse failure. The distinction is where the text came from,
+not whether it is a message: a `git commit -m` you typed is a publish surface, the
+messages an outgoing range already carries are git content.
+
+**Public repositories only.** The guard exists to keep private text out of *public* repositories, so
+before it reads a single word of your text it asks which repository the publish writes to, and skips
+the whole command when that repository is private. The target is resolved per surface: the remote a
+`git push` names (in the directory that push actually runs in), the `origin` remote of the clone a
+`git commit -m` runs in, gh's `-R`/`--repo` flag, the `repos/OWNER/REPO` path of a `gh api` endpoint,
+or the cwd repository's `origin` — and the driver's own forge posts ask the forge's own slug. The
+question is `gh api repos/OWNER/REPO --jq .private`, in argv form, bounded at 10 s and **cached per
+repository for the life of the process**, so a thirty-publish fan-out costs one lookup. Only a
+positive `true` skips. `false` checks. Anything else — no remote, an unparseable URL, a non-GitHub
+host (a GitLab or self-hosted project's visibility is not something `gh` can speak to), no `gh` on
+PATH, a network failure, an unknown repository, a lookup that never answered — **checks**, because
+for this guard "could not tell" has always meant "not clean". If a private repository is being
+refused, that is what the answer was: the lookup could not be made, and `gh api repos/OWNER/REPO
+--jq .private` run by hand is how you see why.
+
+**A surface the guard cannot read is refused, never assumed clean.** An unreadable denylist, a
+`--body-file` outside the working-directory tree, the OS temp dir and the repository, a body file
+over 1 MiB, a git range that fails or hangs: each is a refusal naming what it could not read. The
+out-of-root check runs **before** the file is opened, so a file outside the roots is refused on its
+path alone and its content is neither read nor quoted. The repository is a root because the /work
+driver and its agents write PR and handoff bodies under `<repo>/tmp/issue-<N>/`.
+
+**A wrapper prefix does not put a publish out of reach.** The scan strips the process wrappers
+before it looks for a publish verb — `sudo`, `env` (including `env -S`), `timeout`, `nohup`,
+`watch`, `xargs`, `exec`, `nice`, `command`, `doas` — together with their option operands (`sudo -u
+user`, `nice -n 5`, `watch -n 1`, `xargs -I@`) and any `NAME=value`/`oo` prefix, so `sudo gh pr
+comment 3 --body …` is checked exactly as `gh pr comment 3 --body …` is, and the same stripping runs
+for the `--body-file` and substitution refusals and for resolving which repository the publish
+targets. A publish the stripped view still cannot see — `python3 -c "gh pr comment 3 --body …"`, an
+interpreter, or a wrapper the table does not list — is not passed: when the raw command text matches
+a publish shape (`gh pr|issue|release create|comment|edit|review`, a `gh api` carrying a field flag,
+or a `git` … `commit` with a message flag) and the scan found no surface, the command is refused as a
+publish the guard could not see, and the remedy is to run `gh` or `git` directly. A bundled short
+cluster is read as getopt parses it — `git commit -am…`, `-qm…` and `-aF…` carry their message in the
+rest of the cluster (so `-amq SECRET` commits `q SECRET`), and a `-c`/`-C`/`--reuse-message` commit
+whose message comes from another commit is refused as unreadable rather than passed. A `gh`/`git`
+invoked by path (`/usr/local/bin/gh`, `./gh`) is normalised to the bare program and scanned; a
+symlink installed under a different name is a known residual the guard does not resolve. A glued
+FILE flag is read as a file and not as prose — `gh pr comment 3 -Fnotes.md`, `--body-file=notes.md`,
+`gh api … -Fbody=@notes.md`, `gh api … --input=@f.json` / `-i@f.json` and `git commit -Fnotes.md`
+all go through the same roots test, 1 MiB bound and fail-closed unreadable refusal as their
+separate forms, so no glued shape publishes a file's contents unchecked. Finally, a command the
+scan recognises as a publish but from which it read neither a text nor a problem is refused
+(recognition without evidence), while a publish that names no text flag at all — a bare `git
+commit`, `git commit --amend --no-edit` — is left alone, because the guard was never given a text.
+
+**The guard scans GitHub, not every forge.** The publish shapes and the verb tables name `gh` and
+`git`; a `glab` publish is not scanned, and non-github.com remotes are not push-scanned (issue
+decision 3 puts the forge boundary at github.com). `merge-guard.ts` is the guard that refuses a
+`glab mr merge`; nothing else in this area knows glab.
+
+**Escape hatch:** `PI_ENSEMBLE_PUBLIC_HYGIENE=0` disables the guard (only `0`; `false` and `off` are
+not off switches). Set it for one command (`PI_ENSEMBLE_PUBLIC_HYGIENE=0 gh pr create …`) rather than
+in the shell rc — the guard's value is that it runs on every publish, and an rc-level disable is
+permanent and silent. The hook logs one `WARN public-hygiene: BLOCKED …` line per refusal; that line
+carries a category, a line number and a length, never content.
+
+### A `--body` was refused for "built by the shell" when it contained no substitution
+
+**Symptom:** `gh pr comment 3 --body 'the design mentions $(foo) from the RFC'` is refused with
+`this publish could not be checked`, even though single quotes never expand and the guard could
+have read every character of it.
+
+**Cause:** deliberate, and the cheaper of two failures. The rule (`public-hygiene-substitution.ts`)
+is two independent observations over the WHOLE command — it carries a publish surface, and its raw
+text contains an expansion (`$(`, a backtick, `<(`, `>(`, `${`, `$NAME`) — and it looks at no
+quotes. An earlier shape modelled quoting instead: tracking quotes, substitution depth, backticks
+and where to cut a segment. Review returned nine defects, all of one class — an unquoted backslash,
+a `$` or a backtick honoured inside single quotes, a stray `)` driving the depth negative, only the
+head of a `&&` chain checked, newlines cut inside quotes. Every one was a publish walking out
+unchecked, and every fix was one more character bash treats specially.
+
+**Fix:** pass the text as a file — `--body-file notes.md` (or, for `gh api`, `-F field=@notes.md`),
+which the guard reads, bounds and checks properly. Single-quoted literals that merely *mention* a
+substitution are the accepted false positive: they are rare, the remedy is one file write, and the
+alternative is a quote model with the holes above. Refusing them also keeps the guard consistent
+with the shape it has always refused, a single-quoted `$(…)`.
+
+### A push was refused but the commits look fine
+
+**Cause:** The scan reads the **outgoing range**, and the range comes from the
+command's own REFSPECS, not from what this clone has checked out. `pushRefspecs`
+reads the words after the remote (dropping flags, and swallowing the operand of
+an option that takes a value as a separate word — `-o`, `--push-option`,
+`--repo`, `--receive-pack`, `--exec`), each source is resolved with `git
+rev-parse --verify --quiet <src>^{commit}`, and the scan reads those commits'
+history minus everything already on a remote-tracking ref: `git log <srcs> --not
+--remotes`. So `git push origin some-branch` with HEAD elsewhere scans
+`some-branch`, and a commit already on any remote is not re-scanned (it is
+already public). `--all`/`--branches`/`--mirror` and `--tags` are listed by
+category. A `-d`/`--delete` push, or a refspec with an empty source, publishes no
+commits and is scanned clean. A source that does not resolve is a refusal, never
+a clean range. Non-github.com remotes are not push-scanned (a private remote is
+not the public forge).
+
+The scan runs git in the push's own directory: the tool call's cwd, adjusted for
+the two shapes that move the git (`git -C <dir>`, a `cd <dir> &&` prefix), so a
+detached-worktree push is not judged against the repo root's commits.
+
+**Fix:** `git log --format=%B <srcs> --not --remotes` and read the messages; the
+refusal names the short sha and the path, so `git show <sha>` finds the line.
+Amend or rebase the offending commit and push again. If the refusal instead says
+the range *could not be read*, the cause is git (an unreadable remote URL, a hung
+`git log`) and the fix is to make that read work — a range nobody read is not a
+clean range.
+
+### `bin/pre-push-hygiene.sh` does nothing on a human push
+
+**Cause:** it is not installed. It is a git `pre-push` hook, and git runs hooks from
+`.git/hooks/` (or `core.hooksPath`) — placing the file in the repo does not activate it.
+
+**Fix:**
+
+```bash
+ln -s "$PWD/bin/pre-push-hygiene.sh" .git/hooks/pre-push
+```
+
+It honours the same denylist path and the same `PI_ENSEMBLE_PUBLIC_HYGIENE=0` escape hatch, so a
+human and an agent are judged against one list. It reads the pushed range from stdin the way git
+hands it to a `pre-push` hook, and it prints locations, never terms.
+
 ## Image acquisition
 
 ### `./install.sh` takes 10+ minutes (cold local build)
