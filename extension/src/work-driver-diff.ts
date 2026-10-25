@@ -79,41 +79,121 @@ export const MERGED_DIFF_TRUNCATED_AT_TOTAL = MERGED_DIFF_MARKERS.truncatedAtTot
  *
  * The hard cap on diff size (1 MiB) prevents a runaway worktree state
  * from bloating the dispatch prompt.
+ *
+ * #1634 — this is the BEST-EFFORT projection. Every failure above answers `""`,
+ * which is exactly what "there is nothing to review" answers too, and the
+ * adversarial gate's empty-diff short-circuit (#286) treats that value as
+ * approved-with-zero-rounds. A caller whose verdict depends on the answer
+ * reads `readWorktreeDiff` instead, which keeps the two apart.
  */
 export async function fetchDiff(cwd: string | undefined, baseSha?: string): Promise<string> {
-  if (!cwd) return "";
+  const r = await readWorktreeDiff(cwd, baseSha);
+  return r.ok ? r.diff : "";
+}
+
+/**
+ * #1634 — `fetchDiff` with the failure case preserved: the per-worktree twin
+ * of #384's `readIntegratedDiff`.
+ *
+ * The plain `fetchDiff` cannot say "I could not tell", and its consumers render
+ * `""` as "nothing to review": the adversarial gate records
+ * `adversarial-skipped-empty-diff` with `rounds: 0` and passes the workstream,
+ * so a worktree whose diff could not be read cleared the pre-commit gate
+ * without a review. A gate whose no-signal answer is approval is a gate that
+ * cannot fail — the same shape #384 removed from the lens path.
+ *
+ * `empty` is established POSITIVELY, by the two porcelain probes below: no
+ * tracked change against the range's head AND no untracked file. A diff that
+ * comes back blank with dirt in the tree is NOT reported as empty. A missing
+ * `cwd` is unreadable too — "no worktree resolved yet" is a driver state the
+ * gate must see, not an approval.
+ */
+export type WorktreeDiff =
+  | { ok: true; diff: string; empty: boolean }
+  | { ok: false; reason: string };
+
+export async function readWorktreeDiff(
+  cwd: string | undefined,
+  baseSha?: string,
+): Promise<WorktreeDiff> {
+  if (!cwd) return { ok: false, reason: "no worktree path resolved for this workstream" };
   // #453 — try committed diff first when baseSha is available and valid.
   // `git diff baseSha..HEAD` shows everything the developer committed,
   // which `git diff HEAD` misses once the working tree is clean.
-  if (baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha)) {
+  const shaValid = baseSha !== undefined && VALID_BASEDIFF_SHA_RE.test(baseSha);
+  if (shaValid) {
     try {
       const stdout = await execGit(execp, cwd, ["diff", "--end-of-options", `${baseSha}..HEAD`], {
         maxBuffer: 1024 * 1024,
       });
-      if (stdout.trim()) return stdout;
+      // A non-empty committed diff is the whole answer; the probes below only
+      // decide what a BLANK one means.
+      if (stdout.trim()) return { ok: true, diff: stdout, empty: false };
     } catch (err) {
-      trace(
-        `work-driver: fetchDiff(${cwd}, baseSha..HEAD) failed: ${(err as Error).message?.slice(0, 200)}`,
-      );
+      // #1153 — an invalid baseSha is refused by both branches, so reaching
+      // here means a VALID ref git itself could not resolve. That is a failure
+      // to read, not "the developer committed nothing": falling through to
+      // `git diff HEAD` would answer a range the gate asked about with a
+      // different one, and the pre-commit case that legitimately falls through
+      // is the tree-dirty probe below.
+      return { ok: false, reason: `git diff ${baseSha}..HEAD failed: ${errText(err)}` };
     }
   }
   // Fallback: uncommitted diff — DELIBERATE pre-commit semantics for callers
   // without a baseSha and for the case where baseSha..HEAD is empty
   // (developer hasn't committed yet).
+  // #1153 — the SHA gate applies here too: the primary branch above already
+  // refuses an invalid baseSha, and interpolating one into the fallback
+  // would just move the unsanitised value to the other call site.
+  const diffRange = shaValid ? `${baseSha}..HEAD` : "HEAD";
+  let diff: string;
   try {
-    // Prefer `git diff <baseSha>..HEAD` when baseSha is available — this
-    // captures committed work. Without baseSha, fall back to `git diff HEAD`
-    // (uncommitted changes only), which is correct for pre-commit scenarios.
-    // #1153 — the SHA gate applies here too: the primary branch above already
-    // refuses an invalid baseSha, and interpolating one into the fallback
-    // would just move the unsanitised value to the other call site.
-    const diffRange = baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha) ? `${baseSha}..HEAD` : "HEAD";
-    return await execGit(execp, cwd, ["diff", "--end-of-options", diffRange], {
+    diff = await execGit(execp, cwd, ["diff", "--end-of-options", diffRange], {
       maxBuffer: 1024 * 1024, // 1 MiB cap
     });
   } catch (err) {
-    trace(`work-driver: fetchDiff(${cwd}) failed: ${(err as Error).message?.slice(0, 200)}`);
-    return "";
+    return { ok: false, reason: `git diff ${diffRange} failed: ${errText(err)}` };
+  }
+  if (diff.trim()) return { ok: true, diff, empty: false };
+  // Blank. Decide WHICH blank this is: a clean tree (nothing to review) or a
+  // read that produced nothing while the tree holds work.
+  const clean = await worktreeProvesClean(cwd, diffRange);
+  if (clean === true) return { ok: true, diff: "", empty: true };
+  if (clean === false) {
+    return {
+      ok: false,
+      reason: `git diff ${diffRange} came back empty but the tree is not clean — uncommitted work exists that the diff did not show`,
+    };
+  }
+  return {
+    ok: false,
+    reason: `could not establish whether ${cwd} has changes against ${diffRange}`,
+  };
+}
+
+/**
+ * Does the tree hold no changes against `range`? `true` = proven clean, `false`
+ * = dirt found, `undefined` = the probe itself failed (never a `false`-as-
+ * "unknown": the caller must be able to tell "clean" from "could not tell").
+ *
+ * Two probes because porcelain covers what git can lose: `--untracked-files=all
+ * --ignored=no` also reports an untracked file `git diff HEAD` never shows, and
+ * a developer who wrote files without staging anything would otherwise read as
+ * an empty diff.
+ */
+async function worktreeProvesClean(cwd: string, range: string): Promise<boolean | undefined> {
+  try {
+    const tracked = await execGit(execp, cwd, ["diff", "--quiet", "--end-of-options", range]);
+    if (tracked.trim()) return false;
+    const porcelain = await execGit(execp, cwd, [
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+      "--ignored=no",
+    ]);
+    return !porcelain.trim();
+  } catch {
+    return undefined;
   }
 }
 
@@ -145,14 +225,14 @@ async function fetchAllDiffs(
   worktrees: Record<string, string>,
   repoRoot: string,
   baseSha?: string,
-): Promise<string> {
+): Promise<WorktreeDiff> {
   const ids = Object.keys(worktrees);
   // N=1 path — the structural fix for B2. With Step 3 populating the
   // worktrees map (default → repoRoot for single-task), `worktrees[id]`
   // is always a string, never undefined.
   if (ids.length <= 1) {
     const cwd = ids.length === 1 ? worktrees[ids[0] ?? ""] : repoRoot;
-    return fetchDiff(cwd ?? repoRoot, baseSha);
+    return readWorktreeDiff(cwd ?? repoRoot, baseSha);
   }
   // N>1: gather all per-workstream diffs FIRST, then decide whether to
   // emit headers. PR7 — when every body is empty (e.g., all three
@@ -163,12 +243,29 @@ async function fetchAllDiffs(
   // hallucinating findings against unrelated files (the /work 553
   // 2026-06-24 re-test cascade).
   const fetched: Array<{ id: string; body: string }> = [];
+  const unreadable: string[] = [];
   for (const id of ids) {
     const wt = worktrees[id];
     if (!wt) continue;
-    fetched.push({ id, body: await fetchDiff(wt, baseSha) });
+    const r = await readWorktreeDiff(wt, baseSha);
+    if (!r.ok) {
+      unreadable.push(`${id} (${r.reason})`);
+      continue;
+    }
+    fetched.push({ id, body: r.diff });
   }
-  if (fetched.every((f) => !f.body.trim())) return "";
+  // #1634 — "every body is blank" and "every read failed" are different
+  // answers, and the caller must not render the second as the first: an
+  // empty merged diff means APPROVED on both review gates. Any unreadable
+  // workstream makes the whole read unreadable, so one stale ref cannot
+  // silently shrink the reviewed set.
+  if (unreadable.length > 0) {
+    return {
+      ok: false,
+      reason: `unreadable diff for ${unreadable.join(", ")}`,
+    };
+  }
+  if (fetched.every((f) => !f.body.trim())) return { ok: true, diff: "", empty: true };
 
   // Mixed-or-full diff: emit headers + bodies with the same budget rules
   // as before. Header preserved even for empty bodies in this branch so
@@ -193,7 +290,7 @@ async function fetchAllDiffs(
     totalBytes += header.length + body.length;
   }
   if (truncated) sections.push(`\n${MERGED_DIFF_TRUNCATED_AT_TOTAL}`);
-  return sections.join("\n");
+  return { ok: true, diff: sections.join("\n"), empty: false };
 }
 
 /**
@@ -366,8 +463,14 @@ export async function readAllMergedDiffs(
   // scenarios but would return empty after a developer commit.
   const ids = Object.keys(worktrees);
   if (ids.length > 0) {
-    const diff = await fetchAllDiffs(worktrees, repoRoot, baseSha);
-    return { ok: true, diff, empty: !diff.trim() };
+    // #1634 — the same failure case kept for the lens path's no-branch leg:
+    // `fetchAllDiffs` folded every per-worktree read failure into "", and
+    // `empty: !diff.trim()` then reported it as a CONFIRMED empty diff, which
+    // `runLens` skips to `lens-approved`. One unreadable workstream now makes
+    // the whole read unreadable — the review cannot approve over it.
+    const all = await fetchAllDiffs(worktrees, repoRoot, baseSha);
+    if (!all.ok) return { ok: false, reason: all.reason };
+    return { ok: true, diff: all.diff, empty: !all.diff.trim() };
   }
   // No branch and no worktrees: we cannot read a diff, so fail closed.
   // A confirmed-empty diff (branch exists, nothing ahead) is different —

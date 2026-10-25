@@ -41,9 +41,10 @@ import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
   outcomeOf,
+  unreadableDiffOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { fetchDiff } from "./work-driver-diff.ts";
+import { fetchDiff, readWorktreeDiff } from "./work-driver-diff.ts";
 import {
   jitteredMs,
   providerRetryWaitMs,
@@ -137,10 +138,31 @@ export async function fanOutAdversarial(
     // diff against the detach point. Without baseSha we fall back to
     // `git diff HEAD` (pre-commit semantics for uncommitted work).
     const baseSha = state.pipelineState.baseSha;
-    const diff = await fetchDiff(cwd, baseSha);
+    // #1634 — the gate's own read. `fetchDiff` answers "" for BOTH "nothing to
+    // review" and "the read failed", and the short-circuit below renders an
+    // empty string as approved-with-zero-rounds: a worktree whose diff could
+    // not be read used to clear the pre-commit gate with no reviewer ever
+    // seeing it. `readWorktreeDiff` keeps the two apart (#384's shape, applied
+    // to the per-worktree read).
+    const read = await readWorktreeDiff(cwd, baseSha);
+    if (!read.ok) {
+      return unreadableDiffOutcome({
+        id,
+        label,
+        multi,
+        cwd,
+        startedAt,
+        orchestratorJobId,
+        reason: read.reason,
+        priorInfra: priorOutcomes.get(id) === "infra-failure",
+      });
+    }
+    const diff = read.diff;
 
     // #286 — empty-diff short-circuit (a full reviewer spawn on an empty
-    // diff is pure waste; lens review has had this guard since PR6).
+    // diff is pure waste; lens review has had this guard since PR6). Reached
+    // only when the read SUCCEEDED: `empty` here is positively proven by the
+    // tree being clean, never inferred from a blank string (#1634).
     const emptySkipDisabled = process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP === "0";
     if (!emptySkipDisabled && !diff.trim()) {
       trace(`work-driver: adversarial[${id}] skipped — empty diff`);
@@ -186,7 +208,15 @@ export async function fanOutAdversarial(
           // Re-read before each round. Without this, rounds 2+ are prompted
           // with the pre-fix diff and the reviewer has to notice for itself
           // that its earlier objections were already addressed.
-          getDiff: () => fetchDiff(cwd, baseSha),
+          // #1634 — a FAILED re-read throws rather than resolving to "":
+          // adversarial.ts catches it, keeps the previous round's diff and
+          // records the staleness note. A `""` here would be the same defect
+          // one round deeper — a round reviewing, and approving, "no changes".
+          getDiff: async () => {
+            const r = await readWorktreeDiff(cwd, baseSha);
+            if (!r.ok) throw new Error(`diff re-read failed: ${r.reason}`);
+            return r.diff;
+          },
           // What the fix pass before this re-review changed, to be read first.
           fixDelta: await adversarialFixDelta(state, id, cwd),
           // #278 — the reviewer judges the diff against what was ASKED FOR,

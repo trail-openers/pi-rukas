@@ -103,6 +103,77 @@ export type WorkstreamOutcome = Extract<
   { kind: "adversarial-workstream-outcome" }
 >["outcome"];
 
+/**
+ * #1634 — the outcome for a workstream whose diff the driver could not read.
+ *
+ * The bug this exists for: `fetchDiff` returned `""` on every git failure, and
+ * the fan-out's #286 empty-diff short-circuit renders an empty string as
+ * `skipped: true` + `adversarial-skipped-empty-diff` + `ok: true` — a worktree
+ * nobody reviewed cleared the pre-commit gate. This outcome is the opposite
+ * shape and is built in ONE place so the guarantees below cannot be split:
+ *
+ *  - `ok: false`, `skipped: false`, `rounds: 0` — no approval and no skip event,
+ *    so neither `adversarial-approved` nor `adversarial-skipped-empty-diff`
+ *    can be recorded for it;
+ *  - `infra: true` — it enters the SAME route a reviewer child's infra death
+ *    already takes: the fan-out's in-step retry ladder (transient causes) and
+ *    `runAdversarial`'s `adversarial-infra-failure` park on re-entry. It is
+ *    never rendered as a review rejection, because nothing was reviewed.
+ *
+ * The failure event is a `dispatch-failed` shaped exactly like the loop-throw
+ * sibling above it (same step/role/label/jobId), so the taxonomy, the queue's
+ * systemic check and `explainOther`'s cause line all read it unchanged.
+ */
+export function unreadableDiffOutcome(a: {
+  id: string;
+  label: string;
+  multi: boolean;
+  cwd: string;
+  startedAt: number;
+  orchestratorJobId: string;
+  reason: string;
+  priorInfra: boolean;
+}): AdversarialOutcome {
+  const errorTail = `adversarial diff unreadable for worktree ${a.cwd}: ${a.reason}`.slice(-200);
+  return {
+    id: a.id,
+    ok: false,
+    rounds: 0,
+    records: [],
+    // `threw: false` + `infra: true`: an infra-shaped no-verdict failure, which
+    // is what makes the retry ladder classify it (a `threw` outcome is only
+    // transient when the cause is `provider-severed`, and a git error is not).
+    infra: true,
+    threw: false,
+    skipped: false,
+    priorInfra: a.priorInfra,
+    rejectionText: errorTail,
+    errorTail,
+    failureEvent: {
+      kind: "dispatch-failed",
+      step: "adversarial",
+      role: "adversarial-loop",
+      jobId: a.orchestratorJobId,
+      label: a.label,
+      ms: Date.now() - a.startedAt,
+      at: Date.now(),
+      exitCode: 1,
+      errorTail,
+    },
+    branchEvent: a.multi
+      ? {
+          kind: "branch-completed",
+          step: "adversarial",
+          workstreamId: a.id,
+          ok: false,
+          ms: Date.now() - a.startedAt,
+          error: errorTail,
+          at: Date.now(),
+        }
+      : undefined,
+  };
+}
+
 /** The outcome label one workstream's event records. Total: every outcome has exactly one. */
 export function outcomeOf(o: AdversarialOutcome): WorkstreamOutcome {
   if (o.priorVerdict) return o.priorVerdict;
