@@ -17,7 +17,8 @@
  *    address is rewritten to `<repo>` BEFORE the address rule can read it.
  * 4. **The bounds**: a `<!-- pi-rukas: … -->` marker is byte-identical; a
  *    private target gets no rewrite; the escape hatch off gets no rewrite; a
- *    root that merely PRECEDES other text is not a path under it.
+ *    root that merely PRECEDES other text is not a path under it; a mask that
+ *    cannot be found returns the ORIGINAL bytes and claims no rewrite.
  * 5. **The note**: appended only when a rewrite happened, and only once.
  *
  * Everything is built from this test's own temp home and repo directories — no
@@ -28,18 +29,31 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { resetDenylistCacheForTests } from "../src/public-denylist.ts";
+import { PUBLIC_DENYLIST_PATH_ENV, resetDenylistCacheForTests } from "../src/public-denylist.ts";
 import { driverPublicTextCheck } from "../src/public-hygiene-driver.ts";
 import {
   PATH_NORMALISATION_NOTE,
   normaliseDriverPublishPaths,
   withPathNormalisationNote,
 } from "../src/public-hygiene-normalise.ts";
+import { publicTextRefusal } from "../src/public-hygiene-text.ts";
 import { resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
 const TERM = "example-private-host";
+// A second term for the fold case, so the two blocks never disagree about which
+// entry a refusal is blaming. The fold case needs a term that lives INSIDE the
+// repository root it removes: `example-private-host` is used by the block above
+// as a term that sits OUTSIDE any root, and reusing it here would make one block's
+// expectation depend on the other's fixture.
+// Two terms for the two things the fold block judges: the fold removes a ROOT it
+// recognises, so a body whose only private content is the root publishes clean,
+// while a term that appears as its own path segment survives the rewrite and is
+// still refused. Declared next to the scratch list they are written to, so a
+// refusal's line number is checkable against a file this test owns — never against
+// a host's real denylist, which would make the outcome a fact about the machine.
+const FOLD_TERM = "pi-rukas-host-mark";
 // The scratch root must NOT sit under the host's real home. The rewrite tries the
 // repository spellings before the home spelling, and `home` here is a child of
 // `root`; a transcript path built under `home` would otherwise also sit under the
@@ -48,22 +62,31 @@ const TERM = "example-private-host";
 const root = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "hygiene-normalise-"));
 
 // The fixture world, all under this test's own scratch dir: a home directory
-// with a "real" transcript path, a sibling directory that is ANOTHER user's
-// home, and a repository with a worktree and a verify log under it.
+// with a "real" transcript path and a repository with a worktree and a verify
+// log under it.
 const home = path.join(root, "home", "example-person");
-const otherHome = path.join(root, "home", "someone-else");
 const repo = path.join(root, "work", "example-project");
 for (const dir of [
   home,
-  otherHome,
   path.join(repo, ".worktrees", "issue-7-x"),
   path.join(repo, "tmp", "issue-7"),
 ]) {
   mkdirSync(dir, { recursive: true });
 }
 
+// ANOTHER user's home is a LITERAL absolute path, not a directory under the
+// scratch root. A nested `…/home/someone-else` is preceded by a path character,
+// and the generic home rule matches `/home/<name>/` only at the START of a path
+// (or after a non-path character), so the nested spelling is invisible to it:
+// whether that text got refused depended on the HOST — refused when the scratch
+// root itself sat under a personal `/home/<name>/`, silently clean on a runner
+// whose scratch root sits under the exempt `/home/runner/`. A judgement this test
+// makes must not be a fact about the machine that runs it. The file need not
+// exist; nothing here opens it.
+const otherHome = "/home/someone-else";
+
 const denylist = path.join(root, "denylist");
-writeFileSync(denylist, `# synthetic\n${TERM}\n`, "utf8");
+writeFileSync(denylist, `# synthetic\n${TERM}\n${FOLD_TERM}\n`, "utf8");
 
 /** The driver seam with every host fact pinned to this test's fixture world. */
 const check = (text: string) =>
@@ -104,6 +127,12 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
   assert(ok.text.includes("cap=round-cap"), "…and the pi-rukas marker is untouched");
 
   // ── 2. fail-closed after the rewrite.
+  //
+  // `otherHome` is a LITERAL absolute path, never a directory under the scratch
+  // root: the generic home rule matches `/home/<name>/` only at the START of a
+  // path, so a nested spelling was judged by the host rather than by the rule
+  // (refused under a personal `/home/<name>/` scratch root, clean under the
+  // exempt `/home/runner/` one — the CI failure this fixture fixes).
   const otherUsersHome = `See ${path.join(otherHome, ".ssh", "id_ed25519")} for the key.`;
   const refusedOther = await check(otherUsersHome);
   assert(
@@ -111,7 +140,7 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
     `a path under ANOTHER user's home is still refused after the rewrite (${refusedOther.refusal?.slice(0, 60) ?? "PASSED — the rewrite made it look like ~"})`,
   );
   assert(
-    refusedOther.text.includes(otherHome),
+    refusedOther.text.includes(otherHome) && !refusedOther.text.includes("~/"),
     "and it is NOT rewritten to ~, which would attribute it to this operator",
   );
 
@@ -172,6 +201,25 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
   });
   assert(bareRoot.text === "the root is <repo>", "…while a root at the end of the text is");
 
+  // A marker span whose mask has gone is the one case the rewrite must not guess
+  // at: the masked buffer has a hole where the marker's bytes were, and posting
+  // it would publish a marker the driver's own reader cannot parse. The original
+  // bytes come back with `rewritten: false`, so the generic rules judge what the
+  // caller actually has. Reachable through the exported seam by a body that
+  // carries the mask character alongside a marker — the mask is a control byte no
+  // publish body carries, so this is a fault-injection case, not a shape the
+  // driver composes.
+  const strayed = normaliseDriverPublishPaths(
+    `log at ${path.join(repo, "a.ts")} \u0001 <!-- pi-rukas:x -->`,
+    { repoRoot: repo, homeDir: "" },
+  );
+  assert(
+    strayed.text === `log at ${path.join(repo, "a.ts")} \u0001 <!-- pi-rukas:x -->` &&
+      strayed.rewritten === false &&
+      strayed.kinds.length === 0,
+    "a mask that cannot be found returns the original bytes and claims no rewrite",
+  );
+
   // ── 4b. BOTH flanks are judged, by one class (#1820 round 3).
   //
   // The two flanks used to be judged by two different rules, so a path whose
@@ -216,14 +264,90 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
   // the denylist refused, so the driver had a rendered handoff it could not publish
   // and — before round 2 — an operator who could not tell why. The fold is the fix;
   // the refusal reason below is what makes the residual case diagnosable.
-  const wouldRefuse = normaliseDriverPublishPaths(`trace at ${HOME_REPO}/tmp/x`, {
-    repoRoot: HOME_REPO,
-    homeDir: home,
-    denylist: { lines: ["tmp-host-mark"], skipped: [] },
-  });
+  //
+  // Judged through the seam that ACTUALLY runs the denylist: `driverPublicTextCheck`
+  // folds and then judges with exactly `publicTextRefusal(label, normalised.text)`
+  // (its only caller), which reads the list itself off `PUBLIC_DENYLIST_PATH_ENV`
+  // — the scratch list this `withEnv` block already set. `normaliseDriverPublishPaths`
+  // neither takes a denylist nor returns a refusal, so asking IT both asserted
+  // nothing about the denylist and read a field the function never produces.
+  //
+  // The fixture is a LITERAL `/home/dev/…` tree for the same reason `otherHome`
+  // above is one: only the FOLD is under test, and a root under this test's own
+  // scratch dir made the outcome a fact about the host. Unfolded, a
+  // `${root}/…/tmp-host-mark/x` sits under a personal `/home/<name>/` when the
+  // runner's `TMPDIR` does (so the generic set refused it and the control passed
+  // for a reason the fold has nothing to do with) and under the exempt
+  // `/home/runner/` when it does not (so the control went clean). `dev` is on the
+  // generic rule's placeholder list precisely so documentation and fixtures can
+  // carry a home path, so the judgement below is the same on every host. The
+  // directories need not exist — nothing here opens them.
+  const fakeHome = "/home/dev";
+  const FAKE_REPO = `${fakeHome}/repo`;
+  // Two terms, because this block needs two DIFFERENT outcomes from the same list:
+  // a term that sits OUTSIDE the folded root (the fold removes it, so the body
+  // publishes) and a term that sits INSIDE it (the fold rewrites the path around
+  // it but cannot remove the word, so the check still refuses). One term would
+  // make the two assertions contradict each other.
+  const INSIDE_TERM = FOLD_TERM;
+
+  // (a) A host path whose only private content IS the repository root: the fold
+  // removes the root and the body publishes clean. The RAW text goes in and the
+  // seam does the folding — a caller that pre-folded would hand the check bytes
+  // nobody judged. `homeDir` is the fake home and the cwd is the scratch repo,
+  // exactly as a driver post supplies them.
+  const published = await driverPublicTextCheck(
+    "pull request body",
+    `trace at ${FAKE_REPO}/logs/x and the log`,
+    "gh pr comment 7 --body-file body.md",
+    repo,
+    { exec: async () => ({ stdout: "false\n" }), homeDir: fakeHome, realpath: (dir) => dir },
+  );
   assert(
-    wouldRefuse.refusal === undefined && !wouldRefuse.text.includes(HOME_REPO),
-    `the fold removes the host root before the denylist sees it (${JSON.stringify(wouldRefuse.text)})`,
+    published.refusal === undefined &&
+      published.rewritten === true &&
+      !published.text.includes(FAKE_REPO) &&
+      !published.text.includes(fakeHome) &&
+      published.text === "trace at ~/repo/logs/x and the log",
+    `the fold removes the host root before the denylist sees it (text ${JSON.stringify(published.text)}, refusal ${published.refusal?.split("\n")[1]?.slice(0, 60) ?? "clean"})`,
+  );
+
+  // (b) The same seam with a term the fold CANNOT remove. A fold replaces a ROOT it
+  // recognises; a term that appears as its own path segment is not the root, so it
+  // survives the rewrite and the check still refuses — on the DENYLIST entry, not
+  // the generic set, which is what makes (a) a judgement about the fold rather than
+  // about a list that never fires. Same label, same command, same home, identity
+  // `realpath`: (a) and (b) differ only in whether the text carries the term.
+  // `line 3` is this test's own scratch list's line for `INSIDE_TERM`, named so a
+  // generic-set refusal cannot masquerade as the pass.
+  const residual = await driverPublicTextCheck(
+    "pull request body",
+    `trace at ${FAKE_REPO}/${INSIDE_TERM}/x and the log`,
+    "gh pr comment 7 --body-file body.md",
+    repo,
+    { exec: async () => ({ stdout: "false\n" }), homeDir: fakeHome, realpath: (dir) => dir },
+  );
+  assert(
+    residual.refusal !== undefined &&
+      residual.refusal.includes("A private-denylist entry matched") &&
+      residual.refusal.includes("line 3") &&
+      !residual.refusal.includes(INSIDE_TERM),
+    `a term the fold cannot remove is still refused, by the list and naming no term (${residual.refusal?.split("\n")[1]?.slice(0, 70) ?? "clean"})`,
+  );
+  assert(
+    residual.rewritten === true && residual.text === `trace at ~/repo/${INSIDE_TERM}/x and the log`,
+    `…on the FOLDED bytes, i.e. the fold ran first and did not save it (${JSON.stringify(residual.text)})`,
+  );
+  assert(
+    residual.refusal !== undefined &&
+      residual.refusal.includes("A private-denylist entry matched") &&
+      residual.refusal.includes("line 3") &&
+      !residual.refusal.includes(INSIDE_TERM),
+    `a term the fold cannot remove is still refused, by the list and naming no term (${residual.refusal?.split("\n")[1]?.slice(0, 70) ?? "clean"})`,
+  );
+  assert(
+    residual.rewritten === true && residual.text === `trace at ~/repo/${INSIDE_TERM}/x and the log`,
+    `…on the FOLDED bytes, i.e. the fold ran first and did not save it (${JSON.stringify(residual.text)})`,
   );
 
   // ── 5. the note.

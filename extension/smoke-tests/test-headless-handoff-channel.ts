@@ -31,7 +31,6 @@ import {
 } from "../src/work-driver-handoff-channel.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
-import { renderTerminalStatus as renderTerminalStatusForTest } from "../src/work-status.ts";
 import { runHandoff, setHandoffThrowForTestForTest } from "../src/work-driver-handoff.ts";
 import { setPlanThrowForTestForTest } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
