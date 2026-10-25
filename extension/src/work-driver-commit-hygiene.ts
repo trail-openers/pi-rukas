@@ -34,36 +34,6 @@ type DriverExec = (
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /**
- * Refuse a commit message that would publish private text, or return the
- * failure the commit-pr step should report.
- *
- * Returns `undefined` when the message may be committed — either it is clean,
- * or the target repository is positively private and the guard has no business
- * in a private repository's own commit messages.
- *
- * A refusal is returned as a REASON rather than thrown. The step routes on a
- * discriminated result, and a commit the guard refused is a commit that parks
- * with a reason the operator can act on, not an exception that escapes the
- * step. The reason names the fix: this message derives from the issue title and
- * body, so a private term in it is a private term in the ISSUE, and removing it
- * is an operator action, not something a retry can do.
- */
-export async function commitMessageRefusal(
-  title: string,
-  body: string,
-  opts: {
-    /** Where `git commit` will run, so the target resolves from the right tree. */
-    cwd: string;
-    issue: number;
-    exec: DriverExec;
-    /** The repository root whose paths collapse to `<repo>`; defaults to `cwd`. */
-    repoRoot?: string;
-  },
-): Promise<string | undefined> {
-  return (await commitMessageForPublish(title, body, opts)).refusal;
-}
-
-/**
  * The commit message the driver should COMMIT, or the refusal.
  *
  * The commit-pr step composes the subject and body from the issue and the
@@ -71,8 +41,22 @@ export async function commitMessageRefusal(
  * public-or-unknown branch the seam rewrites the host's own paths out of that
  * message (`<repo>/…`, `~/…`), so the caller must commit the returned message
  * rather than the one it built: the message that was judged is the message that
- * goes out, and a message that still classifies after the rewrite is refused
- * exactly as `commitMessageRefusal` refuses it today.
+ * goes out.
+ *
+ * A refusal is returned as a REASON rather than thrown. The step routes on a
+ * discriminated result, and a commit the guard refused is a commit that parks
+ * with a reason the operator can act on, not an exception that escapes the step.
+ * The reason names the fix: this message derives from the issue title and body,
+ * so a private term in it is a private term in the ISSUE, and removing it is an
+ * operator action, not something a retry can do.
+ *
+ * There is deliberately no refusal-only wrapper beside this (#1820 round 3). One
+ * existed, every driver commit site called it, and each then committed the
+ * strings it had started with — so the rewrite silently did nothing at three of
+ * the four sites while the module documenting "the bytes written equal the bytes
+ * judged" was contradicted by the code that writes. A site that takes only a
+ * verdict has nothing to commit the folded text with, so the question this module
+ * answers returns the text, or the reason it may not be committed.
  */
 export async function commitMessageForPublish(
   title: string,

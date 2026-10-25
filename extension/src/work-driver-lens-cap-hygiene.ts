@@ -31,10 +31,17 @@ import type { ExecFn } from "./worktree.ts";
  * must gate the publish on `refusal`, never on `text`, but a caller that has to
  * report the refusal (the host channel's result body, the trace) needs the judged
  * bytes to say anything specific about it.
+ *
+ * The refusal branch carries `rewritten` for the same reason (#1820 round 3): the
+ * bytes it rejected are the bytes AFTER the fold, so a caller that reports them
+ * has to be able to say whether the host's paths were already folded out. A
+ * reader told "this is what the guard refused" cannot tell a refused raw path from
+ * a refused `<repo>` placeholder without it, and the difference decides whether
+ * the fix is in the issue text or in the fold.
  */
 export type DisclosureCheck =
   | { text: string; rewritten: boolean; refusal?: undefined }
-  | { text: string; refusal: string };
+  | { text: string; rewritten: boolean; refusal: string };
 
 /**
  * Check (and normalise) a driver-authored comment before it is written.
@@ -79,5 +86,5 @@ export async function residualDisclosureBody(
   });
   return checked.refusal === undefined
     ? { text: checked.text, rewritten: checked.rewritten }
-    : { text: checked.text, refusal: checked.refusal };
+    : { text: checked.text, rewritten: checked.rewritten, refusal: checked.refusal };
 }
