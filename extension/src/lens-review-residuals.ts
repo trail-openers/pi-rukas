@@ -310,7 +310,7 @@ async function doPost(
         ]
       : []),
   ];
-  let body = [
+  const body = [
     "## Six-pass review — residual findings (round disclosure)",
     "",
     `The lens review verdict is **${summary.verdict}**; nothing listed here has been fixed.`,
@@ -348,16 +348,12 @@ async function doPost(
   // #1788 — the whole body, on the public-repositories-only rule, before
   // anything is written: this is a publish the tool_call guard cannot see (an
   // in-process exec), and its text is quoted off the branch by six reviewers.
-  // The check also rewrites this host's paths on a public target; `body` is
-  // reassigned so the seam below writes the bytes this matcher judged.
-  const precheck = await driverPublishCheck("pull request comment", body, {
-    command: "gh pr comment",
-    cwd,
-    repoRoot: cwd,
-    exec: (cmd, opts) => execFn(cmd, opts ?? {}),
-  });
-  if (precheck.refusal !== undefined) throw new PublicHygieneError(precheck.refusal);
-  body = precheck.text;
+  // ONE judge, not two (#1820): `postPrComment`'s `checkPublicText` below is the
+  // single place that runs the driver seam on this body, and the bytes it returns
+  // are the bytes `withBodyFile` writes. A precheck here ran the SAME seam over
+  // the SAME text a second time, so two verdicts had to agree by coincidence and
+  // the precheck's own rewritten text was discarded before the judge saw it.
+  let bodyToPost = body;
   await postPrComment(
     {
       forge: detection.forge,
@@ -366,10 +362,8 @@ async function doPost(
       // composed from lens findings quoted off the branch, so it is exactly the
       // kind of text that has carried a private name before; a refusal is thrown
       // and this module's best-effort contract reports it rather than posting.
-      // The seam's own awaited check is the one that judges this body: it now
-      // resolves the target repository's visibility, so a second synchronous
-      // copy of the pure matcher here would be a second owner of a decision the
-      // seam already makes with more information than this call has.
+      // This is the ONE judge of this body: it resolves the target repository's
+      // visibility, rewrites host paths, and its returned text is what posts.
       checkPublicText: async (label, text) => {
         const checked = await driverPublishCheck(label, text, {
           command: "gh pr comment",
@@ -378,6 +372,8 @@ async function doPost(
           exec: (cmd, opts) => execFn(cmd, opts ?? {}),
         });
         if (checked.refusal !== undefined) throw new PublicHygieneError(checked.refusal);
+        // Published in the seam's own call, so nothing else has to be told.
+        bodyToPost = checked.text;
         return { text: checked.text, rewritten: checked.rewritten };
       },
       run: (cmd, map) =>
@@ -396,7 +392,7 @@ async function doPost(
       },
     },
     prNumber,
-    body,
+    bodyToPost,
   );
   return "";
 }

@@ -16,6 +16,7 @@
  * own failure shape.
  */
 
+import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { driverPublishCheck } from "./public-hygiene-driver.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
@@ -49,17 +50,18 @@ export type DisclosureCheck = { text: string; rewritten: boolean } | { refusal: 
 export async function residualDisclosureBody(
   ctx: Pick<CycleContext, "repoRoot" | "verifyExecFn">,
   body: string,
-  execFn: ExecFn,
+  execFn: ExecFn | undefined,
   /** The caller's already-resolved forge; else this function resolves one. */
   forge?: Forge,
   visibility?: VisibilityFn,
 ): Promise<DisclosureCheck> {
-  const resolved = forge ?? (await forgeForCycle(ctx, execFn));
+  const run = execFn ?? execp;
+  const resolved = forge ?? (await forgeForCycle(ctx, run));
   const checked = await driverPublishCheck("pull request comment", body, {
     command: "gh pr comment",
     cwd: ctx.repoRoot,
     repoRoot: ctx.repoRoot,
-    exec: execFn,
+    exec: run,
     visibility,
     target:
       resolved && resolved.owner !== "" && resolved.repo !== ""
