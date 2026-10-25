@@ -35,7 +35,7 @@ import { buildLensRoster } from "../src/lens-roster.ts";
 import { lensPromptFor } from "../src/lens-review-format.ts";
 import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
-import { resolveReviewThreshold } from "../src/review-threshold.ts";
+import { resolveReviewThreshold, severityFromQuote } from "../src/review-threshold.ts";
 import { pathsInDiff, readFileAtBranch } from "../src/work-driver-diff.ts";
 import type { DoctrineDoc } from "../src/work-driver-policy.ts";
 
@@ -315,14 +315,31 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
   );
   // The code default is unchanged by that operator decision: silent doctrine
   // still gets MEDIUM, asserted above in the resolution block.
-  assert(
-    DEFAULT_REVIEW_THRESHOLD === "MEDIUM",
-    "the shipped default for a project whose doctrine is silent is still MEDIUM",
-  );
+  // Derive the sentence the judge would quote from the file itself rather than
+  // hard-coding it — a rewording of §1 must not leave this test asserting a
+  // quote that no longer exists in the doctrine.
+  const OWN_QUOTE = text.match(
+    /Six-pass review findings are blocking at [A-Z]+ severity and above\./,
+  )?.[0];
+  assert(OWN_QUOTE !== undefined, "§1's blocking sentence is found verbatim in AGENTS.md");
+  // Negative direction: no single sentence of §1's threshold paragraph may read
+  // as a LOOSER bar than HIGH. A sentence that says MEDIUM or LOW blocks would
+  // silently lower the gate the judge is chartered to read.
+  const thresholdPara = text
+    .split("\n")
+    .find((line) => line.startsWith("**Six-pass review findings are blocking"));
+  assert(thresholdPara !== undefined, "§1's threshold paragraph is present");
+  for (const sentence of (thresholdPara ?? "").split(/(?<=\.)\s+/).filter(Boolean)) {
+    const got = severityFromQuote(sentence);
+    assert(
+      got === "HIGH" || got === undefined,
+      `sentence "${sentence.slice(0, 60)}…" reads as HIGH or nothing (got ${got}) — never a looser bar`,
+    );
+  }
   const own = await resolveReviewThreshold(
     judgeSaying({
       verdict: "permitted",
-      quote: "Six-pass review findings are blocking at HIGH severity and above.",
+      quote: OWN_QUOTE,
       sourceFile: "AGENTS.md",
     }),
     docs(text),

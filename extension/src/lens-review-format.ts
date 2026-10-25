@@ -376,10 +376,9 @@ export function computeVerdict(
  * The lens decides a finding's severity — that is its judgment and this module
  * does not second-guess it. Which severity is serious *enough to stop a merge*
  * is a different question, and it belongs to the project, not to this code.
- * `AGENTS.md §1` in this repo states the bar in prose — HIGH severity and
- * above since the operator decision of 2026-10-25, MEDIUM before that. Until
- * the threshold was made configurable nothing read that sentence, so it was
- * decorative and a project wanting a different bar had no way to say so.
+ * `AGENTS.md §1` in this repo states the bar in prose: HIGH severity and above.
+ * Until the threshold was made configurable nothing read that sentence, so it
+ * was decorative and a project wanting a different bar had no way to say so.
  *
  * MEDIUM stays the default, so a project that says nothing — or has no
  * AGENTS.md at all — gets exactly today's behaviour. See

@@ -48,6 +48,22 @@ const FULL = `${S1} The fix loop continues until all HIGH and CRITICAL findings 
     severityFromQuote(FULL) !== "LOW" && severityFromQuote(FULL) !== "MEDIUM",
     "...and not to LOW or MEDIUM either — the 'may be deferred' clause must not over-tighten it",
   );
+  // §1's SECOND sentence on its own. A judge is free to quote just this one; if
+  // it read as anything but HIGH the gate would move on nothing but how much of
+  // the paragraph was cited.
+  const S2 = "The fix loop continues until all HIGH and CRITICAL findings are resolved.";
+  const s2 = severityFromQuote(S2);
+  assert(
+    s2 === "HIGH",
+    `canary: §1's second sentence alone resolves to HIGH (got ${s2}) — it named a looser bar, so quoting only that sentence moved the gate`,
+  );
+  // And the deferral sentence alone must not read as a bar at all.
+  const S3 = "MEDIUM and LOW findings are disclosed on the PR and may be deferred.";
+  const s3 = severityFromQuote(S3);
+  assert(
+    s3 === undefined || s3 === "HIGH",
+    `§1's deferral sentence alone does not set a looser bar (got ${s3})`,
+  );
 }
 
 // --------------------------------------------- the relation carries the meaning

@@ -645,10 +645,10 @@ Wait for all 6 to complete, then perform deterministic synthesis:
    - Preserve severity, description, suggestion, metadata
 4. **Critical findings override**:
    - If ANY lens reports CRITICAL severity → merged verdict CANNOT be APPROVED
-   - Final verdict must be ISSUES_FOUND or CRITICAL_ISSUES_FOUND
-5. **Preserve medium/high findings**:
-   - Keep all non-duplicate findings at MEDIUM or HIGH severity
-   - Include LOW severity findings for completeness (not blocker)
+   - Final verdict must be ISSUES_FOUND or CRITICAL_ISSUES_FOUND (a CRITICAL always blocks, whatever the project's blocking severity says)
+5. **Preserve findings at or above the blocking bar**:
+   - Keep all non-duplicate findings at or above the project's blocking severity (this repo's AGENTS.md §1: HIGH; the shipped default for a project whose doctrine is silent is MEDIUM, unless its doctrine sets a different one)
+   - Include findings below that bar for completeness (not blockers)
 6. **Cross-lens candidates**:
    - When `cross_lens_candidate=true`, flag finding as relevant to multiple lenses
    - This signals to @developer that fix may address multiple concerns
@@ -658,9 +658,9 @@ Wait for all 6 to complete, then perform deterministic synthesis:
 After synthesis, generate merged verdict:
 
 ```
-APPROVED: All findings are LOW severity, no blockers
-ISSUES_FOUND: Contains MEDIUM or HIGH severity findings (requires fixes)
-CRITICAL_ISSUES_FOUND: Contains CRITICAL severity findings (blocks merge)
+APPROVED: no finding at or above the project's blocking severity (this repo's AGENTS.md §1: HIGH; the shipped default where doctrine is silent is MEDIUM)
+ISSUES_FOUND: contains findings at or above that severity (requires fixes)
+CRITICAL_ISSUES_FOUND: contains CRITICAL severity findings (always blocks merge)
 ```
 
 ### Post-Review Workflow
