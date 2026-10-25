@@ -214,22 +214,31 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
 /**
  * The clone's remote names, for the refspec reader's anchor. The push-to-URL
  * path needs them too (`pushRefspecs` decides where the refspecs start by
- * finding the remote), and a clone whose `git remote` cannot be read still has
- * the URL the command carries, so an unreadable list is empty rather than an
- * error — the refspec reader then finds no anchor and resolves HEAD, which the
- * caller already treats fail-closed.
+ * finding the remote), and a URL in the command is the destination regardless of
+ * what this clone has.
+ *
+ * A `git remote` that FAILS is reported as a problem rather than as a clone with
+ * no remotes (#1820): an empty list makes the refspec reader find no anchor, and
+ * the caller then resolves HEAD and scans commits this push may not publish —
+ * "I could not ask git what remotes exist" is not "this clone has none", and
+ * reporting it as the second one would let a transient git failure read as a
+ * clean scan. `scanPushRange` already carries its own `askFailed` path; this
+ * function feeds the same problem into it rather than swallowing the error.
  */
 async function pushRemoteNames(
   deps: PushScanDeps,
   git: (args: string[]) => Promise<string>,
-): Promise<string[]> {
+): Promise<{ names: string[]; problem?: string }> {
   try {
-    return (await git(["remote"]))
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
+    const out = await git(["remote"]);
+    return {
+      names: out
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean),
+    };
+  } catch (err) {
+    return { names: [], problem: `this clone's remotes could not be read (${codeOf(err)})` };
   }
 }
 
@@ -242,6 +251,12 @@ async function pushRemoteNames(
  * as one: "the push destination could not be read" is not "the destination is not
  * the public forge", and the difference is the difference between a checked push
  * and one excused on a guess.
+ *
+ * THE SLOT IS READ ONCE (#1820): this function asks {@link pushRemoteName}, the
+ * same reader the target resolver uses, rather than walking the words a second
+ * time with its own option table. Two walkers drifted on the glued `--repo=<url>`
+ * spelling: the scan never triggered and the resolver answered the visibility
+ * question from the clone's own remote.
  */
 /** A destination read from the command: its host, or why it could not be read. */
 type DirectTarget = { kind: "host"; host: string } | { kind: "problem"; problem: string };
@@ -250,27 +265,19 @@ function directPushTarget(deps: PushScanDeps): DirectTarget | undefined {
   const words = splitPushWords(deps.command ?? "");
   const pushVerb = deps.pushVerb ?? "";
   if (pushVerb === "" || words.indexOf(pushVerb) < 0) return undefined;
-  const at = words.indexOf(pushVerb);
-  // Read as far as the remote slot and no further: the first non-option word after
-  // the verb is the destination git itself resolves. A word that is not a URL is
-  // either a configured remote name or a refspec with git defaulting the remote to
-  // `origin` — both are the case the clone's remotes answer, so this reader says
-  // nothing rather than reading a later word as the destination.
-  for (let i = at + 1; i < words.length; i++) {
-    const w = words[i] ?? "";
-    if (PUSH_VALUE_OPTIONS.has(w)) {
-      i += 1;
-      continue;
-    }
-    if (w.startsWith("-")) continue;
-    if (!looksLikeRemoteUrl(w)) return undefined;
-    const parsed = parsePushUrlTarget(w);
-    if (parsed === undefined) {
-      return { kind: "problem", problem: "the push destination URL could not be read" };
-    }
-    return { kind: "host", host: parsed.host };
+  const remoteNames = new Set<string>();
+  const slot = pushRemoteName(words, pushVerb, remoteNames);
+  // `pushRemoteName` defaults to `origin` when the command names no remote of
+  // this clone and carries no URL — including the case where the first non-option
+  // word is a bare refspec and git defaults the remote to `origin`. That is the
+  // shape the clone's own remotes answer, so this reader says nothing. Only a
+  // word that looks like a URL is a destination the command itself carries.
+  if (!looksLikeRemoteUrl(slot)) return undefined;
+  const parsed = parsePushUrlTarget(slot);
+  if (parsed === undefined) {
+    return { kind: "problem", problem: "the push destination URL could not be read" };
   }
-  return undefined;
+  return { kind: "host", host: parsed.host };
 }
 
 /**
@@ -282,7 +289,17 @@ async function scanCommits(
   deps: PushScanDeps,
   git: (args: string[]) => Promise<string>,
 ): Promise<PushScanResult> {
-  const names = await pushRemoteNames(deps, git);
+  // The refspec anchor's remote list, but its failure is NOT fatal here (#1820):
+  // `scanPushRange` already refused when the transport for a NAMED-remote push was
+  // unreadable, so the only way to reach this point with a broken `git remote` is
+  // the push-to-URL path, where the command itself carries the destination. An
+  // empty anchor list makes the refspec reader find no remote word, which is the
+  // documented fail-closed shape (it resolves HEAD and refuses on anything it
+  // cannot read). Turning the transport failure into a refusal here would instead
+  // refuse every push-to-URL the moment git hiccuped on a call the destination did
+  // not need — and a guard that refuses routine work gets switched off.
+  const remoteNames = await pushRemoteNames(deps, git);
+  const names = remoteNames.names;
   // The commits this push would publish, named by the command itself.
   const srcs = await resolveSrcs(deps, git, names);
   if (srcs.problem !== undefined) {

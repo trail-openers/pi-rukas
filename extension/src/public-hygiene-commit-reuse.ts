@@ -31,7 +31,7 @@
  * refused as "message comes from another commit". The rule is now positional:
  * the words before `commit` are git's, the words after it are commit's, and this
  * reader asks only the second set. Where the verb is found is decided by
- * {@link gitVerb} — the hygiene guard's existing skipper for git's globals, the
+ * {@link gitVerbAt} — the hygiene guard's existing skipper for git's globals, the
  * one place that knows which of them take a value as a SEPARATE word (`-C <dir>`,
  * `-c k=v`) and must consume their follower. A second option parser would have
  * disagreed with it about `--git-dir`.
@@ -43,12 +43,12 @@
  *
  * The argv a publish reader hands in begins at the PROGRAM word — the scan's
  * `publishArgv` has already stripped wrappers (`sudo`) and `NAME=value`
- * prefixes — which is the shape {@link gitVerb} expects.
+ * prefixes — which is the shape {@link gitVerbAt} expects.
  */
 
 import { publishArgv } from "./public-hygiene-command.ts";
 import { REUSED_MESSAGE_REASON, commitCluster } from "./public-hygiene-commit-flags.ts";
-import { gitVerb } from "./public-hygiene-target.ts";
+import { gitVerbAt, isGitProgramWord } from "./public-hygiene-target.ts";
 
 /** The long flags whose value is a COMMIT whose message git reuses. */
 const REUSE_COMMIT_FLAGS = ["--reuse-message", "--reedit-message", "--squash", "--fixup"] as const;
@@ -79,26 +79,19 @@ function usesReuseCommitFlag(w: string): boolean {
  * The words of a `git commit` that belong to the COMMIT, i.e. everything after
  * the `commit` verb, or undefined when there is no locatable `commit` verb.
  *
- * The program word is checked before the verb is sought: `commit` is an ordinary
- * word in `docker run myimage commit -m x`, and reading the words after it as
- * commit flags would be a claim about a command that never ran git.
+ * The program word is checked positionally before the verb is sought: `commit` is
+ * an ordinary word in `docker run myimage commit -m x`, and reading the words
+ * after it as commit flags would be a claim about a command that never ran git.
+ * The slice starts at the verb's OWN index + 1, which `gitVerbAt` reports: the
+ * verb may reappear later as an operand (`git commit -C commit -m hello`) and the
+ * last such word is not the verb.
  */
 function argvAfterCommitVerb(argv: readonly string[]): string[] | undefined {
   const words = publishArgv(argv);
-  const program = words[0] ?? "";
-  if (!program.endsWith("git") || program === "") return undefined;
-  const at = gitVerbIndex(words);
-  return at === undefined ? undefined : words.slice(at + 1);
-}
-
-/** The index of the verb, i.e. the last word {@link gitVerb} skipped over. */
-function gitVerbIndex(words: readonly string[]): number | undefined {
-  const verb = gitVerb(words);
-  if (verb === undefined) return undefined;
-  // A duplicate is not a bug: the verb is the FIRST non-flag word git's own
-  // skipper stopped at, and `lastIndexOf` locates exactly that word when it also
-  // reappears later as an operand (`git commit commit -C HEAD`).
-  return verb === "" ? undefined : words.lastIndexOf(verb);
+  if (!isGitProgramWord(words[0])) return undefined;
+  const at = gitVerbAt(words);
+  if (at === undefined || at.verb !== "commit") return undefined;
+  return words.slice(at.index + 1);
 }
 
 export function commitMessageReuse(argv: readonly string[]): boolean {

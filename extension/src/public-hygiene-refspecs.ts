@@ -38,7 +38,7 @@
  */
 
 import type { PushScanDeps } from "./public-hygiene-push.ts";
-import { looksLikeRemoteUrl } from "./public-hygiene-remote.ts";
+import { looksLikeRemoteUrl, pushOptionGluedValue } from "./public-hygiene-remote.ts";
 
 /** How a push names "every local branch" / "every tag". */
 const ALL_BRANCHES_FLAGS = new Set(["--all", "--branches", "--mirror"]);
@@ -105,6 +105,19 @@ export function pushRefspecs(
   let seenRemote = false;
   for (let i = at + 1; i < words.length; i++) {
     const w = words[i] ?? "";
+    // A GLUED option (`--repo=<url>`, `-o=<v>`) is an option word: it never
+    // anchors the remote and never becomes a refspec. Without this the first
+    // word of `git push --repo=<url> feature/x` was neither anchor nor refspec,
+    // `seenRemote` never turned, and the refspec list came back empty — which the
+    // caller reads as "the command names no range" and resolves as HEAD, scanning
+    // commits this push does not publish (#1820).
+    const glued = pushOptionGluedValue(w);
+    if (glued !== undefined) {
+      if (w.startsWith("--repo") && (remoteNames.has(glued) || looksLikeRemoteUrl(glued))) {
+        seenRemote = true;
+      }
+      continue;
+    }
     if (!seenRemote) {
       // The remote anchor never consumes a word, and an option's operand is
       // never it: `git push --repo origin2 origin main` names `origin2` as a
