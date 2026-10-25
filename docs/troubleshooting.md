@@ -592,6 +592,9 @@ The driver's own forge posts bypass the hook (they are in-process execs) and are
 `createForge` seam in `forge.ts` instead; a human `git push` in their own terminal is covered by
 `bin/pre-push-hygiene.sh`.
 
+A `git push` whose remote is given as a URL rather than a remote name is judged by the host that URL
+names, so a URL-shaped remote does not put the push outside the scan.
+
 **Driver-composed paths are folded before they are checked, and what it judged is what it posted.**
 A handoff comment, a PR body or a residual-findings disclosure quotes transcript, worktree and
 verify-log paths, and a personal home path is on the guard's own generic list — so without a

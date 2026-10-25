@@ -389,8 +389,8 @@ hygiene_list="${PI_ENSEMBLE_PUBLIC_DENYLIST:-$HOME/.config/pi-rukas/public-denyl
 if [ ! -f "$hygiene_list" ]; then
   echo "==> Privacy guard: no private denylist yet at $hygiene_list"
   echo "    Optional — one term per line (internal hostnames, addresses, paths) keeps them"
-  echo "    out of public PRs, issues and commit messages. See README → Privacy guard for"
-  echo "    public repositories. The guard's built-in generic set runs without it."
+  echo "    out of public PRs, issues and commit messages. See docs/troubleshooting.md →"
+  echo "    \"Public repository hygiene\". The guard's built-in generic set runs without it."
 fi
 
 cat <<EOF
