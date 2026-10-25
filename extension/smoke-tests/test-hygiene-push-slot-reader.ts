@@ -143,7 +143,32 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath }, async () => {
   );
   assert(
     pushRemoteName(["git", PUSH, "--repo", "other", "origin", "main"], PUSH, REMOTES) === "origin",
-    "the separate-word --repo still swallows its operand",
+    "the separate-word --repo still swallows an operand that names no remote and no URL",
+  );
+  // A separate-word `--repo <value>` whose value IS the destination is the
+  // destination. Skipping it was the fail-OPEN: the scan never triggered and the
+  // visibility question got answered from the clone's own origin.
+  assert(
+    pushRemoteName(["git", PUSH, "--repo", "https://github.com/o/r.git", "main"], PUSH, REMOTES) ===
+      "https://github.com/o/r.git",
+    "--repo <url> as two words is the destination, not an option to skip",
+  );
+  assert(
+    pushRemoteName(
+      ["git", PUSH, "--repo", "upstream", "main"],
+      PUSH,
+      new Set(["origin", "upstream"]),
+    ) === "upstream",
+    "--repo <configured remote> names that remote",
+  );
+  assert(
+    pushRemoteName(["git", PUSH, "--repo", "nope", "origin", "main"], PUSH, REMOTES) === "origin",
+    "--repo <unknown> is not adopted: git cannot resolve it, so the reader keeps walking",
+  );
+  assert(
+    pushRemoteName(["git", PUSH, "--repo", "github.com:o/r.git", "main"], PUSH, REMOTES) ===
+      "github.com:o/r.git",
+    "the scp spelling in a separate-word --repo is a URL too",
   );
   assert(
     pushOptionGluedValue("--exec=/bin/receive-pack") === undefined,
@@ -186,11 +211,22 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath }, async () => {
   );
 
   // ── (b) a `git remote` that fails is a problem, never a clean scan ────────
+  // The commits this push publishes. `--not --remotes` is what makes them
+  // "outgoing", so a fixture that has never fetched has nothing to exclude and
+  // reads as a clean push; `upstream/HEAD` is the stub's stand-in for a ref the
+  // clone has already published.
   const failingRemotes: ExecFn = async (cmd, opts) => {
     const argv = opts?.argv ?? [];
     if (argv[0] === "remote" && argv.length === 1) throw new Error("git: broken pipe");
     if (argv[0] === "rev-parse") return { stdout: `${"a".repeat(40)}\n` };
-    if (argv[0] === "log") return { stdout: "" };
+    if (argv[0] === "log") {
+      // An EMPTY log is the shape that hides a scan that resolved nothing: it
+      // looks clean and proves nothing was read, so this fixture always answers
+      // with the term-carrying commit.
+      return { stdout: `${"a".repeat(40)}\t${TERM}\u001e\n` };
+    }
+    if (argv[0] === "branch") return { stdout: "" };
+    if (argv[0] === "update-ref") return { stdout: "" };
     return { stdout: "" };
   };
   const broken = await scanPushRange({
@@ -259,6 +295,77 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath }, async () => {
   assert(
     filePush.texts.length > 0 || filePush.problems.length > 0,
     `a file:// push is READ (its commits scanned or a problem named), never excused as "not the public forge" (got ${JSON.stringify(filePush)})`,
+  );
+
+  // ── the SEPARATE-WORD `--repo <url>` reaches the same decision (#1820 round 3) ─
+  // The adversarial repro: a clone whose origin is a private forge pushes to
+  // github.com through `--repo`, and the scan must read the outgoing commits
+  // rather than ask `origin` whether this is its business.
+  const spaced = await scanPushRange({
+    exec: failingRemotes,
+    cwd: dir,
+    command: `git ${PUSH} --repo ${GITHUB_URL} main`,
+    pushVerb: PUSH,
+  });
+  assert(
+    !spaced.problems.some((p) => p.reason.includes("remotes could not be read")),
+    `--repo <github url> as two words is a push to the public host, so the clone's remotes are not consulted (got ${JSON.stringify(spaced.problems)})`,
+  );
+  assert(
+    spaced.texts.some((t) => t.location.startsWith("commit message") && t.text.includes(TERM)),
+    `and the outgoing commits ARE read, so the guard has the text to refuse (got ${JSON.stringify(spaced)})`,
+  );
+  const spacedPrivate = await scanPushRange({
+    exec: failingRemotes,
+    cwd: dir,
+    command: `git ${PUSH} --repo ${PRIVATE_FORGE} main`,
+    pushVerb: PUSH,
+  });
+  assert(
+    spacedPrivate.scanned === false && spacedPrivate.problems.length === 0,
+    `a spaced --repo to a non-github host is not scanned (got ${JSON.stringify(spacedPrivate)})`,
+  );
+  const spacedNamed = await scanPushRange({
+    exec: fileProbe,
+    cwd: dir,
+    command: `git ${PUSH} --repo upstream main`,
+    pushVerb: PUSH,
+  });
+  assert(
+    spacedNamed.scanned === true && spacedNamed.texts.length > 0,
+    `--repo <configured remote> IS that remote: its URL is the one the scan resolves (got ${JSON.stringify(spacedNamed)})`,
+  );
+
+  // ── a `git remote` that never answers is a problem, never a clean scan ───
+  const hangingRemotes: ExecFn = (_cmd, opts) => {
+    const argv = opts?.argv ?? [];
+    if (argv[0] === "remote" && argv.length === 1) return new Promise(() => {});
+    if (argv[0] === "rev-parse") return Promise.resolve({ stdout: `${"a".repeat(40)}\n` });
+    if (argv[0] === "log") return Promise.resolve({ stdout: `${"a".repeat(40)}\t${TERM}\u001e\n` });
+    return Promise.resolve({ stdout: "" });
+  };
+  const hung = await scanPushRange({
+    exec: hangingRemotes,
+    cwd: dir,
+    command: `git ${PUSH} main`,
+    pushVerb: PUSH,
+    timeoutMs: 300,
+  });
+  assert(
+    hung.scanned === false &&
+      hung.problems.some((p) => p.reason.includes("remotes could not be read")),
+    `a git remote that never answers is a named problem, not a clean scan (got ${JSON.stringify(hung)})`,
+  );
+  const hungUrlPush = await scanPushRange({
+    exec: hangingRemotes,
+    cwd: dir,
+    command: `git ${PUSH} ${GITHUB_URL} main`,
+    pushVerb: PUSH,
+    timeoutMs: 300,
+  });
+  assert(
+    hungUrlPush.texts.some((t) => t.text.includes(TERM)),
+    `a push-to-URL is still read when the remote list hangs (got ${JSON.stringify(hungUrlPush.problems)})`,
   );
 });
 

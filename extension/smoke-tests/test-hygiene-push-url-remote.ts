@@ -268,7 +268,49 @@ await withEnv({ ...gitEnv, PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => 
   );
   assert(!(blocked?.reason ?? "").includes(TERM), "and never prints the matched term itself");
 
-  // ── 7. a destination word that looks like a URL and does not parse is a
+  // ── 7. the same destination spelled as an option: `--repo <url>`. git reads
+  // that value as the remote, so it IS the destination, and a clone whose only
+  // remote is a private forge still publishes to github.com through it. Skipping
+  // it as "an option's operand" was the fail-OPEN (#1820 round 3).
+  await commitDirty(`feat: point the client at ${TERM} via the repo option`);
+  const viaRepoOption = await inspectCommand(
+    `git ${PUSH} --repo ${GITHUB} HEAD:refs/heads/topic`,
+    repo,
+    exec,
+    () => readPublicDenylist({ ...gitEnv, PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }),
+    { remoteUrl: async () => PRIVATE_FORGE, pushVerb: PUSH },
+  );
+  assert(
+    viaRepoOption !== undefined,
+    "the guard refuses `push --repo <github url>` whose commits carry a listed term",
+  );
+  assert(
+    (viaRepoOption?.reason ?? "").includes("commit message"),
+    "and the refusal names the surface only a git read could have reached",
+  );
+  assert(!(viaRepoOption?.reason ?? "").includes(TERM), "and never prints the matched term itself");
+  // The destination is the option's value, not the clone's remote: the same
+  // commit pushed to the PRIVATE forge by URL is nobody's business.
+  const viaRepoOptionPrivate = await scanPushRange({
+    exec,
+    cwd: repo,
+    ...scanOpts(`git ${PUSH} --repo ${PRIVATE_FORGE} HEAD:refs/heads/topic`),
+  });
+  assert(
+    viaRepoOptionPrivate.scanned === false && viaRepoOptionPrivate.problems.length === 0,
+    "a `--repo` to a company forge is not scanned, though the clone's origin is that forge",
+  );
+  // `--repo <configured remote>` resolves through git, not through the URL path:
+  // the remote's own URL answers the host question.
+  const viaRepoNamed = await resolveCommandTarget(`git ${PUSH} --repo origin main`, repo, exec, {
+    pushVerb: PUSH,
+  });
+  assert(
+    "owner" in viaRepoNamed && viaRepoNamed.owner === "team",
+    "--repo <configured remote> resolves that remote, as `git push origin` would",
+  );
+
+  // ── 8. a destination word that looks like a URL and does not parse is a
   // problem, not an excuse: "could not read it" must not become "not public".
   const unreadable = await scanPushRange({
     exec,

@@ -113,6 +113,11 @@ export function pushRefspecs(
     // commits this push does not publish (#1820).
     const glued = pushOptionGluedValue(w);
     if (glued !== undefined) {
+      // A glued `--repo=<value>` whose value git resolves as a remote ANCHORS
+      // the push: the value is the destination, exactly as in the two-word form
+      // below (#1820 — this branch used to anchor only when the reader happened
+      // to recognise the value, and the two readers disagreed about which word
+      // was the remote).
       if (w.startsWith("--repo") && (remoteNames.has(glued) || looksLikeRemoteUrl(glued))) {
         seenRemote = true;
       }
@@ -125,6 +130,22 @@ export function pushRefspecs(
       // remote name — to be scanned as the refspec. A URL anchors it too: the
       // push-to-URL form publishes just as much as a named remote does, and the
       // words after it are its refspecs.
+      //
+      // `--repo` is the one flag that is ANCHOR and operand at once (#1820): git
+      // resolves its value as the remote, so when that value is a URL or a name
+      // this clone has, it anchors the push and consumes its own word. Read the
+      // same way as the glued form above and as `pushRemoteName` reads it, so the
+      // anchor and the destination cannot disagree about which word is the remote
+      // — and so the refspec after it is not mistaken for a second remote to
+      // resolve (`--repo <url> main` publishes `main`, not `main` plus nothing).
+      if (w === "--repo") {
+        const value = words[i + 1] ?? "";
+        if (remoteNames.has(value) || looksLikeRemoteUrl(value)) {
+          seenRemote = true;
+          i += 1;
+        }
+        continue;
+      }
       if (!w.startsWith("-") && (remoteNames.has(w) || looksLikeRemoteUrl(w))) seenRemote = true;
       continue;
     }

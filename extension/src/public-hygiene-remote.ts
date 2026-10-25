@@ -37,8 +37,18 @@
 
 import { parseRemoteUrl } from "./forge-detect.ts";
 
-/** The option words whose value arrives as the NEXT word, and so never occupies
- * the remote slot: `git push --repo other origin main` pushes to `origin`. */
+/** The option words whose value arrives as the NEXT word.
+ *
+ * The value of `--repo` IS the push's destination: git resolves that word as a
+ * remote, so a URL or a configured remote name in it names the repository the
+ * commits go to and {@link pushRemoteName} returns it rather than skipping it.
+ * The other four take values that are never a destination (`-o`/`--push-option`
+ * are server options, `--receive-pack`/`--exec` a transport helper) and none of
+ * them ever occupies the remote slot.
+ *
+ * So `git push --repo other origin main` pushes to `origin`: `other` is not a
+ * remote this clone has and names no URL, so the reader keeps walking and the
+ * next word that IS a remote answers. */
 export const PUSH_VALUE_OPTIONS = new Set([
   "-o",
   "--push-option",
@@ -188,8 +198,20 @@ export function pushRemoteName(
       }
       continue;
     }
-    // An option's separate-word operand is its value, never the remote.
+    // A separate-word `--repo <value>` CARRIES the destination exactly as the
+    // glued spelling does and is read the same way (#1820 adversarial round): a
+    // URL in that value, or a name this clone really has, IS where the commits
+    // go, and `git push --repo https://github.com/o/r.git main` from a clone
+    // whose origin is a private forge publishes to github.com. A value that is
+    // neither is an option's operand — `--push-option`, `--receive-pack`, or an
+    // `--repo` naming something git cannot resolve — so the reader swallows it
+    // and keeps walking, which is what keeps `--repo other origin main` pointing
+    // at `origin`.
     if (PUSH_VALUE_OPTIONS.has(w)) {
+      const value = words[i + 1] ?? "";
+      if (w === "--repo" && (remoteNames.has(value) || looksLikeRemoteUrl(value))) {
+        return value;
+      }
       i += 1;
       continue;
     }
