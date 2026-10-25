@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.17](https://github.com/trail-openers/pi-rukas/compare/v0.14.16...v0.14.17) (2026-10-25)
+
+
+### Features
+
+* **guard:** refuse private terms in public repository text ([#1792](https://github.com/trail-openers/pi-rukas/issues/1792)) ([96ea9fc](https://github.com/trail-openers/pi-rukas/commit/96ea9fc343222a816278f95de366f82c734ed3b1))
+
 ## [0.14.16](https://github.com/trail-openers/pi-rukas/compare/v0.14.15...v0.14.16) (2026-10-25)
 
 
