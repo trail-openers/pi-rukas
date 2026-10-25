@@ -133,6 +133,16 @@ export function isTransientAdversarialOutcome(o: AdversarialOutcome): boolean {
  * minutes does not fix a hang").
  */
 export function classifyAdversarialOutcome(o: AdversarialOutcome) {
+  // #1634 — a producer-stated cause is shown to the taxonomy BEFORE the kind
+  // is chosen, so git's stderr never enters `providerMessage`: an unreadable
+  // diff is not provider text and must not be read as provider text.
+  if (o.structuredCause) {
+    return classifyFailureCause({
+      kind: "dispatch-failed",
+      errorTail: o.errorTail,
+      structuredCause: o.structuredCause,
+    });
+  }
   return o.infra
     ? classifyFailureCause({
         kind: "dispatch-failed-provider",

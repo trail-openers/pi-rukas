@@ -50,6 +50,9 @@ export function outcomeEvents(
         outcome,
         roundsExecuted: o.rounds,
         ...(o.errorTail && (o.infra || o.threw) ? { errorTail: o.errorTail } : {}),
+        // #1634 — the failed read survives re-entry, so the park after a retry
+        // still names the command the operator has to make work.
+        ...(o.readFailed && (o.infra || o.threw) ? { readFailed: o.readFailed } : {}),
         ...(outcome === "approved" && o.passFindings ? { findings: o.passFindings } : {}),
       });
     }

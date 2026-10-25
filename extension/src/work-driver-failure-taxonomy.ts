@@ -89,6 +89,15 @@ type FailureTail = {
   providerMessage?: string;
   /** #79 — consecutive identical provider failures the adversarial loop already saw. */
   providerRepeats?: number;
+  /**
+   * #1634 — a STRUCTURED cause the producer already knows, supplied so the
+   * classifier never reads git's stderr as provider text. Without it an
+   * infra-shaped unreadable-diff outcome (which carries git's message in
+   * `errorTail`) fell through every branch to the `dispatch-failed-provider`
+   * default and was reported as `provider-severed` — a provider outage that
+   * never happened, and a retry ladder that re-ran the same unreadable read.
+   */
+  structuredCause?: DispatchFailureCause;
 };
 
 type FailureClass = {
@@ -160,6 +169,11 @@ function seamLabelFor(
       return "provider-transient";
     case "crashed":
       return "subagent-failure";
+    // #1634 — an exact rule match: the producer states this cause, git's text
+    // never decides it, so there is nothing for a model to add and nothing to
+    // ask. Falls to the stateless record, like the self-kills.
+    case "environment:diff-unreadable":
+      return undefined;
     case "crashed-unknown":
       return "unknown";
     default: {
@@ -267,6 +281,13 @@ function repeatsNote(tail: { providerRepeats?: number }): string {
  * and RATE_LIMIT_429_PATTERN from types.ts for consistency with adversarial.ts.
  */
 export function classifyFailureCause(tail: FailureTail): FailureClass {
+  // #1634 — a cause the PRODUCER states structurally is the answer, checked
+  // before anything reads text. Only the environment cause may arrive this
+  // way: a self-kill still has to come through `killCause`, which is what
+  // makes a forged `structuredCause` unable to hide one.
+  if (tail.structuredCause === "environment:diff-unreadable") {
+    return { cause: "environment:diff-unreadable", shouldRetry: false, maxRetries: 0 };
+  }
   // Structured killCause (#296) — pi-rukas itself ended the child.
   // MUST be checked first; a self-kill is never a provider failure.
   if (tail.killCause === "timeout") {
@@ -427,6 +448,8 @@ export function failureCauseReason(tail: {
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "self-killed:child-bound":
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
+    case "environment:diff-unreadable":
+      return `the driver could not read the diff it was about to review: ${clip(tail.errorTail) ?? "the git read failed"} — an environment fault, not a provider one: re-running the cycle repeats the same read and gets the same answer until the tree or the ref is fixed`;
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
@@ -474,6 +497,8 @@ export function failureCauseReasonForClass(
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "self-killed:child-bound":
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
+    case "environment:diff-unreadable":
+      return "the driver could not read the diff it was about to review — an environment fault, not a provider one";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":

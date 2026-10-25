@@ -92,9 +92,10 @@ const ENV_CLEAR = "clear the environment fault the evidence names, then re-run `
 export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
   "adversarial-infra-failure": {
     cls: "environment",
-    reason: "the adversarial reviewer's child could not be run to a verdict",
+    reason:
+      "the adversarial reviewer's child could not be run to a verdict (a provider fault, or a diff the driver could not read)",
     action:
-      "check the reviewer's provider and quota named in the evidence, then re-run `/work {issue}`",
+      "clear the environment fault the evidence names — the reviewer's provider and quota, or the worktree/ref the diff read could not open — then re-run `/work {issue}`",
     kindDriven: true,
   },
   // The reviewer judged the diff and still found issues after its own rounds.

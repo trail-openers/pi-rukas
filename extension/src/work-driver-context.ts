@@ -262,6 +262,16 @@ export interface DriverContext {
    */
   verifyExecFn?: DriverExecFn;
   /**
+   * #1634 — optional test seam for the adversarial gate's OWN diff read
+   * (`readWorktreeDiff`). Default `execp`. A test needs to make that read fail
+   * in order to assert the gate refuses to approve an unreadable tree, and the
+   * only other way was to strip `git` from `process.env.PATH` for the duration
+   * of a callback — process-global state every concurrent git user in the
+   * process races with. Narrow by design: it reaches the diff read and nothing
+   * else, so a fake cannot make a verify or a checkpoint pass vacuously.
+   */
+  diffExecFn?: DriverExecFn;
+  /**
    * #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
    * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:
    * the checkpoint's git calls keep calling `execp`, so a fake cannot make

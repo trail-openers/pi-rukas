@@ -80,6 +80,12 @@ export type AdversarialEventFragment =
       roundsExecuted: number;
       /** Present for infra-failure / dispatch-failed — what the failure was. */
       errorTail?: string;
+      /**
+       * #1634 — for an unreadable diff, the read that failed (`git diff
+       * <baseSha>..HEAD`, `git status --porcelain -z …`). Re-emitted on re-entry
+       * so the park after a retry still names the command, not just its class.
+       */
+      readFailed?: string;
       /** #1114 — non-blocking findings an approved workstream carries (re-emitted on re-entry). */
       findings?: string;
     }

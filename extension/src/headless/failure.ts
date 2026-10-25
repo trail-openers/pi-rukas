@@ -69,6 +69,13 @@ export interface ResultFailure {
   errorTail?: string;
   /** How pi-rukas ended the child (`timeout`, `inactivity`, `loop`, …). */
   killCause?: string;
+  /**
+   * #1634 — the producer's own structured cause, when it had one. Surfaced
+   * next to `cause` so a host can tell "the provider said X" from "the driver
+   * states X": for an unreadable diff `cause` and this agree, and neither is
+   * a reading of git's stderr as provider text.
+   */
+  structuredCause?: DispatchFailureCause;
   /** The failed child's exit code, when it exited. */
   exitCode?: number | null;
   /** The cap's evidence (bounded, redacted). */
@@ -171,6 +178,12 @@ function capKind(cap: string): FailureKind {
 /** A failed dispatch's kind: the provider stopped it, a bound or guard killed it, or it crashed. */
 function dispatchKind(e: FailedDispatch): FailureKind {
   if (e.kind === "dispatch-failed-provider") return "provider";
+  // #1634 — an unreadable diff is a fact about the host, not about a child
+  // that exited non-zero. Without this branch the event (shaped like a failed
+  // dispatch only so the log stays complete) reads as `process`, and a host
+  // that re-queues on `process` re-runs a read that cannot succeed until
+  // somebody fixes the tree or the ref.
+  if (e.structuredCause === "environment:diff-unreadable") return "environment";
   switch (e.killCause) {
     case "timeout":
     case "inactivity":
@@ -260,6 +273,7 @@ export function failureOf(
     } else {
       if (failed.errorTail) f.errorTail = redactClip(failed.errorTail, TAIL_MAX, "end");
       if (failed.killCause) f.killCause = failed.killCause;
+      if (failed.structuredCause) f.structuredCause = failed.structuredCause;
       if (failed.exitCode !== undefined) f.exitCode = failed.exitCode;
     }
   } else {

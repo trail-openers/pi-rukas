@@ -10,6 +10,7 @@
  * import them from here.
  */
 
+import type { DispatchFailureCause } from "./types.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 /** #486 — the driver's per-workstream adversarial retry budget. Matches the #308 router's TRANSIENT_MAX_RETRIES shape (2 retries = up to 3 total attempts). */
@@ -66,6 +67,17 @@ export interface AdversarialOutcome {
   /** Non-blocking findings outstanding when this workstream passed. */
   passFindings?: string;
   errorTail?: string;
+  /**
+   * #1634 — a cause the PRODUCER states, rather than one the taxonomy infers
+   * from `errorTail`. Set for the unreadable-diff outcome: git's stderr is a
+   * fact about the tree, and feeding it to a classifier built to read
+   * provider text reported `provider-severed` for a host fault and bought the
+   * retry ladder a minutes-floor wait on an outage that never happened.
+   * Deliberately NOT read from prose anywhere.
+   */
+  structuredCause?: DispatchFailureCause;
+  /** #1634 — for an unreadable diff, the read that failed (`git diff …`, `git status --porcelain …`). */
+  readFailed?: string;
   /** #79 — identical provider failures in a row the loop already saw; ≥2 is not retried in-step. */
   providerRepeats?: number;
   /** #543 — a loop / token-budget cap kill, threaded from the inner spawn.
@@ -119,6 +131,11 @@ export type WorkstreamOutcome = Extract<
  *    already takes: the fan-out's in-step retry ladder (transient causes) and
  *    `runAdversarial`'s `adversarial-infra-failure` park on re-entry. It is
  *    never rendered as a review rejection, because nothing was reviewed.
+ *  - `structuredCause: "environment:diff-unreadable"` + `readFailed` — the
+ *    cause is STATED, never inferred from git's stderr, and the ladder does not
+ *    retry it: an unreadable diff is an environment fact, so re-spawning asks
+ *    git the same question and gets the same answer. The cycle parks at once
+ *    with an environment cause naming the read that failed.
  *
  * The failure event is a `dispatch-failed` shaped exactly like the loop-throw
  * sibling above it (same step/role/label/jobId), so the taxonomy, the queue's
@@ -132,6 +149,7 @@ export function unreadableDiffOutcome(a: {
   startedAt: number;
   orchestratorJobId: string;
   reason: string;
+  readFailed?: string;
   priorInfra: boolean;
 }): AdversarialOutcome {
   const errorTail = `adversarial diff unreadable for worktree ${a.cwd}: ${a.reason}`.slice(-200);
@@ -147,6 +165,8 @@ export function unreadableDiffOutcome(a: {
     threw: false,
     skipped: false,
     priorInfra: a.priorInfra,
+    structuredCause: "environment:diff-unreadable",
+    ...(a.readFailed ? { readFailed: a.readFailed } : {}),
     rejectionText: errorTail,
     errorTail,
     failureEvent: {
@@ -159,6 +179,8 @@ export function unreadableDiffOutcome(a: {
       at: Date.now(),
       exitCode: 1,
       errorTail,
+      structuredCause: "environment:diff-unreadable",
+      ...(a.readFailed ? { readFailed: a.readFailed } : {}),
     },
     branchEvent: a.multi
       ? {

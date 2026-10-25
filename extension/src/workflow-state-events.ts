@@ -4,7 +4,7 @@
  * `workflow-state.ts` for module-size hygiene (AGENTS.md §12).
  */
 import type { RoleName } from "./roles.ts";
-import type { DispatchUsage } from "./types.ts";
+import type { DispatchFailureCause, DispatchUsage } from "./types.ts";
 import type { DevelopCrashFragment } from "./work-develop-crash.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
@@ -226,6 +226,21 @@ export type WorkEvent =
       tokenBudget?: { budget: number; used: number };
       /** #1593/#1789 — a kill the caller's cycle deadline armed. */
       killedAtCycleDeadline?: CycleDeadlineKill;
+      /**
+       * #1634 — a cause the PRODUCER states rather than one the classifier
+       * infers from text. Today only `environment:diff-unreadable`, written by
+       * the adversarial gate when its own git read failed: the event is shaped
+       * like a failed dispatch so the log stays complete, but it is not one —
+       * no child ran — and without this field the classifier reads git's
+       * stderr as provider text and reports an outage that never happened.
+       */
+      structuredCause?: DispatchFailureCause;
+      /**
+       * #1634 — for an UNREADABLE-DIFF failure, the read that failed, verbatim
+       * (`git status --porcelain -z --untracked-files=all`). The cause names
+       * the class; this names the command the operator has to make work.
+       */
+      readFailed?: string;
       /** #534 — tokens flushed before the process-level failure. */
       usage?: DispatchUsage;
     }

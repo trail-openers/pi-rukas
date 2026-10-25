@@ -346,6 +346,11 @@ export type DispatchFailureCause =
   | "self-killed:plan-timeout"
   | "self-killed:child-bound"
   | "crashed"
+  /** #1634 — the driver's own READ of the world failed: git could not produce the
+   * diff the gate asks about. An environment fact (a stale ref, a vanished
+   * worktree, an unreadable tree), never a provider fault: re-dispatching the
+   * child asks git the same question and gets the same answer. */
+  | "environment:diff-unreadable"
   | "crashed-unknown";
 
 /**
