@@ -9,9 +9,12 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { execp } from "./exec.ts";
 import { aheadOfBase, execGit, prRange } from "./git-range.ts";
 import { trace } from "./trace.ts";
+import { isExactDriverArtefact } from "./work-develop-git.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 
@@ -107,6 +110,16 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
  * comes back blank with dirt in the tree is NOT reported as empty. A missing
  * `cwd` is unreadable too — "no worktree resolved yet" is a driver state the
  * gate must see, not an approval.
+ *
+ * The dirt probe SPARES the DRIVER's own records: the cycle's state file, queue
+ * index and scratch all live under `.pi/` / `tmp/` INSIDE the worktree it reads,
+ * so a naive porcelain check finds dirt in every cycle and no genuinely-clean
+ * tree is ever provable — which would turn this gate into one that parks every
+ * cycle instead of one that catches unreadable diffs. The exclusion is the SAME
+ * rule the develop step's save and reset use (`workEntriesOf` /
+ * `isExactDriverArtefact`): only an UNTRACKED entry under the exact-case `.pi/`
+ * or `tmp/` is residue, so a tracked `.pi/` edit stays dirt and the protected-
+ * path gate (#406) still sees it.
  */
 export type WorktreeDiff =
   | { ok: true; diff: string; empty: boolean }
@@ -117,6 +130,27 @@ export async function readWorktreeDiff(
   baseSha?: string,
 ): Promise<WorktreeDiff> {
   if (!cwd) return { ok: false, reason: "no worktree path resolved for this workstream" };
+  // #1634 — "is there a working tree here at all" is asked FIRST, before any git
+  // call, because it is the question git itself cannot answer for us: a plain
+  // directory (a scratch `mkdtemp` fixture with no `git init`, or a worktree
+  // path that has since vanished) makes `git diff HEAD` fail outright, and its
+  // stderr — "Not a git repository", or "unknown revision" for a repository
+  // with no commits — carries no "unreadable" to pattern-match on. Answering it
+  // from the filesystem keeps the whole unreadable class ONE shape: a reason the
+  // fan-out's failure event can be asserted against, rather than git's truncated
+  // diagnostic. A real worktree always has a `.git` (a linked worktree's or a
+  // submodule's is a gitfile pointing at the admin dir), so this costs one stat
+  // per read and never changes the answer for a genuine worktree.
+  //
+  // PM's decision for #1634 is that production stays STRICT: a worktree that is
+  // not a git repository, or has vanished, is the unreadable case this gate
+  // exists for — never "there is nothing to review".
+  if (!treeHasGitDir(cwd)) {
+    return {
+      ok: false,
+      reason: `unreadable: ${cwd} is not a git working tree — an empty diff here means the worktree could not be read, not that there is nothing to review`,
+    };
+  }
   // #453 — try committed diff first when baseSha is available and valid.
   // `git diff baseSha..HEAD` shows everything the developer committed,
   // which `git diff HEAD` misses once the working tree is clean.
@@ -154,21 +188,23 @@ export async function readWorktreeDiff(
   } catch (err) {
     return { ok: false, reason: `git diff ${diffRange} failed: ${errText(err)}` };
   }
-  if (diff.trim()) return { ok: true, diff, empty: false };
-  // Blank. Decide WHICH blank this is: a clean tree (nothing to review) or a
-  // read that produced nothing while the tree holds work.
-  const clean = await worktreeProvesClean(cwd, diffRange);
-  if (clean === true) return { ok: true, diff: "", empty: true };
-  if (clean === false) {
+  if (!diff.trim()) {
+    // Blank, and a real tree. Decide WHICH blank this is: a clean tree (nothing
+    // to review) or a read that produced nothing while the tree holds work.
+    const clean = await worktreeProvesClean(cwd, diffRange);
+    if (clean === true) return { ok: true, diff: "", empty: true };
+    if (clean === false) {
+      return {
+        ok: false,
+        reason: `git diff ${diffRange} came back empty but the tree is not clean — uncommitted work exists that the diff did not show`,
+      };
+    }
     return {
       ok: false,
-      reason: `git diff ${diffRange} came back empty but the tree is not clean — uncommitted work exists that the diff did not show`,
+      reason: `could not establish whether ${cwd} has changes against ${diffRange}`,
     };
   }
-  return {
-    ok: false,
-    reason: `could not establish whether ${cwd} has changes against ${diffRange}`,
-  };
+  return { ok: true, diff, empty: false };
 }
 
 /**
@@ -180,6 +216,10 @@ export async function readWorktreeDiff(
  * --ignored=no` also reports an untracked file `git diff HEAD` never shows, and
  * a developer who wrote files without staging anything would otherwise read as
  * an empty diff.
+ *
+ * Read with `-z` so a path containing a newline, a quote or a control byte
+ * arrives verbatim instead of C-quoted: a payload the reader cannot parse is
+ * `undefined` ("could not tell"), never a `true` that approves the review.
  */
 async function worktreeProvesClean(cwd: string, range: string): Promise<boolean | undefined> {
   try {
@@ -188,13 +228,53 @@ async function worktreeProvesClean(cwd: string, range: string): Promise<boolean 
     const porcelain = await execGit(execp, cwd, [
       "status",
       "--porcelain",
+      "-z",
       "--untracked-files=all",
       "--ignored=no",
     ]);
-    return !porcelain.trim();
+    return porcelainRecordsProveClean(porcelain);
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Does `cwd` resolve to a git working tree — i.e. is there a tree here for git
+ * to read at all? True for a normal clone, a linked worktree and a submodule
+ * checkout (the last two carry `.git` as a gitfile pointing at the admin dir);
+ * false for a plain directory, a scratch `mkdtemp` fixture, or a vanished path.
+ *
+ * Deliberately a filesystem probe rather than `git rev-parse --git-dir`: the
+ * question is "is there a tree here to read", and a fork per blank diff is
+ * worth paying for a gate that cannot be fooled by an empty-string answer.
+ */
+function treeHasGitDir(cwd: string): boolean {
+  try {
+    return existsSync(join(cwd, ".git"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is this working tree clean, judged from a `-z` `status --porcelain` payload?
+ * `true` = proven clean, `false` = work found, `undefined` = unparseable —
+ * and an answer the reader cannot parse is never evidence of a clean tree.
+ *
+ * `-z` terminates each record with NUL and puts the path last, so a record
+ * never contains a newline and parsing stays on the record boundary. Porcelain
+ * v1 is `XY<path>`: at least 4 chars with a space at index 2.
+ */
+function porcelainRecordsProveClean(porcelain: string): boolean | undefined {
+  const records = porcelain.split("\0").filter((r) => r.length > 0);
+  if (records.some((r) => r.length < 4 || r[2] !== " ")) return undefined;
+  for (const record of records) {
+    // An UNTRACKED (`??`) entry under the exact-case driver directories is the
+    // driver's own residue, not the developer's work — see the read's docstring.
+    if (record[0] === "?" && record[1] === "?" && isExactDriverArtefact(record.slice(3))) continue;
+    return false;
+  }
+  return true;
 }
 
 /**
