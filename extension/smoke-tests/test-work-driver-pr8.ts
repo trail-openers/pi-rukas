@@ -14,6 +14,7 @@ import path from "node:path";
 import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { driverWorktree } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -95,6 +96,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the fan-out's per-workstream worktrees must be real trees: a plain
+    // directory is UNREADABLE to the diff read, and the gate now routes that as
+    // an infrastructure failure instead of dispatching the reviewer.
+    for (const w of ["task-a", "task-b", "task-c"]) driverWorktree(path.join(dir, ".worktrees", w));
     let s = initialState(910, 1_000_000);
     s = {
       ...s,
@@ -191,6 +196,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the fan-out's per-workstream worktrees must be real trees: a plain
+    // directory is UNREADABLE to the diff read, and the gate now routes that as
+    // an infrastructure failure instead of dispatching the reviewer.
+    for (const w of ["task-a", "task-b", "task-c"]) driverWorktree(path.join(dir, ".worktrees", w));
     let s = initialState(911, 1_000_000);
     s = {
       ...s,
@@ -282,6 +291,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the fan-out's per-workstream worktrees must be real trees: a plain
+    // directory is UNREADABLE to the diff read, and the gate now routes that as
+    // an infrastructure failure instead of dispatching the reviewer.
+    for (const w of ["task-a", "task-b", "task-c"]) driverWorktree(path.join(dir, ".worktrees", w));
     let s = initialState(912, 1_000_000);
     s = {
       ...s,

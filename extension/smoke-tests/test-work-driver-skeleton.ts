@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { parseAbort, parseBranchName } from "../src/work-driver-diff.ts";
+import { parseAbort, parseBranchName } from "../src/work-driver-diff-replies.ts";
 import {
   scratchDir,
   setupWorkspaceTmp,
