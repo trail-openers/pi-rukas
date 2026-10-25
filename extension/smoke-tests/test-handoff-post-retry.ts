@@ -46,6 +46,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../src/forge.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { HANDOFF_LABEL } from "../src/work-driver-handoff-post.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import {
   handoffPostRetryEnabled,
@@ -77,6 +78,21 @@ function failingDispatch(): DriverContext["dispatchFn"] {
 type Call = { method: string; args: unknown[] };
 
 /**
+ * Whether the `needs-human-attention` label is currently on the object.
+ *
+ * The fake's `issueView`/`prView` read this, and `labelAdd` sets it, so the
+ * driver's label VERIFICATION (`verifyHandoffLabel`, which reads the object's
+ * labels) answers like the real forge instead of throwing. It has to: the
+ * issue-label leg in `work-driver-handoff.ts` now runs for an issue-target park
+ * with no PR, and with a stubbed `issueView` that threw, a second apply could only
+ * ever add one failing read-back and the 3-attempt bound below could never be
+ * reached — the fixture was holding the leg shut, not the code.
+ */
+interface LabelState {
+  labeled: boolean;
+}
+
+/**
  * A fake Forge whose failure behaviour is scripted per method:
  * `failures: Record<method, number[]>` — the first N calls to that method
  * throw (with the given error text); subsequent calls succeed.
@@ -88,6 +104,9 @@ function mkFlakyForge(script: {
 }) {
   const calls: Call[] = [];
   const counters: Record<string, number> = {};
+  // Shared by labelAdd and the label-verification read, so the fake answers the
+  // driver's read like a forge whose add worked rather than like a broken API.
+  const labelState: LabelState = { labeled: false };
   const failNext = (method: string, scriptArr: number[]) => {
     const n = (counters[method] ?? 0) + 1;
     counters[method] = n;
@@ -118,10 +137,17 @@ function mkFlakyForge(script: {
       if (failNext("labelAdd", script.labelAddFailures ?? [])) {
         throw new Error("simulated transient labelAdd hiccup");
       }
+      // A successful add is a successful add, however many times the driver asks
+      // — `gh --add-label` is idempotent server-side, and the comment-target leg
+      // and the issue-target leg may each legitimately request the same label.
+      labelState.labeled = true;
     },
     labelRemove: async () => {},
     issueView: async () => {
-      throw new Error("not used");
+      // The label read the driver performs to VERIFY an apply. `labeled` is false
+      // until an add succeeds, so a hard-fail script still verifies to false and
+      // the exhausted-retry assertions below keep their meaning.
+      return { labels: labelState.labeled ? [{ name: HANDOFF_LABEL }] : [] };
     },
     issueCreate: async () => {
       throw new Error("not used");
@@ -309,7 +335,18 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     const commentCalls = calls.filter((c) => c.method === "issueComment");
     const addCalls = calls.filter((c) => c.method === "labelAdd");
     assert(commentCalls.length === 3, "forge.issueComment was retried up to the 3-attempt bound");
-    assert(addCalls.length === 3, "forge.labelAdd was retried up to the 3-attempt bound");
+    assert(
+      // 3 from the comment-target leg's retry, 1 from the issue-target leg that
+      // runs after it. The retry is per-leg, so an exhausted forge is asked
+      // three times by each leg that still needs the label — not three times in
+      // total across both. What must NOT happen is the issue leg being skipped.
+      addCalls.length === 4,
+      `forge.labelAdd tried the 3-attempt bound in the comment leg, plus the issue-target leg (got ${addCalls.length})`,
+    );
+    assert(
+      addCalls.every((c) => c.args[0] === "issue" && c.args[1] === 674),
+      "every label attempt targets the ISSUE (no PR in this cycle) — the leg the repeat-park guard depends on",
+    );
 
     // The banner MUST appear now, with the verbatim manual gh commands.
     const msg = renderHandoffUserMessage(next, dir, `${dir}/tmp/issue-674`);

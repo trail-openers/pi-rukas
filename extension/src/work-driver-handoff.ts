@@ -22,7 +22,10 @@ import {
   priorHandoffCommentUrl,
 } from "./work-driver-handoff-deliver.ts";
 import { handoffForge } from "./work-driver-handoff-forge.ts";
-import { applyIssueLabelAndVerify, labelPrAfterBodyRefusal } from "./work-driver-handoff-labels.ts";
+import {
+  labelCommentTargetAfterRefusal,
+  labelIssueTarget,
+} from "./work-driver-handoff-label-legs.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import {
@@ -327,53 +330,31 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
       );
     }
   }
-  // #1820 round 3 — a REFUSED body still arms the repeat-park guard. Nothing is
-  // posted (the ops dispatch is gated on `rendered.refusal` above, and
-  // `postHandoffWithRetry` never posts an empty body), but the
-  // `needs-human-attention` label carries no text: it is a name the forge already
-  // has, and the pre-loop attention gate (`work-driver-attention.ts`) reads
-  // exactly that label. A park that refused to publish had no label, so the guard
-  // never armed and `/work N` on the same unchanged issue re-ran the whole
-  // pipeline, refused again, and produced another handoff nobody had been asked to
-  // look at — the label reaches a human through a channel the refused text cannot
-  // travel. It stays inside `!host`: on the host channel the label is the host's
-  // to apply and the event records the decline instead (#1696).
-  if (!host && bodyRefused && prNumber && !prLabelApplied) {
+  // #1820 round 3 — a REFUSED body still arms the repeat-park guard: the label is
+  // a name, not text, so a park whose comment could not be published still reaches
+  // a human. Both legs and the reason each is gated the way it is live in
+  // `work-driver-handoff-label-legs.ts`.
+  if (!host) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
-    if (forge) {
-      const outcome = await labelPrAfterBodyRefusal(forge, prNumber, issueLabelApplied);
+    if (bodyRefused) {
+      const outcome = await labelCommentTargetAfterRefusal(
+        forge,
+        { issueLabelApplied, prLabelApplied, labelApplied },
+        prNumber,
+      );
       prLabelApplied = outcome.prLabelApplied;
       labelApplied = outcome.labelApplied;
     }
-  }
-  // #798 — when prNumber is set, the fallback above applies the label to the
-  // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
-  // separately here because the retry only targets one object.
-  //
-  // This block sits OUTSIDE the swallow-all try/catch above and is guarded by
-  // `!host`: a host-owned channel never labels anything, and a forge write
-  // here must not be traced away with the rest of the fallback. Do not move it
-  // into `deliverHandoff` — that function is the try/catch's body.
-  //
-  // The gate is the TARGET, not the PR. This is the ISSUE label leg — the entry-
-  // gate target that `work-driver-attention.ts` reads — so it is gated on the
-  // issue's own label state. It used to also require `prNumber`, on the reasoning
-  // above that the fallback's retry already labelled the comment target; but with
-  // no PR the retry labels nothing at all, and the `!issueLabelApplied` read-back
-  // above records "not applied", so the whole leg was skipped and an issue-target
-  // park finished with NO label. That is the same failure #1820 fixed for a
-  // refused body: a park the repeat-park guard cannot see re-runs the entire
-  // pipeline against an unchanged issue. `applyIssueLabelDualTarget` has always
-  // been the issue-facing helper, and it applies the label itself whether or not
-  // a PR exists — the comment-target leg can now reach the issue too, so the
-  // pre-read above is the only thing that can spare it the write.
-  if (!host && !issueLabelApplied) {
-    const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
-    if (forge) {
-      const outcome = await applyIssueLabelAndVerify(forge, ctx.issue, prLabelApplied);
-      issueLabelApplied = outcome.issueLabelApplied;
-      labelApplied = outcome.labelApplied;
-    }
+    // #798 — the ISSUE label is the entry-gate target's own write, gated on the
+    // issue's state and NOT on a PR existing; see the module header for what the
+    // old `prNumber` gate cost.
+    const outcome = await labelIssueTarget(
+      forge,
+      { issueLabelApplied, prLabelApplied, labelApplied },
+      ctx.issue,
+    );
+    issueLabelApplied = outcome.issueLabelApplied;
+    labelApplied = outcome.labelApplied;
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
   // renderers can print either the branch-contains-the-work path or the accurate
