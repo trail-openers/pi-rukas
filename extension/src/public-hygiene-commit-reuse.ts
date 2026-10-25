@@ -21,9 +21,34 @@
  * below, so the reuse rule has a single owner: a reader that asked each form
  * separately is how `-c` was refused while `--squash` published a message
  * nobody had read.
+ *
+ * ## Where the question is asked: AFTER the verb (#1820)
+ *
+ * git reads its OWN global options before the verb — `-C <dir>`, `-c k=v`,
+ * `--git-dir=…`, `--work-tree …` — and two of them are spelled exactly like the
+ * reuse letters. Scanning every word made `git -C /tmp commit -m hello` read as
+ * `git commit -C <commit>`, so every agent's `git -C <worktree> commit -m …` was
+ * refused as "message comes from another commit". The rule is now positional:
+ * the words before `commit` are git's, the words after it are commit's, and this
+ * reader asks only the second set. Where the verb is found is decided by
+ * {@link gitVerb} — the hygiene guard's existing skipper for git's globals, the
+ * one place that knows which of them take a value as a SEPARATE word (`-C <dir>`,
+ * `-c k=v`) and must consume their follower. A second option parser would have
+ * disagreed with it about `--git-dir`.
+ *
+ * Fail-closed is kept: a verb that cannot be located — an argv that is not a git
+ * commit at all, or one where git's globals never terminate (`git -C`, with no
+ * directory and no verb) — answers REUSE, today's answer for anything unreadable.
+ * The cost of that branch is a refused command, never a publish nobody read.
+ *
+ * The argv a publish reader hands in begins at the PROGRAM word — the scan's
+ * `publishArgv` has already stripped wrappers (`sudo`) and `NAME=value`
+ * prefixes — which is the shape {@link gitVerb} expects.
  */
 
+import { publishArgv } from "./public-hygiene-command.ts";
 import { REUSED_MESSAGE_REASON, commitCluster } from "./public-hygiene-commit-flags.ts";
+import { gitVerb } from "./public-hygiene-target.ts";
 
 /** The long flags whose value is a COMMIT whose message git reuses. */
 const REUSE_COMMIT_FLAGS = ["--reuse-message", "--reedit-message", "--squash", "--fixup"] as const;
@@ -50,8 +75,38 @@ function usesReuseCommitFlag(w: string): boolean {
  * `public-hygiene-commit-flags.ts` is the single owner of what a bundled word
  * means and answers through `CommitCluster.reuses`.
  */
+/**
+ * The words of a `git commit` that belong to the COMMIT, i.e. everything after
+ * the `commit` verb, or undefined when there is no locatable `commit` verb.
+ *
+ * The program word is checked before the verb is sought: `commit` is an ordinary
+ * word in `docker run myimage commit -m x`, and reading the words after it as
+ * commit flags would be a claim about a command that never ran git.
+ */
+function argvAfterCommitVerb(argv: readonly string[]): string[] | undefined {
+  const words = publishArgv(argv);
+  const program = words[0] ?? "";
+  if (!program.endsWith("git") || program === "") return undefined;
+  const at = gitVerbIndex(words);
+  return at === undefined ? undefined : words.slice(at + 1);
+}
+
+/** The index of the verb, i.e. the last word {@link gitVerb} skipped over. */
+function gitVerbIndex(words: readonly string[]): number | undefined {
+  const verb = gitVerb(words);
+  if (verb === undefined) return undefined;
+  // A duplicate is not a bug: the verb is the FIRST non-flag word git's own
+  // skipper stopped at, and `lastIndexOf` locates exactly that word when it also
+  // reappears later as an operand (`git commit commit -C HEAD`).
+  return verb === "" ? undefined : words.lastIndexOf(verb);
+}
+
 export function commitMessageReuse(argv: readonly string[]): boolean {
-  for (const w of argv) {
+  // Only the words AFTER the verb belong to `git commit`. Before it sit git's own
+  // globals, whose `-C`/`-c` are a directory and a config pair, not reuse flags.
+  const words = argvAfterCommitVerb(argv);
+  if (words === undefined) return true;
+  for (const w of words) {
     // `--reuse-message=<ref>` / `--squash=<ref>` are reuse; `--no-edit` and
     // every other `--no-*` switch are not, and are excluded by NAME — an
     // ordinary `git commit --amend --no-edit` reuses the CURRENT message the
