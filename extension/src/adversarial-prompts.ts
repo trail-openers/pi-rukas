@@ -29,7 +29,7 @@
  * behaviour rather than putting the string "undefined" in front of a reviewer.
  */
 
-import { boundDiffForPrompt } from "./adversarial-diff-cap.ts";
+import { type DiffRange, boundDiffForPrompt } from "./adversarial-diff-cap.ts";
 import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
 
 /** Keeps a pathological issue body from crowding out the diff. */
@@ -152,7 +152,7 @@ export function buildAdversarialPrompt(opts: {
    * so the reviewer can read the files the bound cut. Absent for a pasted diff
    * or a round whose diff re-read failed.
    */
-  diffRange?: { base: string; head: string };
+  diffRange?: DiffRange;
 }): string {
   const commentSection = opts.commentEvidence
     ? `\n\n${opts.commentEvidence}\n\n${COMMENT_JUDGEMENT_PROSE}`
@@ -191,7 +191,7 @@ export function buildFixPrompt(opts: {
   priorFindings?: string[];
   /** See `buildAdversarialPrompt.diffRange` — the ref range this diff came from,
    * which the truncation notice names when the diff is over the inline cap. */
-  diffRange?: { base: string; head: string };
+  diffRange?: DiffRange;
 }): string {
   const prior = (opts.priorFindings ?? []).filter((p) => p.trim());
   const priorSection = prior.length

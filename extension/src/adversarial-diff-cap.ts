@@ -28,8 +28,10 @@
  * claims to be complete: rows are capped at {@link MAX_INVENTORY_ROWS} (the
  * fullest rows are kept, the rest counted on one overflow line), and lines the
  * diff attributes to no file (the /work merged diff's workstream headers and its
- * truncation marker) are counted wherever they appear and reported, so the
- * inventory never promises more than it can compute.
+ * truncation markers) are counted wherever they appear and reported, so the
+ * inventory never promises more than it can compute. Each displayed path is
+ * neutralised and clipped like any other diff-derived prose — see
+ * {@link MAX_DISPLAYED_PATH_CHARS}.
  *
  * At or under the cap there is no note and the diff is returned UNCHANGED,
  * byte-for-byte, so a normal-sized review produces exactly the prompt this
@@ -38,6 +40,13 @@
  * Escape hatch: PI_ENSEMBLE_ADVERSARIAL_DIFF_CAP=0 (or `false`) restores the
  * pre-#1816 shape — the whole diff verbatim, no inventory, no notice.
  */
+
+import { neutraliseEvidence } from "./comment-evidence.ts";
+import {
+  MERGED_DIFF_PIECE_TRUNCATED,
+  MERGED_DIFF_TRUNCATED_AT_TOTAL,
+  MERGED_DIFF_WORKSTREAM_PREFIX,
+} from "./work-driver-diff.ts";
 
 /**
  * Characters of diff text the adversarial prompts may inline. Comfortably under
@@ -60,6 +69,11 @@ export interface DiffFileSummary {
   path: string;
   added: number;
   removed: number;
+  /** Offset into the diff text where this file's `diff --git` section starts.
+   * Recorded WITH the summary so the shown/cut pairing below cannot drift from
+   * the file list: an unparseable header creates no summary, and a parallel
+   * offset array would then shift every later file's status by one. */
+  startOffset: number;
   /** True when this file's body appears in the inlined head COMPLETELY: its
    * section ends before the cut, so nothing about it is missing from the prompt.
    * `false` means the head stops inside this section, or never reaches it. */
@@ -80,6 +94,27 @@ export interface DiffRange {
   base: string;
   head: string;
 }
+
+/**
+ * Characters a displayed inventory path may occupy. A path is diff-derived
+ * prose — git will print a 4,000-byte name verbatim — and the inventory is
+ * printed to the reviewer as text, so each row is bounded the way every other
+ * diff-derived line in a prompt is. The width for column padding is computed
+ * from these displayed rows, never from the raw paths.
+ */
+export const MAX_DISPLAYED_PATH_CHARS = 200;
+
+/**
+ * The markers the /work merged diff writes BETWEEN per-workstream sections.
+ * They live in `work-driver-diff.ts` (the producer) and are re-exported here so
+ * the reader and the test name the same strings — a generic `^(## |\[)` prefix
+ * here would also swallow a real diff body line starting with `##` or `[`.
+ */
+export {
+  MERGED_DIFF_PIECE_TRUNCATED,
+  MERGED_DIFF_TRUNCATED_AT_TOTAL,
+  MERGED_DIFF_WORKSTREAM_PREFIX,
+};
 
 const GIT_HEADER = "diff --git ";
 
@@ -119,19 +154,24 @@ function headerPath(line: string): string | null {
 }
 
 /** A line belongs to no file when it is non-empty and either outside every
- * section (before the first header, or after the merged-diff truncation marker)
+ * section (before the first header, or after a merged-diff truncation marker)
  * or one of the `/work` merged-diff markers, which sit between sections and mean
- * something the reviewer must not read as file content: a `## workstream: …`
- * header, or the bracketed truncation marker. */
-const UNATTRIBUTED_MARKER_LINE = /^(## |\[)/;
-
+ * something the reviewer must not read as file content. Matched against the
+ * EXACT marker strings the producer exports, so a diff body line that merely
+ * starts with `##` (markdown) or `[` (a TOML table, a log fixture) still counts
+ * as content. */
 function isUnattributedLine(
   line: string,
   current: DiffFileSummary | null,
   truncated: boolean,
 ): boolean {
   if (line.trim() === "") return false;
-  if (UNATTRIBUTED_MARKER_LINE.test(line)) return true;
+  if (
+    line.startsWith(MERGED_DIFF_WORKSTREAM_PREFIX) ||
+    line === MERGED_DIFF_PIECE_TRUNCATED ||
+    line === MERGED_DIFF_TRUNCATED_AT_TOTAL
+  )
+    return true;
   return current === null || truncated;
 }
 
@@ -156,36 +196,49 @@ export function summarizeDiffFiles(
   const files: DiffFileSummary[] = [];
   let current: DiffFileSummary | null = null;
   let unattributed = 0;
-  /** Set once the /work 1 MiB truncation marker appears: nothing after it is a file. */
+  /** Set once a /work 1 MiB truncation marker appears: nothing after it is a file.
+   * The per-piece marker ends its OWN workstream's content, so it is counted as
+   * unattributed there and cleared for the next section; the whole-document
+   * marker ends the document, so nothing after it is ever a file. */
   let truncated = false;
+  /** True once the whole-document marker appears — it is never cleared. */
+  let documentTruncated = false;
   /** Offset into `diff` of the line the loop is reading, kept for the shown pass. */
   let lineStart = 0;
-  /** Start offsets of every file section, in order — the `shown` pass needs them. */
-  const sectionStarts: number[] = [];
 
   for (const line of diff.split("\n")) {
     if (line.startsWith(GIT_HEADER)) {
       const path = headerPath(line);
       if (path) {
-        current = { path, added: 0, removed: 0, shown: false };
+        current = { path, added: 0, removed: 0, startOffset: lineStart, shown: false };
         files.push(current);
-        sectionStarts.push(lineStart);
+        // A new section begins, so the per-piece marker of the PREVIOUS section
+        // no longer applies to the lines being counted here.
+        truncated = documentTruncated;
       }
     } else if (current !== null && !truncated) {
       if (line.startsWith("+") && !line.startsWith("+++")) current.added += 1;
       else if (line.startsWith("-") && !line.startsWith("---")) current.removed += 1;
     }
     if (isUnattributedLine(line, current, truncated)) unattributed += 1;
-    if (line.startsWith("[... merged diff truncated")) truncated = true;
+    if (line === MERGED_DIFF_PIECE_TRUNCATED) truncated = true;
+    if (line === MERGED_DIFF_TRUNCATED_AT_TOTAL) {
+      truncated = true;
+      documentTruncated = true;
+    }
     lineStart += line.length + 1;
   }
 
   // A section is shown when it ENDS before the cut, i.e. when the next section
-  // starts at or before it; the last section ends at the end of the diff.
+  // starts at or before it; the last section ends at the end of the diff. Each
+  // file carries its own start offset, so an unparseable header (which creates
+  // no summary) cannot shift the pairing of any later file.
   for (let i = 0; i < files.length; i++) {
-    const end = i + 1 < files.length ? (sectionStarts[i + 1] ?? diff.length) : diff.length;
     const file = files[i];
-    if (file) file.shown = end <= headChars;
+    if (!file) continue;
+    const next = files[i + 1];
+    const end = next ? next.startOffset : diff.length;
+    file.shown = end <= headChars;
   }
   return { files, unattributed };
 }
@@ -201,9 +254,27 @@ function inventoryLead(files: DiffFileSummary[], unattributed: number): string {
   return `EVERY file this diff changes (${files.length}), with added/removed line counts — bodies shown in full for ${shown}, cut mid-file or not shown for ${files.length - shown}.${attribution}`;
 }
 
+/** The row's path as displayed: neutralised diff-derived prose, then bounded.
+ * Neutralise FIRST so the clip can never cut a marker token in half and leave a
+ * readable `VERDICT:` behind; `neutraliseEvidence` also flattens CR/LF and
+ * collapses a backtick run, which is what keeps one hostile path from opening a
+ * fence in the note. The result is one line, so `padEnd` cannot break the table. */
+function displayPath(path: string): string {
+  const neutral = neutraliseEvidence(path);
+  return neutral.length > MAX_DISPLAYED_PATH_CHARS
+    ? `${neutral.slice(0, MAX_DISPLAYED_PATH_CHARS - 1)}…`
+    : neutral;
+}
+
 function rowsText(files: DiffFileSummary[]): string {
-  const width = files.reduce((w, f) => Math.max(w, f.path.length), 0);
-  return files.map((f) => `  ${f.path.padEnd(width)}  +${f.added} -${f.removed}`).join("\n");
+  const rows = files.map((f) => ({
+    path: displayPath(f.path),
+    counts: `+${f.added} -${f.removed}`,
+  }));
+  // The padding width comes from the DISPLAYED rows, so a raw 5,000-character
+  // path cannot widen the table past the bound above.
+  const width = rows.reduce((w, r) => Math.max(w, r.path.length), 0);
+  return rows.map((r) => `  ${r.path.padEnd(width)}  ${r.counts}`).join("\n");
 }
 
 /** The per-file inventory the reviewer sees as prose after the fenced diff. */

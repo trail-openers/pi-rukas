@@ -22,13 +22,28 @@
  * `test-adversarial-diff-cap-loop.ts`.
  */
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
-  boundDiffForPrompt,
-  MAX_INVENTORY_ROWS,
+  MAX_DISPLAYED_PATH_CHARS,
   MAX_INLINE_DIFF_CHARS,
+  MAX_INVENTORY_ROWS,
+  MERGED_DIFF_PIECE_TRUNCATED,
+  MERGED_DIFF_TRUNCATED_AT_TOTAL,
+  MERGED_DIFF_WORKSTREAM_PREFIX,
+  boundDiffForPrompt,
   summarizeDiffFiles,
 } from "../src/adversarial-diff-cap.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "../src/adversarial-prompts.ts";
+import {
+  diffWithBrokenHeader,
+  injectingPathDiff,
+  longPathDiff,
+  markerAtClipEdgeDiff,
+  mergedDiff,
+  mergedDiffWithTruncation,
+  syntheticDiff,
+} from "./lib/adversarial-diff-cap-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -37,19 +52,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-/** A synthetic unified diff over `n` files, each roughly `perFile` characters. */
-function syntheticDiff(files: number, perFile: number): string {
-  const filler = "x".repeat(60);
-  const lines: string[] = [];
-  for (let f = 0; f < files; f++) {
-    const p = `src/module-${f}/deep/nested/path/file-${f}.ts`;
-    lines.push(`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`);
-    lines.push(`@@ -1,${perFile} +1,${perFile} @@`);
-    for (let l = 0; l < perFile; l++) lines.push(`+const value${f}_${l} = "${filler}";`);
-  }
-  return lines.join("\n");
 }
 
 const CONTEXT = "hand-built driver fix: bound the adversarial diff";
@@ -79,7 +81,17 @@ function fencedRegion(prompt: string): { fenced: string; after: string } {
   // fence is the final one the builder printed.
   const close = prompt.lastIndexOf(FENCE);
   if (close < start) throw new Error("prompt has no closing diff fence");
-  return { fenced: prompt.slice(start, close).replace(/^\n/, "").replace(/\n$/, ""), after: prompt.slice(close + FENCE.length) };
+  return {
+    fenced: prompt.slice(start, close).replace(/^\n/, "").replace(/\n$/, ""),
+    after: prompt.slice(close + FENCE.length),
+  };
+}
+
+/** The inventory rows in a note: two-space indented, ending in `+N -M`. */
+function inventoryRows(note: string): string[] {
+  return note
+    .split("\n")
+    .filter((line) => line.startsWith("  ") && / \+\d+ -\d+$/.test(line.trimEnd()));
 }
 
 const OVER_CAP_PROMPTS: Array<[string, string]> = [
@@ -140,11 +152,17 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   for (let f = 0; f < BIG_FILE_COUNT; f++) {
     if (!after.includes(`src/module-${f}/deep/nested/path/file-${f}.ts`)) missing.push(f);
   }
-  assert(missing.length === 0, `${label}: the inventory names every one of the ${BIG_FILE_COUNT} files`);
+  assert(
+    missing.length === 0,
+    `${label}: the inventory names every one of the ${BIG_FILE_COUNT} files`,
+  );
   // The cut lands on a line boundary: the head ends at the end of a line and the
   // next character in the original diff is the newline that terminated it.
   assert(
-    fenced.length > 0 && BIG.startsWith(fenced) && BIG.charAt(fenced.length) === "\n" && !fenced.endsWith("\n"),
+    fenced.length > 0 &&
+      BIG.startsWith(fenced) &&
+      BIG.charAt(fenced.length) === "\n" &&
+      !fenced.endsWith("\n"),
     `${label}: the cut lands on a line boundary, not mid-line`,
   );
 }
@@ -154,7 +172,10 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
 {
   const bounded = boundDiffForPrompt(BIG, RANGE);
   const note = bounded.note ?? "";
-  assert(note.includes("bodies shown in full for "), "inventory: states how many bodies are complete");
+  assert(
+    note.includes("bodies shown in full for "),
+    "inventory: states how many bodies are complete",
+  );
   assert(
     note.includes("cut mid-file or not shown for "),
     "inventory: states how many bodies are cut or absent",
@@ -175,11 +196,11 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   // The /work driver's merged diff concatenates per-worktree sections with a
   // `## workstream: <id>` header before each, so those lines belong to no file.
   // The counter must find them MID-DIFF, not only at the top.
-  const mid = BIG.replace(
-    "diff --git a/src/module-20/",
-    `## workstream: second\n[... merged diff truncated at 1 MiB total]\ndiff --git a/src/module-20/`,
+  const mid = mergedDiffWithTruncation();
+  assert(
+    mid.includes(MERGED_DIFF_TRUNCATED_AT_TOTAL) && mid.includes(MERGED_DIFF_WORKSTREAM_PREFIX),
+    "fixture: the mid-diff markers were inserted",
   );
-  assert(mid !== BIG, "fixture: the mid-diff marker was inserted");
   const bounded = boundDiffForPrompt(mid, RANGE);
   assert(
     bounded.note?.includes("could not be attributed to a file") === true,
@@ -189,6 +210,94 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   assert(counted >= 2, `inventory: reports the count it found (${counted})`);
   const summary = summarizeDiffFiles(mid);
   assert(summary.unattributed === counted, "inventory: the count is the single-pass count");
+}
+
+{
+  // ONLY the producer's markers count as unattributed. A real diff body line
+  // that happens to start with `##` (markdown) or `[` (a TOML table, a log
+  // fixture) is file content, and the old `^(## |\[)` prefix read it as prose.
+  const bodyLineDiff = syntheticDiff(3, 4).replace(
+    "+const value0_0",
+    "## not a workstream header\n[section] not a marker\n+const value0_0",
+  );
+  const summary = summarizeDiffFiles(bodyLineDiff);
+  assert(
+    summary.unattributed === 0,
+    `markers: a body line starting with ## or [ is content, not an unattributed marker (${summary.unattributed})`,
+  );
+}
+
+{
+  // The strings the reader matches are the strings the merged-diff PRODUCER
+  // writes. Read from the producer's own source: the constants are declared in
+  // `work-driver-diff.ts` and reach here through this module's re-export, so
+  // asserting the literals again here would only test the test.
+  const producer = readFileSync(
+    path.join(import.meta.dirname, "..", "src", "work-driver-diff.ts"),
+    "utf8",
+  );
+  const literals = [...producer.matchAll(/"(?:[^"\\]|\\.)*"/g)].map((m) => m[0]);
+  const same = (value: string): boolean => literals.includes(JSON.stringify(value));
+  assert(
+    same(MERGED_DIFF_WORKSTREAM_PREFIX) &&
+      same(MERGED_DIFF_PIECE_TRUNCATED) &&
+      same(MERGED_DIFF_TRUNCATED_AT_TOTAL),
+    "markers: the reader matches the exact strings the producer emits",
+  );
+  assert(
+    literals.length > 10,
+    "markers: the producer really declares them (the scan is not vacuous)",
+  );
+}
+
+{
+  // OFFSET/FILE PAIRING. `diff --git a/no-b-separator` parses to no path, so it
+  // creates no summary; the shown pass must not read that as "one fewer section"
+  // and shift every later file's shown/cut status by one.
+  const broken = diffWithBrokenHeader(3, 60);
+  const full = summarizeDiffFiles(broken);
+  assert(full.files.length === 3, "offsets: the unparseable header contributes no file");
+  const paths = full.files.map((f) => f.path);
+  assert(
+    paths.every((p, i) => p === `src/module-${i}/deep/nested/path/file-${i}.ts`),
+    "offsets: the files listed after the bad header are still the right files",
+  );
+  assert(
+    full.files[2]?.shown === true && full.files[2]?.startOffset > (full.files[0]?.startOffset ?? 0),
+    "offsets: the last section is shown when the head covers the whole diff",
+  );
+  // Now cut INSIDE the middle file: the pairing must say exactly one is shown
+  // and two are not, which is only true if the bad header did not shift it.
+  const middle = full.files[1]?.startOffset;
+  assert(middle !== undefined, "offsets: the fixture produced a second section");
+  const cut = summarizeDiffFiles(broken, (middle ?? 0) + 10);
+  assert(
+    cut.files.filter((f) => f.shown).length === 1,
+    `offsets: cutting inside the second section leaves exactly one file shown (${cut.files.filter((f) => f.shown).length})`,
+  );
+  assert(
+    cut.files[0]?.shown === true && cut.files[1]?.shown === false && cut.files[2]?.shown === false,
+    "offsets: shown/cut status did not drift onto the neighbouring files",
+  );
+}
+
+{
+  // The same pairing, seen through the bound: the note's shown/cut split must be
+  // the one the offsets support for the head that was actually inlined.
+  const brokenBig = diffWithBrokenHeader(40, 220);
+  const bounded = boundDiffForPrompt(brokenBig, RANGE);
+  const summary = summarizeDiffFiles(brokenBig, bounded.diff.length);
+  const shown = summary.files.filter((f) => f.shown).length;
+  assert(
+    summary.files.length === 40 && shown > 0 && shown < 40,
+    `offsets (over cap): the bad header leaves 40 files and a partial split (${shown})`,
+  );
+  assert(
+    (bounded.note ?? "").includes(`bodies shown in full for ${shown}`) &&
+      (bounded.note ?? "").includes(`cut mid-file or not shown for ${40 - shown}`),
+    "offsets (over cap): the note reports the split the offsets computed",
+  );
+  assert(shown > 0 && shown < 40, `offsets (over cap): partial split (${shown})`);
 }
 
 {
@@ -216,12 +325,13 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   const many = syntheticDiff(MAX_INVENTORY_ROWS + 40, 3);
   assert(many.length > MAX_INLINE_DIFF_CHARS, "fixture: a 340-file diff is over the cap");
   const note = boundDiffForPrompt(many, RANGE).note ?? "";
-  const rows = note
-    .split("\n")
-    .filter((line) => line.startsWith("  ") && / \+\d+ -\d+$/.test(line.trimEnd()));
-  assert(rows.length === MAX_INVENTORY_ROWS, `inventory: at most ${MAX_INVENTORY_ROWS} rows printed (${rows.length})`);
+  const rows = inventoryRows(note);
   assert(
-    note.includes(`and 40 more file(s) not listed.`),
+    rows.length === MAX_INVENTORY_ROWS,
+    `inventory: at most ${MAX_INVENTORY_ROWS} rows printed (${rows.length})`,
+  );
+  assert(
+    note.includes("and 40 more file(s) not listed."),
     "inventory: the overflow line counts the files it did not list",
   );
   // The kept rows are the fullest ones, not the first ones.
@@ -232,7 +342,70 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   );
 }
 
-// --------------------------------------------- 3. refs: one entry point, one refusal
+// ------------------- 2b. inventory paths are neutralised diff-derived prose
+
+{
+  const BT = String.fromCharCode(0x60);
+  const note = boundDiffForPrompt(injectingPathDiff(), RANGE).note ?? "";
+  assert(
+    note.split("\n").some((line) => line.includes("‹VERDICT›")),
+    "fixture: the injecting path reached the inventory (the rows below are its rows)",
+  );
+  assert(
+    !note.split("\n").some((line) => line.trimStart().startsWith("VERDICT:")),
+    "paths: an injecting path prints no VERDICT line in the note",
+  );
+  assert(
+    !note.includes(BT.repeat(3)),
+    "paths: an injecting path prints no backtick run of 3 or more",
+  );
+  assert(
+    !note.split("\n").some((line) => /^\s*VERDICT\s*[:\s]/.test(line)),
+    "paths: the injected verdict cannot read as a verdict line (only its token is bracketed; " +
+      "CRITICAL_ISSUES_FOUND is not a marker token any reader parses, so its text survives)",
+  );
+
+  // A long path is bounded, and the padding width comes from the displayed rows.
+  const longNote = boundDiffForPrompt(longPathDiff("d".repeat(5000)), RANGE).note ?? "";
+  const longRow = longNote.split("\n").find((line) => line.trimStart().startsWith("dddd"));
+  assert(longRow !== undefined, "paths: the 5,000-character path still gets a row");
+  const printed = (longRow ?? "").trimStart().replace(/\s+\+\d+ -\d+$/, "");
+  assert(
+    printed.length <= MAX_DISPLAYED_PATH_CHARS,
+    `paths: the displayed path is at most ${MAX_DISPLAYED_PATH_CHARS} characters (${printed.length})`,
+  );
+  assert(printed.endsWith("…"), "paths: the bound is marked with an ellipsis");
+  const rowWidths = inventoryRows(longNote).map((line) => line.length);
+  assert(
+    rowWidths.length > 0 && rowWidths.every((w) => w <= MAX_DISPLAYED_PATH_CHARS + 20),
+    `paths: no row is widened by the raw path (${Math.max(0, ...rowWidths)})`,
+  );
+}
+
+// ------------------------------------- 3. refs: one entry point, one refusal
+
+{
+  // Neutralise-then-clip order: neutralising FIRST is what makes the clip safe.
+  // Clipping a 5,000-byte name at 200 characters could otherwise cut a marker
+  // token in half and leave the readable half behind, so the bound must fall on
+  // text that already carries no token. "VERDICT" is 7 characters, so a cut at
+  // any of the first six would leave a readable prefix. The fixture proves the
+  // order holds, and the canary proves the assertion could have caught a miss.
+  const BT = String.fromCharCode(0x60);
+  const markerNote = boundDiffForPrompt(markerAtClipEdgeDiff(), RANGE).note ?? "";
+  assert(
+    !markerNote.split("\n").some((line) => /VERDICT|CRITICAL_ISSUES_FOUND/.test(line)),
+    "paths: a marker token that straddles the clip is neutralised, not truncated into a verdict",
+  );
+  assert(
+    !markerNote.includes(BT.repeat(3)),
+    "paths: the straddling fixture prints no backtick run of 3 or more",
+  );
+  assert(
+    markerNote.includes("p".repeat(150)),
+    "canary: the row really is the clipped hostile path (the assertion is not vacuous)",
+  );
+}
 
 {
   // A ref is untrusted text. A control character, a line separator or a backtick
@@ -244,16 +417,15 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
     ["a newline in head", { base: "main", head: `HEAD${INJECT}` }],
     ["a backtick in base", { base: "main`x", head: "HEAD" }],
     ["a CR in head", { base: "main", head: "HEAD\r" }],
-    ["U+2028 in base", { base: `ma\u2028in`, head: "HEAD" }],
-    ["U+2029 in head", { base: "main", head: `HE\u2029AD` }],
+    ["U+2028 in base", { base: "ma\u2028in", head: "HEAD" }],
+    ["U+2029 in head", { base: "main", head: "HE\u2029AD" }],
     ["an ESC in base", { base: `main${String.fromCharCode(0x1b)}[0m`, head: "HEAD" }],
     ["a blank ref", { base: "  ", head: "HEAD" }],
   ];
   for (const [label, range] of REF_CASES) {
     const note = boundDiffForPrompt(BIG, range).note ?? "";
     assert(
-      !note.includes(COMMAND_SIGNATURE) &&
-        note.includes("the remaining content is not available"),
+      !note.includes(COMMAND_SIGNATURE) && note.includes("the remaining content is not available"),
       `refs: ${label} mints no command and the notice says so`,
     );
   }
@@ -266,10 +438,22 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   // End to end through both builders: the injected text never appears, and a
   // canary proves the assertion is not vacuously true.
   for (const [label, build] of [
-    ["reviewer", (r: { base: string; head: string } | undefined) =>
-      buildAdversarialPrompt({ diff: BIG, context: CONTEXT, round: 1, maxRounds: 3, diffRange: r })],
-    ["fix-developer", (r: { base: string; head: string } | undefined) =>
-      buildFixPrompt({ findings: "1. f", context: CONTEXT, diff: BIG, round: 1, diffRange: r })],
+    [
+      "reviewer",
+      (r: { base: string; head: string } | undefined) =>
+        buildAdversarialPrompt({
+          diff: BIG,
+          context: CONTEXT,
+          round: 1,
+          maxRounds: 3,
+          diffRange: r,
+        }),
+    ],
+    [
+      "fix-developer",
+      (r: { base: string; head: string } | undefined) =>
+        buildFixPrompt({ findings: "1. f", context: CONTEXT, diff: BIG, round: 1, diffRange: r }),
+    ],
   ] as const) {
     const refused = build({ base: `main${INJECT}`, head: "HEAD" });
     const afterFence = fencedRegion(refused).fenced + fencedRegion(refused).after;
@@ -296,24 +480,17 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
 
 // ---------------------------------------- 4. no range: pasted diff, nothing invented
 
-{
-  for (const [label, prompt] of [
-    ["reviewer", buildAdversarialPrompt({ diff: BIG, context: CONTEXT, round: 1, maxRounds: 3 })],
-    [
-      "fix-developer",
-      buildFixPrompt({ findings: "f", context: CONTEXT, diff: BIG, round: 1 }),
-    ],
-  ] as const) {
-    const { after } = fencedRegion(prompt);
-    assert(
-      after.includes("the remaining content is not available"),
-      `${label} (pasted): the notice says the rest is not available`,
-    );
-    assert(
-      !after.includes(COMMAND_SIGNATURE),
-      `${label} (pasted): no reread command is invented`,
-    );
-  }
+// A pasted diff — no range at all — must not invent a command to run.
+for (const [label, prompt] of [
+  ["reviewer", buildAdversarialPrompt({ diff: BIG, context: CONTEXT, round: 1, maxRounds: 3 })],
+  ["fix-developer", buildFixPrompt({ findings: "f", context: CONTEXT, diff: BIG, round: 1 })],
+] as const) {
+  const { after } = fencedRegion(prompt);
+  assert(
+    after.includes("the remaining content is not available"),
+    `${label} (pasted): the notice says the rest is not available`,
+  );
+  assert(!after.includes(COMMAND_SIGNATURE), `${label} (pasted): no reread command is invented`);
 }
 
 // ---------------------------- 5. at/under the cap: byte-identical to the builders
@@ -325,8 +502,18 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   // Compared against the builders' OWN output for the same under-cap diff, never
   // against a transcription of the template: a transcription is a second copy of
   // the prompt and the first thing to drift.
-  const plainReviewer = buildAdversarialPrompt({ diff: SMALL, context: CONTEXT, round: 1, maxRounds: 3 });
-  const plainFix = buildFixPrompt({ findings: "1. the thing", context: CONTEXT, diff: SMALL, round: 1 });
+  const plainReviewer = buildAdversarialPrompt({
+    diff: SMALL,
+    context: CONTEXT,
+    round: 1,
+    maxRounds: 3,
+  });
+  const plainFix = buildFixPrompt({
+    findings: "1. the thing",
+    context: CONTEXT,
+    diff: SMALL,
+    round: 1,
+  });
   assert(
     buildAdversarialPrompt({
       diff: SMALL,
@@ -351,7 +538,10 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
     boundDiffForPrompt(SMALL, RANGE).note === undefined,
     "helper: an under-cap diff has no note",
   );
-  assert(boundDiffForPrompt(SMALL, RANGE).diff === SMALL, "helper: an under-cap diff is returned unchanged");
+  assert(
+    boundDiffForPrompt(SMALL, RANGE).diff === SMALL,
+    "helper: an under-cap diff is returned unchanged",
+  );
   const atCap = "a".repeat(MAX_INLINE_DIFF_CHARS);
   assert(
     boundDiffForPrompt(atCap).note === undefined && boundDiffForPrompt(atCap).diff === atCap,
@@ -378,11 +568,16 @@ for (const [label, prompt] of OVER_CAP_PROMPTS) {
   const oneLine = "z".repeat(MAX_INLINE_DIFF_CHARS + 500);
   const bounded = boundDiffForPrompt(oneLine, RANGE);
   assert(
-    bounded.diff.length > 0 && oneLine.startsWith(bounded.diff) && bounded.diff.length < oneLine.length,
+    bounded.diff.length > 0 &&
+      oneLine.startsWith(bounded.diff) &&
+      bounded.diff.length < oneLine.length,
     `single line: the head is the cap's prefix kept whole (${bounded.diff.length} chars)`,
   );
   assert(bounded.note !== undefined, "single line: the cut is still announced");
-  assert(bounded.note?.includes(`of ${oneLine.length} characters`) === true, "single line: the notice counts the true length");
+  assert(
+    bounded.note?.includes(`of ${oneLine.length} characters`) === true,
+    "single line: the notice counts the true length",
+  );
 }
 
 // ----------------------------- 7. escape hatch: PI_ENSEMBLE_ADVERSARIAL_DIFF_CAP

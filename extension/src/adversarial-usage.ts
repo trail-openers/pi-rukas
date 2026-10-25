@@ -13,8 +13,9 @@
 
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
-/** What a result carries when nothing ran at all. */
-export function emptyUsage(): DispatchUsage {
+/** What a result carries when nothing ran at all. Module-local: the loop reads
+ * the tally's `usage`, and nothing outside this file needs a zeroed shape. */
+function emptyUsage(): DispatchUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
 
