@@ -6,7 +6,7 @@
  * The body reaches the forge through four readers of the same file: the ops
  * child posts `handoff-comment.md`, the in-process fallback `fs.readFile`s it,
  * `postHandoffWithRetry` compares the target's existing comments against
- * `expectedBody`, and the `handoff-emitted` event records a body that the host
+ * the idempotency comparison, and the `handoff-emitted` event records a body the host
  * channel republishes. A rewrite applied at a reader would leave those four
  * disagreeing, and the disagreement that bites is the idempotency check: a
  * comment that already carries the NORMALISED text compared against the raw
@@ -178,12 +178,14 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
   resetVisibilityCacheForTests();
 
   // ── 1. the body itself, for a public target.
-  const publicBody = await handoffCommentBody(stateWith(transcript), ctx, {
+  const publicCheck = await handoffCommentBody(stateWith(transcript), ctx, {
     forge: "github",
     host: "github.com",
     owner: "example-owner",
     repo: "example-repo",
   } as unknown as Forge);
+  assert(publicCheck.refusal === undefined, `the public body is not refused (${publicCheck.refusal})`);
+  const publicBody = publicCheck.body ?? "";
   assert(publicBody.includes("<!-- pi-rukas:handoff"), "the handoff marker is on the body");
   assert(publicBody.includes("~/"), `the home path is normalised (${publicBody.slice(0, 40)})`);
   assert(!publicBody.includes(home), "…and the host's home directory is gone from the bytes");
@@ -231,27 +233,35 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
     "…and a comment equal to the normalised body is not re-posted",
   );
 
-  // ── 4. with no `body` supplied the file is still the fallback (the ops-child
-  // path is unchanged).
+  // ── 4. a caller with nothing to post posts nothing: `body` is REQUIRED
+  // (#1820), because the file on disk is bytes the hygiene seam never judged.
   const fellBack = mkForge([]);
-  await deliverHandoff({
+  const noBody = await deliverHandoff({
     issue: 9,
     prNumber: undefined,
     forge: fellBack.forge,
     handoffBodyPath: bodyFile,
+    body: "",
     commentUrl: undefined,
     labelApplied: true,
     dispatchFailed: false,
   });
   assert(
-    fellBack.posted.length === 1 && fellBack.posted[0] === publicBody,
-    "with no body handed over, the fallback reads the file — the path that predates this change",
+    fellBack.posted.length === 0,
+    "an empty body is never posted from the file — the seam's bytes or nothing",
+  );
+  assert(noBody.commentUrl === undefined, "and no comment URL is claimed for it");
+  // The file that predates the seam is still on disk, unchanged: what changed is
+  // that posting no longer reads it.
+  assert(
+    readFileSync(bodyFile, "utf8") === publicBody,
+    "the earlier body file is unchanged",
   );
 
   // ── 5. a positively private target keeps the exact paths, and nothing in the
   // body was rewritten.
   resetVisibilityCacheForTests();
-  const privateBody = await handoffCommentBody(
+  const privateCheck = await handoffCommentBody(
     stateWith(transcript),
     ctx,
     {
@@ -262,6 +272,8 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
     } as unknown as Forge,
     async () => true,
   );
+  assert(privateCheck.refusal === undefined, "a private handoff is not refused");
+  const privateBody = privateCheck.body ?? "";
   assert(
     privateBody.includes(transcript),
     "a private repository's handoff keeps the real path — an operator reads the file it names",
@@ -274,7 +286,8 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
   // ── 6. the hatch off: no rewrite, and the bytes are the render's.
   await withEnv({ PI_ENSEMBLE_PUBLIC_HYGIENE: "0" }, async () => {
     resetVisibilityCacheForTests();
-    const off = await handoffCommentBody(stateWith(transcript), ctx, undefined);
+    const offCheck = await handoffCommentBody(stateWith(transcript), ctx, undefined);
+    const off = offCheck.body ?? "";
     assert(off.includes(transcript), "with the guard off the paths are untouched");
     assert(
       readFileSync(bodyFile, "utf8") === publicBody,

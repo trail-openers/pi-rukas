@@ -1,6 +1,7 @@
 /** work-driver-handoff — Step 7g (handoff) handler. #674: worktree consolidation + forge post retry. */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execp } from "./exec.ts";
 import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -178,11 +179,26 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // The forge is resolved here and passed down, so the visibility question and
   // the render share one read.
   const resolvedForge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
-  const handoffMd = await handoffCommentBody(next, ctx, resolvedForge);
+  // The public/private decision and the fold come from the ONE driver seam
+  // (work-driver-lens-cap-hygiene.ts), not from a local copy of the rule: a
+  // handoff on a private repository must keep its exact paths, and only the seam
+  // resolves visibility the way every other driver publish does (#1820).
+  const handoffExec = ctx.verifyExecFn ?? execp;
+  const bodyCheck = await handoffCommentBody(next, ctx, resolvedForge, undefined, handoffExec);
+  if (bodyCheck.refusal !== undefined) {
+    // The comment carries text the matcher refused. Nothing is written, posted or
+    // marked: the refusal is traced (category/line only — never the matched term,
+    // which is the private thing itself) and every post below is gated on
+    // `handoffMd` being present, so the not-posted path runs unchanged.
+    trace(
+      `work-driver: handoff body refused for #${ctx.issue}: ${bodyCheck.refusal.slice(0, 160)}`,
+    );
+  }
+  const handoffMd = bodyCheck.body;
   const handoffBodyPath = path.join(scratchDir(ctx.repoRoot, ctx.issue), "handoff-comment.md");
   try {
     await fs.mkdir(path.dirname(handoffBodyPath), { recursive: true });
-    await fs.writeFile(handoffBodyPath, handoffMd, "utf8");
+    if (handoffMd !== undefined) await fs.writeFile(handoffBodyPath, handoffMd, "utf8");
   } catch (err) {
     trace(`work-driver: failed to write handoff body file: ${(err as Error).message}`);
   }
@@ -207,7 +223,7 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   const park = await readParkMemory(ctx, next, host);
   const reusedComment = park.repeatOf?.commentUrl !== undefined;
   const dispatchResult =
-    reusedComment || host
+    reusedComment || host || handoffMd === undefined
       ? { next, opsReplyText: "" }
       : await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
   next = dispatchResult.next;
@@ -277,7 +293,7 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // delivery half lives in work-driver-handoff-deliver.ts (§12 file-size
   // split); the try/catch stays HERE because the whole point of the leg is
   // that a forge write must never stop a handoff from completing.
-  if (!host && (!commentUrl || !labelApplied)) {
+  if (!host && handoffMd !== undefined && (!commentUrl || !labelApplied)) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
       const delivered = await deliverHandoff({
@@ -365,7 +381,7 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // host channel it is the body reaching the host in the result — which it does
   // whenever a body was rendered at all.
   const parkReported = host
-    ? handoffMd.trim().length > 0
+    ? (handoffMd?.trim().length ?? 0) > 0
     : commentUrl !== undefined || labelApplied === true;
   const parkRecord = await recordPark(ctx, park, commentUrl, parkReported);
   // #1696 — and the host channel's own signal, which covers every cap the
@@ -390,7 +406,10 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
     commentUrl,
     labelApplied,
     handoffBodyPath,
-    body: handoffMd,
+    body: handoffMd ?? "",
+    // #1820 — a refused body posted nothing: record the matcher's category/line
+    // (never the term) so no reader can take this event as proof of delivery.
+    ...(bodyCheck.refusal !== undefined ? { bodyRefusal: bodyCheck.refusal } : {}),
     consolidated: consEvent !== undefined,
     consolidatedBranch: consEvent?.branchName,
     consolidatedWorkstreams: consEvent?.workstreams,

@@ -71,7 +71,7 @@ export interface HandoffResult {
    */
   body?: string;
   /** Present instead of `body` when the cycle recorded no body. */
-  bodyError?: "not-recorded";
+  bodyError?: "not-recorded" | "refused";
   /** Diagnostic path for a person, like `stateFile`. */
   bodyFile?: string;
   /** Forge channel: the comment pi-rukas posted (or an earlier identical park's). */
@@ -396,7 +396,12 @@ export function handoffOf(state: WorkState, cap: string | undefined): HandoffRes
   // #1696 — on the host channel a false label is the contract, not a failure;
   // say which, so a host does not report a decline as an outage.
   if (e.labelSkipped) h.labelSkipped = e.labelSkipped;
-  if (e.body !== undefined) h.body = e.body;
+  if (e.bodyRefusal !== undefined) {
+    // A refused body means NO comment was posted. Publish nothing as the handoff
+    // text (the refusal is matcher output, not prose for a host) and say why
+    // rather than printing an empty body as if it were the comment.
+    h.bodyError = "refused";
+  } else if (e.body !== undefined) h.body = e.body;
   else h.bodyError = "not-recorded";
   if (e.handoffBodyPath) h.bodyFile = e.handoffBodyPath;
   if (e.commentUrl) h.commentUrl = e.commentUrl;

@@ -72,6 +72,14 @@ export type HandoffEmittedEvent = {
    */
   body?: string;
   /**
+   * #1820 — the handoff body was REFUSED by the hygiene seam, so no comment was
+   * posted and no delivery provenance may be asserted. Carries the matcher's
+   * category and line ONLY: the matched term is the private text itself and must
+   * never reach a record a reader sees. Absent on every handoff that posted, and
+   * on every event written before this field existed.
+   */
+  bodyRefusal?: string;
+  /**
    * #798 — the explicit target object type of the handoff artefacts (where
    * the comment was posted). A reader must not have to infer this from the
    * comment URL or a sibling `prNumber` field.

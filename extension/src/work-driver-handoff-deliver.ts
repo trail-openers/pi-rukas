@@ -4,7 +4,6 @@
  * keeps the step handler and re-exports these so no consumer's import path
  * changes. Everything here talks to the forge and none of it touches the
  * worktree, which is the seam the split follows. */
-import fs from "node:fs/promises";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
@@ -87,18 +86,20 @@ export async function deliverHandoff(args: {
   prNumber?: number;
   forge: Forge | undefined;
   /**
-   * The body file on disk — the ops child's post surface, and the fallback's
-   * last resort when the caller has no text to hand over.
+   * The body file on disk — the ops child's post surface and the path the
+   * recovery renderers print. NOT a body source: the text posted is the one the
+   * caller passes below (#1820), so a re-read can never post bytes the hygiene
+   * seam did not judge.
    */
   handoffBodyPath: string;
   /**
-   * #1788 follow-up — the handoff body the step rendered and normalised, when
-   * the caller holds it. Passing it is what keeps the comment the driver posts
-   * and the comment the idempotency check compares against ONE string: reading
-   * the file here would compare a normalised comment against a raw render and
-   * post a duplicate.
+   * #1788 follow-up — the handoff body the step rendered and normalised.
+   * REQUIRED (#1820): it is what keeps the comment the driver posts and the
+   * comment the idempotency check compares against ONE string, and the only
+   * bytes anybody judged. A caller with no body to hand over has a body the
+   * matcher refused, and does not call this function.
    */
-  body?: string;
+  body: string;
   commentUrl?: string;
   labelApplied: boolean;
   issueLabelApplied?: boolean;
@@ -111,9 +112,7 @@ export async function deliverHandoff(args: {
   if (forge) {
     const objType = prNumber ? "pr" : "issue";
     const targetId = prNumber ?? issue;
-    const body = !commentUrl
-      ? (args.body ?? (await fs.readFile(handoffBodyPath, "utf8").catch(() => "")))
-      : "";
+    const body = commentUrl ? "" : args.body;
     // #775 — idempotency check: fetch the target's existing comments
     // BEFORE posting so a comment the ops dispatch already posted (whose
     // URL was lost) is not re-posted. A failed dispatch leaves no such
@@ -132,6 +131,9 @@ export async function deliverHandoff(args: {
     const posted = await postHandoffWithRetry(forge, {
       issue,
       body,
+      // The same string is the comparison value: one owner, one string, so the
+      // comment the driver posts and the comment the dedupe compares against
+      // cannot drift (#775). An empty body matches nothing and posts nothing.
       expectedBody: body,
       targetId: targetId,
       objType,

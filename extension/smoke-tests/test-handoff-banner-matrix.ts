@@ -380,7 +380,11 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
   assert(calls.filter((c) => c.method === "issueComment").length === 1, "G: exactly one post");
 }
 
-// H. Idempotency: empty expected body must NOT match empty-bodied comment.
+// H. Idempotency: an EMPTY body neither matches an existing empty comment nor
+//    gets posted. Two rules, one string: the empty value must not fake an
+//    idempotent skip (#775), and since #1820 it must not post either — a comment
+//    that carries nothing discloses nothing yet returns a URL, which would read
+//    as a delivered handoff. The label still applies; the comment does not.
 {
   const { forge, calls } = mkScriptedForge({
     comments: [{ body: "" }],
@@ -400,10 +404,17 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     { ...fastOpts },
   );
   assert(
-    typeof out.commentUrl === "string" && out.commentUrl.endsWith("#issuecomment-4242"),
-    "H: empty-bodied comment NOT treated as a match (no false idempotent skip)",
+    out.commentUrl === undefined,
+    "H: an empty body is NOT posted — no URL is claimed for a comment that says nothing (#1820)",
   );
-  assert(calls.filter((c) => c.method === "issueComment").length === 1, "H: fallback posts exactly once");
+  assert(
+    calls.filter((c) => c.method === "issueComment").length === 0,
+    "H: the empty body never reaches the forge's comment seam",
+  );
+  assert(
+    out.labelApplied === false,
+    "H: the run recorded no delivery of any kind (this case asks for no label either)",
+  );
 }
 
 // I. End-to-end idempotency: dispatch posted the comment (URL lost in the

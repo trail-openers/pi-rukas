@@ -16,44 +16,57 @@
  * own failure shape.
  */
 
+import type { Forge } from "./forge.ts";
 import { driverPublishCheck } from "./public-hygiene-driver.ts";
+import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** What the disclosure post may do: post this text, or refuse. */
-export type DisclosureCheck = { text: string } | { refusal: string };
+export type DisclosureCheck = { text: string; rewritten: boolean } | { refusal: string };
 
 /**
- * Check (and normalise) the residual-findings disclosure before it is written.
+ * Check (and normalise) a driver-authored comment before it is written.
+ *
+ * Two publishes use this: the round-cap residual post, and the handoff comment
+ * body (`work-driver-handoff-body.ts`). Both are driver prose the `tool_call`
+ * guard cannot see, and both therefore ask the ONE driver seam rather than
+ * re-implementing the public/private decision at their own call site — that
+ * duplication is how a private repository's handoff came to be folded (#1820).
  *
  * The target is the forge's own owner/repo/host — the same shape `createForge`'s
  * `checkPublicText` passes — so the visibility question is asked of the
  * repository the comment actually lands on rather than guessed from the command
- * string. `forgeForCycle` answering `undefined` is not a pass: with no slug the
- * seam falls back to resolving the clone's origin, and a target it cannot name
- * is the driver seam's standing "check it" answer.
+ * string. `forge`/`forgeForCycle` answering `undefined` is not a pass: with no
+ * slug the seam falls back to resolving the clone's origin, and a target it
+ * cannot name is the driver seam's standing "check it" answer.
  *
- * The caller turns a refusal into its existing `{ ok: false }`, so a disclosure
- * that could not be checked is a disclosure that did not happen and the cycle
- * parks rather than routes on. The disclosure marker survives the rewrite: a
- * `<!-- pi-rukas: … -->` span is never touched.
+ * The caller turns a refusal into its own failure shape, so a publish that could
+ * not be checked is a publish that did not happen. The comment marker survives the
+ * rewrite: a `<!-- pi-rukas: … -->` span is never touched.
  */
 export async function residualDisclosureBody(
   ctx: Pick<CycleContext, "repoRoot" | "verifyExecFn">,
   body: string,
   execFn: ExecFn,
+  /** The caller's already-resolved forge; else this function resolves one. */
+  forge?: Forge,
+  visibility?: VisibilityFn,
 ): Promise<DisclosureCheck> {
-  const forge = await forgeForCycle(ctx, execFn);
+  const resolved = forge ?? (await forgeForCycle(ctx, execFn));
   const checked = await driverPublishCheck("pull request comment", body, {
     command: "gh pr comment",
     cwd: ctx.repoRoot,
     repoRoot: ctx.repoRoot,
     exec: execFn,
+    visibility,
     target:
-      forge && forge.owner !== "" && forge.repo !== ""
-        ? { owner: forge.owner, repo: forge.repo, host: forge.host }
+      resolved && resolved.owner !== "" && resolved.repo !== ""
+        ? { owner: resolved.owner, repo: resolved.repo, host: resolved.host }
         : undefined,
   });
-  return checked.refusal === undefined ? { text: checked.text } : { refusal: checked.refusal };
+  return checked.refusal === undefined
+    ? { text: checked.text, rewritten: checked.rewritten }
+    : { refusal: checked.refusal };
 }

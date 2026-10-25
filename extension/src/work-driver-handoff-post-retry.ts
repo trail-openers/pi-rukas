@@ -108,9 +108,11 @@ export async function postHandoffWithRetry(
     /**
      * The body the caller WOULD post if it has to — the comparison value for
      * the existing-comment idempotency check. `opts.body` is `""` when the
-     * caller read the file best-effort and it came back empty (a missing body
-     * file must not be treated as "the comment is already there"), so the
-     * match requires BOTH a non-empty body and a body match.
+     * caller has nothing to publish (the hygiene seam refused the text, or a
+     * best-effort read came back empty), so the match requires BOTH a non-empty
+     * body and a body match: an empty comparison value never matches, and an
+     * empty body is never posted (#1820 — a comment that carries nothing
+     * discloses nothing while still reading as delivered).
      */
     expectedBody: string;
     /**
@@ -141,7 +143,16 @@ export async function postHandoffWithRetry(
   // `issueComment`. The PR seam is used when the target is a PR; the issue
   // path is unchanged.
   const postCommentOnce = (n: number, body: string): Promise<string> =>
-    opts.objType === "pr" ? forge.prComment(n, body) : forge.issueComment(n, body);
+    // #1820 — an EMPTY body is never posted. It is the shape a caller uses for
+    // "the hygiene seam refused this text, so there is nothing to publish"; a
+    // comment carrying nothing discloses nothing yet still returns a URL, which
+    // would read as delivered. The label still applies below, so an operator is
+    // still asked to look, and the caller's not-posted path runs.
+    body.trim() === ""
+      ? Promise.resolve("")
+      : opts.objType === "pr"
+        ? forge.prComment(n, body)
+        : forge.issueComment(n, body);
 
   const backoffFor = (attempt: number): number => {
     // Linear schedule (1s * attempt) with full jitter on top — the same

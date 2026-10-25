@@ -18,7 +18,6 @@
  * Split from work-driver-handoff.ts (AGENTS.md §12 file-size limit).
  */
 
-import fs from "node:fs/promises";
 import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
@@ -106,11 +105,12 @@ export async function postHandoffToForge(opts: {
   prNumber: number | undefined;
   handoffBodyPath: string;
   /**
-   * #1788 follow-up — the normalised body the step rendered. When present it is
-   * what gets posted; the file is the fallback. A caller that passes it keeps
-   * the posted bytes identical to the bytes the step judged and compared.
+   * #1788 follow-up — the normalised body the step rendered. REQUIRED (#1820):
+   * the caller holds the exact bytes the driver seam judged, and a file re-read
+   * here could post bytes nobody judged. `handoffBodyPath` stays the path the
+   * ops child and the recovery renderers use.
    */
-  body?: string;
+  body: string;
   /**
    * When set, the comment URL is already known — skip issueComment.
    */
@@ -132,8 +132,7 @@ export async function postHandoffToForge(opts: {
       // get their handoff comment via the ops dispatch's raw `gh` prompt.
       // For the in-process path, the forge covers the issue-comment shape.
       if (objType === "issue") {
-        const body = opts.body ?? (await fs.readFile(handoffBodyPath, "utf8").catch(() => ""));
-        const out = await forge.issueComment(issue, body);
+        const out = await forge.issueComment(issue, opts.body);
         const parsedUrl = parseHandoffCommentUrl(out) ?? out.trim();
         if (parsedUrl) commentUrl = parsedUrl;
       }
@@ -186,8 +185,15 @@ export function makeHandoffEmittedEvent(opts: {
   commentUrl: string | undefined;
   labelApplied: boolean;
   handoffBodyPath: string;
-  /** #1327 — the rendered body, carried in memory (see HandoffEmittedEvent.body). */
-  body?: string;
+  /** #1327 — the rendered body, carried in memory (see HandoffEmittedEvent.body).
+   *  REQUIRED (#1820): it is the bytes the driver seam judged, and the only copy
+   *  a headless result can publish without reading a file that may be stale. */
+  body: string;
+  /**
+   * #1820 — the matcher's category/line when the body was REFUSED: the comment
+   * posted nothing, and the event must say so without carrying the term.
+   */
+  bodyRefusal?: string;
   consolidated: boolean;
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
@@ -235,7 +241,8 @@ export function makeHandoffEmittedEvent(opts: {
     labelApplied,
     handoffBodyPath,
   };
-  if (opts.body !== undefined) ev.body = opts.body;
+  if (opts.bodyRefusal !== undefined) ev.bodyRefusal = opts.bodyRefusal;
+  ev.body = opts.body;
   if (delivery) ev.delivery = delivery;
   if (opts.labelSkipped) ev.labelSkipped = opts.labelSkipped;
   if (opts.targetType) ev.targetType = opts.targetType;
