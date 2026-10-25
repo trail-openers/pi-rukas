@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.15](https://github.com/trail-openers/pi-rukas/compare/v0.14.14...v0.14.15) (2026-10-24)
+
+
+### Performance Improvements
+
+* **work:** run the base-health probe beside develop instead of before it ([#1812](https://github.com/trail-openers/pi-rukas/issues/1812)) ([e9d3e3b](https://github.com/trail-openers/pi-rukas/commit/e9d3e3b0998662bcea93245f8035324dce224247))
+
 ## [0.14.14](https://github.com/trail-openers/pi-rukas/compare/v0.14.13...v0.14.14) (2026-10-24)
 
 
