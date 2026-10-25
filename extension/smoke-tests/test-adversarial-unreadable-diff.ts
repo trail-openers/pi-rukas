@@ -23,34 +23,43 @@
  *  - N>1: one unreadable workstream is an infra failure while its readable
  *    sibling is still reviewed, and the aggregate records no approval;
  *  - `readWorktreeDiff`'s own contract for a missing cwd, a dirt-only tree, a
- *    tracked modification, and `fetchDiff`'s best-effort string projection;
- *  - the per-round re-read (`getDiff`) throws on a failed read rather than
- *    resolving to "", so a round cannot review and approve "no changes";
+ *    tracked modification, and a git binary that fails (an injected failing
+ *    `exec`, never a mutated `PATH`);
+ *  - an unreadable diff is an ENVIRONMENT fact, never a provider fault: it
+ *    carries a structured non-retryable cause, its stderr is never handed to
+ *    the provider classifier, and the retry ladder spends no wait on it;
+ *  - the per-round re-read (`getDiff`) thrown by the REAL fan-out rejects on a
+ *    failed read rather than resolving to "", so a round cannot review and
+ *    approve "no changes";
  *  - the step handler parks with `adversarial-infra-failure` rather than
  *    approving, when the diff cannot be read.
  *
  * Offline: no spawn, no network. Fixtures use the real-git helpers in
- * smoke-tests/lib/git-worktree.ts.
+ * smoke-tests/lib/git-worktree-fixture.ts.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { ExecFn } from "../src/worktree.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { fanOutAdversarial } from "../src/work-driver-adversarial-fanout.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
-import { fetchDiff, readWorktreeDiff } from "../src/work-driver-diff.ts";
+import { readWorktreeDiff } from "../src/work-driver-diff.ts";
 import { __setSleepFn } from "../src/work-driver-step-router.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import {
   commitAll,
+  execFailingArgs,
+  passthroughExec,
+  failingExec,
+  gitFixture,
   initScratchRepoFresh,
   scratchDir,
   scratchDirWithoutGit,
   seedFile,
   stageFile,
-  withGitBroken,
-} from "./lib/git-worktree.ts";
+} from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -59,6 +68,20 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+/** The dirt probe `readWorktreeDiff` runs to decide what a BLANK diff means. */
+const DIRTY_PROBE_READ = "git status --porcelain -z --untracked-files=all";
+
+/**
+ * M4 — the best-effort string projection is gone from the module's exports.
+ * Read off the module object rather than the source text, so a re-added
+ * `fetchDiff` (or any `""`-on-failure sibling) fails here rather than silently
+ * giving a future caller back the value #1634 removed.
+ */
+async function noStringProjection(): Promise<boolean> {
+  const mod = (await import("../src/work-driver-diff.ts")) as Record<string, unknown>;
+  return !Object.keys(mod).includes("fetchDiff") && !Object.keys(mod).includes("fetchIntegratedDiff");
 }
 
 const dirs: string[] = [];
@@ -126,6 +149,33 @@ function ctxFor(
     },
   } as never as CycleContext;
   return { ctx, calls: () => calls };
+}
+
+/**
+ * The same, with the fan-out's DIFF READ handed a specific executor. The
+ * #1634 seam: a test makes the read fail for one workstream deterministically
+ * instead of mutating `process.env.PATH`, which every concurrent git user in
+ * the process would race with.
+ */
+function ctxForExec(
+  repoRoot: string,
+  issue: number,
+  exec: ExecFn,
+): { ctx: CycleContext; calls: () => number; captured: () => Array<() => Promise<string>> } {
+  let calls = 0;
+  const getDiffs: Array<() => Promise<string>> = [];
+  const ctx = {
+    host: { sendUserMessage: () => {} },
+    repoRoot,
+    issue,
+    diffExecFn: exec,
+    adversarialLoopFn: async (params: { getDiff: () => Promise<string> }) => {
+      calls++;
+      getDiffs.push(params.getDiff);
+      return approvedLoop();
+    },
+  } as never as CycleContext;
+  return { ctx, calls: () => calls, captured: () => getDiffs };
 }
 
 const approvedLoop = (): DispatchResult => ({
@@ -233,14 +283,20 @@ async function unreadableCase(
 ): Promise<void> {
   const issue = how === "plain" ? 1636 : 1639;
   const repoRoot = tempRepo();
-  const { ctx, calls } = ctxFor(repoRoot, issue, approvedLoop);
+  // M3a — the failing executor is INJECTED, not installed by rewriting PATH:
+  // the whole fan-out sees it (the retry ladder re-reads the tree on every
+  // attempt, and a read that succeeded on attempt 2 would approve a diff nobody
+  // reviewed — the exact defect this file pins), it is scoped to this one
+  // fixture, and no sibling test's git child can race with it.
+  const { ctx, calls } = ctxForExec(repoRoot, issue, failingExec());
   const state = seedState(repoRoot, { default: worktree }, issue);
-  // `withGitBroken` stays in force for the WHOLE fan-out, not just the first
-  // read: the retry ladder re-reads the tree on every attempt, and a read that
-  // succeeded on attempt 2 would approve a diff nobody reviewed — the exact
-  // defect this file pins. The sleeps are injected above, so no wait needs git.
-  const { next, outcomes } = await withGitBroken(() =>
-    fanOutAdversarial(ctx, state, ["default"], new Map(), false, null),
+  const { next, outcomes } = await fanOutAdversarial(
+    ctx,
+    state,
+    ["default"],
+    new Map(),
+    false,
+    null,
   );
   const o = outcomes[0];
   assert(calls() === 0, `${name}: no reviewer dispatched when the diff could not be read`);
@@ -357,54 +413,58 @@ async function unreadableCase(
   const p = await readWorktreeDiff(plain, undefined);
   assert(p.ok === false, "T5f: a directory that is not a git repo is unreadable, not empty");
 
-  // With git removed from PATH, a REAL clean worktree is unreadable too.
+  // With a failing executor injected, a REAL clean worktree is unreadable too.
+  // (M3a: the read takes `exec`, so this needs no PATH surgery and cannot race
+  // a sibling test that spawns git.)
   const real = tempRepo();
-  const broken = await withGitBroken(() => readWorktreeDiff(real, undefined));
+  const broken = await readWorktreeDiff(real, undefined, failingExec());
   assert(broken.ok === false, "T5g: a git binary that fails makes the read unreadable");
 
-  // fetchDiff keeps its best-effort string contract for its other callers.
-  const asString = await fetchDiff(undefined, undefined);
-  assert(asString === "", "T5e: fetchDiff keeps returning '' for a caller that wants a string");
+  // M3a — the executor seam decides WHICH read fails: with only the dirt probe
+  // broken, a blank diff is "could not tell", never a proven empty. The old
+  // shape could only reach this by removing git from PATH entirely.
+  const blank = tempRepo();
+  const probeBroken = await readWorktreeDiff(
+    blank,
+    undefined,
+    execFailingArgs(["status", "--porcelain"]),
+  );
+  assert(
+    probeBroken.ok === false && /could not establish/.test(probeBroken.reason),
+    `T5h: a blank diff whose dirt probe failed is unreadable, never empty (${probeBroken.ok ? "read ok" : probeBroken.reason})`,
+  );
+  assert(
+    probeBroken.ok === false && probeBroken.readFailed === DIRTY_PROBE_READ,
+    "T5h: the read names WHICH git command failed (the operator needs the command, not just the class)",
+  );
+
+  // M4 — there is NO best-effort string projection of this read any more
+  // (`fetchDiff` had no production caller, and ""-on-failure is the very value
+  // this type exists to make unrepresentable). Canary-checked at compile time
+  // by this file's imports; a re-added export would not be seen here, so the
+  // assertion below is the one that says so out loud.
+  assert(
+    await noStringProjection(),
+    "T5e: work-driver-diff.ts exports no `\"\"`-on-failure string read",
+  );
 }
 
 // ===========================================================================
-// T6 — the per-round re-read: a failed getDiff is not an approvable "no changes"
+// T6 — the per-round re-read the REAL fan-out builds: a failed getDiff is not
+//      an approvable "no changes". Driven end-to-end (a non-empty first diff
+//      so the loop is reached, then the captured `params.getDiff` called
+//      against a tree the read cannot establish) rather than by re-implementing
+//      the closure in the test.
 // ===========================================================================
 {
-  // The fan-out hands the loop a `getDiff` that must THROW on a failed read
-  // (adversarial.ts catches it and keeps the previous round's diff). Asserted
-  // through the contract the fan-out builds it from: a re-read of a tree that
-  // is not a repository rejects rather than resolving to "".
   const dir = tempRepo();
-  const first = await readWorktreeDiff(dir, undefined);
-  assert(first.ok === true && first.empty === true, "T6: the fixture tree starts clean-empty");
-  const plain = scratchDirWithoutGit("adv-unreadable-reread-", { "a.ts": "a\n" });
-  dirs.push(plain);
-  let threw = false;
-  try {
-    const r = await readWorktreeDiff(plain, undefined);
-    if (!r.ok) throw new Error(`diff re-read failed: ${r.reason}`);
-  } catch (err) {
-    threw = true;
-    assert(
-      /re-read failed/.test((err as Error).message),
-      "T6: a failed re-read throws (it does not resolve to an empty string)",
-    );
-  }
-  assert(threw, "T6: the re-read path throws for an unreadable tree");
-
-  // And through the real loop: the `getDiff` the fan-out builds must reject.
-  const seenGetDiff: Array<() => Promise<string>> = [];
-  const ctx = {
-    host: { sendUserMessage: () => {} },
-    repoRoot: dir,
-    issue: 1640,
-    adversarialLoopFn: async (params: { getDiff: () => Promise<string> }) => {
-      seenGetDiff.push(params.getDiff);
-      return approvedLoop();
-    },
-  } as never;
-  await fanOutAdversarial(
+  seedFile(dir, "foo.ts", "export const a = 1;\n");
+  stageFile(dir, "foo.ts");
+  // The FIRST read must succeed for the loop to be reached at all, so this
+  // fixture injects an executor that fails only the DIRT PROBE — which is what
+  // makes a blank re-read unreadable while a re-read with content still works.
+  const { ctx, calls, captured } = ctxForExec(dir, 1640, execFailingArgs(["status", "--porcelain"]));
+  const { outcomes } = await fanOutAdversarial(
     ctx,
     seedState(dir, { default: dir }, 1640),
     ["default"],
@@ -412,19 +472,176 @@ async function unreadableCase(
     false,
     null,
   );
-  // The first read was empty, so the loop was never reached; drive getDiff
-  // against a tree the read cannot establish instead.
-  const plain2 = scratchDirWithoutGit("adv-unreadable-reread2-", { "b.ts": "b\n" });
-  dirs.push(plain2);
+  assert(calls() === 1, "T6: a non-empty diff reaches the loop");
+  assert(outcomes[0]?.ok === true, "T6: the readable round approved");
+  const getDiff = captured()[0];
+  assert(getDiff !== undefined, "T6: the fan-out passed the loop a getDiff");
+
+  // With the dirt probe failing, a re-read of the same tree resolves through the
+  // committed/staged content — but a tree whose diff is BLANK and whose probe
+  // fails must REJECT. That is the case the old `""` answer smuggled into a
+  // round as "no changes to review".
+  const blankDir = tempRepo();
+  const { ctx: blankCtx, captured: blankCaptured } = ctxForExec(
+    blankDir,
+    1641,
+    execFailingArgs(["status", "--porcelain"]),
+  );
+  // Seed a non-empty FIRST read (staged) so the loop is reached, then remove
+  // the staged content so the RE-READ is the blank-and-unprobeable shape.
+  seedFile(blankDir, "bar.ts", "export const b = 2;\n");
+  stageFile(blankDir, "bar.ts");
+  await fanOutAdversarial(
+    blankCtx,
+    seedState(blankDir, { default: blankDir }, 1641),
+    ["default"],
+    new Map(),
+    false,
+    null,
+  );
+  const roundTwoGetDiff = blankCaptured()[0];
+  assert(roundTwoGetDiff !== undefined, "T6b: the loop received a getDiff for the blank tree");
+  // Unstage: the working tree is now blank and the probe is the failing one.
+  gitFixture(blankDir, ["reset", "-q"]);
   let rejected = false;
+  let resolvedTo = "<did not reject>";
   try {
-    const diff = await readWorktreeDiff(plain2, undefined);
-    if (!diff.ok) throw new Error(`diff re-read failed: ${diff.reason}`);
-  } catch {
+    resolvedTo = JSON.stringify(await (roundTwoGetDiff ?? (async () => ""))());
+  } catch (err) {
     rejected = true;
+    resolvedTo = (err as Error).message;
   }
-  assert(rejected, "T6b: a re-read of a non-repository rejects rather than approving empty");
-  assert(seenGetDiff.length === 0, "T6c: an empty diff never reaches the loop at all");
+  assert(
+    rejected && /re-read failed/.test(resolvedTo),
+    `T6b: the fan-out's real getDiff REJECTS a blank diff it cannot prove clean (got ${resolvedTo})`,
+  );
+
+  // And an empty diff never reaches the loop at all (the #286 skip still fires).
+  // The executor must be a WORKING one here: "empty" is proven by reading the
+  // tree, so a failing executor would make this the unreadable case instead and
+  // the assertion would prove nothing about the short-circuit.
+  const emptyDir = tempRepo();
+  const { ctx: emptyCtx, calls: emptyCalls } = ctxForExec(emptyDir, 1642, passthroughExec());
+  const emptyRun = await fanOutAdversarial(
+    emptyCtx,
+    seedState(emptyDir, { default: emptyDir }, 1642),
+    ["default"],
+    new Map(),
+    false,
+    null,
+  );
+  assert(
+    emptyCalls() === 0 && emptyRun.outcomes[0]?.skipped === true,
+    "T6c: a proven-empty tree never reaches the loop at all",
+  );
+}
+
+// ===========================================================================
+// T8 — an unreadable diff is an ENVIRONMENT fact, never a provider fault.
+//      Before this, the outcome was `infra: true` with git's text in
+//      `errorTail`, and `classifyAdversarialOutcome` fed that to the taxonomy
+//      as `providerMessage` — so a host fault was reported as `provider-severed`
+//      (an outage that never happened), the retry ladder treated it as
+//      transient, and the headless `failure.kind` was `process`, which hosts
+//      re-queue. Each of those is a separate assertion below.
+// ===========================================================================
+{
+  const { classifyAdversarialOutcome } = await import("../src/work-driver-adversarial-reentry.ts");
+  const { classifyFailureCause } = await import("../src/work-driver-failure-taxonomy.ts");
+  const { unreadableDiffOutcome } = await import("../src/work-driver-adversarial-types.ts");
+
+  const o = unreadableDiffOutcome({
+    id: "default",
+    label: "adversarial_loop",
+    multi: false,
+    cwd: "/tmp/no-such-worktree",
+    startedAt: Date.now(),
+    orchestratorJobId: "job-t8",
+    // Provider-shaped text in git's message: if anything read this as provider
+    // prose, the classifier would say `provider-severed` and the ladder would
+    // buy a minutes-floor wait. The structured cause must win outright.
+    reason: "git diff HEAD failed: Request timed out. 429 requested 59s retry delay",
+    readFailed: "git diff HEAD",
+    priorInfra: false,
+  });
+
+  assert(
+    o.structuredCause === "environment:diff-unreadable",
+    `T8a: the outcome STATES its cause (got ${o.structuredCause})`,
+  );
+  assert(o.readFailed === "git diff HEAD", "T8b: the outcome names the read that failed");
+
+  const cls = classifyAdversarialOutcome(o);
+  assert(
+    cls.cause === "environment:diff-unreadable",
+    `T8c: the taxonomy reports the environment cause, not a provider one (got ${cls.cause})`,
+  );
+  assert(cls.shouldRetry === false, "T8d: an unreadable diff is NOT retryable");
+  assert(cls.maxRetries === 0, "T8e: zero retries — re-spawning asks git the same question");
+  assert(
+    !o.infra || classifyAdversarialOutcome(o).cause !== "provider-severed",
+    "T8f: the provider-class cause the old shape produced is gone",
+  );
+
+  // git's stderr must not reach the classifier AS PROVIDER TEXT: even handed a
+  // provider-shaped message directly, the structured cause is what answers.
+  const direct = classifyFailureCause({
+    kind: "dispatch-failed-provider",
+    providerMessage: "429 requested 59s retry delay",
+    structuredCause: "environment:diff-unreadable",
+  });
+  assert(
+    direct.cause === "environment:diff-unreadable" && direct.shouldRetry === false,
+    `T8g: a structured cause is never overridden by provider-shaped prose (got ${direct.cause})`,
+  );
+
+  // The same event, read the way the driver's cause surfaces read it.
+  const { failureOf } = await import("../src/headless/failure.ts");
+  const dir = tempRepo();
+  const state: WorkState = {
+    ...seedState(dir, { default: scratchDirWithoutGit("adv-unreadable-t8-", {}) }, 1643),
+    eventLog: [
+      { kind: "step-started", step: "adversarial", at: Date.now() },
+      ...(o.failureEvent ? [o.failureEvent] : []),
+      {
+        kind: "cap-hit" as const,
+        at: Date.now(),
+        cap: "adversarial-infra-failure" as const,
+        reviewRound: 0,
+        nextStep: "handoff" as const,
+      },
+    ],
+  };
+  const f = failureOf(state, "adversarial-infra-failure", "adversarial");
+  assert(
+    f?.cause === "environment:diff-unreadable",
+    `T8h: the headless failure reports the environment cause (got ${f?.cause})`,
+  );
+  assert(
+    f?.kind === "environment",
+    `T8i: failure.kind is environment so a host does not re-queue it as a crash (got ${f?.kind})`,
+  );
+  assert(
+    f?.structuredCause === "environment:diff-unreadable",
+    `T8j: the producer's cause is surfaced alongside the inferred one (got ${f?.structuredCause})`,
+  );
+
+  // And the operator-facing explanation names the class, the read, and the fact
+  // that the ladder deliberately did not retry.
+  const { explainCap } = await import("../src/work-driver-explain.ts");
+  const why = explainCap("adversarial-infra-failure", state);
+  assert(
+    /environment:diff-unreadable/.test(why),
+    "T8k: the handoff's cause line carries the environment cause",
+  );
+  assert(
+    /git diff HEAD/.test(why),
+    "T8l: the handoff names the READ that failed, not just its class",
+  );
+  assert(
+    /did NOT re-run it/.test(why),
+    "T8m: the handoff says the retry ladder declined, so the operator does not wait for a retry",
+  );
 }
 
 // ===========================================================================

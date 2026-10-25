@@ -1,14 +1,39 @@
 /**
- * Test fixture (#1016): real git worktrees with one base commit each, for the
- * develop-fanout smoke tests. A develop green needs commits ahead of its base,
- * so fixtures that stage a passing developer must make real commits.
+ * Test fixture: real git worktrees, and the two shapes a diff read must be
+ * able to tell apart.
+ *
+ * #1016 — the develop fan-out needs commits ahead of a base, so fixtures that
+ * stage a passing developer must make real commits. `makeBaseWorktrees` and
+ * `gitIn` are that half.
+ *
+ * #1634 — `readWorktreeDiff` (work-driver-diff.ts) distinguishes "this tree is
+ * clean, there is nothing to review" from "this tree could not be read", and
+ * the adversarial gate routes the second case as an infrastructure failure
+ * rather than the empty-diff approval #286 introduced. A fixture built with
+ * `mkdtempSync` and no `git init` is the SECOND case: there is no repository,
+ * so the gate must refuse to approve it. That is the correct production answer
+ * — a worktree that is not a git repo must never be auto-approved — so the
+ * fixtures, not the gate, are what changed. `initScratchRepo` gives a fixture
+ * tree the two things the read needs: one commit on `main` (so `HEAD` resolves
+ * and `git diff HEAD` answers), and an identity so `git commit` works from a
+ * bare temp directory — the developer's global config is not present on every
+ * host and CI's runner has none.
+ *
+ * The unreadable half is `scratchDirWithoutGit` (a directory with files in it
+ * and no repository). A git binary that itself fails is NOT simulated here by
+ * mangling `PATH`: `readWorktreeDiff` takes an injectable `exec`, so a test
+ * hands it a failing executor instead of mutating process-global state that any
+ * sibling test spawning git would race with. See the `failingExec` export.
  */
+
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import type { ExecFn } from "../../src/worktree.ts";
+import { execp } from "../../src/exec.ts";
 import { gitTestEnv } from "./git-test-env.ts";
-import { makeFakeGitDirReal } from "./git-worktree.ts";
 
 /**
  * The safety net's `git commit` runs through the inherited environment, not
@@ -43,6 +68,39 @@ export function gitIn(cwd: string, args: string[]): string {
   }).trim();
 }
 
+/**
+ * Run git with the #1145 isolated view PLUS a pinned `core.hooksPath`. The env
+ * comes from `gitTestEnv()` — the repo's own fixture isolation (isolated HOME /
+ * XDG_CONFIG_HOME / GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM, and the
+ * `core.excludesFile=/dev/null` entry it carries), which is what `gitIn` hands
+ * every other fixture repo. Two reasons not to hand-roll this:
+ *
+ *  - a fixture that becomes a real repository is subject to whatever the host's
+ *    git config ignores; on a host whose global config ignores `.pi/` the
+ *    driver's own `git diff` / `git status` reads change shape;
+ *  - a second isolation mechanism that disagrees with the first is a second set
+ *    of git defaults, and the two then differ per host — the exact state #1145
+ *    exists to make impossible.
+ *
+ * `core.hooksPath` is added on top: a host- or repo-installed `pre-commit` hook
+ * must neither run nor block a fixture's commit. `timeout` bounds every call, so
+ * a git child waiting for input (a credential prompt, a hook) fails the test
+ * rather than hanging it.
+ */
+function git(cwd: string, args: string[]): void {
+  try {
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+      cwd,
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: 30_000,
+      env: gitTestEnv(),
+    });
+  } catch (err) {
+    const stderr = (err as { stderr?: Buffer }).stderr?.toString().trim();
+    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${stderr ?? String(err)}`);
+  }
+}
+
 /** #1016 — the mock developer's work: task-c leaves its edit UNCOMMITTED (the
  *  case the #622 safety net commits); every other developer commits. */
 export function mockDeveloperWork(cwd: string, label: string | undefined): void {
@@ -66,19 +124,206 @@ export async function makeBaseWorktrees(
   return shas;
 }
 
+/** A fresh temp directory, not a repository — the caller cleans it up. */
+export function scratchDir(prefix = "pi-ens-gitfix-"): string {
+  return mkdtempSync(path.join(tmpdir(), prefix));
+}
+
+/**
+ * Make `dir` a git working tree with one empty commit on `main`, so `git diff
+ * HEAD` and `git status --porcelain -z` both answer.
+ * Idempotent: a directory that already has a repository is returned untouched.
+ */
+export function initScratchRepo(dir: string): string {
+  try {
+    execFileSync("git", ["rev-parse", "--git-dir"], {
+      cwd: dir,
+      stdio: ["ignore", "ignore", "ignore"],
+      timeout: 30_000,
+    });
+    return dir;
+  } catch {
+    // Not a repo yet — the ordinary case for a mkdtemp fixture.
+  }
+  git(dir, ["init", "-q", "--initial-branch=main", "."]);
+  git(dir, ["config", "user.email", "smoke-test@pi-rukas.invalid"]);
+  git(dir, ["config", "user.name", "pi-rukas smoke test"]);
+  git(dir, ["commit", "-q", "--allow-empty", "-m", "fixture baseline"]);
+  return dir;
+}
+
+/**
+ * A git working tree with one empty commit, built from scratch. The fixture
+ * every diff-read test starts from: `git diff HEAD` is empty — so the read
+ * reports a POSITIVELY proven empty diff — until the test writes a file.
+ */
+export function initScratchRepoFresh(prefix = "pi-ens-gitfix-"): string {
+  return initScratchRepo(scratchDir(prefix));
+}
+
+/** Write `content` to `rel` inside `dir`, creating parent directories. */
+export function seedFile(dir: string, rel: string, content: string): string {
+  const full = path.join(dir, rel);
+  mkdirSync(path.dirname(full), { recursive: true });
+  writeFileSync(full, content);
+  return full;
+}
+
+/** Stage (but do not commit) `rel`, so the diff read sees a tracked change. */
+export function stageFile(dir: string, rel: string): void {
+  git(dir, ["add", "--", rel]);
+}
+
+/** Commit everything currently in `dir` (the fixture's own identity makes this work). */
+export function commitAll(dir: string, message = "fixture commit"): void {
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", message]);
+}
+
+/**
+ * Run `git` with the fixture's isolated view, for a test that needs to change a
+ * tree's staged/unstaged state (e.g. unstage a seeded change so the SECOND read
+ * of one workstream is the blank-and-unprobeable shape).
+ */
+export function gitFixture(cwd: string, args: string[]): void {
+  git(cwd, args);
+}
+
+/**
+ * The same, for a call whose STDOUT is the answer (`rev-parse HEAD`, a file at
+ * a ref). `gitFixture` discards stdout because its callers mutate the tree.
+ */
+export function gitFixtureOut(cwd: string, args: string[]): string {
+  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+    cwd,
+    encoding: "utf8",
+    timeout: 30_000,
+    env: gitTestEnv(),
+  }).trim();
+}
+
+/**
+ * A directory that holds files but is NOT a git repository — the shape the
+ * gate must treat as UNREADABLE rather than empty. `files` are written so the
+ * tree is not trivially empty on disk either.
+ */
+export function scratchDirWithoutGit(
+  prefix = "pi-ens-norepo-",
+  files: Record<string, string> = {},
+): string {
+  const dir = scratchDir(prefix);
+  for (const [rel, content] of Object.entries(files)) seedFile(dir, rel, content);
+  return dir;
+}
+
+/**
+ * An executor whose every call fails — the fixture for "git itself failed", as
+ * distinct from `scratchDirWithoutGit`'s "there is no repository here". Both
+ * must be unreadable, and a gate that handles only one of them is a gate that
+ * can still be fooled.
+ *
+ * It replaces the old `withGitBroken`, which removed `git` from
+ * `process.env.PATH` for the duration of a callback. That worked, but it is
+ * process-global: it mutated shared state every sibling git read in the same
+ * process (including any concurrent test) would have raced with, and it could
+ * not be scoped to one call. The diff reads take an `exec` parameter precisely
+ * so this can be handed to ONE read instead — deterministic, scoped, reversible
+ * by doing nothing.
+ */
+export function failingExec(reason = "git is not available (smoke-test executor)"): ExecFn {
+  return (cmd: string) =>
+    Promise.reject(new Error(`${cmd} failed: ${reason}`)) as Promise<{
+      stdout: string;
+      stderr: string;
+    }>;
+}
+
+/**
+ * The default executor, behind the same `ExecFn` type — so a fixture that needs
+ * the read to SUCCEED can pass an executor explicitly instead of relying on the
+ * parameter's default. Matters for the "proven empty" case: `empty` is
+ * established by a real read, so a test that wants that answer must supply a
+ * working git rather than inherit one by omission.
+ */
+export function passthroughExec(): ExecFn {
+  return (cmd, opts) => execp(cmd, opts);
+}
+
+/**
+ * An executor that fails only for `git` invocations whose argv contains EVERY
+ * token in `failWhenArgsInclude` — for making just the dirt probe fail while
+ * the diff read itself succeeds, which is the shape of "the diff came back
+ * blank and the thing that decides what a blank means could not be read".
+ */
+export function execFailingArgs(failWhenArgsInclude: readonly string[]): ExecFn {
+  return async (cmd, opts) => {
+    if (failWhenArgsInclude.every((tok) => (opts?.argv ?? []).includes(tok))) {
+      throw new Error(`${cmd} ${(opts?.argv ?? []).join(" ")}: forced failure (smoke test)`);
+    }
+    return execp(cmd, opts);
+  };
+}
+
+/**
+ * #1634 — upgrade the very common `mkdtempSync` + `mkdirSync(<dir>/.git/info)`
+ * fake-tree fixture into something git can actually answer, WITHOUT changing
+ * what the test asserts.
+ *
+ * Dozens of driver tests build a scratch "worktree" by making a directory and a
+ * `.git/info` path inside it so the driver's state file has somewhere to live.
+ * That directory is not a repository, which was invisible while the diff read
+ * answered `""` for every failure mode and the adversarial gate read `""` as
+ * approved-with-zero-rounds. Once the gate can tell the two apart (this issue)
+ * such a fixture is UNREADABLE, and a test whose fixture never reaches the
+ * reviewer it means to exercise is measuring something else.
+ *
+ * `initScratchRepo` cannot detect the case (it probes with `git rev-parse`,
+ * which needs the binary), so this recognises the FAKE admin dir by shape — a
+ * `.git` directory with no `HEAD`, which a real `git init` never leaves behind —
+ * and turns it into a real tree with one empty commit. A directory with no
+ * `.git` at all is left alone: those fixtures are deliberately the
+ * not-a-repository case and their tests say so.
+ *
+ * The driver artefacts already in the tree (`.pi/work-state/*.json`, `tmp/**`)
+ * are untracked, so `isDriverArtefactPath` spares them and the tree still reads
+ * as a POSITIVELY proven empty diff — which is what the fixture meant to be.
+ * A caller that wants a diff puts a file in itself.
+ *
+ * ⚠ Every command here goes through `git` above, which pins the isolated git
+ * view. Do NOT route these through the ambient environment: see that helper.
+ */
+export function makeFakeGitDirReal(dir: string): string {
+  const gitDir = path.join(dir, ".git");
+  let isFake = false;
+  try {
+    isFake = existsSync(gitDir) && !existsSync(path.join(gitDir, "HEAD"));
+  } catch {
+    return dir;
+  }
+  if (!isFake) return dir;
+  // The fixture's `.git` is a plain directory, so `git init` here is the repair:
+  // git writes the admin files it was never given.
+  git(dir, ["init", "-q", "--initial-branch=main", "."]);
+  git(dir, ["config", "user.email", "smoke-test@pi-rukas.invalid"]);
+  git(dir, ["config", "user.name", "pi-rukas smoke test"]);
+  git(dir, ["commit", "-q", "--allow-empty", "-m", "fixture baseline"]);
+  return dir;
+}
+
 /**
  * #1634 — one call for the `mkdtempSync` + `mkdirSync(dir, ".git", "info")`
  * fixture shape this suite uses everywhere: the scratch directory that stands in
  * for a worktree so the driver's state file has somewhere to live.
  *
- * That directory is not a repository, which was harmless while `fetchDiff`
+ * That directory is not a repository, which was harmless while the diff read
  * answered `""` for every failure mode — and stays harmless for the tests that
  * never reach the review step. But the `.git` ENTRY makes `readWorktreeDiff` ask
  * git whether the tree is clean, and for a directory that was never a repository
- * that probe fails: the read comes back unreadable, the failure classifies as
- * transient, and the retry ladder sleeps through its whole budget. Two tests of
- * this shape measured 109 s and 110 s against a 45 s per-test bound — which is
- * how the previous dispatch hung for 40 minutes without reaching its assertions.
+ * that probe fails: the read comes back unreadable, the failure classifies as an
+ * environment fault, and — before #1634's non-retryable cause — the retry ladder
+ * slept through its whole budget. Two tests of this shape measured 109 s and
+ * 110 s against a 45 s per-test bound — which is how the previous dispatch hung
+ * for 40 minutes without reaching its assertions.
  *
  * Making the tree real costs one `git init` per fixture and answers every
  * question the driver asks of it, so the test exercises the path it names
@@ -100,12 +345,13 @@ export function driverWorktree(dir: string): string {
  *
  * Every driver smoke fixture that reaches the adversarial gate declares worktree
  * paths it never creates (`${dir}/.worktrees/task-a`), which was harmless while
- * `fetchDiff` answered `""` for everything and the gate read `""` as approved with
- * zero rounds. It is no longer harmless: a missing tree is the UNREADABLE class,
- * the gate now routes that as an infrastructure failure, and a test written to
- * assert a verdict ends up asserting a retry ladder. Creating the directories and
- * making each a one-commit repo costs nothing and returns the fixture to the path
- * it names. Idempotent, and it leaves a path that is already a repository alone.
+ * the diff read answered `""` for everything and the gate read `""` as approved
+ * with zero rounds. It is no longer harmless: a missing tree is the UNREADABLE
+ * class, the gate now routes that as an infrastructure failure, and a test
+ * written to assert a verdict ends up asserting a retry ladder. Creating the
+ * directories and making each a one-commit repo costs nothing and returns the
+ * fixture to the path it names. Idempotent, and it leaves a path that is already
+ * a repository alone.
  */
 export function driverWorktrees(
   worktrees: Record<string, string> | undefined,

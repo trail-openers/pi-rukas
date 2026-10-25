@@ -19,12 +19,13 @@
  */
 
 import { exec } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { readAllMergedDiffs, readIntegratedDiff } from "../src/work-driver-diff.ts";
+import { fetchAllDiffs, readAllMergedDiffs, readIntegratedDiff } from "../src/work-driver-diff.ts";
+import { commitAll, gitFixture, gitFixtureOut } from "./lib/git-worktree-fixture.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState, writeState } from "../src/workflow-state.ts";
@@ -146,6 +147,108 @@ async function mkRepo(): Promise<string> {
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ------------------------- #1634 M3c: `empty` is DERIVED FROM THE READS, not
+// from `!diff.trim()`. Two shapes matter:
+//   (a) N>1 whose bodies are all blank — the merged document is nothing but
+//       `## workstream:` headers, so a string-length predicate calls it a
+//       non-empty diff and lens review runs over headers alone, hallucinating
+//       findings against unrelated files (the PR7 shape);
+//   (b) a read that FAILED — which must never be reported as `empty: true`.
+
+{
+  const root = mkdtempSync(path.join(tmpdir(), "pi-lens-merged-empty-"));
+  try {
+    // (a) Two CLEAN worktrees: each read succeeds and proves itself empty, so
+    // the merged result is `ok` — and its `empty` must come from those reads.
+    const worktrees: Record<string, string> = {};
+    for (const id of ["task-a", "task-b"]) {
+      const wt = path.join(root, id);
+      mkdirSync(wt, { recursive: true });
+      // The fixture helpers, not a hand-rolled `execp("git …")`: they pin the
+      // #1145 isolated git view AND supply an identity, so `commit` works on a
+      // CI runner that has no global config. A fixture that cannot commit is a
+      // fixture whose tree is not the one the read is asked about.
+      gitFixture(wt, ["init", "-q", "--initial-branch=main", "."]);
+      gitFixture(wt, ["config", "user.email", "t@t"]);
+      gitFixture(wt, ["config", "user.name", "T"]);
+      gitFixture(wt, ["commit", "-q", "--allow-empty", "-m", "base"]);
+      worktrees[id] = wt;
+    }
+    // Same base SHA in both trees, so a committed change in one reads as a diff
+    // against a range the other resolves too.
+    const sharedBase = gitFixtureOut(worktrees["task-a"] ?? root, ["rev-parse", "HEAD"]);
+    for (const wt of Object.values(worktrees)) {
+      if (gitFixtureOut(wt, ["rev-parse", "HEAD"]) !== sharedBase) {
+        gitFixture(wt, ["reset", "--hard", sharedBase]);
+      }
+    }
+    const r = await fetchAllDiffs(worktrees, root, undefined);
+    assert(r.ok, "M3a: two proven-clean worktrees are a readable merged diff");
+    if (r.ok) {
+      assert(
+        r.empty === true,
+        "M3a: two proven-clean worktrees merge to an EMPTY result — the flag derives from the reads, not the string",
+      );
+      assert(
+        r.diff === "",
+        "M3b: the merged document holds no headers at all, so runLens's guard cannot be fooled into reviewing header-only context (the PR7 hallucination)",
+      );
+    }
+
+    // And `runLens`'s own branch keys on that flag, NOT on `!diff.trim()`. The
+    // merged document for a partly-empty fan-out legitimately carries blank
+    // bodies and `## workstream:` headers, so a string predicate and the flag
+    // DO come apart there — see M3d below for the producer's header rule.
+
+    // One workstream with real content still reports a non-empty diff, so the
+    // derivation is not simply "always true". It needs a BASE SHA: with none,
+    // the read falls back to `git diff HEAD`, which is empty once the work is
+    // committed — the exact #453 case the committed-range read exists for.
+    const baseA = gitFixtureOut(worktrees["task-b"] ?? root, ["rev-parse", "HEAD"]);
+    writeFileSync(path.join(worktrees["task-a"] ?? "", "work.txt"), "change\n");
+    commitAll(worktrees["task-a"] ?? root, "one work file");
+    const withWork = await fetchAllDiffs(worktrees, root, baseA);
+    assert(
+      withWork.ok && withWork.empty === false,
+      `M3c: one workstream with a committed change against the base makes the merged diff non-empty (${withWork.ok ? "empty=" + withWork.empty : withWork.reason})`,
+    );
+    if (withWork.ok) {
+      assert(
+        withWork.diff.includes("## workstream:"),
+        "M3d: a merged document WITH content does carry the per-workstream headers — so an all-blank document must not be judged non-empty by string length",
+      );
+    }
+
+    // (b) A read that FAILED is never `empty: true` — not on the N>1 path…
+    const worktreesWithBad = { ...worktrees, "task-c": path.join(root, "never-created") };
+    const partial = await fetchAllDiffs(worktreesWithBad, root, undefined);
+    assert(
+      !partial.ok,
+      "M3e: one unreadable workstream makes the whole merged read unreadable",
+    );
+
+    // …and not on the N=1 path, where the read is returned directly. A path
+    // that is not a git tree at all is the unreadable case: N=1 must report it
+    // as such rather than as a proven-empty diff (the shape that let the
+    // adversarial gate approve a tree nobody read).
+    const notATree = path.join(root, "plain-dir");
+    mkdirSync(notATree, { recursive: true });
+    writeFileSync(path.join(notATree, "a.txt"), "a\n");
+    const n1 = await fetchAllDiffs({ default: notATree }, root, undefined);
+    assert(
+      !n1.ok,
+      `M3e: N=1 against a directory that is not a git tree is UNREADABLE, never empty (${n1.ok ? "reported empty=" + n1.empty : n1.reason})`,
+    );
+    const n1merged = await readAllMergedDiffs({ default: notATree }, root, undefined);
+    assert(
+      !n1merged.ok,
+      "M3g: and the lens path no-branch leg reports the same, so runLens halts rather than skipping to lens-approved",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

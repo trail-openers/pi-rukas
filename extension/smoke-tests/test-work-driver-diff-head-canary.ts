@@ -8,7 +8,7 @@
  * against itself and passes unconditionally — the worst possible gate
  * failure mode, invisible in CI until the epic lands.
  *
- * `fetchDiff` (work-driver-diff.ts) is exempt by design: its `git diff
+ * `readWorktreeDiff` (work-driver-diff.ts) is exempt by design: its `git diff
  * HEAD` is DELIBERATE pre-commit semantics — adversarial review runs
  * pre-commit, `cwd` is always a per-cycle worktree (or the documented
  * last-resort repoRoot fallback), and "working tree vs its own HEAD"
@@ -22,15 +22,16 @@
  *
  *   1. SOURCE SCAN — the verification and diff-fetch sources name every
  *      repo-root ref explicitly; the only bare `git diff HEAD` in
- *      work-driver-diff.ts is the documented per-worktree `fetchDiff`
- *      call, and the per-worktree `git diff HEAD -U0` fallback in
- *      work-driver-verify-develop.ts is bounded by a baseSha precondition.
+ *      work-driver-diff.ts is the documented per-worktree
+ *      `readWorktreeDiff` call, and the per-worktree `git diff HEAD -U0`
+ *      fallback in work-driver-verify-develop.ts is bounded by a baseSha
+ *      precondition.
  *
  *   2. LIVE SCOPE — in a real repo whose ROOT IS ON MAINLINE, an
  *      uncommitted change in a DETACHED worktree is exactly what
- *      `fetchDiff(worktree)` returns and exactly what `fetchDiff(root)`
- *      does NOT return. If a future refactor ever pointed a
- *      repo-root-scoped diff read at the wrong tree, this fixture
+ *      `readWorktreeDiff(worktree)` returns and exactly what
+ *      `readWorktreeDiff(root)` does NOT return. If a future refactor ever
+ *      pointed a repo-root-scoped diff read at the wrong tree, this fixture
  *      catches it: the gate would see mainline-vs-mainline = empty and
  *      approve.
  */
@@ -49,7 +50,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { runBranchViaOpsDispatch } from "../src/work-driver-branch-ops.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { fetchDiff } from "../src/work-driver-diff.ts";
+import { readWorktreeDiff } from "../src/work-driver-diff.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
@@ -87,9 +88,9 @@ const readSrc = (name: string) => readFileSync(path.join(SRC, name), "utf8");
 // work-driver-diff.ts — the per-worktree fetchers.
 {
   const src = readSrc("work-driver-diff.ts");
-  // After cherry-pick integration (#453), fetchDiff uses `git show <commitSHA>`
-  // for post-commit diffs. There are now ZERO bare `git diff HEAD` calls
-  // in code — all diff reads use explicit refs or commit SHAs.
+  // After cherry-pick integration (#453), the committed read uses
+  // `git diff <baseSha>..HEAD` for post-commit diffs. There are now ZERO bare
+  // `git diff HEAD` strings in code — all diff reads use explicit refs or SHAs.
   const codeLines = src
     .split("\n")
     .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//"))
@@ -97,11 +98,11 @@ const readSrc = (name: string) => readFileSync(path.join(SRC, name), "utf8");
   const matches = codeLines.match(/git diff HEAD/g) ?? [];
   assert(
     matches.length === 0,
-    `work-driver-diff.ts: zero bare \`git diff HEAD\` calls (fetchDiff uses git show for post-commit diffs), found ${matches.length}`,
+    `work-driver-diff.ts: zero bare \`git diff HEAD\` calls (the committed read names its range), found ${matches.length}`,
   );
   assert(
     src.includes("DELIBERATE pre-commit semantics"),
-    "work-driver-diff.ts: fetchDiff documents its `git diff HEAD` as deliberate pre-commit semantics",
+    "work-driver-diff.ts: readWorktreeDiff documents its `git diff HEAD` fallback as deliberate pre-commit semantics",
   );
   // The repo-root integrated read names both refs — the reference shape.
   assert(
@@ -189,18 +190,18 @@ async function main() {
     writeFileSync(path.join(wt, "src.txt"), "developer edit\n");
 
     // The worktree read sees the change...
-    const wtDiff = await fetchDiff(wt);
+    const wtDiff = await readWorktreeDiff(wt, undefined);
     assert(
-      wtDiff.includes("developer edit"),
-      "live scope: fetchDiff(worktree) returns the uncommitted work",
+      wtDiff.ok && wtDiff.diff.includes("developer edit"),
+      "live scope: readWorktreeDiff(worktree) returns the uncommitted work",
     );
     // ...and the repo-root read does NOT — the mainline tree is clean.
     // A verification path that runs this at repoRoot post-epic would
     // review mainline-vs-mainline = "" and approve.
-    const rootDiff = await fetchDiff(repo);
+    const rootDiff = await readWorktreeDiff(repo, undefined);
     assert(
-      rootDiff === "",
-      "live scope: fetchDiff(repoRoot-on-mainline) is empty — scoping the diff read to the worktree is what keeps the gate meaningful",
+      rootDiff.ok && rootDiff.diff === "" && rootDiff.empty === true,
+      "live scope: readWorktreeDiff(repoRoot-on-mainline) is a PROVEN empty diff — scoping the diff read to the worktree is what keeps the gate meaningful",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

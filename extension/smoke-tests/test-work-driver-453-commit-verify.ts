@@ -9,7 +9,7 @@
  *     transfer unit is now a commit (cherry-picked at integration), not a
  *     patch. Invalid/absent baseSha (older state files) keeps the old
  *     uncommitted-counts behaviour.
- *  2. `fetchDiff(cwd, baseSha)` prefers the committed range
+ *  2. `readWorktreeDiff(cwd, baseSha)` prefers the committed range
  *     `git diff baseSha..HEAD` and falls back to `git diff HEAD` for
  *     uncommitted work — so the adversarial gate keeps reviewing the real
  *     work after the developer commits (pre-#453, `git diff HEAD` was
@@ -30,7 +30,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { fetchDiff } from "../src/work-driver-diff.ts";
+import { readWorktreeDiff } from "../src/work-driver-diff.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
 import type { VerifyDevelopOutcomeOptions } from "../src/work-driver-verify-develop-options.ts";
 import { commandOf } from "./lib/argv-shell.ts";
@@ -216,34 +216,36 @@ const NO_OPTIONS: VerifyDevelopOutcomeOptions = {};
   }
 }
 
-// --------------------- #453: fetchDiff with baseSha (live git) --------------
+// --------------------- #453: readWorktreeDiff with baseSha (live git) ------
 
 async function mainFetchDiffBaseSha(): Promise<void> {
   const { root, wt, baseSha } = await mkCommittedWorktree();
   try {
-    // fetchDiff with baseSha → shows committed diff (non-empty).
-    const withBase = await fetchDiff(wt, baseSha);
+    // The committed range is the answer when baseSha is a valid SHA.
+    const withBase = await readWorktreeDiff(wt, baseSha);
     assert(
-      withBase.includes("developer work"),
-      "#453 fetchDiff(wt, baseSha): returns committed diff when baseSha provided",
+      withBase.ok && withBase.diff.includes("developer work"),
+      "#453 readWorktreeDiff(wt, baseSha): returns committed diff when baseSha provided",
     );
 
-    // fetchDiff without baseSha → git diff HEAD, which is empty (tree is clean).
-    const withoutBase = await fetchDiff(wt);
+    // Without baseSha → `git diff HEAD`, which is empty on a clean tree (the
+    // committed work is not shown), and the read PROVES it empty.
+    const withoutBase = await readWorktreeDiff(wt, undefined);
     assert(
-      withoutBase === "",
-      "#453 fetchDiff(wt) without baseSha: clean tree returns empty (committed work not shown)",
+      withoutBase.ok && withoutBase.diff === "" && withoutBase.empty === true,
+      "#453 readWorktreeDiff(wt) without baseSha: clean tree returns a PROVEN empty diff (committed work not shown)",
     );
 
-    // fetchDiff with baseSha but uncommitted changes → committed range wins.
+    // baseSha with extra uncommitted changes → committed range wins.
     writeFileSync(path.join(wt, "extra.txt"), "uncommitted\n");
-    const withExtraUncommitted = await fetchDiff(wt, baseSha);
+    const withExtraUncommitted = await readWorktreeDiff(wt, baseSha);
     // baseSha..HEAD has content (the commit), so that path wins — extra.txt
     // (uncommitted) is NOT in the diff.
     assert(
-      withExtraUncommitted.includes("developer work") &&
-        !withExtraUncommitted.includes("extra.txt"),
-      "#453 fetchDiff(wt, baseSha): committed diff wins over uncommitted when both present",
+      withExtraUncommitted.ok &&
+        withExtraUncommitted.diff.includes("developer work") &&
+        !withExtraUncommitted.diff.includes("extra.txt"),
+      "#453 readWorktreeDiff(wt, baseSha): committed diff wins over uncommitted when both present",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -254,7 +256,7 @@ async function mainFetchDiffBaseSha(): Promise<void> {
 //
 // DoD shape: after a developer commit, the diff the adversarial gate is
 // fed is non-empty and matches the committed content. The fan-out builds
-// it via `fetchDiff(cwd, baseSha)`; the mocked loop records what it got.
+// it via `readWorktreeDiff(cwd, baseSha)`; the mocked loop records what it got.
 
 async function mainAdversarialCommittedDiff(): Promise<void> {
   const { root, wt, baseSha } = await mkCommittedWorktree();
