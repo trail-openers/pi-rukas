@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { rereadCommandForRound } from "./adversarial-diff-cap.ts";
 import {
   type FenceRecord,
   type FencedRound,
@@ -20,6 +19,7 @@ import { makeRunPhase } from "./adversarial-phase.ts";
 import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
+import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import {
   decideLoopAction,
   fixRefusedResult,
@@ -147,19 +147,21 @@ export async function runAdversarialLoop(
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
-  /**
-   * The command reproducing the diff the CURRENT round reviews, or nothing when
-   * no caller ran one — used only by the truncation notice when the diff exceeds
-   * the inline cap (adversarial-diff-cap.ts). Minted only where THIS loop ran
-   * `rangeDiffFn`; the /work fan-out pastes a diff its own `fetchDiff` produced
-   * and keeps the "not available" wording. See `rangeRereadCommand`.
-   */
-  let diffRereadCommand: string | undefined;
   // #1360 — the head the CURRENT round reviews. It starts as the caller's ref
   // and a fix round that committed changes re-points it at `HEAD`, which is
   // what `getDiff` then diffs against (the range's head half), so the loop and
   // the writer never disagree about which commit a round judged.
   let headRef: string | undefined = params.head;
+  /**
+   * The diff the CURRENT round reviews, and the range its truncation notice may
+   * name — ONE value, updated in ONE place (#1816). The builders mint the reread
+   * command from `range` only when the diff exceeds the inline cap
+   * (adversarial-diff-cap.ts), and `range` is set only where THIS loop ran
+   * `rangeDiffFn`, so the /work fan-out's pasted diff keeps the "not available"
+   * wording. A round whose re-read FAILED has none: the diff under review is a
+   * previous round's, so the notice must not name a range it never read.
+   */
+  let review: RoundReview = { diff: "" };
 
   // #948 / #1040 — the comment check runs ONCE per round, on the diff that round
   // reviews; that single result feeds both the reviewer's prompt and the
@@ -234,7 +236,7 @@ export async function runAdversarialLoop(
       );
     }
     diff = initial.diff;
-    diffRereadCommand = rereadCommandForRound(range.base, headRef ?? range.head);
+    review = roundAfterReread(review, range, headRef, true, initial.diff);
     // Rounds 2+ re-compute the SAME range, so a fix round's changes are
     // reviewed (same rule as the driver's per-round getDiff re-read).
     getDiff = async () => {
@@ -300,10 +302,10 @@ export async function runAdversarialLoop(
         // both halves of the range. A failed re-read keeps the previous diff,
         // so it keeps the previous round's head too.
         headRef = roundHeadRef(headRef, { isRefRangeRound: range !== null, freshDiff: fresh });
-        // Minted HERE, beside the head it describes: the notice must print the
-        // command for the range this round actually reviewed.
-        if (range) diffRereadCommand = rereadCommandForRound(range.base, headRef ?? range.head);
-        if (fresh.trim()) diff = fresh;
+        // #1816 — the range is minted HERE, beside the head it describes, and
+        // TOGETHER with the diff it produced: the notice must print the command
+        // for the range this round actually reviewed.
+        review = roundAfterReread(review, range, headRef, true, fresh);
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
         // diff plus the live worktree is what the reviewer had before this.
@@ -311,6 +313,10 @@ export async function runAdversarialLoop(
         // of the operator having to notice it.
         const reason = (err as Error).message;
         trace(`adversarial: diff re-read failed for round ${round}: ${reason}`);
+        // #1816 — and no range for this round either: the diff under review is
+        // a previous round's, so the notice may not name a range this round
+        // never read.
+        review = roundAfterReread(review, range, headRef, false, undefined);
         diffRereadNotes.push(
           `note: round ${round} diff re-read failed (${reason}) — reviewed the previous diff`,
         );
@@ -342,9 +348,12 @@ export async function runAdversarialLoop(
         // #1040 — comments this round's diff removed, for the reviewer to judge.
         commentEvidence: renderCommentEvidence(lastComments),
         // #1137 — scope the review to this workstream (N>1 only; absent on N=1).
-        ...(params.scope !== undefined ? { scope: params.scope } : {}),
+        // A plain pass-through now that the value is optional: an absent scope
+        // leaves the key undefined, exactly as the conditional spread did, and
+        // the builder already branches on `opts.scope`.
+        scope: params.scope,
         // Only non-undefined on the ref-range path; a pasted diff keeps today's prompt.
-        ...(diffRereadCommand !== undefined ? { diffRereadCommand } : {}),
+        diffRange: review.range,
       }),
       params.workCwd,
       { runPhase, accumulate, signal },
@@ -450,7 +459,7 @@ export async function runAdversarialLoop(
             round,
             issueBody: params.issueBody,
             priorFindings: [...priorFindings],
-            ...(diffRereadCommand !== undefined ? { diffRereadCommand } : {}),
+            diffRange: review.range,
           }),
           params.workCwd,
           { runPhase, accumulate, signal },
