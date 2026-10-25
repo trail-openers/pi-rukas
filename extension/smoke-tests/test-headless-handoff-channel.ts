@@ -20,6 +20,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Forge } from "../src/forge.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { projectIssue } from "../src/headless/result.ts";
+import { PATH_NORMALISATION_NOTE } from "../src/public-hygiene-normalise.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import {
@@ -42,6 +43,8 @@ import {
 } from "../src/workflow-state.ts";
 
 let exit = 0;
+/** The forge's own name for a PR/MR target (the `labelAdd` vocabulary). */
+const PR_KIND = "pr";
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
   else {
@@ -105,9 +108,18 @@ function capped(issue: number, cap: string, parkReason?: string): WorkState {
 }
 
 /** A forge that records every call; comment/label calls succeed, reads fail. */
+/**
+ * A forge that records every call. Comment/label writes succeed; reads fail —
+ * except the label read-back, which a `labelAdd` this cycle made actually
+ * answers. The refused-body leg's whole claim is that a label the driver applied
+ * is RECORDED as applied, and `verifyHandoffLabel` is the read that decides it,
+ * so a stub that always answered "no labels" could not pin that claim.
+ */
 function recordingForge(): { forge: Forge; calls: string[]; bodies: string[] } {
   const calls: string[] = [];
   const bodies: string[] = [];
+  /** The targets this forge had `needs-human-attention` added, keyed `kind:number`. */
+  const labelled = new Set<string>();
   const forge = new Proxy(
     { forge: "github", host: "github.com", owner: "a", repo: "b" } as object,
     {
@@ -120,7 +132,21 @@ function recordingForge(): { forge: Forge; calls: string[]; bodies: string[] } {
             bodies.push(String(args[1]));
             return `https://github.com/a/b/issues/${args[0]}#issuecomment-1`;
           }
-          if (prop === "labelCreate" || prop === "labelAdd") return undefined;
+          if (prop === "labelCreate" || prop === "labelAdd") {
+            // `labelAdd(target, number, name)`, in the forge's own vocabulary
+            // where a PR/MR is "mr" — keyed the way the read below asks for it.
+            if (prop === "labelAdd") {
+              const target = String(args[0]);
+              labelled.add(`${target === "mr" ? PR_KIND : target}:${String(args[1])}`);
+            }
+            return undefined;
+          }
+          if (prop === "issueView" || prop === "prView") {
+            const kind = prop === "prView" ? PR_KIND : "issue";
+            return labelled.has(`${kind}:${String(args[0])}`)
+              ? { labels: [{ name: "needs-human-attention" }] }
+              : { labels: [] };
+          }
           throw new Error(`${String(prop)} unavailable`);
         };
       },
@@ -140,6 +166,44 @@ function mkCtx(dir: string, issue: number, forge: Forge, dispatched: string[]): 
       throw new Error("ops dispatch failed (simulated)");
     },
   };
+}
+
+/**
+ * A state whose handoff body carries `term`: a committed worktree under the
+ * scratch root, and a dispatch whose label quotes the private term. The shape a
+ * handoff has when the publish guard will refuse it (#1820 round 3).
+ */
+function refusedState(state: WorkState, dir: string, term: string): WorkState {
+  // The dispatch label is the term's carrier. The worktree path deliberately
+  // carries no term: a snapshot naming one would print it into the worktree
+  // section of /work-status, and the test's claim there is that the RENDERED
+  // handoff block never leaks it.
+  state.eventLog.push({
+    kind: "dispatch-completed",
+    at: 2,
+    step: "develop",
+    role: "developer",
+    jobId: "j",
+    label: `develop mentions ${term}`,
+    ms: 1_000,
+  } as WorkState["eventLog"][number]);
+  state.pipelineState.handoffSnapshot = {
+    modifiedFiles: [],
+    unstagedCount: 0,
+    stagedCount: 0,
+    branchExists: true,
+    branchPushed: false,
+    capturedAt: 1,
+    committedWork: [
+      {
+        worktreeId: "default",
+        path: `${dir}/.worktrees/issue-default`,
+        headSha: "1111111111111111111111111111111111111111",
+        ahead: 2,
+      },
+    ],
+  };
+  return state;
 }
 
 // ── 3. Forge channel: the posted comment carries the marker.
@@ -178,9 +242,25 @@ function mkCtx(dir: string, issue: number, forge: Forge, dispatched: string[]): 
       },
       "github",
     );
+    // What the seam guarantees about the posted text, asserted as properties
+    // rather than as equality with a fresh render: the marker line comes first,
+    // and the body is the renderer's output with the host paths folded away and
+    // the disclosure note that says so. Byte-equality with a re-render cannot
+    // hold once the fold fires — the fold is a REWRITE of the render, and the
+    // state mutates between the step's render and this one — so a test that
+    // demanded it was really asserting "no rewrite happened" (#1788, #1820).
+    assert(posted.startsWith(`${marker}\n`), "forge: the body carries the marker line first");
     assert(
-      posted === `${marker}\n${rendered}`,
-      "forge: the body is the renderer's output with only the marker line added",
+      posted.includes(PATH_NORMALISATION_NOTE),
+      "forge: a public handoff carries the disclosure note the fold adds",
+    );
+    assert(
+      !posted.includes(dir),
+      "forge: no host repository-root path survives into the published comment",
+    );
+    assert(
+      rendered.startsWith("## ") && posted.includes("Cap hit"),
+      "forge: the body still carries the rendered handoff's own sections",
     );
     const r = projectIssue(next, "state.json");
     assert(r.handoff?.channel === "forge", "forge: the result's handoff channel is forge");

@@ -18,9 +18,25 @@
  * `visibility` is the seam that keeps the offline suite off the network; when a
  * caller supplies neither it nor an executor, no lookup is made and the text is
  * checked, which is the same outcome as a failed lookup.
+ *
+ * ## The seam also REWRITES, and the caller publishes what it returns
+ *
+ * On the public-or-unknown branch — after the positive-private early return, so
+ * a private repository's own prose is never rewritten and never checked — the
+ * text's host paths are normalised (`public-hygiene-normalise.ts`): anything
+ * under the repository root becomes `<repo>/…` and anything under the CURRENT
+ * user's home becomes `~/…`. The CHECK then judges the rewritten text and the
+ * caller publishes the same bytes, so "what was judged" and "what was posted"
+ * are one string. That is why this seam returns the text rather than only a
+ * refusal: a caller that discarded the returned text would post bytes nobody
+ * judged. `PI_ENSEMBLE_PUBLIC_HYGIENE=0` disables the check and the rewrite
+ * together — the same off switch governs both, so a disabled guard cannot leave
+ * a half-applied rewrite that no check was run against.
  */
 
 import { execp } from "./exec.ts";
+import { hygieneGuardDisabled } from "./public-hygiene-config.ts";
+import { normaliseDriverPublishPaths } from "./public-hygiene-normalise.ts";
 import { type Target, isRepoTarget, resolveCommandTarget } from "./public-hygiene-target.ts";
 import { publicTextRefusal } from "./public-hygiene-text.ts";
 import {
@@ -35,7 +51,7 @@ import type { ExecFn } from "./worktree.ts";
 /**
  * The ONE entry point every driver-authored publish calls.
  *
- * `driverPublicTextRefusal` takes the command string and the directory because
+ * `driverPublicTextCheck` takes the command string and the directory because
  * that is what a caller whose only knowledge of its target is a `gh` invocation
  * has. Most call sites know more than that — a forge adapter knows its owner,
  * repo and host; a driver step knows its worktree — and an options bag is what
@@ -46,7 +62,32 @@ import type { ExecFn } from "./worktree.ts";
  * did (#1788 round 2): the forge adapter's `checkPublicText` and the direct-exec
  * merge-subject check both checked every repository, including private ones.
  */
-export async function driverPublishRefusal(
+export interface DriverPublishCheck {
+  /** The refusal, or `undefined` when the (rewritten) text may be published. */
+  refusal?: string;
+  /** The bytes the caller must publish — the judged text, not the input. */
+  text: string;
+  /** True when a host path was rewritten out of the text. */
+  rewritten: boolean;
+}
+
+/** Nothing to refuse; the caller publishes the text the seam hands back. */
+function checked(text: string, rewritten: boolean): DriverPublishCheck {
+  return { text, rewritten };
+}
+
+/**
+ * The full decision for a driver-authored publish: what to refuse, what to
+ * publish, and whether the bytes differ from what the caller composed.
+ *
+ * `driverPublicTextCheck`'s one entry point. A caller that publishes the text
+ * itself — a body file, a commit message, a merge subject — calls this and
+ * writes `text` back. A caller that has NO use for the rewritten bytes still
+ * gets them, because there is no refusal-only projection: a projection that
+ * discards the rewrite is how a commit site ended up judging one string and
+ * committing another (#1820).
+ */
+export async function driverPublishCheck(
   label: string,
   text: string,
   opts: {
@@ -58,15 +99,28 @@ export async function driverPublishRefusal(
     visibility?: VisibilityFn;
     /** A target the caller already knows (the forge slug); skips resolution. */
     target?: Target;
-    /** Bound on the visibility question; see `driverPublicTextRefusal`. */
+    /** Bound on the visibility question; see `driverPublicTextCheck`. */
     timeoutMs?: number;
+    /** The repository root whose paths collapse to `<repo>`; defaults to `cwd`. */
+    repoRoot?: string;
+    /**
+     * The home directory the `~` rewrite is relative to. Production leaves it
+     * out and the current user's home answers; the offline suite builds its own
+     * scratch home so no test rewrites (or reads) the host's.
+     */
+    homeDir?: string;
+    /** The realpath seam that derives each root's second spelling. */
+    realpath?: (dir: string) => string;
   },
-): Promise<string | undefined> {
-  return driverPublicTextRefusal(label, text, opts.command, opts.cwd, {
+): Promise<DriverPublishCheck> {
+  return driverPublicTextCheck(label, text, opts.command, opts.cwd, {
     exec: opts.exec,
     visibility: opts.visibility,
     target: opts.target,
     timeoutMs: opts.timeoutMs,
+    repoRoot: opts.repoRoot,
+    homeDir: opts.homeDir,
+    realpath: opts.realpath,
   });
 }
 
@@ -80,15 +134,33 @@ export async function driverPublishRefusal(
  * the tool_call guard uses, so driver and agent cannot disagree about what is
  * publishable.
  *
- * Prefer `driverPublishRefusal` at a new call site; this is what it delegates to.
+ * Prefer `driverPublishCheck` at a new call site: this is what it delegates to,
+ * and it hands back the bytes to publish.
  */
-export async function driverPublicTextRefusal(
+/** What a caller may pin about the target and the roots the rewrite collapses. */
+export interface DriverTextCheckOpts {
+  exec?: ExecFn;
+  visibility?: VisibilityFn;
+  target?: Target;
+  timeoutMs?: number;
+  /** The repository root whose paths collapse to `<repo>`; defaults to `cwd`. */
+  repoRoot?: string;
+  /** The home directory the `~` rewrite is relative to (a test seam). */
+  homeDir?: string;
+  /** The realpath seam that derives each root's second spelling (a test seam). */
+  realpath?: (dir: string) => string;
+}
+
+export async function driverPublicTextCheck(
   label: string,
   text: string,
   command: string,
   cwd: string,
-  opts: { exec?: ExecFn; visibility?: VisibilityFn; target?: Target; timeoutMs?: number } = {},
-): Promise<string | undefined> {
+  opts: DriverTextCheckOpts = {},
+): Promise<DriverPublishCheck> {
+  // The off switch disables the check AND the rewrite: a rewrite that ran
+  // against no check would be a silent content change in a disabled guard.
+  if (hygieneGuardDisabled()) return checked(text, false);
   const target = opts.target ?? (await resolveTarget(command, cwd, opts));
   if (target !== undefined && isRepoTarget(target)) {
     const isPrivate = await isPrivateTarget(target, {
@@ -105,11 +177,28 @@ export async function driverPublicTextRefusal(
       timeoutMs: opts.timeoutMs,
     }).catch(() => false);
     if (isPrivate) {
+      // A private repository keeps its exact paths: nothing is published, so
+      // there is nothing to normalise, and an operator reading a private repo's
+      // own comment wants the real path.
       trace(`public-hygiene: driver ${label} skipped — the target repository is private`);
-      return undefined;
+      return checked(text, false);
     }
   }
-  return publicTextRefusal(label, text);
+  const normalised = normaliseDriverPublishPaths(text, {
+    repoRoot: opts.repoRoot ?? cwd,
+    homeDir: opts.homeDir,
+    realpath: opts.realpath,
+  });
+  if (normalised.rewritten) {
+    // The trace names the KINDS of root replaced and never a path: a path is
+    // the thing this module exists to keep out of a public body, and a trace
+    // line reaches the run transcript.
+    trace(`public-hygiene: driver ${label} — paths normalised (${normalised.kinds.join(", ")})`);
+  }
+  const refusal = publicTextRefusal(label, normalised.text);
+  return refusal === undefined
+    ? checked(normalised.text, normalised.rewritten)
+    : { refusal, text: normalised.text, rewritten: normalised.rewritten };
 }
 
 /**

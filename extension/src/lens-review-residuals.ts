@@ -53,7 +53,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { mergeIdentity } from "./merge-guard-reads.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { PublicHygieneError } from "./public-hygiene-config.ts";
-import { driverPublishRefusal } from "./public-hygiene-driver.ts";
+import { driverPublishCheck } from "./public-hygiene-driver.ts";
 import { remoteName } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -348,32 +348,35 @@ async function doPost(
   // #1788 — the whole body, on the public-repositories-only rule, before
   // anything is written: this is a publish the tool_call guard cannot see (an
   // in-process exec), and its text is quoted off the branch by six reviewers.
-  const refusal = await driverPublishRefusal("pull request comment", body, {
+  //
+  // ONE judge, and the judged bytes ARE the argument (#1820 round 3). The seam
+  // runs HERE, once, and what it returns is the string handed to `postPrComment`
+  // as its body — so `withBodyFile` writes the bytes the guard saw. The previous
+  // shape passed the UNjudged `body` as the argument and smuggled the judged text
+  // out of the check callback through a captured variable: the argument and the
+  // posted bytes were two different strings, and a reader could not tell from the
+  // call site which one the guard had cleared. A refusal throws before any write,
+  // and this module's best-effort contract reports it rather than posting.
+  const checked = await driverPublishCheck("pull request comment", body, {
     command: "gh pr comment",
     cwd,
+    repoRoot: cwd,
     exec: (cmd, opts) => execFn(cmd, opts ?? {}),
   });
-  if (refusal !== undefined) throw new PublicHygieneError(refusal);
+  if (checked.refusal !== undefined) {
+    throw new PublicHygieneError(
+      `${checked.refusal} — the disclosure was not posted (fail closed; the merge guard will refuse until a clean disclosure is posted)`,
+    );
+  }
   await postPrComment(
     {
       forge: detection.forge,
-      // #1788 — this disclosure is a PR comment, i.e. public text, and the seam
-      // now requires the check rather than permitting its absence. The body is
-      // composed from lens findings quoted off the branch, so it is exactly the
-      // kind of text that has carried a private name before; a refusal is thrown
-      // and this module's best-effort contract reports it rather than posting.
-      // The seam's own awaited check is the one that judges this body: it now
-      // resolves the target repository's visibility, so a second synchronous
-      // copy of the pure matcher here would be a second owner of a decision the
-      // seam already makes with more information than this call has.
-      checkPublicText: async (label, text) => {
-        const refusal = await driverPublishRefusal(label, text, {
-          command: "gh pr comment",
-          cwd,
-          exec: (cmd, opts) => execFn(cmd, opts ?? {}),
-        });
-        if (refusal !== undefined) throw new PublicHygieneError(refusal);
-      },
+      // #1788 — the seam requires the check rather than permitting its absence.
+      // It is a pass-through here BECAUSE the body was judged above and is passed
+      // below as the argument: the seam cannot be handed a body this module has
+      // not cleared, and a second identical judge over the same bytes would only
+      // ask two verdicts to agree by coincidence.
+      checkPublicText: async (_label, text) => ({ text, rewritten: false }),
       run: (cmd, map) =>
         execFn(cmd, { cwd, maxBuffer: 256 * 1024, timeout: 30_000 }).then(({ stdout }) =>
           map(stdout),
@@ -390,7 +393,7 @@ async function doPost(
       },
     },
     prNumber,
-    body,
+    checked.text,
   );
   return "";
 }

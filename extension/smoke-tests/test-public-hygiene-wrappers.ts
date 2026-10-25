@@ -42,7 +42,7 @@ import {
 import { looksLikePublish } from "../src/public-hygiene-publish-shapes.ts";
 import { scanPublishSurfaces } from "../src/public-hygiene-scan.ts";
 import { resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
-import { commitMessageRefusal } from "../src/work-driver-commit-hygiene.ts";
+import { commitMessageForPublish } from "../src/work-driver-commit-hygiene.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
@@ -293,10 +293,13 @@ await withEnv(env, async () => {
   assert(blocked(echoWords), "an echo of a clean publish line is refused on the same rule");
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 4. The driver's own commit sites (#1788 round 6): a commit message built
-  //    from the issue is checked on the same seam, and a refusal means no
-  //    commit. Both sites use `commitMessageRefusal`; the two driver files are
-  //    exercised through it, because their executors reach a real git.
+  // 4. The driver's own commit sites (#1788 round 6, #1820 round 3): a commit
+  //    message built from the issue is checked on the same seam, a refusal means
+  //    no commit, and the bytes the site commits are the bytes the seam returned.
+  //    Every site now asks `commitMessageForPublish` — the refusal-only wrapper is
+  //    gone, because a site that took only the verdict had nothing to make it
+  //    commit the rewritten text with. The two driver files are exercised through
+  //    it, because their executors reach a real git.
   // ─────────────────────────────────────────────────────────────────────────
   const executed: string[] = [];
   const recording: ExecFn = async (cmd, o) => {
@@ -308,14 +311,14 @@ await withEnv(env, async () => {
     return { stdout: "" };
   };
   executed.length = 0;
-  const refused = await commitMessageRefusal(`feat(x): point the build at ${TERM}`, "body", {
+  const refusedMsg = await commitMessageForPublish(`feat(x): point the build at ${TERM}`, "body", {
     cwd: dir,
     issue: 1788,
     exec: recording,
   });
-  assert(refused !== undefined, "a driver commit message with a private term is refused");
+  assert(refusedMsg.refusal !== undefined, "a driver commit message with a private term is refused");
   assert(
-    refused !== undefined && !refused.includes(TERM),
+    refusedMsg.refusal !== undefined && !refusedMsg.refusal.includes(TERM),
     "and the refusal carries no term, only the denylist line",
   );
   assert(
@@ -323,12 +326,41 @@ await withEnv(env, async () => {
     "the commit is not made: the check runs before the exec, at both driver sites",
   );
   executed.length = 0;
-  const allowedMsg = await commitMessageRefusal("feat(x): point the build at the host", "body", {
-    cwd: dir,
-    issue: 1788,
-    exec: recording,
-  });
-  assert(allowedMsg === undefined, "a clean driver commit message passes the same seam");
+  const allowedMsg = await commitMessageForPublish(
+    "feat(x): point the build at the host",
+    "body",
+    { cwd: dir, issue: 1788, exec: recording },
+  );
+  assert(
+    allowedMsg.refusal === undefined && allowedMsg.title === "feat(x): point the build at the host",
+    "a clean driver commit message passes the same seam and comes back whole",
+  );
+  // The invariant every commit site now shares: what comes back from the seam is
+  // what goes to `git commit -m`. A host path in the subject is folded, and a
+  // site that ignored the returned text would publish the unfolded one.
+  const homePath = `${dir}/src/deep/file.ts`;
+  const folded = await commitMessageForPublish(
+    `fix(x): handle ${homePath}`,
+    `see ${homePath} for the trace`,
+    { cwd: dir, issue: 1788, exec: recording, repoRoot: dir, homeDir: dir },
+  );
+  assert(
+    folded.refusal === undefined &&
+      !folded.title.includes(homePath) &&
+      !folded.body.includes(homePath) &&
+      folded.title.includes("<repo>"),
+    `the seam returns the folded message the site must commit (got ${JSON.stringify(folded.title)})`,
+  );
+  assert(
+    !executed.some((c) => c.includes(homePath)),
+    "and no site exec carries the unfolded host path",
+  );
+  // The refusal-only wrapper must not come back: it is the shape that let a site
+  // judge one string and publish another.
+  assert(
+    !(await import("../src/work-driver-commit-hygiene.ts")).commitMessageRefusal,
+    "commitMessageRefusal is gone — every driver commit site commits the seam's own text",
+  );
 });
 
 rmSync(dir, { recursive: true, force: true });

@@ -4,7 +4,6 @@
  * keeps the step handler and re-exports these so no consumer's import path
  * changes. Everything here talks to the forge and none of it touches the
  * worktree, which is the seam the split follows. */
-import fs from "node:fs/promises";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
@@ -86,7 +85,14 @@ export async function deliverHandoff(args: {
   issue: number;
   prNumber?: number;
   forge: Forge | undefined;
-  handoffBodyPath: string;
+  /**
+   * #1788 follow-up — the handoff body the step rendered and normalised.
+   * REQUIRED (#1820): it is what keeps the comment the driver posts and the
+   * comment the idempotency check compares against ONE string, and the only
+   * bytes anybody judged. A caller with no body to hand over has a body the
+   * matcher refused, and does not call this function.
+   */
+  body: string;
   commentUrl?: string;
   labelApplied: boolean;
   issueLabelApplied?: boolean;
@@ -94,12 +100,12 @@ export async function deliverHandoff(args: {
   delivery?: "dispatch" | "fallback";
   dispatchFailed: boolean;
 }): Promise<DeliveryOutcome> {
-  const { issue, prNumber, forge, handoffBodyPath, dispatchFailed } = args;
+  const { issue, prNumber, forge, dispatchFailed } = args;
   let { commentUrl, labelApplied, issueLabelApplied, prLabelApplied, delivery } = args;
   if (forge) {
     const objType = prNumber ? "pr" : "issue";
     const targetId = prNumber ?? issue;
-    const body = !commentUrl ? await fs.readFile(handoffBodyPath, "utf8").catch(() => "") : "";
+    const body = commentUrl ? "" : args.body;
     // #775 — idempotency check: fetch the target's existing comments
     // BEFORE posting so a comment the ops dispatch already posted (whose
     // URL was lost) is not re-posted. A failed dispatch leaves no such
@@ -118,6 +124,9 @@ export async function deliverHandoff(args: {
     const posted = await postHandoffWithRetry(forge, {
       issue,
       body,
+      // The same string is the comparison value: one owner, one string, so the
+      // comment the driver posts and the comment the dedupe compares against
+      // cannot drift (#775). An empty body matches nothing and posts nothing.
       expectedBody: body,
       targetId: targetId,
       objType,

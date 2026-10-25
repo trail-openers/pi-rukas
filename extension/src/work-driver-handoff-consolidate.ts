@@ -47,7 +47,7 @@ import { type ForgeDetection, detectForge } from "./forge-detect.ts";
 import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
-import { commitMessageRefusal } from "./work-driver-commit-hygiene.ts";
+import { commitMessageForPublish } from "./work-driver-commit-hygiene.ts";
 import {
   classifyRootDirt,
   probeIgnored,
@@ -339,22 +339,29 @@ export async function consolidateWorktreesToBranch(
         // #1788 — the subject carries the ISSUE TITLE, so this commit is a
         // publish the `tool_call` guard cannot see: the message is composed in
         // process and reaches git through this exec. It goes through the same
-        // commit-message seam `work-driver-commit.ts` uses. A refusal means NO
-        // commit, and it degrades the way this module already promises —
-        // `{ ok: false, reason }`, no throw, the branch left without the
+        // commit-message seam `work-driver-commit.ts` uses — and, as at every
+        // other driver commit site since #1820, the site commits the message the
+        // seam RETURNED, not the one it assembled: on the public-or-unknown branch
+        // that seam rewrites this host's paths to `<repo>`/`~`, and a site that
+        // judged one string and committed another published bytes nobody checked.
+        // A refusal means NO commit, and it degrades the way this module already
+        // promises — `{ ok: false, reason }`, no throw, the branch left without the
         // consolidation the handoff would otherwise claim.
-        const messageRefusal = await commitMessageRefusal(subject, commitBody, {
+        const message = await commitMessageForPublish(subject, commitBody, {
           cwd: ctx.repoRoot,
           issue: ctx.issue,
           exec: execFn,
         });
-        if (messageRefusal !== undefined) {
-          throw new PublishRefusal(messageRefusal);
+        if (message.refusal !== undefined) {
+          throw new PublishRefusal(message.refusal);
         }
-        await execFn(`git commit -m ${JSON.stringify(subject)} -m ${JSON.stringify(commitBody)}`, {
-          cwd: ctx.repoRoot,
-          maxBuffer: 256 * 1024,
-        });
+        await execFn(
+          `git commit -m ${JSON.stringify(message.title)} -m ${JSON.stringify(message.body)}`,
+          {
+            cwd: ctx.repoRoot,
+            maxBuffer: 256 * 1024,
+          },
+        );
       }
       // #968 — restore the operator's checkout after the branch is done:
       // pre-#968 the success path returned with repoRoot still on the

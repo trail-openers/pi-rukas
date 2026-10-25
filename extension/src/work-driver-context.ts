@@ -17,6 +17,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchResult, DispatchSpec, WriteFenceOpt } from "./types.ts";
+import type { DriverPublishContextFields } from "./work-driver-context-publish.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
@@ -85,21 +86,15 @@ export {
 export type CycleContext = DriverContext & { emitSink: EmitSink };
 
 /**
- * #1414 — the shell-executor shape the driver's test seams accept, written
- * once so `verifyExecFn` and `checkpointExecFn` cannot drift.
- *
- * Round 2: this used to be a SECOND structural declaration of the same shape.
- * Two literals that must stay byte-equivalent is one more thing to forget — an
- * added option on `VerifyExecFn` would have left this one silently dropping it,
- * which is precisely the #1279 failure the `argv` field exists to prevent.
- * `work-driver-git.ts` is the leaf (its jsdoc header says so) and `VerifyExecFn`
- * is its one executor type, so this is an ALIAS of it: one declaration, and the
- * `satisfies` check there keeps `execp` honest against both names. A type-only
- * import pulls no runtime code, so the leaf-ness claimed above is unaffected.
+ * #1414 — the shell-executor shape the driver's test seams accept, written once
+ * so `verifyExecFn` and `checkpointExecFn` cannot drift. It is an ALIAS of
+ * `VerifyExecFn` (the leaf's one executor type), not a second structural copy:
+ * an added option there must not silently drop here — the #1279 class. Type-only,
+ * so the leaf-ness `work-driver-git.ts` claims is unaffected.
  */
 export type DriverExecFn = VerifyExecFn;
 
-export interface DriverContext {
+export interface DriverContext extends DriverPublishContextFields {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */
   host: DriverHost;
   /** Project root (NOT a worktree). State file lives here. */

@@ -18,12 +18,11 @@
  * Split from work-driver-handoff.ts (AGENTS.md §12 file-size limit).
  */
 
-import fs from "node:fs/promises";
 import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
+import { parseHandoffCommentUrl } from "./work-driver-handoff-deliver.ts";
 import { readError } from "./work-driver-handoff-snapshot.ts";
-import { parseHandoffCommentUrl } from "./work-driver-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -104,13 +103,21 @@ export async function postHandoffToForge(opts: {
   forge: Forge;
   issue: number;
   prNumber: number | undefined;
-  handoffBodyPath: string;
-  /** When set, the comment URL is already known — skip issueComment. */
+  /**
+   * #1788 follow-up — the normalised body the step rendered. REQUIRED (#1820):
+   * the caller holds the exact bytes the driver seam judged, and a file re-read
+   * the caller passes below (#1820), so this function has no body source of its
+   * own — no file re-read, and no bytes the hygiene seam did not judge.
+   */
+  body: string;
+  /**
+   * When set, the comment URL is already known — skip issueComment.
+   */
   knownCommentUrl?: string;
   /** Injected in tests so a 1s/2s backoff does not take 1s/2s. */
   sleep?: (ms: number) => Promise<void>;
 }): Promise<HandoffPostResult> {
-  const { forge, issue, prNumber, handoffBodyPath } = opts;
+  const { forge, issue, prNumber } = opts;
   const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const targetId = String(prNumber ?? issue);
   const objType = prNumber ? "pr" : "issue";
@@ -124,8 +131,7 @@ export async function postHandoffToForge(opts: {
       // get their handoff comment via the ops dispatch's raw `gh` prompt.
       // For the in-process path, the forge covers the issue-comment shape.
       if (objType === "issue") {
-        const body = await fs.readFile(handoffBodyPath, "utf8").catch(() => "");
-        const out = await forge.issueComment(issue, body);
+        const out = await forge.issueComment(issue, opts.body);
         const parsedUrl = parseHandoffCommentUrl(out) ?? out.trim();
         if (parsedUrl) commentUrl = parsedUrl;
       }
@@ -178,8 +184,15 @@ export function makeHandoffEmittedEvent(opts: {
   commentUrl: string | undefined;
   labelApplied: boolean;
   handoffBodyPath: string;
-  /** #1327 — the rendered body, carried in memory (see HandoffEmittedEvent.body). */
-  body?: string;
+  /** #1327 — the rendered body, carried in memory (see HandoffEmittedEvent.body).
+   *  REQUIRED (#1820): it is the bytes the driver seam judged, and the only copy
+   *  a headless result can publish without reading a file that may be stale. */
+  body: string;
+  /**
+   * #1820 — the matcher's category/line when the body was REFUSED: the comment
+   * posted nothing, and the event must say so without carrying the term.
+   */
+  bodyRefusal?: string;
   consolidated: boolean;
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
@@ -226,8 +239,13 @@ export function makeHandoffEmittedEvent(opts: {
     commentUrl,
     labelApplied,
     handoffBodyPath,
+    // #1820 round 3 — assigned in the literal, because the field is required on
+    // the type and this is the only producer. The host channel's entire delivery
+    // is this string, so it is not one of the fields that may be conditionally
+    // absent.
+    body: opts.body,
   };
-  if (opts.body !== undefined) ev.body = opts.body;
+  if (opts.bodyRefusal !== undefined) ev.bodyRefusal = opts.bodyRefusal;
   if (delivery) ev.delivery = delivery;
   if (opts.labelSkipped) ev.labelSkipped = opts.labelSkipped;
   if (opts.targetType) ev.targetType = opts.targetType;
@@ -286,14 +304,39 @@ export function declinedLabelSeed(
 }
 
 export async function applyIssueLabelDualTarget(forge: Forge, issue: number): Promise<boolean> {
+  return applyAttentionLabel(
+    forge,
+    "issue",
+    issue,
+    "issue label fallback failed (#798 dual-target)",
+  );
+}
+
+/**
+ * Create the attention label if absent and add it to ONE target, then read it
+ * back. The shape both #798's issue leg and #1820's refused-body PR leg need;
+ * `applyIssueLabelDualTarget` is the issue-facing name callers already use.
+ *
+ * The add is idempotent server-side and every failure is swallowed into `false`:
+ * an attention label is a request for a human, and a forge write that cannot
+ * complete must not be the thing that stops a handoff from finishing.
+ *
+ * EXPORTED because the refused-body leg in `work-driver-handoff.ts` labels the
+ * PR through it — the comment target the handoff would have carried the comment,
+ * which is where the label belongs when there is no comment.
+ */
+export async function applyAttentionLabel(
+  forge: Forge,
+  objType: "issue" | "pr",
+  targetId: number,
+  traceLabel: string,
+): Promise<boolean> {
   try {
     await forge.labelCreate(HANDOFF_LABEL, "FFAA00").catch(() => {});
-    await forge.labelAdd("issue", issue, HANDOFF_LABEL);
-    return await verifyHandoffLabel(forge, "issue", issue);
+    await forge.labelAdd(objType === "pr" ? "mr" : "issue", targetId, HANDOFF_LABEL);
+    return await verifyHandoffLabel(forge, objType, targetId);
   } catch (err) {
-    trace(
-      `work-driver: issue label fallback failed (#798 dual-target): ${(err as Error).message?.slice(0, 160)}`,
-    );
+    trace(`work-driver: ${traceLabel}: ${(err as Error).message?.slice(0, 160)}`);
     return false;
   }
 }

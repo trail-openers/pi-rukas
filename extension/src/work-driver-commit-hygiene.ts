@@ -10,7 +10,7 @@
  * a hook to read. The driver therefore judges its own prose on the way in.
  *
  * It asks on the ONE seam every driver-authored publish uses
- * (`driverPublishRefusal`), which resolves the target and applies the same
+ * (`driverPublishCheck`), which resolves the target and applies the same
  * public-only rule the `tool_call` guard applies: a POSITIVE private answer
  * skips, and public, unknown, or a lookup that failed all check. That is the
  * whole reason this is a seam call rather than the pure text checker: a private
@@ -22,7 +22,7 @@
  */
 
 import { PublicHygieneError } from "./public-hygiene-config.ts";
-import { driverPublicTextRefusal, driverPublishRefusal } from "./public-hygiene-driver.ts";
+import { driverPublicTextCheck, driverPublishCheck } from "./public-hygiene-driver.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -34,40 +34,73 @@ type DriverExec = (
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /**
- * Refuse a commit message that would publish private text, or return the
- * failure the commit-pr step should report.
+ * The commit message the driver should COMMIT, or the refusal.
  *
- * Returns `undefined` when the message may be committed — either it is clean,
- * or the target repository is positively private and the guard has no business
- * in a private repository's own commit messages.
+ * The commit-pr step composes the subject and body from the issue and the
+ * workstream list, and the very next thing it does is push them. On the
+ * public-or-unknown branch the seam rewrites the host's own paths out of that
+ * message (`<repo>/…`, `~/…`), so the caller must commit the returned message
+ * rather than the one it built: the message that was judged is the message that
+ * goes out.
  *
  * A refusal is returned as a REASON rather than thrown. The step routes on a
  * discriminated result, and a commit the guard refused is a commit that parks
- * with a reason the operator can act on, not an exception that escapes the
- * step. The reason names the fix: this message derives from the issue title and
- * body, so a private term in it is a private term in the ISSUE, and removing it
- * is an operator action, not something a retry can do.
+ * with a reason the operator can act on, not an exception that escapes the step.
+ * The reason names the fix: this message derives from the issue title and body,
+ * so a private term in it is a private term in the ISSUE, and removing it is an
+ * operator action, not something a retry can do.
+ *
+ * There is deliberately no refusal-only wrapper beside this (#1820 round 3). One
+ * existed, every driver commit site called it, and each then committed the
+ * strings it had started with — so the rewrite silently did nothing at three of
+ * the four sites while the module documenting "the bytes written equal the bytes
+ * judged" was contradicted by the code that writes. A site that takes only a
+ * verdict has nothing to commit the folded text with, so the question this module
+ * answers returns the text, or the reason it may not be committed.
  */
-export async function commitMessageRefusal(
+export async function commitMessageForPublish(
   title: string,
   body: string,
   opts: {
-    /** Where `git commit` will run, so the target resolves from the right tree. */
     cwd: string;
     issue: number;
     exec: DriverExec;
+    /** The repository root; defaults to `cwd`. */
+    repoRoot?: string;
+    /** The home directory the `~` rewrite is relative to (a test seam). */
+    homeDir?: string;
+    /** The realpath seam that derives each root's second spelling (a test seam). */
+    realpath?: (dir: string) => string;
   },
-): Promise<string | undefined> {
-  const refusal = await driverPublishRefusal("commit message", `${title}\n${body}`, {
+): Promise<{ refusal?: string; title: string; body: string; rewritten: boolean }> {
+  const checked = await driverPublishCheck("commit message", `${title}\n${body}`, {
     command: "git commit",
     cwd: opts.cwd,
-    // The driver's executor and the guard's differ only in optionality of the
-    // options bag; the seam passes it straight through to the reads it makes.
+    repoRoot: opts.repoRoot ?? opts.cwd,
+    homeDir: opts.homeDir,
+    realpath: opts.realpath,
     exec: opts.exec as unknown as ExecFn,
   });
-  if (refusal === undefined) return undefined;
-  trace(`work-driver: commit message refused for #${opts.issue}: ${refusal.slice(0, 160)}`);
-  return `${refusal} The commit message is derived from the issue title and body — remove the private term from the issue and restart the cycle.`;
+  // A conventional-commit subject is one line and the body follows it, so the
+  // checked text splits back into the same two git arguments. The split is on
+  // the FIRST newline of the CHECKED text, which is where the original newline
+  // still is: the rewrite never introduces a newline.
+  const nl = checked.text.indexOf("\n");
+  const split = nl < 0 ? checked.text.length : nl;
+  const parts = {
+    title: checked.text.slice(0, split),
+    body: checked.text.slice(nl < 0 ? checked.text.length : nl + 1),
+    rewritten: checked.rewritten,
+  };
+  if (checked.refusal !== undefined) {
+    const refusal = checked.refusal;
+    trace(`work-driver: commit message refused for #${opts.issue}: ${refusal.slice(0, 160)}`);
+    return {
+      refusal: `${refusal} The commit message is derived from the issue title and body — remove the private term from the issue and restart the cycle.`,
+      ...parts,
+    };
+  }
+  return parts;
 }
 
 /**
@@ -87,7 +120,7 @@ export async function commitMessageRefusal(
  * one `gh` call, and inheriting the guard's default while the adapter's own execs
  * time out sooner would make the gate the slowest thing on the path.
  */
-export async function forgePublishRefusal(
+export async function forgePublishCheck(
   label: string,
   text: string,
   command: string,
@@ -97,13 +130,23 @@ export async function forgePublishRefusal(
     visibility?: VisibilityFn;
     target?: { owner: string; repo: string; host?: string };
     timeoutMs?: number;
+    /** The repository root whose paths collapse to `<repo>`; defaults to `cwd`. */
+    repoRoot?: string;
+    /** The home directory the `~` rewrite is relative to (a test seam). */
+    homeDir?: string;
+    /** The realpath seam that derives each root's second spelling (a test seam). */
+    realpath?: (dir: string) => string;
   },
-): Promise<void> {
-  const refusal = await driverPublicTextRefusal(label, text, command, opts.cwd, {
+): Promise<{ text: string; rewritten: boolean }> {
+  const checked = await driverPublicTextCheck(label, text, command, opts.cwd, {
     exec: opts.exec,
     visibility: opts.visibility,
     target: opts.target,
     timeoutMs: opts.timeoutMs,
+    repoRoot: opts.repoRoot,
+    homeDir: opts.homeDir,
+    realpath: opts.realpath,
   });
-  if (refusal !== undefined) throw new PublicHygieneError(refusal);
+  if (checked.refusal !== undefined) throw new PublicHygieneError(checked.refusal);
+  return { text: checked.text, rewritten: checked.rewritten };
 }

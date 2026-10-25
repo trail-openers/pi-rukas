@@ -347,19 +347,24 @@ await withEnv(env, async () => {
     "utf8",
   );
   const gateSrc = readFileSync(
-    path.join(import.meta.dirname, "..", "src", "work-driver-integrate-commit-gate.ts"),
+    path.join(import.meta.dirname, "..", "src", "work-driver-commit-message-publish.ts"),
     "utf8",
   );
-  const commitAt = integrateSrc.indexOf("git commit -m ${JSON.stringify(opts.commitTitle)}");
+  const commitAt = integrateSrc.indexOf("git commit -m ${JSON.stringify(gate.title)}");
   const gateCallAt = integrateSrc.indexOf("cherryPickCommitGate(");
   assert(commitAt > 0, "the cherry-pick path still carries its own commit exec");
+  assert(
+    integrateSrc.indexOf("JSON.stringify(opts.commitTitle)") < 0,
+    "the cherry-pick exec no longer commits the caller's RAW title: it commits the bytes " +
+      "the gate judged (#1820 — a rewrite the commit site discards is a rewrite that never ships)",
+  );
   assert(
     gateCallAt > 0 && gateCallAt < commitAt,
     "the cherry-pick commit site calls the gate before it execs git commit",
   );
   assert(
-    gateSrc.includes("commitMessageRefusal(") &&
-      /commitMessageRefusal\([\s\S]{0,400}?ok: false,[\s\S]{0,80}?failure: "apply"/.test(gateSrc),
+    gateSrc.includes("commitMessageForPublish(") &&
+      /refusalResult:[\s\S]{0,160}?ok: false,[\s\S]{0,80}?failure: "apply"/.test(gateSrc),
     "the gate checks the message and returns a parked failure (ok:false/apply) rather than throwing",
   );
   assert(

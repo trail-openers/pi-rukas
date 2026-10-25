@@ -58,7 +58,13 @@
 
 import { parseRemoteUrl } from "./forge-detect.ts";
 import { execGit } from "./git-range.ts";
-import { resolveSrcs } from "./public-hygiene-refspecs.ts";
+import { resolveSrcs, splitPushWords } from "./public-hygiene-refspecs.ts";
+import {
+  PUSH_VALUE_OPTIONS,
+  looksLikeRemoteUrl,
+  parsePushUrlTarget,
+  pushRemoteName,
+} from "./public-hygiene-remote.ts";
 import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
 import type { PublishText, PushScanResult, ScanProblem } from "./public-hygiene-types.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -108,28 +114,65 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // "This clone has no remote" and "git could not be asked" are DIFFERENT facts
   // and must not share a sentence — they send the agent to different things to
   // fix. A `.catch(() => undefined)` collapsed both, so a git that never
-  // returned reported itself as a clone with no remote. The probe's failure is
-  // tracked by its own marker, and the whole scan carries a wall clock of its
-  // own: an executor that ignores the timeout it is handed must still not hang
-  // the hook, because a hung guard is a guard an operator switches off.
-  const askFailed = Symbol("ask-failed");
-  const remotes = await bounded(
-    timeout,
-    askFailed,
-    git(["remote"]).catch(() => askFailed),
-  );
-  if (remotes === askFailed) {
+  // returned reported itself as a clone with no remote. `pushRemoteNames` below
+  // owns that discrimination now: it returns the names git named, or the reason it
+  // could not ask, and never reports a failed read as an empty clone.
+  //
+  // The whole scan carries a wall clock of its own, and `pushRemoteNames` is
+  // where it is armed: `exec` is a seam the caller supplies, and an executor that
+  // ignores the `timeout` it is handed would otherwise hang the `tool_call` hook
+  // forever — a hung guard is a guard an operator switches off. Every later call
+  // is bounded by the same number handed straight to git.
+  //
+  // The clone's remote names, read ONCE for the whole scan. Both readers that
+  // decide a destination need them — the direct (command-carried) one below and
+  // the refspec anchor in `scanCommits` — and a second `git remote` that could
+  // answer where the first could not is a second chance to guess (#1820).
+  //
+  // The direct reader is asked FIRST, and a failure to list the remotes is not
+  // fatal to it: `git push https://host/o/r.git main` carries its own destination
+  // and needs nothing from the clone. A failure IS fatal to everything downstream
+  // that has to fall back on the clone, and `pushRemoteNames` reports it as a
+  // problem rather than as a clone with no remotes.
+  const remotes = await pushRemoteNames(deps, git);
+  const names = new Set(remotes.names);
+  // The push-to-URL form: `git push https://host/o/r.git main` carries the
+  // destination in the command, and no remote this clone has can name it. Read
+  // first, so it does not depend on the clone's remotes at all — a clone with NO
+  // remote still publishes through this shape, and the remotes are the next
+  // section's way of finding a target, not the only one.
+  const direct = directPushTarget(deps, names);
+  if (direct !== undefined) {
+    if (direct.kind === "problem") {
+      return {
+        scanned: false,
+        texts: [],
+        problems: [{ location: "push", reason: direct.problem }],
+      };
+    }
+    if (direct.host !== PUBLIC_GITHUB_HOST) {
+      // The command names a repository on a host this guard does not scan (issue
+      // decision: a company host or a self-hosted forge is not the public forge).
+      // Asked of the URL, not of `origin`: a private-forge clone that pushes to
+      // github.com must not be excused by the wrong remote, and a github.com
+      // clone that pushes elsewhere must not be scanned for a destination that
+      // publishes nothing there.
+      return { scanned: false, texts: [], problems: [] };
+    }
+    return scanCommits(deps, git, remotes);
+  }
+  // No destination in the command: the clone's own remotes answer, so an
+  // unreadable list is not a scan (#1820 — it used to fall through as "this clone
+  // has no remote", which is a different fact and a clean-looking one).
+  if (remotes.problem !== undefined) {
     return {
       scanned: false,
       texts: [],
-      problems: [{ location: "push", reason: "this clone's remotes could not be read" }],
+      problems: [{ location: "push", reason: remotes.problem }],
     };
   }
-  const names = remotes
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (names.length === 0) {
+  const listed = remotes.names;
+  if (names.size === 0) {
     return {
       scanned: false,
       texts: [],
@@ -141,7 +184,7 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // seams arrive as a bag (`opts`), so this is a plain local read and there is
   // exactly one place that decides whether a transport was pinned.
   const transport = deps.remoteUrl;
-  for (const name of names) {
+  for (const name of listed) {
     let url: string;
     // A pinned transport and an unreadable `git remote get-url` are different
     // facts and must not be reportable as the same sentence, so their failures
@@ -177,6 +220,123 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // push is not this guard's business (issue decision: other hosts are not
   // scanned).
   if (!target) return { scanned: false, texts: [], problems: [] };
+  return scanCommits(deps, git, remotes);
+}
+
+/**
+ * The clone's remote names, for the refspec reader's anchor. The push-to-URL
+ * path needs them too (`pushRefspecs` decides where the refspecs start by
+ * finding the remote), and a URL in the command is the destination regardless of
+ * what this clone has.
+ *
+ * A `git remote` that FAILS is reported as a problem rather than as a clone with
+ * no remotes (#1820): an empty list makes the refspec reader find no anchor, and
+ * the caller then resolves HEAD and scans commits this push may not publish —
+ * "I could not ask git what remotes exist" is not "this clone has none", and
+ * reporting it as the second one would let a transient git failure read as a
+ * clean scan. This is the one place the scan asks git for its remotes; the
+ * problem it returns is what `scanPushRange` surfaces, rather than the error
+ * being swallowed into an empty list.
+ */
+/**
+ * The sentinel the remote-list read resolves to when the executor never
+ * settles. A module-level symbol rather than a local one so the read that uses
+ * it stays a single expression; a hung guard is a guard an operator switches off.
+ */
+const askFailed = Symbol("ask-failed");
+
+/**
+ * Ask git for the clone's remote names, under the guard's own wall clock.
+ * Resolves `askFailed` when the executor never settles — the fallback is the
+ * `askFailed` symbol, so the caller can tell "never answered" from "answered
+ * with no remotes", which are different facts and get different sentences.
+ */
+async function pushRemoteNames(
+  deps: PushScanDeps,
+  git: (args: string[]) => Promise<string>,
+): Promise<{ names: string[]; problem?: string }> {
+  const asked = await bounded(
+    deps.timeoutMs ?? PUSH_SCAN_TIMEOUT_MS,
+    askFailed,
+    git(["remote"]).catch(() => askFailed),
+  );
+  if (asked === askFailed) {
+    return { names: [], problem: "this clone's remotes could not be read (timed out)" };
+  }
+  return {
+    names: asked
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean),
+  };
+}
+
+/**
+ * The repository a `git push <url> …` pushes to, read out of the command.
+ *
+ * Returns undefined when the command names a configured remote (or none), which
+ * is the case the clone's own remotes answer. When it names a URL the answer is
+ * the URL's host, or a problem when the word looks like a URL and does not parse
+ * as one: "the push destination could not be read" is not "the destination is not
+ * the public forge", and the difference is the difference between a checked push
+ * and one excused on a guess.
+ *
+ * THE SLOT IS READ ONCE (#1820): this function asks {@link pushRemoteName}, the
+ * same reader the target resolver uses, rather than walking the words a second
+ * time with its own option table. Two walkers drifted on the glued `--repo=<url>`
+ * spelling: the scan never triggered and the resolver answered the visibility
+ * question from the clone's own remote. The same drift made the SEPARATE-WORD
+ * `--repo <url>` an option to skip: with no remote names handed over, the reader
+ * could not tell `--repo https://github.com/o/r.git` from `--repo other`, so the
+ * scan never triggered and the visibility question got answered from the clone's
+ * own `origin` — a fail-OPEN. The real remote names are handed over here.
+ */
+/** A destination read from the command: its host, or why it could not be read. */
+type DirectTarget = { kind: "host"; host: string } | { kind: "problem"; problem: string };
+
+function directPushTarget(
+  deps: PushScanDeps,
+  remoteNames: ReadonlySet<string>,
+): DirectTarget | undefined {
+  const words = splitPushWords(deps.command ?? "");
+  const pushVerb = deps.pushVerb ?? "";
+  if (pushVerb === "" || words.indexOf(pushVerb) < 0) return undefined;
+  const slot = pushRemoteName(words, pushVerb, remoteNames);
+  // `pushRemoteName` defaults to `origin` when the command names no remote of
+  // this clone and carries no URL — including the case where the first non-option
+  // word is a bare refspec and git defaults the remote to `origin`. That is the
+  // shape the clone's own remotes answer, so this reader says nothing. Only a
+  // word that looks like a URL is a destination the command itself carries.
+  if (!looksLikeRemoteUrl(slot)) return undefined;
+  const parsed = parsePushUrlTarget(slot);
+  if (parsed === undefined) {
+    return { kind: "problem", problem: "the push destination URL could not be read" };
+  }
+  return { kind: "host", host: parsed.host };
+}
+
+/**
+ * The commit half of the scan: resolve the command's own refspecs to commits and
+ * read their messages and added lines. Identical for a push through a named
+ * remote and a push to a URL, because the commits are the clone's either way.
+ *
+ * `remoteNames` is the list `scanPushRange` read once, not a second read. Its
+ * failure is NOT fatal here (#1820): `scanPushRange` already refused when the
+ * remotes were unreadable for a NAMED-remote push, so the only way to reach this
+ * point with a broken `git remote` is the push-to-URL / `--repo <url>` path, where
+ * the command itself carries the destination. An empty anchor list makes the
+ * refspec reader find no remote word, which is the documented fail-closed shape
+ * (it resolves HEAD and refuses on anything it cannot read). Turning the transport
+ * failure into a refusal here would instead refuse every push-to-URL the moment
+ * git hiccuped on a call the destination did not need — and a guard that refuses
+ * routine work gets switched off.
+ */
+async function scanCommits(
+  deps: PushScanDeps,
+  git: (args: string[]) => Promise<string>,
+  remoteNames: { names: string[]; problem?: string },
+): Promise<PushScanResult> {
+  const names = remoteNames.names;
   // The commits this push would publish, named by the command itself.
   const srcs = await resolveSrcs(deps, git, names);
   if (srcs.problem !== undefined) {

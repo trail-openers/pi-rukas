@@ -77,6 +77,19 @@ export function companionLinesOf(
 }
 
 /**
+ * The `Consolidated N workstreams: …` block, empty for a single workstream.
+ * `scopeOf` is the caller's lookup (a workstream with no recorded scope prints
+ * `no scope`), injected so this module stays free of the pipeline-state shape.
+ */
+export function workstreamLinesOf(ids: string[], scopeOf: (id: string) => string): string[] {
+  if (ids.length <= 1) return [];
+  return [
+    "",
+    `Consolidated ${ids.length} workstreams: ${ids.map((id) => `${id} (${scopeOf(id)})`).join(", ")}`,
+  ];
+}
+
+/**
  * Generate the assumptions block from a pipeline state normalised spec.
  * Returns empty string if no assumptions.
  */

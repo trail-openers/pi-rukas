@@ -21,9 +21,34 @@
  * below, so the reuse rule has a single owner: a reader that asked each form
  * separately is how `-c` was refused while `--squash` published a message
  * nobody had read.
+ *
+ * ## Where the question is asked: AFTER the verb (#1820)
+ *
+ * git reads its OWN global options before the verb — `-C <dir>`, `-c k=v`,
+ * `--git-dir=…`, `--work-tree …` — and two of them are spelled exactly like the
+ * reuse letters. Scanning every word made `git -C /tmp commit -m hello` read as
+ * `git commit -C <commit>`, so every agent's `git -C <worktree> commit -m …` was
+ * refused as "message comes from another commit". The rule is now positional:
+ * the words before `commit` are git's, the words after it are commit's, and this
+ * reader asks only the second set. Where the verb is found is decided by
+ * {@link gitVerbAt} — the hygiene guard's existing skipper for git's globals, the
+ * one place that knows which of them take a value as a SEPARATE word (`-C <dir>`,
+ * `-c k=v`) and must consume their follower. A second option parser would have
+ * disagreed with it about `--git-dir`.
+ *
+ * Fail-closed is kept: a verb that cannot be located — an argv that is not a git
+ * commit at all, or one where git's globals never terminate (`git -C`, with no
+ * directory and no verb) — answers REUSE, today's answer for anything unreadable.
+ * The cost of that branch is a refused command, never a publish nobody read.
+ *
+ * The argv a publish reader hands in begins at the PROGRAM word — the scan's
+ * `publishArgv` has already stripped wrappers (`sudo`) and `NAME=value`
+ * prefixes — which is the shape {@link gitVerbAt} expects.
  */
 
+import { publishArgv } from "./public-hygiene-command.ts";
 import { REUSED_MESSAGE_REASON, commitCluster } from "./public-hygiene-commit-flags.ts";
+import { gitVerbAt, isGitProgramWord } from "./public-hygiene-target.ts";
 
 /** The long flags whose value is a COMMIT whose message git reuses. */
 const REUSE_COMMIT_FLAGS = ["--reuse-message", "--reedit-message", "--squash", "--fixup"] as const;
@@ -50,8 +75,31 @@ function usesReuseCommitFlag(w: string): boolean {
  * `public-hygiene-commit-flags.ts` is the single owner of what a bundled word
  * means and answers through `CommitCluster.reuses`.
  */
+/**
+ * The words of a `git commit` that belong to the COMMIT, i.e. everything after
+ * the `commit` verb, or undefined when there is no locatable `commit` verb.
+ *
+ * The program word is checked positionally before the verb is sought: `commit` is
+ * an ordinary word in `docker run myimage commit -m x`, and reading the words
+ * after it as commit flags would be a claim about a command that never ran git.
+ * The slice starts at the verb's OWN index + 1, which `gitVerbAt` reports: the
+ * verb may reappear later as an operand (`git commit -C commit -m hello`) and the
+ * last such word is not the verb.
+ */
+function argvAfterCommitVerb(argv: readonly string[]): string[] | undefined {
+  const words = publishArgv(argv);
+  if (!isGitProgramWord(words[0])) return undefined;
+  const at = gitVerbAt(words);
+  if (at === undefined || at.verb !== "commit") return undefined;
+  return words.slice(at.index + 1);
+}
+
 export function commitMessageReuse(argv: readonly string[]): boolean {
-  for (const w of argv) {
+  // Only the words AFTER the verb belong to `git commit`. Before it sit git's own
+  // globals, whose `-C`/`-c` are a directory and a config pair, not reuse flags.
+  const words = argvAfterCommitVerb(argv);
+  if (words === undefined) return true;
+  for (const w of words) {
     // `--reuse-message=<ref>` / `--squash=<ref>` are reuse; `--no-edit` and
     // every other `--no-*` switch are not, and are excluded by NAME — an
     // ordinary `git commit --amend --no-edit` reuses the CURRENT message the

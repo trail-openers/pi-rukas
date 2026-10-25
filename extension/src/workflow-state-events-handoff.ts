@@ -66,11 +66,27 @@ export type HandoffEmittedEvent = {
   /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
   handoffBodyPath?: string;
   /**
-   * #1327 — the handoff body itself (marker line first), so the headless
-   * result never depends on the file at `handoffBodyPath`, which a failed
-   * write leaves missing and a later cycle overwrites. Absent on older events.
+   * #1327 — the handoff body itself (marker line first), so the headless result
+   * never depends on the file at `handoffBodyPath`, which a failed write leaves
+   * missing and a later cycle overwrites.
+   *
+   * REQUIRED (#1820 round 3), to match `makeHandoffEmittedEvent`, which has never
+   * accepted a missing body: the builder and the type had to agree about the one
+   * field the host channel's whole delivery depends on. It is the bytes the driver
+   * seam judged, and on a refused handoff it is the only copy of the report the
+   * host ever gets — an optional field there invites a producer that drops it and
+   * a park that silently vanishes (#1743's whole point). No event on disk can
+   * predate it, because every writer went through the builder.
    */
-  body?: string;
+  body: string;
+  /**
+   * #1820 — the handoff body was REFUSED by the hygiene seam, so no comment was
+   * posted and no delivery provenance may be asserted. Carries the matcher's
+   * category and line ONLY: the matched term is the private text itself and must
+   * never reach a record a reader sees. Absent on every handoff that posted, and
+   * on every event written before this field existed.
+   */
+  bodyRefusal?: string;
   /**
    * #798 — the explicit target object type of the handoff artefacts (where
    * the comment was posted). A reader must not have to infer this from the

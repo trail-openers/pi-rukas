@@ -379,6 +379,20 @@ else
   echo "    Host-mode \`pi\` (with the legacy permission system) works regardless."
 fi
 
+# The privacy guard's private denylist is the one piece of configuration that is
+# never created for you: the file lives outside every repository precisely so no
+# cycle can edit the list it is judged against, and an installer writing into a
+# personal config tree would be the installer doing the thing the guard forbids.
+# Absent is a supported state (the guard's built-in generic set still runs), so
+# this is one informational line and never a failure and never a mkdir.
+hygiene_list="${PI_ENSEMBLE_PUBLIC_DENYLIST:-$HOME/.config/pi-rukas/public-denylist}"
+if [ ! -f "$hygiene_list" ]; then
+  # At most two lines: the path, and where the rest of the story lives. A notice
+  # this long reads as a failure and gets skimmed.
+  echo "==> Privacy guard: no private denylist yet at $hygiene_list (optional; the built-in generic set runs without it)"
+  echo "    To add one: one term per line at that path — see docs/troubleshooting.md → \"Public repository hygiene\"."
+fi
+
 cat <<EOF
 
 ==> Install complete.

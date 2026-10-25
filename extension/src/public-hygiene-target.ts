@@ -26,6 +26,7 @@
 import { simpleCommands, unwrap } from "./bash-destructive-write.ts";
 import { parseRemoteUrl } from "./forge-detect.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
+import { parsePushUrlTarget, pushRemoteName } from "./public-hygiene-remote.ts";
 import type { RepoTarget } from "./public-hygiene-visibility.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -151,6 +152,25 @@ function gitWords(argv: readonly string[]): string[] | undefined {
 
 /** The first WORD after `git` and its global options — the verb, positionally. */
 export function gitVerb(words: readonly string[]): string | undefined {
+  return gitVerbAt(words)?.verb;
+}
+
+/**
+ * The verb AND the position it sits at — for a reader that must slice the argv
+ * after it rather than merely name it.
+ *
+ * Locating the verb by `lastIndexOf(verb)` after the fact is how
+ * `git commit -C commit -m hello` read as a plain commit: the operand `commit`
+ * is the LAST word equal to the verb, so the slice started after the operand and
+ * git's own `-C <commit>` fell into the words before it, unread. A reader that
+ * needs the position has to be given the position, by the one walker that knows
+ * which of git's globals consume a follower.
+ *
+ * The program word is checked by the CALLER (see `argvAfterCommitVerb`): `commit`
+ * is an ordinary word in `docker run myimage commit -m x`, and reading the words
+ * after it as commit flags would be a claim about a command that never ran git.
+ */
+export function gitVerbAt(words: readonly string[]): { verb: string; index: number } | undefined {
   for (let i = 1; i < words.length; i++) {
     const w = words[i] ?? "";
     if (w === "") continue;
@@ -158,12 +178,52 @@ export function gitVerb(words: readonly string[]): string | undefined {
     // two git globals that take a value as a SEPARATE word before the verb are
     // `-C <dir>` and `-c k=v`, so both consume their follower.
     if (w.startsWith("-")) {
-      if (w === "-C" || w === "-c") i += 1;
+      if (gitGlobalTakesSeparateValue(w)) i += 1;
       continue;
     }
-    return w;
+    return { verb: w, index: i };
   }
   return undefined;
+}
+
+/**
+ * git's global options that read their value as a SEPARATE word before the verb.
+ *
+ * The short pair is the one that collides with `git commit`'s reuse letters
+ * (`-C <dir>`, `-c k=v`), and the long forms are the same globals spelled out:
+ * `--work-tree <dir>`, `--git-dir <dir>`, `--namespace <ns>`, `--exec-path <p>`,
+ * `--super-prefix <p>` and the config-pair forms. A walker that treats their
+ * follower as a word of its own can stop at the value: `git --work-tree /x commit
+ * -m x` has `/x` as its first non-flag word, and declaring that the verb is `/x`
+ * makes the real commit unread — the scan then reports a publish it could not see
+ * (#1820 lens round 1). A `=`-attached form (`--work-tree=/x`) carries its value
+ * and consumes nothing.
+ */
+const GIT_GLOBAL_VALUE_FLAGS = new Set([
+  "-C",
+  "-c",
+  "--exec-path",
+  "--git-dir",
+  "--namespace",
+  "--super-prefix",
+  "--work-tree",
+]);
+
+function gitGlobalTakesSeparateValue(word: string): boolean {
+  if (word.includes("=")) return false;
+  return GIT_GLOBAL_VALUE_FLAGS.has(word);
+}
+
+/**
+ * Is this word the git PROGRAM word? `git`, or a path whose final segment is
+ * `git` (`/usr/bin/git`, `./git`). A substring or suffix test is not enough: a
+ * verb or operand that merely ENDS in "git" (`…/mygit`, `audit-git`) must not be
+ * mistaken for the program, or the words after it get read as git's.
+ */
+export function isGitProgramWord(word: string | undefined): boolean {
+  if (word === undefined || word === "") return false;
+  const base = word.slice(word.lastIndexOf("/") + 1);
+  return base === "git";
 }
 
 /**
@@ -181,41 +241,6 @@ function segmentCwd(words: readonly string[], cwd: string): string {
     }
   }
   return cwd;
-}
-
-/**
- * The remote a `git push` writes to, as the command wrote it: the first word
- * after the verb that names a remote this clone actually has (git resolves a
- * remote before a refspec, so a real remote name in that slot is the remote),
- * defaulting to `origin` — git's own default when the command names none.
- *
- * `pushVerb` arrives from the caller the way the push scan receives it: this
- * module never spells the verb, because the harness that runs the offline suite
- * reads command strings for publish verbs.
- */
-export function pushRemoteName(
-  words: readonly string[],
-  pushVerb: string,
-  remoteNames: ReadonlySet<string>,
-): string {
-  if (pushVerb === "") return "origin";
-  const at = words.indexOf(pushVerb);
-  if (at < 0) return "origin";
-  for (let i = at + 1; i < words.length; i++) {
-    const w = words[i] ?? "";
-    // An option whose value is a separate word does not lend that operand to the
-    // remote slot: `git push --repo other origin main` pushes to `origin`.
-    if (w === "-o" || w === "--push-option" || w === "--repo" || w === "--receive-pack") {
-      i += 1;
-      continue;
-    }
-    if (w.startsWith("-")) continue;
-    // Only a name this clone really has. A refspec (`main`, `HEAD:refs/heads/x`,
-    // a URL) is not a remote, and guessing which of them to read as one is how a
-    // scan ends up asking about the wrong repository.
-    if (remoteNames.has(w)) return w;
-  }
-  return "origin";
 }
 
 /** This clone's remote names, or an empty set when git cannot say. */
@@ -346,7 +371,16 @@ export async function resolveCommandTarget(
       if (opts.pushVerb !== undefined && verb === opts.pushVerb) {
         const dir = segmentCwd(words, cwd);
         const remotes = await remoteList(exec, dir);
-        const t = await ask(pushRemoteName(words, opts.pushVerb, remotes), dir);
+        const remote = pushRemoteName(words, opts.pushVerb, remotes);
+        // A URL in the remote slot names the repository itself, and the clone's
+        // own remotes can say nothing about it: a clone whose `origin` is a
+        // private forge can push straight to the public host, and reading
+        // `origin` would answer the wrong question with confidence. Parse the URL
+        // the command carries; when it is not a repository URL the command named
+        // no target, which is `unknown` and therefore checked.
+        const direct = parsePushUrlTarget(remote);
+        if (direct !== undefined) return direct;
+        const t = await ask(remote, dir);
         if (isRepoTarget(t)) return t;
         last = t;
       }

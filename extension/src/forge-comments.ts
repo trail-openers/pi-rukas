@@ -24,7 +24,20 @@ import type { NormalizedComment } from "./forge-types.ts";
 import type { ForgeExecFn } from "./forge.ts";
 
 /**
- * A comment-read seam: takes the forge type + the exec/run helpers from
+ * What the forge's public-text check decided about one piece of text.
+ *
+ * `text` is the bytes the caller must publish: the check rewrites host paths to
+ * `~`/`<repo>` on the public-or-unknown branch, and the posted file has to be
+ * the same bytes the matcher judged. A caller that ignores it posts text nobody
+ * checked.
+ */
+export interface PublicTextCheck {
+  text: string;
+  /** True when at least one host path was rewritten out of the text. */
+  rewritten: boolean;
+}
+
+/** A comment-read seam: takes the forge type + the exec/run helpers from
  * `createForge` and returns a list of NormalizedComment for the given
  * target. `run` is the same closure `createForge` builds (it carries the
  * forge's cwd + maxBuffer + per-call execOpts).
@@ -48,8 +61,12 @@ export interface CommentSeamDeps {
    * or a residuals poster whose repository is not a forge target) passes an
    * explicit no-op, which says in the call site what the type used to allow
    * silently.
+   *
+   * RETURNS the text to publish (#1788 follow-up): the seam rewrites host paths
+   * and the caller writes what it returns, so judged bytes and posted bytes are
+   * one string. Throws `PublicHygieneError` on a refusal.
    */
-  checkPublicText: (label: string, text: string) => Promise<void>;
+  checkPublicText: (label: string, text: string) => Promise<PublicTextCheck>;
 }
 
 /** List an issue's comments (the idempotency check for the handoff fallback).
@@ -125,8 +142,8 @@ export async function postPrComment(
   // that never thought about it. AWAITED, because the check now resolves the
   // target repository's visibility — a seam a caller cannot forget awaiting is
   // a comment posted unchecked, which is exactly what this line exists to stop.
-  await deps.checkPublicText("pull request comment", body);
-  return deps.withBodyFile(`pr-comment-${number}`, body, (file) =>
+  const checked = await deps.checkPublicText("pull request comment", body);
+  return deps.withBodyFile(`pr-comment-${number}`, checked.text, (file) =>
     deps.run(cmds.prCommentCmd(deps.forge, number, file), (stdout) => {
       if (deps.forge === "github") return stdout.trim();
       try {

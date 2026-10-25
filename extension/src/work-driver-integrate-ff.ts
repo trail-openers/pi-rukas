@@ -16,7 +16,7 @@
 
 import { trace } from "./trace.ts";
 import type { OrchestratedCherryPickResult } from "./work-driver-cherry-pick.ts";
-import { commitMessageRefusal } from "./work-driver-commit-hygiene.ts";
+import { commitMessageToPublish } from "./work-driver-commit-message-publish.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 import { type ExecFn, gitErrorDetail } from "./worktree.ts";
 
@@ -38,6 +38,12 @@ export type FastForwardOutcome =
  * `committed` reports whether any worktree was committed before the refusal,
  * which is always `false` today — it is the field the caller would read if the
  * order ever moved.
+ *
+ * The message COMMITTED is the message JUDGED (#1820): the seam returns the
+ * normalised title/body and this loop passes THOSE to `git commit -m`, never the
+ * `commit.title`/`commit.body` it was handed. On a public target the seam rewrites
+ * host paths to `<repo>`/`~`; committing the caller's originals would have made
+ * that rewrite a no-op here while the check still read the rewritten bytes.
  */
 export async function fastForwardOnto(
   execFn: ExecFn,
@@ -48,20 +54,23 @@ export async function fastForwardOnto(
   /** The issue the message derives from — named in the refusal only. */
   issue?: number,
 ): Promise<FastForwardOutcome> {
-  const refusal = await commitMessageRefusal(commit.title, commit.body, {
-    cwd: repoRoot,
-    issue: issue ?? 0,
-    exec: execFn,
-  });
-  if (refusal !== undefined) {
+  const message = await commitMessageToPublish(
+    execFn,
+    { commitTitle: commit.title, commitBody: commit.body, issue },
+    repoRoot,
+  );
+  if (message.refusal !== undefined) {
     trace(`work-driver: integrate — fast-forward commit refused for #${issue ?? "?"}`);
-    return { _publishRefusal: { reason: refusal, committed: false } };
+    return { _publishRefusal: { reason: message.refusal, committed: false } };
   }
   for (const id of ids) {
     const wt = worktrees[id];
     if (!wt) throw new Error(`worktree '${id}' has no path`);
     if ((await stagePorcelainPaths(execFn, wt, commit.exempt)) > 0) {
-      await execFn("git", { argv: ["commit", "-m", commit.title, "-m", commit.body], cwd: wt });
+      await execFn("git", {
+        argv: ["commit", "-m", message.title, "-m", message.body],
+        cwd: wt,
+      });
     }
     const head = (await execFn("git", { argv: ["rev-parse", "HEAD"], cwd: wt })).stdout.trim();
     await execFn("git", { argv: ["merge", "--ff-only", head], cwd: repoRoot });

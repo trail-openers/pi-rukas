@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import type { ShellExecFn } from "./exec.ts";
 import { prMergeSubjectFlag } from "./forge-commands.ts";
 import { PublicHygieneError } from "./public-hygiene-config.ts";
-import { driverPublishRefusal } from "./public-hygiene-driver.ts";
+import { driverPublishCheck } from "./public-hygiene-driver.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -302,25 +302,32 @@ async function executeAndVerifyMergeDirect(
   // reason spelled out on the adapter path above: `runMerged` routes on the
   // result, and a merge the guard refused is a merge that parks with a reason,
   // not an exception that escapes the step.
+  // `mergeSubject` is the subject the merge actually writes: the checked text,
+  // with this clone's paths rewritten out of it on a public target (#1788
+  // follow-up). A local rather than a reassignment of the parameter.
+  let mergeSubject = subject;
   if (subject !== undefined) {
-    const refusal = await driverPublishRefusal("merge commit subject", subject, {
+    const checked = await driverPublishCheck("merge commit subject", subject, {
       command: "gh pr merge",
       cwd: repoRoot,
       // `VerifyExecFn` and the guard's `ExecFn` differ only in optionality of
       // the options bag; the seam accepts either shape and passes it through.
       exec: execFn as unknown as ExecFn,
       visibility,
+      repoRoot,
     });
-    if (refusal !== undefined) {
+    if (checked.refusal !== undefined) {
+      const refusal = checked.refusal;
       trace(`work-driver: merge subject refused for PR #${prNumber}: ${refusal.slice(0, 200)}`);
       return { ok: false, reason: refusal };
     }
+    mergeSubject = checked.text;
   }
 
   // Execute the merge.
   try {
     await execFn(
-      `gh pr merge ${prNumber} --${method} --delete-branch${prMergeSubjectFlag(subject)}`,
+      `gh pr merge ${prNumber} --${method} --delete-branch${prMergeSubjectFlag(mergeSubject)}`,
       {
         cwd: repoRoot,
         maxBuffer: 1024 * 1024,
