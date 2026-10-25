@@ -28,19 +28,17 @@ Seven slash commands, an orchestrator-shaped system prompt, and nine tools that 
 | `/review [#PR \| path \| latest N]` | On-demand six-pass code review of a PR, file, directory, or the latest N PRs. Returns a deduplicated, precedence-merged verdict (APPROVED / ISSUES_FOUND / CRITICAL_ISSUES_FOUND). |
 | `/audit [<path> \| "full"]` | Standards-first repo/path audit. Derives expectations from docs/config/CI/memory/examples, then reports misalignments across bugs, dead code, style drift, architecture drift, and quality-gate gaps. |
 
-Plus utility commands: `/ensemble-model` (per-role subagent model picker), `/runs` (browse subagent transcripts), `/ensemble-debug` (show resolved configuration), `/work-status` (live `/work` cycle status; postmortem layout in a terminal state).
+Plus utility commands: `/ensemble-model` (per-role subagent model picker), `/runs` (browse subagent transcripts), `/ensemble-debug` (show resolved configuration), `/work-status` (live `/work` cycle status; postmortem layout in a terminal state). A **privacy guard** is on by default: private hostnames, internal addresses and personal paths never reach a public PR, issue or commit message ([Privacy guard for public repositories](#privacy-guard-for-public-repositories)).
+
+### Privacy guard for public repositories
+
+An agent that publishes — a PR body, an issue comment, a commit message, a push — has seen your whole machine, and what it writes quotes hostnames, internal addresses and personal paths without meaning to. pi-rukas runs a guard that refuses such a publish before anything reaches the forge, in every mode, including the ones where the permission layer is off. It checks **public repositories only** (a private repository has no public to protect) against a **built-in generic set** that is always on — private IPv4 ranges, personal home paths — plus a **private denylist** of your own terms, and it covers `gh issue|pr|release` and `gh api` writes, `git commit -m`/`-F`, and the outgoing commits and added diff lines of a `git push` (a push whose remote is a URL is judged by the host that URL names). What it cannot read it refuses rather than passes, and a refusal names a denylist line, a path, or a category — never the matched term.
+
+The one-time setup is naming your own terms in `~/.config/pi-rukas/public-denylist`: **outside every repository** (a cycle that could edit the list could delete its own entry), mode `600`, one term per line, `#` comments, `regex:` in front of a line that should match as a pattern. Never commit it, and keep each host's copy in sync — a laptop that never got the new line lets that term through there. Nothing creates it for you (`./install.sh` prints one line naming the path when it is absent and installs nothing), and nothing fails without it: the generic set runs regardless. For a `git push` you type yourself, install the companion hook `bin/pre-push-hygiene.sh` in your clones. The tiers, the fail-closed rules and the `PI_ENSEMBLE_PUBLIC_HYGIENE=0` escape hatch are in [docs/troubleshooting.md](docs/troubleshooting.md) → "Public repository hygiene"; the two variables are in [docs/configuration.md](docs/configuration.md).
 
 ## When to use which command
 
-- **`/start`** — beginning of a session: load context, check state. Reads only.
-- **`/research <topic>`** — investigate a topic (web + codebase + memory); deterministic verification, dated artifact + provenance under `outputs/`.
-- **`/plan <description>`** — draft a GitHub issue. No memory writes.
-- **`/work <issue#>`** — execute an issue end-to-end (implement → review → merge) on a feature branch. Subagents may write to memory.
-- **`/do <description>`** — free-form work without an issue. Subagents may write to memory.
-- **`/review`** — evaluate code against the six universal quality lenses; does not write to memory.
-- **`/audit`** — audit a repo or path against its own intended standards; sparse, durable stores only.
-
-**Quick rule of thumb**: learn → `/research`; fix with an issue → `/work <issue#>`; fix free-form → `/do <description>`; check code quality → `/review`; assess overall health → `/audit`.
+Read-only, no memory writes: `/start` (session context), `/research <topic>` (web + codebase + memory), `/plan <description>` (draft an issue). Writing work, where subagents may write to memory: `/work <issue#>` (an issue end-to-end: implement → review → merge) and `/do <description>` (free-form, no issue). On demand: `/review` (the six quality lenses), `/audit` (a repo against its own intended standards).
 
 ## Prerequisites
 

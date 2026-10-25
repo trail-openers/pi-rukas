@@ -592,11 +592,55 @@ The driver's own forge posts bypass the hook (they are in-process execs) and are
 `createForge` seam in `forge.ts` instead; a human `git push` in their own terminal is covered by
 `bin/pre-push-hygiene.sh`.
 
+**Driver-composed paths are folded before they are checked, and what it judged is what it posted.**
+A handoff comment, a PR body or a residual-findings disclosure quotes transcript, worktree and
+verify-log paths, and a personal home path is on the guard's own generic list — so without a
+rewrite the driver would refuse its own handoff, which is the artifact an operator needs most.
+The seam (`public-hygiene-normalise.ts`) therefore collapses the current user's home to `~` and
+the repository root to `<repo>` in the text it is about to publish, and then checks the REWRITTEN
+bytes, so the text that passed is byte-for-byte the text that goes out. It is applied once, at the
+place the body is rendered, and that one string is threaded to every consumer of it — the body
+file, the in-process fallback's post, the idempotency comparison against the target's existing
+comments, and the recorded event. Applying it at a reader instead would leave those disagreeing,
+and the disagreement that bites is the comparison: a comment carrying the folded text compared
+against the raw render does not match, and the driver posts a duplicate handoff.
+
+Three rules keep the fold from becoming a hole. Only the CURRENT user's home folds to `~` — a path
+under another account is untouched and still refused. The repository and home spellings fold only
+when followed by a path separator or the end of the text, so a sibling directory whose name starts
+with the repository's (`/srv/myrepo-backup`) is not rewritten into something else. And the
+`<!-- pi-rukas: … -->` marker spans a host parses to find and extend a comment are masked out
+before any rewrite and restored verbatim, so a marker is never rewritten even when it names a
+path; if a body ever carried the mask character, the rewrite is skipped for the whole text rather
+than applied inside a marker. `~` and `<repo>` are conventions, not secrets: the fold is applied
+to a PUBLIC or unresolvable target only, a positively private repository keeps its real paths (an
+operator reading that handoff wants the path it names), and `PI_ENSEMBLE_PUBLIC_HYGIENE=0` turns
+the rewrite off together with the check — a fold applied with no check would be a silent content
+change. Where the text is not published at all — the chat message, the local `/work-status`
+recovery block — nothing is folded.
+
 **Fix (the normal case):** the refusal is correct — the publish really does name something private.
 Rewrite the text to describe the thing instead of naming it (`the staging host`, an RFC 5737 address
 such as `192.0.2.10`, `/home/dev/` rather than a personal home path). The refusal names a
 **denylist line number, a path, or a category** and never the matched term, so open the denylist at
 the line it cites to see what matched.
+
+**Setting the list up (the one-time step the installer only points at).** Nothing creates the file
+for you, and nothing should — an installer writing into a personal config tree would be doing the
+thing the guard exists to prevent, and a cycle that could edit the list could delete its own entry.
+So `install.sh` prints one informational line naming the path when the file is absent and moves on;
+absent is a supported state. To create it:
+
+```bash
+mkdir -p ~/.config/pi-rukas && umask 077 && : > ~/.config/pi-rukas/public-denylist
+# edit it: internal hostnames, project code names, addresses, personal paths
+chmod 600 ~/.config/pi-rukas/public-denylist
+```
+
+Mode `600` because it is a list of the things you are keeping private. **Never commit it**, and keep
+each host's copy in sync: the file is per-machine, so a laptop that never received the new line lets
+that term through on that machine. `bin/pre-push-hygiene.sh` is the human-side counterpart for a
+`git push` you type yourself; install it in your clones if you want the same check outside the agent.
 
 **Where the denylist lives:** `~/.config/pi-rukas/public-denylist`, or `$PI_ENSEMBLE_PUBLIC_DENYLIST`
 when set. One term per line, `#` comments, blank lines ignored, literal matches are case-insensitive.
@@ -714,6 +758,19 @@ category. A `-d`/`--delete` push, or a refspec with an empty source, publishes n
 commits and is scanned clean. A source that does not resolve is a refusal, never
 a clean range. Non-github.com remotes are not push-scanned (a private remote is
 not the public forge).
+
+**The remote may be a URL, and then the URL is the target.** `git push
+https://github.com/owner/repo.git main` names its destination in the command, and no
+remote in the clone has anything to say about where those commits go. Both readers of
+that slot read the URL, not the clone's `origin`: the scan triggers on the host the URL
+names (so a clone whose only remotes are a company forge still has its push to the public
+forge scanned), and the visibility question is asked of the repository the URL parses to
+— `ssh://`, `git@host:` and `https://` spellings resolve identically. The reverse also
+holds: a URL to a host outside the forge boundary is not scanned just because `origin`
+happens to point at github.com. A word that looks like a URL and does not parse as one
+is a refusal, not an excuse. A bare `owner/repo` in the remote slot is **not** read as a
+URL — a refspec may legitimately look like that — and the range still comes from the
+refspecs after it, never from HEAD.
 
 The scan runs git in the push's own directory: the tool call's cwd, adjusted for
 the two shapes that move the git (`git -C <dir>`, a `cd <dir> &&` prefix), so a
