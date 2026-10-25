@@ -13,6 +13,7 @@ import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { driverWorktree } from "./lib/git-worktree-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -55,6 +56,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-infra-"));
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the fake `.git` becomes a real tree, or the diff read fails and
+    // the retry ladder sleeps instead of the loop re-running as asserted.
+    driverWorktree(dir);
     let s = initialState(955, 1_000_000);
     s = {
       ...s,

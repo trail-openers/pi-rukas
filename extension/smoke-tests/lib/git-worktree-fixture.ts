@@ -4,10 +4,11 @@
  * so fixtures that stage a passing developer must make real commits.
  */
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
+import { makeFakeGitDirReal } from "./git-worktree.ts";
 
 /**
  * The safety net's `git commit` runs through the inherited environment, not
@@ -63,4 +64,34 @@ export async function makeBaseWorktrees(
     shas[id] = gitIn(wt, ["rev-parse", "HEAD"]);
   }
   return shas;
+}
+
+/**
+ * #1634 — one call for the `mkdtempSync` + `mkdirSync(dir, ".git", "info")`
+ * fixture shape this suite uses everywhere: the scratch directory that stands in
+ * for a worktree so the driver's state file has somewhere to live.
+ *
+ * That directory is not a repository, which was harmless while `fetchDiff`
+ * answered `""` for every failure mode — and stays harmless for the tests that
+ * never reach the review step. But the `.git` ENTRY makes `readWorktreeDiff` ask
+ * git whether the tree is clean, and for a directory that was never a repository
+ * that probe fails: the read comes back unreadable, the failure classifies as
+ * transient, and the retry ladder sleeps through its whole budget. Two tests of
+ * this shape measured 109 s and 110 s against a 45 s per-test bound — which is
+ * how the previous dispatch hung for 40 minutes without reaching its assertions.
+ *
+ * Making the tree real costs one `git init` per fixture and answers every
+ * question the driver asks of it, so the test exercises the path it names
+ * instead of an infrastructure failure nobody intended. The driver's own
+ * untracked records stay non-dirt, so a fixture that meant "clean worktree"
+ * still reads as a POSITIVELY proven empty diff.
+ */
+export function driverWorktree(dir: string): string {
+  const gitDir = path.join(dir, ".git");
+  // The `.git/info` path is what the callers created; some build it with
+  // `fs/promises.mkdir` and have no sync mkdir at the call site, so this
+  // guarantees it rather than depending on the call order. `git init` writes
+  // into `.git` and needs the parent to exist.
+  mkdirSync(path.join(gitDir, "info"), { recursive: true });
+  return makeFakeGitDirReal(dir);
 }

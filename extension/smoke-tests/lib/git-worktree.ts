@@ -25,8 +25,10 @@
  * of the two proves half the gate.
  */
 
+import { gitTestEnv } from "./git-test-env.ts";
+
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -45,9 +47,37 @@ function run(cmd: string, args: string[], cwd: string): void {
   }
 }
 
-/** Run git in `cwd`, throwing with git's own message on failure. */
+/**
+ * Run git with the #1145 isolated view. The env comes from `gitTestEnv()` — the
+ * repo's own fixture isolation (isolated HOME / XDG_CONFIG_HOME /
+ * GIT_CONFIG_GLOBAL / GIT_CONFIG_NOSYSTEM, and the `core.excludesFile=/dev/null`
+ * entry it carries), which is what `gitIn` in lib/git-worktree-fixture.ts hands
+ * every other fixture repo. Two reasons not to hand-roll this:
+ *
+ *  - a fixture that becomes a real repository is subject to whatever the host's
+ *    git config ignores; on a host whose global config ignores `.pi/` the
+ *    driver's own `git diff` / `git status` reads change shape;
+ *  - a second isolation mechanism that disagrees with the first is a second set
+ *    of git defaults, and the two then differ per host — the exact state #1145
+ *    exists to make impossible.
+ *
+ * `core.hooksPath` is added on top: a host- or repo-installed `pre-commit` hook
+ * must neither run nor block a fixture's commit. `timeout` bounds every call, so
+ * a git child waiting for input (a credential prompt, a hook) fails the test
+ * rather than hanging it.
+ */
 function git(cwd: string, args: string[]): void {
-  run("git", args, cwd);
+  try {
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
+      cwd,
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: 30_000,
+      env: gitTestEnv(),
+    });
+  } catch (err) {
+    const stderr = (err as { stderr?: Buffer }).stderr?.toString().trim();
+    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${stderr ?? String(err)}`);
+  }
 }
 
 /**
@@ -134,4 +164,50 @@ export async function withGitBroken<T>(fn: () => Promise<T>): Promise<T> {
     // it costs nothing to answer it correctly.
     process.env.PATH = saved as string;
   }
+}
+
+/**
+ * #1634 — upgrade the very common `mkdtempSync` + `mkdirSync(<dir>/.git/info)`
+ * fake-tree fixture into something git can actually answer, WITHOUT changing
+ * what the test asserts.
+ *
+ * Dozens of driver tests build a scratch "worktree" by making a directory and a
+ * `.git/info` path inside it so the driver's state file has somewhere to live.
+ * That directory is not a repository, which was invisible while `fetchDiff`
+ * answered `""` for every failure mode and the adversarial gate read `""` as
+ * approved-with-zero-rounds. Once the gate can tell the two apart (this issue)
+ * such a fixture is UNREADABLE, and a test whose fixture never reaches the
+ * reviewer it means to exercise is measuring something else.
+ *
+ * `initScratchRepo` cannot detect the case (it probes with `git rev-parse`,
+ * which needs the binary), so this recognises the FAKE admin dir by shape — a
+ * `.git` directory with no `HEAD`, which a real `git init` never leaves behind —
+ * and turns it into a real tree with one empty commit. A directory with no
+ * `.git` at all is left alone: those fixtures are deliberately the
+ * not-a-repository case and their tests say so.
+ *
+ * The driver artefacts already in the tree (`.pi/work-state/*.json`, `tmp/**`)
+ * are untracked, so `isExactDriverArtefact` spares them and the tree still reads
+ * as a POSITIVELY proven empty diff — which is what the fixture meant to be.
+ * A caller that wants a diff puts a file in itself.
+ *
+ * ⚠ Every command here goes through `git` above, which pins the isolated git
+ * view. Do NOT route these through the ambient environment: see that helper.
+ */
+export function makeFakeGitDirReal(dir: string): string {
+  const gitDir = path.join(dir, ".git");
+  let isFake = false;
+  try {
+    isFake = existsSync(gitDir) && !existsSync(path.join(gitDir, "HEAD"));
+  } catch {
+    return dir;
+  }
+  if (!isFake) return dir;
+  // The fixture's `.git` is a plain directory, so `git init` here is the repair:
+  // git writes the admin files it was never given.
+  git(dir, ["init", "-q", "--initial-branch=main", "."]);
+  git(dir, ["config", "user.email", "smoke-test@pi-rukas.invalid"]);
+  git(dir, ["config", "user.name", "pi-rukas smoke test"]);
+  git(dir, ["commit", "-q", "--allow-empty", "-m", "fixture baseline"]);
+  return dir;
 }
