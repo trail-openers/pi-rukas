@@ -36,7 +36,8 @@ import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review-for
 import type { Finding } from "../src/lens-review.ts";
 import { buildLensRoster } from "../src/lens-roster.ts";
 import { resolveReviewThreshold, severityFromQuote } from "../src/review-threshold.ts";
-import { pathsInDiff, readFileAtBranch } from "../src/work-driver-diff.ts";
+import { pathsInDiff } from "../src/work-driver-diff.ts";
+import { readFileAtBranch } from "../src/work-driver-diff-branch-file.ts";
 import { type DoctrineDoc, policyJudgeEnabled } from "../src/work-driver-policy.ts";
 
 const execFileAsync = promisify(execFile);
