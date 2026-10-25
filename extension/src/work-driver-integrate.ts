@@ -347,12 +347,14 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       maxBuffer: 64 * 1024,
     });
     if (hasStaged.trim()) {
-      const refused = await cherryPickCommitGate(execFn, opts, repoRoot, restoreRoot, claimFor);
-      if (refused !== undefined) return refused;
-      await execFn(
-        `git commit -m ${JSON.stringify(opts.commitTitle)} -m ${JSON.stringify(opts.commitBody)}`,
-        { cwd: repoRoot, maxBuffer: 256 * 1024 },
-      );
+      const gate = await cherryPickCommitGate(execFn, opts, repoRoot, restoreRoot, claimFor);
+      if ("refusalResult" in gate) return gate.refusalResult;
+      // The bytes this gate judged (#1820): the normalised title/body, not
+      // `opts.commitTitle`/`opts.commitBody`, which still carry the host paths.
+      await execFn(`git commit -m ${JSON.stringify(gate.title)} -m ${JSON.stringify(gate.body)}`, {
+        cwd: repoRoot,
+        maxBuffer: 256 * 1024,
+      });
     }
 
     // Determine which workstreams actually produced output. (#749 — the

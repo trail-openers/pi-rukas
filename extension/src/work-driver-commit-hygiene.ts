@@ -10,7 +10,7 @@
  * a hook to read. The driver therefore judges its own prose on the way in.
  *
  * It asks on the ONE seam every driver-authored publish uses
- * (`driverPublishRefusal`), which resolves the target and applies the same
+ * (`driverPublishCheck`), which resolves the target and applies the same
  * public-only rule the `tool_call` guard applies: a POSITIVE private answer
  * skips, and public, unknown, or a lookup that failed all check. That is the
  * whole reason this is a seam call rather than the pure text checker: a private
@@ -165,17 +165,4 @@ export async function forgePublishCheck(
   });
   if (checked.refusal !== undefined) throw new PublicHygieneError(checked.refusal);
   return { text: checked.text, rewritten: checked.rewritten };
-}
-
-/**
- * The refusal-only form of {@link forgePublishCheck}, for a caller that has
- * already normalised its text and only needs the verdict.
- */
-export async function forgePublishRefusal(
-  label: string,
-  text: string,
-  command: string,
-  opts: Parameters<typeof forgePublishCheck>[3],
-): Promise<void> {
-  await forgePublishCheck(label, text, command, opts);
 }

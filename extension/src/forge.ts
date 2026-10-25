@@ -42,7 +42,7 @@ import {
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
-import { forgePublishCheck, forgePublishRefusal } from "./work-driver-commit-hygiene.ts";
+import { forgePublishCheck } from "./work-driver-commit-hygiene.ts";
 export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
 import type {
   CiWatchOpts,

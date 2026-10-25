@@ -86,17 +86,18 @@ export function withPathNormalisationNote(body: string, rewritten: boolean): str
  * Rewrite the repository-root and home-directory paths in a driver-composed
  * publish out of it.
  *
- * `roots` are the repository spellings to collapse — the configured root, its
- * realpath, and this cycle's worktree when that differs. `home`, when supplied,
- * is the current user's home in both spellings; the caller derives it through
- * {@link normaliseDriverPublishPaths} so a test can hand in a scratch home
- * instead of the machine's. A missing or empty spelling is skipped rather than
- * matched.
+ * `roots` are the repository spellings to collapse — the configured root and its
+ * realpath. `home`, when supplied, is the current user's home in both spellings;
+ * the caller derives it through {@link normaliseDriverPublishPaths} so a test can
+ * hand in a scratch home instead of the machine's. A root that is not a non-empty
+ * string — missing, empty, or a non-string that reached the caller as data — is
+ * skipped rather than matched, and never turns the rewrite into a no-op for the
+ * roots that WERE supplied.
  */
 export function normalisePublishPaths(
   text: string,
-  roots: readonly string[],
-  home?: readonly string[],
+  roots: readonly (string | undefined)[],
+  home?: readonly (string | undefined)[],
 ): NormaliseResult {
   if (text === "") return { text, rewritten: false, kinds: [] };
   const repo = spellings(roots);
@@ -177,46 +178,39 @@ export function normaliseDriverPublishPaths(
   text: string,
   opts: {
     repoRoot?: string;
-    env?: NodeJS.ProcessEnv;
     homeDir?: string;
     realpath?: (dir: string) => string;
   },
 ): NormaliseResult {
   const realpath = opts.realpath ?? realpathOf;
   const roots: string[] = [];
-  if (opts.repoRoot !== undefined && opts.repoRoot !== "") {
+  if (isUsableRoot(opts.repoRoot)) {
     roots.push(opts.repoRoot, ...realpathsOf(opts.repoRoot, realpath));
   }
-  const home = opts.homeDir ?? homeFromEnv(opts.env ?? process.env);
+  const home = opts.homeDir ?? homeFromEnv();
   return normalisePublishPaths(
     text,
     roots,
-    home === "" ? [] : [home, ...realpathsOf(home, realpath)],
+    isUsableRoot(home) ? [home, ...realpathsOf(home, realpath)] : [],
   );
 }
 
+/** A root this rewrite can act on: a string, non-empty after trimming. */
+function isUsableRoot(dir: unknown): dir is string {
+  return typeof dir === "string" && dir.trim() !== "";
+}
+
 /** The current user's home as the process knows it (an env `HOME` wins). */
-function homeFromEnv(env: NodeJS.ProcessEnv): string {
-  const fromEnv = env.HOME?.trim();
+function homeFromEnv(): string {
+  const fromEnv = process.env.HOME?.trim();
   return fromEnv !== undefined && fromEnv !== "" ? fromEnv : os.homedir();
 }
 
-/**
- * The current user's home, in both spellings — `os.homedir()` and its realpath.
- *
- * The environment is consulted for `HOME` only when it is the caller's own
- * (tests pass one); production passes nothing and `os.homedir()` answers, which
- * is the same value `public-denylist.ts` builds the default list path from.
- */
-export function homeSpellings(env: NodeJS.ProcessEnv = process.env): string[] {
-  return spellings([homeFromEnv(env)]);
-}
-
 /** Trim, de-duplicate, drop separators, and sort longest-first. */
-function spellings(dirs: readonly string[]): string[] {
+function spellings(dirs: readonly (string | undefined)[]): string[] {
   const seen = new Set<string>();
   for (const dir of dirs) {
-    if (dir === undefined) continue;
+    if (!isUsableRoot(dir)) continue;
     const trimmed = withoutSeparator(dir);
     if (trimmed !== "" && path.isAbsolute(trimmed)) seen.add(trimmed);
   }

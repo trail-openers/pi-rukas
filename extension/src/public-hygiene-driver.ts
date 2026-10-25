@@ -36,7 +36,7 @@
 
 import { execp } from "./exec.ts";
 import { hygieneGuardDisabled } from "./public-hygiene-config.ts";
-import { type NormaliseResult, normaliseDriverPublishPaths } from "./public-hygiene-normalise.ts";
+import { normaliseDriverPublishPaths } from "./public-hygiene-normalise.ts";
 import { type Target, isRepoTarget, resolveCommandTarget } from "./public-hygiene-target.ts";
 import { publicTextRefusal } from "./public-hygiene-text.ts";
 import {
@@ -51,7 +51,7 @@ import type { ExecFn } from "./worktree.ts";
 /**
  * The ONE entry point every driver-authored publish calls.
  *
- * `driverPublicTextRefusal` takes the command string and the directory because
+ * `driverPublicTextCheck` takes the command string and the directory because
  * that is what a caller whose only knowledge of its target is a `gh` invocation
  * has. Most call sites know more than that — a forge adapter knows its owner,
  * repo and host; a driver step knows its worktree — and an options bag is what
@@ -82,8 +82,10 @@ function checked(text: string, rewritten: boolean): DriverPublishCheck {
  *
  * `driverPublicTextCheck`'s one entry point. A caller that publishes the text
  * itself — a body file, a commit message, a merge subject — calls this and
- * writes `text` back. `driverPublishRefusal` is the refusal-only projection for
- * a caller whose text is already normalised at its render site.
+ * writes `text` back. A caller that has NO use for the rewritten bytes still
+ * gets them, because there is no refusal-only projection: a projection that
+ * discards the rewrite is how a commit site ended up judging one string and
+ * committing another (#1820).
  */
 export async function driverPublishCheck(
   label: string,
@@ -97,7 +99,7 @@ export async function driverPublishCheck(
     visibility?: VisibilityFn;
     /** A target the caller already knows (the forge slug); skips resolution. */
     target?: Target;
-    /** Bound on the visibility question; see `driverPublicTextRefusal`. */
+    /** Bound on the visibility question; see `driverPublicTextCheck`. */
     timeoutMs?: number;
     /** The repository root whose paths collapse to `<repo>`; defaults to `cwd`. */
     repoRoot?: string;
@@ -123,22 +125,6 @@ export async function driverPublishCheck(
 }
 
 /**
- * The refusal for a driver-authored public text, discarding the rewrite.
- *
- * For a caller that publishes text it has ALREADY normalised (the handoff body
- * goes through `normaliseDriverPublishPaths` at its render site, and the file on
- * disk must stay the bytes the seam judged). A new call site wants
- * `driverPublishCheck`, which hands back the bytes to publish.
- */
-export async function driverPublishRefusal(
-  label: string,
-  text: string,
-  opts: Parameters<typeof driverPublishCheck>[2],
-): Promise<string | undefined> {
-  return (await driverPublishCheck(label, text, opts)).refusal;
-}
-
-/**
  * The refusal for a driver-authored public text, or `undefined` when the text is
  * clean or its repository is positively private.
  *
@@ -148,7 +134,8 @@ export async function driverPublishRefusal(
  * the tool_call guard uses, so driver and agent cannot disagree about what is
  * publishable.
  *
- * Prefer `driverPublishRefusal` at a new call site; this is what it delegates to.
+ * Prefer `driverPublishCheck` at a new call site: this is what it delegates to,
+ * and it hands back the bytes to publish.
  */
 /** What a caller may pin about the target and the roots the rewrite collapses. */
 export interface DriverTextCheckOpts {
@@ -212,21 +199,6 @@ export async function driverPublicTextCheck(
   return refusal === undefined
     ? checked(normalised.text, normalised.rewritten)
     : { refusal, text: normalised.text, rewritten: normalised.rewritten };
-}
-
-/**
- * The refusal for a driver-authored public text, or `undefined` when the text is
- * clean or its repository is positively private. Discards the rewrite; see
- * `driverPublicTextCheck`.
- */
-export async function driverPublicTextRefusal(
-  label: string,
-  text: string,
-  command: string,
-  cwd: string,
-  opts: DriverTextCheckOpts = {},
-): Promise<string | undefined> {
-  return (await driverPublicTextCheck(label, text, command, cwd, opts)).refusal;
 }
 
 /**

@@ -184,19 +184,6 @@ function segmentCwd(words: readonly string[], cwd: string): string {
   return cwd;
 }
 
-/**
- * The remote a `git push` writes to, as the command wrote it.
- *
- * The rule lives in `public-hygiene-remote.ts`, the module that owns the push
- * command's remote slot; this module re-exports it so the callers that resolved
- * a push's remote here keep one import. `origin` is git's own default when the
- * command names none, a URL in the remote slot is returned verbatim for
- * {@link parsePushUrlTarget} to read, and an option's separate-word operand
- * never occupies the slot — `git push --repo other origin main` pushes to
- * `origin`.
- */
-export { pushRemoteName } from "./public-hygiene-remote.ts";
-
 /** This clone's remote names, or an empty set when git cannot say. */
 async function remoteList(exec: ExecFn | undefined, cwd: string): Promise<ReadonlySet<string>> {
   if (exec === undefined) return new Set();

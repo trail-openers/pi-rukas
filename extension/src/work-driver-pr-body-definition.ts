@@ -90,24 +90,6 @@ export function workstreamLinesOf(ids: string[], scopeOf: (id: string) => string
 }
 
 /**
- * The commit body the mechanized commit-pr step writes: the fixes lines, the
- * companion lines, and the workstream block — the same three blocks the PR body
- * interleaves, joined as one commit message.
- */
-export function commitBodyOf(
-  issues: number[],
-  droppedIssues: Array<{ issue: number; verdict: string; reason: string }>,
-  ids: string[],
-  scopeOf: (id: string) => string,
-): string {
-  return [
-    ...fixesLinesOf(issues),
-    ...companionLinesOf(droppedIssues),
-    ...workstreamLinesOf(ids, scopeOf),
-  ].join("\n");
-}
-
-/**
  * Generate the assumptions block from a pipeline state normalised spec.
  * Returns empty string if no assumptions.
  */
