@@ -354,7 +354,20 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // `!host`: a host-owned channel never labels anything, and a forge write
   // here must not be traced away with the rest of the fallback. Do not move it
   // into `deliverHandoff` — that function is the try/catch's body.
-  if (!host && prNumber && !issueLabelApplied) {
+  //
+  // The gate is the TARGET, not the PR. This is the ISSUE label leg — the entry-
+  // gate target that `work-driver-attention.ts` reads — so it is gated on the
+  // issue's own label state. It used to also require `prNumber`, on the reasoning
+  // above that the fallback's retry already labelled the comment target; but with
+  // no PR the retry labels nothing at all, and the `!issueLabelApplied` read-back
+  // above records "not applied", so the whole leg was skipped and an issue-target
+  // park finished with NO label. That is the same failure #1820 fixed for a
+  // refused body: a park the repeat-park guard cannot see re-runs the entire
+  // pipeline against an unchanged issue. `applyIssueLabelDualTarget` has always
+  // been the issue-facing helper, and it applies the label itself whether or not
+  // a PR exists — the comment-target leg can now reach the issue too, so the
+  // pre-read above is the only thing that can spare it the write.
+  if (!host && !issueLabelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     if (forge) {
       const outcome = await applyIssueLabelAndVerify(forge, ctx.issue, prLabelApplied);
