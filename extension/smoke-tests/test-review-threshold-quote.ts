@@ -34,7 +34,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const S1 = "Six-pass review findings are blocking at HIGH severity and above.";
-const FULL = `${S1} The fix loop continues until all HIGH and CRITICAL findings are resolved. MEDIUM and LOW findings are disclosed on the PR and may be deferred.`;
+const FULL = `${S1} The fix loop continues until every finding at HIGH severity and above is resolved. MEDIUM and LOW findings are disclosed on the PR and may be deferred.`;
 
 // ------------------------------------- this repo's own doctrine, both quotes
 
@@ -48,19 +48,19 @@ const FULL = `${S1} The fix loop continues until all HIGH and CRITICAL findings 
     severityFromQuote(FULL) !== "LOW" && severityFromQuote(FULL) !== "MEDIUM",
     "...and not to LOW or MEDIUM either — the 'may be deferred' clause must not over-tighten it",
   );
-  // §1's SECOND sentence on its own. The bar itself is stated in the first
-  // sentence ("blocking at HIGH severity and above"), which is what the judge
-  // must cite — so the brief STOP condition here is that this sentence alone
-  // reads as a bar LOOSER than HIGH. It does not resolve to HIGH, and per the
-  // brief that is reported rather than fixed by touching review-threshold.ts:
-  // this sentence names no blocking relation at all, it only says which findings
-  // the fix loop runs until, so `severityFromQuote` abstains (undefined) and the
-  // caller keeps the doctrine/default bar.
-  const S2 = "The fix loop continues until all HIGH and CRITICAL findings are resolved.";
+  // §1's SECOND sentence on its own. It used to read "until all HIGH and
+  // CRITICAL findings are resolved" — a bare list with no blocking relation, so
+  // `severityFromQuote` abstained and a judge that quoted only that sentence
+  // silently fell back to the MEDIUM default. Abstention is the correct
+  // semantics for a sentence with no bar (review-threshold.ts stays as is), but
+  // the fallback is the wrong answer, so §1 now states the relation itself and
+  // this sentence resolves to HIGH on its own. STRICT on purpose: an abstaining
+  // quote here is a §1 regression, not a pass.
+  const S2 = "The fix loop continues until every finding at HIGH severity and above is resolved.";
   const s2 = severityFromQuote(S2);
   assert(
-    s2 === undefined || s2 === "HIGH",
-    `canary: §1's second sentence alone never sets a bar looser than HIGH (got ${s2}) — it resolved to ${s2}, which is not HIGH, so a judge quoting only that sentence would move the gate`,
+    s2 === "HIGH",
+    `canary: §1's second sentence alone resolves to HIGH (got ${s2}) — abstention here means the sentence states no bar, and a judge quoting only it would fall back to the MEDIUM default`,
   );
   // And the deferral sentence alone must not read as a bar at all.
   const S3 = "MEDIUM and LOW findings are disclosed on the PR and may be deferred.";
