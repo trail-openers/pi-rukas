@@ -135,7 +135,7 @@ When you receive a plumb report:
 
 When a deterministic loop cap fires (adversarial-loop 3-round rejection, `/work` Step 7f review-round cap, `/plan` Phase 4 iteration cap, `check_review_cap` wall-clock), **produce a structured handoff artifact and stop. Do not ask the user "what should I do next?"** Caps exist because the data says rounds-beyond-cap produce diminishing returns; the deterministic stop is the answer, and asking the user to confirm it just leaves the team idle waiting for a binary that's already decided.
 
-**One cap no longer stops the cycle**, and the driver decides this — not you. A `/work` review-round cap reached with only MEDIUM/HIGH findings, an approving adversarial gate and the residual findings posted to the PR routes on to CI rather than parking, because parking work a human then judges merge-worthy is the more expensive mistake. You will see the cycle continue past the cap; that is correct and needs no intervention. A `CRITICAL` finding, an undisclosed residual, or an exhausted wall-clock budget still parks, and those still get the handoff artifact above.
+**One cap no longer stops the cycle**, and the driver decides this — not you. A `/work` review-round cap reached with only HIGH findings, an approving adversarial gate and the residual findings posted to the PR routes on to CI rather than parking, because parking work a human then judges merge-worthy is the more expensive mistake. You will see the cycle continue past the cap; that is correct and needs no intervention. A `CRITICAL` finding, an undisclosed residual, or an exhausted wall-clock budget still parks, and those still get the handoff artifact above.
 
 **After a review round cap on a hand-managed branch (`dispatch_lens_review`), the budget is spent — do not keep reviewing for its own sake.** A run past the cap is not refused (#1140): the review runs, is recorded as the next round, and its result carries a visible warning. Two warnings:
 
@@ -144,7 +144,7 @@ When a deterministic loop cap fires (adversarial-loop 3-round rejection, `/work`
 
 For `ROUND_CAP_REACHED`:
 
-1. Dispatch the developer to fix every finding at or above the project's blocking threshold (AGENTS.md §1: MEDIUM and above, unless the project's doctrine sets a different one). Do not fix LOW findings.
+1. Dispatch the developer to fix every finding at or above the project's blocking threshold (this repo's AGENTS.md §1: HIGH and above; the shipped default for a project whose doctrine is silent is MEDIUM, unless its doctrine sets a different one). Do not fix LOW findings.
 2. File everything you did not fix — the LOW findings and any blocking-level residual you could not resolve — as **one** follow-up issue (filed through `start_plan_driver`, the only path PM uses to create issues), linking the PR. One issue, not one per finding.
 3. Merge under the #973 rule: the latest lens entry is `ISSUES_FOUND` with `hasCritical: false`, round ≥ the cap (3 by default, `PI_ENSEMBLE_LENS_ROUND_CAP`), the adversarial gate approved, and the residual-disclosure marker is posted on the PR for the current patch. If any of those fails, the guard refuses and the work parks as a handoff instead.
 

@@ -2341,7 +2341,7 @@ PI_ENSEMBLE_CLAIM_SCAN=0 /work <issue>
 
 A lens assigns a finding's severity — that is its judgment. Which severity is serious enough to **stop a merge** is your project's call, stated in your `AGENTS.md`:
 
-> Six-pass review findings are blocking at MEDIUM severity and above.
+> Six-pass review findings are blocking at HIGH severity and above.
 
 That is pi-rukas's own sentence, and since this change it is read rather than merely written down. Say something equivalent in your own `AGENTS.md` to move the bar. Rules:
 

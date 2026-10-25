@@ -20,8 +20,7 @@
  * ## Why the threshold is here too
  *
  * A lens assigns severity; the project decides which severity blocks. That was
- * hardcoded, and `AGENTS.md §1`'s "blocking at MEDIUM and above" was read by
- * nobody. The rule differs from merge authority ON PURPOSE: authority fails
+ * hardcoded, and `AGENTS.md §1`'s blocking sentence was read by nobody. The rule differs from merge authority ON PURPOSE: authority fails
  * closed, configuration falls back to the default — because a repo with no
  * AGENTS.md at all is the normal case, not an error.
  */
@@ -307,8 +306,30 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
   const root = path.resolve(import.meta.dirname, "..", "..");
   const text = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
   assert(
-    /blocking at MEDIUM severity and above/i.test(text),
-    "pi-ensemble's own AGENTS.md still states MEDIUM — the sentence the code now reads",
+    /blocking at HIGH severity and above/i.test(text),
+    "pi-ensemble's own AGENTS.md states HIGH — the sentence the code now reads (raised from MEDIUM on 2026-10-25)",
+  );
+  assert(
+    !/blocking at MEDIUM severity and above/i.test(text),
+    "...and no longer states the old MEDIUM bar anywhere §1 could be cited from",
+  );
+  // The code default is unchanged by that operator decision: silent doctrine
+  // still gets MEDIUM, asserted above in the resolution block.
+  assert(
+    DEFAULT_REVIEW_THRESHOLD === "MEDIUM",
+    "the shipped default for a project whose doctrine is silent is still MEDIUM",
+  );
+  const own = await resolveReviewThreshold(
+    judgeSaying({
+      verdict: "permitted",
+      quote: "Six-pass review findings are blocking at HIGH severity and above.",
+      sourceFile: "AGENTS.md",
+    }),
+    docs(text),
+  );
+  assert(
+    own.severity === "HIGH" && own.source === "doctrine",
+    `resolving this repository's own AGENTS.md yields HIGH (got ${own.severity}/${own.source})`,
   );
 }
 

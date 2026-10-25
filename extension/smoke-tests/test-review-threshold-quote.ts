@@ -4,7 +4,7 @@
  *
  * `severityIn` scanned the judge's quote for severity tokens and took the FIRST
  * of `["CRITICAL","HIGH","MEDIUM","LOW"]` it found — i.e. the most severe named,
- * which is the LOOSEST bar. This repo's own AGENTS.md §1 reads:
+ * which is the LOOSEST bar. AGENTS.md §1 used to read:
  *
  *   "Six-pass review findings are blocking at MEDIUM severity and above. The fix
  *    loop continues until all MEDIUM, HIGH, and CRITICAL findings are resolved …
@@ -13,6 +13,9 @@
  * Quote the first sentence → MEDIUM. Quote the passage → CRITICAL. Both verify
  * against the file; both are honest citations by a judge that is not lying. The
  * gate silently moved two levels, and HIGH and MEDIUM findings stopped blocking.
+ * (§1 now states HIGH — raised by operator decision 2026-10-25 — but the
+ * defect this test guards was the quote-length dependence, so the canary below
+ * tracks the current sentence.)
  *
  * Note what the fix must NOT be: "take the least severe named" resolves that
  * same passage to LOW, because of the deferral clause. The relation is what
@@ -30,20 +33,20 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const S1 = "Six-pass review findings are blocking at MEDIUM severity and above.";
-const FULL = `${S1} The fix loop continues until all MEDIUM, HIGH, and CRITICAL findings are resolved — there is no round cap for these severities. Only LOW findings may be deferred or overridden with user confirmation.`;
+const S1 = "Six-pass review findings are blocking at HIGH severity and above.";
+const FULL = `${S1} The fix loop continues until all HIGH and CRITICAL findings are resolved. MEDIUM and LOW findings are disclosed on the PR and may be deferred.`;
 
 // ------------------------------------- this repo's own doctrine, both quotes
 
 {
-  assert(severityFromQuote(S1) === "MEDIUM", "the short quote resolves to MEDIUM");
+  assert(severityFromQuote(S1) === "HIGH", "the short quote resolves to HIGH");
   assert(
-    severityFromQuote(FULL) === "MEDIUM",
-    `canary: the FULL passage also resolves to MEDIUM (got ${severityFromQuote(FULL)}) — it resolved to CRITICAL, loosening the gate two levels on an honest quote`,
+    severityFromQuote(FULL) === "HIGH",
+    `canary: the FULL passage also resolves to HIGH (got ${severityFromQuote(FULL)}) — it resolved to CRITICAL, loosening the gate two levels on an honest quote`,
   );
   assert(
-    severityFromQuote(FULL) !== "LOW",
-    "...and not to LOW either — 'only LOW may be deferred' must not over-tighten it",
+    severityFromQuote(FULL) !== "LOW" && severityFromQuote(FULL) !== "MEDIUM",
+    "...and not to LOW or MEDIUM either — the 'may be deferred' clause must not over-tighten it",
   );
 }
 

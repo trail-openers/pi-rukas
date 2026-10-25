@@ -3,8 +3,9 @@
  *
  * The lens decides a finding's severity; that is its judgment. Which severity
  * is serious *enough to stop a merge* is a different question and it belongs to
- * the project. `AGENTS.md §1` in this repo has always said "blocking at MEDIUM
- * severity and above" — but nothing read that sentence, so it was decorative,
+ * the project. `AGENTS.md §1` in this repo said "blocking at MEDIUM severity
+ * and above" until 2026-10-25, when the operator raised it to HIGH. For longer
+ * than that nothing read the sentence, so it was decorative,
  * and a project wanting a different bar had no way to express one.
  *
  * **Configuration fails differently from authority, and the distinction is the
