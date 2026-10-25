@@ -128,11 +128,3 @@ export function stateWith(fixture: HandoffFixture) {
     ],
   };
 }
-
-/** A public-visibility executor: the `gh api` answer is "not private". */
-export const publicExec = async () => ({ stdout: "false\n" });
-
-/** An executor whose visibility read blows up — a failed lookup must still check. */
-export const throwingExec = async () => {
-  throw new Error("gh unreachable");
-};

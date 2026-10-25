@@ -1,7 +1,4 @@
 /** work-driver-handoff — Step 7g (handoff) handler. #674: worktree consolidation + forge post retry. */
-import fs from "node:fs/promises";
-import path from "node:path";
-import { execp } from "./exec.ts";
 import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -26,7 +23,6 @@ import {
   labelCommentTargetAfterRefusal,
   labelIssueTarget,
 } from "./work-driver-handoff-label-legs.ts";
-import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import {
   captureCommittedWork,
@@ -306,7 +302,6 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
         issue: ctx.issue,
         prNumber,
         forge,
-        handoffBodyPath,
         // The bytes the seam judged. On a refusal those bytes may NOT be posted,
         // and `deliverHandoff`'s own rule is that an empty body posts no comment —
         // which is what makes "label only, comment never" one code path rather

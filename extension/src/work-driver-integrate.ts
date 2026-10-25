@@ -3,9 +3,9 @@
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { cherryPickCommitGate } from "./work-driver-commit-message-publish.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { isConfiguredExemptDirtLine } from "./work-driver-dirty-root-exempt.ts";
-import { cherryPickCommitGate } from "./work-driver-integrate-commit-gate.ts";
 import { isCommitOnBranch } from "./work-driver-integrate-commit.ts";
 import { integrationEmptiness } from "./work-driver-integrate-emptiness.ts";
 import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.ts";

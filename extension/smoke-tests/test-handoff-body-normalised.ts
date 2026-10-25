@@ -184,7 +184,10 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
     owner: "example-owner",
     repo: "example-repo",
   } as unknown as Forge);
-  assert(publicCheck.refusal === undefined, `the public body is not refused (${publicCheck.refusal})`);
+  assert(
+    publicCheck.refusal === undefined,
+    `the public body is not refused (${publicCheck.refusal})`,
+  );
   const publicBody = publicCheck.body ?? "";
   assert(publicBody.includes("<!-- pi-rukas:handoff"), "the handoff marker is on the body");
   assert(publicBody.includes("~/"), `the home path is normalised (${publicBody.slice(0, 40)})`);
@@ -200,7 +203,6 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
     issue: 9,
     prNumber: undefined,
     forge: unposted.forge,
-    handoffBodyPath: bodyFile,
     body: publicBody,
     commentUrl: undefined,
     labelApplied: true,
@@ -222,7 +224,6 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
     issue: 9,
     prNumber: undefined,
     forge: already.forge,
-    handoffBodyPath: bodyFile,
     body: publicBody,
     commentUrl: undefined,
     labelApplied: true,
@@ -240,7 +241,6 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
     issue: 9,
     prNumber: undefined,
     forge: fellBack.forge,
-    handoffBodyPath: bodyFile,
     body: "",
     commentUrl: undefined,
     labelApplied: true,
@@ -253,10 +253,7 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylist }, async () => {
   assert(noBody.commentUrl === undefined, "and no comment URL is claimed for it");
   // The file that predates the seam is still on disk, unchanged: what changed is
   // that posting no longer reads it.
-  assert(
-    readFileSync(bodyFile, "utf8") === publicBody,
-    "the earlier body file is unchanged",
-  );
+  assert(readFileSync(bodyFile, "utf8") === publicBody, "the earlier body file is unchanged");
 
   // ── 5. a positively private target keeps the exact paths, and nothing in the
   // body was rewritten.

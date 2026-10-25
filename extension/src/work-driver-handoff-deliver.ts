@@ -86,13 +86,6 @@ export async function deliverHandoff(args: {
   prNumber?: number;
   forge: Forge | undefined;
   /**
-   * The body file on disk — the ops child's post surface and the path the
-   * recovery renderers print. NOT a body source: the text posted is the one the
-   * caller passes below (#1820), so a re-read can never post bytes the hygiene
-   * seam did not judge.
-   */
-  handoffBodyPath: string;
-  /**
    * #1788 follow-up — the handoff body the step rendered and normalised.
    * REQUIRED (#1820): it is what keeps the comment the driver posts and the
    * comment the idempotency check compares against ONE string, and the only
@@ -107,7 +100,7 @@ export async function deliverHandoff(args: {
   delivery?: "dispatch" | "fallback";
   dispatchFailed: boolean;
 }): Promise<DeliveryOutcome> {
-  const { issue, prNumber, forge, handoffBodyPath, dispatchFailed } = args;
+  const { issue, prNumber, forge, dispatchFailed } = args;
   let { commentUrl, labelApplied, issueLabelApplied, prLabelApplied, delivery } = args;
   if (forge) {
     const objType = prNumber ? "pr" : "issue";

@@ -40,12 +40,8 @@ import { resetDenylistCacheForTests } from "../src/public-denylist.ts";
 import { resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
 import { handoffCommentBody } from "../src/work-driver-handoff-body.ts";
 import { deliverHandoff } from "../src/work-driver-handoff-deliver.ts";
-import {
-  makeFixture,
-  mkForge,
-  stateWith,
-} from "./lib/handoff-publish-fixture.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { makeFixture, mkForge, stateWith } from "./lib/handoff-publish-fixture.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
 
 const root = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "handoff-seam-"));
@@ -118,9 +114,7 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: fx.denylist }, async () => {
     "…and a worktree path under the repository folds to `<repo>`",
   );
   const markerLine = publicBody.split("\n").find((l) => l.startsWith("<!-- pi-rukas:"));
-  const markerLineFromPrivate = privateBody
-    .split("\n")
-    .find((l) => l.startsWith("<!-- pi-rukas:"));
+  const markerLineFromPrivate = privateBody.split("\n").find((l) => l.startsWith("<!-- pi-rukas:"));
   assert(
     markerLine !== undefined && markerLine === markerLineFromPrivate,
     `the pi-rukas marker is byte-identical folded or not (folded: ${JSON.stringify(markerLine)})`,
@@ -160,7 +154,6 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: fx.denylist }, async () => {
     issue: 9,
     prNumber: undefined,
     forge: forge.forge,
-    handoffBodyPath: fx.bodyFile,
     body: "",
     commentUrl: undefined,
     labelApplied: false,
@@ -173,13 +166,7 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: fx.denylist }, async () => {
 
   // ── 5. a visibility lookup that FAILS still folds (fail-closed) ───────────
   resetVisibilityCacheForTests();
-  const broken = await handoffCommentBody(
-    state,
-    ctx,
-    FORGE,
-    undefined,
-    seamExec("throws").fn,
-  );
+  const broken = await handoffCommentBody(state, ctx, FORGE, undefined, seamExec("throws").fn);
   assert(
     broken.body !== undefined && !broken.body.includes(fx.transcript),
     "an unreadable visibility answer folds the paths — never publishes the host path",

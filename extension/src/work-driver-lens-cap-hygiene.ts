@@ -69,6 +69,12 @@ export async function residualDisclosureBody(
   execFn: ExecFn | undefined,
   /** The caller's already-resolved forge; else this function resolves one. */
   forge?: Forge,
+  /**
+   * #1820 — the caller's visibility resolver. Production omits it and `gh`
+   * answers; a harness that must not depend on the host's `gh` pins the answer.
+   * Threaded through to the seam's `visibility` option — the only place the
+   * question is asked.
+   */
   visibility?: VisibilityFn,
 ): Promise<DisclosureCheck> {
   const run = execFn ?? execp;

@@ -94,6 +94,9 @@ export async function handoffCommentBody(
   const rendered = renderHandoffMarkdown(state, forge?.forge);
   if (hygieneGuardDisabled()) return { body: withHandoffMarker(rendered, state) };
   const execFn = exec ?? ctx.verifyExecFn ?? execp;
+  // The caller's resolved forge is threaded into the seam so the visibility
+  // question is asked of the repository the comment actually lands on; the
+  // seam resolves origin itself when the caller has none (#1820).
   const checked = await residualDisclosureBody(
     { repoRoot: ctx.repoRoot, verifyExecFn: execFn },
     rendered,

@@ -21,8 +21,8 @@
 import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
+import { parseHandoffCommentUrl } from "./work-driver-handoff-deliver.ts";
 import { readError } from "./work-driver-handoff-snapshot.ts";
-import { parseHandoffCommentUrl } from "./work-driver-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -103,12 +103,11 @@ export async function postHandoffToForge(opts: {
   forge: Forge;
   issue: number;
   prNumber: number | undefined;
-  handoffBodyPath: string;
   /**
    * #1788 follow-up — the normalised body the step rendered. REQUIRED (#1820):
    * the caller holds the exact bytes the driver seam judged, and a file re-read
-   * here could post bytes nobody judged. `handoffBodyPath` stays the path the
-   * ops child and the recovery renderers use.
+   * the caller passes below (#1820), so this function has no body source of its
+   * own — no file re-read, and no bytes the hygiene seam did not judge.
    */
   body: string;
   /**
@@ -118,7 +117,7 @@ export async function postHandoffToForge(opts: {
   /** Injected in tests so a 1s/2s backoff does not take 1s/2s. */
   sleep?: (ms: number) => Promise<void>;
 }): Promise<HandoffPostResult> {
-  const { forge, issue, prNumber, handoffBodyPath } = opts;
+  const { forge, issue, prNumber } = opts;
   const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const targetId = String(prNumber ?? issue);
   const objType = prNumber ? "pr" : "issue";
