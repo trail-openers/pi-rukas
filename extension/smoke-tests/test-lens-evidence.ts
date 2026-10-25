@@ -31,13 +31,13 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildEvidence } from "../src/lens-evidence.ts";
-import { buildLensRoster } from "../src/lens-roster.ts";
 import { lensPromptFor } from "../src/lens-review-format.ts";
 import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review-format.ts";
 import type { Finding } from "../src/lens-review.ts";
+import { buildLensRoster } from "../src/lens-roster.ts";
 import { resolveReviewThreshold, severityFromQuote } from "../src/review-threshold.ts";
 import { pathsInDiff, readFileAtBranch } from "../src/work-driver-diff.ts";
-import type { DoctrineDoc } from "../src/work-driver-policy.ts";
+import { type DoctrineDoc, policyJudgeEnabled } from "../src/work-driver-policy.ts";
 
 const execFileAsync = promisify(execFile);
 const sh = async (cmd: string, cwd: string) => {
@@ -157,7 +157,9 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
     "...and every lens is warned that opening a file yields the pre-change version",
   );
   assert(
-    !lensPromptFor(LENS_SECURITY, diff, "ctx", undefined, EVIDENCE_ROSTER).includes("The default timeout is 30 seconds."),
+    !lensPromptFor(LENS_SECURITY, diff, "ctx", undefined, EVIDENCE_ROSTER).includes(
+      "The default timeout is 30 seconds.",
+    ),
     "...while a prompt built without evidence carries none (not vacuous)",
   );
 
@@ -189,8 +191,7 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
     "#952 canary: clean-lane (no-findings) branch carries the exact stop sentence",
   );
   // Both branches end with the stop sentence as the final non-blank line.
-  const lastLine = (s: string) =>
-    [...s.split("\n").reverse()].find((l) => l.trim() !== "") ?? "";
+  const lastLine = (s: string) => [...s.split("\n").reverse()].find((l) => l.trim() !== "") ?? "";
   assert(
     lastLine(findingsBranch) === STOP_SENTENCE,
     "#952 canary: stop sentence is the LAST line of the findings branch",
@@ -236,6 +237,12 @@ const mk = (severity: Finding["severity"]): Finding => ({
 
 // ------------------------- resolution: absent doctrine is normal, not an error
 
+// The stub is the ONLY backend on this path: `askPolicy` builds one backend
+// named "policy-judge" whose `run` calls the injected `judge`, and
+// `decide()` uses `ctx.backends` verbatim — the grandfathered branch that
+// would otherwise refuse the generic classifier/session-LLM backends is only
+// reached when a caller supplies none (decision-seam.ts). So nothing here
+// spawns a child process: the whole block is offline.
 const judgeSaying = (a: Record<string, unknown> | undefined) => async () => ({
   toolUses: a ? [{ name: "report_policy", arguments: a }] : [],
 });
@@ -303,39 +310,62 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
 // --------------------------------- this repo's own AGENTS.md §1, end to end
 
 {
+  // With the judge disabled, `askPolicy` denies before the stub is called and
+  // every resolution below falls to the default — which is exactly the shape
+  // these assertions must NOT silently pass on. Fail loudly instead.
+  assert(
+    policyJudgeEnabled(),
+    "the policy judge is enabled (PI_ENSEMBLE_POLICY_JUDGE unset) — with it off every resolution here would fall to the default and pass for the wrong reason",
+  );
+
   const root = path.resolve(import.meta.dirname, "..", "..");
   const text = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
   assert(
     /blocking at HIGH severity and above/i.test(text),
     "pi-ensemble's own AGENTS.md states HIGH — the sentence the code now reads (raised from MEDIUM on 2026-10-25)",
   );
-  assert(
-    !/blocking at MEDIUM severity and above/i.test(text),
-    "...and no longer states the old MEDIUM bar anywhere §1 could be cited from",
-  );
   // The code default is unchanged by that operator decision: silent doctrine
   // still gets MEDIUM, asserted above in the resolution block.
-  // Derive the sentence the judge would quote from the file itself rather than
-  // hard-coding it — a rewording of §1 must not leave this test asserting a
+  // Derive the sentences the judge would quote from the file itself rather than
+  // hard-coding them — a rewording of §1 must not leave this test asserting a
   // quote that no longer exists in the doctrine.
-  const OWN_QUOTE = text.match(
-    /Six-pass review findings are blocking at [A-Z]+ severity and above\./,
-  )?.[0];
-  assert(OWN_QUOTE !== undefined, "§1's blocking sentence is found verbatim in AGENTS.md");
-  // Negative direction: no single sentence of §1's threshold paragraph may read
-  // as a LOOSER bar than HIGH. A sentence that says MEDIUM or LOW blocks would
-  // silently lower the gate the judge is chartered to read.
   const thresholdPara = text
     .split("\n")
     .find((line) => line.startsWith("**Six-pass review findings are blocking"));
   assert(thresholdPara !== undefined, "§1's threshold paragraph is present");
-  for (const sentence of (thresholdPara ?? "").split(/(?<=\.)\s+/).filter(Boolean)) {
+  // Split on sentence FINAL punctuation, not on every period: the paragraph's
+  // first sentence ends inside markdown bold (`…and above.**`), so a bare
+  // `(?<=\.)` split glues sentences 1 and 2 together and both counts lie.
+  // Bold markers and whitespace are stripped by `normaliseForCitation`, so the
+  // leading `**` / trailing `.` fragment still verifies as a citation.
+  const sentences = (thresholdPara ?? "")
+    .split(/(?<=[.!?])\*\*|(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const OWN_QUOTE = sentences.find((s) =>
+    /^\**Six-pass review findings are blocking at [A-Z]+ severity and above\.\**$/.test(s),
+  );
+  assert(OWN_QUOTE !== undefined, "§1's blocking sentence is found verbatim in AGENTS.md");
+  // Negative direction: no single sentence of §1's threshold paragraph may read
+  // as a LOOSER bar than HIGH. A sentence that says MEDIUM or LOW blocks would
+  // silently lower the gate the judge is chartered to read. And at least two
+  // sentences must carry the bar themselves — if §1 ever degenerates to a
+  // single relational sentence plus prose, the judge quoting the other one
+  // falls to the MEDIUM default, so a loop that only rejects looser bars
+  // cannot notice.
+  let barSentences = 0;
+  for (const sentence of sentences) {
     const got = severityFromQuote(sentence);
     assert(
       got === "HIGH" || got === undefined,
       `sentence "${sentence.slice(0, 60)}…" reads as HIGH or nothing (got ${got}) — never a looser bar`,
     );
+    if (got === "HIGH") barSentences++;
   }
+  assert(
+    barSentences >= 2,
+    `at least two sentences of §1's threshold paragraph resolve to HIGH (got ${barSentences}) — a judge quoting either one must land on HIGH, not the MEDIUM default`,
+  );
   const own = await resolveReviewThreshold(
     judgeSaying({
       verdict: "permitted",
@@ -347,6 +377,31 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
   assert(
     own.severity === "HIGH" && own.source === "doctrine",
     `resolving this repository's own AGENTS.md yields HIGH (got ${own.severity}/${own.source})`,
+  );
+
+  // Mirror 1 over the REAL doctrine: a judge that reads the same file and says
+  // nothing stays on the default — HIGH doctrine does not leak into an answer
+  // the judge did not give.
+  const ownSilent = await resolveReviewThreshold(judgeSaying({ verdict: "unstated" }), docs(text));
+  assert(
+    ownSilent.severity === "MEDIUM" && ownSilent.source === "default",
+    `the same AGENTS.md with an 'unstated' judge yields MEDIUM/default (got ${ownSilent.severity}/${ownSilent.source}) — doctrine is only honoured through a verified citation`,
+  );
+
+  // Mirror 2: a judge that quotes the OLD MEDIUM bar, a sentence this repo's
+  // AGENTS.md does not contain. It must not be honoured — the #407 citation
+  // check over the real file is what stops it, not a literal in this test.
+  const ownFabricated = await resolveReviewThreshold(
+    judgeSaying({
+      verdict: "permitted",
+      quote: "Six-pass review findings are blocking at MEDIUM severity and above.",
+      sourceFile: "AGENTS.md",
+    }),
+    docs(text),
+  );
+  assert(
+    ownFabricated.severity === "MEDIUM" && ownFabricated.source !== "doctrine",
+    `a quote of the retired MEDIUM sentence, absent from AGENTS.md, is not honoured (got ${ownFabricated.severity}/${ownFabricated.source})`,
   );
 }
 
