@@ -68,9 +68,15 @@ export async function runAdversarialLoop(
     verdict: AdversarialVerdict;
     ms: number;
   }> = [];
-  // #859 — failed re-reads on rounds 2+: the loop keeps the previous diff (never
-  // abandons a round); the loop itself never reviews the STALE diff on a
-  // failed re-read, and the final result must say so.
+  // #859 — failed re-reads on rounds 2+ of a range the loop computed ITSELF
+  // (`rangeDiffFn` threw): the loop keeps the previous diff, never abandons the
+  // round, and the final result must say so — the caller can re-run that read,
+  // and the note is the operator's record of the staleness.
+  //
+  // #1634 — a re-read the CALLER supplied (`params.getDiff`) failing is NOT
+  // this case. See the catch in the round loop: that error is rethrown, because
+  // on the /work path this loop IS the gate, and a gate must not adjudicate on a
+  // diff it could not read.
   const diffRereadNotes: string[] = [];
   // The loop's cost tally and the transcript/model of its LAST dispatch
   // (adversarial-usage.ts): every result this loop synthesises reads through it,
@@ -271,6 +277,17 @@ export async function runAdversarialLoop(
   // notice the staleness itself.
   const priorFindings: string[] = [];
 
+  // #1634 — the loop may swallow a failed re-read ONLY for a range it computed
+  // itself (`rangeDiffFn`, below). When the caller supplied `getDiff` — the
+  // /work gate's own `readWorktreeDiff` — a failed re-read is the gate's read
+  // failing, and the loop must not adjudicate on a diff it could not read.
+  // Decided HERE, where the substitution happens, rather than by sniffing the
+  // error: a loop that ran `rangeDiffFn` replaced `getDiff`, so a changed
+  // identity is the positive fact that this loop owns the re-read (#859's
+  // keep-the-previous-diff rule) and an unchanged one is the fact that the
+  // caller does.
+  const rereadIsLoopOwn = getDiff !== params.getDiff;
+
   const runPhase = makeRunPhase({
     runId,
     signal,
@@ -302,10 +319,22 @@ export async function runAdversarialLoop(
         // for the range this round actually reviewed.
         review = roundAfterReread(review, range, headRef, true, fresh);
       } catch (err) {
-        // A failed re-read is not a reason to abandon the round; the previous
-        // diff plus the live worktree is what the reviewer had before this.
-        // #859 — record it, so the final result names the staleness instead
-        // of the operator having to notice it.
+        // #1634 — a caller-supplied re-read that fails is the GATE's own read
+        // failing, not a transient the loop can ride out. On the /work path
+        // `params.getDiff` is the driver's `readWorktreeDiff`, and this loop is
+        // the thing that decides whether the branch may be committed: carrying
+        // the PREVIOUS round's diff into the reviewer and accepting its verdict
+        // is an APPROVED with no diff behind it. So the failure of a caller's
+        // read is rethrown — the same object, so the caller still recognises it
+        // — and the pass turns it into the no-verdict `diffUnreadable` outcome.
+        // The loop never produces a verdict for a round whose diff it could not
+        // read, and it never dispatches a reviewer against one.
+        if (!rereadIsLoopOwn) throw err;
+        // #859 — a range this loop computed itself is the other case: a failed
+        // re-read is not a reason to abandon the round; the previous diff plus
+        // the live worktree is what the reviewer had before this. Record it, so
+        // the final result names the staleness instead of the operator having to
+        // notice it.
         const reason = (err as Error).message;
         trace(`adversarial: diff re-read failed for round ${round}: ${reason}`);
         // #1816 — and no range for this round either: the diff under review is

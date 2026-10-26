@@ -35,8 +35,14 @@ type FailedDispatch = Extract<WorkEvent, { kind: "dispatch-failed" }>;
 /**
  * Did the DRIVER fail to read this workstream's diff (as opposed to the
  * reviewer failing to run)? Reads the structural marker only — never prose.
+ *
+ * Private on purpose: it is the reading behind {@link isDiffUnreadableOutcome},
+ * which is the ONE predicate the park and router sites call. The sites that
+ * once read the event directly read the outcome instead, so an exported second
+ * predicate was a second way to ask the same question — and the pair drifted
+ * before this module existed.
  */
-export function isDiffUnreadableDispatch(e: FailedDispatch | undefined): boolean {
+function isDiffUnreadableDispatch(e: FailedDispatch | undefined): boolean {
   return e?.diffUnreadable === true;
 }
 
@@ -52,47 +58,45 @@ export function isDiffUnreadableOutcome(o: AdversarialOutcome): boolean {
 }
 
 /**
- * The reason one read failure reports, from the git error. The ONLY producer of
- * this sentence — the predicate no longer matches it, so renaming it is safe,
- * and both the outcome and its dispatch event carry the same string.
+ * The reason one read failure reports — the ONLY producer of the sentence, and
+ * the place its text is BOUNDED. `redactClip` is the same scrub the provider
+ * park's evidence gets (`work-driver-provider-park.ts::providerParkEvidence`):
+ * this string is git/child-authored text that the outcome carries into the
+ * durable state file and onto the handoff, so it is scrubbed at the PRODUCER.
+ * That is what lets the cap helper trust what it was handed, and what makes the
+ * outcome, its dispatch event and the cap's evidence carry the SAME bounded
+ * text rather than three lengths of it.
  */
 export function adversarialDiffReadReason(id: string, cwd: string, reason: string): string {
-  return `adversarial could not read the diff for workstream ${id} at ${cwd || "(no worktree)"}: ${reason}`;
+  const head = `adversarial could not read the diff for workstream ${id} at ${cwd || "(no worktree)"}: `;
+  // The prefix is this module's own text, so only the git half needs bounding —
+  // and the whole line still lands inside the taxonomy's budget.
+  return head + redactClip(reason, FAILURE_REASON_CHARS - head.length);
 }
 
 /**
  * The cap-hit that parks an adversarial step whose diff the driver could not
  * read. `reason` is the failing outcome's own account of the read
  * (`AdversarialOutcome.errorTail` / `rejectionText`), which is the only version
- * that describes THIS workstream's failure.
+ * that describes THIS workstream's failure — normally the producer's already
+ * bounded text, and re-bounded here because a router caller reads `errorTail`
+ * off an event it did not write.
  *
- * `redactClip` is the same scrub the provider park's evidence gets
- * (`work-driver-provider-park.ts::providerParkEvidence`): this string is
- * git/child-authored text that lands in the durable state file and on the
- * handoff, so it is scrubbed before it is written, not only at render. The
- * bound is the taxonomy's own so the clip stays one number.
+ * The evidence is ALWAYS populated. A park with no evidence prints the bare cap
+ * name and sends the operator nowhere, so a missing or blank reason becomes a
+ * fixed sentence rather than a gap.
  */
 export function adversarialDiffUnreadableCapHit(
   reason: string | undefined,
   reviewRound: number,
 ): Extract<WorkEvent, { kind: "cap-hit" }> {
+  const text = reason?.trim() || "the diff read failed with no reason reported";
   return {
     kind: "cap-hit",
     at: Date.now(),
     cap: "adversarial-diff-unreadable",
     reviewRound,
     nextStep: "handoff",
-    ...(reason?.trim() ? { evidence: redactClip(reason, FAILURE_REASON_CHARS) } : {}),
+    evidence: redactClip(text, FAILURE_REASON_CHARS),
   };
-}
-
-/**
- * The reason a park's evidence carries, from whichever event ended the step.
- * The read's own git error lives on `errorTail` of the synthesised
- * `dispatch-failed`; the provider member keeps its own renderer.
- */
-export function adversarialDiffUnreadableEvidence(
-  tail: FailedDispatch | undefined,
-): string | undefined {
-  return isDiffUnreadableDispatch(tail) ? tail?.errorTail : undefined;
 }

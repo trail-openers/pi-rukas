@@ -36,65 +36,12 @@ import { type WorktreeDiff, readWorktreeDiff } from "./work-driver-diff-read.ts"
  * multi-second waits to re-run a read that cannot change. A router path that
  * cannot see the outcome still sees the marker on the event.
  */
-export async function readDiffOrFailureOutcome(args: {
-  id: string;
-  cwd: string;
-  baseSha?: string;
-  multi: boolean;
-  label: string;
-  jobId: string;
-  startedAt: number;
-  priorOutcomes: Map<string, string>;
-  execFn?: Parameters<typeof readWorktreeDiff>[2];
-}): Promise<{ ok: true; diff: string } | { ok: false; outcome: AdversarialOutcome }> {
-  const { id, cwd, multi, label, jobId, startedAt, priorOutcomes } = args;
-  const r: WorktreeDiff = await readWorktreeDiff(cwd, args.baseSha, args.execFn);
+export async function readDiffOrFailureOutcome(
+  args: ReadFailureArgs & { baseSha?: string; execFn?: Parameters<typeof readWorktreeDiff>[2] },
+): Promise<{ ok: true; diff: string } | { ok: false; outcome: AdversarialOutcome }> {
+  const r: WorktreeDiff = await readWorktreeDiff(args.cwd, args.baseSha, args.execFn);
   if (r.ok) return { ok: true, diff: r.diff };
-  const reason = adversarialDiffReadReason(id, cwd, r.reason);
-  trace(`work-driver: ${reason} — NOT approving on an unreadable diff`);
-  return {
-    ok: false,
-    outcome: {
-      id,
-      ok: false,
-      rounds: 0,
-      records: [],
-      infra: true,
-      threw: false,
-      skipped: false,
-      priorInfra: priorOutcomes.get(id) === "infra-failure",
-      // Distinguishes "the reviewer could not be run" from "the diff could not
-      // be read", so the aggregate parks with the cap that names the read.
-      diffUnreadable: true,
-      rejectionText: reason,
-      errorTail: reason,
-      failureEvent: {
-        kind: "dispatch-failed",
-        step: "adversarial",
-        role: "adversarial-loop",
-        jobId,
-        label,
-        ms: Date.now() - startedAt,
-        at: Date.now(),
-        errorTail: reason,
-        // #1634 — the structural marker. Every consumer (the cap routing, the
-        // headless failure class, the retry ladder) reads THIS, never the
-        // prose of `errorTail`.
-        diffUnreadable: true,
-      },
-      branchEvent: multi
-        ? {
-            kind: "branch-completed",
-            step: "adversarial",
-            workstreamId: id,
-            ok: false,
-            ms: Date.now() - startedAt,
-            error: reason,
-            at: Date.now(),
-          }
-        : undefined,
-    },
-  };
+  return { ok: false, outcome: diffUnreadableOutcome({ ...args, reason: r.reason }) };
 }
 
 /**
@@ -111,6 +58,19 @@ export async function readDiffOrFailureOutcome(args: {
 export class DiffRereadError extends Error {
   /** The read's own account of the failure, naming the git command. */
   readonly reason: string;
+  /**
+   * The STRUCTURAL discriminant. `isDiffRereadError` reads THIS, not just
+   * `instanceof`: the reviewer loop re-throws the caught error after it has
+   * crossed a module boundary (`adversarial.ts` rethrows what `getDiff`
+   * threw), and a class identity that does not survive that hop — a second
+   * module instance, a re-exported class, a transpile boundary — would turn a
+   * failed READ back into the generic `threw` outcome, which is exactly the
+   * shape the retry ladder may re-run and which carries no
+   * `diffUnreadable` marker. A property every instance carries is checked by
+   * shape, so the classification does not depend on which copy of this class
+   * produced the value.
+   */
+  readonly diffReread = true;
   constructor(reason: string) {
     super(reason);
     this.name = "DiffRereadError";
@@ -118,44 +78,19 @@ export class DiffRereadError extends Error {
   }
 }
 
-/** Is this throw the driver's failed diff READ, rather than a child that died? */
-export function isDiffRereadError(err: unknown): err is DiffRereadError {
-  return err instanceof DiffRereadError;
-}
-
-// The marker the fan-out stamps on the failure it synthesises for a diff it
-// could not read. Recognised here as well as at the synthesising site: a
-// re-read failure reaches the outcome through `adversarial.ts`'s own catch, so
-// its text comes back as the loop's `errorTail` / infra text rather than as a
-// throw the pass sees directly. Matching the prefix is the fallback; the
-// structural field is what every consumer routes on.
-const DIFF_READ_PREFIX = "adversarial could not read the diff for workstream ";
-
 /**
- * Did the text this failure carries come from the driver's own diff read?
+ * Is this throw the driver's failed diff READ, rather than a child that died?
  *
- * The primary signal is always the structural `diffUnreadable` field. This
- * text check exists for ONE shape: a round-2+ re-read whose throw is caught
- * inside `adversarial.ts`'s own loop, so it comes back as the loop's
- * `errorTail` and the pass never sees the throw. The sentence is produced by
- * `adversarialDiffReadReason` — the only writer of it — so the prefix names its
- * producer rather than a string some other module might also print. A failed
- * read must never be reported as a reviewer that crashed.
+ * Shape-checked first (see {@link DiffRereadError.diffReread}), `instanceof`
+ * as the fallback for an error built before this module was ever loaded.
  */
-export function outcomeFromDiffRead(o: AdversarialOutcome): boolean {
-  if (o.diffUnreadable === true) return true;
-  const text = `${o.errorTail ?? ""}${o.rejectionText ?? ""}`;
-  return text.startsWith(DIFF_READ_PREFIX);
+export function isDiffRereadError(err: unknown): err is DiffRereadError {
+  if (typeof err !== "object" || err === null) return false;
+  return (err as { diffReread?: unknown }).diffReread === true;
 }
 
-/**
- * The no-verdict outcome for a diff the driver could not read, from whatever
- * text the failure surfaced with. One builder for both shapes of the same
- * failure: the read the pass performs itself (`readDiffOrFailureOutcome`) and
- * the round-2+ re-read the reviewer loop calls, whose failure arrives as the
- * loop's own `errorTail`.
- */
-export function diffUnreadableOutcome(args: {
+/** What one unreadable-diff failure needs in order to build its outcome. */
+export interface ReadFailureArgs {
   id: string;
   cwd: string;
   multi: boolean;
@@ -163,13 +98,31 @@ export function diffUnreadableOutcome(args: {
   jobId: string;
   startedAt: number;
   priorOutcomes: Map<string, string>;
-  /** The read's reason, or the whole sentence when it arrived as text. */
-  reason: string;
-}): AdversarialOutcome {
+}
+
+/**
+ * The no-verdict outcome for a diff the driver could not read — the ONE
+ * builder, used both by the read the pass performs itself
+ * (`readDiffOrFailureOutcome`) and by the round-2+ re-read whose throw the
+ * reviewer loop rethrows (#1634). Two ~60-line copies of the same literal used
+ * to stand here, and they were the kind of duplicate that drifts: a field added
+ * to one and not the other silently changes how one of the two failure shapes
+ * routes.
+ *
+ * `reason` is the read's own git account (`WorktreeDiff.reason` / a
+ * `DiffRereadError.reason`), never a pre-rendered sentence — the sentence is
+ * `adversarialDiffReadReason`'s to write, and it bounds the text on the way
+ * out, so the outcome, its dispatch event and the cap's evidence all carry the
+ * same string.
+ */
+export function diffUnreadableOutcome(
+  args: ReadFailureArgs & {
+    /** The read's own account of the failure, naming the git command. */
+    reason: string;
+  },
+): AdversarialOutcome {
   const { id, cwd, multi, label, jobId, startedAt, priorOutcomes } = args;
-  const reason = args.reason.startsWith(DIFF_READ_PREFIX)
-    ? args.reason
-    : adversarialDiffReadReason(id, cwd, args.reason);
+  const reason = adversarialDiffReadReason(id, cwd, args.reason);
   trace(`work-driver: ${reason} — NOT approving on an unreadable diff`);
   return {
     id,
@@ -210,7 +163,3 @@ export function diffUnreadableOutcome(args: {
       : undefined,
   };
 }
-
-// Re-exported from the cap module so the retry ladder's guard and the gate's
-// aggregate read one predicate, not two copies of it.
-export { isDiffUnreadableOutcome };
