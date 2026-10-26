@@ -123,12 +123,39 @@ export function isDiffRereadError(err: unknown): err is DiffRereadError {
   return err instanceof DiffRereadError;
 }
 
+// The marker the fan-out stamps on the failure it synthesises for a diff it
+// could not read. Recognised here as well as at the synthesising site: a
+// re-read failure reaches the outcome through `adversarial.ts`'s own catch, so
+// its text comes back as the loop's `errorTail` / infra text rather than as a
+// throw the pass sees directly. Matching the prefix is the fallback; the
+// structural field is what every consumer routes on.
+const DIFF_READ_PREFIX = "adversarial could not read the diff for workstream ";
+
 /**
- * The no-verdict outcome for a failed re-read: the same shape the first read's
- * failure returns, so the aggregate parks with `adversarial-diff-unreadable`
- * whichever of the two reads broke.
+ * Did the text this failure carries come from the driver's own diff read?
+ *
+ * The primary signal is always the structural `diffUnreadable` field. This
+ * text check exists for ONE shape: a round-2+ re-read whose throw is caught
+ * inside `adversarial.ts`'s own loop, so it comes back as the loop's
+ * `errorTail` and the pass never sees the throw. The sentence is produced by
+ * `adversarialDiffReadReason` — the only writer of it — so the prefix names its
+ * producer rather than a string some other module might also print. A failed
+ * read must never be reported as a reviewer that crashed.
  */
-export function diffRereadFailureOutcome(args: {
+export function outcomeFromDiffRead(o: AdversarialOutcome): boolean {
+  if (o.diffUnreadable === true) return true;
+  const text = `${o.errorTail ?? ""}${o.rejectionText ?? ""}`;
+  return text.startsWith(DIFF_READ_PREFIX);
+}
+
+/**
+ * The no-verdict outcome for a diff the driver could not read, from whatever
+ * text the failure surfaced with. One builder for both shapes of the same
+ * failure: the read the pass performs itself (`readDiffOrFailureOutcome`) and
+ * the round-2+ re-read the reviewer loop calls, whose failure arrives as the
+ * loop's own `errorTail`.
+ */
+export function diffUnreadableOutcome(args: {
   id: string;
   cwd: string;
   multi: boolean;
@@ -136,11 +163,14 @@ export function diffRereadFailureOutcome(args: {
   jobId: string;
   startedAt: number;
   priorOutcomes: Map<string, string>;
+  /** The read's reason, or the whole sentence when it arrived as text. */
   reason: string;
 }): AdversarialOutcome {
   const { id, cwd, multi, label, jobId, startedAt, priorOutcomes } = args;
-  const reason = adversarialDiffReadReason(id, cwd, args.reason);
-  trace(`work-driver: ${reason} — NOT approving on an unreadable diff (round re-read)`);
+  const reason = args.reason.startsWith(DIFF_READ_PREFIX)
+    ? args.reason
+    : adversarialDiffReadReason(id, cwd, args.reason);
+  trace(`work-driver: ${reason} — NOT approving on an unreadable diff`);
   return {
     id,
     ok: false,
@@ -150,6 +180,9 @@ export function diffRereadFailureOutcome(args: {
     threw: false,
     skipped: false,
     priorInfra: priorOutcomes.get(id) === "infra-failure",
+    // #1634 — the structural marker. Every consumer (the cap routing, the
+    // headless failure class, the retry ladder) reads THIS, never the prose of
+    // `errorTail`.
     diffUnreadable: true,
     rejectionText: reason,
     errorTail: reason,

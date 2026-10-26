@@ -21,8 +21,9 @@ import {
 } from "./work-driver-adversarial-fanout-capkill.ts";
 import {
   DiffRereadError,
-  diffRereadFailureOutcome,
+  diffUnreadableOutcome,
   isDiffRereadError,
+  outcomeFromDiffRead,
   readDiffOrFailureOutcome,
 } from "./work-driver-adversarial-fanout-diff.ts";
 import { interpretReview, reviewRoundFor, reviewTrack } from "./work-driver-adversarial-fix.ts";
@@ -192,9 +193,13 @@ export async function runAdversarialWorkstream(
   } catch (err) {
     // #1634 — a failed re-read is the driver's own read failing, not a child
     // that died: same no-verdict outcome, same cap, never an approval on the
-    // stale diff the loop would otherwise have carried forward.
+    // stale diff the loop would otherwise have carried forward. Two shapes
+    // reach here: the throw this pass raises around `getDiff`, and — when
+    // `adversarial.ts` catches the re-read inside its own loop — the same
+    // failure arriving as the loop's infra text, which `outcomeFromDiffRead`
+    // recognises below.
     if (isDiffRereadError(err)) {
-      return diffRereadFailureOutcome({
+      return diffUnreadableOutcome({
         id,
         cwd,
         multi,

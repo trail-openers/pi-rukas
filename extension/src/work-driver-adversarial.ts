@@ -286,6 +286,29 @@ export async function runAdversarial(
         }
       }
     }
+  } else if (
+    // #1634 — a diff nobody could read is not a reviewer that failed to run, so
+    // it is checked BEFORE the N=1 infra branch below (whose first-pass arm
+    // leaves the tail to the router, and whose re-entry arm parks with
+    // `adversarial-infra-failure`, blaming the reviewer for the driver's own
+    // `git diff`). The router path still works: the event it reads carries the
+    // same marker. Checked before the N>1 final-failure branch for the same
+    // reason — one predicate, both arities.
+    failed.length > 0 &&
+    failed.every(isDiffUnreadableOutcome)
+  ) {
+    const names = failed.map((o) => o.id).join(", ");
+    trace(
+      `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
+    );
+    next = appendEvent(
+      next,
+      adversarialDiffUnreadableCapHit(
+        failed.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
+        state.pipelineState.reviewRound,
+      ),
+    );
+    return next;
   } else if (failed.every((o) => o.infra) && ids.length === 1) {
     // #486 — N=1 with a pure infra failure: no verdict exists. TWO-STATE:
     // FIRST pass leaves the dispatch-failed tail for the RETRY_ONCE router;
@@ -301,21 +324,6 @@ export async function runAdversarial(
       );
     } else {
       const names = failed.map((o) => o.id).join(", ");
-      // #1634 — a diff nobody could read is not a reviewer that failed to run:
-      // it gets the cap that names the read, with the git error as evidence.
-      if (failed.every(isDiffUnreadableOutcome)) {
-        trace(
-          `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
-        );
-        next = appendEvent(
-          next,
-          adversarialDiffUnreadableCapHit(
-            failed.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
-            state.pipelineState.reviewRound,
-          ),
-        );
-        return next;
-      }
       trace(
         `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
       );
@@ -363,21 +371,6 @@ export async function runAdversarial(
         failed.some((o) => (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES))
   ) {
     const names = failed.map((o) => o.id).join(", ");
-    // #1634 — every failing workstream failed the same READ, so the park names
-    // the read rather than the reviewer.
-    if (failed.every(isDiffUnreadableOutcome)) {
-      trace(
-        `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
-      );
-      next = appendEvent(
-        next,
-        adversarialDiffUnreadableCapHit(
-          failed.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
-          state.pipelineState.reviewRound,
-        ),
-      );
-      return next;
-    }
     trace(
       `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
     );
