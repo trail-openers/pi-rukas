@@ -339,8 +339,10 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
       `fail-header: the recorded evidence is the header alone, never a detail line (got ${JSON.stringify(stored)})`,
     );
     assert(
-      stored.length < given.length,
-      `fail-header: the prompt is the wider channel, the record the narrower one (stored ${stored.length}, given ${given.length})`,
+      stored.every((l) => given.includes(l)) &&
+        given.length > 0 &&
+        !FAIL_HEADER_DETAILS.some((l) => stored.includes(l.trim())),
+      `fail-header: the record is a subset of the prompt and holds no detail line (stored ${JSON.stringify(stored)}, given ${JSON.stringify(given)})`,
     );
     // The fence reads its admission evidence through `correctiveRoundFor`, whose
     // `evidence` is `evidenceLines.join("\n")` — so the ONE thing that must never

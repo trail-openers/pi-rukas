@@ -103,6 +103,11 @@ export function carriesOpaqueRun(line: string): boolean {
  * `guardedPush`'s veto in `work-driver-verify-record.ts`. "Could this line still be
  * credential material" is ONE question, and a veto the indented route asks while the
  * unindented one does not is the module's own defect mirrored.
+ *
+ * The screen is asked on the line as it STANDS, not on its redaction. A line whose
+ * credential the patterns already saw masks to prose and stays (`✗ token mismatch,
+ * got [REDACTED]` is the evidence of a real assertion, #1762 round 1); a line whose
+ * body the patterns never recognised masks to itself and is refused here.
  */
 export function detailLooksCredential(line: string): boolean {
   return nameLooksSecret(line) || carriesOpaqueRun(line);
