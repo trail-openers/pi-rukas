@@ -90,6 +90,31 @@ interface MergeView {
   prView: string;
 }
 
+/**
+ * The PR head OID every evidence row reports (#1533).
+ *
+ * The evidence probe is where the driver reads the OID it pins the merge to, so
+ * every row answers `headRefOid`: an absent one is a refusal, and a fixture that
+ * omitted it would park every merging case on "no head OID". Exported because
+ * the exec seam answers the identity check's fetched-head read with the same
+ * OID, so the positive-control case's pin and its patch identity agree.
+ */
+export const EVIDENCE_HEAD = "f".repeat(40);
+
+/**
+ * The patch identity the merged step's identity comparison computes (#1533).
+ *
+ * The fixture answers `git patch-id` with this, and the head verification
+ * compares it with the latest PASSING adversarial ledger row for the cycle's
+ * branch — so a case that wants a merge seeds a row carrying the same id, and
+ * a case that wants the park seeds one carrying another. Exported for both.
+ */
+export const FIXTURE_PATCH_ID = "e".repeat(40);
+
+function evidenceJson(fields: Record<string, string>): string {
+  return JSON.stringify({ ...fields, headRefOid: EVIDENCE_HEAD });
+}
+
 export function mergeView(
   verdict: MergeVerdict,
   pr: number,
@@ -107,7 +132,11 @@ export function mergeView(
       // the forge merge has actually run, so the post-merge verification in
       // `executeAndVerifyMerge` has something real to confirm.
       return {
-        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}',
+        evidence: evidenceJson({
+          mergeStateStatus: "CLEAN",
+          mergeable: "MERGEABLE",
+          state: "OPEN",
+        }),
         checks: JSON.stringify(passing),
         prView: prViewJson(pr, {
           state: merged ? "MERGED" : "OPEN",
@@ -116,13 +145,21 @@ export function mergeView(
       };
     case "green":
       return {
-        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}',
+        evidence: evidenceJson({
+          mergeStateStatus: "CLEAN",
+          mergeable: "MERGEABLE",
+          state: "OPEN",
+        }),
         checks: JSON.stringify(passing),
         prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
       };
     case "blocked":
       return {
-        evidence: '{"mergeStateStatus":"BLOCKED","mergeable":"UNKNOWN","state":"OPEN"}',
+        evidence: evidenceJson({
+          mergeStateStatus: "BLOCKED",
+          mergeable: "UNKNOWN",
+          state: "OPEN",
+        }),
         checks: JSON.stringify(passing),
         prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "BLOCKED" }),
       };
@@ -137,7 +174,11 @@ export function mergeView(
       // flips to FAILURE, so CLEAN-plus-failing-row is the platform-accurate
       // shape where the checks read is load-bearing.
       return {
-        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN"}',
+        evidence: evidenceJson({
+          mergeStateStatus: "CLEAN",
+          mergeable: "MERGEABLE",
+          state: "OPEN",
+        }),
         checks: JSON.stringify(failing),
         prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
       };
@@ -147,7 +188,11 @@ export function mergeView(
       // above): if it said CLOSED too, the case would pass on the identity
       // gate's refusal rather than the evidence gate's.
       return {
-        evidence: '{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"CLOSED"}',
+        evidence: evidenceJson({
+          mergeStateStatus: "CLEAN",
+          mergeable: "MERGEABLE",
+          state: "CLOSED",
+        }),
         checks: JSON.stringify(passing),
         prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
       };

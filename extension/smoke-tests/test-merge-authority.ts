@@ -58,8 +58,72 @@ function fakeGh(responses: Record<string, string | Error>, checksFrag = "pr chec
   return { fn, calls };
 }
 
-const GREEN_STATE = JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" });
+// #1533 — the head OID the CI verdict is read at rides the SAME response, so
+// the fixtures that stand in for `gh pr view` answer it the way gh does.
+const GREEN_HEAD = "a".repeat(40);
+const GREEN_STATE = JSON.stringify({
+  mergeStateStatus: "CLEAN",
+  state: "OPEN",
+  headRefOid: GREEN_HEAD,
+});
 const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
+
+{
+  // #1533 — the verified head the merge is pinned to comes out of the SAME
+  // bounded read that answered the CI verdict, so a head that moved between two
+  // reads cannot be papered over. Three refusals and one success, all from the
+  // shape of that one field.
+  const checks = JSON.stringify([passing("build")]);
+  const green = await gatherMergeEvidence(
+    fakeGh({ "pr view": GREEN_STATE, "pr checks": checks }).fn,
+    "/x",
+    7,
+  );
+  assert(
+    green.ok && green.headOid === GREEN_HEAD && green.headOidError === undefined,
+    `#1533: a CLEAN read carries the head OID the verdict describes (${JSON.stringify(green)})`,
+  );
+
+  const absent = await gatherMergeEvidence(
+    fakeGh({
+      "pr view": JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" }),
+      "pr checks": checks,
+    }).fn,
+    "/x",
+    7,
+  );
+  assert(
+    absent.headOid === undefined && /no head OID/.test(absent.headOidError ?? ""),
+    `#1533: an absent head OID names the failed read (${JSON.stringify(absent.headOidError)})`,
+  );
+
+  const abbrev = await gatherMergeEvidence(
+    fakeGh({
+      "pr view": JSON.stringify({
+        mergeStateStatus: "CLEAN",
+        state: "OPEN",
+        headRefOid: "abc1234",
+      }),
+      "pr checks": checks,
+    }).fn,
+    "/x",
+    7,
+  );
+  assert(
+    abbrev.headOid === undefined && /not a full 40-char SHA/.test(abbrev.headOidError ?? ""),
+    `#1533: an abbreviated OID is refused and named, not silently trusted (${JSON.stringify(abbrev.headOidError)})`,
+  );
+
+  const threw = await gatherMergeEvidence(
+    fakeGh({ "pr view": new Error("gh: connection reset"), "pr checks": checks }).fn,
+    "/x",
+    7,
+  );
+  assert(
+    threw.headOid === undefined && /failed/.test(threw.headOidError ?? ""),
+    `#1533: a read that threw names the failed read rather than reporting nothing (${JSON.stringify(threw.headOidError)})`,
+  );
+}
 
 {
   // #745 — the exact argv the gate shells out to is pinned here for the same
@@ -73,7 +137,10 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
   assert(e.ok, "all required checks passing + CLEAN → evidence gate allows the merge");
   assert(calls.length >= 2, "the gate issues two reads: the PR state and the checks");
   assert(
-    calls[0]!.cmd === "gh pr view 7 --json mergeStateStatus,mergeable,state",
+    // #1533 — `headRefOid` is requested by the SAME read: the CI verdict and
+    // the merge pin must describe one moment on the forge, so the field list is
+    // part of this gate's pinned argv.
+    calls[0]!.cmd === "gh pr view 7 --json mergeStateStatus,mergeable,state,headRefOid",
     `argv: gh pr view requests exactly the fields the gate knows how to read (got: ${calls[0]!.cmd})`,
   );
   assert(

@@ -215,13 +215,18 @@ export async function mergedRun(opts: {
   baseSha: string;
   env: Record<string, string | undefined>;
 }> {
-  const repo = headlessRepo(opts.grant);
+  // #1533 — the ledger row is keyed on the SAME branch name this state file
+  // carries: the identity check looks a row up by the cycle's branch, and a
+  // fixture whose two disagreed would park every case on "no adversarial row".
+  const repo = headlessRepo(opts.grant, "headless-s5-", `feature/issue-${opts.issue}`);
   const log: MergeExecLog = {
     calls: [],
     mergeCmds: [],
     prViewAnswers: [],
     issueViewCmds: [],
     unexpected: [],
+    headFetches: [],
+    headReads: [],
     doctrineReads: [],
   };
   let code = -1;

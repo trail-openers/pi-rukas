@@ -112,12 +112,18 @@ export async function compareFetchedHead(
 
   // The head the fetch actually brought in, recorded for the park's reason: the
   // operator has to see BOTH the reviewed OID and the one the branch is on now.
+  //
+  // argv form, not a joined string: `origin/<branch>` is a caller-influenced ref
+  // name (it comes from the cycle's branch, which the planner wrote), and this
+  // step runs at repoRoot — the one place a shell string could reach a sibling
+  // group's tree. The fetch above is argv for the same reason.
   let foundHead: string | undefined;
   try {
-    const { stdout } = await execFn(`git rev-parse ${remote}/${branch}`, {
+    const { stdout } = await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 8 * 1024,
       timeout: EXEC_TIMEOUT_MS,
+      argv: ["rev-parse", `${remote}/${branch}`],
     });
     const v = stdout.trim();
     if (/^[0-9a-f]{40}$/.test(v)) foundHead = v;
@@ -132,6 +138,12 @@ export async function compareFetchedHead(
 
   const ledgerPath = await ledgerPathFor(execFn, repoRoot);
   if (!ledgerPath) {
+    // An empty ledger and no ledger are different faults with different
+    // remedies: "the clone has no review file at all" is a broken or unreadable
+    // clone (fail closed, name the read); "the file is there but holds no row
+    // for this branch" is a real answer, and `compareAdversarialIdentity`'s
+    // `no-entry` refusal is the honest wording for it. Returning the refusal
+    // here made every clean-but-unreviewed clone report a tooling fault.
     return refusal(
       "no git common dir found — the review ledger is unavailable, so the reviewed identity cannot be checked",
       headOid,
@@ -200,9 +212,15 @@ async function resolveMainlineForHead(
       timeout: EXEC_TIMEOUT_MS,
     });
     const v = stdout.trim();
+    // `git symbolic-ref --short` prints `origin/main`; without `--short` (and on
+    // some clones) it prints `refs/remotes/origin/main`. Both name the same
+    // branch, and the identity is always taken against `<remote>/<mainline>`, so
+    // the ref prefix is stripped rather than refused — rejecting it parked every
+    // cycle whose clone carried the long form.
+    const bare = v.startsWith("refs/remotes/") ? v.slice("refs/remotes/".length) : v;
     const prefix = `${remote}/`;
-    if (v.startsWith(prefix)) {
-      const name = v.slice(prefix.length);
+    if (bare.startsWith(prefix)) {
+      const name = bare.slice(prefix.length);
       if (name) return { ok: true, mainline: name };
     }
     return {

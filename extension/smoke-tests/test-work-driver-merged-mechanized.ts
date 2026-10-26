@@ -88,7 +88,12 @@ const HEAD_OID = "7".repeat(39) + "e";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
-process.env.PI_ENSEMBLE_MERGE_AUTHORITY = "0";
+// #1533 — the merged step verifies the PR head before it merges, and that
+// verification sits behind the same gate as the evidence read. Switching the
+// gate off (as this file used to) also skipped the head check, so the pin tests
+// below would have passed with the check deleted. The gate stays on and each
+// merge fixture answers its `gh pr view` evidence probe green instead.
+// process.env.PI_ENSEMBLE_MERGE_AUTHORITY = "0";
 setupSpawnGuard();
 
 // ---- deriveMergeMethod tests ----
@@ -197,7 +202,11 @@ setupSpawnGuard();
   });
   const forwarded: Array<string | undefined> = [];
   const fakeForge = {
-    prView: async () => ({ state: "OPEN" }),
+    // #1533 — two reads, and the second is the post-merge verification. An
+    // object-shaped `prView` is what the production path consumes; a fixture
+    // that answered OPEN twice would be asserting a merge the step then
+    // refused to trust.
+    prView: async () => (forwarded.length === 0 ? { state: "OPEN" } : { state: "MERGED" }),
     // Argument order is the seam's own (number, headOid, method, subject):
     // #1533 moved the pin ahead of the optional arguments so it cannot be
     // omitted, and the assertion is that the OID ARRIVES there.
@@ -236,11 +245,19 @@ setupSpawnGuard();
 // ---- inlineMergePrompt tests ----
 
 {
-  const p = inlineMergePrompt([100], 999, "squash", "/tmp/scratch");
+  const p = inlineMergePrompt([100], 999, "squash", "/tmp/scratch", HEAD_OID);
   assert(p.includes("--squash --delete-branch"), "inlineMergePrompt: includes merge method");
   assert(!/adjust the flags/i.test(p), "inlineMergePrompt: escape clause removed");
   assert(!/AGENTS\.md|CONTRIBUTING\.md/i.test(p), "inlineMergePrompt: no doc refs");
-  assert(p.includes("Do NOT change it"), "inlineMergePrompt: tells agent not to override");
+  assert(
+    p.includes(`--match-head-commit ${HEAD_OID}`),
+    "inlineMergePrompt: the fallback carries the same head pin the mechanized path does",
+  );
+  assert(
+    p.includes("Do NOT change either") &&
+      p.includes("DO NOT re-run the merge without the pin"),
+    "inlineMergePrompt: tells the agent not to drop or change the pin",
+  );
 }
 
 // ---- restoreCheckout tests ----
@@ -315,12 +332,26 @@ setupSpawnGuard();
       // The mainline probe (#1093: a validated ref) must get the branch name;
       // the broader "gh repo view" key below answers the repo-settings query.
       "gh repo view --json defaultBranchRef": { stdout: "main\n" },
+      // #1533 — the merge-evidence probe is a `gh pr view` too, and it PARSES
+      // its answer: the generic "gh pr view" key below (a plain `MERGED` token,
+      // for the pre/post-merge state reads) would otherwise make the gate fail
+      // closed with "could not read PR state" before the merge was attempted.
+      // Listing it first also means the state reads never see the JSON.
+      "mergeStateStatus,mergeable,state": {
+        stdout: `{"mergeStateStatus":"CLEAN","state":"OPEN","headRefOid":"${HEAD_OID}"}`,
+      },
+      "gh pr checks": { stdout: '[{"name":"ci","bucket":"pass"}]' },
       "gh repo view": {
         stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       },
       // executeAndVerifyMerge checks `stdout.trim() === "MERGED"` on the
       // plain-text `--jq '.state'` output — answer with the plain token.
       "gh pr view": { stdout: "MERGED\n" },
+      // The identity comparison needs a git common dir to read the review ledger
+      // from; this fixture's directory is not a clone, so the read fails and the
+      // check degrades to the pin plus an honest note (which is what the merged
+      // step does for a state file with no clone behind it).
+      "git rev-parse --git-common-dir": { error: true, stderr: "not a git repository" },
       "git fetch": { stdout: "" },
       "git rev-parse": { stdout: "feature/issue-476\n" },
       "git check-ref-format": { stdout: "" },

@@ -44,6 +44,8 @@ import type { WorkEvent } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
 import {
+  EVIDENCE_HEAD,
+  FIXTURE_PATCH_ID,
   FIXTURE_PR,
   type MergeVerdict,
   doctrineSpec,
@@ -56,7 +58,13 @@ import {
 // Re-exported so the harness and every case keep importing the forge rows from
 // the fixture they already know; the declarations live in `headless-s5-forge.ts`
 // only so each file stays under the §12 cap.
-export { FIXTURE_PR, type MergeVerdict, isForgeMerge } from "./headless-s5-forge.ts";
+export {
+  EVIDENCE_HEAD,
+  FIXTURE_PATCH_ID,
+  FIXTURE_PR,
+  type MergeVerdict,
+  isForgeMerge,
+} from "./headless-s5-forge.ts";
 
 /**
  * The sentence a `permitted` judge would have to quote verbatim. Kept here so
@@ -73,11 +81,48 @@ export interface HeadlessRepo {
   dispose(): void;
 }
 
+
+/**
+ * Write the per-clone review ledger the merged step's identity check reads
+ * (#1533): one adversarial row for `branch`, whose patchId is the id the exec
+ * seam's `git patch-id` answers.
+ *
+ * The row's shape is the whole point. A cycle that reaches the merge with NO
+ * row is a cycle nobody reviewed, and the head check parks it — so the positive
+ * control needs this file, and a case that wants the mismatch park asks for a
+ * row that did not pass. `passed` is a parameter rather than a constant so the
+ * negative case is one call, not a fixture edit. The ledger lives where the
+ * clone keeps it: under the git dir.
+ */
+export function seedReviewLedger(repoRoot: string, branch: string, passed = true): void {
+  writeFileSync(
+    path.join(repoRoot, ".git", "review-ledger.json"),
+    JSON.stringify({
+      entries: [
+        {
+          branch,
+          kind: "adversarial",
+          patchId: FIXTURE_PATCH_ID,
+          passed,
+          at: 1,
+          round: 1,
+          hasCritical: false,
+        },
+      ],
+    }),
+  );
+}
+
 /**
  * A throwaway git repo whose AGENTS.md carries `grant` at the base commit and
  * nothing in the working tree. No remotes, no hooks, fixture-local git identity.
  */
-export function headlessRepo(grant: string | undefined, dirName = "headless-s5-"): HeadlessRepo {
+export function headlessRepo(
+  grant: string | undefined,
+  dirName = "headless-s5-",
+  branch = `feature/issue-${FIXTURE_PR}`,
+  reviewRow = true,
+): HeadlessRepo {
   const repoRoot = mkdtempSync(path.join(tmpdir(), dirName));
   const git = (...args: string[]) => {
     // #1145 — `env: gitTestEnv()`: `spawnSync` with no `env` inherits the REAL
@@ -95,6 +140,13 @@ export function headlessRepo(grant: string | undefined, dirName = "headless-s5-"
   git("config", "user.name", "Headless S5 test");
   git("config", "commit.gpgsign", "false");
   mkdirSync(path.join(repoRoot, ".git", "info"), { recursive: true });
+  // #1533 — the merged step's identity comparison reads the per-clone review
+  // ledger, and a cycle that reaches the merge with NO adversarial row is a
+  // cycle nobody reviewed: the check parks it. Seed one passing row for the
+  // cycle's branch, carrying the patch id the exec seam's `git patch-id`
+  // answers, so the identity the merged step computes is the identity on file.
+  // A case that wants the mismatch park passes `reviewRow: false`.
+  if (reviewRow) seedReviewLedger(repoRoot, branch);
   // Something tracked at the base commit whatever the grant — `git commit` with
   // an empty index exits 1 and takes the whole fixture down with it.
   writeFileSync(path.join(repoRoot, "README.md"), "# headless S5 fixture repo\n");
@@ -137,6 +189,11 @@ export interface MergeExecLog {
    * is content, and "only after the merge was asked for" is order.
    */
   prViewAnswers: string[];
+  /** #1533 — the head verification's fetch, and the rev-parse that records the
+   * fetched head. Both are answered by the fixture rather than run against a
+   * remote these throwaway repos do not have. */
+  headFetches: string[];
+  headReads: string[];
   /** #1472 — every `gh issue view` the seam answered, verbatim. */
   issueViewCmds: string[];
   /**
@@ -219,6 +276,66 @@ export function mergeExec(
 
     if (cmd === "git" && o?.argv) {
       const sub = o.argv[0] ?? "";
+      // #1533 — `git symbolic-ref` answers the mainline probe, and these
+      // throwaway repos have no `refs/remotes/origin/HEAD` at all: without this
+      // the fixture's own answer was shadowed by the real git failing on a ref
+      // that does not exist, and every merging case parked on an unreadable
+      // mainline. The fixture's `main` is the same answer its `gh repo view`
+      // fallback already gives.
+      if (sub === "symbolic-ref") return { stdout: "origin/main\n" };
+      if (sub === "merge-base") {
+        // #1533 — the identity's merge base, over refs this remote-less clone
+        // cannot resolve. Answered with a fixed OID so the patch identity is
+        // computed (and compared) rather than the check refusing an unreadable
+        // base; the comparison itself is what the case under test asserts on.
+        log.headReads.push(line);
+        return { stdout: `${EVIDENCE_HEAD}\n` };
+      }
+      if (sub === "check-ref-format") {
+        // #1533 — the branch-name guard for the head read. These fixture repos do
+        // not have the cycle's branch at all, so the real git refused it and the
+        // merged step parked. Answered as valid; the identity comparison is what
+        // the cases assert on, not whether the local branch exists.
+        log.headReads.push(line);
+        return { stdout: "" };
+      }
+      if (sub === "diff") {
+        log.headReads.push(line);
+        return { stdout: "" };
+      }
+      // #1533 — the merged step fetches the head and the mainline before it
+      // trusts any identity, and these throwaway fixture repos have no remote
+      // at all. The head verification's OWN reads (fetch, the rev-parse that
+      // records the fetched head) are answered here rather than against the
+      // origin that does not exist; everything else the whitelist serves still
+      // runs against the real fixture repo, so an unexpected read is still
+      // unexpected. A cycle that reached this fetch with a real remote would
+      // have had one in `git remote`, and the check refuses that case instead.
+      if (sub === "fetch") {
+        log.headFetches.push(line);
+        return { stdout: "" };
+      }
+      if (sub === "rev-parse" && o.argv.some((w) => w.startsWith("origin/"))) {
+        // #1533 — the head verification's read of the fetched head, and the
+        // merge-base computation behind it. Both name `origin/<branch>` refs that
+        // these remote-less fixture repos cannot resolve, so the seam answers
+        // them directly; every other rev-parse still runs against the fixture's
+        // real repo, so an unexpected read stays unexpected.
+        log.headReads.push(line);
+        return { stdout: `${EVIDENCE_HEAD}\n` };
+      }
+      // #1533 — `readyPatchId` resolves the branch tip through `resolveHeadSha`,
+      // which prefixes `-C <cwd>` and therefore is not the `rev-parse` subcommand
+      // at argv[0]. Same reasoning: an `origin/<branch>` ref this fixture cannot
+      // resolve, answered with the OID the evidence probe reported.
+      if (
+        sub === "-C" &&
+        o.argv[2] === "rev-parse" &&
+        o.argv.some((w) => w.startsWith("origin/"))
+      ) {
+        log.headReads.push(line);
+        return { stdout: `${EVIDENCE_HEAD}\n` };
+      }
       if (!isKnownGitSubcommand(o.argv)) {
         log.unexpected.push(line);
         return { stdout: "" };
@@ -230,6 +347,15 @@ export function mergeExec(
         log.unexpected.push(`(recorded) ${line}`);
       }
       return runGit(o.argv);
+    }
+
+    // #1533 — the ledger path helper resolves the clone's git dir with a STRING
+    // form call (`git rev-parse --git-common-dir`, no argv), so the argv branch
+    // above never sees it and it landed in `unexpected`. It reads the fixture's
+    // own repo, so run it there and record it as an anticipated read.
+    if (line === "git rev-parse --git-common-dir") {
+      log.headReads.push(line);
+      return runGit(["rev-parse", "--git-common-dir"]);
     }
 
     // The evidence gate's 3-field probe — distinct from the forge adapter's wide
@@ -282,7 +408,26 @@ export function mergeExec(
       return { stdout: "https://github.com/s5/s5.git\n" };
     }
     if (line.includes("git remote")) return { stdout: "origin\n" };
-    if (line.includes("git symbolic-ref")) return { stdout: "refs/remotes/origin/main\n" };
+    if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
+    // #1533 — the merged step's identity reads that name `origin/<ref>`s these
+    // remote-less fixture repos cannot resolve: the merge base and the patch
+    // identity over it. Both are STRING-form calls, so the argv branch above
+    // never sees them and they landed in `unexpected`. The OID and the patch
+    // id are fixed, so the identity comparison the cases assert on runs.
+    if (line.startsWith("git merge-base ") && line.includes("origin/")) {
+      log.headReads.push(line);
+      return { stdout: `${EVIDENCE_HEAD}\n` };
+    }
+    if (line.includes("git patch-id")) {
+      log.headReads.push(line);
+      return { stdout: `${FIXTURE_PATCH_ID} commit\n` };
+    }
+    // #1533 — the merged step's identity check resolves the mainline through the
+    // STRING form of this probe (the argv branch above cannot see it), and this
+    // clone has no `refs/remotes/origin/HEAD`: the real git always failed here,
+    // so every merging case parked on an unreadable mainline. `origin/main` is
+    // what the fixture's `gh repo view` fallback answers anyway.
+
     log.unexpected.push(line);
     return { stdout: "" };
   };

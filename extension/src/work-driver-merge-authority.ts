@@ -114,8 +114,8 @@ async function decideMergeAuthority(
   operatorGrant: boolean | undefined,
   where: DecisionWhere | undefined,
 ): Promise<MergeAuthority> {
-  // Tier 1 — durable, in code. The escape hatch and the operator grant are not
-  // things a repository can write into its own documents.
+  // Tier 1 — durable, in code. The escape hatch is not a thing a repository can
+  // write into its own documents, so it is answered before any document is read.
   if (!mergeAuthorityEnabled()) {
     return {
       granted: true,
@@ -123,11 +123,16 @@ async function decideMergeAuthority(
       reason: "PI_ENSEMBLE_MERGE_AUTHORITY=0: the authority gate is disabled for this process.",
     };
   }
+  // Tier 1 — the operator's in-session grant. It is the human's own answer, so
+  // like the escape hatch it is answered WITHOUT consulting the judge: asking an
+  // LLM whether a human is allowed to allow something is not a question that
+  // can veto the human, and the judge child would be spawned on every `--merge`
+  // run for nothing.
   if (operatorGrant === true) {
     return {
       granted: true,
       source: "operator",
-      reason: "The operator granted merging for this run (--merge).",
+      quote: "operator granted merge for this run",
     };
   }
 
@@ -137,15 +142,20 @@ async function decideMergeAuthority(
   if (verdict.permitted && !verdict.citationFailed) {
     return {
       granted: true,
-      source: "agents-md",
+      // `doctrine` is the source a PROSE grant has always reported, and the
+      // merged event records it: `source: "agents-md"` is the escape-hatch /
+      // no-judgment answer. Renaming it here would silently change what the
+      // state file says about how a merge was authorised.
+      source: "doctrine",
       ...(verdict.quote ? { quote: verdict.quote } : {}),
-      reason: `The project's own documents permit merging: "${verdict.quote}".`,
+      reason: verdict.reason ?? `The project's own documents permit merging: "${verdict.quote}".`,
     };
   }
   if (verdict.permitted && verdict.citationFailed) {
     return {
       granted: false,
       source: "citation-failed",
+      ...(verdict.quote ? { quote: verdict.quote } : {}),
       reason:
         verdict.reason ??
         `The judge reported a merge grant, but the sentence it quoted was not found in ${verdict.sourceFile ?? "the file it named"} — treating it as no grant.`,
@@ -154,6 +164,7 @@ async function decideMergeAuthority(
   return {
     granted: false,
     source: "none",
+    ...(verdict.quote ? { quote: verdict.quote } : {}),
     reason:
       verdict.reason ??
       "No merge grant found: this project's documents do not permit an agent to merge, and no --merge grant was given for this run.",
