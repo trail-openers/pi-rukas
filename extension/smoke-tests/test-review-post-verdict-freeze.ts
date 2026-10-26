@@ -211,22 +211,37 @@ function reviewerMenu(): string {
   );
   assert(lines.length === 0, "…and writes no stderr");
 
-  // An empty accumulation cannot wipe the result: nothing was frozen.
+  // An empty accumulation cannot wipe the result — and it cannot record a clean
+  // end either (#1827 round 5). A fired stop parses its verdict out of the
+  // accumulation, so a status with a blank accumulation is a by-hand outcome:
+  // stamping `ok: true` + `reviewStopReason` on it would call a review nobody can
+  // show accepted, and would leave `result.text` as the collapse — the exact
+  // two-readers-disagree split the freeze above exists to close. So the fold
+  // warns once and touches nothing.
   const kept = baseResult({ text: "collapsed reply that already has the verdict" });
+  const blankLines: string[] = [];
+  const blankWarns: string[] = [];
   applyReviewBounds(
     { stoppedByVerdict: true, verdictText: "   ", verdictStatus: "APPROVED" },
     kept,
-    () => undefined,
-    () => undefined,
+    (s) => blankLines.push(s),
+    (s) => blankWarns.push(s),
   );
   assert(
     kept.text === "collapsed reply that already has the verdict",
     "a fired stop with nothing accumulated keeps the collapsed text",
   );
   assert(
-    kept.reviewStopReason === REVIEW_POST_VERDICT_STOP,
-    "…while still recording the clean end",
+    kept.reviewStopReason === undefined,
+    "…but records no clean end (no reviewStopReason) for a blank reply",
   );
+  assert(kept.ok === true, "…and leaves the result's own ok untouched");
+  assert(blankWarns.length === 1, "…warns exactly once");
+  assert(
+    /APPROVED/.test(blankWarns[0] ?? "") && /blank reply/.test(blankWarns[0] ?? ""),
+    `…and the warning names the accepted status and that the reply was blank (got: ${blankWarns[0]})`,
+  );
+  assert(blankLines.length === 0, "…and emits no stderr attribution line");
 }
 
 // ── (4) end to end: the real observe seam ends the child, the real fold writes

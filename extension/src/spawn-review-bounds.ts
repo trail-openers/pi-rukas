@@ -171,7 +171,9 @@ export interface ReviewBoundOutcome {
    *  the stop ended the child it is ALWAYS set (`observeReviewBounds` records the
    *  end on the branch that has it), so its absence with `stoppedByVerdict` true
    *  means a caller built the outcome by hand — the fold refuses to stamp rather
-   *  than invent an `ok`. */
+   *  than invent an `ok`. The same holds for `verdictText`: a fired stop parses
+   *  its verdict out of the accumulation, so an accumulation that is blank while
+   *  a status is set is the same by-hand outcome, judged by the same gate. */
   verdictStatus?: VerdictStatus;
 }
 
@@ -215,9 +217,19 @@ export function applyReviewBounds(
   // this is a by-hand outcome; stamping `ok: true` + `reviewStopReason` without
   // one would call an unreviewed child accepted. Warn and leave the collapsed
   // reply exactly as the spawn built it (warn-not-drop, as everywhere here).
-  if (outcome.verdictStatus === undefined) {
+  //
+  // One gate covers both ways a fired stop can have nothing behind it: no status
+  // at all, and a status with a BLANK accumulation. The stop parses its verdict
+  // out of the accumulation, so a status that no text supports is the same
+  // by-hand outcome in a different costume — and the old shape recorded a clean
+  // end for it while leaving `result.text` as the collapse, which is precisely
+  // the two-readers-disagree split the freeze exists to close. `verdictText`
+  // undefined counts as blank: it is only ever absent on a by-hand outcome, as
+  // the wiring always supplies the stop's own text when it reports an end.
+  const accumulated = outcome.verdictText?.trim();
+  if (outcome.verdictStatus === undefined || !accumulated) {
     warn(
-      "reviewer bounds: the post-verdict stop reported ending a child without a recorded verdict status — leaving the collapsed reply and the result's own ok alone",
+      `reviewer bounds: the post-verdict stop reported ending a child without a readable verdict (${outcome.verdictStatus ? `accepted "${outcome.verdictStatus}" from a blank reply` : "no recorded verdict status"}) — leaving the collapsed reply and the result's own ok alone`,
     );
     return;
   }
@@ -245,8 +257,7 @@ export function applyReviewBounds(
   // review, so its accumulator wins outright. When the stop did NOT fire we
   // return above and the collapsed reply is left alone — the accumulation runs
   // whatever the caps say, and an unfired stop has no authority over the text.
-  const accumulated = outcome.verdictText?.trim();
-  if (accumulated) result.text = accumulated;
+  result.text = accumulated;
   // A provider error-stop is still the fault it was: ending the child at its
   // verdict does not turn a severed stream into a completed turn.
   result.ok = !result.errorStop;

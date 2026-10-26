@@ -438,5 +438,32 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   assert(status === undefined, "a fresh stop reports no verdict, typed as VerdictStatus");
 }
 
+// ── (12) #1827 round 5 — a fired stop whose accumulated reply is BLANK is the
+// same by-hand outcome as one with no status at all: the stop parses its verdict
+// out of the accumulation, so a status with no text behind it must not record a
+// clean end. One gate in the fold covers both arms; the blank arm is pinned here
+// (and in test-review-post-verdict-freeze.ts section (3)), the missing-status arm
+// in that file.
+{
+  const result = baseResult({ text: "collapsed reply carrying the verdict" });
+  const warned: string[] = [];
+  const lines: string[] = [];
+  applyReviewBounds(
+    { stoppedByVerdict: true, verdictText: "   ", verdictStatus: "APPROVED" },
+    result,
+    (s) => lines.push(s),
+    (s) => warned.push(s),
+  );
+  assert(result.reviewStopReason === undefined, "a blank frozen reply stamps no reviewStopReason");
+  assert(result.text === "collapsed reply carrying the verdict", "…and the collapsed reply");
+  assert(result.ok === true, "…and ok are all left as the spawn set them");
+  assert(warned.length === 1, "…and warns exactly once");
+  assert(
+    /APPROVED/.test(warned[0] ?? "") && /blank reply/.test(warned[0] ?? ""),
+    `the warning names the accepted status and the blank reply (got: ${warned[0]})`,
+  );
+  assert(lines.length === 0, "…and emits no \"ended the reviewer at its VERDICT marker\" line");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
