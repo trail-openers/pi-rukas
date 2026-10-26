@@ -98,8 +98,8 @@ const finding = (
 });
 
 const savedAgentDir = process.env.PI_AGENT_DIR;
-const agentDir = await mkdtemp(path.join(os.tmpdir(), "crit-probe-agent-"));
-process.env.PI_AGENT_DIR = agentDir;
+const pinnedAgentDir = await mkdtemp(path.join(os.tmpdir(), "crit-probe-agent-"));
+process.env.PI_AGENT_DIR = pinnedAgentDir;
 // The state-dir resolver caches its answer per clone. This fixture repoints
 // `PI_AGENT_DIR` for the whole file, so without a reset a fixture earlier in the
 // process (or an earlier import-time resolve) would answer for this one and the
@@ -112,20 +112,41 @@ try {
   // The store location the RECORD path would use — created here so the writes
   // below have somewhere to land. The probe itself must never create it (see the
   // fresh-clone assertion), which is why it is not this test's only lookup.
+  // #1832 round 2 regression pin — the probe must resolve through the READ-ONLY
+  // arm. It is asserted on its OWN fixture rather than on `dir`, because other
+  // fixtures in this file create stores and the module caches per clone: what must
+  // not happen is a probe that creates a clone's state root or mints its token.
+  // A probe that lost `readOnly: true` fails both assertions below, since
+  // `findingsStateDir` (the creating arm) is never called on this clone.
+  const readOnlyPin = makeRepo();
+  commitIn(readOnlyPin, "// pin fixture\n");
+  const pinProbe = await branchHasOpenCriticalRow(readOnlyPin.dir, "feat/x");
+  assert(
+    pinProbe.kind === "absent",
+    `pin fixture: a clone with no store answers absent (got ${JSON.stringify(pinProbe)})`,
+  );
+  const pinRoot = stateRootFor(readOnlyPin.dir);
+  assert(
+    !existsSync(pinRoot),
+    "the probe alone created no state root for this clone (a creating resolve would have made it)",
+  );
+  assert(
+    !existsSync(path.join(pinRoot, "token")),
+    "…and minted no token, which is the write a read path must never perform",
+  );
+
   const loc = await findingsStateDir(execp, dir);
   assert(loc !== undefined, "probe: the clone resolves a state dir");
   assert(
-    loc !== undefined && loc.file === path.join(loc.dir, FINDINGS_FILE),
+    loc?.file === path.join(loc.dir, FINDINGS_FILE),
     `fixture: the resolved store carries the exported basename (${FINDINGS_FILE})`,
   );
-  // #1832 round 2 regression pin — the probe must resolve through the READ-ONLY
-  // arm. This clone's store has not been created by any write yet, so a probe that
-  // lost `readOnly: true` would mint the token and create the clone's state root
-  // right here, and the assertion below fails. `findingsStateDir` above is the
-  // creating arm and runs AFTER the probe, so the ordering is the test.
+  // The creating arm really does create what the probe above did not: without this
+  // the probe assertions would pass against a resolver that never creates
+  // anything, which is not the property under test.
   assert(
-    !existsSync(stateRootFor(dir)),
-    "the probe alone created nothing: the clone's state root exists only once the record path runs",
+    existsSync(stateRootFor(dir)) && existsSync(path.join(path.dirname(loc!.dir), "token")),
+    "the RECORD path does create the state root and mint the token the probe left alone",
   );
 
   // No store at all yet: the file does not exist, which the raw read answers as
@@ -310,7 +331,7 @@ try {
 
   // An empty scratch dir under the agent root is not read as a corrupt store:
   // the resolver keys on the clone, not on stray directories beside it.
-  mkdirSync(path.join(agentDir, "empty-branch-check"), { recursive: true });
+  mkdirSync(path.join(pinnedAgentDir, "empty-branch-check"), { recursive: true });
 
   // #1832 round 2 — rows for the branch that are ALL malformed answer `absent`
   // with a trace, NOT `unreadable`: a row the schema refuses is not a row, the
