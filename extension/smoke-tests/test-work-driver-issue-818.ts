@@ -290,10 +290,11 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         issue: 818,
         issueBodyFetcherFn,
         // #1634 — the adversarial gate reads each worktree's diff through this
-        // seam (`git rev-parse --show-toplevel`, then
-        // `git diff --end-of-options <base>..HEAD`); this fixture models its
-        // worktrees on disk, so both reads answer as a clean tree.
-        verifyExecFn: answerDiffReads(exec, () => ""),
+        // seam (`git rev-parse --show-toplevel`, then ONE
+        // `git diff --end-of-options <base-or-HEAD>` against the working tree);
+        // this fixture models its worktrees on disk, so both reads answer as a
+        // clean tree — which is what a bare `answerDiffReads(exec)` gives.
+        verifyExecFn: answerDiffReads(exec),
         adversarialLoopFn: async () =>
           mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
         dispatchFn: mkDispatchFn(dir, 818),

@@ -18,8 +18,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { DriverContext } from "../../src/work-driver-context.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { commandOf } from "./argv-shell.ts";
 
@@ -41,51 +42,6 @@ function run(dir: string, args: string[]): string {
     throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr || "").trim()}`);
   }
   return (r.stdout ?? "").trim();
-}
-
-/**
- * #1634 — create one real linked worktree of `dir`, checked out at `head`
- * (default `HEAD`), and return its absolute path, for a fixture that needs the
- * tree to be a WORKTREE rather than a directory. `readWorktreeDiff` resolves the
- * path it was given with `realpathSync` and fails closed if it cannot; a bare
- * `mkdir`ed stand-in satisfies that, but `inspectWorktreeForLoss` then reads it
- * as a non-worktree holding unrecoverable work and halts `integrate()` (#1170).
- * A fixture that walks both gates needs a real tree at the path its branch reply
- * names, which is what `at` is for; without it the driver's own
- * `<dir>/.worktrees/<name>` layout is used.
- *
- * Idempotent: a path that already carries a `.git` file is already a worktree
- * and is returned untouched, which is what lets `answerDiffReads` call it from
- * inside an exec seam that may ask for the same tree twice.
- *
- * `git worktree add` is not a no-op, so a fixture whose exec seam is a script
- * cannot produce this: the command has to reach git, which is what `run` does.
- * The repository is initialised here if it is not one already, so a fixture that
- * built its tree with `mkdtempSync` rather than `initCleanRepo` still works.
- */
-export function addWorktree(dir: string, name: string, head = "HEAD", at?: string): string {
-  const abs = at ?? path.join(dir, ".worktrees", name);
-  if (existsSync(path.join(abs, ".git"))) return abs;
-  const gitDir = path.join(dir, ".git");
-  mkdirSync(gitDir, { recursive: true });
-  run(dir, ["init", "-q", "-b", "main", "."]);
-  mkdirSync(path.join(gitDir, "info"), { recursive: true });
-  // `git worktree add` needs a commit to detach from; a fixture's repo is
-  // sometimes created empty, and a bare `commit` would then fail on "nothing to
-  // commit" — which is exactly what `--allow-empty` says the tree IS.
-  // `rev-parse --verify --quiet` on a branch with no commit exits 1, so the
-  // probe cannot use `run` (which throws on non-zero): this asks, it does not
-  // require.
-  const probed = spawnSync("git", [...IDENTITY, "rev-parse", "--verify", "--quiet", "HEAD"], {
-    cwd: dir,
-    encoding: "utf8",
-    env: gitTestEnv(),
-  });
-  if (probed.status !== 0 || !(probed.stdout ?? "").trim())
-    run(dir, ["commit", "-q", "--allow-empty", "-m", "base"]);
-  mkdirSync(path.dirname(abs), { recursive: true });
-  run(dir, ["worktree", "add", "--detach", abs, head]);
-  return abs;
 }
 
 /**
@@ -122,6 +78,11 @@ export function initCleanRepo(dir: string): string {
  * on the argv prefix `readWorktreeDiff` issues through the driver's exec seam
  * (`execFn("git", { argv, cwd })`). That argv form is the only transport
  * production uses, so it is the only form matched here.
+ *
+ * The diff read is ONE call — `git diff --end-of-options <baseSha>` (or
+ * `HEAD`) — comparing the base against the WORKING TREE. The positional is
+ * whatever argv carries after the flag, so a fixture whose base is a 40-hex id
+ * and one whose base is absent both match without this helper knowing either.
  */
 const GATE_ARGV_READS = [
   ["rev-parse", "--show-toplevel"],
@@ -139,19 +100,24 @@ function gateArgvRead(argv: string[] | undefined): (typeof GATE_ARGV_READS)[numb
  * fake's catch-all `""`.
  *
  * The gate (`readWorktreeDiff`) runs `git rev-parse --show-toplevel` in the
- * worktree — which must name the worktree itself — and then
- * `git diff --end-of-options <base>..HEAD` with a `HEAD` fallback. A fake that
- * answers those with `""` (which is what a catch-all `return { stdout: "" }`
- * does) is REFUSED: the gate cannot tell a fake's silence from git's, so it
- * parks with `adversarial-diff-unreadable` and the cycle never reaches
- * commit-pr. A fixture that scripts git therefore has to answer the toplevel
- * probe as what the tree is (`cwd` itself) and the diff reads as what the tree
- * holds. Every other command passes through untouched, so the fixture's own
- * scripted answers — cherry-pick, push, `gh pr create` — are unaffected.
+ * worktree — which must name the worktree itself — and then ONE
+ * `git diff --end-of-options <base-or-HEAD>` that compares that base against
+ * the working tree. A fake that answers those with `""` (which is what a
+ * catch-all `return { stdout: "" }` does) is REFUSED: the gate cannot tell a
+ * fake's silence from git's, so it parks with `adversarial-diff-unreadable` and
+ * the cycle never reaches commit-pr. A fixture that scripts git therefore has to
+ * answer the toplevel probe as what the tree is (`cwd` itself) and the diff read
+ * as what the tree holds. Every other command passes through untouched, so the
+ * fixture's own scripted answers — cherry-pick, push, `gh pr create` — are
+ * unaffected.
  *
  * `diffFor` lets a fixture return the diff it wants the gate to see (non-empty
  * = the reviewer actually runs instead of skipping on an empty diff) — the
- * kill-cause fixture is that caller.
+ * kill-cause fixture is that caller. Its second argument is the COMPARISON
+ * TARGET the gate asked for: the 40-hex base when the cycle recorded one, `HEAD`
+ * when it did not. A fixture that replays that token straight into a real
+ * `git diff` sees committed and uncommitted work alike, which is exactly what
+ * the gate reads.
  *
  * A fake that SCRIPTS git answers these reads for a tree git never made: such a
  * fixture scripts `git worktree add` as a no-op and models its worktrees as
@@ -168,14 +134,15 @@ function gateArgvRead(argv: string[] | undefined): (typeof GATE_ARGV_READS)[numb
  * scripted fake produces (they all normalise with `commandOf` before matching),
  * while an argv call is production's and must never touch the disk.
  */
-export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
-  exec: F,
-  diffFor?: (cwd: string, range: string) => string,
-): F {
-  // A real `git diff <range>` prints nothing when the range is empty, so an
-  // absent range reads as a clean tree — not as "the fake was never asked".
-  const diff = (cwd: string, range: string | undefined) => ({
-    stdout: diffFor && range ? diffFor(cwd, range) : "",
+export function answerDiffReads(
+  exec: NonNullable<DriverContext["verifyExecFn"]>,
+  diffFor?: (cwd: string, target: string) => string,
+): NonNullable<DriverContext["verifyExecFn"]> {
+  // The comparison target argv names after the flag. Absent means the fake was
+  // never asked for a diff, which reads as a CLEAN tree rather than as "nobody
+  // answered" — the same answer real git gives for an empty comparison.
+  const diff = (cwd: string, target: string | undefined) => ({
+    stdout: diffFor && target ? diffFor(cwd, target) : "",
   });
   // The gate resolves the path with `realpathSync` and fail-closes on a
   // directory that does not exist, so a fixture whose worktrees exist only as
@@ -212,6 +179,9 @@ export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
   // path as far as the gate is concerned, and M3 is that fixture.
   const materialise = (cmd: unknown, cwd: string | undefined): void => {
     if (typeof cmd !== "string" || !cwd?.startsWith("/")) return;
+    // A failure to create the directory the read is about is a broken fixture,
+    // not a state to answer around: swallow it and the gate fails closed with
+    // "could not resolve worktree path", and the reader blames the driver.
     mkdirSync(cwd, { recursive: true });
   };
   // The directory exists for the gate's `realpathSync` and for nothing else:
@@ -230,15 +200,15 @@ export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
       // Not empty, already gone, or never ours — none of which is ours to fix.
     }
   };
-  return (async (cmd: any, o?: any) => {
+  return (async (cmd, o) => {
     const read = gateArgvRead(o?.argv);
     // A shell-form fake may already have folded argv into the command string,
     // in which case `o.argv` is gone and only the line below matches.
     if (cmd === "git" && read) {
       materialise(cmd, o?.cwd);
-      const range = o.argv.find((a: string) => a.includes(".."));
+      const target = read[0] === "diff" ? o.argv[2] : undefined;
       const answered =
-        read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, range);
+        read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, target);
       // The toplevel probe is the read that NEEDED the directory; the diff read
       // is the last one the gate makes, so the tree is residue from here on.
       if (read[0] !== "rev-parse") dematerialise(cmd, o.cwd);
@@ -255,5 +225,5 @@ export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
       return answered;
     }
     return exec(cmd, o);
-  }) as unknown as F;
+  }) as NonNullable<DriverContext["verifyExecFn"]>;
 }

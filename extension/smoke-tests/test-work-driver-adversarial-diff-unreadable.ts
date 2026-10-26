@@ -225,11 +225,13 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
 // ───────── #1634: the base is a full sha, and the path is a real directory ─────────
 
 {
-  // A baseSha that is not a 40-hex object id NEVER reaches git's argv. The old
+  // A baseSha that is not a 40-hex object id NEVER reaches git's argv, and the
+  // read does not quietly answer a DIFFERENT question instead. The old
   // ref-shaped pattern admitted a leading `-` — which git reads as an OPTION —
   // and any symbolic ref, whose movement silently changes what the gate
-  // compared. The read must fall back to `git diff HEAD` without ever handing
-  // git the rejected value.
+  // compared; the old code then fell back to `git diff HEAD`, which is a
+  // different comparison, made against a base the cycle did not name. A read
+  // that gates an approval refuses rather than guesses.
   const dir = repoDir("unit-badsha", true);
   try {
     const argvs: string[][] = [];
@@ -239,7 +241,14 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
       if (argv.includes("--show-toplevel")) return { stdout: `${opts?.cwd}\n` };
       return { stdout: "diff --git a/a.ts b/a.ts\n" };
     });
-    assert(r.ok, "a non-sha baseSha still reads the uncommitted diff");
+    assert(
+      !r.ok,
+      `a non-sha baseSha → the read REFUSES (never a degraded comparison) (${r.ok ? "returned a diff" : r.reason.slice(0, 60)})`,
+    );
+    assert(
+      !r.ok && r.reason.includes("is not a full commit id"),
+      "a non-sha baseSha → the reason says so, in terms the operator can act on",
+    );
     assert(
       argvs.length > 0 &&
         argvs.every((a) => a.every((t) => !t.includes("pwned") && !t.startsWith("--output"))),
@@ -251,7 +260,12 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
 }
 
 {
-  // A real 40-hex base IS used, so the pinned comparison is the primary read.
+  // A real 40-hex base IS used, and it is compared against the WORKING TREE:
+  // ONE `git diff <sha>`, with no `..HEAD` anywhere. The pair this used to run
+  // (`<sha>..HEAD`, then the same range again as its "fallback") never asked
+  // git about uncommitted work, which is the exact shape #1634 was reported
+  // on — a develop round that died before its commit leaves the change in the
+  // tree and nothing in a commit.
   const dir = repoDir("unit-goodsha", false);
   try {
     const sha = git(dir, "rev-parse", "HEAD").trim();
@@ -270,8 +284,37 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
       "a full 40-hex baseSha → the committed range is read",
     );
     assert(
-      argvs.some((a) => a.some((t) => t === `${sha}..HEAD`)),
-      "a full 40-hex baseSha → git is asked for <sha>..HEAD",
+      argvs.some((a) => a.length === 3 && a[0] === "diff" && a[1] === "--end-of-options" && a[2] === sha),
+      "a full 40-hex baseSha → git is asked for ONE `diff <sha>` (base vs working tree)",
+    );
+    assert(
+      argvs.filter((a) => a[0] === "diff").length === 1,
+      `ONE diff call, not a range-then-fallback pair (${argvs.filter((a) => a[0] === "diff").length})`,
+    );
+    assert(
+      argvs.every((a) => a.every((t) => !t.includes(".."))),
+      "no `..HEAD` range is ever handed to git — the second read could not add evidence",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // #1634 round 2, the case the pair could not see: the change is STAGED but
+  // never committed, so `<base>..HEAD` is empty and the old fallback re-ran the
+  // same empty range. With base-vs-working-tree the single read finds it.
+  // Everything is real git here — no fake answers the diff — so this asserts
+  // what git reports, not what a stub was told to print.
+  const dir = repoDir("unit-uncommitted", false);
+  try {
+    const sha = git(dir, "rev-parse", "HEAD").trim();
+    writeFileSync(path.join(dir, "u.ts"), "export const uncommitted = 1;\n");
+    git(dir, "add", "u.ts");
+    const r = await readWorktreeDiff(dir, sha);
+    assert(
+      r.ok && r.diff.includes("export const uncommitted = 1;"),
+      `an UNCOMMITTED change with a baseSha → read as non-empty (${r.ok ? (r.diff ? "non-empty" : "EMPTY") : r.reason})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

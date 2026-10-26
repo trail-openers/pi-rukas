@@ -13,6 +13,12 @@
  *
  * Split from work-driver-diff.ts, which was already at the §12 size cap and
  * whose callers that do NOT gate an approval keep the old best-effort shape.
+ *
+ * #1634 round 2 — the read is ONE `git diff` of the base commit against the
+ * working tree, so committed and uncommitted work are both in what the gate
+ * sees. It used to try `base..HEAD` and, when that came back empty, re-run the
+ * same range as its own "fallback": uncommitted changes were never asked about,
+ * and a tree whose work was never committed read as empty and was approved.
  */
 
 import { realpathSync } from "node:fs";
@@ -65,10 +71,18 @@ export type WorktreeDiff = { ok: true; diff: string } | { ok: false; reason: str
  * is `{ ok: false }`, and the caller must treat that as no evidence rather
  * than as approval.
  *
+ * WHAT it compares, in ONE call: with a `baseSha` that is a full 40-hex id, the
+ * base commit against the WORKING TREE (`git diff <baseSha>`) — committed work
+ * since the base plus the uncommitted tracked changes, which is the whole of
+ * what a pre-commit gate reviews. With no `baseSha` at all, the working tree
+ * against `HEAD`. A `baseSha` that is present but is NOT a full object id is a
+ * FAILED read, never a silently degraded comparison: the caller gets no evidence
+ * rather than evidence about the wrong pair (#1634 round 2).
+ *
  * `execFn` is the driver's exec seam (the same one `verifyExecFn` injects), so
  * a test fake answers both reads; production defaults to `execp`. Every call
- * goes through `execGit`: argv always, a bounded timeout always, never a
- * command string.
+ * goes through `execGit`: argv always, a bounded timeout always
+ * (`DEFAULT_GIT_TIMEOUT_MS`, git-range.ts), never a command string.
  */
 export async function readWorktreeDiff(
   cwd: string | undefined,
@@ -118,34 +132,40 @@ export async function readWorktreeDiff(
     ok: false,
     reason: `git ${args.join(" ")} failed in ${cwd}: ${errorText(err)}`,
   });
-  // Committed work first (post-#453: after a developer commit `git diff HEAD`
-  // is empty because HEAD IS the commit), then the uncommitted fallback.
+  // #1634 round 2 — ONE read, comparing the base commit against the WORKING
+  // TREE: `git diff <baseSha>` (no `..HEAD`). That single form carries both
+  // halves of what the gate must see — everything committed since the base AND
+  // whatever is still uncommitted — so the pair this used to run (`base..HEAD`
+  // first, then `git diff HEAD` when it came back empty) is gone.
   //
-  // #1634 — the base is pinned by FULL_SHA, the SAME 40-hex gate `fetchDiff`
-  // applies (one predicate, imported, not a second pattern that can drift). The
-  // loose ref shape this used to test admitted a leading `-`, which git reads
-  // as an OPTION even after `--end-of-options`, and a value that resolves to a
-  // ref instead of a commit. A diff read that gates an approval pins the
-  // comparison to a full object id or compares nothing.
-  const pinned = baseSha !== undefined && FULL_SHA.test(baseSha);
-  if (pinned) {
-    const rangeArgs = ["diff", "--end-of-options", `${baseSha}..HEAD`];
-    let committed: string;
-    try {
-      committed = await execGit(exec, cwd, rangeArgs, { maxBuffer: DIFF_MAX_BUFFER });
-    } catch (err) {
-      return unreadable(rangeArgs, err);
-    }
-    if (committed.trim()) return { ok: true, diff: committed };
+  // The pair was the bug. When the committed range was empty the fallback re-ran
+  // the SAME range a second time and returned its emptiness as the answer, so a
+  // worktree whose change was never committed — the exact shape #1634 was
+  // reported on, and the shape a develop round that died before its commit
+  // leaves behind — read as "nothing to review". One identical second call could
+  // not have discovered the uncommitted change; the tree was never asked.
+  //
+  // #1634 round 3 — the base is pinned by FULL_SHA, the SAME 40-hex gate
+  // `fetchDiff` applies (one predicate, imported, not a second pattern that can
+  // drift), and a base that is PRESENT but not a full object id is a FAILED
+  // read rather than a degraded one. The loose ref shape this used to test
+  // admitted a leading `-`, which git reads as an OPTION even after
+  // `--end-of-options`, and a symbolic ref whose movement would silently change
+  // what the gate compared. `--end-of-options` stays: it is what makes the
+  // positional below unable to be read as a flag by a git that sees it first.
+  if (baseSha !== undefined && !FULL_SHA.test(baseSha)) {
+    return {
+      ok: false,
+      reason: `baseSha ${JSON.stringify(baseSha)} is not a full commit id — refusing to guess what to compare`,
+    };
   }
-  const range = pinned ? `${baseSha}..HEAD` : "HEAD";
-  const fallbackArgs = ["diff", "--end-of-options", range];
+  const args = ["diff", "--end-of-options", baseSha ?? "HEAD"];
   try {
     return {
       ok: true,
-      diff: await execGit(exec, cwd, fallbackArgs, { maxBuffer: DIFF_MAX_BUFFER }),
+      diff: await execGit(exec, cwd, args, { maxBuffer: DIFF_MAX_BUFFER }),
     };
   } catch (err) {
-    return unreadable(fallbackArgs, err);
+    return unreadable(args, err);
   }
 }
