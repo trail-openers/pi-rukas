@@ -208,6 +208,21 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
         line,
       ),
   },
+  // #1841 — a runner's own FAIL HEADER: `FAIL  <description>`, a status token in
+  // its own position followed by prose that names the check, with NO file name and
+  // therefore no extension anchor. It sits AFTER the two extension-bearing
+  // `named-file` arms so `FAIL a.ts` keeps classifying as `named-file` (the table
+  // is first-match-wins), and it is asked AFTER `isSuccessLine`, which is what
+  // refuses a header whose description quotes a passing tally (`FAIL the budget
+  // check (0 failed)`) — the PM decision of #1841. Without it a gate that reports
+  // `FAIL  <description>` above indented detail lines named no failing line at all
+  // and the develop round parked without its corrective round.
+  {
+    shape: "fail-header",
+    namesTest: true,
+    preVeto: false,
+    test: (l: string) => /^\s*FAIL\s+\S/.test(l),
+  },
   // TAP / bats. Anchored with a number so `book`, `token` and `lookup` never match.
   {
     shape: "tap-not-ok",

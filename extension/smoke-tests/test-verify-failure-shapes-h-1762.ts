@@ -35,6 +35,7 @@ import {
   CHECKS_BLOCK,
   CMD,
   EXAMPLE_STREAM,
+  FAIL_HEADER,
   PAYLOAD_MARKER,
   TALLY_LINE,
   TALLY_NAMES,
@@ -177,6 +178,9 @@ const { assert, failed } = makeAssert();
     ["error: cannot compile", "diagnostic"],
     [CHECKS_BLOCK, "script-tally"],
     ["scripts/test.sh: 3 failed", "named-file"],
+    // #1841 — the anchorless FAIL header, the shape whose absence parked a develop
+    // round with no corrective dispatch. Its probe is the last line the union needs.
+    [FAIL_HEADER, "fail-header"],
     ["not ok 3 - x", "tap-not-ok"],
     ["FAILED tests/test_a.py::test_login", "pytest-failed"],
     ["ERROR tests/test_a.py::test_login", "pytest-error"],
