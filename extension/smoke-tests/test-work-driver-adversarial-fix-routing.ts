@@ -20,12 +20,12 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
-  cleanTreeDiffExec,
   git,
   singleState,
   tmpDir,
   twoWorkstreamState,
 } from "./lib/adversarial-fix-fixtures.ts";
+import { cleanTreeDiffExec } from "./lib/git-worktree-fixture.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
