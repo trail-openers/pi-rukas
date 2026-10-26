@@ -65,6 +65,24 @@ export interface SpawnOptions extends WriteFenceOpt {
    */
   onBoundArmed?: () => void;
   /**
+   * #1827 round 4 — OPT IN to the post-verdict stop (review-bounds.ts
+   * `createVerdictStop`). The stop ends the child the moment its reply closes on
+   * a `VERDICT:` marker, and freezes the accumulated reply as the result.
+   *
+   * Role alone cannot decide this. `adversarial-developer` is spawned by two
+   * callers with two DIFFERENT verdict protocols: the adversarial review loop
+   * (`adversarial-phase.ts`, values from `VERDICT_STATUSES`) and the plan gap
+   * gate (`plan-gaps.ts` / `plan-gate-prompt.ts`, whose line is
+   * `VERDICT: READY | NEEDS_ITERATION`). A stop keyed on the role alone would
+   * read the gate's `VERDICT:` line with the review enum's reader — and a child
+   * ended at a marker from a protocol it never agreed to is a review that was
+   * silently cut short. So the caller that wants the stop says so here, and
+   * `createReviewBounds` builds it only for `adversarial-developer` AND only
+   * when this flag is set. The re-read cap stays role-keyed: it counts reads of
+   * the skill the dispatch named, which is the same fact for either protocol.
+   */
+  verdictStop?: true;
+  /**
    * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
    * the running tool. We listen on this and kill the child with SIGTERM so
    * cancellation actually propagates instead of leaving Pi stuck.

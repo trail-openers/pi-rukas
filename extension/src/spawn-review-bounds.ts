@@ -24,14 +24,16 @@
 
 import type { ChildProcess } from "node:child_process";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
+import type { VerdictStatus } from "./review-bounds-verdict.ts";
 import {
   REVIEW_POST_VERDICT_STOP,
   REVIEW_SKILL_REREAD_KILL,
   type ReviewBoundTargets,
+  type SkillReadGuard,
+  type VerdictStop,
   createReviewBounds,
   observeReviewBounds,
 } from "./review-bounds.ts";
-import type { SkillReadGuard, VerdictStop } from "./review-bounds.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -45,12 +47,11 @@ import type { DispatchResult } from "./types.ts";
  *
  * The bounds are `undefined` unless the role is a reviewer AND the caller
  * supplied the input that bound needs (a skill path for the re-read cap; the
- * VERDICT protocol, which is the adversarial role itself, for the post-verdict
- * stop) — so a `developer` fix-pass child carries no bound objects at all.
+ * `verdictStop` opt-in PLUS the adversarial role for the post-verdict stop) — so
+ * a `developer` fix-pass child and a plan-gap gate carry no bound objects at all.
  */
 export interface ReviewBoundWiring {
   skillRead?: SkillReadGuard;
-  verdictStop?: VerdictStop;
   observe: (assistantMessageEnd: PiJsonEvent | null) => void;
   /** Fold into a result that has been through the attribution passes. A
    *  re-read kill an earlier cause superseded is traced from here, so it needs
@@ -73,7 +74,7 @@ export function wireReviewBounds(deps: {
    * process group. Both are wrapped so a child already gone is not an error. */
   child: ChildProcess;
   role: string;
-  opts: Pick<SpawnOptions, "reviewSkillPath" | "onSteer">;
+  opts: Pick<SpawnOptions, "reviewSkillPath" | "onSteer" | "verdictStop">;
   completePrompt: () => void;
   armBound: () => void;
   /** #1827 round 2 — the spawn's killing-bound flag, threaded to the re-read
@@ -107,11 +108,6 @@ export function wireReviewBounds(deps: {
     setKillCause: (cause) => {
       killCause = cause;
     },
-    // Only ever called by `observeReviewBounds`, on the branch that ends the
-    // child; it flips the fold's single gate (see `stoppedByVerdict` below).
-    markStopped: () => {
-      stoppedByVerdict = true;
-    },
     reported: deps.reported,
     willRetry: deps.willRetry,
   };
@@ -126,27 +122,24 @@ export function wireReviewBounds(deps: {
     );
   };
   let killCause: DispatchResult["killCause"];
-  // The one record the fold reads a clean end from: set by `observeReviewBounds`
-  // through `targets.markStopped`, i.e. ONLY on the branch that arms, closes
-  // stdin and ends the child. The accumulator runs whatever the caps say, so
-  // `verdictStop.status()` on its own is no proof a stop happened — with
-  // `PI_ENSEMBLE_DISPATCH_CAPS=0` a verdict is parsed and the child is left
-  // alone, and this flag stays false. No second `verdictStopped` boolean: the
-  // fold reads THIS one and stamps `reviewStopReason` from it.
-  let stoppedByVerdict = false;
   return {
     ...(skillRead ? { skillRead } : {}),
-    ...(verdictStop ? { verdictStop } : {}),
     observe,
     apply: (result, appendStderr, warn) =>
       applyReviewBounds(
         {
           ...(killCause !== undefined ? { killCause } : {}),
           ...(skillRead ? { skillReads: skillRead.count() } : {}),
-          stoppedByVerdict,
+          // One source for "the stop ended this child": the stop object itself.
+          // There is no second `stoppedByVerdict` boolean for the wiring to keep
+          // in step with (#1827 round 4).
           ...(verdictStop
-            ? { verdictText: verdictStop.text(), verdictStatus: verdictStop.status() }
-            : {}),
+            ? {
+                stoppedByVerdict: verdictStop.stopped(),
+                verdictText: verdictStop.text(),
+                verdictStatus: verdictStop.status(),
+              }
+            : { stoppedByVerdict: false }),
         },
         result,
         appendStderr,
@@ -161,17 +154,18 @@ export interface ReviewBoundOutcome {
   killCause?: DispatchResult["killCause"];
   /** Reads counted at the kill, for the stderr attribution line. */
   skillReads?: number;
-  /** The post-verdict stop ACTUALLY ended the child — set on the branch in
-   *  `observeReviewBounds` that arms, closes stdin and kills, never from the
-   *  accumulator. The only condition under which the fold stamps a clean end:
-   *  with `PI_ENSEMBLE_DISPATCH_CAPS=0` a verdict is still parsed into the
+  /** Whether the post-verdict stop ENDED this child — the stop's own record
+   *  (`VerdictStop.stopped()`), set on the branch in `observeReviewBounds` that
+   *  arms, closes stdin and kills, never from the accumulator. The only condition
+   *  under which the fold stamps a clean end: with
+   *  `PI_ENSEMBLE_DISPATCH_CAPS=0` a verdict is still parsed into the
    *  accumulation and this stays false, so nothing is stamped. */
   stoppedByVerdict: boolean;
   /** The accumulated assistant text the verdict was parsed out of. When the
    *  stop fired this becomes `result.text` outright — the frozen reply. */
   verdictText?: string;
   /** The parsed verdict, for the stderr line that names what was accepted. */
-  verdictStatus?: string;
+  verdictStatus?: VerdictStatus;
 }
 
 /**
@@ -209,6 +203,20 @@ export function applyReviewBounds(
     }
   }
   if (!outcome.stoppedByVerdict) return;
+  // #1827 round 4 — the stop stands down behind an armed killing bound, exactly
+  // as the re-read kill does (`shouldKill` / `boundArmed` above). If something
+  // else already decided how this child ends and named a cause, that cause owns
+  // the result: stamping `ok: true`, `reviewStopReason` and the frozen text on
+  // top of a kill would report a killed review as a clean one. The stop's own
+  // gate cannot see this (the wiring's `armBound` is the same seam both bounds
+  // use), so the fold checks it, and says so rather than folding in silence —
+  // the same warn-not-drop rule the discarded re-read kill follows.
+  if (result.killCause) {
+    warn(
+      `reviewer bounds: the post-verdict stop had accepted "${outcome.verdictStatus ?? "an unreadable verdict"}" but cause ${result.killCause} ended the child; the existing cause stands`,
+    );
+    return;
+  }
   // #1827 round 3 — when the stop FIRED, the result text IS the frozen
   // accumulation, unconditionally. The round-2 rule replaced the collapsed
   // reply only when it was empty or a placeholder, which left the two readers

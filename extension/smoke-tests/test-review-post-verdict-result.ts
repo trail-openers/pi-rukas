@@ -270,7 +270,6 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     completePrompt: () => armed.push("completePrompt"),
     armBound: () => armed.push("armBound"),
     setKillCause: () => undefined,
-    markStopped: () => armed.push("markStopped"),
     reported: () => false,
     willRetry: () => false,
   });
@@ -309,7 +308,6 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
       completePrompt: () => calls.push("completePrompt"),
       armBound: () => calls.push("armBound"),
       setKillCause: (c) => calls.push(`cause:${String(c)}`),
-      markStopped: () => calls.push("markStopped"),
       reported: () => false,
       willRetry: () => false,
       ...over,
@@ -325,7 +323,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   // child (the fold's own gate is pinned in
   // test-review-post-verdict-freeze.ts).
   assert(
-    normal.join(",") === "markStopped,armBound,completePrompt,kill",
+    normal.join(",") === "armBound,completePrompt,kill",
     `the stop records the end, then arms, closes stdin and kills (${normal.join(",")})`,
   );
   assert(!normal.some((c) => c.startsWith("cause:")), "…and records no kill cause whatsoever");
@@ -386,7 +384,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     const fired = createVerdictStop();
     fired.observe(turn(text("Findings: the unbounded scan in observe().")));
     fired.observe(turn(text("VERDICT: ISSUES_FOUND")));
-    fired.markStopped();
+    fired.markEnded();
     const r = baseResult({ text: collapsed });
     applyReviewBounds(
       {
@@ -439,7 +437,6 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     completePrompt: () => armed.push("completePrompt"),
     armBound: () => armed.push("armBound"),
     setKillCause: () => undefined,
-    markStopped: () => undefined,
     reported: () => false,
     willRetry: () => false,
   });

@@ -100,6 +100,13 @@ export function makeRunPhase(opts: {
           ...(reviewer
             ? {
                 childBoundMs: adversarialChildBoundMs(),
+                // #1827 round 4 — OPT IN to the post-verdict stop. Only this
+                // dispatch speaks the `VERDICT_STATUSES` protocol: the plan gap
+                // gate spawns the same role with `READY / NEEDS_ITERATION`, and
+                // the re-read cap stays role-keyed. Set here (beside the skill
+                // path, which this caller also supplies) so the bound and the
+                // protocol it reads cannot drift apart from the caller.
+                verdictStop: true,
                 // The bound's wrap-up steer and the re-read cap's steer both
                 // reach this child through the driver's steer seam (dispatch.ts
                 // pairs the two for exactly this reason).

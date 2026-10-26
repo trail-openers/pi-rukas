@@ -50,7 +50,12 @@ import type { SteerSource } from "./dispatch-steer.ts";
 import { isSkillReadWith } from "./lens-skill-load-proof.ts";
 import { candidateDirs, resolveSkillDir, skillFileCandidates } from "./lens-skill-path.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
-import { verdictEndingMessage } from "./review-bounds-verdict.ts";
+import {
+  type VerdictStatus,
+  appendBounded,
+  keepVerdictText,
+  verdictEndingMessage,
+} from "./review-bounds-verdict.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -216,16 +221,18 @@ export interface VerdictStop {
   observe(event: PiJsonEvent): boolean;
   /** The accumulated assistant text the verdict was parsed from. */
   text(): string;
-  /** The parsed verdict, once stopped. */
-  status(): string | undefined;
-  /** Record that the stop ENDED this child. The one caller is
-   *  `observeReviewBounds`, on the branch that arms, closes stdin and kills —
-   *  so `stopped()` below means "this child was actually ended", never merely
-   *  "a verdict was seen". */
-  markStopped(): void;
-  /** The stop FIRED — the child was armed, its stdin closed and ended. The one
-   *  signal the fold may stamp a clean end from: `status()` alone is true of a
-   *  parsed verdict nobody acted on, e.g. with the caps off. */
+  /** The parsed verdict, once stopped. Typed as `VerdictStatus` (#1827 round 4):
+   *  a bare `string` here let a caller compare the stop's word against a typo the
+   *  compiler could not see, and it is the value the fold reports as accepted. */
+  status(): VerdictStatus | undefined;
+  /** Record that the stop ENDED this child. The only caller is
+   *  `observeReviewBounds`, on the branch that arms, closes stdin and kills — so
+   *  `stopped()` below means "this child was actually ended", never merely "a
+   *  verdict was seen". The fold's SINGLE source of that fact (#1827 round 4 —
+   *  the wiring's duplicate `stoppedByVerdict` boolean is gone, so a clean end
+   *  is recorded in exactly one place). */
+  markEnded(): void;
+  /** The stop FIRED — the child was armed, its stdin closed and ended. */
   stopped(): boolean;
 }
 
@@ -259,7 +266,10 @@ export function createVerdictStop(): VerdictStop {
   // silent, and the reviewer runs its natural tail.
   const active = capsOn();
   const parts: string[] = [];
-  let stopped: string | undefined;
+  let stopped: VerdictStatus | undefined;
+  // Set on the branch of `observeReviewBounds` that ends the child, through the
+  // seam below. Distinct from `stopped`, which the parse sets: with the caps off
+  // a verdict is read and nothing is ended.
   let ended = false;
   return {
     observe: (event) => {
@@ -267,7 +277,14 @@ export function createVerdictStop(): VerdictStop {
       if (event.type !== "message_end" || msg?.role !== "assistant") return stopped !== undefined;
       if (msg.stopReason === "error" || msg.stopReason === "aborted") return stopped !== undefined;
       for (const block of msg.content ?? []) {
-        if (block.type === "text" && block.text) parts.push(block.text);
+        // The SAME model-adapter filter `collapseEvents` applies, so a GLM
+        // "None" placeholder never reaches `result.text` through the frozen
+        // reply, and the SAME bounded append: the accumulation is the result the
+        // spawn reports, so it collects under the caps too and must not grow
+        // without limit on a 400-turn child.
+        if (block.type === "text" && block.text && keepVerdictText(msg, block.text)) {
+          appendBounded(parts, block.text);
+        }
       }
       if (stopped) return true;
       if (!active) return false;
@@ -280,7 +297,7 @@ export function createVerdictStop(): VerdictStop {
     },
     text: () => parts.join("\n"),
     status: () => stopped,
-    markStopped: () => {
+    markEnded: () => {
       ended = true;
     },
     // Read at the fold, so it must reflect the ACT of stopping — set on the
@@ -293,13 +310,15 @@ export function createVerdictStop(): VerdictStop {
 /**
  * Which bounds a given spawn gets, decided in ONE place so a role cannot be
  * half-bounded. The re-read cap needs a driver-supplied skill path; the
- * post-verdict stop is the adversarial reviewer's alone — it is the only role
- * whose reply ends on a VERDICT marker, and stopping a lens child at a marker
- * that never appears would cut reviews short.
+ * post-verdict stop needs BOTH the adversarial role AND the caller's explicit
+ * opt-in (`SpawnOptions.verdictStop`) — `adversarial-developer` is also the plan
+ * gap gate's role, and that gate ends on `VERDICT: READY | NEEDS_ITERATION`, a
+ * protocol this stop was never written to read. Stopping a lens child (or a gap
+ * gate) at a marker from a protocol it was not given cuts a review short.
  */
 export function createReviewBounds(
   role: string,
-  opts: Pick<SpawnOptions, "reviewSkillPath">,
+  opts: Pick<SpawnOptions, "reviewSkillPath" | "verdictStop">,
   reported: () => boolean,
   /** #1827 round 2 — threaded to the re-read guard so its kill stands down
    *  when a killing bound (the caps) has already armed. Optional: the bounds
@@ -316,7 +335,9 @@ export function createReviewBounds(
           }),
         }
       : {}),
-    ...(role === "adversarial-developer" ? { verdictStop: createVerdictStop() } : {}),
+    ...(role === "adversarial-developer" && opts.verdictStop === true
+      ? { verdictStop: createVerdictStop() }
+      : {}),
   };
 }
 
@@ -343,11 +364,10 @@ export interface ReviewBoundTargets {
   armBound: () => void;
   /** Record the cause the spawn applies AFTER `applyChildBound`. */
   setKillCause: (cause: DispatchResult["killCause"]) => void;
-  /** Record that the post-verdict stop ENDED this child — called by
-   *  `observeReviewBounds` on the branch that kills, and the only fact the
-   *  fold reads a clean end from. */
-  markStopped: () => void;
-  /** The child has sent its `agent_end` — nothing left to stop. */
+  /** Whether the post-verdict stop ENDED this child — read by the fold through
+   *  `verdictStop.stopped()`, so no separate flag is threaded here (#1827 round 4:
+   *  one record of the act, set on the branch in `observeReviewBounds` that arms,
+   *  closes stdin and kills). */
   reported: () => boolean;
   /** The CURRENT segment is inside Pi's in-process retry, so ending the child
    *  now discards the replay it is about to resend. Mirrors `willRetryAfter`. */
@@ -429,10 +449,9 @@ export function observeReviewBounds(
   ) {
     if (o.verdictStop.observe(o.assistantMessageEnd)) {
       // The fold's single gate: recorded HERE, on the branch that actually ends
-      // the child, and forwarded through `targets.markStopped` to the spawn's
-      // accumulator. Never from the parse alone.
-      o.verdictStop.markStopped();
-      targets.markStopped();
+      // the child, on the stop object the fold already reads — never from the
+      // parse alone, and never through a second flag the wiring keeps.
+      o.verdictStop.markEnded();
       targets.armBound();
       // NOT `setKillCause`: a clean end is not a kill cause — see
       // spawn-review-bounds.ts for why the stop rides on `reviewStopReason`

@@ -74,7 +74,6 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
     completePrompt: () => calls.push("completePrompt"),
     armBound: () => calls.push("armBound"),
     setKillCause: (c) => calls.push(`cause:${String(c)}`),
-    markStopped: () => calls.push("markStopped"),
     reported: () => false,
     willRetry: () => false,
   };
@@ -117,13 +116,16 @@ function reviewerMenu(): string {
   assert(stop2.status() === undefined, "…and records no verdict");
   // The child then keeps working, and the real verdict afterwards does stop it.
   const calls3: string[] = [];
+  // A FRESH stop:  has already seen the fenced quotation, and the stop is
+  // sticky once it has decided, so reusing it here judged the wrong question.
+  const stop3 = createVerdictStop();
   observeReviewBounds(
-    { verdictStop: stop2, assistantMessageEnd: turn(text("VERDICT: ISSUES_FOUND")) },
+    { verdictStop: stop3, assistantMessageEnd: turn(text("VERDICT: ISSUES_FOUND")) },
     quietTargets(calls3),
   );
   assert(
-    calls3.join(",") === "markStopped,armBound,completePrompt,kill",
-    `the real verdict after the quotation still stops the child (${calls3.join(",")})`,
+    calls3.join(",") === "armBound,completePrompt,kill",
+    `the real verdict after the quotation still arms, closes stdin and kills (${calls3.join(",")})`,
   );
 }
 
@@ -168,7 +170,7 @@ function reviewerMenu(): string {
     const fired = createVerdictStop();
     fired.observe(turn(text("Findings: the unbounded scan in observe().")));
     fired.observe(turn(text("VERDICT: ISSUES_FOUND")));
-    fired.markStopped();
+    fired.markEnded();
     const r = baseResult({ text: collapsed });
     applyReviewBounds(
       { stoppedByVerdict: true, verdictText: fired.text(), verdictStatus: fired.status() },
