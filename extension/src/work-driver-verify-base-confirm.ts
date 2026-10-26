@@ -59,6 +59,7 @@ import {
   isRedBaseline,
   probeBaselineVerify,
 } from "./work-driver-verify-baseline.ts";
+import type { NameResolution } from "./work-driver-verify-names.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -134,12 +135,47 @@ export function reusableRedRecord(
 }
 
 /**
+ * The ONE predicate for the arm `confirmRedBase` short-circuits on: may a REUSED
+ * arm's own record stand in for a confirming run, for the arm the caller rebuilt
+ * out of that record?
+ *
+ * The reused arm used to answer this question itself (`first.secondRun === "red"`),
+ * which is a SECOND reading of one record in a second vocabulary — the same drift
+ * `reusableRedRecord` was extracted to close, one layer down: a caller that asked
+ * the reuse gate and a confirmation that reads the arm could disagree about what
+ * `secondRun` means, and a colour the gate reused is a colour the confirmation must
+ * confirm on the same words or not at all. So the caller asks THIS predicate and
+ * hands the answer down as `reusedRecordConfirms`, and `confirmRedBase` never
+ * re-tests the field.
+ *
+ * `arm` is the value the caller built from the record (`reuseCachedVerdict` in the
+ * comparison seam), NOT the stored record: the arm is the thing the confirmation
+ * reasons over, so the predicate is asked about the same object the answer is given
+ * for. The rule matches `reusableRedRecord`'s red arm exactly — a killed record
+ * never reuses and never confirms, and only `secondRun: "red"` is a confirmation.
+ */
+export function reusedRecordConfirms(arm: BaselineVerdict | undefined): boolean {
+  if (arm === undefined || !isRedBaseline(arm)) return false;
+  if (arm.reused !== true) return false;
+  return arm.secondRun === "red";
+}
+
+/**
  * What a confirming run that THREW establishes: nothing, and never a red. The arm
  * the caller keeps, the note it writes, and the reason the record carries all come
  * from this one value so a paid-for first red cannot collapse into "the base is
  * fine" and cannot gain a claim it never earned.
  */
 export const CONFIRMING_RUN_UNREADABLE = "could not be read" as const;
+
+/**
+ * #1826 round 2 — the `confirmingOutcome` of a pair where EXACTLY ONE run named
+ * failing tests. It is a structured arm marker (the caller matches on it, never on
+ * published prose), and its wording is the fact: one run saw which test broke and
+ * the other saw none, so "the two runs named different failing tests" would claim a
+ * comparison of two lists when one of them is empty.
+ */
+export const ONE_SIDED_NAMES_OUTCOME = "only one of the two base runs named failing tests" as const;
 
 /**
  * The probe a REUSED arm is confirmed with. It never runs: the record IS the
@@ -323,6 +359,17 @@ export async function confirmRedBase(
    * from its record rather than from a name comparison.
    */
   roots: BaseConfirmRoots = { firstRoot: "", secondRoot: "" },
+  /**
+   * #1826 round 2 — what the caller's ONE reuse predicate established about a
+   * REUSED first arm: true when the record states the confirming run, false (or
+   * omitted) when it does not. `confirmRedBase` does NOT re-test `secondRun` —
+   * the predicate lives in `reusedRecordConfirms` / `reusableRedRecord` and is
+   * asked once, by the caller that built the arm, so the reuse gate and the
+   * confirmation cannot answer for one record in two vocabularies. The parameter
+   * is only consulted when `first.reused === true`; a fresh run pays for its own
+   * confirming run whatever a caller asserts here.
+   */
+  reusedConfirmed = false,
 ): Promise<BaseRedConfirmationResult> {
   // A first `red-timed-out` is a red arm for TODAY's routing (the timeout
   // evidence, the timeout's cap precedence) but it judged nothing, so there is
@@ -334,23 +381,23 @@ export async function confirmRedBase(
   // no second run. Both reach here only on the red branch of the callers, so an
   // answer here is a defensive one, never a route a cycle takes.
   if (!isRedBaseline(first)) return decided("not-confirmed", { first }, false);
-  // A REUSED arm is ANSWERED FROM ITS RECORD rather than by re-running the gate.
-  // `secondRun: "red"` is the one thing that may say the base failed twice: the
-  // probe watched both runs when it wrote it, and the throwaway tree that printed
-  // either stream is gone — so a second run here buys a full suite execution for an
-  // answer the cycle already holds, and the name rule could not anchor the pair
-  // anyway (a reused arm carries no stream, so its names are unplaceable and the
-  // pair would come back "exactly one run named", discarding a confirmation this
-  // cycle already paid for).
+  // A REUSED arm is ANSWERED FROM ITS RECORD rather than by re-running the gate,
+  // and the answer is the CALLER's predicate (`reusedRecordConfirms`), not a
+  // re-reading of `secondRun` here: the probe watched both runs when it wrote the
+  // record, and the throwaway tree that printed either stream is gone — so a second
+  // run here buys a full suite execution for an answer the cycle already holds, and
+  // the name rule could not anchor the pair anyway (a reused arm carries no stream,
+  // so its names are unplaceable and the pair would come back "exactly one run
+  // named", discarding a confirmation this cycle already paid for).
   //
-  // A record stating any other colour, or nothing, has been judged ONCE, and #1826
-  // does not act on once. That answer is returned, not left to the probe: the
-  // caller's reuse branch injects a probe that REJECTS on purpose — reaching it is
-  // the failure its assertion is made of, never a run to be quietly bought — so a
-  // refusal that fell through would fault the comparison instead of reporting the
-  // colour for what it is.
+  // A record the predicate refuses has been judged ONCE, and #1826 does not act on
+  // once. That answer is returned, not left to the probe: the caller's reuse branch
+  // injects a probe that REJECTS on purpose — reaching it is the failure its
+  // assertion is made of, never a run to be quietly bought — so a refusal that fell
+  // through would fault the comparison instead of reporting the colour for what it
+  // is.
   if (first.reused === true) {
-    return first.secondRun === "red"
+    return reusedConfirmed
       ? decided("confirmed-red", { first, second: first }, false)
       : decided("not-confirmed", { first }, false);
   }
@@ -407,7 +454,11 @@ export async function confirmRedBase(
   }
   if (!named(firstNames) || !named(secondNames)) {
     // Exactly one run saw which test broke. That is a disagreement between the
-    // runs about what they judged, so it is not baseline-red.
+    // runs about what they judged, so it is not baseline-red — but it is NOT "they
+    // named different tests": one of them named nothing, and an operator told the
+    // two runs disagreed about WHICH test failed would go diff two test lists that
+    // do not exist. The sentence is the caller's to render (see `notConfirmedProse`
+    // in the comparison seam, which reads `firstNames`/`secondNames`).
     return decided(
       "names-disagree",
       { first, second },
@@ -415,35 +466,22 @@ export async function confirmRedBase(
       firstNames,
       secondNames,
       undefined,
-      "the two runs named different failing tests",
+      ONE_SIDED_NAMES_OUTCOME,
     );
   }
-  // The `unplaceable-names` arm confirms exactly as "neither run named" does, and
-  // is reported to the caller as that arm so no caller has to learn a fourth value
-  // to decide whether a base may be claimed; the structured `namesUnplaceable` and
-  // the prose below carry the distinction the operator reads. The `!named` guards
-  // above narrow both lists, which is what makes them assignable here.
-  if (firstNames === undefined || secondNames === undefined) {
-    // Unreachable: the two guards above returned on either list being empty.
-    return decided(
-      "names-disagree",
-      { first, second },
-      true,
-      firstNames,
-      secondNames,
-      undefined,
-      "the two runs named different failing tests",
-    );
-  }
-  const both: [readonly string[], readonly string[]] = [firstNames, secondNames];
-  if (everyNameUnplaceable(both[0], both[1], roots)) {
+  // Past the two `!named` guards both lists are present and non-empty, which is
+  // what makes them assignable below and what makes `everyNameUnplaceable`'s empty
+  // guard a backstop rather than the rule (an absent list is the `!named` arm's
+  // business, answered above — never by this comparison).
+  const resolution: NameResolution = new Map();
+  if (everyNameUnplaceable(firstNames, secondNames, roots, resolution)) {
     // Neither run's names could be placed in a tree — so the name rule has read
     // nothing, and "the runs disagree" would be a verdict on an absence of
     // evidence. Same arm as a stream that named nothing (red twice suffices), and
     // the caller's note names the difference.
     return decided("unplaceable-names", { first, second }, true, firstNames, secondNames);
   }
-  const common = commonNames(both[0], both[1], roots);
+  const common = commonNames(firstNames, secondNames, roots, resolution);
   if (common.length === 0) {
     return decided(
       "names-disagree",

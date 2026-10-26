@@ -32,13 +32,7 @@ import {
   type BaseHealthRedEvidence,
   baseHealthRedEvidence,
 } from "./work-driver-verify-base-park.ts";
-import {
-  type BaselineVerdict,
-  type RedBaselineVerdict,
-  baselineProbeWorktreePath,
-  isRedBaseline,
-  probeBaselineVerify,
-} from "./work-driver-verify-baseline.ts";
+import { type BaselineVerdict, isRedBaseline } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 
@@ -125,8 +119,10 @@ export async function runBaseHealthProbe(
   });
   const tree = (label: string) => baseRunTreePath(ctx.repoRoot, `branch-${ctx.issue}`, label);
   const probe = await baseRun(BASE_CONFIRM_FIRST_LABEL, key.tierBoundMs);
-  const firstEndedAt = Date.now();
-  const firstMs = firstEndedAt - startedAt;
+  // The FIRST run's own wall clock, captured before the confirmation: `firstMs` is
+  // what the probe's own run cost, and the record reports it whenever a second run
+  // was paid for on top.
+  const firstMs = Date.now() - startedAt;
   // #1826 — the second run, paid for only when the first arm leaves the question
   // open. A first `red-timed-out` or `unknown` triggers NO second run and keeps
   // today's routing; a green triggers none.
@@ -150,6 +146,13 @@ export async function runBaseHealthProbe(
   // reads a colour, and a colour it reads is a colour it may claim, which is why
   // `secondRun` has to travel with every red the record states.
   const confirmed = confirmation?.confirmation === "confirmed-red";
+  // The arm the CONFIRMED red is reported on. `confirmed` is only reachable for a
+  // red pair (a `red-timed-out` first run confirms nothing and a non-red second run
+  // is refused), so the guard below narrows the value instead of a cast asserting
+  // it, and a killed first run — which keeps its own route with no confirmation —
+  // narrows on its own arm.
+  const confirmedRedArm = confirmed && isRedBaseline(probe) ? probe : undefined;
+  const killedFirstArm = timedOut && isRedBaseline(probe) ? probe : undefined;
   const secondRun = confirmation?.second?.status;
   // `reason` is the `unknown` arm's own field; every other arm has no verdict to
   // explain, which is why the reader below narrows rather than defaults.
@@ -206,7 +209,10 @@ export async function runBaseHealthProbe(
       ran: true,
       ms: probeMs,
       verdict,
-      red: baseHealthRedEvidence(verdict, probe as RedBaselineVerdict, confirmation),
+      red:
+        confirmedRedArm === undefined
+          ? undefined
+          : baseHealthRedEvidence(verdict, confirmedRedArm, confirmation),
       notes: [
         // This arm is reached only with a CONFIRMED red, so the sentence has one
         // shape: the older form carried a "killed at its bound" alternative that
@@ -261,7 +267,9 @@ export async function runBaseHealthProbe(
     // as `verify-timeout:<step>` (#1404), never as a base claim. It carries no
     // two-run prose because there was no second run: `confirmRedBase` asked for none,
     // and a run that judged nothing has nothing to confirm.
-    ...(timedOut ? { red: baseHealthRedEvidence(verdict, probe as RedBaselineVerdict) } : {}),
+    ...(killedFirstArm === undefined
+      ? {}
+      : { red: baseHealthRedEvidence(verdict, killedFirstArm) }),
     notes: [
       `base-health: not established — ${verdict.reason ?? "the probe reached no verdict"}; the cycle proceeds`,
       // #1826 — the flaky base is recorded where the operator can read it: the

@@ -77,7 +77,13 @@ function runLine(which: string, run: BaselineVerdict): string {
   if (run.status === "red-timed-out") return `${which}: FAILED, killed at its bound`;
   if (run.status === "red") return `${which}: FAILED`;
   if (run.status === "green") return `${which}: PASSED`;
-  return `${which}: not established (${run.reason})`;
+  // The `unknown` arm's `reason` is a git or executor message that reached this
+  // module through a verdict, and the sink that renders it is a handoff note or a
+  // forge comment — so the credential veto is applied HERE, at the interpolation
+  // point, rather than at each of the four call sites that print this line (a
+  // caller that forgot one published the secret, with the redaction as one
+  // reviewer's bug).
+  return `${which}: not established (${publishableEvidenceText(run.reason)})`;
 }
 
 /**

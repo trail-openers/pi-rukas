@@ -14,7 +14,8 @@ import type { BaseConfirmRoots } from "./work-driver-verify-base-confirm.ts";
  * failing-test name, and two runs agree when an anchored comparison places the same
  * path in one of the two trees. A name neither comparison can place is not evidence
  * of a disagreement — it is the absence of name evidence, and the caller decides on
- * "red twice" instead (see `everyNameUnplaceable`).
+ * "red twice" instead (see `everyNameUnplaceable`, which refuses an empty list for
+ * the same reason: absence is never a verdict).
  */
 import type { BaselineVerdict } from "./work-driver-verify-baseline.ts";
 import { type NameResolution, compareNames, failingTestNames } from "./work-driver-verify-names.ts";
@@ -53,8 +54,18 @@ function anchorName(path: string, root: string): string {
   return path.startsWith("/") ? path : `${root.replace(/\/+$/, "")}/${path}`;
 }
 
-/** True when a run printed any failing-test name at all. */
-export function named(names: readonly string[] | undefined): boolean {
+/**
+ * True when a run printed any failing-test name at all.
+ *
+ * A TYPE PREDICATE, not just a boolean: the confirmation rule asks this once per
+ * run and then compares the two lists, and the guard is what makes the narrowed
+ * list usable afterwards. As a plain boolean the rule needed a second, unreachable
+ * `undefined` check whose only job was to convince the compiler of what this
+ * predicate already decided — dead code that read as a live arm of the table.
+ */
+export function named(
+  names: readonly string[] | undefined,
+): names is readonly string[] & { length: number } {
   return names !== undefined && names.length > 0;
 }
 
@@ -70,6 +81,11 @@ export function named(names: readonly string[] | undefined): boolean {
  * Each pair is tried in both orientations because the two runs live in two trees:
  * `changeRoots` carries one run's tree and `probeRoot` the other's, and either run
  * may be the one whose absolute spelling is the comparable one.
+ *
+ * `resolution` is the CALLER's memo, not this module's: one confirmation consults
+ * both `commonNames` and `everyNameUnplaceable` on the same pair of trees, and a
+ * memo per function would double the `realpath` walks over directories that do not
+ * change inside a call.
  */
 function pairIsSame(
   a: string,
@@ -98,8 +114,8 @@ export function commonNames(
   first: readonly string[],
   second: readonly string[],
   roots: BaseConfirmRoots,
+  resolution: NameResolution,
 ): string[] {
-  const resolution: NameResolution = new Map();
   return first.filter((a) => second.some((b) => pairIsSame(a, b, roots, resolution)));
 }
 
@@ -114,13 +130,21 @@ export function commonNames(
  * in the same way. When every name of BOTH runs comes back unplaceable there is
  * no name evidence either way, so the caller falls back to the arm a stream that
  * named nothing uses: red twice is sufficient, and the evidence says so.
+ *
+ * An EMPTY list is not "all of it unplaceable" — it is the absence of a list, and
+ * `named()` is what answers that question (the both-runs-named guard is checked
+ * before this is reached). Answering `true` for an empty pair would let a caller
+ * that skipped the `named` guards confirm a base on nothing at all, so the guard is
+ * explicit rather than left to `Array.every`'s vacuous truth. `resolution` is the
+ * caller's shared memo (see `commonNames`).
  */
 export function everyNameUnplaceable(
   first: readonly string[],
   second: readonly string[],
   roots: BaseConfirmRoots,
+  resolution: NameResolution,
 ): boolean {
-  const resolution: NameResolution = new Map();
+  if (first.length === 0 || second.length === 0) return false;
   const placeable = (name: string): boolean =>
     second.some(
       (b) =>

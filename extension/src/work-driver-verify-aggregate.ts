@@ -289,6 +289,12 @@ export async function aggregateVerifyOutcome(args: {
             // base and its assertion, and a second line saying the same colour
             // would be two records of one consultation. The consultation record
             // still carries the red's colour and measured ms for the event log.
+            //
+            // #1826 round 2 — the decision is made on the STRUCTURED fields (the
+            // consulted `status` and the record's `secondRun`), never by matching
+            // the rendered note: the renderer is how the fact is printed, and a
+            // reworded sentence must not silently change which consultations get
+            // recorded. Same rule as `confirmingRunWasFlaky` in the comparison seam.
             if (consulted.status !== "red" || consulted.secondRun === "green") {
               // A RED whose confirmation came back green is the note exception's
               // exception: it is a FLAKY base, and the only operator-visible

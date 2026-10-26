@@ -1,3 +1,4 @@
+import { named } from "./work-driver-verify-base-confirm-names.ts";
 import {
   baseRunsProse,
   confirmingOutcomeProse,
@@ -36,21 +37,21 @@ import {
   BASE_CONFIRM_FIRST_LABEL,
   BASE_CONFIRM_SECOND_LABEL,
   type BaseRedConfirmationResult,
+  ONE_SIDED_NAMES_OUTCOME,
   baseRunInLabelledTree,
   baseRunTreePath,
   confirmRedBase,
   reusableRedRecord,
   reusedArmProbe,
+  reusedRecordConfirms,
 } from "./work-driver-verify-base-confirm.ts";
 import {
   type BaselineVerdict,
   type ChangeFailure,
   type RedBaselineVerdict,
   type ReusableVerdict,
-  baselineProbeWorktreePath,
   baselineRedMessage,
   isRedBaseline,
-  probeBaselineVerify,
 } from "./work-driver-verify-baseline.ts";
 import { boundText } from "./work-driver-verify-develop-helpers.ts";
 import type { BaseHealthKey } from "./workflow-state-schema-base-health.ts";
@@ -144,8 +145,17 @@ function notConfirmedProse(
   timeoutMs: number,
 ): { why: string; flaky: boolean } {
   if (result.confirmation === "names-disagree") {
+    // WHICH name disagreement, read off the structured name lists rather than off
+    // the prose: exactly one run named failing tests is not the same fact as two
+    // runs that named disjoint sets, and an operator told the latter goes comparing
+    // two lists when one of them was never printed. `named()` is the same predicate
+    // the rule used to decide the arm, so the sentence cannot drift from it.
+    const oneSided =
+      !named(result.firstNames) ||
+      !named(result.secondNames) ||
+      result.confirmingOutcome === ONE_SIDED_NAMES_OUTCOME;
     return {
-      why: "the two base runs named different failing tests",
+      why: oneSided ? ONE_SIDED_NAMES_OUTCOME : "the two base runs named different failing tests",
       flaky: true,
     };
   }
@@ -174,10 +184,23 @@ function notConfirmedProse(
  * its bound, or a run that could not be read). A run that reached no verdict is not
  * evidence of a base that changes colour; calling it flaky would tell an operator to
  * chase a nondeterministic test when the actionable fact is the bound.
+ *
+ * #1826 round 2 — the decision reads STRUCTURED fields: the confirmation the seam
+ * returned and the confirming run's own status. It used to substring-match the
+ * prose (`includes("green")`), which is a rendering: a reason reworded upstream
+ * silently stopped reporting a flaky base, and an unreadable run whose `reason`
+ * happened to contain the word would have reported one that never happened. The
+ * arm is the fact; the sentence is only how it is printed.
  */
 function confirmingRunWasFlaky(result: BaseRedConfirmationResult): boolean {
-  const outcome = result.confirmingOutcome ?? "";
-  return outcome.includes("green") || outcome.includes("different failing tests");
+  // A pair that disagreed about NAMES disagreed about the base, whatever colour the
+  // second run reached (the rule only compares names for a pair that failed twice).
+  // The arm marker is matched as an EQUALITY against the exported constant, never
+  // as a substring search over prose a later reword could move.
+  if (result.confirmation === "names-disagree") return true;
+  // A confirming run that came back GREEN is the flaky base #1826 exists for: red
+  // once, green once, on an immutable commit.
+  return result.second?.status === "green";
 }
 
 /**
@@ -272,6 +295,15 @@ export async function compareWithBaseline(
       { ...reused, reused: true },
       reusedArmProbe(),
       timeoutMs,
+      // No roots: the throwaway trees that printed either stream are gone, and the
+      // record — not a name comparison — is the confirmation.
+      { firstRoot: "", secondRoot: "" },
+      // THE reuse question, asked once. `reusedRecordConfirms` is the exported
+      // predicate over the very arm handed in above, so the confirmation below and
+      // `established` further down are answers to one reading of one record — the
+      // seam used to re-test `secondRun` inside `confirmRedBase`, which is how a
+      // reuse gate and a confirmation come to disagree about a colour.
+      reusedRecordConfirms(reused),
     );
     if (confirmation.confirmation !== "confirmed-red") {
       // A reuse the confirmation refuses is not a green base and not a red one: it
@@ -282,10 +314,18 @@ export async function compareWithBaseline(
       );
       return undefined;
     }
+    if (!isRedBaseline(confirmation.first)) {
+      // Unreachable in the same way as the guard below, and answered the same way:
+      // a reused red whose record confirms is red by predicate, never by cast.
+      opts.notes.push(
+        `baseline verify: the cached RED for base ${baseSha.slice(0, 12)} \`${publishableEvidenceText(cmd)}\` reached an inconsistent confirmation arm (${confirmation.first.status}) — no baseline-red claim (#1826)`,
+      );
+      return undefined;
+    }
     const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
     const runs = baseRunsProse(confirmation);
     opts.failures.unshift(
-      `${baselineRedMessage(confirmation.first as RedBaselineVerdict, { cmd, baseSha, timeoutMs, changeFailure })}${runs === "" ? "" : ` — ${runs}`}`,
+      `${baselineRedMessage(confirmation.first, { cmd, baseSha, timeoutMs, changeFailure })}${runs === "" ? "" : ` — ${runs}`}`,
     );
     return {
       verdict: { ...reused, reused: true },
@@ -364,7 +404,21 @@ export async function compareWithBaseline(
     return undefined;
   }
   const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
-  const arm = confirmation.first as RedBaselineVerdict;
+  const arm = confirmation.first;
+  // #1826 round 2 — `confirmed-red` is reachable on exactly two paths: a fresh pair
+  // in which BOTH runs reached `red` (the rule tests `second.status !== "red"` and
+  // returns before the name rule otherwise), and a reused arm the reuse predicate
+  // accepted, which `reusedRecordConfirms` only accepts for a red arm. So `arm` is
+  // narrowed by the guard below rather than asserted: the predicate is total, says
+  // plainly when the narrowing does not hold, and nothing publishes a finding about
+  // a base no run showed red.
+  const isRed = isRedBaseline(arm);
+  if (!isRed) {
+    opts.notes.push(
+      `baseline verify not established — \`${publishableEvidenceText(cmd)}\` returned an inconsistent confirmation (${confirmation.confirmation} on a ${arm.status} first run), so no baseline-red claim (#1826)`,
+    );
+    return undefined;
+  }
   const runs = baseRunsProse(confirmation);
   opts.failures.unshift(
     `${baselineRedMessage(arm, { cmd, baseSha, timeoutMs, changeFailure })}${runs === "" ? "" : ` — ${runs}`}`,
