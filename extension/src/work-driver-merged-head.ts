@@ -52,7 +52,11 @@
 import { isFullCommitSha } from "./review-head-sha.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { MergeEvidence } from "./work-driver-merge-authority.ts";
-import { compareFetchedHead, headCheckRefusals } from "./work-driver-merged-identity.ts";
+import {
+  compareFetchedHead,
+  headCheckRefusals,
+  reviewedHeadFromEntries,
+} from "./work-driver-merged-identity.ts";
 
 /** Why the merged step will not merge, in the operator's words. */
 export interface HeadCheckRefusal {
@@ -117,12 +121,32 @@ export function verifiedHeadFromEvidence(evidence: MergeEvidence): HeadCheck {
  * would be the driver inventing a fault the cycle never had. A real cycle always
  * has one, and gets the full rule.
  */
+export interface VerifyMergeHeadOpts {
+  /**
+   * The ledger the reviewed head is read from. Production never sets it: the
+   * check resolves the clone's own ledger through `ledgerPathFor`, the same
+   * resolution every writer uses, and a caller that hardcoded a path could read
+   * a file the review never wrote. A test must be able to say WHICH ledger its
+   * verdict came from, though — `ledgerPathFor` honours
+   * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` before any git call, and the offline verify
+   * loop documents that override as the isolation every ledger-writing test
+   * uses, so without this a scenario can be answered out of another test's file
+   * and report "no lens row" for a row that is genuinely on disk.
+   */
+  ledgerFile?: string;
+  /**
+   * Pin without comparing, for a caller that has no repository to read a ledger
+   * from. The note then says the comparison did not run, so the pass is honest.
+   */
+  skipIdentity?: boolean;
+}
+
 export async function verifyMergeHead(
   execFn: VerifyExecFn,
   repoRoot: string,
   branch: string | undefined,
   evidence: MergeEvidence,
-  opts: { skipIdentity?: boolean } = {},
+  opts: VerifyMergeHeadOpts = {},
 ): Promise<HeadCheck> {
   const head = verifiedHeadFromEvidence(evidence);
   if (!head.ok) return head;
@@ -137,5 +161,5 @@ export async function verifyMergeHead(
 
   const cheap = await headCheckRefusals(execFn, repoRoot, branch);
   if (!cheap.ok) return cheap;
-  return compareFetchedHead(execFn, repoRoot, branch, head.headOid, cheap.remote);
+  return compareFetchedHead(execFn, repoRoot, branch, head.headOid, cheap.remote, opts.ledgerFile);
 }

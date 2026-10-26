@@ -59,6 +59,7 @@ import {
 // the fixture they already know; the declarations live in `headless-s5-forge.ts`
 // only so each file stays under the §12 cap.
 export {
+  EVIDENCE_BASE,
   EVIDENCE_HEAD,
   FIXTURE_PATCH_ID,
   FIXTURE_PR,
@@ -83,30 +84,42 @@ export interface HeadlessRepo {
 
 
 /**
- * Write the per-clone review ledger the merged step's identity check reads
- * (#1533): one adversarial row for `branch`, whose patchId is the id the exec
- * seam's `git patch-id` answers.
+ * Write the per-clone review ledger the merged step's head check reads (#1533):
+ * one LENS row for `branch`, whose `headSha` is the OID the evidence probe
+ * reports and whose `patchId` is the id the exec seam's `git patch-id` answers.
  *
- * The row's shape is the whole point. A cycle that reaches the merge with NO
- * row is a cycle nobody reviewed, and the head check parks it — so the positive
- * control needs this file, and a case that wants the mismatch park asks for a
- * row that did not pass. `passed` is a parameter rather than a constant so the
- * negative case is one call, not a fixture edit. The ledger lives where the
- * clone keeps it: under the git dir.
+ * THE LENS ROW IS THE POINT, not an adversarial one. The driver's own lens step
+ * is the review a /work cycle runs on the integrated branch, and it is the only
+ * writer a /work cycle reaches: the driver's adversarial gate records no ledger
+ * row at all, so a fixture that seeded an adversarial row made the merged step's
+ * check pass for a shape no real cycle produces (the round-1 finding on PR
+ * #1837). `headSha` equal to the evidence head is the "nothing moved since the
+ * review" case; a case that wants the moved-head park overrides it.
+ *
+ * `passed` is written but NOT read by the merged step — the lens gate and the
+ * round-cap route decide it upstream — so it is a parameter for the guard-side
+ * cases that share this file, not a knob the head check responds to.
  */
-export function seedReviewLedger(repoRoot: string, branch: string, passed = true): void {
+export function seedReviewLedger(
+  repoRoot: string,
+  branch: string,
+  passed = true,
+  headSha = EVIDENCE_HEAD,
+): void {
   writeFileSync(
     path.join(repoRoot, ".git", "review-ledger.json"),
     JSON.stringify({
       entries: [
         {
           branch,
-          kind: "adversarial",
+          kind: "lens",
           patchId: FIXTURE_PATCH_ID,
           passed,
           at: 1,
           round: 1,
           hasCritical: false,
+          detail: "APPROVED",
+          headSha,
         },
       ],
     }),
@@ -122,6 +135,7 @@ export function headlessRepo(
   dirName = "headless-s5-",
   branch = `feature/issue-${FIXTURE_PR}`,
   reviewRow = true,
+  reviewedHead = EVIDENCE_HEAD,
 ): HeadlessRepo {
   const repoRoot = mkdtempSync(path.join(tmpdir(), dirName));
   const git = (...args: string[]) => {
@@ -140,13 +154,15 @@ export function headlessRepo(
   git("config", "user.name", "Headless S5 test");
   git("config", "commit.gpgsign", "false");
   mkdirSync(path.join(repoRoot, ".git", "info"), { recursive: true });
-  // #1533 — the merged step's identity comparison reads the per-clone review
-  // ledger, and a cycle that reaches the merge with NO adversarial row is a
-  // cycle nobody reviewed: the check parks it. Seed one passing row for the
-  // cycle's branch, carrying the patch id the exec seam's `git patch-id`
-  // answers, so the identity the merged step computes is the identity on file.
-  // A case that wants the mismatch park passes `reviewRow: false`.
-  if (reviewRow) seedReviewLedger(repoRoot, branch);
+  // #1533 — the merged step's head check reads the per-clone review ledger, and
+  // a cycle that reaches the merge with NO lens row recorded is a cycle the
+  // driver never reviewed: the check parks it. Seed one row for the cycle's
+  // branch, carrying the OID the evidence probe reports and the patch id the
+  // exec seam's `git patch-id` answers, so the identity the merged step computes
+  // is the identity on file. A case that wants the moved-head park passes a
+  // `reviewedHead` the branch no longer points at; `reviewRow: false` is the
+  // never-reviewed park.
+  if (reviewRow) seedReviewLedger(repoRoot, branch, true, reviewedHead);
   // Something tracked at the base commit whatever the grant — `git commit` with
   // an empty index exits 1 and takes the whole fixture down with it.
   writeFileSync(path.join(repoRoot, "README.md"), "# headless S5 fixture repo\n");
@@ -248,10 +264,25 @@ export function mergeExec(
     refuseDoctrine?: boolean;
     /** #1472 — answer the issue-view with CLOSED so a case can exercise the gate. */
     issueState?: "OPEN" | "CLOSED";
+    /**
+     * #1533 — the OID `origin/<branch>` resolves to once the merged step has
+     * fetched. Defaults to `EVIDENCE_HEAD` (nothing moved since the review).
+     */
+    fetchedHead?: string;
+    /**
+     * #1533 — the patch identity the FETCHED head answers with. Defaults to the
+     * fixture's `FIXTURE_PATCH_ID` — the reviewed one, i.e. a move that was only
+     * the mainline coming in. A different id is a content change after the review.
+     */
+    fetchedPatchId?: string;
+    /** #1533 — the `headSha` the lens row the head check reads carries. */
+    lensHeadSha?: string;
   },
   log: MergeExecLog,
 ): VerifyExecFn {
   const pr = opts.prNumber ?? FIXTURE_PR;
+  const fetchedHead = opts.fetchedHead ?? EVIDENCE_HEAD;
+  const fetchedPatchId = opts.fetchedPatchId ?? FIXTURE_PATCH_ID;
   let mergeAsked = false;
   const runGit = (args: string[]) => runFixtureGit(args, opts.repoRoot);
   return async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
@@ -320,9 +351,12 @@ export function mergeExec(
         // merge-base computation behind it. Both name `origin/<branch>` refs that
         // these remote-less fixture repos cannot resolve, so the seam answers
         // them directly; every other rev-parse still runs against the fixture's
-        // real repo, so an unexpected read stays unexpected.
+        // real repo, so an unexpected read stays unexpected. A ref naming the
+        // MAINLINE is the base side of an identity, not the head: it answers with
+        // the base SHA, so the two sides of a comparison are distinguishable.
         log.headReads.push(line);
-        return { stdout: `${EVIDENCE_HEAD}\n` };
+        const target = o.argv.find((w) => w.startsWith("origin/")) ?? "";
+        return { stdout: `${target.endsWith("/main") ? EVIDENCE_BASE : fetchedHead}\n` };
       }
       // #1533 — `readyPatchId` resolves the branch tip through `resolveHeadSha`,
       // which prefixes `-C <cwd>` and therefore is not the `rev-parse` subcommand

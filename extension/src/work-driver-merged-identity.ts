@@ -28,6 +28,7 @@
  * merging the mainline in still merge, pinned to the new OID.
  */
 
+import { existsSync } from "node:fs";
 import { mergeIdentity } from "./merge-guard-reads.ts";
 import { compareReviewedHead } from "./merge-identity-compare.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
@@ -102,13 +103,58 @@ async function readReviewedHead(
   execFn: VerifyExecFn,
   repoRoot: string,
   branch: string,
+  /**
+   * Where to read the ledger, in the form `"<path>@<tag>"`.
+   *
+   * The `@<tag>` is diagnostic context echoed into the refusal and stripped
+   * before the path is read. It exists because this function answers two
+   * questions a park has to tell apart — "this clone has no ledger" and "the
+   * ledger the caller named holds no row for this branch" — and a caller that can
+   * only name a path cannot tell the operator which file it consulted. The tag
+   * travels with the path it belongs to rather than as a second parameter, so a
+   * caller cannot hand back a label for a file it did not read.
+   */
+  ledgerFile?: string,
 ): Promise<{ ok: true; headSha: string } | { ok: false; reason: string }> {
-  const ledgerPath = await ledgerPathFor(execFn, repoRoot);
+  // The file the reviewed head is read from. `ledgerPathFor` is the production
+  // answer (one ledger per clone, honoured by every writer); `ledgerFile` lets a
+  // caller that already knows the path read THAT ledger rather than the clone's.
+  // The tag is split off on `#`, not `@`: a filesystem path may legitimately
+  // contain `@` (a user named one, a checkout under a scoped directory), while a
+  // fragment marker would put a separator inside the tag itself.
+  const hash = ledgerFile?.lastIndexOf("#named-ledger:");
+  // The tag is stripped, and the strip is a no-op when the caller named no tag
+  // (`hash` is -1, or no path at all) — which is every production caller. The
+  // marker is a fixed string rather than a bare `#` because a path may contain
+  // one, and stripping at the wrong position would read a file nobody named.
+  const ledgerPath =
+    ledgerFile === undefined
+      ? await ledgerPathFor(execFn, repoRoot)
+      : hash === undefined || hash < 0
+        ? ledgerFile
+        : ledgerFile.slice(0, hash);
+  const label =
+    ledgerFile === undefined || hash === undefined || hash < 0
+      ? undefined
+      : ledgerFile.slice(hash + "#named-ledger:".length);
+  const named = label !== undefined && label !== "" ? ` (${label})` : "";
   if (!ledgerPath) {
     return {
       ok: false,
-      reason:
-        "no git common dir found — the review ledger is unavailable, so the reviewed head cannot be read",
+      reason: `no review ledger could be located${named} — the reviewed head cannot be read, so nothing licenses this merge`,
+    };
+  }
+  // The file's absence is a refusal, not "no rows". `readLedgerAt` is the
+  // ledger's permissive read and swallows ENOENT to an empty list, which is the
+  // right contract for a caller asking "what did the review record" and the
+  // wrong one here: "this clone has no ledger at all" and "the ledger holds no
+  // lens row" are different faults with different remedies (a broken or
+  // redirected repository versus a cycle that was never reviewed), and the
+  // operator reading the park needs to know which one they are looking at.
+  if (!existsSync(ledgerPath)) {
+    return {
+      ok: false,
+      reason: `no review ledger at ${ledgerPath}${named} — the reviewed head cannot be read, so nothing licenses this merge`,
     };
   }
   // `readLedgerAt` never throws today (every fs and parse fault is swallowed to
@@ -120,14 +166,14 @@ async function readReviewedHead(
   } catch (err) {
     return {
       ok: false,
-      reason: `the review ledger could not be read (${(err as Error).message?.slice(0, 120)})`,
+      reason: `the review ledger${named} could not be read (${(err as Error).message?.slice(0, 120)})`,
     };
   }
   const headSha = reviewedHeadFromEntries(entries, branch);
   if (headSha === undefined) {
     return {
       ok: false,
-      reason: `no lens review row with a recorded head SHA on file for \`${branch}\` — the /work lens step records the commit it reviewed, so a cycle with no such row was never reviewed on this branch`,
+      reason: `no lens review row with a recorded head SHA on file for \`${branch}\`${named} — the /work lens step records the commit it reviewed, so a cycle with no such row was never reviewed on this branch`,
     };
   }
   return { ok: true, headSha };
@@ -142,6 +188,7 @@ export async function headCheckRefusals(
   execFn: VerifyExecFn,
   repoRoot: string,
   branch: string | undefined,
+  ledgerFile?: string,
 ): Promise<{ ok: true; remote: string } | { ok: false; refusal: HeadCheckRefusal }> {
   if (!branch) {
     return refusal("no branch name in pipeline state — cannot look up the reviewed head");
@@ -179,13 +226,28 @@ export async function compareFetchedHead(
   branch: string,
   headOid: string,
   remote: string,
+  ledgerFile?: string,
 ): Promise<HeadCheck> {
   // The reviewed head first: a cycle whose lens review recorded no head has no
   // reviewed commit, and fetching a branch nobody pinned is a network call whose
   // answer cannot license a merge.
-  const read = await readReviewedHead(execFn, repoRoot, branch);
+  const read = await readReviewedHead(execFn, repoRoot, branch, ledgerFile);
   if (!read.ok) return refusal(read.reason, undefined, headOid);
   const reviewedHead = read.headSha;
+
+  // A remote is resolved BEFORE anything is believed, on both paths. Skipping it
+  // when the heads agreed would let "this repository has no remote, so the
+  // comparison could not be completed" pass on the strength of a row that was
+  // never checked against the branch the forge actually holds — and the guard's
+  // `--match-head-commit` backstop needs a remote to pin against, so it would be
+  // absent for exactly that case too.
+  if (!remote) {
+    return refusal(
+      "no git remote found (origin/upstream/first) — the reviewed head cannot be compared with what the forge holds",
+      reviewedHead,
+      headOid,
+    );
+  }
 
   if (reviewedHead === headOid) {
     // The common case, and the cheap one: the branch has not moved since the
@@ -197,6 +259,7 @@ export async function compareFetchedHead(
     };
   }
 
+  // The head moved, so the answer now depends on a fetch and two git reads.
   // The head moved between the review and now. That is legitimate ONLY when the
   // move was merging the mainline in — which a merge-base patch identity
   // detects — so the identity is computed at BOTH commits. A failed fetch is a

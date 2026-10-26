@@ -102,14 +102,26 @@ interface MergeView {
 export const EVIDENCE_HEAD = "f".repeat(40);
 
 /**
- * The patch identity the merged step's identity comparison computes (#1533).
+ * The patch identity the merged step's head check computes (#1533).
  *
- * The fixture answers `git patch-id` with this, and the head verification
- * compares it with the latest PASSING adversarial ledger row for the cycle's
- * branch — so a case that wants a merge seeds a row carrying the same id, and
- * a case that wants the park seeds one carrying another. Exported for both.
+ * The fixture answers `git patch-id` with this for the VERIFIED head, and the
+ * head check compares it against the id the FETCHED head answers with
+ * (`mergeExec`'s `fetchedPatchId`). Equal ids are the "head moved only by
+ * merging the mainline in" case; different ids are an unreviewed push. Exported
+ * because the lens row the fixture seeds carries this id too, so the reviewed
+ * side of a comparison is on file rather than assumed.
  */
 export const FIXTURE_PATCH_ID = "e".repeat(40);
+
+/**
+ * The OID the fixture's mainline resolves to (#1533).
+ *
+ * Distinct from `EVIDENCE_HEAD` on purpose: the head check computes an identity
+ * from a merge-base to a head, and a fixture that answered every ref with the
+ * same OID could not tell "the branch moved" from "the base moved" — the two
+ * scenarios would answer identically and only one of them would be tested.
+ */
+export const EVIDENCE_BASE = "c".repeat(40);
 
 function evidenceJson(fields: Record<string, string>): string {
   return JSON.stringify({ ...fields, headRefOid: EVIDENCE_HEAD });
