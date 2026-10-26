@@ -49,11 +49,11 @@
 import type { SteerSource } from "./dispatch-steer.ts";
 import { isSkillReadWith } from "./lens-skill-load-proof.ts";
 import { candidateDirs, resolveSkillDir, skillFileCandidates } from "./lens-skill-path.ts";
+import { adapterFor } from "./model-adapters.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import {
   type VerdictStatus,
   appendBounded,
-  keepVerdictText,
   verdictEndingMessage,
 } from "./review-bounds-verdict.ts";
 import { traceWarn } from "./trace.ts";
@@ -266,6 +266,10 @@ export function createVerdictStop(): VerdictStop {
   // silent, and the reviewer runs its natural tail.
   const active = capsOn();
   const parts: string[] = [];
+  // Running total of `parts` (plus the "\n" joins), maintained by
+  // `appendBounded` — re-summing the buffer per block was quadratic on a child
+  // that may run 400+ turns.
+  const used = { total: 0 };
   let stopped: VerdictStatus | undefined;
   // Set on the branch of `observeReviewBounds` that ends the child, through the
   // seam below. Distinct from `stopped`, which the parse sets: with the caps off
@@ -276,14 +280,17 @@ export function createVerdictStop(): VerdictStop {
       const msg = event.message;
       if (event.type !== "message_end" || msg?.role !== "assistant") return stopped !== undefined;
       if (msg.stopReason === "error" || msg.stopReason === "aborted") return stopped !== undefined;
+      // Resolved ONCE for the message, not once per text block: the adapter is a
+      // property of the model that produced it, and this is the hot path.
+      const adapter = adapterFor(msg.model, msg.provider);
       for (const block of msg.content ?? []) {
         // The SAME model-adapter filter `collapseEvents` applies, so a GLM
         // "None" placeholder never reaches `result.text` through the frozen
         // reply, and the SAME bounded append: the accumulation is the result the
         // spawn reports, so it collects under the caps too and must not grow
         // without limit on a 400-turn child.
-        if (block.type === "text" && block.text && keepVerdictText(msg, block.text)) {
-          appendBounded(parts, block.text);
+        if (block.type === "text" && block.text && adapter.isArtifactText?.(block.text) !== true) {
+          appendBounded(parts, block.text, used);
         }
       }
       if (stopped) return true;
@@ -292,7 +299,21 @@ export function createVerdictStop(): VerdictStop {
       // call anywhere in the message, or a last block that does not close on a
       // single unfenced verdict — all return undefined and the child runs on.
       const hit = verdictEndingMessage(msg);
-      if (hit) stopped = hit;
+      if (hit) {
+        stopped = hit;
+        // #1827 round 5 — the block the stop MATCHED goes in past the budget.
+        // The fold sets `result.text` to this accumulation, so a budget that
+        // dropped the matched line made `parseVerdict(result.text)` disagree
+        // with the very stop that ended the child, and a clean review read as
+        // incomplete. At most one block is ever appended past the cap, so the
+        // memory bound is only ever one closing block over the budget.
+        const last = [...(msg.content ?? [])]
+          .reverse()
+          .find((b) => b.type === "text" && b.text && adapter.isArtifactText?.(b.text) !== true);
+        if (last && last.type === "text" && last.text) {
+          appendBounded(parts, last.text, used, true);
+        }
+      }
       return stopped !== undefined;
     },
     text: () => parts.join("\n"),
@@ -369,6 +390,10 @@ export interface ReviewBoundTargets {
    *  one record of the act, set on the branch in `observeReviewBounds` that arms,
    *  closes stdin and kills). */
   reported: () => boolean;
+  /** A KILLING bound has armed for this child (#1827 round 5). The post-verdict
+   *  stop stands down when it is true, exactly as the re-read kill does through
+   *  `SkillReadGuard.boundArmed()` — whichever bound armed first owns the end. */
+  boundArmed: () => boolean;
   /** The CURRENT segment is inside Pi's in-process retry, so ending the child
    *  now discards the replay it is about to resend. Mirrors `willRetryAfter`. */
   willRetry: () => boolean;
@@ -444,6 +469,11 @@ export function observeReviewBounds(
     o.verdictStop &&
     o.assistantMessageEnd &&
     !o.verdictStop.status() &&
+    // #1827 round 5 — same seam the re-read kill checks: once a KILLING bound
+    // has armed, that bound owns how this child ends and its cause is already
+    // on its way. Stamping a clean end over it would report a killed review as
+    // a completed one.
+    !targets.boundArmed() &&
     !targets.reported() &&
     !targets.willRetry()
   ) {

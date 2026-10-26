@@ -46,43 +46,47 @@ export type VerdictStatus = (typeof VERDICT_STATUSES)[number];
  * The accumulation is the RESULT the spawn reports when the stop fires, so it
  * keeps collecting whatever the caps say — which makes it unbounded memory on a
  * child measured at 476 turns and 80M tokens of output. Past this budget the
- * accumulator stops appending and keeps the HEAD: the head is where a reviewer's
- * findings sit, and the closing verdict line is preserved separately by the
- * stop itself (`status()`), so a truncated reply still reports the verdict that
- * ended the child.
+ * accumulator stops appending and keeps the HEAD — the head is where a reviewer's
+ * findings sit.
+ *
+ * One exception, and it is the whole reason the budget does not cost a verdict:
+ * the text block a stop MATCHED is appended even past the budget (#1827 round 5).
+ * The budget alone silently lost the verdict on a long reply, so
+ * `parseVerdict(result.text)` reported its `ISSUES_FOUND` default while the stop
+ * had ended the child on `APPROVED` — a clean review read as incomplete. The
+ * exception is bounded by construction: the accumulator appends at most ONE
+ * block past the budget, the one the stop matched, so the freeze is never more
+ * than that block over the cap.
  */
 export const VERDICT_ACCUMULATION_BUDGET = 256 * 1024;
 
 /**
  * Append one text block to an accumulation, never past the budget.
  *
- * The block that crosses the budget is cut rather than dropped, so a reviewer
- * that ends on one enormous block still contributes its opening. Exported for
- * the accumulator in `review-bounds.ts` and for the test that feeds it an
- * oversized stream; the budget rule has exactly one implementation.
- */
-export function appendBounded(parts: string[], text: string): void {
-  let used = 0;
-  for (const part of parts) used += part.length + 2; // the "\n" join
-  const room = VERDICT_ACCUMULATION_BUDGET - used;
-  if (room <= 0) return;
-  if (text.length > room) parts.push(text.slice(0, room));
-  else parts.push(text);
-}
-
-/**
- * The model-adapter text filter `collapseEvents` applies (spawn-collapse-events.ts
- * / model-adapters.ts), reused rather than re-implemented (#1827 round 4).
+ * The block that crosses the budget is CUT rather than dropped, so a reviewer
+ * that ends on one enormous block still contributes its opening. `force` is the
+ * one block that goes in whatever the budget says: the closing text block a
+ * verdict stop matched, which is the line `parseVerdict(result.text)` has to be
+ * able to read (see the budget's docstring). Exported for the accumulator in
+ * `review-bounds.ts` and for the tests that feed it an oversized stream; the
+ * budget rule has exactly one implementation.
  *
- * The stop's accumulation becomes `result.text` outright when it fires, so
- * without this a GLM `{type:"text",text:"None"}` block — a Python-repr artifact
- * the collapse drops — would reach the loop's `parseVerdict` through the frozen
- * reply. Shared rather than copied so the two paths cannot drift: an adapter
- * added to the registry filters both at once.
+ * The running total is the sum of the stored parts plus one `\n` join per
+ * seam — the same arithmetic the old per-call re-sum performed, but O(1): this
+ * sits on the per-stdout-line hot path of a child that may run 400+ turns, and
+ * re-summing the buffer per block was quadratic in the accumulation.
  */
-export function keepVerdictText(msg: PiMessage, text: string): boolean {
-  const adapter = adapterFor(msg.model, msg.provider);
-  return adapter.isArtifactText?.(text) !== true;
+export function appendBounded(
+  parts: string[],
+  text: string,
+  used: { total: number },
+  force = false,
+): void {
+  const room = VERDICT_ACCUMULATION_BUDGET - used.total;
+  if (room <= 0 && !force) return;
+  const piece = text.length > room ? text.slice(0, room) : text;
+  parts.push(piece);
+  used.total += piece.length + (parts.length > 1 ? 2 : 0); // the "\n" join
 }
 
 /** Lines opening or closing a fenced block. Built once, not per call: this
@@ -116,62 +120,6 @@ const MAX_FENCE_LINES = 2;
  * so it stops nothing.
  */
 type FencePosition = "outside" | "inside" | "unknown";
-
-/** All four values, in a `readEnumMarker`-shaped line each — the reviewer's own
- *  brief (`buildAdversarialPrompts`) hands the model exactly this list. */
-const VERDICT_MENU_LINES = VERDICT_STATUSES.map((status) => `VERDICT: ${status}`);
-/** Each menu line with all whitespace collapsed, for comparison against a line
- *  that differs from it only in indentation or padding. */
-const VERDICT_MENU_COMPACT = VERDICT_MENU_LINES.map((line) => line.replace(/\s+/g, " ").trim());
-
-/** A marker line the model is SHOWING rather than signing — the protocol read
- *  back, where a reader over the whole text would find a value in it. Three
- *  shapes, each reproduced by the adversarial review of #1827:
- *
- *   - an echo of one of the brief's menu lines (`VERDICT: APPROVED` with nothing
- *     else on the line) — the reviewer reciting the list it was handed;
- *   - a TEMPLATE with a placeholder value (`VERDICT: <APPROVED|ISSUES_FOUND|…>`),
- *     the shape a brief uses to introduce the menu, from which a reader takes the
- *     first value inside the angle brackets;
- *   - a marker quoted INSIDE a sentence (`For example: **VERDICT: APPROVED**`).
- *     A line the reviewer signs is the marker and nothing but it — the marker
- *     alone, or the marker wrapped in emphasis (`**VERDICT: APPROVED**`), which is
- *     the spelling the tolerant reader was widened for in #408. Anything else on
- *     the line is the reviewer talking ABOUT the protocol.
- *
- * Two boundaries keep this a narrowing rather than a veto, and both are facts
- * about how the marker is SIGNED rather than about where the line sits:
- *
- *   - the HEADING form is exempt. `### VERDICT` signs nothing on its own line —
- *     its value is on the line below — so a "nothing else on the line" test would
- *     reject a form `readEnumMarker` accepts;
- *   - the block's LAST marker line is exempt, and that exemption is what keeps a
- *     real verdict stopping: the brief's own instructions, and the reviewer's own
- *     summary, are byte-identical to a menu line (`VERDICT: APPROVED`), so any
- *     test that refused menu-shaped lines outright would stand down every genuine
- *     ending. Only the line the message ENDS on is trusted on structure alone;
- *     every marker line above it is judged on its shape, and an echo or quotation
- *     up there adds a SECOND distinct verdict to the count, which is what refuses
- *     the block.
- *
- * That pairing is what the adversarial review of #1827 needed and the old word
- * count could not give: a block that echoes the brief's menu, or quotes an example
- * line, above a real closing line names two or more distinct verdicts and is
- * refused — while the ordinary `prose … VERDICT: X … prose` ending, whose only
- * marker line is the one it signs, still stops.
- *
- * Menu-echo comparison is against the WHOLE line, never `includes`:
- * `VERDICT: APPROVED and the gates pass` is the reviewer's own sentence.
- */
-function shownNotChosen(line: string): boolean {
-  if (VERDICT_HEADING_RE.test(line)) return false; // heading form signs elsewhere
-  const compact = line.replace(/\s+/g, " ").trim();
-  if (VERDICT_MENU_COMPACT.includes(compact)) return true;
-  // A template: VERDICT followed (past any emphasis/colon) by `<`…`>`.
-  if (/\**\s*VERDICT\s*\**\s*:?\s*<?[^>\n]*>[^\n]*$/i.test(compact)) return true;
-  // A quotation: only emphasis and whitespace may sit in front of the marker.
-  return !/^[*_\-\s]*\**\s*VERDICT\b/i.test(compact);
-}
 
 /** How many fence markers sit above line index `at` in `block`? Used for the one
  *  case the line-level reader cannot judge on its own — a heading whose value is
@@ -402,12 +350,13 @@ export function verdictEndingMessage(msg: PiMessage): VerdictStatus | undefined 
       .split("\n")
       .slice(at + 1)
       .find((l) => l.trim() !== "");
-    const upper = value?.trim().toUpperCase();
+    // No non-empty line under the heading: nothing signs the verdict, so the
+    // block is not an ending — an early return, not a cast of `undefined`.
+    if (value === undefined) return undefined;
+    const upper = value.trim().toUpperCase();
     const only = VERDICT_STATUSES.find((s) => s === upper);
     if (only === undefined) return undefined;
-    return fencePositionOf(value as string, countFencesBefore(last, at)) === "outside"
-      ? only
-      : undefined;
+    return fencePositionOf(value, countFencesBefore(last, at)) === "outside" ? only : undefined;
   }
   if (named.size !== 1) return undefined;
   const hit = [...named][0];

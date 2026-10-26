@@ -269,6 +269,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     armBound: () => armed.push("armBound"),
     setKillCause: () => undefined,
     reported: () => false,
+    boundArmed: () => false,
     willRetry: () => false,
   });
   const guard = createSkillReadGuard({ skillPath: SKILL_DIR, reported: () => false });
@@ -307,6 +308,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
       armBound: () => calls.push("armBound"),
       setKillCause: (c) => calls.push(`cause:${String(c)}`),
       reported: () => false,
+      boundArmed: () => false,
       willRetry: () => false,
       ...over,
     };
@@ -333,6 +335,16 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     stops({ willRetry: () => true }).length === 0,
     "no stop while the segment will retry (that reply is about to be replayed)",
   );
+  // #1827 round 5 — and no stop once a KILLING bound has armed. Same seam the
+  // re-read kill checks (section (8)): the bound that armed first owns the
+  // child's end, and a clean end stamped over its kill would report a killed
+  // review as a completed one. The stop records no verdict either, so the fold
+  // cannot stamp anything from a child it never ended.
+  const armedCalls = stops({ boundArmed: () => true });
+  assert(
+    armedCalls.length === 0,
+    `no stop while a killing bound is armed (${armedCalls.join(",")})`,
+  );
 }
 
 // ── (8) #1827 round 2 — the re-read kill stands down once a KILLING bound has
@@ -348,6 +360,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     armBound: () => armed.push("armBound"),
     setKillCause: () => undefined,
     reported: () => false,
+    boundArmed: () => false,
     willRetry: () => false,
   });
   const guard = createSkillReadGuard({
@@ -473,6 +486,42 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     clean.reviewStopReason === REVIEW_POST_VERDICT_STOP && clean.ok === true,
     "with no cause on the result the clean end is still stamped",
   );
+}
+
+// ── (11) #1827 round 5 — the fold stamps a clean end ONLY where a verdict was
+// actually recorded. `observeReviewBounds` sets `markEnded()` and the status on
+// the same branch, so `stoppedByVerdict: true` with no status is an outcome a
+// caller built by hand — and stamping `ok: true` + `reviewStopReason` there
+// would call an unreviewed child accepted. Warn, and leave the collapsed reply
+// and the result's own `ok` exactly as the spawn built them.
+{
+  const before = baseResult({ text: "collapsed reply from collapseEvents", ok: false });
+  const lines: string[] = [];
+  const warned: string[] = [];
+  applyReviewBounds(
+    { stoppedByVerdict: true, verdictText: "prose with no marker at all" },
+    before,
+    (s) => lines.push(s),
+    (s) => warned.push(s),
+  );
+  assert(
+    before.text === "collapsed reply from collapseEvents",
+    "a stopped-by-verdict outcome with no recorded verdict does not replace the text",
+  );
+  assert(
+    before.reviewStopReason === undefined,
+    "…stamps no reviewStopReason, records no attribution line",
+  );
+  assert(before.ok === false, "…and does not resurrect `ok`");
+  assert(lines.length === 0, "…and writes no stderr");
+  assert(warned.length === 1, "…but traces the mismatch (warn-not-drop)");
+  assert(
+    /verdict status/.test(warned[0] ?? ""),
+    `the warning names what is missing (got: ${warned[0]})`,
+  );
+  // The real path is unaffected: a stop that ended the child always carries its
+  // status, and that is the clean end (already pinned in (10)); this pins only
+  // that its ABSENCE is not a clean end.
 }
 
 console.log(`\nexit ${exit}`);

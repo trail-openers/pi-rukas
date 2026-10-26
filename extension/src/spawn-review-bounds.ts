@@ -109,6 +109,9 @@ export function wireReviewBounds(deps: {
       killCause = cause;
     },
     reported: deps.reported,
+    // The stop reads this on the same seam the re-read kill does, so whichever
+    // killing bound armed first owns the child's end.
+    boundArmed: deps.boundArmed,
     willRetry: deps.willRetry,
   };
   const observe = (assistantMessageEnd: PiJsonEvent | null): void => {
@@ -164,7 +167,11 @@ export interface ReviewBoundOutcome {
   /** The accumulated assistant text the verdict was parsed out of. When the
    *  stop fired this becomes `result.text` outright — the frozen reply. */
   verdictText?: string;
-  /** The parsed verdict, for the stderr line that names what was accepted. */
+  /** The parsed verdict, for the stderr line that names what was accepted. When
+   *  the stop ended the child it is ALWAYS set (`observeReviewBounds` records the
+   *  end on the branch that has it), so its absence with `stoppedByVerdict` true
+   *  means a caller built the outcome by hand — the fold refuses to stamp rather
+   *  than invent an `ok`. */
   verdictStatus?: VerdictStatus;
 }
 
@@ -203,6 +210,17 @@ export function applyReviewBounds(
     }
   }
   if (!outcome.stoppedByVerdict) return;
+  // #1827 round 5 — a clean end is recorded ONLY where a verdict was actually
+  // read. `observeReviewBounds` marks the end and records the status together, so
+  // this is a by-hand outcome; stamping `ok: true` + `reviewStopReason` without
+  // one would call an unreviewed child accepted. Warn and leave the collapsed
+  // reply exactly as the spawn built it (warn-not-drop, as everywhere here).
+  if (outcome.verdictStatus === undefined) {
+    warn(
+      "reviewer bounds: the post-verdict stop reported ending a child without a recorded verdict status — leaving the collapsed reply and the result's own ok alone",
+    );
+    return;
+  }
   // #1827 round 4 — the stop stands down behind an armed killing bound, exactly
   // as the re-read kill does (`shouldKill` / `boundArmed` above). If something
   // else already decided how this child ends and named a cause, that cause owns

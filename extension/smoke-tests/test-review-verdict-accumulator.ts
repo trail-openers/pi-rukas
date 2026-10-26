@@ -16,7 +16,7 @@
 
 import { parseVerdict } from "../src/adversarial-verdict.ts";
 import type { PiContentBlock, PiJsonEvent } from "../src/pi-event-shapes.ts";
-import { createVerdictStop } from "../src/review-bounds.ts";
+import { createVerdictStop, observeReviewBounds, type ReviewBoundTargets } from "../src/review-bounds.ts";
 import { VERDICT_ACCUMULATION_BUDGET } from "../src/review-bounds-verdict.ts";
 import { applyReviewBounds } from "../src/spawn-review-bounds.ts";
 import type { DispatchResult } from "../src/types.ts";
@@ -46,6 +46,18 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     exitCode: 0,
     ...over,
   } as DispatchResult;
+}
+function quietTargets(calls: string[]): ReviewBoundTargets {
+  return {
+    writeSteer: () => undefined,
+    kill: () => calls.push("kill"),
+    completePrompt: () => calls.push("completePrompt"),
+    armBound: () => calls.push("armBound"),
+    setKillCause: (c) => calls.push(`cause:${String(c)}`),
+    reported: () => false,
+    boundArmed: () => false,
+    willRetry: () => false,
+  };
 }
 
 // ── (11) #1827 round 4 — the accumulator is bounded, and its text passes
@@ -83,13 +95,11 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     `the accumulation is capped at the budget (${big.text().length} > ${VERDICT_ACCUMULATION_BUDGET})`,
   );
   assert(big.text().startsWith("xxxx"), "…and keeps the HEAD of the reply");
-  // Past the budget appending stops, so a verdict that arrives afterwards is
-  // still READ (the decision is made on the message in hand, never on the
-  // truncated tail) even though it can no longer be APPENDED. That is the
-  // documented head-keeping trade: the closing line the stop matched lives in
-  // `status()`, and `parseVerdict` over the frozen reply is expected to fall
-  // back to its default on a reply whose tail was cut. The budget is not a
-  // filter on which verdicts are recognised.
+  // Past the budget appending stops for ORDINARY prose, so a verdict that
+  // arrives afterwards is still READ (the decision is made on the message in
+  // hand, never on the truncated tail). The one block that does get appended is
+  // the matched closing block itself — see (12) below, which is what keeps
+  // `parseVerdict` over the frozen reply in agreement with the stop.
   const budgeted = createVerdictStop();
   for (let i = 0; i < 200; i++) budgeted.observe(turn(text(chunk)));
   const before = budgeted.text().length;
@@ -98,9 +108,21 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     budgeted.status() === "CRITICAL_ISSUES_FOUND",
     "the verdict after the budget still stops the child",
   );
+  // #1827 round 5 — and it is APPENDED, because the fold makes this accumulation
+  // `result.text` and `parseVerdict(result.text)` has to read the same verdict
+  // that ended the child. The old assertion pinned the opposite (no growth past
+  // the budget), which was the reported defect.
   assert(
-    budgeted.text().length === before,
-    "…and nothing more is appended past the budget",
+    budgeted.text().length > before && budgeted.text().endsWith("VERDICT: CRITICAL_ISSUES_FOUND"),
+    "…and the matched closing block is kept past the budget",
+  );
+  // A stop that never fires keeps the budget absolutely: the accumulation is
+  // only ever one matched block over the cap, and only when a stop fired.
+  const quiet = createVerdictStop();
+  for (let i = 0; i < 400; i++) quiet.observe(turn(text(chunk)));
+  assert(
+    quiet.text().length <= VERDICT_ACCUMULATION_BUDGET && quiet.status() === undefined,
+    `an unfired stop stays inside the budget (${quiet.text().length})`,
   );
   // The budget does not narrow what counts as a verdict: the very next reply,
   // from a stop with room, is recognised identically.
@@ -112,6 +134,55 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   assert(fresh.text().length < VERDICT_ACCUMULATION_BUDGET, "…well inside the budget");
 }
 
+
+// ── (12) #1827 round 5 — the reported defect: past the budget the frozen reply
+// kept the HEAD but lost the verdict, so `parseVerdict(result.text)` disagreed
+// with the stop that ended the child and a CLEAN review read as `incomplete`
+// (the loop's no-marker default is ISSUES_FOUND with verdictParsed false).
+// Eighty turns of 5 KB each is 400 KB, well past the 256 KB budget, and the
+// reply then closes tool-free on the verdict line.
+{
+  const longTurn = "y".repeat(5 * 1024);
+  for (const verdict of ["APPROVED", "MINOR_OBSERVATIONS"] as const) {
+    const stop = createVerdictStop();
+    for (let i = 0; i < 80; i++) stop.observe(turn(text(longTurn)));
+    assert(stop.status() === undefined, `an unfinished ${verdict} reply has no verdict yet`);
+    assert(
+      stop.text().length > VERDICT_ACCUMULATION_BUDGET * 0.9,
+      `…and the accumulation is past the budget before the verdict (${stop.text().length})`,
+    );
+    const calls: string[] = [];
+    observeReviewBounds(
+      {
+        verdictStop: stop,
+        assistantMessageEnd: turn(text(`All gates green.\n\nVERDICT: ${verdict}`)),
+      },
+      quietTargets(calls),
+    );
+    assert(stop.status() === verdict, `the ${verdict} verdict ends the child`);
+    assert(stop.stopped() === true, "…and records the clean end");
+    const r = baseResult({ text: "(thinking content only - no text output)" });
+    applyReviewBounds(
+      { stoppedByVerdict: true, verdictText: stop.text(), verdictStatus: stop.status() },
+      r,
+      () => undefined,
+      () => undefined,
+    );
+    const parsed = parseVerdict(r.text);
+    assert(
+      parsed.verdictParsed === true,
+      `parseVerdict reads a verdict out of the frozen reply past the budget (${verdict})`,
+    );
+    assert(
+      parsed.status === stop.status(),
+      `…and it is the status that ended the child (${parsed.status} vs ${String(stop.status())})`,
+    );
+    assert(
+      r.text.length <= VERDICT_ACCUMULATION_BUDGET + longTurn.length + 40,
+      `the freeze is at most the matched block over the budget (${r.text.length})`,
+    );
+  }
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

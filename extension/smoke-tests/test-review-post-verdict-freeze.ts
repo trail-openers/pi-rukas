@@ -75,6 +75,7 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
     armBound: () => calls.push("armBound"),
     setKillCause: (c) => calls.push(`cause:${String(c)}`),
     reported: () => false,
+    boundArmed: () => false,
     willRetry: () => false,
   };
 }
@@ -116,8 +117,9 @@ function reviewerMenu(): string {
   assert(stop2.status() === undefined, "…and records no verdict");
   // The child then keeps working, and the real verdict afterwards does stop it.
   const calls3: string[] = [];
-  // A FRESH stop:  has already seen the fenced quotation, and the stop is
-  // sticky once it has decided, so reusing it here judged the wrong question.
+  // A FRESH stop, because `stop2` above has already seen the fenced quotation
+  // and a stop is sticky once it has decided: reusing it here would have judged
+  // the earlier verdict rather than this one.
   const stop3 = createVerdictStop();
   observeReviewBounds(
     { verdictStop: stop3, assistantMessageEnd: turn(text("VERDICT: ISSUES_FOUND")) },
