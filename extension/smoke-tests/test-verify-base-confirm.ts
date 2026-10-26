@@ -23,9 +23,13 @@
 import {
   BASE_CONFIRM_SECOND_LABEL,
   type BaseRedConfirmation,
+  baseRunsProse,
   confirmRedBase,
 } from "../src/work-driver-verify-base-confirm.ts";
 import type { BaselineVerdict } from "../src/work-driver-verify-baseline.ts";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -62,16 +66,46 @@ const TREE_TWO = "/tmp/pi-confirm/tree-two";
 const ROOTS = { firstRoot: TREE_ONE, secondRoot: TREE_TWO };
 
 /**
+ * The pair of trees a comparison can ACTUALLY place names in. The two above are
+ * synthetic paths that name no directory, which is honest for the absolute case
+ * (`asPath` resolves the longest existing prefix, `/tmp`, and keeps the tail) but
+ * not for the relative one: a relative name normalises to a path WITHOUT a leading
+ * slash, so it resolves under the process's cwd and can never sit under either
+ * root. These are real directories under the temp dir, so a relative name joined
+ * onto one of them strips the way a real run's does — which is the only way a case
+ * can tell "the two runs named the same test" apart from "nothing was placeable".
+ */
+const REAL_ONE = mkdtempSync(path.join(tmpdir(), "pi-confirm-one-"));
+const REAL_TWO = mkdtempSync(path.join(tmpdir(), "pi-confirm-two-"));
+const REAL_ROOTS = { firstRoot: REAL_ONE, secondRoot: REAL_TWO };
+// A subtree that exists IN BOTH temp trees, so a name under it is placeable the
+// way a real run's is. Unlike an absolute name under a tree that was never created
+// (`asPath` still resolves its longest existing prefix), a RELATIVE name joined
+// onto a root that does not exist has no prefix left to resolve, so `compareNames`
+// cannot place it — the fixture's trees therefore have to exist on disk, and to
+// carry the directory the names cite.
+const REAL_SUB = "extension/smoke-tests";
+for (const tree of [REAL_ONE, REAL_TWO]) {
+  mkdirSync(path.join(tree, REAL_SUB), { recursive: true });
+}
+
+/**
  * The loop's own triad: per-file markers anchored in the tree that ran, plus a
  * summary whose count agrees with them. Anything else and `failingTestNames`
  * returns `[]`, which is the "no names" arm — so a case that wants names has to
  * print this shape rather than any line beginning `FAILED:`.
  */
-const named = (tree: string, ...paths: string[]): string =>
-  [
-    ...paths.map((p) => `FAILED: ${tree}/${p}`),
-    `FAILED: ${paths.length} test(s) — ${paths.join(", ")}`,
+const named = (tree: string, ...paths: string[]): string => {
+  // A relative spelling is what most harnesses print (`FAILED: tests/a.ts`,
+  // relative to the tree the run executed in) — the shape the anchoring rule
+  // exists for. An empty tree prints the names bare, which is how a case stages
+  // names no anchored comparison can place.
+  const spell = (p: string): string => (tree === "" ? p : `${tree}/${p}`);
+  return [
+    ...paths.map((p) => `FAILED: ${spell(p)}`),
+    `FAILED: ${paths.length} test(s) — ${paths.map((p) => spell(p)).join(", ")}`,
   ].join("\n");
+};
 
 /** What one call to `confirmRedBase` did: the answer, and the runs it paid for. */
 interface Recorded {
@@ -189,6 +223,99 @@ for (const [label, second, want, ranSecond] of secondRunCases) {
   );
 }
 
+// ── relative names, anchored in each run's own tree (round 1) ──
+//
+// Most harnesses print a failing test RELATIVE to the tree they ran in (`FAILED:
+// tests/a.ts`), which is the shape the loop itself prints for a gate invoked from
+// its own checkout. An anchored comparison refuses a relative name outright — it
+// records nothing about which tree printed it — so before the join these two runs
+// came back "disagree" and every legitimate red base printed this way was refused.
+// The join is with the run's OWN tree, so agreement survives and disagreement still
+// disagrees.
+{
+  // The two runs name THE SAME test in the only spelling most harnesses print
+  // (relative to the tree that ran), and the runs execute in two different trees,
+  // so the two spellings are equal strings. The join with each run's own tree root
+  // is what makes the anchored comparison able to place them at all — without it
+  // `compareNames` answers `unknown` for both and the pair falls to the
+  // "nothing placeable" arm, which confirms but for the wrong reason. Asserting
+  // the exact overlap is what tells the two arms apart.
+  const twiceRedRelative = await run(
+    red(named(REAL_ONE, `${REAL_SUB}/a.ts`, `${REAL_SUB}/b.ts`)),
+    [red(named(REAL_TWO, `${REAL_SUB}/b.ts`, `${REAL_SUB}/c.ts`))],
+    { roots: REAL_ROOTS },
+  );
+  assert(
+    twiceRedRelative.confirmation === "confirmed-red" &&
+      twiceRedRelative.result.namesUnplaceable === undefined &&
+      twiceRedRelative.result.commonNames?.length === 1 &&
+      twiceRedRelative.result.commonNames[0] === `${REAL_ONE}/${REAL_SUB}/b.ts`,
+    `two identically red runs printing relative names: confirmed-red on the anchored shared name (got ${twiceRedRelative.confirmation}, ${JSON.stringify(twiceRedRelative.result.commonNames)}, unplaceable=${String(twiceRedRelative.result.namesUnplaceable)})`,
+  );
+}
+{
+  const disjointRelative = await run(
+    red(named(REAL_ONE, `${REAL_SUB}/a.ts`)),
+    [red(named(REAL_TWO, `${REAL_SUB}/z.ts`))],
+    { roots: REAL_ROOTS },
+  );
+  assert(
+    disjointRelative.confirmation === "names-disagree" && disjointRelative.probes.length === 1,
+    `disjoint relative names stay a disagreement once anchored (got ${disjointRelative.confirmation})`,
+  );
+}
+{
+  // Neither run's names can be placed: the roots this seam was given name no
+  // directory (the case a caller passes when a tree is already gone). The name
+  // rule has read nothing, so the pair falls to the arm a stream that named
+  // nothing uses — red twice — and the evidence says so rather than claiming a
+  // match nobody compared.
+  const unplaceable = await run(red(named("", "tests/a.ts")), [
+    red(named("", "tests/a.ts")),
+  ]);
+  assert(
+    unplaceable.confirmation === "confirmed-red" &&
+      unplaceable.result.namesUnplaceable === true &&
+      unplaceable.result.commonNames === undefined,
+    `names neither run can place: red twice suffices, and the record says the names were not compared (got ${unplaceable.confirmation}, unplaceable=${String(unplaceable.result.namesUnplaceable)})`,
+  );
+  assert(
+    baseRunsProse(unplaceable.result).includes("could not be placed in either tree"),
+    `unplaceable names: the evidence names the absence instead of claiming a match (${JSON.stringify(baseRunsProse(unplaceable.result))})`,
+  );
+}
+
+// ── the name rule stays linear in the number of names (round 1) ──
+//
+// `compareNames` re-walks every root and every name through `realpath` unless it
+// is handed a memo, so without one a pair of runs printing N names each costs
+// 2·N² stat-heavy walks. The 300-name case below is the detector: it passes in
+// milliseconds with the memo and minutes without it, so the bound asserted here is
+// generous on purpose — it is a regression tripwire, not a benchmark.
+{
+  const startedAt = Date.now();
+  // The roots must be roots the comparison can actually strip: this repo's own
+  // `smoke-tests` directory exists in both spellings of every tree, so a name
+  // under it resolves through the longest existing prefix and gets placed. A path
+  // that exists nowhere would take the "nothing placeable" arm and the 300 names
+  // would never be compared at all — which is the vacuous version of this case.
+  const many = Array.from({ length: 300 }, (_, i) => `${REAL_SUB}/t${i}.ts`);
+  const wide = await run(red(named(REAL_ONE, ...many)), [
+    red(named(REAL_TWO, ...many.slice(100))),
+  ], { roots: REAL_ROOTS });
+  const elapsed = Date.now() - startedAt;
+  assert(
+    wide.confirmation === "confirmed-red" &&
+      wide.result.namesUnplaceable === undefined &&
+      wide.result.commonNames?.length === 200,
+    `300 names: the overlap is still computed exactly (got ${wide.confirmation}, ${wide.result.commonNames?.length}, unplaceable=${String(wide.result.namesUnplaceable)})`,
+  );
+  assert(
+    elapsed < 5000,
+    `300 names on both runs complete under a generous 5 s bound (took ${elapsed} ms — one memo per call, not one realpath per pair)`,
+  );
+}
+
 // ── the arms that decide alone: no second run, ever ──
 for (const [label, first] of [
   ["first run red-timed-out", killed()],
@@ -229,5 +356,8 @@ for (const [label, first] of [
   }
   assert(threw, "an injected probe that throws propagates — the rule folds nothing into a red");
 }
+
+rmSync(REAL_ONE, { recursive: true, force: true });
+rmSync(REAL_TWO, { recursive: true, force: true });
 
 process.exit(exit);
