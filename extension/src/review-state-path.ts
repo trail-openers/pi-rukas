@@ -20,6 +20,12 @@
  * `cloneLedgerPathFor` (review-ledger-path.ts) — the #912 merge guard reads the
  * ledger from under the git common dir exactly as before.
  *
+ * Two entries, one location. `findingsStateDir` is the CREATING path and owns the
+ * process cache; `findingsStoreLocation` is the read-only locator the probe uses
+ * and is deliberately NOT cached — a read that seeded the cache would hand the
+ * next creating resolve an answer that predates the first real resolve, and the
+ * creating arm would never mint the token it is there to mint.
+ *
  * Layout, per clone:
  *
  *     <agentDir>/review-state/<repo-key>/<token>/review-findings.json
@@ -295,24 +301,25 @@ function migrateOnce(commonDir: string, dir: string): void {
  * ledger's own directory, warned, and returns a path. A store that cannot move
  * is still a store.
  *
- * `readOnly` (#1832 round 2) answers the SAME question as the creating path —
- * the location comes from the ONE `computeLocation` both arms call, so the probe
- * and the record path cannot name two stores for one clone: not the override, not
- * the common-dir lookup, not the key, not the token, and not the corrupt-token
- * fallback, where the read-only arm names the SAME beside-the-ledger file the
- * creating path would have written. A read-only resolve does none of the writes:
- * no `mkdir`, no `chmod`, no token minting, no migration, and nothing cached (a
- * read must not seed the cache with an answer that predates the first real
- * resolve, and must not mint a token whose directory nobody else can find).
+ * The location comes from the ONE `computeLocation` this module and the read-only
+ * locator both call, so the probe and the record path cannot name two stores for
+ * one clone: not the override, not the common-dir lookup, not the key, not the
+ * token, and not the corrupt-token fallback, where both arms name the SAME
+ * beside-the-ledger file.
+ *
+ * The cache READ is the first thing after the location resolves, exactly as it was
+ * before the locator was split out (#1832 round 3): a clone this process already
+ * created answers from memory, without re-reading the token file or asking `tokenFor`
+ * to mint. Deleting a token file after the store exists must not produce a second
+ * directory for one clone — an adversary measured the missing read as a regression
+ * against `origin/main`, which answered from the cache before any of this ran.
  */
 export async function findingsStateDir(
   execFn: LedgerExecFn,
   cwd: string,
-  opts: { readOnly?: boolean } = {},
 ): Promise<FindingsLocation | undefined> {
   const computed = await computeLocation(execFn, cwd);
   if (!computed) return undefined;
-  if (opts.readOnly === true) return computed.loc;
 
   const { loc, commonDir, root, key } = computed;
   const override = process.env[LEDGER_OVERRIDE_ENV]?.trim();
@@ -323,6 +330,14 @@ export async function findingsStateDir(
   // `MIGRATED` marker appear under the real agent dir as a side effect of running
   // the suite.
   if (override) return loc;
+
+  // The cache READ, restored to the position `origin/main` has it: an override
+  // answers from its own path (see the block above) and never consults or writes
+  // the cache, so this is the only arm that reads it. A hit returns the location
+  // this process created for the clone earlier — no token read, no mint, no second
+  // directory.
+  const cached = resolved.get(key);
+  if (cached) return cached.loc;
 
   // From here the caller intends to WRITE, which is where every side effect of the
   // location belongs. The location itself was decided by `computeLocation`, so the
@@ -374,7 +389,10 @@ export type FindingsStoreLocation = FindingsLocation & { exists: boolean };
 /**
  * The findings store's location for `cwd`, computed the SAME way the creating path
  * computes it (#1832 round 2) and with no side effects at all: no `mkdir`, no
- * `chmod`, no token minting, no migration, and nothing cached.
+ * `chmod`, no token minting, no migration — and, unlike `findingsStateDir`, nothing
+ * read from or written to the process cache. That is deliberate: this arm answers
+ * the question "where WOULD the store be" for a clone it must not bring into
+ * existence, so it cannot be allowed to seed the cache with a pre-creation answer.
  *
  * `exists` distinguishes "there is no store here yet" from "a file sits here that
  * this process has not read" — the distinction the open-CRITICAL probe needs,

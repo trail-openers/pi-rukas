@@ -318,8 +318,9 @@ type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
  * The single place a full-review `ok` outcome is built (#1832 round 2).
  *
  * `resolveReviewDiff` has three arms that can return a FULL review — the explicit
- * `since` arm returns a delta, so it is not one of them — and every one of them
- * must carry `forcedFull` when the veto fired. Writing the spread at each arm is
+ * `since` arm returns a delta, so it is not one of them — and the two of them that
+ * can be reached with the veto fired return through here, so every one of them
+ * carries `forcedFull` when it fired. Writing the spread at each arm is
  * how the field came to be stamped on one and missed on another: an arm without
  * it reports a forced full review as an ordinary one, and the `Mode:` line the
  * operator reads says "the whole branch diff" for a round that was forced.
@@ -422,13 +423,15 @@ async function emptyAutoDelta(
       problem: "lens review: the full diff returned no content; it is not treated as empty (#384)",
     };
   }
-  return {
-    kind: "ok",
-    diff: full.diff,
-    diffSource: "computed",
-    base,
-    head,
-  };
+  return okArm(
+    {
+      diff: full.diff,
+      diffSource: "computed",
+      base,
+      head,
+    },
+    undefined,
+  );
 }
 
 /**

@@ -28,6 +28,7 @@ import { promisify } from "node:util";
 import { execp } from "./exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import type { AutoDeltaVeto, ForcedFullReason } from "./lens-review-delta-disclose.ts";
+import { forcedFullText } from "./lens-review-delta-disclose.ts";
 import type { LensReviewSummary, Verdict } from "./lens-review-format.ts";
 import { branchHasOpenCriticalRow } from "./review-findings-critical-probe.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
@@ -141,8 +142,11 @@ export async function resolveDeltaSince(
  * `trace`: a round that is full when its caller asked for a delta should be
  * findable after the fact without setting `PI_ENSEMBLE_DEBUG` — the forced round
  * is longer and costs more, and "why is this review full" is the first question it
- * raises. The reason's WORDING still lives with the reason, in
- * `forcedFullText` (lens-review-delta-disclose.ts).
+ * raises. The reason's WORDING lives with the reason, in
+ * `forcedFullText` (lens-review-delta-disclose.ts), and this trace renders THAT:
+ * #1832 round 3 spelled its own parenthetical here, which is the second definition
+ * of one sentence the disclosure module's header exists to prevent — and the one
+ * that quietly dropped the neutralisation `forcedFullText` applies to the detail.
  */
 export async function vetoAutoDeltaForOpenCritical(
   branch: string,
@@ -157,7 +161,7 @@ export async function vetoAutoDeltaForOpenCritical(
       ? { kind: "open-critical" }
       : { kind: "findings-unreadable", detail: probe.reason };
   traceWarn(
-    `lens-review: automatic delta since ${autoSince.slice(0, 8)} vetoed — full review (${reason.kind}${reason.kind === "findings-unreadable" && reason.detail ? `: ${reason.detail}` : ""})`,
+    `lens-review: automatic delta since ${autoSince.slice(0, 8)} vetoed — full review (${forcedFullText(reason)})`,
   );
   return { kind: "forced", reason };
 }

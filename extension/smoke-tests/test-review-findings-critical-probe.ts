@@ -116,8 +116,8 @@ try {
   // arm. It is asserted on its OWN fixture rather than on `dir`, because other
   // fixtures in this file create stores and the module caches per clone: what must
   // not happen is a probe that creates a clone's state root or mints its token.
-  // A probe that lost `readOnly: true` fails both assertions below, since
-  // `findingsStateDir` (the creating arm) is never called on this clone.
+  // `findingsStateDir` (the creating arm) is never called on this clone, and the
+  // read-only API is `findingsStoreLocation` (which is what the probe calls).
   const readOnlyPin = makeRepo();
   commitIn(readOnlyPin, "// pin fixture\n");
   const pinProbe = await branchHasOpenCriticalRow(readOnlyPin.dir, "feat/x");
@@ -218,7 +218,7 @@ try {
   // the clone's token and creates the state dir. Without it there is no token to
   // read, and the honest answer for "this process cannot name a store" is
   // `unreadable` — never a silent `absent` (see the no-token arm of
-  // `findingsStateDir`'s read-only path).
+  // `computeLocation`, the location the read-only locator returns).
   const fresh = makeRepo();
   const freshHead = commitIn(fresh, "// nothing here yet\n");
   await recordFindingRunOutcome({

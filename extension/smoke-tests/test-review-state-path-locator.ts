@@ -17,13 +17,18 @@
  *
  * And the read-only answer never creates: the state root of a clone whose store
  * was never made is still absent after a read-only lookup, and no token is
- * minted beside it.
+ * minted beside it. The creating arm is the opposite shape, and fixture 6 pins
+ * it: once a clone's store exists in this process, a later resolve answers from
+ * the cache — a deleted token file does not re-mint a directory or move the store
+ * (#1832 round 3, a regression against `origin/main`). The second resolve must
+ * leave the token file ABSENT: re-minting it is the symptom of a cache that is
+ * never consulted.
  *
  * Every fixture uses a temp `PI_AGENT_DIR` and temp git repos; nothing here
  * touches the operator's `~/.pi/agent`.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
@@ -234,6 +239,59 @@ try {
     );
     assert(!existsSync(path.join(agent, STATE_LEAF)), "…the leaf directory itself does not exist");
     assert(agentDir() === process.env.PI_AGENT_DIR, "agentDir() is the pinned temp root");
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+    rmSync(agent, { recursive: true, force: true });
+  }
+  // ── 6. the creating path READS its cache: a deleted token does not mint a
+  //       second directory (#1832 round 3, the regression against origin/main) ──
+  //
+  // `computeLocation` answers the location from disk every time — that is what
+  // makes the read-only locator tell "no store yet" from "a file that will not
+  // parse". The CREATING arm sits in front of it with a process cache, exactly
+  // where origin/main had it: once this process has created a clone's store, a
+  // later resolve for the same clone answers from memory. Without that read every
+  // resolve re-reads the token file and asks `tokenFor` to mint, so deleting the
+  // token after the first round makes the next one name a brand-new directory and
+  // the clone silently loses its memory.
+  {
+    const agent = tempAgentDir("loc-cache");
+    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    const { repo, git } = makeRepo("loc-cache");
+    const commonDir = path.resolve(repo, git("rev-parse", "--git-common-dir"));
+
+    const first = await findingsStateDir(execp, repo);
+    assert(first !== undefined && !first.fellBack, "cache: the first resolve creates the store");
+    if (!first) throw new Error("the cache fixture resolved no store");
+    const tokenFile = path.join(path.dirname(first.dir), "token");
+    assert(existsSync(tokenFile), "cache: the token is on disk after the creating resolve");
+    // Snapshot the root BEFORE deleting anything: what a cache miss does is write
+    // a token file back, so the assertion has to compare against the shape that
+    // held no token at all.
+    const tokenGone = () => !existsSync(tokenFile);
+    rmSync(tokenFile);
+    const second = await findingsStateDir(execp, repo);
+    assert(second !== undefined, "cache: the second resolve still answers");
+    assert(
+      second!.dir === first.dir && second!.file === first.file,
+      "cache: the same key answers the SAME location after the token file is gone",
+    );
+    assert(!second!.fellBack, "…not the beside-the-ledger fallback");
+    assert(
+      tokenGone(),
+      "…and the cache answered WITHOUT a re-mint: the token file is still absent",
+    );
+    // One directory under this clone's state root, still the first one. The
+    // re-mint this asserts against would have created a sibling 32-hex directory
+    // that every later process names instead of the store holding the rows.
+    const root = stateRootOf(agent, commonDir);
+    const dirs = readdirSync(root)
+      .filter((name) => name !== "token")
+      .sort();
+    assert(
+      dirs.length === 1 && dirs[0] === path.basename(first.dir),
+      `…and no second token directory exists for the clone (root holds ${dirs.join(", ")})`,
+    );
+
     rmSync(path.dirname(repo), { recursive: true, force: true });
     rmSync(agent, { recursive: true, force: true });
   }

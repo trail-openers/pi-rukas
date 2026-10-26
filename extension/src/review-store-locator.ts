@@ -22,7 +22,8 @@
  *
  * The location itself is documented in review-state-path.ts's header (layout,
  * key derivation, token minting, failure policy); this module is the read-only
- * half of that contract.
+ * half of that contract. `agentDir()` is DEFINED here and re-exported from
+ * review-state-path.ts (which owns the writes), so the root has one definition.
  */
 
 import { createHash } from "node:crypto";
@@ -60,8 +61,9 @@ export interface ComputedLocation {
 }
 
 /** The agent dir: Pi's own root, the same one transcripts and models config use.
- * Defined in review-state-path.ts and re-read here through `agentDir()` so the
- * two modules cannot point at different roots. */
+ * DEFINED here (this is where the store's root is decided) and re-exported by
+ * review-state-path.ts, so the accept guard and every caller of that module build
+ * their root spellings from the one definition rather than a second literal. */
 export function agentDir(): string {
   return process.env.PI_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
 }
@@ -115,13 +117,18 @@ export function fallbackBesideLedger(ledger: string): FindingsLocation {
  * ledger's common dir, the repo-key hash, the token read, and the
  * beside-the-ledger fallback when the token is unreadable or malformed.
  *
- * Both arms of `findingsStateDir` call this — the read-only probe returns its
+ * Both arms of the location call this — the read-only locator returns its
  * `loc` verbatim, the creating path runs its mkdir/chmod/mint/migrate/cache work
  * AROUND the same answer — so no step is copied and the two can name only one
  * file. `process.env` is read here, which is precisely the property the store's
  * `locate()` relies on: a resolve takes the answer as an argument and never
  * caches an override, so changing `PI_ENSEMBLE_REVIEW_LEDGER_FILE` between two
  * rounds cannot leave a later round reading the first round's file.
+ *
+ * The CREATING path reads its own process cache BEFORE any of the writes below
+ * run (review-state-path.ts), so a clone this process already set up answers from
+ * memory and never re-reads or re-mints the token. This function is not consulted
+ * on that hit and does not own the cache.
  *
  * Answers undefined only for "there is no clone to locate": no ledger at all
  * (not a git clone), or a clone whose git common dir does not exist — there is
