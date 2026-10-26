@@ -178,16 +178,12 @@ export function describeOutcome(result: DispatchResult): {
       bodyPrefix: null,
     };
   }
-  // #1827 — NOT a failure. The reviewer wrote its VERDICT and was ended at that
-  // point rather than running the 200-300-call tail; the report says so in
-  // words because a bare "finished" would hide that the harness stopped the
-  // child, and the stop reason is what an operator goes looking for.
-  if (result.killCause === "review-post-verdict") {
-    return {
-      status: "finished (ended at its VERDICT marker — post-verdict tool calls stopped)",
-      bodyPrefix: null,
-    };
-  }
+  // #1827 — NOT a failure, and it never reaches this branch: a post-verdict
+  // stop sets no `killCause` at all (it is recorded as `reviewStopReason`), so
+  // the reviewer that wrote its verdict and was stopped before the tail reads
+  // as the `finished` result it is. `describeOutcome` therefore has no
+  // post-verdict case to maintain — a cause in this list is a failure or a cap
+  // by definition, and this shape is neither.
   if (result.errorStop && isRateLimit429Msg(result.errorStop.message)) {
     // #366's distinction, not a second one. A per-minute token bucket and a
     // 24-hour quota exhaustion arrive as the same status code and differ only

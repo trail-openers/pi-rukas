@@ -321,15 +321,14 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   if (tail.killCause === "review-skill-reread") {
     return { cause: "self-killed:review-skill-reread", shouldRetry: false, maxRetries: 0 };
   }
-  // #1827 — the post-verdict stop is a CLEAN END, not a failure: the child
-  // produced its verdict and `ok` stays true, so the router normally never
-  // reaches this classifier for it. An explicit branch sits here so a result
-  // that carries the stop AND reports ok=false cannot fall through to the
-  // `crashed` fallback (shouldRetry:true) and re-run a review whose verdict is
-  // already in hand.
-  if (tail.killCause === "review-post-verdict") {
-    return { cause: "success", shouldRetry: false, maxRetries: 0 };
-  }
+  // #1827 — the post-verdict stop is a CLEAN END and carries NO kill cause, so
+  // no tail ever reaches this classifier naming it: the child produced its
+  // verdict, `ok` stayed true, and the router never treats the dispatch as
+  // failed. There is deliberately no branch for it — every cause this function
+  // reads is a failure or a cap, and a "clean end" entered into that table
+  // would be a claim that something can classify a completed review as killed.
+  // If a future shape ever does stamp a cause on a stopped reviewer, it must
+  // reach the `crashed` fallback and be judged, not silently excused here.
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token

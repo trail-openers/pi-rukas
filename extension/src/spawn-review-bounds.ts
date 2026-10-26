@@ -1,20 +1,24 @@
 /**
  * spawn-review-bounds — how the #1827 reviewer bounds land on the result.
  *
- * Two causes, and the place they are applied is load-bearing:
+ * One kill cause, and the place it is applied is load-bearing:
  * `applyChildBound` (spawn-child-bound.ts) rewrites `killCause` whenever it is
  * falsy, `timeout` or `abort`, so a reviewer cause set BEFORE that call is
  * silently relabelled `child-bound` for any child that also outlived its bound.
- * Both causes are therefore applied here, AFTER the attribution passes, and
- * only when no structural cap (loop / token-budget) already named the kill —
- * those are the more specific diagnosis of what actually cost the money.
+ * It is therefore applied here, AFTER the attribution passes, and only when no
+ * structural cap (loop / token-budget) already named the kill — those are the
+ * more specific diagnosis of what actually cost the money.
  *
- * The post-verdict stop is not a kill at all. The reviewer had already written
- * its VERDICT, so the child is ended as DONE: `ok` stays true, the reply is the
- * accumulated assistant text the stop parsed its verdict out of (the SAME
- * string `parseVerdict` reads, which is what keeps the live stop and the loop's
- * final parse from disagreeing), and the stop reason rides on the result so the
- * dispatch report says the harness cut the post-verdict tail.
+ * The post-verdict stop is not a kill at all, and the round-1 review made what
+ * "not a kill" means mechanical: it sets NO `killCause`. A cause is the
+ * failure-or-cap vocabulary every consumer keys on — `describeOutcome`, the
+ * step router, the cap-kill recorders, the handoff renderers — so a cause that
+ * one of them forgot to exempt silently marks a completed review as failed. A
+ * clean end therefore lives in its own field, `reviewStopReason`, which no
+ * failure path reads. `ok` stays true and the reply is the accumulated
+ * assistant text the stop parsed its verdict out of (the SAME string
+ * `parseVerdict` reads, which is what keeps the live stop and the loop's final
+ * parse from disagreeing).
  */
 
 import type { ChildProcess } from "node:child_process";
@@ -22,6 +26,7 @@ import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import {
   REVIEW_POST_VERDICT_STOP,
   REVIEW_SKILL_REREAD_KILL,
+  type ReviewBoundTargets,
   createReviewBounds,
   observeReviewBounds,
 } from "./review-bounds.ts";
@@ -46,8 +51,14 @@ export interface ReviewBoundWiring {
   skillRead?: SkillReadGuard;
   verdictStop?: VerdictStop;
   observe: (assistantMessageEnd: PiJsonEvent | null) => void;
-  /** Fold into a result that has been through the attribution passes. */
-  apply: (result: DispatchResult, appendStderr: (s: string) => void) => void;
+  /** Fold into a result that has been through the attribution passes. A
+   *  re-read kill an earlier cause superseded is traced from here, so it needs
+   *  the same warn sink as the fold itself. */
+  apply: (
+    result: DispatchResult,
+    appendStderr: (s: string) => void,
+    warn?: (s: string) => void,
+  ) => void;
 }
 
 /**
@@ -65,8 +76,32 @@ export function wireReviewBounds(deps: {
   completePrompt: () => void;
   armBound: () => void;
   reported: () => boolean;
+  willRetry: () => boolean;
 }): ReviewBoundWiring {
   const { skillRead, verdictStop } = createReviewBounds(deps.role, deps.opts, deps.reported);
+  // Built ONCE per child: the targets close over these, so the path resolution
+  // and the stat calls inside the candidate list do not run on every stdout
+  // line of a 400-turn child.
+  const targets: ReviewBoundTargets = {
+    writeSteer: (message) => {
+      deps.child.stdin?.write(`${JSON.stringify({ type: "steer", message })}\n`);
+    },
+    ...(deps.opts.onSteer ? { onSteer: deps.opts.onSteer } : {}),
+    kill: () => {
+      try {
+        killProcessTree(deps.child);
+      } catch (err) {
+        traceWarn(`reviewer bound killProcessTree failed: ${String(err)}`);
+      }
+    },
+    completePrompt: deps.completePrompt,
+    armBound: deps.armBound,
+    setKillCause: (cause) => {
+      killCause = cause;
+    },
+    reported: deps.reported,
+    willRetry: deps.willRetry,
+  };
   const observe = (assistantMessageEnd: PiJsonEvent | null): void => {
     observeReviewBounds(
       {
@@ -74,24 +109,7 @@ export function wireReviewBounds(deps: {
         ...(verdictStop ? { verdictStop } : {}),
         assistantMessageEnd,
       },
-      {
-        writeSteer: (message) => {
-          deps.child.stdin?.write(`${JSON.stringify({ type: "steer", message })}\n`);
-        },
-        ...(deps.opts.onSteer ? { onSteer: deps.opts.onSteer } : {}),
-        kill: () => {
-          try {
-            killProcessTree(deps.child);
-          } catch (err) {
-            traceWarn(`reviewer bound killProcessTree failed: ${String(err)}`);
-          }
-        },
-        completePrompt: deps.completePrompt,
-        armBound: deps.armBound,
-        setKillCause: (cause) => {
-          killCause = cause;
-        },
-      },
+      targets,
     );
   };
   let killCause: DispatchResult["killCause"];
@@ -99,7 +117,7 @@ export function wireReviewBounds(deps: {
     ...(skillRead ? { skillRead } : {}),
     ...(verdictStop ? { verdictStop } : {}),
     observe,
-    apply: (result, appendStderr) =>
+    apply: (result, appendStderr, warn) =>
       applyReviewBounds(
         {
           ...(killCause !== undefined ? { killCause } : {}),
@@ -114,6 +132,7 @@ export function wireReviewBounds(deps: {
         },
         result,
         appendStderr,
+        warn,
       ),
   };
 }
@@ -142,9 +161,22 @@ export function applyReviewBounds(
   outcome: ReviewBoundOutcome,
   result: DispatchResult,
   appendStderr: (s: string) => void,
+  warn: (s: string) => void = traceWarn,
 ): void {
   if (outcome.killCause && !result.killCause) {
     result.killCause = outcome.killCause;
+    // #1827 round 1 — a kill the review bounds recorded but an EARLIER cause
+    // already named is not silently dropped: the two causes contradict each
+    // other and the operator is the only reader who can tell which was the
+    // real end of this child. `outcome.killCause` is only ever
+    // `review-skill-reread` (the post-verdict stop is not a kill — see the
+    // header), so this always means "the re-read cap had decided to end this
+    // child and something else did it first".
+    if (result.killCause !== outcome.killCause) {
+      traceWarn(
+        `reviewer bounds: the re-read cap reached ${outcome.skillReads ?? 0} skill reads but the child was already killed (${result.killCause}); the existing cause stands`,
+      );
+    }
     if (outcome.killCause === REVIEW_SKILL_REREAD_KILL) {
       appendStderr(
         `\n[pi-rukas] killed: re-read its own skill file ${outcome.skillReads ?? 0} times (override: PI_ENSEMBLE_REVIEW_SKILL_READS / PI_ENSEMBLE_DISPATCH_CAPS)`,
@@ -157,6 +189,8 @@ export function applyReviewBounds(
   // A provider error-stop is still the fault it was: ending the child at its
   // verdict does not turn a severed stream into a completed turn.
   result.ok = !result.errorStop;
+  // Deliberately NOT a `killCause`: see the module header. Whatever another
+  // attribution pass already named on this result stands.
   result.reviewStopReason = REVIEW_POST_VERDICT_STOP;
   appendStderr(
     `\n[pi-rukas] ended the reviewer at its VERDICT marker (${outcome.verdictStatus ?? "unknown"}) — its post-verdict tool calls were stopped`,
@@ -164,11 +198,22 @@ export function applyReviewBounds(
 }
 
 /**
- * Whether a kill cause should mark the child as failed. The post-verdict stop
- * is the one cause that must not: the reviewer completed its assignment (it
- * wrote the verdict) and the loop must read a verdict rather than an
- * `incomplete`.
+ * Whether the child ended as a clean reviewer stop rather than as a kill.
+ * Keyed on `reviewStopReason` ALONE, deliberately: the stop never writes
+ * `killCause`, so a caller that asked "killCause set and not the stop" would
+ * return true for a post-verdict child and mark a completed review failed —
+ * which is the round-1 CRITICAL this function's shape exists to prevent.
+ */
+export function endedAtVerdictStop(result: DispatchResult): boolean {
+  return result.reviewStopReason === REVIEW_POST_VERDICT_STOP;
+}
+
+/**
+ * Whether a kill cause should mark the child as failed. A post-verdict child
+ * carries no cause at all, so it falls out of this test by construction: the
+ * reviewer completed its assignment (it wrote the verdict) and the loop must
+ * read a verdict rather than an `incomplete`.
  */
 export function failedByKill(result: DispatchResult): boolean {
-  return !!result.killCause && result.reviewStopReason !== REVIEW_POST_VERDICT_STOP;
+  return !!result.killCause;
 }

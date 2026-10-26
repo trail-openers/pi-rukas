@@ -177,14 +177,22 @@ export interface DispatchResult {
     | "child-bound"
     | "no-progress"
     | "stuck-tool"
-    /** #1827 — a reviewer child re-read its own skill file past
+    /** #1827 — a reviewer re-read its own skill file past
      * PI_ENSEMBLE_REVIEW_SKILL_READS (steer at N+1, this kill at N+2). A
      * failure kill: a lens ended by it keeps its evidence and is not retried. */
-    | "review-skill-reread"
-    /** #1827 — the adversarial reviewer's live reply carried a parseable
-     * VERDICT and the child was ended as DONE at that point. Not a failure:
-     * `ok` stays true and the stop reason is reported, never retried. */
-    | "review-post-verdict";
+    | "review-skill-reread";
+  /**
+   * #1827 — the adversarial reviewer's live reply carried a parseable VERDICT
+   * and the child was ended as DONE at that point. **Deliberately NOT a
+   * `killCause`**: that union is the failure-or-cap vocabulary — `describeOutcome`,
+   * the step router, the cap-kill recorders and the handoff renderers all read
+   * it, and every one of them treats a member of it as something that went
+   * wrong. A completed review recorded there gets marked failed by whichever
+   * consumer forgets an exemption, so a clean end has its OWN field, which no
+   * failure path reads. Not retried; `ok` stays true and the reply is the
+   * verdict. Set by `spawn-review-bounds.ts`; read only for reporting.
+   */
+  reviewStopReason?: "review-post-verdict";
   /**
    * #298 — set only on the SYNTHESIZED adversarial-loop result (role
    * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
@@ -223,13 +231,6 @@ export interface DispatchResult {
    * (`PI_ENSEMBLE_CYCLE_DEADLINE`), which tightened the child's own bound.
    */
   killedAtCycleDeadline?: boolean;
-  /**
-   * #1827 — set when the adversarial reviewer was ended as DONE the moment its
-   * VERDICT appeared (`review-post-verdict`). Not a failure: `ok` stays true and
-   * the reply is the verdict. Recorded so the dispatch report says the harness
-   * cut the post-verdict tail instead of the child finishing on its own.
-   */
-  reviewStopReason?: "review-post-verdict";
   /**
    * #1789 — the id of the DRIVER dispatch that produced this result, when a
    * driver ran the child (`runSingleDispatch` threads the id `beginDispatch`

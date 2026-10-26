@@ -250,6 +250,25 @@ export function isSkillFileRead(
   return isSkillRead(toolName.toLowerCase(), args, candidateDirs(wants), wants);
 }
 
+/**
+ * #1827 — the same predicate with its candidate spellings supplied rather than
+ * recomputed. `skillFileCandidates` / `candidateDirs` resolve paths and can
+ * `realpathSync`, so a caller that asks this once per tool call of a 400-turn
+ * child pays for the same resolution thousands of times. `review-bounds.ts`
+ * builds the two lists once per spawn and calls this; the argument list is
+ * exactly what `isSkillFileRead` would have built for the same `skillPath`, so
+ * the two entries cannot disagree about what a skill read is.
+ */
+export function isSkillReadWith(
+  toolName: string,
+  args: Record<string, unknown>,
+  dirs: readonly string[],
+  wants: readonly string[],
+): boolean {
+  if (wants.length === 0) return false;
+  return isSkillRead(toolName.toLowerCase(), args, dirs, wants);
+}
+
 function isSkillRead(
   toolName: string,
   args: Record<string, unknown>,

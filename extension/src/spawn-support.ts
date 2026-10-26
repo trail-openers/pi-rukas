@@ -188,8 +188,8 @@ export function makeRunId(): string {
  * Read defensively: a Pi version that does not stamp the flag simply yields
  * `false`, restoring the previous behaviour exactly.
  */
-export function willRetryAfter(event: PiJsonEvent): boolean {
-  return event.willRetry === true;
+export function willRetryAfter(event: PiJsonEvent | null | undefined): boolean {
+  return event?.willRetry === true;
 }
 
 /**

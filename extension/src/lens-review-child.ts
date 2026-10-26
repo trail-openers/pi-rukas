@@ -334,6 +334,13 @@ export async function runLensChild(opts: {
   //      tool-inactivity kill is not: a text-only "summary" from such a
   //      child is pre-kill narration, and without findings it is not
   //      evidence — the lens is blocked, never a silent approver.
+  //
+  // #1827 round 1 — `review-post-verdict` is deliberately NOT in this list and
+  // never will be. It is not a kill cause: a clean end rides on
+  // `reviewStopReason`, which no failure path reads, so a result reaching this
+  // `!result.ok` branch cannot have been stopped at its verdict. Reading it
+  // here would make a stopped reviewer's narration count as a preserved
+  // partial review, which is the #966 shape this guard exists to refuse.
   if (!result || !result.ok) {
     // #534 — a failed lens still flushes usage from whatever turns
     // completed before it died; count it like any other dispatch-failed.
@@ -345,12 +352,8 @@ export async function runLensChild(opts: {
       // #1827 — `review-skill-reread` belongs in THIS class, not the timeout /
       // abort class below: it fires only in a child that was actively working
       // (it opened its own SKILL.md too many times), so its prose is the same
-      // partial review a loop kill preserves. `review-post-verdict` cannot
-      // reach this branch (it ends `ok`) and is listed for symmetry with the
-      // failure taxonomy, so a future shape reporting it as a failure is
-      // treated the same way in both places.
-      result?.killCause === "review-skill-reread" ||
-      result?.killCause === "review-post-verdict";
+      // partial review a loop kill preserves.
+      result?.killCause === "review-skill-reread";
     // #966 — one source for the placeholder: NO_TEXT_PLACEHOLDER
     // (lens-review-incomplete.ts, where `collapseEvents` declares it).
     const textIsReviewOutput =

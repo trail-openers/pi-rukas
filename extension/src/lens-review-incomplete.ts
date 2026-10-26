@@ -79,12 +79,6 @@ function laneReason(r: LensRunResult): string {
   if (r.killCause === "review-skill-reread") {
     return "not reviewed — re-read its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS and left no findings or summary (not retried)";
   }
-  // #1827 — the post-verdict stop is a clean end, so a blocked lane carrying
-  // it means the stop happened with nothing to show; name it rather than
-  // leaving it as `unknown failure`.
-  if (r.killCause === "review-post-verdict") {
-    return "not reviewed — ended at its VERDICT marker with no findings or summary behind it";
-  }
   const why = r.parseError ?? "unknown failure";
   if (r.attempts === 0) return `not run — ${why}`;
   return `${why} (${r.attempts} attempt${r.attempts === 1 ? "" : "s"})`;

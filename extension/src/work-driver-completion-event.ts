@@ -69,11 +69,13 @@ export function overrideEnvForKillCause(
     // child (not the inactivity knob, which the fallback would imply).
     case "review-skill-reread":
       return "PI_ENSEMBLE_REVIEW_SKILL_READS + PI_ENSEMBLE_DISPATCH_CAPS";
-    // #1827 — a clean end rather than a kill: the reviewer answered with its
-    // verdict and was stopped before running the tail. The knob is the
-    // reviewer bound's, under the same master switch.
-    case "review-post-verdict":
-      return "PI_ENSEMBLE_ADVERSARIAL_BOUND_MS + PI_ENSEMBLE_DISPATCH_CAPS";
+    // #1827 round 1 — no `review-post-verdict` row, and there must never be
+    // one: this function reads a `DispatchResult.killCause`, and a clean
+    // reviewer stop does not have one. Every member of that union is a failure
+    // or a cap; the stop lives in `reviewStopReason`, which no failure path
+    // reads. The reviewer's own run bound (`PI_ENSEMBLE_ADVERSARIAL_BOUND_MS`)
+    // is named by the `child-bound` row above, which is the cause that stop
+    // would have become.
   }
 }
 

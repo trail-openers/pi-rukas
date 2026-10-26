@@ -67,7 +67,7 @@ import {
 } from "./spawn-support.ts";
 import { armCapSession, declareKillFlags } from "./spawn-watchdog.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
 import { childEnvFor, writeFenceChildEnv } from "./write-fence-contract.ts";
@@ -300,6 +300,11 @@ async function spawnSpecialistInner(
     completePrompt,
     armBound,
     reported: () => promptCompleted,
+    // The post-verdict stop asks this before ending the child: while Pi is
+    // mid-retry the segment in hand is about to be REPLAYED, so a stop that
+    // closes stdin now throws the reply away rather than preserving it — the
+    // same gate `onAgentEnd` applies above.
+    willRetry: () => willRetryAfter(lastAgentEnd),
   });
   const stdoutRl = createInterface({ input: child.stdout });
   const lineHandler = createStdoutLineHandler({
@@ -451,8 +456,10 @@ async function spawnSpecialistInner(
   capKillAttribution(caps, spec, runningState.totalTokens, appendStderr, result);
   applyChildBound(childBound, result);
   // #1827 — the reviewer bounds land HERE, after both attribution passes
-  // (spawn-review-bounds.ts says why the ordering is load-bearing).
-  reviewBounds.apply(result, appendStderr);
+  // (spawn-review-bounds.ts says why the ordering is load-bearing). The warn
+  // sink is passed explicitly so a discarded re-read kill is visible in the
+  // operator's trace rather than silently dropped.
+  reviewBounds.apply(result, appendStderr, traceWarn);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
   // The cap-kill cause + evidence were already resolved above (capKillAttribution,

@@ -84,6 +84,10 @@ export type DispatchFailKillCause =
   | "no-progress"
   | "stuck-tool"
   /** #1827 — a reviewer re-read its own skill file past the cap (a failure kill). */
-  | "review-skill-reread"
-  /** #1827 — a reviewer was ended as done the moment its verdict appeared (a clean end, not a failure). */
-  | "review-post-verdict";
+  | "review-skill-reread";
+// #1827 round 1 — `review-post-verdict` is deliberately absent. This union is
+// the kill-cause vocabulary the handoff renderers and the failure taxonomy read,
+// and a post-verdict stop is a clean end: it now rides on
+// `DispatchResult.reviewStopReason` instead, where no consumer can classify a
+// completed review as failed. A cause belongs here only when ending the child
+// with it means something went wrong.

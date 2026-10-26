@@ -67,11 +67,10 @@ const WHY: Record<string, string> = {
   // work" does not apply — re-issuing the same prompt re-reads it again.
   "review-skill-reread":
     "re-read its own skill file past the cap — it opened the same SKILL.md over and over (the read/cat/grep alternation no loop detector sees) instead of reviewing; the allowance is PI_ENSEMBLE_REVIEW_SKILL_READS (default 3 reads, steer at N+1, ended at N+2)",
-  // #1827 — not a kill: the reviewer wrote its verdict and this harness ended
-  // the child at that point rather than letting it run 200-300 more tool calls
-  // after the answer was already there. The report carries the verdict.
-  "review-post-verdict":
-    "ended the moment its VERDICT appeared — the answer was already written, and reviewers otherwise keep calling tools for hundreds of turns afterwards (PI_ENSEMBLE_ADVERSARIAL_BOUND_MS is the reviewer's own run bound; this stop is not a failure)",
+  // #1827 — NOT a kill and not a row: the post-verdict stop sets no
+  // `killCause`, so `killDetail` — which finds the last `dispatch-failed` that
+  // carries one — can never select it. A clean end has nothing to explain in
+  // the kill panel; it appears in the dispatch report as a stop reason.
 };
 
 /**

@@ -38,24 +38,26 @@
  * every other cap.
  */
 
-import path from "node:path";
 import { VERDICT_STATUSES } from "./adversarial-verdict.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
-import { isSkillFileRead } from "./lens-skill-load-proof.ts";
+import { isSkillReadWith } from "./lens-skill-load-proof.ts";
+import { candidateDirs, resolveSkillDir, skillFileCandidates } from "./lens-skill-path.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
+import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
 /** A child that re-read its skill file past the cap. */
 export const REVIEW_SKILL_REREAD_KILL = "review-skill-reread" as const;
-/** A reviewer that was ended as done once its verdict appeared. */
+/** A reviewer that was ended as done once its verdict appeared. NOT a member
+ *  of `DispatchResult.killCause` — it is the value of `reviewStopReason`, the
+ *  clean-end vocabulary. See types.ts for why the two are separate. */
 export const REVIEW_POST_VERDICT_STOP = "review-post-verdict" as const;
 
-/** The roles the two bounds apply to. The fix-pass `developer` is not one. */
-export const REVIEWER_ROLES: readonly string[] = [
-  "code-review-specialist",
-  "adversarial-developer",
-];
+/** The roles the two bounds apply to. The fix-pass `developer` is not one.
+ *  Read only through `isReviewerRole` — a second list a caller keeps by hand is
+ *  how a role ends up half-bounded. */
+const REVIEWER_ROLES: readonly string[] = ["code-review-specialist", "adversarial-developer"];
 
 /** Does this role get the reviewer bounds? */
 export function isReviewerRole(role: string): boolean {
@@ -66,10 +68,31 @@ function capsOn(): boolean {
   return process.env.PI_ENSEMBLE_DISPATCH_CAPS !== "0";
 }
 
+/** Default allowance, and the ceiling an operator knob cannot raise past. */
+const DEFAULT_SKILL_READ_CAP = 3;
+const MAX_SKILL_READ_CAP = 50;
+
 /** Reads of its own skill file a reviewer is allowed before the first steer. */
 export function reviewSkillReadCap(): number {
-  const n = Number(process.env.PI_ENSEMBLE_REVIEW_SKILL_READS);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 3;
+  const raw = process.env.PI_ENSEMBLE_REVIEW_SKILL_READS;
+  // An unset or EMPTY knob is the operator saying "default", not "0": the old
+  // `Number("")` was 0, which silently made every single read a violation.
+  const text = raw?.trim() ?? "";
+  if (text === "") return DEFAULT_SKILL_READ_CAP;
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < 1) {
+    traceWarn(
+      `PI_ENSEMBLE_REVIEW_SKILL_READS="${raw}" is not a positive integer — using ${DEFAULT_SKILL_READ_CAP}`,
+    );
+    return DEFAULT_SKILL_READ_CAP;
+  }
+  if (n > MAX_SKILL_READ_CAP) {
+    traceWarn(
+      `PI_ENSEMBLE_REVIEW_SKILL_READS=${n} exceeds the ${MAX_SKILL_READ_CAP}-read ceiling — using ${MAX_SKILL_READ_CAP}`,
+    );
+    return MAX_SKILL_READ_CAP;
+  }
+  return n;
 }
 
 /** The adversarial reviewer's own run bound (a lens child's is 30 min). */
@@ -99,27 +122,32 @@ export interface SkillReadGuard {
 export function createSkillReadGuard(o: {
   skillPath: string;
   reported: () => boolean;
-  /** Injectable for tests; the guard is pure otherwise. */
-  now?: () => number;
 }): SkillReadGuard {
-  // No skill path to compare against, or caps off: the guard observes nothing
-  // and can neither steer nor kill.
   const active = capsOn() && !!o.skillPath;
   let reads = 0;
   let steered = false;
   let killed = false;
+  // Built ONCE for the guard's lifetime, not per tool call: resolving the
+  // skill dir and listing its accepted spellings reaches the filesystem
+  // (`realpathSync`), and this guard sits on the per-stdout-line hot path of a
+  // child that may run hundreds of turns.
+  const dir = active ? resolveSkillDir(o.skillPath) : "";
+  const wants = dir ? skillFileCandidates(dir) : [];
+  const dirs = wants.length > 0 ? candidateDirs(wants) : [];
   const cap = reviewSkillReadCap();
   return {
     observe: (event) => {
-      if (!active) return;
+      if (!active || wants.length === 0) return;
       const msg = event.message;
       if (event.type !== "message_end" || msg?.role !== "assistant") return;
       if (msg.stopReason === "error" || msg.stopReason === "aborted") return;
       for (const block of msg.content ?? []) {
         if (block.type !== "toolCall") continue;
-        const name = (block.name ?? "").toLowerCase();
+        // `name` is Pi's — shape not ours — so a non-string never matches
+        // rather than throwing "[object Object]" through the matcher.
+        const name = typeof block.name === "string" ? block.name.toLowerCase() : "";
         const args = (block.arguments ?? {}) as Record<string, unknown>;
-        if (isSkillFileRead(name, args, o.skillPath)) reads += 1;
+        if (isSkillReadWith(name, args, dirs, wants)) reads += 1;
       }
     },
     steerText: () => {
@@ -151,13 +179,55 @@ export interface VerdictStop {
 }
 
 /**
- * The live post-verdict stop. Accumulates every text block of every assistant
- * `message_end` and asks the consumer's own reader whether a verdict is in it.
- *
- * Accumulated text, not the last block alone: a reviewer that returns its
- * verdict in one block and its findings in the next must not be judged by a
- * different rule than `parseVerdict` will judge the finished reply by.
+ * Assistant text blocks kept verbatim for the marker scan. The stop looks at
+ * the NEWEST text plus a small look-back, never at the whole accumulation: a
+ * 400-turn reviewer would otherwise re-parse its entire reply on every
+ * `message_end`, which is quadratic in a child this bound exists to bound. The
+ * look-back covers the one shape a newest-block-only rule misses — the verdict
+ * at the end of one block and the findings in the next.
  */
+const VERDICT_SCAN_WINDOW = 8;
+
+/**
+ * The live post-verdict stop. Accumulates every text block of every assistant
+ * `message_end` (that accumulation is the RESULT), and asks the consumer's own
+ * reader whether a verdict is in the tail of it.
+ *
+ * The scan is a window, the stored text is not: `parseVerdict` will later read
+ * the whole accumulated reply, so a verdict the window happened to miss is
+ * still the verdict the loop reports — it simply costs one extra turn of tail
+ * rather than a disagreeing verdict.
+ */
+export function createVerdictStop(): VerdictStop {
+  const parts: string[] = [];
+  let stopped: string | undefined;
+  return {
+    observe: (event) => {
+      const msg = event.message;
+      if (event.type !== "message_end" || msg?.role !== "assistant") return stopped !== undefined;
+      if (msg.stopReason === "error" || msg.stopReason === "aborted") return stopped !== undefined;
+      let added = false;
+      for (const block of msg.content ?? []) {
+        if (block.type === "text" && block.text) {
+          parts.push(block.text);
+          added = true;
+        }
+      }
+      if (stopped) return true;
+      // An event that added no text cannot carry a verdict; re-scanning the
+      // unchanged tail of the accumulation for it is the quadratic cost this
+      // window exists to remove.
+      if (!added) return false;
+      const tail = parts.slice(-VERDICT_SCAN_WINDOW).join("\n");
+      const hit = readEnumMarker(tail, "VERDICT", VERDICT_STATUSES);
+      if (hit) stopped = hit;
+      return stopped !== undefined;
+    },
+    text: () => parts.join("\n"),
+    status: () => stopped,
+  };
+}
+
 /**
  * Which bounds a given spawn gets, decided in ONE place so a role cannot be
  * half-bounded. The re-read cap needs a driver-supplied skill path; the
@@ -175,27 +245,6 @@ export function createReviewBounds(
       ? { skillRead: createSkillReadGuard({ skillPath: opts.reviewSkillPath, reported }) }
       : {}),
     ...(role === "adversarial-developer" ? { verdictStop: createVerdictStop() } : {}),
-  };
-}
-
-export function createVerdictStop(): VerdictStop {
-  const parts: string[] = [];
-  let stopped: string | undefined;
-  return {
-    observe: (event) => {
-      const msg = event.message;
-      if (event.type !== "message_end" || msg?.role !== "assistant") return stopped !== undefined;
-      if (msg.stopReason === "error" || msg.stopReason === "aborted") return stopped !== undefined;
-      for (const block of msg.content ?? []) {
-        if (block.type === "text" && block.text) parts.push(block.text);
-      }
-      if (stopped) return true;
-      const hit = readEnumMarker(parts.join("\n"), "VERDICT", VERDICT_STATUSES);
-      if (hit) stopped = hit;
-      return stopped !== undefined;
-    },
-    text: () => parts.join("\n"),
-    status: () => stopped,
   };
 }
 
@@ -217,10 +266,16 @@ export interface ReviewBoundTargets {
   kill: () => void;
   /** The prompt's `agent_end` arrived — the post-verdict end also closes stdin. */
   completePrompt: () => void;
-  /** A killing bound has armed: the advisory steers stand down (#1827 ordering). */
+  /** A KILLING bound has armed: the advisory steers stand down (#1827 ordering).
+   *  Set only where a bound actually ends the child — never on an advisory steer. */
   armBound: () => void;
   /** Record the cause the spawn applies AFTER `applyChildBound`. */
   setKillCause: (cause: DispatchResult["killCause"]) => void;
+  /** The child has sent its `agent_end` — nothing left to stop. */
+  reported: () => boolean;
+  /** The CURRENT segment is inside Pi's in-process retry, so ending the child
+   *  now discards the replay it is about to resend. Mirrors `willRetryAfter`. */
+  willRetry: () => boolean;
 }
 
 /**
@@ -246,9 +301,15 @@ export function observeReviewBounds(
     // goes through the driver's seam when the caller has one (so the lifecycle
     // record names the source) and to raw stdin otherwise — the same fallback
     // `armChildBound` uses.
+    //
+    // #1827 round 1 — the ADVISORY steer does NOT arm the bound. `armBound`
+    // stands down every other supervision seam (slow notice, turn nudge,
+    // child-bound wrap-up, the caps steer); arming it on a message whose whole
+    // purpose is to get the child to change course would silence the
+    // supervision that the steer exists to supplement, and the steer often
+    // works — the child carries on and reviews. Only the KILL arms.
     const steer = o.skillRead.steerText();
     if (steer !== undefined) {
-      targets.armBound();
       try {
         if (targets.onSteer) targets.onSteer(steer, SKILL_REREAD_STEER_SOURCE);
         else targets.writeSteer(steer);
@@ -257,17 +318,36 @@ export function observeReviewBounds(
       }
     }
     if (o.skillRead.shouldKill()) {
+      targets.armBound();
       targets.setKillCause(REVIEW_SKILL_REREAD_KILL);
       targets.kill();
     }
   }
   // The post-verdict stop ends the child as DONE, not killed: the reviewer's
   // answer is in hand, so the child is ended NOW and none of its later tool
-  // calls run. `completePrompt` closes stdin exactly as a normal end would.
-  if (o.verdictStop && o.assistantMessageEnd && !o.verdictStop.status()) {
+  // calls run. `completePrompt` closes stdin exactly as a normal end would —
+  // and it is what keeps the accumulated reply as the result rather than a
+  // replay (spawn.ts only opens the stdin gate on a non-retrying `agent_end`).
+  //
+  // Two gates, both copied from the re-read cap and from `willRetryAfter` in
+  // spawn-support.ts, for the same reason: while the child has reported, or is
+  // mid-retry, its stdout belongs to an answer being delivered or about to be
+  // REPLAYED, and a stop that ends the child there loses the very reply the
+  // stop is claiming to preserve. `status()` is checked by the caller before
+  // `observe`, so an errored/aborted turn — which records no verdict — never
+  // reaches here either.
+  if (
+    o.verdictStop &&
+    o.assistantMessageEnd &&
+    !o.verdictStop.status() &&
+    !targets.reported() &&
+    !targets.willRetry()
+  ) {
     if (o.verdictStop.observe(o.assistantMessageEnd)) {
       targets.armBound();
-      targets.setKillCause(REVIEW_POST_VERDICT_STOP);
+      // NOT `setKillCause`: a clean end is not a kill cause — see
+      // spawn-review-bounds.ts for why the stop rides on `reviewStopReason`
+      // instead, where no failure-or-cap consumer can mistake it for one.
       targets.completePrompt();
       targets.kill();
     }

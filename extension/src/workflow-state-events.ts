@@ -206,7 +206,7 @@ export type WorkEvent =
       /** Process-level failure (non-zero exit), distinct from provider-error. */
       exitCode?: number | null;
       errorTail?: string;
-      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout; #951 adds tool-inactivity; #1567 adds child-bound/no-progress/stuck-tool; #1827 adds review-skill-reread/review-post-verdict). Named type, not a literal union: see `DispatchFailKillCause`. */
+      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout; #951 adds tool-inactivity; #1567 adds child-bound/no-progress/stuck-tool; #1827 adds review-skill-reread). A clean reviewer stop is NOT a cause here — it is `reviewStopReason` on the result. Named type, not a literal union: see `DispatchFailKillCause`. */
       killCause?: DispatchFailKillCause;
       /** #543 — the F1 streak evidence at a loop kill (tool + count);
        * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped.
