@@ -8,6 +8,19 @@
  * the same grounds — contributes nothing, and its reason is kept so the
  * cycle's event log and handoff can say what the planner got wrong.
  *
+ * #1756 — those checks run on the value Pi PASSED TO THE CHILD, not on the raw
+ * arguments: Pi clones them, converts them (`Value.Convert`) and validates the
+ * converted result, so a model that sends an array field as a single string is
+ * accepted in the child and was refused HERE, as "arguments do not match the
+ * report_workstream schema". The child had already recorded the workstream, so
+ * the retry under the same id was refused as a duplicate and the whole
+ * workstream's paths were lost. Same parent, same schema, two verdicts: Pi's
+ * `validateToolArguments` (pi-ai `utils/validation.js`) CLONES the arguments
+ * and passes them through `Value.Convert` before checking them, so an array
+ * field that arrived as a single string is an one-element array by the time
+ * `execute` ran. The parent mirrors that clone-and-convert (`asTheChildSawIt`)
+ * and judges, records and folds the CONVERTED value.
+ *
  * A call with NO result entry is different: the channel that carries results
  * failed, so nothing says the planner did anything wrong. Those calls are
  * counted as `unreadable`, and the step parks on them rather than reading them
@@ -80,6 +93,28 @@ export function emptyWorkstreamReport(): WorkstreamReport {
 
 type ToolUse = { id?: unknown; name?: unknown; arguments?: unknown };
 
+/**
+ * The value Pi's tool validation actually checked: a clone of what the model
+ * sent, passed through TypeBox `Value.Convert` (#1756). Pi's
+ * `validateToolArguments` (pi-ai `utils/validation.js`) runs exactly this
+ * clone-then-Convert before its `Check`, so the child's `execute` sees the
+ * converted shape — an array field that arrived as one string is an
+ * one-element array by then. The clone is what makes the raw transcript safe
+ * to hand to the state file: `Value.Convert` mutates its argument in place.
+ * A value that no conversion can repair (no `id`, an object where an array
+ * belongs) is still invalid here and is refused with the reason it always
+ * carried.
+ */
+function asTheChildSawIt(args: unknown): unknown {
+  try {
+    return Value.Convert(WORKSTREAM_PARAMETERS, structuredClone(args));
+  } catch {
+    // A clone of the model's arguments can fail (a getter that throws, a
+    // cyclic shape). Then the raw value is what this reader judges, as before.
+    return args;
+  }
+}
+
 function isWorkstreamArgs(v: unknown): v is WorkstreamArgs {
   return Value.Check(WORKSTREAM_PARAMETERS, v);
 }
@@ -131,23 +166,26 @@ export function workstreamCallsOf(
       refuse(rawId, r.text || "refused");
       continue;
     }
-    // Pi validated the call, but the parent judges it again: a value this check
-    // would refuse must not reach state because the child let it through.
-    if (!isWorkstreamArgs(args)) {
+    // Pi validated the call, but the parent judges it again — on the SAME
+    // value Pi validated (#1756), so the two agree: a value the child let
+    // through and this check would refuse must not reach state, and a value the
+    // child accepted must never be refused here for a shape Pi already fixed.
+    const converted = asTheChildSawIt(args);
+    if (!isWorkstreamArgs(converted)) {
       refuse(rawId, "arguments do not match the report_workstream schema");
       continue;
     }
-    const pathProblem = workstreamPathProblem(args);
+    const pathProblem = workstreamPathProblem(converted);
     if (pathProblem) {
-      refuse(args.id, pathProblem);
+      refuse(converted.id, pathProblem);
       continue;
     }
-    if (seen.has(args.id)) {
-      refuse(args.id, duplicateWorkstreamIdMessage(args.id));
+    if (seen.has(converted.id)) {
+      refuse(converted.id, duplicateWorkstreamIdMessage(converted.id));
       continue;
     }
-    seen.add(args.id);
-    accepted.push(workstreamFromArgs(args));
+    seen.add(converted.id);
+    accepted.push(workstreamFromArgs(converted));
   }
   return {
     workstreams: foldToCeiling(accepted),
