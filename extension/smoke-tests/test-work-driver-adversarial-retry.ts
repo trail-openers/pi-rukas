@@ -9,7 +9,7 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -17,6 +17,7 @@ import { __setSleepFn } from "../src/work-driver-step-router.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -76,7 +77,9 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-rejected-"));
   try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — a bare directory now reads as "could not tell" (a refusal), not a
+    // clean tree, so this cycle's worktree is a real one-commit repo.
+    initCleanRepo(dir);
     let s = initialState(954, 1_000_000);
     s = {
       ...s,
@@ -149,6 +152,10 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
   for (const w of worktrees) {
     tree[w] = `${dir}/.worktrees/${w}`;
     streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
+    // #1634 — the adversarial diff read REFUSES a directory that is not a git
+    // repository, so a bare worktree dir parks the cycle before the loop the
+    // assertions below script is ever called. Each one is a real clean repo.
+    initCleanRepo(tree[w]);
   }
   return {
     ...s,
@@ -167,7 +174,6 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1-"));
   try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(958, dir, ["task-a", "task-b", "task-c"]);
     await writeState(dir, s);
 
@@ -255,7 +261,6 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w2-"));
   try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(959, dir, ["task-a", "task-b", "task-c"]);
     await writeState(dir, s);
 
@@ -350,7 +355,6 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w3-"));
   try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(960, dir, ["task-a", "task-b", "task-c"]);
     await writeState(dir, s);
 

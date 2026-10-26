@@ -179,7 +179,13 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
 // ------------------------------------------- adversarial: worktree-scoped cwd
 
 {
-  const fanout = read("work-driver-adversarial-fanout.ts");
+  // #1634 fix round — the per-workstream pass moved to
+  // work-driver-adversarial-fanout-run.ts (the §12 line cap split it out of
+  // the fan-out). The allowlist rows above follow the file that HOLDS the
+  // site, and so does this section: the assertions are byte-for-byte the ones
+  // that used to read work-driver-adversarial-fanout.ts, and the fan-out is
+  // now declared seam plumbing for the same reason — it holds none of them.
+  const fanout = read("work-driver-adversarial-fanout-run.ts");
   // The per-workstream adversarial loop is scoped to the workstream's own
   // worktree. The `?? ctx.repoRoot` there is the degenerate last-resort (an
   // id absent from the map), not a cwd-less dispatch — the key is present on
@@ -339,7 +345,12 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     // #1789 — runSingleDispatch moved here and still DEFINES the seam.
     "work-driver-merged.ts",
     "work-driver-dispatch-seam.ts",
+    // #1634 fix round — the per-workstream pass (and the `loopFn` seam call)
+    // moved to work-driver-adversarial-fanout-run.ts, where the adversarial
+    // cwd section above pins the cwd it threads. The fan-out itself now only
+    // calls that helper, so neither file is a dispatch site of its own.
     "work-driver-adversarial-fanout.ts",
+    "work-driver-adversarial-fanout-run.ts",
   ]);
   const allowlisted = new Set(ROOT_INTENTIONAL_SITES.map((s) => s.file));
   const problems: string[] = [];

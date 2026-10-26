@@ -15,6 +15,10 @@ import { execp } from "./exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
+import {
+  adversarialDiffUnreadableCapHit,
+  isDiffUnreadableOutcome,
+} from "./work-driver-adversarial-diff-cap.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
 import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
 import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
@@ -123,6 +127,19 @@ export async function runAdversarial(
           pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
         };
       }
+      return next;
+    }
+    // #1634 — the shortfall is the driver's own diff READ, so the park names
+    // the read (same routing as the two final-failure branches below), with the
+    // failing outcome's own reason as its evidence.
+    if (infraShortfall.every(isDiffUnreadableOutcome)) {
+      next = appendEvent(
+        next,
+        adversarialDiffUnreadableCapHit(
+          infraShortfall.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
+          state.pipelineState.reviewRound,
+        ),
+      );
       return next;
     }
     const noVerdict = new Set(infraShortfall.map((o) => o.id));
@@ -269,6 +286,29 @@ export async function runAdversarial(
         }
       }
     }
+  } else if (
+    // #1634 — a diff nobody could read is not a reviewer that failed to run, so
+    // it is checked BEFORE the N=1 infra branch below (whose first-pass arm
+    // leaves the tail to the router, and whose re-entry arm parks with
+    // `adversarial-infra-failure`, blaming the reviewer for the driver's own
+    // `git diff`). The router path still works: the event it reads carries the
+    // same marker. Checked before the N>1 final-failure branch for the same
+    // reason — one predicate, both arities.
+    failed.length > 0 &&
+    failed.every(isDiffUnreadableOutcome)
+  ) {
+    const names = failed.map((o) => o.id).join(", ");
+    trace(
+      `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
+    );
+    next = appendEvent(
+      next,
+      adversarialDiffUnreadableCapHit(
+        failed.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
+        state.pipelineState.reviewRound,
+      ),
+    );
+    return next;
   } else if (failed.every((o) => o.infra) && ids.length === 1) {
     // #486 — N=1 with a pure infra failure: no verdict exists. TWO-STATE:
     // FIRST pass leaves the dispatch-failed tail for the RETRY_ONCE router;

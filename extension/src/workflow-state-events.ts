@@ -217,6 +217,16 @@ export type WorkEvent =
       tokenBudget?: { budget: number; used: number };
       /** #1593/#1789 — a kill the caller's cycle deadline armed. */
       killedAtCycleDeadline?: CycleDeadlineKill;
+      /**
+       * #1634 — the driver's SYNTHESIS for a diff it could not read, not a
+       * record of a child that died. Stamped at the one synthesising site
+       * (`work-driver-adversarial-fanout-diff.ts`) and routed on structurally:
+       * the park names the read, and both retry ladders decline it (a read
+       * failure is deterministic). The old router matched a prefix of
+       * `errorTail` — a string the reason renderer owns — so a reworded reason
+       * silently lost the cap and the ladder exemption.
+       */
+      diffUnreadable?: true;
       /** #534 — tokens flushed before the process-level failure. */
       usage?: DispatchUsage;
     }

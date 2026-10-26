@@ -97,6 +97,17 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
       "check the reviewer's provider and quota named in the evidence, then re-run `/work {issue}`",
     kindDriven: true,
   },
+  // #1634 — the gate's own read failed, not the reviewer's: nobody judged the
+  // diff, and the driver refused to read "could not tell" as "nothing changed".
+  "adversarial-diff-unreadable": {
+    cls: "pi-rukas",
+    reason: "the driver could not read the worktree's diff for the adversarial gate",
+    // The `pi-rukas` entries carry no action (test-cause-class.ts): the fix is
+    // ours to ship. The operator action for this cap lives in the ONE place
+    // the queue renders it — work-queue-cap.ts::humanActionFor — next to the
+    // `lens-diff-unreadable` row it mirrors.
+    action: null,
+  },
   // The reviewer judged the diff and still found issues after its own rounds.
   "adversarial-loop": {
     cls: "change",

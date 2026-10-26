@@ -43,6 +43,11 @@ function assert(cond: boolean, msg: string) {
 const LISTED = [
   "git-range.ts",
   "work-driver-diff.ts",
+  // #1634 — the adversarial gate's discriminated diff read. Every call goes
+  // through `execGit` (argv + the module's own timeout + a bounded maxBuffer),
+  // and test-work-driver-adversarial-diff-unreadable.ts asserts on the argv
+  // the fake receives, so this file is under the same discipline as the rest.
+  "work-driver-diff-read.ts",
   "work-driver-verify.ts",
   "work-driver-verify-pr17.ts",
   "comment-retention.ts",

@@ -226,6 +226,14 @@ export function humanActionFor(
   if (/lens-diff-unreadable/.test(reason)) {
     return `check that #${primary}'s branch is pushed and \`git fetch origin --prune\` is current — the review could not read the diff`;
   }
+  // #1634 — the adversarial twin of the row above: the pre-commit read of one
+  // worktree failed, so the operator goes to that worktree, not to the remote
+  // refs. Checked BEFORE the lens row's pattern cannot fire on it: the two cap
+  // names share no substring, and a `lens-diff-unreadable` test would otherwise
+  // never see this reason.
+  if (/adversarial-diff-unreadable/.test(reason)) {
+    return `check that #${primary}'s worktree still exists and is a git worktree (\`git -C <path> rev-parse --show-toplevel\`; the path and the git error are in the cap's evidence), then re-run \`/work ${primary}\``;
+  }
   // #1398 — the PR is mergeable while its review re-runs and the driver could
   // not put it back. `--restart` would rebuild the cycle and leave the PR
   // mergeable all the same; the one thing missing is the draft the forge

@@ -23,6 +23,7 @@ import { explainCap } from "../src/work-driver-explain.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
 import { isNulStatusRead, nulStatus } from "./lib/nul-porcelain.ts";
 import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
@@ -111,7 +112,11 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           repoRoot: dir,
           issue: 991,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: hollowExec,
+          // #1634 — the adversarial gate reads each worktree's diff through
+          // this seam (`git rev-parse --show-toplevel`, then
+          // `git diff --end-of-options <base>..HEAD`); these fixtures model
+          // their worktrees on disk, so both reads answer as a clean tree.
+          verifyExecFn: answerDiffReads(hollowExec),
           dispatchFn: async (_pi, spec, opts) => {
             const label = opts?.label ?? spec.role;
             if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
@@ -196,7 +201,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           repoRoot: dir,
           issue: 992,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
+          verifyExecFn: answerDiffReads(exec),
           adversarialLoopFn: async () =>
             mkResult({
               role: "adversarial-developer",
@@ -299,7 +304,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           repoRoot: dir,
           issue: 993,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
+          verifyExecFn: answerDiffReads(exec),
           adversarialLoopFn: async () =>
             mkResult({
               role: "adversarial-developer",

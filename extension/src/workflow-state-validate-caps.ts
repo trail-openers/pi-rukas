@@ -107,6 +107,9 @@ export const CAP_HIT_FIXED_LITERALS = [
   // failed: the branch ops created does not sit on the driver-fetched base.
   "ops-merge-base-mismatch",
   "adversarial-infra-failure",
+  // #1634 — the adversarial gate could not read the worktree diff it is meant
+  // to review; halts rather than approving on the absence of evidence.
+  "adversarial-diff-unreadable",
   // #1243 — the step parked on a provider outage (an endpoint timeout, a
   // transport severance, a short-burst 429) rather than on a failure of the
   // work. NOT `step-failed:` (that prefix would read as a mid-flight crash and

@@ -19,6 +19,7 @@ import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -56,8 +57,6 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1r-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const s = initialState(961, 1_000_000);
     const tree: Record<string, string> = {};
     const streams: Record<
@@ -67,6 +66,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     for (const w of ["task-a", "task-b"]) {
       tree[w] = `${dir}/.worktrees/${w}`;
       streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
+      // #1634 — the adversarial diff read REFUSES a directory that is not a
+      // repository (it no longer reads "could not tell" as "clean"), so each
+      // worktree is a real one-commit repo.
+      initCleanRepo(tree[w]);
     }
     s.pipelineState = {
       ...s.pipelineState,
@@ -187,8 +190,6 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1rr-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const s = initialState(962, 1_000_000);
     const tree: Record<string, string> = {};
     const streams: Record<
@@ -198,6 +199,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     for (const w of ["task-a", "task-b"]) {
       tree[w] = `${dir}/.worktrees/${w}`;
       streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
+      // #1634 — the adversarial diff read REFUSES a directory that is not a
+      // repository (it no longer reads "could not tell" as "clean"), so each
+      // worktree is a real one-commit repo.
+      initCleanRepo(tree[w]);
     }
     s.pipelineState = {
       ...s.pipelineState,
@@ -362,8 +367,6 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w2b-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const s = initialState(963, 1_000_000);
     const tree: Record<string, string> = {};
     const streams: Record<
@@ -373,6 +376,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     for (const w of ["task-a", "task-b"]) {
       tree[w] = `${dir}/.worktrees/${w}`;
       streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
+      // #1634 — the adversarial diff read REFUSES a directory that is not a
+      // repository (it no longer reads "could not tell" as "clean"), so each
+      // worktree is a real one-commit repo.
+      initCleanRepo(tree[w]);
     }
     s.pipelineState = {
       ...s.pipelineState,

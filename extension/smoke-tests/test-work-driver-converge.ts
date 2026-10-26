@@ -16,6 +16,7 @@ import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead, isNulStatusRead, nulNameStatus, nulStatus } from "./lib/nul-porcelain.ts";
+import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
 import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
@@ -177,7 +178,11 @@ async function runConvergeCycle(
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: mockIssueBodyOk,
-      verifyExecFn: exec,
+      // #1634 — the adversarial gate reads each worktree's diff through this
+      // seam (`git rev-parse --show-toplevel`, then
+      // `git diff --end-of-options <base>..HEAD`); this fixture models its
+      // worktrees on disk, so both reads answer as a clean tree.
+      verifyExecFn: answerDiffReads(exec),
       dispatchFn: async (_pi, spec, dOpts) => {
         const label = dOpts?.label ?? spec.role;
         if (label === "explore") return mkResult({ text: EXPLORE_SPEC });
@@ -435,7 +440,8 @@ async function runConvergeCycle(
         host: makeFakePi().pi,
         repoRoot: dir,
         issue: 1001,
-        verifyExecFn: exec,
+        // #1634 — as above: the gate's two diff reads answer as a clean tree.
+        verifyExecFn: answerDiffReads(exec),
       };
       const verdict = await runConvergeGate(ctx, withSpec);
       gateSkipped = verdict === null;

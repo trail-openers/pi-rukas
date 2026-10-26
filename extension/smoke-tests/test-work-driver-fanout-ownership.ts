@@ -7,13 +7,16 @@
  * NOT reviewed, but is still named as a sibling of the reviewed workstreams.
  */
 
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { readWorktreeDiff } from "../src/work-driver-diff-read.ts";
 import { fanOutAdversarial } from "../src/work-driver-adversarial-fanout.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { git, tmpDir } from "./lib/adversarial-fix-fixtures.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -28,10 +31,56 @@ function assert(cond: boolean, msg: string) {
 // disable the empty-diff skip (the same settings the other adversarial tests use).
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
+// No live spawn: a reviewer child this file does not stub must not be waited on
+// (the fixture's own `adversarialLoopFn` stubs answer immediately).
+process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
+process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
+// Transient provider backoff off — the retry ladder must not wait 60 s floors.
+process.env.PI_ENSEMBLE_TRANSIENT_RETRY = "0";
 
 type Ws = { id: string; scope: string; paths: string[]; outOfScope: string[] };
 
-/** A state whose worktrees cover the map's keys, with the map as declared. */
+/**
+ * One real clean repo per workstream id, under `<dir>/.worktrees/<id>` (#1634).
+ *
+ * The adversarial diff read REFUSES a directory that is not its OWN worktree
+ * root, so the old fixture shape — every id mapped at the bare temp dir, plus
+ * `git init` on that dir — now reads as "could not tell" for any id whose path
+ * sits below it, and the pass never reaches the reviewer loop these
+ * assertions script. `stateWith` cannot create the repos itself, because the
+ * reviewed set (`ids`) is passed to `fanOutAdversarial` at the call site, so
+ * each block calls this for the ids it reviews.
+ */
+async function ensureWorktrees(dir: string, ids: string[]): Promise<Record<string, string>> {
+  const created: Record<string, string> = {};
+  for (const id of ids) {
+    const wt = path.join(dir, ".worktrees", id);
+    // The fixture's `.git/info/exclude` is written by `tmpDir` BEFORE the repo
+    // exists, so a bare `.git` directory would make `git init` refuse (and a
+    // real cycle's worktree never has one). Drop it, init, then PROVE the
+    // gate's read answers before handing the path back — the same read the
+    // fan-out makes, so a fixture git cannot read fails here, loudly, with
+    // git's reason, rather than parking a pass the assertions never reach.
+    rmSync(path.join(wt, ".git"), { recursive: true, force: true });
+    initCleanRepo(wt);
+    const read = await readWorktreeDiff(wt);
+    if (!read.ok) throw new Error(`fixture worktree ${wt} is unreadable: ${read.reason}`);
+    created[id] = wt;
+  }
+  return created;
+}
+
+/** `dir`'s own `.git` came from `tmpDir`'s pre-`git init` scaffold, which
+ *  makes `git init` refuse there; drop it the same way before initialising. */
+function initFixtureRepo(dir: string): void {
+  rmSync(path.join(dir, ".git"), { recursive: true, force: true });
+  initCleanRepo(dir);
+}
+
+/** A state whose worktrees cover the map's keys, with the map as declared.
+ *  Every path points at the fixture dir; `ensureWorktrees` makes each reviewed
+ *  id its own repository, and the shared dir is what an id with no repo falls
+ *  back to. */
 function stateWith(dir: string, workstreams: Record<string, Ws>): WorkState {
   const s = initialState(1137, 1_000_000);
   const ids = Object.keys(workstreams);
@@ -41,7 +90,7 @@ function stateWith(dir: string, workstreams: Record<string, Ws>): WorkState {
     pipelineState: {
       ...s.pipelineState,
       currentStep: "adversarial",
-      worktrees: Object.fromEntries(ids.map((id) => [id, dir])),
+      worktrees: Object.fromEntries(ids.map((id) => [id, path.join(dir, ".worktrees", id)])),
       workstreams,
     },
   };
@@ -70,7 +119,7 @@ const WS = {
   // its real sibling and no one else.
   const dir = tmpDir("own-phantom");
   try {
-    git(dir, "init -q -b main");
+    initCleanRepo(dir);
     const reviewed: string[] = [];
     const siblingsSeen: Record<string, string[]> = {};
     const ctx: DriverContext = {
@@ -86,6 +135,19 @@ const WS = {
       },
     };
     const st = stateWith(dir, { docs: WS.docs, code: WS.code });
+    // The phantom (an id with no map entry) is reviewed AT repoRoot, as on
+    // main: that is the behaviour this assertion exists to pin, so it keeps
+    // the fixture's own repo rather than a per-worktree path (#1634 makes a
+    // non-repository path a refusal, which would park the pass before the
+    // loop the assertion reads) — so it keeps the fixture's own repo, which IS
+    // one (git init ran on it above), exactly as on main. The reviewed ids get
+    // their own repositories, because #1634 turned "git could not tell" into a
+    // refusal and a path nested inside another repo is not its own root.
+    st.pipelineState.worktrees = {
+      ...st.pipelineState.worktrees,
+      ...(await ensureWorktrees(dir, ["docs", "code"])),
+      phantom: dir,
+    };
     const { outcomes } = await fanOutAdversarial(
       ctx,
       st,
@@ -118,7 +180,7 @@ const WS = {
   // reviewed, but the docs prompt still names it as a sibling.
   const dir = tmpDir("own-extra");
   try {
-    git(dir, "init -q -b main");
+    initCleanRepo(dir);
     const reviewed: string[] = [];
     const siblingsSeen: Record<string, string[]> = {};
     const ctx: DriverContext = {
@@ -134,12 +196,16 @@ const WS = {
       },
     };
     const st = stateWith(dir, WS);
+    // Every reviewed id reads the fixture dir itself, which `initCleanRepo`
+    // made a real repository above — the pre-#1634 shape, kept, because it was
+    // always a repository (a BARE dir is what #1634 turned into a refusal).
+    st.pipelineState.worktrees = Object.fromEntries(Object.keys(WS).map((k) => [k, dir]));
     // A real base commit, so the per-workstream diff reads cleanly.
     writeFileSync(path.join(dir, "a.txt"), "base a\n");
     writeFileSync(path.join(dir, "b.txt"), "base b\n");
     writeFileSync(path.join(dir, "c.txt"), "base c\n");
     git(dir, "add -A");
-    git(dir, 'commit -q -m "base"');
+    git(dir, 'commit -q -m "base content"');
     st.pipelineState.baseSha = git(dir, "rev-parse HEAD").trim();
     const { outcomes } = await fanOutAdversarial(ctx, st, ["docs", "code"], new Map(), false, null);
     assert(
@@ -162,7 +228,7 @@ const WS = {
   // truth — a single default workstream, N=1 prompt, no sibling scope.
   const dir = tmpDir("own-fallback");
   try {
-    git(dir, "init -q -b main");
+    initFixtureRepo(dir);
     let n1 = false;
     const ctx: DriverContext = {
       host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
@@ -175,6 +241,8 @@ const WS = {
       },
     };
     const s = initialState(1137, 1_000_000);
+    // The default workstream is the directory itself, which `git(dir, "init")`
+    // above already made a repository.
     const st: WorkState = {
       ...s,
       eventLog: [],
@@ -201,7 +269,7 @@ const WS = {
   // This is deliberate — the map is the cycle's workstream count.
   const dir = tmpDir("own-subset");
   try {
-    git(dir, "init -q -b main");
+    initCleanRepo(dir);
     const reviewed: string[] = [];
     const ctx: DriverContext = {
       host: { sendUserMessage: () => {} } as unknown as DriverContext["host"],
@@ -215,9 +283,11 @@ const WS = {
       },
     };
     const st = stateWith(dir, WS);
+    // As in B: the reviewed ids read the fixture dir, which is a real repo.
+    st.pipelineState.worktrees = Object.fromEntries(Object.keys(WS).map((k) => [k, dir]));
     writeFileSync(path.join(dir, "b.txt"), "base b\n");
     git(dir, "add -A");
-    git(dir, 'commit -q -m "base"');
+    git(dir, 'commit -q -m "base content"');
     st.pipelineState.baseSha = git(dir, "rev-parse HEAD").trim();
     const { next, outcomes } = await fanOutAdversarial(ctx, st, ["docs"], new Map(), false, null);
     assert(

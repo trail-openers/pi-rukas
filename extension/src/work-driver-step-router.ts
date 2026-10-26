@@ -19,6 +19,7 @@ import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { dispatchTokens } from "./work-driver-cycle-total.ts";
+import { parkUnreadableDiffRead } from "./work-driver-diff-read-park.ts";
 import { failureEventOf } from "./work-driver-failure-lookup.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-failure-policy.ts";
 import {
@@ -245,6 +246,12 @@ export async function routeStepOutcome(
       // evidence-carrying replay fires from its own router branch and
       // this generic path becomes develop's fallback.)
       const classification = classifyFailureCause(tail);
+      // #1634 — a diff read the DRIVER could not perform is deterministic, so
+      // it never enters either ladder and parks at once. Whole branch lives in
+      // work-driver-diff-read-park.ts (§12 size); `undefined` means "not the
+      // read", and the ladders below run exactly as before.
+      const readPark = await parkUnreadableDiffRead(ctx, state, step, tail);
+      if (readPark) return readPark;
       // #1308 S3 — acted on here, so the failure-cause seam is asked (in shadow).
       shadowFailureCause(tail, classification, {
         repoRoot: ctx.repoRoot,

@@ -46,6 +46,21 @@ export function explainOther(cap: Cap, state: WorkState): string {
       const cause = adversarialFailureCause(state);
       return `${which}'s adversarial loop failed on infrastructure${cause ? ` (${cause})` : ""} and was not retried further — NO verdict exists for it, and that is not a review rejection. The other workstreams' completed reviews are preserved in the state file (adversarial-workstream-outcome events); recover by re-running /work, which re-enters the adversarial step and re-runs ONLY the workstream(s) that never produced a verdict`;
     }
+    case "adversarial-diff-unreadable": {
+      // #1634 — the git error the read met, from the cap's own evidence — the
+      // ONE field the single cap helper (`work-driver-adversarial-diff-cap.ts`)
+      // writes. There is no second channel: a pipeline-state copy would be a
+      // second source of truth for the same string, and the one that used to
+      // exist was written by whichever sibling's read failed last.
+      const why =
+        [...state.eventLog]
+          .reverse()
+          .find(
+            (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+              e.kind === "cap-hit" && e.cap === "adversarial-diff-unreadable",
+          )?.evidence ?? "(no git error recorded)";
+      return `The adversarial gate could not read the worktree diff it is supposed to review: ${why}. The driver halted rather than approving. Before #1634 the diff read returned an empty string for every failure — no worktree path, a directory that is not a repository, a \`git diff\` that threw or exited non-zero — and the empty-diff guard read that as a clean tree: skipped, then APPROVED with zero rounds, so a killed develop round's unreadable worktree merged unreviewed. Check that the worktree named above still exists and is a git worktree (\`git -C <path> rev-parse --show-toplevel\`), then re-run.`;
+    }
     case "step-back-revise-spec": {
       const sb = [...state.eventLog]
         .reverse()

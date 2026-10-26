@@ -16,6 +16,10 @@
 
 import { redactClip } from "./decision-log.ts";
 import {
+  adversarialDiffUnreadableCapHit,
+  isDiffUnreadableDispatch,
+} from "./work-driver-adversarial-diff-cap.ts";
+import {
   FAILURE_REASON_CHARS,
   classifyFailureCause,
   failureCauseReason,
@@ -76,7 +80,21 @@ export function dispatchFailCapFor(
   step: WorkStep,
   tail: DispatchFailureEvent | undefined,
 ): WorkCapLiteral {
-  return stepParkedOnProvider(tail) ? "provider-unavailable" : `step-failed:${step}`;
+  if (stepParkedOnProvider(tail)) return "provider-unavailable";
+  // #1634 — an adversarial child that never ran because the driver could not
+  // READ the diff is a failed read, not a failed dispatch: it gets the cap that
+  // names the read, so the operator is sent to the worktree rather than to the
+  // reviewer. Which event says so is the cap module's ONE predicate — the same
+  // one the step handler's park sites and the retry-ladder exemption call — so
+  // the cap, the park and the ladder cannot disagree about one event.
+  if (
+    step === "adversarial" &&
+    tail?.kind === "dispatch-failed" &&
+    isDiffUnreadableDispatch(tail)
+  ) {
+    return "adversarial-diff-unreadable";
+  }
+  return `step-failed:${step}`;
 }
 
 /**
@@ -140,6 +158,19 @@ export function dispatchFailCapHit(
   tail: DispatchFailureEvent | undefined,
 ): Extract<WorkEvent, { kind: "cap-hit" }> {
   const cap = dispatchFailCapFor(step, tail);
+  // #1634 — the read park is built by the ONE helper in
+  // work-driver-adversarial-diff-cap.ts, so its evidence is redacted and
+  // clipped the same way whichever site raises it (this one, or the three in
+  // the step handler). `dispatchFailCapFor` above is what recognises the read,
+  // structurally, from the marker on the event.
+  if (cap === "adversarial-diff-unreadable") {
+    // Built by the ONE helper — which also stamps `at`, so the sites cannot
+    // drift on anything but the reason they were handed.
+    return adversarialDiffUnreadableCapHit(
+      tail?.kind === "dispatch-failed" ? tail.errorTail : undefined,
+      state.pipelineState.reviewRound,
+    );
+  }
   return {
     kind: "cap-hit",
     at: Date.now(),

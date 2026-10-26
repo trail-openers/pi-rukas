@@ -15,8 +15,16 @@ import { trace } from "./trace.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 
-/** Validate a git SHA before shell interpolation. */
-const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
+/**
+ * Validate a git SHA before shell interpolation.
+ *
+ * #1634 — exported, and `work-driver-diff-read.ts` (the read that GATES an
+ * approval) uses it. One predicate for both diff readers: a second, looser
+ * pattern there accepted anything ref-shaped — including a value with a leading
+ * `-`, which git reads as an option, and a symbolic ref whose movement would
+ * silently change what the gate compared.
+ */
+export const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /**
  * The markers the merged-diff producer below writes BETWEEN per-workstream
@@ -85,7 +93,7 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
   // #453 — try committed diff first when baseSha is available and valid.
   // `git diff baseSha..HEAD` shows everything the developer committed,
   // which `git diff HEAD` misses once the working tree is clean.
-  if (baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha)) {
+  if (baseSha && FULL_SHA.test(baseSha)) {
     try {
       const stdout = await execGit(execp, cwd, ["diff", "--end-of-options", `${baseSha}..HEAD`], {
         maxBuffer: 1024 * 1024,
@@ -107,7 +115,7 @@ export async function fetchDiff(cwd: string | undefined, baseSha?: string): Prom
     // #1153 — the SHA gate applies here too: the primary branch above already
     // refuses an invalid baseSha, and interpolating one into the fallback
     // would just move the unsanitised value to the other call site.
-    const diffRange = baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha) ? `${baseSha}..HEAD` : "HEAD";
+    const diffRange = baseSha && FULL_SHA.test(baseSha) ? `${baseSha}..HEAD` : "HEAD";
     return await execGit(execp, cwd, ["diff", "--end-of-options", diffRange], {
       maxBuffer: 1024 * 1024, // 1 MiB cap
     });

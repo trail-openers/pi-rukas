@@ -19,6 +19,7 @@ import type { DispatchResult, ExtensionAPI } from "../src/types.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -59,8 +60,6 @@ for (const [killCause, cap] of [
 ] as const) {
   const dir = mkdtempSync(path.join(tmpdir(), `work-driver-543-${killCause}-`));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const s = initialState(543, 1_000_000);
     const tree: Record<string, string> = {};
     const streams: Record<
@@ -71,6 +70,9 @@ for (const [killCause, cap] of [
       tree[w] = `${dir}/.worktrees/${w}`;
       streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
     }
+    // #1634 — the fan-out's diff read refuses (never skips) on a directory that
+    // is not a repository, so these worktrees are real clean trees.
+    for (const w of ["task-a", "task-b"]) initCleanRepo(tree[w]);
     // Budget already spent (as post-step persistence would leave it), so any
     // retry would park immediately — the point is a cap kill is NOT retried.
     s.pipelineState = {

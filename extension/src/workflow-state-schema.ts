@@ -198,8 +198,7 @@ export interface PipelineState extends IssueClosedState {
   /**
    * #378 — the resolved intent. Absent when intent resolution is
    * disabled or the resolver returned no `## Spec` block.
-   */
-  /**
+   *
    * #792 — the plan-time no-diff marker. Set by the intent resolver
    * and nowhere else; a marker without a non-empty evidence string is
    * NOT honoured. Optional; absent = no marker.
