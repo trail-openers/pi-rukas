@@ -32,7 +32,13 @@ import { execp } from "../src/exec.ts";
 import type { Finding } from "../src/lens-review-types.ts";
 import { branchHasOpenCriticalRow } from "../src/review-findings-critical-probe.ts";
 import { recordFindingRunOutcome } from "../src/review-findings-store.ts";
-import { findingsStateDir, resetFindingsStateCache } from "../src/review-state-path.ts";
+import {
+  FINDINGS_FILE,
+  STATE_LEAF,
+  agentDir,
+  findingsStateDir,
+  resetFindingsStateCache,
+} from "../src/review-state-path.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -65,16 +71,18 @@ function makeRepo() {
 const commitIn = (r: { dir: string; commit: (c: string) => string }, content: string) =>
   r.commit(content);
 
-/** `<agentDir>/review-state/<key>` for a clone — read from disk, never through
- * `findingsStateDir`, which would CREATE the directory the read-only probe is
+/** `<agentDir>/review-state/<key>` for a clone — read from disk, never through a
+ * creating resolver, which would CREATE the directory the read-only probe is
  * asserted not to create. Same derivation as the module under test: realpath of
- * the clone's git dir, sha256, first 16 hex. */
+ * the clone's git dir, sha256, first 16 hex — but the NAMES come from the
+ * module's own exports (#1832 round 2), so this fixture cannot drift from the
+ * store's spelling and then assert against a path nothing writes to. */
 function stateRootFor(cloneDir: string): string {
   const key = createHash("sha256")
     .update(realpathSync(path.join(cloneDir, ".git")))
     .digest("hex")
     .slice(0, 16);
-  return path.join(process.env.PI_AGENT_DIR as string, "review-state", key);
+  return path.join(agentDir(), STATE_LEAF, key);
 }
 
 const finding = (
@@ -106,6 +114,19 @@ try {
   // fresh-clone assertion), which is why it is not this test's only lookup.
   const loc = await findingsStateDir(execp, dir);
   assert(loc !== undefined, "probe: the clone resolves a state dir");
+  assert(
+    loc !== undefined && loc.file === path.join(loc.dir, FINDINGS_FILE),
+    `fixture: the resolved store carries the exported basename (${FINDINGS_FILE})`,
+  );
+  // #1832 round 2 regression pin — the probe must resolve through the READ-ONLY
+  // arm. This clone's store has not been created by any write yet, so a probe that
+  // lost `readOnly: true` would mint the token and create the clone's state root
+  // right here, and the assertion below fails. `findingsStateDir` above is the
+  // creating arm and runs AFTER the probe, so the ordering is the test.
+  assert(
+    !existsSync(stateRootFor(dir)),
+    "the probe alone created nothing: the clone's state root exists only once the record path runs",
+  );
 
   // No store at all yet: the file does not exist, which the raw read answers as
   // "the genuine empty store" — absent, NOT unreadable.
@@ -198,17 +219,21 @@ try {
     `…and the read-only probe wrote nothing into the state dir (was ${before}, is ${readdirSync(freshRoot).sort().join(",")})`,
   );
 
-  // A clone with NO store at all: the probe must not create one. The answer is
-  // `unreadable` (there is no token to name a directory), and the point of the
-  // assertion is the side effect that did NOT happen. The clone's state root is
-  // read from disk here — NOT from `findingsStateDir`, which would create the very
-  // directory this asserts is absent.
+  // A clone with NO store at all: the probe must not create one, and it answers
+  // `absent` — a store that does not exist holds no rows, and no rows means no
+  // CRITICAL, so there is nothing a forced full round could retire. #1832 round 2:
+  // this used to answer `unreadable` ("no token to name a directory"), which forced
+  // a full review on every clean branch and named a repair for a file that does not
+  // exist. `unreadable` is now reserved for a file that EXISTS and cannot be read or
+  // parsed. The point of the second assertion is still the side effect that did NOT
+  // happen: the clone's state root is read from disk here — NOT through
+  // `findingsStateDir`, which would create the directory this asserts is absent.
   const neverWritten = makeRepo();
   commitIn(neverWritten, "// nothing here yet\n");
   const probeBefore = await branchHasOpenCriticalRow(neverWritten.dir, "feat/x");
   assert(
-    probeBefore.kind === "unreadable",
-    `a clone whose store was never created → unreadable, never a silent absent (got ${JSON.stringify(probeBefore)})`,
+    probeBefore.kind === "absent",
+    `a clone whose store was never created → absent (no store, no rows, no CRITICAL; got ${JSON.stringify(probeBefore)})`,
   );
   assert(
     !existsSync(stateRootFor(neverWritten.dir)),
@@ -286,6 +311,36 @@ try {
   // An empty scratch dir under the agent root is not read as a corrupt store:
   // the resolver keys on the clone, not on stray directories beside it.
   mkdirSync(path.join(agentDir, "empty-branch-check"), { recursive: true });
+
+  // #1832 round 2 — rows for the branch that are ALL malformed answer `absent`
+  // with a trace, NOT `unreadable`: a row the schema refuses is not a row, the
+  // record path does not refuse on it either (it sets such rows aside and carries
+  // on with the valid ones), and a probe stricter than the path whose memory it
+  // reads would force a full round for a branch with nothing open.
+  const allBad = makeRepo();
+  const allBadHead = commitIn(allBad, "const x = 1/0;\n");
+  await recordFindingRunOutcome({
+    cwd: allBad.dir,
+    branch: "feat/x",
+    headSha: allBadHead,
+    findings: [finding("Division by zero", 1)],
+    review: "full",
+  });
+  const allBadFile = (await findingsStateDir(execp, allBad.dir))?.file as string;
+  const allBadRows = JSON.parse(readFileSync(allBadFile, "utf8")) as {
+    rows: Array<Record<string, unknown>>;
+  };
+  assert(allBadRows.rows.length > 0, "fixture: the all-malformed clone starts with one row");
+  // Break the row's schema while keeping its branch, so the branch filter still
+  // sees it — that is what makes "all of this branch's rows are malformed" the
+  // state under test rather than "this branch has no rows".
+  allBadRows.rows = allBadRows.rows.map((r) => ({ ...r, severity: 42 }));
+  writeFileSync(allBadFile, JSON.stringify(allBadRows));
+  const allBadProbe = await branchHasOpenCriticalRow(allBad.dir, "feat/x");
+  assert(
+    allBadProbe.kind === "absent",
+    `a branch whose only rows are malformed → absent, not unreadable (got ${JSON.stringify(allBadProbe)})`,
+  );
 } finally {
   if (savedAgentDir === undefined) delete process.env.PI_AGENT_DIR;
   else process.env.PI_AGENT_DIR = savedAgentDir;

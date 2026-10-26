@@ -35,6 +35,7 @@ import {
   type CarriedEntry,
   decideEmptyDelta,
   resolveDeltaSince,
+  vetoAutoDeltaForOpenCritical,
   writeCarriedEntry,
 } from "./lens-review-auto-delta.ts";
 import type {
@@ -42,7 +43,6 @@ import type {
   AutoDeltaVeto,
   ForcedFullReason,
 } from "./lens-review-delta-disclose.ts";
-import { vetoAutoDeltaForOpenCritical } from "./lens-review-delta-disclose.ts";
 import type { Verdict } from "./lens-review.ts";
 import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
@@ -213,14 +213,15 @@ export async function resolveReviewDiff(opts: {
       kind: "ok";
       diff: string;
       delta?: AutoDeltaInfo;
-      /** #1832 — set on an `ok` outcome that is a FULL review because the
+      /** #1832 — set on EVERY `ok` outcome that is a FULL review because the
        * automatic delta stood down (an open CRITICAL row is pending, or the
-       * findings store is unreadable). Never set together with `delta`. */
+       * findings store is unreadable), and stamped in ONE place — the `okArm`
+       * helper below — rather than at each arm. Never set together with `delta`:
+       * a delta and a veto are mutually exclusive, and an arm that returns a
+       * `delta` has already returned before the stamp could apply. The reason
+       * carries its own `detail` when the read failed, so there is no separate
+       * detail field to keep in step with it (#1832 round 2). */
       forcedFull?: ForcedFullReason;
-      /** #1832 round 1 — why the findings read failed, set only together with a
-       * `findings-unreadable` `forcedFull`. Carried to the summary so the
-       * operator sees WHICH repair is needed instead of a generic warning. */
-      forcedFullDetail?: string;
       /** Who produced `diff` — see the header: only a `computed` range is the
        * split's source of truth for what the PR changed. */
       diffSource: "caller" | "computed";
@@ -307,14 +308,28 @@ export async function resolveReviewDiff(opts: {
     ...(resolution.base !== undefined ? { base: resolution.base } : {}),
     ...(opts.head !== undefined ? { head: opts.head } : {}),
     ...(forcedFull ? { forcedFull } : {}),
-    ...(forcedFull?.kind === "findings-unreadable" && forcedFull.detail
-      ? { forcedFullDetail: forcedFull.detail }
-      : {}),
   };
 }
 
 /** Every `resolveReviewDiff` answer, shared by the delta helpers below. */
 type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
+
+/**
+ * The single place a full-review `ok` outcome is built (#1832 round 2).
+ *
+ * `resolveReviewDiff` has three arms that can return a FULL review — the explicit
+ * `since` arm returns a delta, so it is not one of them — and every one of them
+ * must carry `forcedFull` when the veto fired. Writing the spread at each arm is
+ * how the field came to be stamped on one and missed on another: an arm without
+ * it reports a forced full review as an ordinary one, and the `Mode:` line the
+ * operator reads says "the whole branch diff" for a round that was forced.
+ */
+function okArm(
+  fields: Omit<Extract<ReviewDiffOutcome, { kind: "ok" }>, "kind" | "forcedFull">,
+  forcedFull: ForcedFullReason | undefined,
+): Extract<ReviewDiffOutcome, { kind: "ok" }> {
+  return { kind: "ok", ...fields, ...(forcedFull ? { forcedFull } : {}) };
+}
 
 /**
  * #1128 — the automatic delta's diff. The hunk-level reviewed patch

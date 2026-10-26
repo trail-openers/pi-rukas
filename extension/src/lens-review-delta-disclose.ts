@@ -17,15 +17,17 @@
  */
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
-import { branchHasOpenCriticalRow } from "./review-findings-critical-probe.ts";
 import { trace } from "./trace.ts";
 
 /**
- * #1832 round 1 — the veto's three answers, so its caller SWITCHES on the outcome
- * instead of reading a `since` that is absent for two different reasons. That
- * ambiguity was the first cut's shape (`{ since, reason? }`), which let "no delta
- * was available" and "the delta was vetoed" look identical to anything but this
- * module's own caller.
+ * #1832 — the veto's three answers, so its caller SWITCHES on the outcome instead
+ * of reading a `since` that is absent for two different reasons. That ambiguity
+ * was the first cut's shape (`{ since, reason? }`), which let "no delta was
+ * available" and "the delta was vetoed" look identical to anything but this type's
+ * own reader. The veto itself lives beside `resolveDeltaSince` in
+ * lens-review-auto-delta.ts — the two are the two halves of one decision, the base
+ * and whether it may be used — and is re-exported from here so every consumer of
+ * the delta disclosure keeps importing from one module.
  *
  * `{ kind: "none" }` means there was no automatic delta to veto at all (no ledger
  * entry, or a first review): nothing was forced, and the round is full on its own
@@ -37,41 +39,9 @@ export type AutoDeltaVeto =
   | { kind: "forced"; reason: ForcedFullReason }
   | { kind: "none" };
 
-/**
- * #1832 — veto the automatic delta when an open, line-bearing CRITICAL row may
- * still be standing on this branch.
- *
- * The probe is consulted only when an automatic delta actually resolved: with no
- * ledger entry there is no delta to veto and no round to force, and a review that
- * was already going to be full costs no extra read.
- *
- * The read is READ-ONLY (#1832 round 1): the probe resolves the store's location
- * without creating it and never copies an unreadable file aside — a delta decision
- * that leaves artefacts on disk is a side effect nobody asked for, and the round's
- * own record path keeps the copy-aside disclosure it always had.
- *
- * Lives here, beside the reason it produces and the `forcedFullText` that renders
- * it, rather than in lens-review-diff.ts (the 500-line gate, and the one place the
- * reason's shape is defined is the better home for the only thing that constructs
- * it).
- */
-export async function vetoAutoDeltaForOpenCritical(
-  branch: string,
-  cwd: string | undefined,
-  autoSince: string | undefined,
-): Promise<AutoDeltaVeto> {
-  if (!autoSince) return { kind: "none" };
-  const probe = await branchHasOpenCriticalRow(cwd ?? process.cwd(), branch);
-  if (probe.kind === "absent") return { kind: "delta", since: autoSince };
-  const reason: ForcedFullReason =
-    probe.kind === "present"
-      ? { kind: "open-critical" }
-      : { kind: "findings-unreadable", detail: probe.reason };
-  trace(
-    `lens-review: automatic delta since ${autoSince.slice(0, 8)} vetoed — full review (${reason.kind}${reason.kind === "findings-unreadable" && reason.detail ? `: ${reason.detail}` : ""})`,
-  );
-  return { kind: "forced", reason };
-}
+/** The veto, living beside `resolveDeltaSince` (#1832 round 2) and re-exported so
+ * the delta-disclosure surface keeps one import site. */
+export { vetoAutoDeltaForOpenCritical } from "./lens-review-auto-delta.ts";
 
 /** The delta a review ran against. `fallback` is set when an automatic delta
  * could not use its hunk-level method and reviewed the two-dot range instead
@@ -81,15 +51,6 @@ export interface AutoDeltaInfo {
   head: string;
   auto?: boolean;
   fallback?: string;
-  /** Why a review that an automatic delta WOULD have produced instead ran as a
-   * full review (#1832). Set only on a NON-delta outcome — a delta and a
-   * forced-full veto are mutually exclusive — and rendered in the `Mode:` line
-   * so the operator can tell a forced full review from an ordinary one.
-   * #1832 round 1: on the SUMMARY this is its own top-level field
-   * (`LensReviewSummary.forcedFull`), not a member of `deltaReview` — a full
-   * review has no delta to describe, and borrowing the delta shape put empty
-   * `since`/`head` sentinels on a field whose other readers slice them as refs. */
-  forcedFull?: ForcedFullReason;
 }
 
 /**

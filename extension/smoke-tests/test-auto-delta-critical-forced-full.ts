@@ -22,7 +22,8 @@
  *
  * The probe's own behaviour (read-only, three answers, the shared row predicate)
  * is `test-review-findings-critical-probe.ts`; what lives here is the DECISION the
- * probe feeds, including the `forcedFullDetail` that reaches the `Mode:` line.
+ * probe feeds, including the cause that reaches the `Mode:` line on the reason
+ * itself (`forcedFull.detail`) rather than on a parallel field (#1832 round 2).
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -44,6 +45,10 @@ const { resolveReviewDiff } = await import("../src/lens-review-diff.ts");
 const { forcedFullText } = await import("../src/lens-review-delta-disclose.ts");
 import type { ForcedFullReason } from "../src/lens-review-delta-disclose.ts";
 const { renderSummary } = await import("../src/lens-review-render.ts");
+// The store's own names, imported rather than re-derived (#1832 round 2): a
+// fixture that spells the findings file's basename by hand silently stops
+// pointing at the store the probe reads, and then asserts against nothing.
+import { FINDINGS_FILE } from "../src/review-state-path.ts";
 
 const branch = "feature/work";
 
@@ -64,9 +69,10 @@ function seededLedger(headSha: string) {
   ];
 }
 
-/** The findings store path the ledger override pins the store to. */
+/** The findings store path the ledger override pins the store to — built from the
+ * module's own `FINDINGS_FILE` export, not a literal (#1832 round 2). */
 function findingsFile(ledgerFile: string): string {
-  return path.join(path.dirname(ledgerFile), "review-findings.json");
+  return path.join(path.dirname(ledgerFile), FINDINGS_FILE);
 }
 
 const criticalFinding: Finding = {
@@ -157,9 +163,11 @@ const opts = (dir: string) => ({ base: "main", head: "feature/work", branch, cwd
       d.kind === "ok" && d.delta === undefined && d.forcedFull?.kind === "findings-unreadable",
       "an unparseable findings store → forced full (findings-unreadable), never read as absent",
     );
+    // #1832 round 2 — there is no separate `forcedFullDetail` field: the cause
+    // travels on the reason itself, so nothing can carry one without the other.
     assert(
-      d.kind === "ok" && (d.forcedFullDetail ?? "").includes("JSON"),
-      `the forced reason carries WHY the read failed (got ${JSON.stringify(d.kind === "ok" ? d.forcedFullDetail : undefined)})`,
+      d.kind === "ok" && (d.forcedFull?.kind === "findings-unreadable" ? d.forcedFull.detail ?? "" : "").includes("JSON"),
+      `the forced reason carries WHY the read failed (got ${JSON.stringify(d.kind === "ok" ? d.forcedFull : undefined)})`,
     );
     assert(
       d.kind === "ok" && forcedFullText(d.forcedFull as ForcedFullReason).includes("JSON"),
@@ -198,6 +206,34 @@ const opts = (dir: string) => ({ base: "main", head: "feature/work", branch, cwd
     assert(
       d.kind === "ok" && d.delta === undefined && d.forcedFull === undefined,
       "explicit `full: true` → an ordinary full review with no forced marker",
+    );
+  } finally {
+    cleanup(r.dir, r.ledgerFile);
+  }
+}
+
+// (7) #1832 round 2 — EVERY `kind: "ok"` arm of `resolveReviewDiff` carries
+// `forcedFull` when the veto fired, not just the one the first cut stamped. The
+// full-range arm and the empty-delta's full-review arm are different code paths,
+// and an arm that drops the marker reports a forced round as an ordinary one: the
+// `Mode:` line then says "the whole branch diff" for a round that was forced. The
+// assertion also reads the field through a cast, so a re-added parallel
+// `forcedFullDetail` (which the type no longer has) would fail here rather than
+// silently carry a second copy of the cause.
+{
+  const r = await mkRepo();
+  writeLedger(r.ledgerFile, seededLedger(r.c1));
+  try {
+    await seedRow(r.dir, r.c2, [criticalFinding]);
+    const d = await resolveReviewDiff(opts(r.dir));
+    assert(
+      d.kind === "ok" && d.forcedFull?.kind === "open-critical",
+      `the full-range arm carries the marker (kind ${d.kind}, forcedFull ${JSON.stringify(d.kind === "ok" ? d.forcedFull : undefined)})`,
+    );
+    assert(
+      d.kind === "ok" &&
+        (d as { forcedFullDetail?: unknown }).forcedFullDetail === undefined,
+      "…and no parallel `forcedFullDetail` field came back with it (#1832 round 2)",
     );
   } finally {
     cleanup(r.dir, r.ledgerFile);

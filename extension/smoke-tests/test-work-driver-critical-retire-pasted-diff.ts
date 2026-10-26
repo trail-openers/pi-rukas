@@ -103,6 +103,10 @@ async function main() {
   const origLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
   const origSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
   const origAgent = process.env.PI_AGENT_DIR;
+  // The real `Date.now`, captured BEFORE any stub replaces it and outside the
+  // `try`, so the `finally` can always restore it (a `const` declared inside the
+  // block is not in scope there). See the teardown.
+  const realNow = Date.now;
   try {
     const origin = path.join(root, "origin.git");
     const repo = path.join(root, "repo");
@@ -194,7 +198,6 @@ async function main() {
      * forward exactly one second at a time and each round's row is the newest.
      */
     let clock = Date.now();
-    const realNow = Date.now;
     Date.now = () => clock;
     setLedgerCriticalSectionHookForTests(() => {
       clock += 1000;
@@ -374,6 +377,14 @@ async function main() {
       `the driver counted two lens rounds (got ${s2.pipelineState.reviewRound})`,
     );
   } finally {
+    // The clock stub and the critical-section hook are process-wide: leaving them
+    // installed hands a frozen `Date.now` and a mutating hook to whatever runs next
+    // in this process (the verify loop runs files in one bun process), and a later
+    // fixture that dedupes ledger rows on `at` would silently see the same
+    // millisecond forever. Restored FIRST, before the env is put back, so nothing
+    // in the teardown below runs against the stub.
+    Date.now = realNow;
+    setLedgerCriticalSectionHookForTests(undefined);
     process.env.PATH = origPath;
     if (origLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = origLedger;

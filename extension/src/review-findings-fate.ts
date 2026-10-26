@@ -271,14 +271,17 @@ function linesFate(
   // re-reported (a re-report is matched in `applyFindingRound` and never comes
   // here), and a COMPLETE full review. A delta or an incomplete round saw too
   // little to retire a CRITICAL, and a CRITICAL with no `lineHash` has no proof
-  // its cited line changed at all, so both cases carry. `lineHash` is already
-  // known present here (an absent one returned at step 4's carry for a surviving
-  // line, and the next line carries the rest), so what remains is the
-  // full-review test; the row-shape half of that condition is the shared
-  // `isRetirableOpenCriticalRow` the probe calls, so the two agree by
-  // construction rather than by copy.
-  if (row.severity === "CRITICAL") {
-    return full && row.lineHash !== undefined ? { kind: "resolve", reason: "code-gone" } : CARRY;
+  // its cited line changed at all, so both cases carry.
+  //
+  // `isRetirableOpenCriticalRow` (#1832 round 2) is the WHOLE row-shape test here,
+  // called rather than re-derived. `lineHash` was already known present two lines
+  // up for a line that survives anywhere in the file, but not for one past EOF, so
+  // re-testing the shape by hand left the fate rule stating a subset of the probe's
+  // predicate: a row the probe forced a round for and this arm then carried is a
+  // forced round that retires nothing. Both sides now call the one predicate, so
+  // the veto and the rule that consumes the forced round agree by construction.
+  if (isRetirableOpenCriticalRow(row)) {
+    return full ? { kind: "resolve", reason: "code-gone" } : CARRY;
   }
   if (row.lineHash === undefined) return CARRY;
   // Did this round review the stored line? A full review covers the whole
