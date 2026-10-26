@@ -82,9 +82,9 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  *     line differ from what the extractor and the classifier both saw.
  *
  *   - **The tally harvest is an OPTION on this reader, not a second reader.**
- *     {@link AssertionLinesOptions}'s `harvestTallies` is the ONLY difference
- *     between the two routes; everything else — dedupe, redact, rank — is one
- *     pipeline. See {@link consolidatedAssertionLines}. The harvest defaults OFF
+ *     {@link AssertionLinesOptions}'s `harvestTallies` is what separates the two
+ *     routes; everything else — dedupe, redact, rank — is one pipeline. See
+ *     {@link consolidatedAssertionLines}. The harvest defaults OFF
  *     because a per-worktree record's text is `formatExecError`'s wrapper, and when
  *     the tail fits the window that wrapper KEEPS its newlines and indentation — so
  *     an unconditional harvest here read the tally block out of a per-worktree
@@ -112,7 +112,7 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  */
 /**
  * Options distinguishing the two routes into this reader. `harvestTallies` is the
- * `harvestTallies` is the ONLY route difference: the consolidated route holds the
+ * route difference: the consolidated route holds the
  * gate's raw stream and so can read a script's tally block; every other route holds
  * harness prose and must not. Dedupe, redaction and ranking are shared — a second
  * reader that copies them is a reader that forgets one of them (the #1808 round found
@@ -170,7 +170,8 @@ interface AssertionLinesView {
   /**
    * The indented detail lines of any `FAIL` header, same bounds, dedupe and
    * redaction, and screened for credentials. The developer's DIAGNOSIS — given in
-   * the prompt, NEVER stored as evidence (see {@link failHeaderAssertions}).
+   * the prompt, NEVER stored as evidence: {@link failureEvidence}'s `assertions`
+   * is the one public reader for what a round may be stored from.
    */
   details: string[];
 }
@@ -180,10 +181,10 @@ export function assertionLines(text: string, opts: AssertionLinesOptions = {}): 
 }
 
 /**
- * The ONE walker of a verify failure text. {@link assertionLines},
- * {@link failureEvidence} and {@link failHeaderEvidence} are all thin readers of
- * this, so the two channels cannot be assembled by a copy that forgets the wrapper
- * cut, the dedupe set or the redaction — the #1762/#1808 defect family.
+ * The ONE walker of a verify failure text. {@link assertionLines} and
+ * {@link failureEvidence} are the thin readers of this, so the two channels cannot
+ * be assembled by a copy that forgets the wrapper cut, the dedupe set or the
+ * redaction — the #1762/#1808 defect family.
  */
 function assertionLinesView(text: string, opts: AssertionLinesOptions): AssertionLinesView {
   const seen = new Set<string>();
@@ -235,8 +236,9 @@ function assertionLinesView(text: string, opts: AssertionLinesOptions): Assertio
   // only a line the shared table recognises as NAMING a check may be an assertion,
   // and a detail line is prose — it names nothing on its own, which is the whole
   // reason it needs a reader. Its place is beside the header, which is what earns the
-  // round, so this channel stays out of `lines` and {@link failHeaderEvidence}
-  // is what joins header and details into the lines a developer is given. They run
+  // round, so this channel stays out of `lines` and {@link failureEvidence}'s
+  // `given` is what joins header and details into the lines a developer is given.
+  // They run
   // through the SAME shared tail as every assertion ({@link guardedPush}: the #807
   // non-assertion/secret veto, the same redact-then-bound every other stored verify
   // line goes through, the same dedupe set), with the credential screen
@@ -270,8 +272,8 @@ function assertionLinesView(text: string, opts: AssertionLinesOptions): Assertio
  * The two channels of one verify failure text, read ONCE (#1841 round 3, c).
  *
  * `decideCorrectiveRound` used to ask two readers over the same stream —
- * `assertionLines` for its gate and dependency check, `failHeaderEvidence` for what
- * the developer is given — which walked, deduped and redacted the text twice and let
+ * `assertionLines` for its gate and dependency check, a second reader for what the
+ * developer is given — which walked, deduped and redacted the text twice and let
  * the two answers drift. One call returns both, and each caller says which channel
  * it is on.
  */
@@ -286,9 +288,9 @@ export interface FailureEvidence {
 }
 
 /**
- * Read one failure text ONCE and return both channels. {@link assertionLines},
- * {@link assertionLines}, {@link failHeaderAssertions} and
- * {@link failHeaderEvidence} are thin readers of it.
+ * Read one failure text ONCE and return both channels. {@link assertionLines} and
+ * {@link consolidatedAssertionLines} are the other thin readers of it; every caller
+ * that needs both channels asks this one.
  */
 export function failureEvidence(text: string, opts: AssertionLinesOptions = {}): FailureEvidence {
   const view = assertionLinesView(text, opts);
@@ -297,35 +299,6 @@ export function failureEvidence(text: string, opts: AssertionLinesOptions = {}):
     details: view.details,
     given: [...view.lines, ...view.details],
   };
-}
-
-/**
- * #1841 round 2 (b) — the lines a corrective round may be STORED from: the
- * assertions only, never a `FAIL`-header detail. The record's own
- * `corrective-round` event and the fix-pass fence's admission evidence are built
- * from this, so the extra diagnosis the developer is shown in its prompt cannot
- * widen the set of files the round is admitted to have authored.
- *
- * Identical to {@link assertionLines} today, and kept as its own name because the
- * two roles are not the same question — "what names a failing check" (the gate) and
- * "what may authorise a file" (the fence) — and a caller that asks the second one
- * by the first name is a caller that starts passing details the moment someone
- * joins the channels.
- */
-export function failHeaderAssertions(text: string, opts: AssertionLinesOptions = {}): string[] {
-  return assertionLinesView(text, opts).lines;
-}
-
-/**
- * #1841 — the evidence lines a corrective developer is given for one failure text:
- * the assertions, and beneath them the indented details of any `FAIL` header that
- * produced no assertion of its own. One caller-visible reader so the two channels
- * cannot be assembled in one route and forgotten in the other. PROMPT-ONLY: the
- * stored event and the fence read {@link failHeaderAssertions}.
- */
-export function failHeaderEvidence(text: string, opts: AssertionLinesOptions = {}): string[] {
-  const view = assertionLinesView(text, opts);
-  return [...view.lines, ...view.details];
 }
 
 /**

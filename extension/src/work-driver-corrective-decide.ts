@@ -56,7 +56,9 @@ export interface CorrectiveTarget {
    * What the developer is GIVEN: the assertions, plus the `FAIL`-header details.
    * `lines` is the same list the round dispatches and records, and
    * {@link evidence} is the prompt-only superset — the two are kept apart so the
-   * stored event and the fence see assertions alone (#1841 round 2, b).
+   * stored event and the fence see assertions alone (#1841 round 2, b): `lines`
+   * reach the developer's prompt, `evidence` is what the `corrective-round` event
+   * stores and what the write-fence admits a file from.
    */
   lines: string[];
   /**
@@ -80,8 +82,9 @@ export type CorrectiveDecision =
 
 /**
  * The lines a developer is GIVEN for one workstream: bounded, each cut. The
- * `#`1841 detail channel is part of this list and of NO stored field — see
- * {@link CorrectiveTarget.given}.
+ * `#`1841 detail channel is part of this list and of NO stored field — its lines
+ * go to the developer's prompt, while the stored event and the write-fence read
+ * {@link CorrectiveTarget.evidence} (#1841 round 2, b).
  */
 function boundedLines(lines: readonly string[]): string[] {
   return lines

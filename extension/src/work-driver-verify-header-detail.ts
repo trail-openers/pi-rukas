@@ -26,6 +26,7 @@
  * readable. Sharing the module would have meant one file with two routes and two
  * bound sets in it, which is exactly the confusion its own docblock warns about.
  *
+ * The credential screen this harvest asks lives in
  * `work-driver-verify-credential-screen.ts` — the tally's three-arm veto and the
  * post-redaction opaque-run arm that catches an unprefixed base64 blob. It lives
  * there so the record and the harvest each import ONE secret module: the harvest
