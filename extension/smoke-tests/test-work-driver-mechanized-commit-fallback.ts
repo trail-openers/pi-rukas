@@ -25,6 +25,7 @@ import { runWorkDriver } from "../src/work-driver.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
 import { type WorkstreamArgs, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
@@ -160,7 +161,12 @@ const mkDispatchFn =
           repoRoot: dir,
           issue: 995,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
+          // #1634 — the adversarial gate reads each worktree's diff through
+          // this seam (`git rev-parse --show-toplevel`, then
+          // `git diff --end-of-options <base>..HEAD`). These fixtures model
+          // their worktrees on disk rather than creating them, so the two
+          // reads are answered as what they are: a clean tree.
+          verifyExecFn: answerDiffReads(exec),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 995, { allowOpsCommitPr: true }),
@@ -274,7 +280,7 @@ const mkDispatchFn =
           repoRoot: dir,
           issue: 998,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
+          verifyExecFn: answerDiffReads(exec),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: async (_pi, spec, dOpts) => {
@@ -354,7 +360,7 @@ const mkDispatchFn =
           repoRoot: dir,
           issue: 996,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
+          verifyExecFn: answerDiffReads(exec),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 996, { allowOpsCommitPr: true }),
@@ -437,7 +443,7 @@ const mkDispatchFn =
           repoRoot: dir,
           issue: 997,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
+          verifyExecFn: answerDiffReads(exec),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 997, { allowOpsCommitPr: true }),
