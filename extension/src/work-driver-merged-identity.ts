@@ -23,9 +23,12 @@
  *
  * The comparison is `compareReviewedHead` (merge-identity-compare.ts) so the
  * driver and the merge guard cannot drift on what "the same reviewed patch"
- * means, and the identity is computed at BOTH commits — the verified head and
- * the head the fetch found — which is what lets a branch that moved only by
- * merging the mainline in still merge, pinned to the new OID.
+ * means, and the identity is computed at BOTH commits the step is asked about —
+ * the REVIEWED commit the lens row names and the VERIFIED commit the merge is
+ * pinned to. Measuring one of the two (the first cut measured the verified head
+ * and the head the fetch had just brought in, which under the ordinary
+ * reviewed-A / verified-B / fetched-B sequence are the same commit) compares a
+ * commit with itself and approves whatever the review never saw.
  */
 
 import { existsSync } from "node:fs";
@@ -104,44 +107,31 @@ async function readReviewedHead(
   repoRoot: string,
   branch: string,
   /**
-   * Where to read the ledger, in the form `"<path>@<tag>"`.
+   * Where to read the ledger: a plain filesystem path, read as-is.
    *
-   * The `@<tag>` is diagnostic context echoed into the refusal and stripped
-   * before the path is read. It exists because this function answers two
-   * questions a park has to tell apart — "this clone has no ledger" and "the
-   * ledger the caller named holds no row for this branch" — and a caller that can
-   * only name a path cannot tell the operator which file it consulted. The tag
-   * travels with the path it belongs to rather than as a second parameter, so a
-   * caller cannot hand back a label for a file it did not read.
+   * Production never sets it — the check resolves the clone's own ledger through
+   * `ledgerPathFor`, the same resolution every writer and the merge guard use.
+   * It exists so a test can say WHICH ledger its verdict came from: `ledgerPathFor`
+   * honours `PI_ENSEMBLE_REVIEW_LEDGER_FILE` before it consults git, and the
+   * offline verify loop exports that override for every child it runs, so a check
+   * that always resolved through `ledgerPathFor` would read the harness's shared
+   * ledger and answer "no lens row" for a row its own case wrote — or answer from
+   * a row some other test seeded. Every refusal names the path it actually read,
+   * which is what makes the parameter observable rather than decoration.
    */
   ledgerFile?: string,
 ): Promise<{ ok: true; headSha: string } | { ok: false; reason: string }> {
-  // The file the reviewed head is read from. `ledgerPathFor` is the production
-  // answer (one ledger per clone, honoured by every writer); `ledgerFile` lets a
-  // caller that already knows the path read THAT ledger rather than the clone's.
-  // The tag is split off on `#`, not `@`: a filesystem path may legitimately
-  // contain `@` (a user named one, a checkout under a scoped directory), while a
-  // fragment marker would put a separator inside the tag itself.
-  const hash = ledgerFile?.lastIndexOf("#named-ledger:");
-  // The tag is stripped, and the strip is a no-op when the caller named no tag
-  // (`hash` is -1, or no path at all) — which is every production caller. The
-  // marker is a fixed string rather than a bare `#` because a path may contain
-  // one, and stripping at the wrong position would read a file nobody named.
-  const ledgerPath =
-    ledgerFile === undefined
-      ? await ledgerPathFor(execFn, repoRoot)
-      : hash === undefined || hash < 0
-        ? ledgerFile
-        : ledgerFile.slice(0, hash);
-  const label =
-    ledgerFile === undefined || hash === undefined || hash < 0
-      ? undefined
-      : ledgerFile.slice(hash + "#named-ledger:".length);
-  const named = label !== undefined && label !== "" ? ` (${label})` : "";
+  // Which ledger to read: the caller's `ledgerFile` when it named one, and that
+  // file alone; otherwise the clone's own ledger through `ledgerPathFor` — one
+  // ledger per clone, shared by its worktrees, where the lens writer recorded its
+  // row. Quietly preferring another file would let the check decide for itself
+  // which review this merge is verified against.
+  const ledgerPath = ledgerFile === undefined ? await ledgerPathFor(execFn, repoRoot) : ledgerFile;
   if (!ledgerPath) {
     return {
       ok: false,
-      reason: `no review ledger could be located${named} — the reviewed head cannot be read, so nothing licenses this merge`,
+      reason:
+        "no review ledger could be located — the reviewed head cannot be read, so nothing licenses this merge",
     };
   }
   // The file's absence is a refusal, not "no rows". `readLedgerAt` is the
@@ -154,7 +144,7 @@ async function readReviewedHead(
   if (!existsSync(ledgerPath)) {
     return {
       ok: false,
-      reason: `no review ledger at ${ledgerPath}${named} — the reviewed head cannot be read, so nothing licenses this merge`,
+      reason: `no review ledger at ${ledgerPath} — the reviewed head cannot be read, so nothing licenses this merge`,
     };
   }
   // `readLedgerAt` never throws today (every fs and parse fault is swallowed to
@@ -166,14 +156,14 @@ async function readReviewedHead(
   } catch (err) {
     return {
       ok: false,
-      reason: `the review ledger${named} could not be read (${(err as Error).message?.slice(0, 120)})`,
+      reason: `the review ledger at ${ledgerPath} could not be read (${(err as Error).message?.slice(0, 120)})`,
     };
   }
   const headSha = reviewedHeadFromEntries(entries, branch);
   if (headSha === undefined) {
     return {
       ok: false,
-      reason: `no lens review row with a recorded head SHA on file for \`${branch}\`${named} — the /work lens step records the commit it reviewed, so a cycle with no such row was never reviewed on this branch`,
+      reason: `no lens review row with a recorded head SHA on file for \`${branch}\` in ${ledgerPath} — the /work lens step records the commit it reviewed, so a cycle with no such row was never reviewed on this branch`,
     };
   }
   return { ok: true, headSha };
@@ -205,11 +195,11 @@ export async function headCheckRefusals(
 /** The mismatch, in the operator's words: both SHAs and both patch ids. */
 function mismatchReason(
   reviewedHead: string,
+  reviewedPatchId: string,
+  verifiedHead: string,
   verifiedPatchId: string,
-  fetchedHead: string,
-  fetchedPatchId: string,
 ): string {
-  return `the head is not the reviewed one: the lens review pinned ${reviewedHead.slice(0, 8)} (patchId ${verifiedPatchId.slice(0, 8)} at the verified head) but the branch is now at ${fetchedHead.slice(0, 8)} (patchId ${fetchedPatchId.slice(0, 8)}) — content changed after the review, so the approval does not cover it; a human should look at what landed on this branch`;
+  return `the head is not the reviewed one: the lens review covered ${reviewedHead.slice(0, 8)} (patchId ${reviewedPatchId.slice(0, 8)}) but the head to merge is ${verifiedHead.slice(0, 8)} (patchId ${verifiedPatchId.slice(0, 8)}) — content changed after the review, so the approval does not cover it; a human should look at what landed on this branch`;
 }
 
 /**
@@ -217,8 +207,18 @@ function mismatchReason(
  * touches the network and the ledger, where every fault is a refusal.
  *
  * `headOid` is the verified head — the OID the CI evidence was read at, and the
- * OID the merge is pinned to when this function says yes (or the fetched OID,
- * when the head moved only by merging the mainline in).
+ * OID the merge is pinned to whenever this function says yes. It is never
+ * replaced by a fetched read: the pin is the verified OID, and if the remote
+ * moved after the evidence read the forge refuses the pinned merge (the
+ * `--match-head-commit` refusal is classified upstream).
+ *
+ * THE COMPARISON IS REVIEWED AGAINST VERIFIED, never verified against fetched.
+ * The first cut measured the verified head and the head the fetch had just read
+ * back, so the ordinary sequence — reviewed A, verified B, fetched B — compared B
+ * with B, agreed by construction, and merged content nobody had reviewed. Both
+ * patch identities are now taken over the SAME base (the merge base with the
+ * mainline), which is what still forgives a branch that moved only by taking the
+ * mainline in.
  */
 export async function compareFetchedHead(
   execFn: VerifyExecFn,
@@ -263,7 +263,9 @@ export async function compareFetchedHead(
   // The head moved between the review and now. That is legitimate ONLY when the
   // move was merging the mainline in — which a merge-base patch identity
   // detects — so the identity is computed at BOTH commits. A failed fetch is a
-  // refusal: merging on stale refs is the exact failure this check exists for.
+  // refusal: merging on stale refs is the exact failure this check exists for,
+  // and the identity of a commit the clone does not have cannot be computed
+  // without fetching first.
   const base = await identityBase(execFn, repoRoot);
   if (!base.ok) return refusal(base.reason, reviewedHead, headOid);
   const problem = netRefProblem(remote, branch, base.mainline);
@@ -285,70 +287,60 @@ export async function compareFetchedHead(
     );
   }
 
-  // The head the fetch actually brought in. argv form, not a joined string:
-  // `origin/<branch>` is a caller-influenced ref name (it comes from the
-  // cycle's branch, which the planner wrote), and this step runs at repoRoot —
-  // the one place a shell string could reach a sibling group's tree.
-  let fetchedHead: string | undefined;
-  try {
-    const { stdout } = await execFn("git", {
-      cwd: repoRoot,
-      maxBuffer: 8 * 1024,
-      timeout: EXEC_TIMEOUT_MS,
-      argv: ["rev-parse", `${remote}/${branch}`],
-    });
-    const v = stdout.trim();
-    if (isFullCommitSha(v)) fetchedHead = v;
-  } catch (err) {
-    trace(
-      `work-driver: merged head read failed for ${remote}/${branch}: ${(err as Error).message?.slice(0, 120)}`,
-    );
-  }
-  if (fetchedHead === undefined) {
-    return refusal(`could not read the fetched head ${remote}/${branch}`, reviewedHead, headOid);
-  }
-
   // Both identities or neither: a patch identity that could not be computed at
-  // one of the two commits is not evidence of equality, so it refuses rather
-  // than comparing the one it has. `mergeIdentity` computes the verified head's
-  // the way the ledger writers record theirs (`<remote>/<head>` against the
-  // mainline); `committedPatchIdentity` computes the fetched OID's over the same
-  // base, so both sides of the comparison are the ONE construction.
-  const verified = await mergeIdentity(execFn, repoRoot, branch, base.mainline);
-  if (!verified.ok) {
-    return refusal(
-      `could not compute the patch identity at the verified head: ${verified.reason}`,
-      reviewedHead,
-      headOid,
-    );
-  }
-  const fetched = await committedPatchIdentity(
+  // one of the two commits is not evidence of equality, so it refuses rather than
+  // comparing the one it has. Each side is measured over the SAME base — the
+  // merge base with the mainline — which is the only way the comparison can
+  // answer the question it is asked.
+  //
+  // `mergeIdentity` is deliberately not used here: it takes the branch NAME and
+  // resolves `<remote>/<branch>` itself, so it measures the CURRENT head. Under a
+  // moved head both halves then describe the same commit, their patch identities
+  // agree by construction, and the check approves unreviewed content with a note
+  // claiming the patch identity is unchanged. Passing the two commits the step was
+  // asked about — the one the lens row names and the one the evidence names —
+  // makes the two diffs of two different commits, so the verdict means what its
+  // wording says.
+  const reviewed = await committedPatchIdentity(
     execFn,
     repoRoot,
-    fetchedHead,
+    reviewedHead,
     `${base.remote}/${base.mainline}`,
   );
-  if (!fetched.ok) {
+  if (!reviewed.ok) {
     return refusal(
-      `could not compute the patch identity at the fetched head ${fetchedHead.slice(0, 8)}: ${fetched.reason}`,
+      `could not compute the patch identity at the reviewed head ${reviewedHead.slice(0, 8)}: ${reviewed.reason}`,
+      reviewedHead,
+      headOid,
+    );
+  }
+  const verified = await committedPatchIdentity(
+    execFn,
+    repoRoot,
+    headOid,
+    `${base.remote}/${base.mainline}`,
+  );
+  if (!verified.ok) {
+    return refusal(
+      `could not compute the patch identity at the head to merge ${headOid.slice(0, 8)}: ${verified.reason}`,
       reviewedHead,
       headOid,
     );
   }
 
-  const verdict = compareReviewedHead(reviewedHead, verified.patchId, fetched.patchId);
+  const verdict = compareReviewedHead(reviewedHead, reviewed.patchId, verified.patchId);
   if (!verdict.ok) {
     return refusal(
-      mismatchReason(reviewedHead, verified.patchId, fetchedHead, fetched.patchId),
+      mismatchReason(reviewedHead, reviewed.patchId, headOid, verified.patchId),
       reviewedHead,
-      fetchedHead,
+      headOid,
     );
   }
-  // The head moved only by taking the mainline in, so the fetched commit is the
-  // reviewed content and the pin travels with it.
+  // The head moved only by taking the mainline in, so the verified commit is the
+  // reviewed content and the pin stays where the evidence put it.
   return {
     ok: true,
-    headOid: fetchedHead,
-    note: `the head moved ${reviewedHead.slice(0, 8)} → ${fetchedHead.slice(0, 8)} since the lens review and its patch identity is unchanged (the mainline merged in); the merge is pinned to ${fetchedHead.slice(0, 8)}`,
+    headOid,
+    note: `the head moved ${reviewedHead.slice(0, 8)} → ${headOid.slice(0, 8)} since the lens review and its patch identity is unchanged (the mainline merged in); the merge is pinned to ${headOid.slice(0, 8)}`,
   };
 }
