@@ -35,6 +35,7 @@ import {
   mkCycleCtx,
   mkDispatchResult,
 } from "./helpers-dispatch-deck-driver.ts";
+import { driverWorktree } from "./lib/git-worktree-fixture.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
 setupSpawnGuard();
@@ -379,6 +380,12 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   const dir = mkdtempSync(path.join(tmpdir(), "wd-838-"));
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — a fixture `.git` ENTRY is not a repository: `readWorktreeDiff`
+    // now calls such a tree UNREADABLE, the adversarial gate parks the cycle on
+    // an environment fault, and this test — whose contract is the deck header
+    // across a MERGED cycle — measures a handoff that was never meant to happen.
+    // Making the tree a one-commit repo is what lets the cycle reach `merged`.
+    driverWorktree(dir);
     dispatchDeck.reset();
     const optsSeen: { label?: string }[] = [];
     let headerSeen = false;
