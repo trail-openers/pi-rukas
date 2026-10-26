@@ -19,6 +19,7 @@
  * No real Pi spawn; `dispatchFn` and `issueBodyFetcherFn` are injected,
  * mirroring test-explore-body-retry.ts.
  */
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,8 +30,12 @@ import type { NormalisedSpec } from "../src/work-driver-intent.ts";
 import { parseNormalisedSpec, reconcileVerdict } from "../src/work-driver-intent.ts";
 import { readMarker } from "../src/reply-markers.ts";
 import { scratchDir } from "../src/work-driver-workspace.ts";
-import { readState } from "../src/workflow-state.ts";
+import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
+import { repoWithCommittedChange, answerDiffReads } from "./lib/clean-repo-fixture.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { mkLensSummary } from "./test-helpers.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const REPLY_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
@@ -190,6 +195,37 @@ assert(
   assert(!resolvesUnderScratch("tmp/issue-674/../../etc/passwd", root, 674), "...../ escape outside");
 }
 
+/**
+ * #1634 — answer the adversarial gate's two diff reads (`rev-parse
+ * --show-toplevel`, `diff --end-of-options …`) as git would in a CLEAN worktree
+ * at `worktreeDir`, and return `undefined` for every other command so the
+ * caller's own scripting keeps ownership of it. The toplevel names the tree
+ * itself (a worktree of the fixture repo, so git agrees), and the diff reads
+ * empty — the honest shape for a worktree whose work is committed.
+ */
+function answerWorktreeDiffReads(
+  cmd: string,
+  o: { argv?: string[] } | undefined,
+  worktreeDir: string,
+): { stdout: string } | undefined {
+  const argv = o?.argv;
+  if (cmd !== "git" || !argv) return undefined;
+  if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel")
+    return { stdout: `${worktreeDir}\n` };
+  if (argv[0] === "diff" && argv[1] === "--end-of-options") return { stdout: "" };
+  return undefined;
+}
+
+// The driver's exec seam, answered by git itself: whatever tree the driver
+// asks about is asked of the real git in that cwd. A fixture whose tree IS a
+// repository has nothing to gain from a scripted stub here — a scripted ""
+// would be read by #1634's gate as "could not tell" and park the cycle.
+const realGitExec = async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
+  const r = spawnSync(cmd, o?.argv ?? [], { cwd: o?.cwd, encoding: "utf8", env: gitTestEnv() });
+  if (r.status !== 0) throw new Error(`git ${o?.argv?.join(" ") ?? cmd} failed: ${r.stderr}`);
+  return { stdout: r.stdout ?? "" };
+};
+
 async function makeRepoWith(
   prefix: string,
   files: Record<string, string | { missing: true }>,
@@ -309,6 +345,50 @@ async function runDriverCase(
   exploreDispatches: number;
 }> {
   const dir = await makeRepoWith(prefix, files);
+  // #1634 — a cycle that reaches the adversarial gate has a worktree, and the
+  // gate reads that worktree's diff through `readWorktreeDiff`, which REFUSES a
+  // plain directory ("not its own worktree root") rather than reading it as
+  // clean. So the fixture gives the cycle what a real branch step would: a
+  // `git worktree` of the fixture repo at the base it records, carrying the
+  // deliverable the spec names. Both of the gate's reads then answer from git
+  // itself — toplevel names the directory, `git diff <baseSha>..HEAD` is the
+  // change — and a tree nobody can read still parks.
+  const { baseSha } = repoWithCommittedChange(dir);
+  const wsId = "default";
+  const worktreeDir = path.join(dir, ".worktrees", `issue-${issue}-${wsId}`);
+  const wt = spawnSync(
+    "git",
+    ["-c", "user.email=t@t", "-c", "user.name=t", "worktree", "add", "--detach", worktreeDir, baseSha],
+    { cwd: dir, encoding: "utf8", env: gitTestEnv() },
+  );
+  if (wt.status !== 0) throw new Error(`fixture worktree add failed: ${wt.stderr}`);
+  // #1634 — the develop fan-out dispatches a developer INTO this worktree, so
+  // it has to exist on disk (a missing cwd is a refused workstream, #746). The
+  // deliverable paths the spec's `[paths: …]` slots name are written there as
+  // the developer's work, which is what the converge gate later checks.
+  const deliverablePaths: string[] = [
+    "extension/src/work-driver-handoff.ts",
+    "extension/src/work-driver-integrate.ts",
+    "extension/src/work-driver-cherry-pick.ts",
+    "extension/src/workflow-state-schema.ts",
+    "extension/src/work-driver-handoff-recovery.ts",
+    "extension/src/work-driver-handoff-recovery.chat.ts",
+    "extension/src/work-driver-handoff-recovery.md.ts",
+    "extension/src/work-driver-handoff-message.ts",
+    "extension/src/work-driver-worktree-sweep.ts",
+    "extension/src/work-driver-finalize.ts",
+    "extension/src/dispatch-retry.ts",
+    "extension/smoke-tests/test-handoff-rendering.ts",
+    "extension/smoke-tests/test-handoff-tells-the-truth.ts",
+    "extension/smoke-tests/test-work-driver-worktree-sweep.ts",
+    "extension/smoke-tests/test-work-driver-handoff-forge-fallback.ts",
+  ];
+  for (const rel of deliverablePaths) {
+    const target = path.join(worktreeDir, rel);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, "export const deliverable = 1;\n");
+  }
+  const developLog: Array<{ role: string; cwd?: string }> = [];
   let exploreDispatches = 0;
   try {
     const ctx: DriverContext = {
@@ -321,7 +401,28 @@ async function runDriverCase(
           exploreDispatches++;
           return mkResult({ role: "explore", text: reply });
         }
+        if (specArg.role === "developer") {
+          developLog.push({ role: specArg.role, cwd: specArg.cwd });
+          // The developer writes its deliverables into the worktree it was
+          // dispatched in, exactly as a real one does — that is what the
+          // converge gate later reads with git.
+          for (const rel of deliverablePaths) {
+            const target = path.join(specArg.cwd ?? worktreeDir, rel);
+            mkdirSync(path.dirname(target), { recursive: true });
+            writeFileSync(target, "export const deliverable = 1;\n");
+          }
+          return mkResult({ role: "developer", text: "done" });
+        }
         if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        // #1634 — the branch step's ops fallback records the cycle's worktree
+        // map and branch name from its reply (the same shape every other
+        // driver test's ops stub returns); without it the workstream has no
+        // tree to be dispatched into.
+        if (specArg.role === "ops")
+          return mkResult({
+            role: "ops",
+            text: `branch: feature/issue-${issue}\n\n## Worktrees\n- ${wsId}: ${worktreeDir}`,
+          });
         // #1652 — one workstream claiming every path the reply names (the gate's concern).
         if (opts?.label?.startsWith("plan")) {
           // Stop at markdown punctuation (a captured trailing backtick is a malformed path).
@@ -331,14 +432,78 @@ async function runDriverCase(
           const paths = [...new Set(found)];
           return {
             ...mkResult({ role: specArg.role, text: "stub" }),
-            ...planResultFromCalls([{ id: "default", scope: "the fix", paths, outOfScope: [] }]),
+            ...planResultFromCalls([{ id: wsId, scope: "the fix", paths, outOfScope: [] }]),
           };
         }
         return mkResult({ role: specArg.role, text: "stub" });
       },
+      // #1634 — the gate reads the diff for real; the review itself is the
+      // approved stub this fixture always meant to use.
+      adversarialLoopFn: async () =>
+        ({
+          ...mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
+          loopOutcome: "approved",
+          adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+        }) as Awaited<ReturnType<NonNullable<DriverContext["adversarialLoopFn"]>>>,
+      // The six-lens review reads the INTEGRATED diff (origin/<mainline>...
+      // origin/<branch>) through the plain executor, which no fixture seam
+      // reaches — and a throwaway repo has no remote for those refs, so the
+      // read would fail closed. This file's claim is the offloaded SPEC and
+      // the caps around it, so the lens step is injected as the approved stub
+      // every other driver fixture gives it (same shape as
+      // test-work-driver-pr11-lens-diff.ts).
+      lensReviewFn: async () => mkLensSummary(),
+      // #1634 — the worktree the gate reads is the one created above: the
+      // gate's own diff read is the change under review (an empty one would
+      // skip the review), and its toplevel probe names the tree, so both
+      // reads ANSWER. Every other git read on this seam belongs to the
+      // steps past the adversarial gate — consolidated integration, the PR
+      // gate — which this fixture never intended to exercise against a
+      // throwaway repo, so they keep the inert answers the fixture always
+      // gave them.
+      verifyExecFn: async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
+        // #1634 — the adversarial gate's two reads, answered by git itself in
+        // the real worktree: toplevel (which must name the tree) and the diff.
+        const gate = answerWorktreeDiffReads(cmd, o, worktreeDir);
+        if (gate) return gate;
+        const line = commandOf(cmd, o);
+        if (line.startsWith("git diff --end-of-options "))
+          return { stdout: "diff --git a/extension/src/foo.ts b/extension/src/foo.ts\n" };
+        // What the developer produced in this worktree: the deliverable paths
+        // the spec names, as git reports them (committed range and porcelain
+        // alike). The converge gate classifies deliverables off exactly this.
+        if (line.startsWith("git diff --name-only"))
+          return { stdout: `${deliverablePaths.join("\n")}\n` };
+        if (line.startsWith("git status --porcelain"))
+          return {
+            stdout: deliverablePaths.map((f) => `?? ${f}`).join("\n") + "\n",
+          };
+        if (line.startsWith("git rev-parse HEAD")) return { stdout: `${baseSha}\n` };
+        // The develop green-check: the worktree's one commit ahead of the base
+        // the fixture created it at (what the safety net commits the developer's
+        // work into), mirroring what a real develop round leaves behind.
+        if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
+        // The lens-review step reads the INTEGRATED diff — origin/<mainline>
+        // ...origin/<branch> — through the plain executor (a remote read no
+        // fixture seam reaches). Answered here as a pushed branch with no
+        // commits ahead of the mainline: the read SUCCEEDS and is empty, which
+        // the gate skips (#286) rather than parking on.
+        if (line.startsWith("git rev-parse --verify --end-of-options origin/"))
+          return { stdout: `${baseSha}\n` };
+        if (line.startsWith("git rev-list --count --right-only --end-of-options origin/"))
+          return { stdout: "0\n" };
+        if (line.startsWith("git diff --end-of-options origin/")) return { stdout: "" };
+        return { stdout: "" };
+      },
     };
+    if (process.env.OFFLOAD_DEBUG)
+      for (const e of (await readState(dir, issue))?.eventLog ?? [])
+        console.log("EV", JSON.stringify(e).slice(0, 300));
     await runWorkDriver(ctx);
     const after = await readState(dir, issue);
+    if (process.env.OFFLOAD_DEBUG)
+      for (const e of after?.eventLog ?? []) console.log("EV", JSON.stringify(e).slice(0, 300));
+
     const caps = (after?.eventLog ?? []).filter(
       (e) => e.kind === "cap-hit",
     ) as Array<{ kind: "cap-hit"; cap: string }>;
@@ -346,6 +511,7 @@ async function runDriverCase(
     const ns = ps && "normalisedSpec" in ps ? (ps as { normalisedSpec?: unknown }).normalisedSpec : undefined;
     return {
       cap: caps[0]?.cap,
+      developLog,
       caps,
       spec: ns ? (ns as { deliverables: unknown[]; verdict: string }) : undefined,
       exploreDispatches,

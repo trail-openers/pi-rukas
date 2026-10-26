@@ -29,6 +29,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
+import { commandOf } from "./argv-shell.ts";
 
 /** The identity every fixture commit carries, so a CI runner with no global
  *  git identity still commits (#1016 hit this through the safety net). */
@@ -71,4 +72,67 @@ export function initCleanRepo(dir: string): string {
   writeFileSync(path.join(dir, ".git", "info", "exclude"), ".pi/\ntmp/\n");
   run(dir, ["commit", "-q", "--allow-empty", "-m", "base"]);
   return run(dir, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * #1634 — the two git reads the adversarial gate makes of a worktree, matched
+ * in BOTH transport forms. `readWorktreeDiff` goes through the driver's exec
+ * seam as argv (`execFn("git", { argv, cwd })`); a fixture that instead
+ * normalises with `commandOf` sees the shell-form line. Production only ever
+ * uses the argv form — the string branch exists for the fakes that already
+ * normalise before matching.
+ */
+const GATE_ARGV_READS = [
+  ["rev-parse", "--show-toplevel"],
+  ["diff", "--end-of-options"],
+] as const;
+
+function gateArgvRead(argv: string[] | undefined): (typeof GATE_ARGV_READS)[number] | undefined {
+  if (!argv) return undefined;
+  return GATE_ARGV_READS.find((read) => read.every((part, i) => argv[i] === part));
+}
+
+/**
+ * #1634 — wrap a fixture's scripted `verifyExecFn` so it answers the
+ * adversarial gate's two reads HONESTLY instead of falling through to the
+ * fake's catch-all `""`.
+ *
+ * The gate (`readWorktreeDiff`) runs `git rev-parse --show-toplevel` in the
+ * worktree — which must name the worktree itself — and then
+ * `git diff --end-of-options <base>..HEAD` with a `HEAD` fallback. A fake that
+ * answers those with `""` (which is what a catch-all `return { stdout: "" }`
+ * does) is REFUSED: the gate cannot tell a fake's silence from git's, so it
+ * parks with `adversarial-diff-unreadable` and the cycle never reaches
+ * commit-pr. A fixture that scripts git therefore has to answer the toplevel
+ * probe as what the tree is (`cwd` itself) and the diff reads as what the tree
+ * holds. Every other command passes through untouched, so the fixture's own
+ * scripted answers — cherry-pick, push, `gh pr create` — are unaffected.
+ *
+ * `diffFor` lets a fixture return the diff it wants the gate to see (non-empty
+ * = the reviewer actually runs instead of skipping on an empty diff).
+ */
+export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
+  exec: F,
+  diffFor?: (cwd: string, range: string) => string,
+): F {
+  // A real `git diff <range>` prints nothing when the range is empty, so an
+  // absent range reads as a clean tree — not as "the fake was never asked".
+  const diff = (cwd: string, range: string | undefined) => ({
+    stdout: diffFor && range ? diffFor(cwd, range) : "",
+  });
+  return (async (cmd: any, o?: any) => {
+    const read = gateArgvRead(o?.argv);
+    // A shell-form fake may already have folded argv into the command string,
+    // in which case `o.argv` is gone and only the line below matches.
+    if (cmd === "git" && read) {
+      const range = o.argv.find((a: string) => a.includes(".."));
+      return read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, range);
+    }
+    const line = typeof cmd === "string" ? commandOf(cmd, o) : "";
+    if (line === "git rev-parse --show-toplevel") return { stdout: `${o?.cwd ?? ""}\n` };
+    if (line.startsWith("git diff --end-of-options ")) {
+      return diff(o?.cwd ?? "", line.slice("git diff --end-of-options ".length));
+    }
+    return exec(cmd, o);
+  }) as unknown as F;
 }
