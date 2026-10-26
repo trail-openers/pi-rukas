@@ -189,6 +189,10 @@ export function explainCap(
             }
           : undefined,
         pr,
+        // #1533 — the head check's own refusal and the two SHAs it compared,
+        // read off the state file: a park that reads "the gate refused" without
+        // naming the reviewed head and the head at merge is not actionable.
+        hold,
       );
       const skipped =
         hold?.inconclusive && hold.inconclusive.length > 0

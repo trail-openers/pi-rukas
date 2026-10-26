@@ -15,31 +15,41 @@
  *
  *  1. **The verified head** — the full 40-char OID from the SAME bounded read
  *     that supplied the CI evidence (`gatherMergeEvidence`), so the CI verdict
- *     and the pin describe one moment. Missing or malformed → no merge.
- *  2. **The reviewed identity** — for a single-workstream cycle, the head is
- *     fetched (bounded network git) and its merge-base patch identity is
- *     compared with the latest passing adversarial ledger row for the cycle's
- *     branch, with the rule the merge guard applies to agent-run merges
- *     (`compareAdversarialIdentity`). Equal — including a head that moved only
- *     by merging the mainline in, which is exactly what patch identity is for —
- *     merge. Different, no passing row, an unreadable ledger, or a failed fetch
- *     → no merge.
+ *     and the pin describe one moment. `undefined` — the read did not answer,
+ *     failed, or answered with something that is not an OID — is no merge. The
+ *     type is `string | undefined` and the narrowing is a type guard, not a
+ *     cast: a merge command built from a value this file could not vouch for is
+ *     the failure the whole check exists to prevent (both round-1 lens HIGHs
+ *     were about a cast that papered over exactly this).
+ *  2. **The reviewed head** — the `headSha` of the latest LENS ledger row for
+ *     the cycle's branch, read through the same resolution the merge guard uses
+ *     for its own read. Equal to the verified head → merge, pinned to it.
+ *     Different → both refs are fetched with the bounded network-git helper and
+ *     the merge-base patch identity is computed at BOTH commits; equal (the head
+ *     moved only by merging the mainline in) → merge pinned to the fetched OID;
+ *     different, no lens row, an unreadable ledger, a failed fetch or a failed
+ *     identity read → no merge, and the park names both SHAs.
  *
- * Grouped cycles (more than one workstream) skip check 2: their adversarial
- * rows are recorded per workstream tree, not under the integration branch, so a
- * per-branch lookup would park every grouped cycle with a confusing reason. The
- * pin still applies, and the merge notes say the identity check did not apply.
+ * WHY the lens row and not the adversarial one (round-1 review of PR #1837):
+ * the driver's adversarial gate writes NO ledger row — `makeLedgerWrite` records
+ * only the `adversarial_loop` TOOL path — and a round-capped cycle's rows are
+ * `passed: false`, so an adversarial-row rule parked every /work cycle. The
+ * lens step is the review the driver itself runs on the integrated branch, and
+ * it records the OID it covered on every round. Grouped cycles take the same
+ * rule: the lens review covers the one integrated branch the merge merges, so
+ * there is nothing to skip and no `workstreamCount` to consult.
  *
  * Per the PM decisions there is NO re-review route: a head whose changes were
- * not reviewed is never merged, and a human should look at a push that landed
- * on a driver-owned branch after review. No new cap, counter or setting.
+ * not reviewed is never merged, and a human should look at a push that landed on
+ * a driver-owned branch after review. No new cap, counter or setting.
  *
  * The second check's mechanics live in `work-driver-merged-identity.ts`; this
  * file owns the entry point and the first check, so the two refusals stay
- * separately testable — an unreadable OID and a stale identity are different
- * faults with different remedies.
+ * separately testable — an unreadable OID and a stale head are different faults
+ * with different remedies.
  */
 
+import { isFullCommitSha } from "./review-head-sha.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { MergeEvidence } from "./work-driver-merge-authority.ts";
 import { compareFetchedHead, headCheckRefusals } from "./work-driver-merged-identity.ts";
@@ -50,7 +60,7 @@ export interface HeadCheckRefusal {
   reason: string;
   /** The OID the step reviewed, when it had one (the park names both SHAs). */
   reviewedHead?: string;
-  /** The head found at merge time, when a fetch answered (the other SHA). */
+  /** The head found at merge time, when a read answered (the other SHA). */
   foundHead?: string;
 }
 
@@ -74,17 +84,20 @@ function refused(reason: string, reviewedHead?: string): HeadCheck {
  *
  * The shape is re-checked here rather than trusted from the read: the pin's
  * whole claim is precision about one commit, and this is the last place that can
- * say so before the command is built.
+ * say so before the command is built. `MergeEvidence.headOid` is
+ * `string | undefined` — deliberately not `""`, which is neither a value nor an
+ * absence and forces every consumer to guess — so narrowing happens through
+ * this guard and no caller of the result ever casts.
  */
 export function verifiedHeadFromEvidence(evidence: MergeEvidence): HeadCheck {
-  const oid = evidence.headOid;
-  if (typeof oid !== "string" || oid === "") {
+  const oid: string | undefined = evidence.headOid;
+  if (oid === undefined || oid === "") {
     return refused(
       evidence.headOidError ??
         "the merge-evidence read returned no head OID, so there is no commit to pin the merge to",
     );
   }
-  if (!/^[0-9a-f]{40}$/.test(oid)) {
+  if (!isFullCommitSha(oid)) {
     return refused(
       `the head OID the merge evidence reported is not a full 40-char SHA (${oid.slice(0, 48)})`,
     );
@@ -94,53 +107,35 @@ export function verifiedHeadFromEvidence(evidence: MergeEvidence): HeadCheck {
 
 /**
  * The merged step's whole head verification, in sequence: the verified OID from
- * the evidence, then the reviewed identity for a single-workstream cycle.
+ * the evidence, then that OID against the head the cycle's lens review recorded.
  *
- * `workstreamCount` > 1 skips the identity comparison and says so in the
- * returned note; the pin is unaffected. `branch` is the cycle's integration
- * branch name, the same string the ledger rows record.
- *
- * The identity comparison runs only when the CALLER asked for it — which is
- * when it has somewhere to look. A caller with no repoRoot it can read a
- * ledger from, or no branch name to look a row up by, gets the pin and an
- * honest note instead: those inputs are absent in a resumed or hand-built
- * state file, and parkingsuch a cycle on "no git remote found" would be the
- * driver inventing a fault the cycle never had. A real cycle always has both.
+ * `branch` is the cycle's integration branch name — the same string the lens
+ * writer keys its row on — and the comparison is attempted whenever the caller
+ * has a branch name to look a row up by. A caller with no branch name gets the
+ * pin and an honest note instead: that input is absent in a resumed or
+ * hand-built state file, and parking such a cycle on "no lens row on file"
+ * would be the driver inventing a fault the cycle never had. A real cycle always
+ * has one, and gets the full rule.
  */
 export async function verifyMergeHead(
   execFn: VerifyExecFn,
   repoRoot: string,
   branch: string | undefined,
   evidence: MergeEvidence,
-  workstreamCount: number,
-  opts: { identityCheck?: boolean } = {},
+  opts: { skipIdentity?: boolean } = {},
 ): Promise<HeadCheck> {
   const head = verifiedHeadFromEvidence(evidence);
   if (!head.ok) return head;
 
-  if (opts.identityCheck === false || !branch || !repoRoot) {
+  if (opts.skipIdentity === true || !branch || !repoRoot) {
     return {
       ok: true,
       headOid: head.headOid,
-      note: "the merge is pinned to the verified head; the reviewed-identity comparison did not run (no branch name or repository to read the review ledger from)",
+      note: "the merge is pinned to the verified head; the reviewed-head comparison did not run (no branch name or repository to read the review ledger from)",
     };
   }
 
-  const cheap = await headCheckRefusals(execFn, repoRoot, branch, workstreamCount);
+  const cheap = await headCheckRefusals(execFn, repoRoot, branch);
   if (!cheap.ok) return cheap;
-  if (cheap.grouped) {
-    return {
-      ok: true,
-      headOid: head.headOid,
-      note: `grouped cycle (${workstreamCount} workstreams): the merge is pinned to the verified head, but the reviewed-identity comparison did not apply — adversarial rows for a grouped cycle are recorded per workstream, not under the integration branch`,
-    };
-  }
-  return compareFetchedHead(
-    execFn,
-    repoRoot,
-    branch as string,
-    head.headOid,
-    cheap.remote,
-    cheap.mainline,
-  );
+  return compareFetchedHead(execFn, repoRoot, branch, head.headOid, cheap.remote);
 }

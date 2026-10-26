@@ -197,11 +197,47 @@ export function mergeHoldToolingNote(granted: boolean, failureKind?: EvidenceFai
     : "";
 }
 
+/** What the merged step's head verification recorded, for the renderers.
+ *
+ * The three fields a parked cycle carries on `pipelineState.mergeHold` about the
+ * head check. Declared structurally (not imported from the state schema) because
+ * the renderers hand this module a subset, and the queue's summary record and the
+ * state file are two different objects that both carry these three fields.
+ */
+export interface MergeHeadHold {
+  /** Why the head check refused, in the step's own words. */
+  headCheckReason?: string;
+  /** The OID the cycle's lens review recorded. */
+  reviewedHead?: string;
+  /** The head found at merge time. */
+  headAtMerge?: string;
+}
+
+/** The head-check sentence, or "" when the hold was not about the head.
+ *
+ * One sentence, one owner: every surface that explains a merge hold renders this
+ * so an operator reading the chat, the markdown handoff, the queue or the
+ * checkpoint sees the SAME two SHAs and the same reason (#760's rule, extended
+ * to the #1533 fields). Without the SHAs an operator has to go find them, and a
+ * park that reads "the head was not the reviewed one" without naming either is
+ * not actionable.
+ */
+export function mergeHeadHoldNote(head: MergeHeadHold | undefined): string {
+  if (!head?.headCheckReason) return "";
+  const reviewed = head.reviewedHead ? head.reviewedHead.slice(0, 8) : "unknown";
+  const atMerge = head.headAtMerge ? head.headAtMerge.slice(0, 8) : "unknown";
+  return (
+    `The head check refused: ${head.headCheckReason} ` +
+    `(reviewed head ${reviewed}, head at merge ${atMerge}).`
+  );
+}
+
 /** Operator-facing explanation for a cycle that stopped at the merge step. */
 export function explainMergeHold(
   authority: MergeAuthority,
   evidence: MergeEvidence | undefined,
   prNumber: number | undefined,
+  head?: MergeHeadHold,
 ): string {
   const pr = prNumber ? `PR #${prNumber}` : "the PR";
   if (!authority.granted) {
@@ -221,7 +257,8 @@ export function explainMergeHold(
   }
   const why = evidence?.reason ?? "no evidence gathered";
   const tooling = mergeHoldToolingNote(true, evidence?.failureKind);
-  return `${pr} is open and merging is permitted, but the evidence gate refused: ${why}. ${tooling ? `${tooling} ` : ""}The driver merges on what \`gh\` reports, never on a subagent's claim.`;
+  const headNote = mergeHeadHoldNote(head);
+  return `${pr} is open and merging is permitted, but the evidence gate refused: ${why}. ${tooling ? `${tooling} ` : ""}${headNote ? `${headNote} ` : ""}The driver merges on what \`gh\` reports, never on a subagent's claim.`;
 }
 
 /**
@@ -254,6 +291,7 @@ export function mergeHoldAction(
   authority: MergeAuthority,
   prNumber?: number,
   failureKind?: EvidenceFailureKind,
+  head?: MergeHeadHold,
 ): string {
   // `prNumber` comes from the state file's `prNumber?: number` at every call
   // site, so the optional marker (rather than `number | undefined`) is the
@@ -262,6 +300,11 @@ export function mergeHoldAction(
   if (!authority.granted) {
     return mergeHoldGrantAction(pr);
   }
+  // The head check first: an operator told to go chase failing checks on a PR
+  // whose CI is green — and whose real fault is an unreviewed commit — goes
+  // looking in the wrong place. Same reason #745 tags a tooling refusal.
+  const headNote = mergeHeadHoldNote(head);
+  if (headNote) return `${headNote} Nothing may merge what the review did not cover.`;
   const tooling = mergeHoldToolingNote(true, failureKind);
   if (tooling) return `the merge evidence gate for ${pr} ${tooling}`.replace("first.", "first");
   // Names the driver as the actor: a human was never going to merge anyway.

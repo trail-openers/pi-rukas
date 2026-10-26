@@ -26,7 +26,7 @@ import {
   requalifyLine,
 } from "./work-driver-handoff-recovery.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
-import { mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
+import { mergeHeadHoldNote, mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -99,6 +99,13 @@ export function recoveryCommandsChat(
     );
     if (toolingNote) {
       lines.push(toolingNote);
+    }
+    // #1533 — the head check's refusal, with BOTH SHAs: the reviewed one the
+    // lens step recorded and the one the branch is at now. A park that names
+    // neither leaves the operator to go find them in git.
+    const headNote = mergeHeadHoldNote(hold);
+    if (headNote) {
+      lines.push(headNote);
     }
   } else if (cap === "existing-pr-detected") {
     const pr = ps.existingPr;

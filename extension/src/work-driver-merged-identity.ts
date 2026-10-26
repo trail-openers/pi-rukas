@@ -1,24 +1,40 @@
 /**
  * work-driver-merged-identity — #1533: is the head this step is about to merge
- * the head the review covered?
+ * the head the driver's lens review covered?
  *
  * The question has two parts, and they fail for different reasons, so they are
  * two functions: the *refusals* that a cycle's own state can answer (no branch
- * name, no remote, an unreadable mainline, no ledger file) and the *comparison*
- * that needs the fetched refs and the ledger rows. Splitting them keeps
- * `verifyMergeHead` a readable sequence and lets each refusal be tested without
- * a ledger on disk.
+ * name, no remote) and the *comparison* that needs the ledger, the fetched refs
+ * and the two patch identities. Splitting them keeps `verifyMergeHead` a
+ * readable sequence and lets each refusal be tested without a ledger on disk.
  *
- * The comparison itself is `compareAdversarialIdentity` (merge-identity-compare.ts)
- * — the same rule the merge guard applies to agent-run merges — so the driver
- * and the guard cannot drift on what "the same reviewed patch" means.
+ * THE REVIEWED HEAD IS THE LENS ROW's `headSha`, and nothing else (round-1
+ * review of PR #1837). The first cut asked for the latest PASSING ADVERSARIAL
+ * row, and the adversarial review proved that can never be satisfied by a /work
+ * cycle: the driver's adversarial gate records no ledger row at all
+ * (`makeLedgerWrite` in adversarial.ts writes only from the `adversarial_loop`
+ * TOOL path), and a cycle routed here by the lens round-cap holds rows whose
+ * `passed` is false. As built, every /work cycle would have parked. The PM
+ * decision names the lens row instead — which the driver's own lens step DOES
+ * write, per round, carrying the OID it reviewed — and drops the `passed`
+ * re-judgement: the lens gate and the round-cap route upstream of this step
+ * already decided whether this branch may merge, and a merge gate that
+ * re-decides their verdict is a second authority over one question.
+ *
+ * The comparison is `compareReviewedHead` (merge-identity-compare.ts) so the
+ * driver and the merge guard cannot drift on what "the same reviewed patch"
+ * means, and the identity is computed at BOTH commits — the verified head and
+ * the head the fetch found — which is what lets a branch that moved only by
+ * merging the mainline in still merge, pinned to the new OID.
  */
 
 import { mergeIdentity } from "./merge-guard-reads.ts";
-import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
+import { compareReviewedHead } from "./merge-identity-compare.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
+import { identityBase, ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
-import { ledgerPathFor, remoteName } from "./review-ledger.ts";
-import { readLedgerAt } from "./review-ledger.ts";
+import { latestEntry, readLedgerAt } from "./review-ledger.ts";
+import { committedPatchIdentity } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { HeadCheck, HeadCheckRefusal } from "./work-driver-merged-head.ts";
@@ -44,43 +60,118 @@ function refusal(
 }
 
 /**
- * The state-only refusals — everything the cycle's own pipeline state can rule
- * out before a single git call is made. Exported for the tests that assert the
- * cheap faults are cheap: a grouped cycle never fetches, a cycle with no branch
- * name never resolves a remote.
+ * The reviewed head, as the driver's lens review recorded it: the `headSha` of
+ * the LATEST lens row for this branch, read through `ledgerPathFor` — the same
+ * resolution the merge guard uses for its own read, override included, so the
+ * driver and the guard cannot be pointed at two different files.
+ *
+ * `passed` is deliberately NOT consulted. The lens gate and the round-cap route
+ * decided it before this step ran, and a round-capped cycle reaching the merge
+ * with its findings disclosed on the PR is a cycle those gates approved:
+ * refusing it here on a stored boolean would re-litigate their verdict from a
+ * different place with less context.
+ */
+export function reviewedHeadFromEntries(
+  entries: readonly LedgerEntry[],
+  branch: string,
+): string | undefined {
+  const lens = latestEntry([...entries], branch, "lens");
+  if (!lens?.headSha) return undefined;
+  // A legacy or malformed row records a branch NAME in this field (the
+  // pre-#1039 shape), and a name is not a commit: matching one by string
+  // equality against an OID would compare a ref to a SHA and call the
+  // mismatch evidence of drift. An unusable headSha is UNKNOWN — a refusal,
+  // never a match.
+  if (!isFullCommitSha(lens.headSha)) {
+    trace(
+      `work-driver: merged head check — the lens row for ${branch} records headSha "${lens.headSha.slice(0, 40)}", not a 40-char SHA — treated as no reviewed head`,
+    );
+    return undefined;
+  }
+  return lens.headSha;
+}
+
+/**
+ * The ledger read and the reviewed head out of it, with every fault named.
+ *
+ * An empty ledger and no ledger are different faults with different remedies,
+ * so the missing-path case names the read (a broken or unreadable clone) while
+ * a ledger that holds no lens row is a real answer about the review.
+ */
+async function readReviewedHead(
+  execFn: VerifyExecFn,
+  repoRoot: string,
+  branch: string,
+): Promise<{ ok: true; headSha: string } | { ok: false; reason: string }> {
+  const ledgerPath = await ledgerPathFor(execFn, repoRoot);
+  if (!ledgerPath) {
+    return {
+      ok: false,
+      reason:
+        "no git common dir found — the review ledger is unavailable, so the reviewed head cannot be read",
+    };
+  }
+  // `readLedgerAt` never throws today (every fs and parse fault is swallowed to
+  // "no rows"); the guard keeps a torn file a refusal rather than a merge
+  // whatever its current contract says.
+  let entries: LedgerEntry[];
+  try {
+    entries = readLedgerAt(ledgerPath);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `the review ledger could not be read (${(err as Error).message?.slice(0, 120)})`,
+    };
+  }
+  const headSha = reviewedHeadFromEntries(entries, branch);
+  if (headSha === undefined) {
+    return {
+      ok: false,
+      reason: `no lens review row with a recorded head SHA on file for \`${branch}\` — the /work lens step records the commit it reviewed, so a cycle with no such row was never reviewed on this branch`,
+    };
+  }
+  return { ok: true, headSha };
+}
+
+/**
+ * The state-only refusals — everything the cycle's own state can rule out
+ * before a network call. Exported for the tests that assert the cheap faults
+ * are cheap: a cycle with no branch name never resolves a remote.
  */
 export async function headCheckRefusals(
   execFn: VerifyExecFn,
   repoRoot: string,
   branch: string | undefined,
-  workstreamCount: number,
-): Promise<
-  | { ok: true; grouped: false; remote: string; mainline: string }
-  | { ok: true; grouped: true }
-  | { ok: false; refusal: HeadCheckRefusal }
-> {
-  // Grouped cycles record their adversarial rows per workstream tree, not under
-  // the integration branch, so a per-branch lookup would park every grouped
-  // cycle with a confusing reason. The pin still applies; the caller says in the
-  // merged notes that the identity comparison did not apply.
-  if (workstreamCount > 1) return { ok: true, grouped: true };
+): Promise<{ ok: true; remote: string } | { ok: false; refusal: HeadCheckRefusal }> {
   if (!branch) {
-    return refusal("no branch name in pipeline state — cannot look up the reviewed identity");
+    return refusal("no branch name in pipeline state — cannot look up the reviewed head");
   }
   const remote = await remoteName(execFn, repoRoot);
   if (!remote) {
     return refusal(
-      "no git remote found (origin/upstream/first) — the reviewed identity cannot be checked",
+      "no git remote found (origin/upstream/first) — the reviewed head cannot be checked",
     );
   }
-  const mainline = await resolveMainlineForHead(execFn, repoRoot, remote);
-  if (!mainline.ok) return refusal(mainline.reason);
-  return { ok: true, grouped: false, remote, mainline: mainline.mainline };
+  return { ok: true, remote };
+}
+
+/** The mismatch, in the operator's words: both SHAs and both patch ids. */
+function mismatchReason(
+  reviewedHead: string,
+  verifiedPatchId: string,
+  fetchedHead: string,
+  fetchedPatchId: string,
+): string {
+  return `the head is not the reviewed one: the lens review pinned ${reviewedHead.slice(0, 8)} (patchId ${verifiedPatchId.slice(0, 8)} at the verified head) but the branch is now at ${fetchedHead.slice(0, 8)} (patchId ${fetchedPatchId.slice(0, 8)}) — content changed after the review, so the approval does not cover it; a human should look at what landed on this branch`;
 }
 
 /**
- * Fetch, read, compare. Everything after the cheap refusals: this is the half
- * that touches the network and the ledger, and every fault in it is a refusal.
+ * Fetch, read, compare. Everything after the cheap refusals: the half that
+ * touches the network and the ledger, where every fault is a refusal.
+ *
+ * `headOid` is the verified head — the OID the CI evidence was read at, and the
+ * OID the merge is pinned to when this function says yes (or the fetched OID,
+ * when the head moved only by merging the mainline in).
  */
 export async function compareFetchedHead(
   execFn: VerifyExecFn,
@@ -88,36 +179,54 @@ export async function compareFetchedHead(
   branch: string,
   headOid: string,
   remote: string,
-  mainline: string,
 ): Promise<HeadCheck> {
-  // The refs must be current before any identity is computed: a local clone
-  // that has not seen the latest push would report the OLD patch identity and
-  // the step would merge a head it never fetched. Fail closed on a failed
-  // fetch — a merge on stale refs is exactly the failure this check exists for.
-  const problem = netRefProblem(remote, branch, mainline);
-  if (problem !== undefined) return refusal(`git fetch refused: ${problem}`, headOid);
+  // The reviewed head first: a cycle whose lens review recorded no head has no
+  // reviewed commit, and fetching a branch nobody pinned is a network call whose
+  // answer cannot license a merge.
+  const read = await readReviewedHead(execFn, repoRoot, branch);
+  if (!read.ok) return refusal(read.reason, undefined, headOid);
+  const reviewedHead = read.headSha;
+
+  if (reviewedHead === headOid) {
+    // The common case, and the cheap one: the branch has not moved since the
+    // review, so the verified head IS the reviewed head and nothing is fetched.
+    return {
+      ok: true,
+      headOid,
+      note: `the verified head ${headOid.slice(0, 8)} is the head the lens review recorded for ${branch}; the merge is pinned to it`,
+    };
+  }
+
+  // The head moved between the review and now. That is legitimate ONLY when the
+  // move was merging the mainline in — which a merge-base patch identity
+  // detects — so the identity is computed at BOTH commits. A failed fetch is a
+  // refusal: merging on stale refs is the exact failure this check exists for.
+  const base = await identityBase(execFn, repoRoot);
+  if (!base.ok) return refusal(base.reason, reviewedHead, headOid);
+  const problem = netRefProblem(remote, branch, base.mainline);
+  if (problem !== undefined) {
+    return refusal(`git fetch refused: ${problem}`, reviewedHead, headOid);
+  }
   try {
     await runNetGit(execFn, "git", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
       timeoutMs: EXEC_TIMEOUT_MS,
-      argv: ["fetch", remote, branch, mainline],
+      argv: ["fetch", remote, branch, base.mainline],
     });
   } catch (err) {
     return refusal(
       `git fetch of ${remote}/${branch} failed: ${(err as Error).message?.slice(0, 160)}`,
+      reviewedHead,
       headOid,
     );
   }
 
-  // The head the fetch actually brought in, recorded for the park's reason: the
-  // operator has to see BOTH the reviewed OID and the one the branch is on now.
-  //
-  // argv form, not a joined string: `origin/<branch>` is a caller-influenced ref
-  // name (it comes from the cycle's branch, which the planner wrote), and this
-  // step runs at repoRoot — the one place a shell string could reach a sibling
-  // group's tree. The fetch above is argv for the same reason.
-  let foundHead: string | undefined;
+  // The head the fetch actually brought in. argv form, not a joined string:
+  // `origin/<branch>` is a caller-influenced ref name (it comes from the
+  // cycle's branch, which the planner wrote), and this step runs at repoRoot —
+  // the one place a shell string could reach a sibling group's tree.
+  let fetchedHead: string | undefined;
   try {
     const { stdout } = await execFn("git", {
       cwd: repoRoot,
@@ -126,113 +235,57 @@ export async function compareFetchedHead(
       argv: ["rev-parse", `${remote}/${branch}`],
     });
     const v = stdout.trim();
-    if (/^[0-9a-f]{40}$/.test(v)) foundHead = v;
+    if (isFullCommitSha(v)) fetchedHead = v;
   } catch (err) {
     trace(
       `work-driver: merged head read failed for ${remote}/${branch}: ${(err as Error).message?.slice(0, 120)}`,
     );
   }
-  if (foundHead === undefined) {
-    return refusal(`could not read the fetched head ${remote}/${branch}`, headOid);
+  if (fetchedHead === undefined) {
+    return refusal(`could not read the fetched head ${remote}/${branch}`, reviewedHead, headOid);
   }
 
-  const ledgerPath = await ledgerPathFor(execFn, repoRoot);
-  if (!ledgerPath) {
-    // An empty ledger and no ledger are different faults with different
-    // remedies: "the clone has no review file at all" is a broken or unreadable
-    // clone (fail closed, name the read); "the file is there but holds no row
-    // for this branch" is a real answer, and `compareAdversarialIdentity`'s
-    // `no-entry` refusal is the honest wording for it. Returning the refusal
-    // here made every clean-but-unreviewed clone report a tooling fault.
+  // Both identities or neither: a patch identity that could not be computed at
+  // one of the two commits is not evidence of equality, so it refuses rather
+  // than comparing the one it has. `mergeIdentity` computes the verified head's
+  // the way the ledger writers record theirs (`<remote>/<head>` against the
+  // mainline); `committedPatchIdentity` computes the fetched OID's over the same
+  // base, so both sides of the comparison are the ONE construction.
+  const verified = await mergeIdentity(execFn, repoRoot, branch, base.mainline);
+  if (!verified.ok) {
     return refusal(
-      "no git common dir found — the review ledger is unavailable, so the reviewed identity cannot be checked",
+      `could not compute the patch identity at the verified head: ${verified.reason}`,
+      reviewedHead,
       headOid,
-      foundHead,
     );
   }
-  // `readLedgerAt` never throws today (every fs and parse fault is swallowed to
-  // "no rows"); the try/catch keeps a torn file a refusal rather than a merge
-  // whatever its current contract says. The empty case falls through to the
-  // comparison, whose `no-entry` refusal is the honest wording.
-  let entries: LedgerEntry[] = [];
-  try {
-    entries = readLedgerAt(ledgerPath);
-  } catch (err) {
+  const fetched = await committedPatchIdentity(
+    execFn,
+    repoRoot,
+    fetchedHead,
+    `${base.remote}/${base.mainline}`,
+  );
+  if (!fetched.ok) {
     return refusal(
-      `the review ledger could not be read (${(err as Error).message?.slice(0, 120)})`,
+      `could not compute the patch identity at the fetched head ${fetchedHead.slice(0, 8)}: ${fetched.reason}`,
+      reviewedHead,
       headOid,
-      foundHead,
-    );
-  }
-
-  const identity = await mergeIdentity(execFn, repoRoot, branch, mainline);
-  if (!identity.ok) {
-    return refusal(
-      `could not compute the patch identity of ${branch}: ${identity.reason}`,
-      headOid,
-      foundHead,
     );
   }
 
-  const verdict = compareAdversarialIdentity(entries, branch, identity.patchId);
+  const verdict = compareReviewedHead(reviewedHead, verified.patchId, fetched.patchId);
   if (!verdict.ok) {
-    return refusal(describeMismatch(verdict), headOid, foundHead);
+    return refusal(
+      mismatchReason(reviewedHead, verified.patchId, fetchedHead, fetched.patchId),
+      reviewedHead,
+      fetchedHead,
+    );
   }
+  // The head moved only by taking the mainline in, so the fetched commit is the
+  // reviewed content and the pin travels with it.
   return {
     ok: true,
-    headOid,
-    note: `reviewed identity confirmed for ${branch} (patchId ${verdict.patchId.slice(0, 8)})`,
+    headOid: fetchedHead,
+    note: `the head moved ${reviewedHead.slice(0, 8)} → ${fetchedHead.slice(0, 8)} since the lens review and its patch identity is unchanged (the mainline merged in); the merge is pinned to ${fetchedHead.slice(0, 8)}`,
   };
 }
-
-/** The mismatch, in the operator's words: what was reviewed vs what is there. */
-function describeMismatch(
-  verdict: Exclude<ReturnType<typeof compareAdversarialIdentity>, { ok: true }>,
-): string {
-  const reviewed = "entry" in verdict ? verdict.entry.patchId.slice(0, 8) : "none";
-  const detail =
-    verdict.cause === "patch-changed"
-      ? `the reviewed patch ${verdict.reviewedPatchId.slice(0, 8)} ≠ the head's ${verdict.currentPatchId.slice(0, 8)}`
-      : verdict.cause === "not-passed"
-        ? `the latest adversarial row did not pass (patchId ${verdict.entry.patchId.slice(0, 8)})`
-        : `no adversarial row on file for \`${verdict.branch}\``;
-  return `the head was not the reviewed one: reviewed ${reviewed} — ${detail}`;
-}
-
-/** The mainline the identity is taken against, named on failure. */
-async function resolveMainlineForHead(
-  execFn: VerifyExecFn,
-  repoRoot: string,
-  remote: string,
-): Promise<{ ok: true; mainline: string } | { ok: false; reason: string }> {
-  try {
-    const { stdout } = await execFn("git symbolic-ref --short refs/remotes/origin/HEAD", {
-      cwd: repoRoot,
-      maxBuffer: 8 * 1024,
-      timeout: EXEC_TIMEOUT_MS,
-    });
-    const v = stdout.trim();
-    // `git symbolic-ref --short` prints `origin/main`; without `--short` (and on
-    // some clones) it prints `refs/remotes/origin/main`. Both name the same
-    // branch, and the identity is always taken against `<remote>/<mainline>`, so
-    // the ref prefix is stripped rather than refused — rejecting it parked every
-    // cycle whose clone carried the long form.
-    const bare = v.startsWith("refs/remotes/") ? v.slice("refs/remotes/".length) : v;
-    const prefix = `${remote}/`;
-    if (bare.startsWith(prefix)) {
-      const name = bare.slice(prefix.length);
-      if (name) return { ok: true, mainline: name };
-    }
-    return {
-      ok: false,
-      reason: `refs/remotes/${remote}/HEAD resolved to \`${v.slice(0, 64)}\`, which is not \`${remote}/<mainline>\``,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `could not resolve the mainline from refs/remotes/${remote}/HEAD: ${(err as Error).message?.slice(0, 120)}`,
-    };
-  }
-}
-
-// (no second import block — `readLedgerAt` is in the top group above)

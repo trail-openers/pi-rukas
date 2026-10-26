@@ -157,10 +157,11 @@ export async function executeAndVerifyMerge(
   execFn: VerifyExecFn,
   repoRoot: string,
   subject: string | undefined,
-  // #1533 — REQUIRED: the verified PR head OID the merge is pinned to. Every
-  // caller has one by the time it reaches here; the step that cannot produce
-  // one does not call this function at all.
-  headOid: string,
+  // #1533 — the verified PR head OID the merge is pinned to. `string | undefined`
+  // so the absence is representable and narrowed below (never cast, never an
+  // empty-string sentinel): a merge command built from a value nobody vouched for
+  // is the defect, and the refusal below is what the caller parks with.
+  headOid: string | undefined,
   // The forge-resolution seam. Production leaves it undefined and the adapter
   // path is chosen by `forgeForCycle`, exactly as before; a test that exists to
   // cover the DIRECT-exec fallback passes `() => undefined` rather than hoping a
@@ -179,12 +180,16 @@ export async function executeAndVerifyMerge(
   // is not a full 40-char SHA is not a claim about one commit, and the command
   // builders refuse to render it anyway — naming the reason here is what the
   // merged step parks with.
-  if (!isFullCommitSha(headOid)) {
+  if (headOid === undefined || !isFullCommitSha(headOid)) {
     return {
       ok: false,
       reason: `refusing to merge PR #${prNumber}: the verified head OID is missing or not a full 40-char SHA`,
     };
   }
+  // Narrowed once, at the only refusal that can produce an unpinned merge below:
+  // every call after this line passes THIS binding, so no path can reach a
+  // command builder with the un-narrowed optional.
+  const pinned = headOid;
   const forge = resolveForge
     ? await resolveForge({ repoRoot }, execFn)
     : await forgeForCycle({ repoRoot }, execFn);
@@ -201,7 +206,7 @@ export async function executeAndVerifyMerge(
       execFn,
       repoRoot,
       subject,
-      headOid,
+      pinned,
       visibility,
     );
   }
@@ -227,7 +232,7 @@ export async function executeAndVerifyMerge(
   // cycle would die instead of parking with the reason the guard gave. Same
   // shape as every other refusal in this function: `{ ok: false, reason }`.
   try {
-    await forge.prMerge(prNumber, headOid, method, subject);
+    await forge.prMerge(prNumber, pinned, method, subject);
   } catch (err) {
     if (isPublicHygieneRefusal(err)) {
       const reason = refusalMessage(err);
@@ -312,9 +317,13 @@ export async function executeAndVerifyMerge(
 export async function mechanizedMerge(
   ctx: CycleContext,
   state: WorkState,
-  // #1533 — the head the merged step verified, REQUIRED. A merge with no pin is
-  // the defect this ticket removes, so the builder has no unpinned form.
-  headOid: string,
+  // #1533 — the head the merged step verified. `string | undefined` rather than
+  // a required `string`: the step produces one whenever the merge gate runs, and
+  // this signature is where the absence is refused. A merge with no pin is the
+  // defect this ticket removes, so the builder has no unpinned form — and the
+  // absence must be representable, because "we could not verify a head" is the
+  // very answer the caller needs to distinguish from a pin.
+  headOid: string | undefined,
 ): Promise<
   | { ok: true; method: MergeMethod; notes: string[] }
   | { ok: false; reason: string; method?: MergeMethod }
@@ -334,7 +343,9 @@ export async function mechanizedMerge(
   }
   // Checked before the method derivation so a cycle with nothing to pin does
   // not even read the repo settings; the merged step parks with this reason.
-  if (!isFullCommitSha(headOid)) {
+  // `isFullCommitSha` takes a `string`, so the absence is narrowed here rather
+  // than passed through the shape check.
+  if (headOid === undefined || !isFullCommitSha(headOid)) {
     return {
       ok: false,
       reason: `refusing to merge PR #${prNumber}: the verified head OID is missing or not a full 40-char SHA`,

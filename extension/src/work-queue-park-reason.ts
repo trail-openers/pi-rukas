@@ -122,6 +122,12 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
       const granted = state.pipelineState.mergeHold?.authorityGranted ? "granted" : "no-authority";
       suffix = `:${granted}:pr${state.pipelineState.prNumber ?? 0}`;
       if (state.pipelineState.mergeHold?.evidenceFailureKind === "tooling") suffix += ":tooling";
+      // #1533 — the head check's own refusal, machine-readably, so the queue's
+      // action can name both SHAs instead of sending the operator to the checks
+      // on a PR whose CI is green. Carried as a fixed tag (never the free-text
+      // reason, which would put prose in the reason's grammar) plus the two OIDs
+      // the renderers read out of the state file.
+      if (state.pipelineState.mergeHold?.headCheckReason) suffix += ":head";
     } else if (cap.cap === "cross-group-conflict") {
       // #1454 — the claimant's number is the only thing that makes this park
       // actionable: the operator has to check ONE cycle, not the whole

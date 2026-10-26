@@ -29,7 +29,6 @@ import { verifyMergeHead } from "./work-driver-merged-head.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { hasGitDir } from "./work-driver-merged-repo.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
-import { workstreamCount } from "./work-driver-merged-workstreams.ts";
 import { clearHostParkSignals } from "./work-driver-park-memory-host.ts";
 import { clearParkRecords } from "./work-driver-park-record.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
@@ -142,8 +141,11 @@ export async function runMerged(
   let mergeSucceeded = false;
   // #1533 — the head this step verified, which the merge is pinned to. Set only
   // past the head check; the LLM fallback prompt carries the same value so the
-  // fallback path cannot merge what the mechanized path refused to.
-  let verifiedHead = "";
+  // fallback path cannot merge what the mechanized path refused to. `undefined`
+  // rather than `""`: an empty string is neither a value nor an absence, and the
+  // merge paths below take `string | undefined` and refuse the absence — they do
+  // not have to guess what an empty OID meant (round-1 lens HIGH).
+  let verifiedHead: string | undefined;
   const headNotes: string[] = [];
 
   // #380 — two independent gates, both defaulting to "no". Merging is the
@@ -197,17 +199,15 @@ export async function runMerged(
             ctx.repoRoot,
             state.pipelineState.branchName,
             evidence,
-            workstreamCount(state),
-            // The identity comparison needs a real clone to read the review ledger
-            // from, so it is attempted only when the cycle has a branch name AND a
-            // repository on disk. Everything else — a resumed or hand-built state
-            // file, a fixture with no clone — gets the pin and an honest note;
-            // parking those on "no git remote found" would be the driver inventing
-            // a fault the cycle never had. See `verifyMergeHead` and `hasGitDir`
-            // for why the probe is a leaf.
-            {
-              identityCheck: !!state.pipelineState.branchName && hasGitDir(ctx.repoRoot),
-            },
+            // The reviewed-head comparison needs a real clone to read the review
+            // ledger from, so it is attempted only when the cycle has a repository
+            // on disk. Everything else — a resumed or hand-built state file, a
+            // fixture with no clone — gets the pin and an honest note; parking
+            // those on "no git remote found" would be the driver inventing a fault
+            // the cycle never had. See `verifyMergeHead` and `hasGitDir` for why
+            // the probe is a leaf. Grouped cycles take the SAME rule: the lens
+            // review covers the one integrated branch the merge merges.
+            hasGitDir(ctx.repoRoot) ? undefined : { skipIdentity: true },
           )
         : undefined;
     if (!authority.granted || !evidence?.ok || routedRoundCap || headCheck?.ok !== true) {
@@ -249,14 +249,45 @@ export async function runMerged(
     headNotes.push(headCheck.note);
   }
 
+  // #1533 — a cycle that reaches this point WITHOUT a verified head has not
+  // passed the head check, whatever made it get here: the authority gate off
+  // (`PI_ENSEMBLE_MERGE_AUTHORITY=0`) disables only the permission and evidence
+  // gate, so the head is still read with the same bounded read and the merge is
+  // still pinned. Unreadable head → refuse, exactly as the gated path does —
+  // disabling the authority question was never a licence to merge an
+  // unverified commit.
+  if (verifiedHead === undefined) {
+    trace("work-driver: merge held — no verified head OID to pin the merge to");
+    const held: WorkState = {
+      ...state,
+      pipelineState: {
+        ...state.pipelineState,
+        currentStep: "merged",
+        mergeHold: {
+          authorityGranted: true,
+          authoritySource: "none",
+          headCheckReason:
+            "no verified head OID was read for this cycle, so there is no commit to pin the merge to",
+        },
+      },
+    };
+    return appendEvent(held, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "awaiting-human-merge",
+      reviewRound: held.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+  }
+
   // Try mechanized merge first.
   const mechResult = await mechanizedMerge(ctx, state, verifiedHead);
   if (mechResult.ok) {
     mergeMethod = mechResult.method;
     mergeSucceeded = true;
     // The head-check note rides the merged event so the record says what the
-    // step actually verified (for a grouped cycle: that the identity comparison
-    // did not apply, not that it passed).
+    // step actually verified (for a cycle whose comparison did not run: that it
+    // did not run, not that it passed).
     for (const note of headNotes) {
       if (note) mechResult.notes.push(note);
     }
