@@ -134,12 +134,10 @@ export async function fanOutAdversarial(
     // diff against the detach point. Without baseSha we fall back to
     // `git diff HEAD` (pre-commit semantics for uncommitted work).
     const baseSha = state.pipelineState.baseSha;
-    // #1634 — the gate's own read. The best-effort string answer is "" for BOTH
-    // "nothing to review" and "the read failed", and the short-circuit below
-    // renders an empty string as approved-with-zero-rounds: a worktree whose
-    // diff could not be read used to clear the pre-commit gate with no reviewer
-    // ever seeing it. `readWorktreeDiff` keeps the two apart (#384's shape,
-    // applied to the per-worktree read).
+    // #1634 — the gate's own read, via `readWorktreeDiff`, so a failure says
+    // "unreadable" instead of "": the best-effort string answer rendered a
+    // worktree whose diff could not be read as approved with no reviewer ever
+    // seeing it (#384's shape, applied to the per-worktree read).
     const diffExec = ctx.diffExecFn ?? execp;
     const read = await readWorktreeDiff(cwd, baseSha, diffExec);
     if (!read.ok) {

@@ -12,9 +12,10 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
-import { aheadOfBase, execGit, prRange } from "./git-range.ts";
+import { aheadOfBase, execGit, prRange, treeHasCommit } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import { type StatusEntry, parseStatus } from "./work-develop-git.ts";
+import { fetchAllDiffs } from "./work-driver-diff-merged.ts";
 import { resolveMainline } from "./work-driver-git.ts";
 import { isDriverArtefactPath } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -119,11 +120,25 @@ export async function readWorktreeDiff(
   // not a git repository, or has vanished, is the unreadable case this gate
   // exists for — never "there is nothing to review".
   if (!treeHasGitDir(cwd)) {
+    // PM's ruling for #1634 is that production stays STRICT on a path that is
+    // there but is not a repository: that is the shape a real integration
+    // failure takes (a worktree removed under the driver, a `git worktree add`
+    // that failed and left a bare checkout), and calling it "nothing to review"
+    // is the bug this gate exists to close.
     return {
       ok: false,
       reason: `unreadable: ${cwd} is not a git working tree — an empty diff here means the worktree could not be read, not that there is nothing to review`,
     };
   }
+  // Does this tree have a commit yet? Asked ONCE, because two later questions
+  // depend on it and each used to ask in its own way — which is how the
+  // pre-initial-commit case got a different answer from one call site to the
+  // next. A young repository is not an unreadable one: `git diff HEAD` is fatal
+  // without a HEAD and `git status` proves nothing about a tree with no commit
+  // to be clean relative to, so a cycle whose developer has not committed (and
+  // a driver harness that never ran the branch step) must read as EMPTY, not
+  // fail with "could not establish whether the tree has changes".
+  const hasHead = await treeHasCommit(exec, cwd);
   // #453 — try committed diff first when baseSha is available and valid.
   // `git diff baseSha..HEAD` shows everything the developer committed,
   // which `git diff HEAD` misses once the working tree is clean.
@@ -174,16 +189,31 @@ export async function readWorktreeDiff(
         maxBuffer: 1024 * 1024, // 1 MiB cap
       });
     } catch (err) {
-      return {
-        ok: false,
-        reason: `git diff ${diffRange} failed: ${errText(err)}`,
-        readFailed: `git diff ${diffRange}`,
-      };
+      // A tree with no commit yet has no `HEAD` to diff against, and git calls
+      // that fatal (`ambiguous argument 'HEAD'`) rather than answering empty.
+      // That is the pre-initial-commit state every worktree passes through, not
+      // a failed read — answering UNREADABLE here parked a cycle whose developer
+      // had simply not committed. `hasHead` is the hoisted answer.
+      if (!hasHead) {
+        diff = "";
+      } else {
+        return {
+          ok: false,
+          reason: `git diff ${diffRange} failed: ${errText(err)}`,
+          readFailed: `git diff ${diffRange}`,
+        };
+      }
     }
   }
   if (!diff.trim()) {
     // Blank, and a real tree. Decide WHICH blank this is: a clean tree (nothing
     // to review) or a read that produced nothing while the tree holds work.
+    //
+    // A tree with no commit has nothing to be clean RELATIVE to — `git status`
+    // cannot answer that question, and asking it produced "could not establish
+    // whether the tree has changes" for every pre-commit case. Nothing is
+    // committed, nothing is diffable: that is empty, positively established.
+    if (!hasHead) return { ok: true, diff: "", empty: true };
     const entries = await worktreeStatusEntries(exec, cwd);
     if (entries === undefined) {
       return {
@@ -252,97 +282,6 @@ async function worktreeStatusEntries(
  */
 function treeHasGitDir(cwd: string): boolean {
   return existsSync(join(cwd, ".git"));
-}
-
-/**
- * PR3 multi-worktree variant of `fetchDiff`. Resolves the diff(s) for
- * the current /work cycle's workstreams:
- *  - N=1 (default workstream): single `git diff <baseSha>..HEAD` from the
- *    recorded worktree path, OR `ctx.repoRoot` as fallback when the
- *    worktrees map is empty (the B2 cwd-fallback, restored to working
- *    order by populating the map in Step 3 — single-task /work writes
- *    `{default: ctx.repoRoot}`).
- *  - N>1: one diff per worktree, concatenated with `## workstream: <id>`
- *    headers so reviewers (adversarial-developer + lens code-review-
- *    specialists) see one merged document with provenance. Per-branch
- *    fetch failures contribute an empty section rather than aborting
- *    the whole gather.
- * Total budget capped at 1 MiB cumulative; once exceeded the function
- * returns what it has plus a `[... truncated for size]` marker so
- * downstream prompts don't silently lose context.
- * file, so the producer and the reader cannot drift apart.
- */
-export async function fetchAllDiffs(
-  worktrees: Record<string, string>,
-  repoRoot: string,
-  baseSha?: string,
-  exec: ExecFn = execp,
-): Promise<WorktreeDiff> {
-  const ids = Object.keys(worktrees);
-  // N=1 path — the structural fix for B2. With Step 3 populating the
-  // worktrees map (default → repoRoot for single-task), `worktrees[id]`
-  // is always a string, never undefined.
-  if (ids.length <= 1) {
-    const cwd = ids.length === 1 ? worktrees[ids[0] ?? ""] : repoRoot;
-    return readWorktreeDiff(cwd ?? repoRoot, baseSha, exec);
-  }
-  // N>1: gather all per-workstream diffs FIRST, then decide whether to
-  // emit headers. PR7 — when every body is empty (e.g., all three
-  // developer workstreams provider-errored mid-stream without committing
-  // anything), return "" so PR6's `!diff.trim()` guard in runLens fires.
-  // Pre-PR7, the `## workstream: <id>\n` headers alone made the returned
-  // string non-empty and lens-review ran against header-only "diffs",
-  // hallucinating findings against unrelated files (the /work 553
-  // 2026-06-24 re-test cascade).
-  const fetched: Array<{ id: string; body: string }> = [];
-  const unreadable: string[] = [];
-  for (const id of ids) {
-    const wt = worktrees[id];
-    if (!wt) continue;
-    const r = await readWorktreeDiff(wt, baseSha, exec);
-    if (!r.ok) {
-      unreadable.push(`${id} (${r.reason})`);
-      continue;
-    }
-    fetched.push({ id, body: r.diff });
-  }
-  // #1634 — "every body is blank" and "every read failed" are different
-  // answers, and the caller must not render the second as the first: an
-  // empty merged diff means APPROVED on both review gates. Any unreadable
-  // workstream makes the whole read unreadable, so one stale ref cannot
-  // silently shrink the reviewed set.
-  if (unreadable.length > 0) {
-    return {
-      ok: false,
-      reason: `unreadable diff for ${unreadable.join(", ")}`,
-    };
-  }
-  if (fetched.every((f) => !f.body.trim())) return { ok: true, diff: "", empty: true };
-
-  // Mixed-or-full diff: emit headers + bodies with the same budget rules
-  // as before. Header preserved even for empty bodies in this branch so
-  // reviewers see "task-a had no changes" alongside "task-b had X".
-  const TOTAL_CAP = 1024 * 1024;
-  const sections: string[] = [];
-  let totalBytes = 0;
-  let truncated = false;
-  for (const { id, body: piece } of fetched) {
-    if (truncated) break;
-    const header = `${MERGED_DIFF_WORKSTREAM_PREFIX}${id}\n`;
-    const remaining = TOTAL_CAP - totalBytes - header.length;
-    if (remaining <= 0) {
-      truncated = true;
-      break;
-    }
-    const body =
-      piece.length > remaining
-        ? `${piece.slice(0, remaining)}\n${MERGED_DIFF_PIECE_TRUNCATED}`
-        : piece;
-    sections.push(header + body);
-    totalBytes += header.length + body.length;
-  }
-  if (truncated) sections.push(`\n${MERGED_DIFF_TRUNCATED_AT_TOTAL}`);
-  return { ok: true, diff: sections.join("\n"), empty: false };
 }
 
 /**

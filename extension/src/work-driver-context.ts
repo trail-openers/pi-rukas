@@ -17,6 +17,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchResult, DispatchSpec, WriteFenceOpt } from "./types.ts";
+import type { DriverContextAdversarialSeams } from "./work-driver-context-adversarial.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
@@ -99,7 +100,13 @@ export type CycleContext = DriverContext & { emitSink: EmitSink };
  */
 export type DriverExecFn = VerifyExecFn;
 
-export interface DriverContext {
+/**
+ * The driver's dependency-injection bag. Its per-step seams live in
+ * `work-driver-context-<step>.ts` modules intersected here (§12 size cap), so
+ * this stays the ONE type every caller names while no single file has to hold
+ * every seam's docstring.
+ */
+export interface DriverContext extends DriverContextAdversarialSeams {
   /** The host the cycle runs in (#1020). Pi-session or a recording test host. */
   host: DriverHost;
   /** Project root (NOT a worktree). State file lives here. */
@@ -242,35 +249,12 @@ export interface DriverContext {
    */
   invocationStartRef?: string;
   /**
-   * Optional injection point for tests: replace runAdversarialLoop with a
-   * fake. Production callers omit this — runAdversarial uses the real
-   * orchestrator from adversarial.ts. Mirrors `dispatchFn` for symmetry.
-   * Added in PR8 alongside the per-workstream adversarial fanout so the
-   * smoke tests can validate fanout shape without spawning real Pi
-   * children.
-   */
-  adversarialLoopFn?: (
-    params: { diff: string; context: string; workCwd?: string; processGroup?: boolean },
-    signal: AbortSignal,
-    orchestratorJobId: string,
-  ) => Promise<DispatchResult>;
-  /**
    * PR17 — optional injection point for tests: replace the shell
    * executor used by verifyStepOutcome (git status / rev-list, the
    * project's verify command, gh pr view). Production callers omit
    * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
    */
   verifyExecFn?: DriverExecFn;
-  /**
-   * #1634 — optional test seam for the adversarial gate's OWN diff read
-   * (`readWorktreeDiff`). Default `execp`. A test needs to make that read fail
-   * in order to assert the gate refuses to approve an unreadable tree, and the
-   * only other way was to strip `git` from `process.env.PATH` for the duration
-   * of a callback — process-global state every concurrent git user in the
-   * process races with. Narrow by design: it reaches the diff read and nothing
-   * else, so a fake cannot make a verify or a checkpoint pass vacuously.
-   */
-  diffExecFn?: DriverExecFn;
   /**
    * #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
    * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:

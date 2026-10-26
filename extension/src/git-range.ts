@@ -324,3 +324,39 @@ export function errorText(err: unknown): string {
     String(err);
   return String(text).slice(0, 200);
 }
+
+/**
+ * Does `cwd` have a commit at all? `git rev-parse --verify HEAD` is the
+ * question asked, and only its exit status is read — an unreadable tree (not a
+ * repository, a broken object store) answers `false` the same way a young one
+ * does, and the caller then reads the status probe, which distinguishes them:
+ * a non-repository fails there and reports unreadable.
+ */
+export async function treeHasCommit(exec: ExecFn, cwd: string): Promise<boolean> {
+  try {
+    await execGit(exec, cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], { maxBuffer: 4096 });
+    return true;
+  } catch (err) {
+    // `--quiet` makes git's OWN answer to "no such commit" a silent exit 1
+    // (git-range's `gitSaysAbsent` set). Anything else — the binary missing,
+    // a broken object store, a timeout — is a failed read, and must NOT be
+    // read as "a young repository with nothing to review": the caller falls
+    // through to the dirt probe, which fails too and reports UNREADABLE.
+    return !gitSaysNoCommit(err);
+  }
+}
+
+/** git's answer to `rev-parse --verify --quiet <missing-ref>`, and the sibling
+ * cases of the same fact: not a repository (no HEAD to resolve at all), and a
+ * path that is not a working tree. Wording-matched like `gitSaysAbsent`, since
+ * the exit code alone (1) also covers "git could not run". */
+function gitSaysNoCommit(err: unknown): boolean {
+  const msg = `${(err as { message?: unknown })?.message ?? ""} ${(err as { stderr?: unknown })?.stderr ?? ""}`;
+  return (
+    msg.includes("needed a single revision") ||
+    msg.includes("not a git repository") ||
+    msg.includes("not a git work-tree") ||
+    msg.includes("outside the repository") ||
+    msg.includes("unknown revision")
+  );
+}
