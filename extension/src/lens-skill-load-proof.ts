@@ -228,36 +228,19 @@ export function skillLoadProof(
 }
 
 /**
- * #1827 — the ONE predicate for "did this tool call open the skill file?",
+ * #1827 — the ONE predicate shape for "did this tool call open the skill file?",
  * exported so the reviewer skill re-read cap (`review-bounds.ts`) counts reads
  * with the same rule this proof uses instead of copying it. A copied predicate
  * is a second source of truth that drifts: the cap would then stop a child for
  * reads this module does not credit as loading the skill (or fail to stop ones
  * it does).
  *
- * `skillPath` is the DRIVER-supplied skill path (`path.join(skillsDir,
- * lens.skill)`), never anything a child wrote — same asymmetry the rest of this
- * module enforces.
- */
-export function isSkillFileRead(
-  toolName: string,
-  args: Record<string, unknown>,
-  skillPath: string,
-): boolean {
-  const dir = resolveSkillDir(skillPath ?? "");
-  if (!dir) return false;
-  const wants = skillFileCandidates(dir);
-  return isSkillRead(toolName.toLowerCase(), args, candidateDirs(wants), wants);
-}
-
-/**
- * #1827 — the same predicate with its candidate spellings supplied rather than
- * recomputed. `skillFileCandidates` / `candidateDirs` resolve paths and can
- * `realpathSync`, so a caller that asks this once per tool call of a 400-turn
- * child pays for the same resolution thousands of times. `review-bounds.ts`
- * builds the two lists once per spawn and calls this; the argument list is
- * exactly what `isSkillFileRead` would have built for the same `skillPath`, so
- * the two entries cannot disagree about what a skill read is.
+ * The candidate spellings are SUPPLIED rather than recomputed:
+ * `skillFileCandidates` / `candidateDirs` resolve paths and can `realpathSync`,
+ * so a caller that asked per tool call of a 400-turn child would pay for the
+ * same resolution thousands of times. `review-bounds.ts` builds the two lists
+ * once per spawn and passes them; they are exactly what a `skillPath` resolves
+ * to, so the cap and this proof cannot disagree about what a skill read is.
  */
 export function isSkillReadWith(
   toolName: string,

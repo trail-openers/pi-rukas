@@ -18,7 +18,7 @@
  * would end a child for reading something the review asked for.
  *
  * Pure function — no child, no timers. The counter delegates the "did this
- * call open that file" judgement to `isSkillFileRead`, so this file also pins
+ * call open that file" judgement to `isSkillReadWith`, so this file also pins
  * that delegation: the grep form is NOT counted (grep names the path without
  * opening it), which is the predicate's own rule, not this cap's.
  */

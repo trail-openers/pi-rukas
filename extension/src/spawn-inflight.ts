@@ -402,6 +402,12 @@ export function attachStdoutLinePump(opts: {
   // require a stream, so a child without one simply never pumps (the same
   // shape spawn relied on when it passed the handle directly).
   const rl = createInterface({ input: opts.child.stdout as NodeJS.ReadableStream });
+  // #1827 round 2 — `close` is called from the spawn's `finally`. It is not
+  // strictly required: readline listens on its INPUT stream, so the child's
+  // exit closes stdout and releases the interface with its `line` listener —
+  // which is why the pump worked without it. It is called anyway because a
+  // child that lingers after `exit` (a grandchild holding the pipe) otherwise
+  // keeps the interface and its listener alive past the spawn that made them.
   rl.on("line", (line) => {
     lines += 1;
     const res = opts.handler(line);

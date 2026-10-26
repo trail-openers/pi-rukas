@@ -158,6 +158,31 @@ assert(
     adversarialChildBoundMs() === 30 * 60_000,
     "a non-positive override falls back to the 30-min default (never unbounded)",
   );
+  // #1827 round 2 — the knob is clamped like every other bound knob: garbage
+  // and a negative fall back, and a huge value cannot ask for a bound past the
+  // ceiling (4 h) that the 2-h backstop could never reach anyway.
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "abc";
+  assert(
+    adversarialChildBoundMs() === 30 * 60_000,
+    "a garbage override falls back to the 30-min default",
+  );
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "-1";
+  assert(
+    adversarialChildBoundMs() === 30 * 60_000,
+    "a negative override falls back to the 30-min default",
+  );
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "86400000"; // 24 h
+  assert(
+    adversarialChildBoundMs() === 4 * 60 * 60_000,
+    "an oversized override is clamped to the 4-h ceiling, not honoured verbatim",
+  );
+  // An EMPTY knob is the operator saying "default", not garbage: no warning,
+  // and the default value.
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "";
+  assert(
+    adversarialChildBoundMs() === 30 * 60_000,
+    "an empty override means the default, not a warning-worthy value",
+  );
   if (saved === undefined) delete process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS;
   else process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = saved;
 }

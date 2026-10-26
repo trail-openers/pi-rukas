@@ -299,6 +299,7 @@ async function spawnSpecialistInner(
     opts,
     completePrompt,
     armBound,
+    boundArmed: boundArmedState.armed, // #1827 — the re-read kill reads this
     reported: () => promptCompleted,
     // The post-verdict stop asks this before ending the child: while Pi is
     // mid-retry the segment in hand is about to be REPLAYED, so a stop that
@@ -415,6 +416,7 @@ async function spawnSpecialistInner(
     stopInactivityPoll();
     caps.cleanup();
     detachAbortKill();
+    stdoutPump.close(); // #1827 — why, at `attachStdoutLinePump`
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     // Stop the per-spawn permission broker; unlinks the socket file.

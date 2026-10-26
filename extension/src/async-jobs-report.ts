@@ -4,6 +4,7 @@
  * that async-jobs.ts pushes back to the parent agent via
  * `pi.sendUserMessage(report, { deliverAs: "steer" })`.
  */
+import { endedAtVerdictStop } from "./spawn-review-bounds.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 
@@ -209,7 +210,18 @@ export function describeOutcome(result: DispatchResult): {
         : "Provider request error: (no error message captured from pi-ai)",
     };
   }
-  if (result.ok) return { status: "finished", bodyPrefix: null };
+  if (result.ok) {
+    // #1827 round 2 — the clean post-verdict end has a reader: the stop sets
+    // no `killCause` (it rides on `reviewStopReason`), so without this branch
+    // it would fall through to the plain `finished` headline and an operator
+    // could not tell a reviewer stopped at its verdict from one that ran its
+    // natural tail. Still NOT a failure — and it is checked after every kill
+    // cause above, so a cause another pass named always outranks it.
+    return {
+      status: endedAtVerdictStop(result) ? "finished (stopped after its verdict)" : "finished",
+      bodyPrefix: null,
+    };
+  }
   return { status: `FAILED (exit ${result.exitCode ?? "?"})`, bodyPrefix: null };
 }
 

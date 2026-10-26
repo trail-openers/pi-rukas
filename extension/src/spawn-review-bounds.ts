@@ -22,6 +22,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import {
   REVIEW_POST_VERDICT_STOP,
@@ -75,10 +76,17 @@ export function wireReviewBounds(deps: {
   opts: Pick<SpawnOptions, "reviewSkillPath" | "onSteer">;
   completePrompt: () => void;
   armBound: () => void;
+  /** #1827 round 2 — the spawn's killing-bound flag, threaded to the re-read
+   *  guard so its kill stands down when a caps kill has already armed. */
+  boundArmed: () => boolean;
   reported: () => boolean;
   willRetry: () => boolean;
 }): ReviewBoundWiring {
-  const { skillRead, verdictStop } = createReviewBounds(deps.role, deps.opts, deps.reported);
+  const { skillRead, verdictStop } = createReviewBounds(deps.role, deps.opts, deps.reported, {
+    // #1827 round 2 — the re-read kill reads this before ending the child, so
+    // a caps kill already in flight is not overwritten.
+    boundArmed: deps.boundArmed,
+  });
   // Built ONCE per child: the targets close over these, so the path resolution
   // and the stat calls inside the candidate list do not run on every stdout
   // line of a 400-turn child.
@@ -99,6 +107,11 @@ export function wireReviewBounds(deps: {
     setKillCause: (cause) => {
       killCause = cause;
     },
+    // Only ever called by `observeReviewBounds`, on the branch that ends the
+    // child; it flips the fold's single gate (see `stoppedByVerdict` below).
+    markStopped: () => {
+      stoppedByVerdict = true;
+    },
     reported: deps.reported,
     willRetry: deps.willRetry,
   };
@@ -113,6 +126,14 @@ export function wireReviewBounds(deps: {
     );
   };
   let killCause: DispatchResult["killCause"];
+  // The one record the fold reads a clean end from: set by `observeReviewBounds`
+  // through `targets.markStopped`, i.e. ONLY on the branch that arms, closes
+  // stdin and ends the child. The accumulator runs whatever the caps say, so
+  // `verdictStop.status()` on its own is no proof a stop happened — with
+  // `PI_ENSEMBLE_DISPATCH_CAPS=0` a verdict is parsed and the child is left
+  // alone, and this flag stays false. No second `verdictStopped` boolean: the
+  // fold reads THIS one and stamps `reviewStopReason` from it.
+  let stoppedByVerdict = false;
   return {
     ...(skillRead ? { skillRead } : {}),
     ...(verdictStop ? { verdictStop } : {}),
@@ -122,10 +143,7 @@ export function wireReviewBounds(deps: {
         {
           ...(killCause !== undefined ? { killCause } : {}),
           ...(skillRead ? { skillReads: skillRead.count() } : {}),
-          // The stop is its own record: once it parsed a verdict, the child was
-          // ended as done. `status()` is the flag, so there is no second copy of
-          // the state to keep in step with it.
-          verdictStopped: verdictStop?.status() !== undefined,
+          stoppedByVerdict,
           ...(verdictStop
             ? { verdictText: verdictStop.text(), verdictStatus: verdictStop.status() }
             : {}),
@@ -141,10 +159,14 @@ export function wireReviewBounds(deps: {
 export interface ReviewBoundOutcome {
   /** The cause the bounds recorded, or undefined when neither fired. */
   killCause?: DispatchResult["killCause"];
-  /** The re-read count at the kill, for the stderr attribution line. */
+  /** Reads counted at the kill, for the stderr attribution line. */
   skillReads?: number;
-  /** The post-verdict end happened (the child is DONE, not killed). */
-  verdictStopped: boolean;
+  /** The post-verdict stop ACTUALLY ended the child — set on the branch in
+   *  `observeReviewBounds` that arms, closes stdin and kills, never from the
+   *  accumulator. The only condition under which the fold stamps a clean end:
+   *  with `PI_ENSEMBLE_DISPATCH_CAPS=0` a verdict is still parsed into the
+   *  accumulation and this stays false, so nothing is stamped. */
+  stoppedByVerdict: boolean;
   /** The accumulated assistant text the verdict was parsed out of. */
   verdictText?: string;
   /** The parsed verdict, for the stderr line that names what was accepted. */
@@ -185,9 +207,18 @@ export function applyReviewBounds(
       );
     }
   }
-  if (!outcome.verdictStopped) return;
-  const accumulated = outcome.verdictText?.trim();
-  if (accumulated) result.text = accumulated;
+  if (!outcome.stoppedByVerdict) return;
+  // #1827 round 2 — replace the collapsed reply with the accumulation ONLY
+  // when the collapse produced nothing to read: an empty string or one of the
+  // two placeholders `collapseEvents` stamps (`"(no output)"`, or the
+  // thinking-only marker from `lens-review-incomplete.ts`). The collapsed text
+  // is the normal result and carries the model/tool-use filtering the
+  // accumulator does not, so overwriting it unconditionally would downgrade a
+  // good result on a child that happened to print a verdict.
+  if (replaceableText(result.text)) {
+    const accumulated = outcome.verdictText?.trim();
+    if (accumulated) result.text = accumulated;
+  }
   // A provider error-stop is still the fault it was: ending the child at its
   // verdict does not turn a severed stream into a completed turn.
   result.ok = !result.errorStop;
@@ -197,6 +228,16 @@ export function applyReviewBounds(
   appendStderr(
     `\n[pi-rukas] ended the reviewer at its VERDICT marker (${outcome.verdictStatus ?? "unknown"}) — its post-verdict tool calls were stopped`,
   );
+}
+
+/** The two spellings of "this child gave no reply": the thinking-only marker
+ *  and the empty-reply fallback, both from `collapseEvents`. */
+const NO_REPLY_PLACEHOLDERS: readonly string[] = [NO_TEXT_PLACEHOLDER, "(no output)"];
+
+/** Is the collapsed result text one the accumulated reply may stand in for? */
+function replaceableText(text: string | undefined): boolean {
+  const t = text?.trim() ?? "";
+  return t === "" || NO_REPLY_PLACEHOLDERS.includes(t);
 }
 
 /**

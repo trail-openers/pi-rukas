@@ -96,12 +96,39 @@ export function reviewSkillReadCap(): number {
 }
 
 /** The adversarial reviewer's own run bound (a lens child's is 30 min). */
+const DEFAULT_ADVERSARIAL_BOUND_MS = 30 * 60_000;
+/** Four hours: past the 2-h spawn backstop, so a knob cannot ask for a bound
+ *  this child could never live long enough to reach. */
+const MAX_ADVERSARIAL_BOUND_MS = 4 * 60 * 60_000;
+
 export function adversarialChildBoundMs(): number {
-  const n = Number(process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS);
-  return Number.isFinite(n) && n > 0 ? n : 30 * 60_000;
+  const raw = process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS;
+  // An unset or EMPTY knob is the operator saying "default", not garbage: the
+  // same rule `reviewSkillReadCap` applies, so `=""` is never a warning.
+  const text = raw?.trim() ?? "";
+  if (text === "") return DEFAULT_ADVERSARIAL_BOUND_MS;
+  const n = Number(text);
+  if (!Number.isFinite(n) || n <= 0) {
+    traceWarn(
+      `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS="${raw}" is not a positive number — using ${DEFAULT_ADVERSARIAL_BOUND_MS}`,
+    );
+    return DEFAULT_ADVERSARIAL_BOUND_MS;
+  }
+  if (n > MAX_ADVERSARIAL_BOUND_MS) {
+    traceWarn(
+      `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS=${n} exceeds the ${MAX_ADVERSARIAL_BOUND_MS}ms ceiling — using ${MAX_ADVERSARIAL_BOUND_MS}`,
+    );
+    return MAX_ADVERSARIAL_BOUND_MS;
+  }
+  return n;
 }
 
 export interface SkillReadGuard {
+  /** True once a KILLING bound has armed for this child (a caps kill, or
+   *  another reviewer bound). The re-read kill then stands down rather than
+   *  overwriting the cause that is already on its way. Mirrors the `boundArmed`
+   *  seam `armChildBound` already takes. */
+  boundArmed(): boolean;
   /**
    * Feed one parsed child event. Called from the stdout LINE HANDLER
    * (`spawn-inflight.ts`), which is the only site that sees every parsed event
@@ -128,6 +155,7 @@ export interface SkillReadGuard {
 export function createSkillReadGuard(o: {
   skillPath: string;
   reported: () => boolean;
+  boundArmed?: () => boolean;
 }): SkillReadGuard {
   const active = capsOn() && !!o.skillPath;
   let reads = 0;
@@ -172,6 +200,7 @@ export function createSkillReadGuard(o: {
       return true;
     },
     count: () => reads,
+    boundArmed: () => o.boundArmed?.() === true,
   };
 }
 
@@ -182,6 +211,15 @@ export interface VerdictStop {
   text(): string;
   /** The parsed verdict, once stopped. */
   status(): string | undefined;
+  /** Record that the stop ENDED this child. The one caller is
+   *  `observeReviewBounds`, on the branch that arms, closes stdin and kills —
+   *  so `stopped()` below means "this child was actually ended", never merely
+   *  "a verdict was seen". */
+  markStopped(): void;
+  /** The stop FIRED — the child was armed, its stdin closed and ended. The one
+   *  signal the fold may stamp a clean end from: `status()` alone is true of a
+   *  parsed verdict nobody acted on, e.g. with the caps off. */
+  stopped(): boolean;
 }
 
 /**
@@ -209,11 +247,13 @@ export function createVerdictStop(): VerdictStop {
   // no bound of ours ends a child, and docs/configuration.md says so. The stop
   // is gated at the decision rather than at the accumulator — the accumulation
   // is the RESULT the spawn reports, so it must keep collecting text whatever
-  // the caps say. A disabled stop can never report a status, so the caller's
-  // kill branch is unreachable and the reviewer runs its natural tail.
+  // the caps say. A disabled stop can never report a status and can never be
+  // marked stopped, so the caller's kill branch is unreachable, the fold stays
+  // silent, and the reviewer runs its natural tail.
   const active = capsOn();
   const parts: string[] = [];
   let stopped: string | undefined;
+  let ended = false;
   return {
     observe: (event) => {
       const msg = event.message;
@@ -239,6 +279,13 @@ export function createVerdictStop(): VerdictStop {
     },
     text: () => parts.join("\n"),
     status: () => stopped,
+    markStopped: () => {
+      ended = true;
+    },
+    // Read at the fold, so it must reflect the ACT of stopping — set on the
+    // branch in `observeReviewBounds` that ends the child — and not merely the
+    // accumulation, which runs whatever the caps say.
+    stopped: () => ended,
   };
 }
 
@@ -253,10 +300,20 @@ export function createReviewBounds(
   role: string,
   opts: Pick<SpawnOptions, "reviewSkillPath">,
   reported: () => boolean,
+  /** #1827 round 2 — threaded to the re-read guard so its kill stands down
+   *  when a killing bound (the caps) has already armed. Optional: the bounds
+   *  are also built directly by tests that have no caps session. */
+  bound?: { boundArmed?: () => boolean },
 ): { skillRead?: SkillReadGuard; verdictStop?: VerdictStop } {
   return {
     ...(opts.reviewSkillPath !== undefined && isReviewerRole(role)
-      ? { skillRead: createSkillReadGuard({ skillPath: opts.reviewSkillPath, reported }) }
+      ? {
+          skillRead: createSkillReadGuard({
+            skillPath: opts.reviewSkillPath,
+            reported,
+            ...(bound?.boundArmed ? { boundArmed: bound.boundArmed } : {}),
+          }),
+        }
       : {}),
     ...(role === "adversarial-developer" ? { verdictStop: createVerdictStop() } : {}),
   };
@@ -285,6 +342,10 @@ export interface ReviewBoundTargets {
   armBound: () => void;
   /** Record the cause the spawn applies AFTER `applyChildBound`. */
   setKillCause: (cause: DispatchResult["killCause"]) => void;
+  /** Record that the post-verdict stop ENDED this child — called by
+   *  `observeReviewBounds` on the branch that kills, and the only fact the
+   *  fold reads a clean end from. */
+  markStopped: () => void;
   /** The child has sent its `agent_end` — nothing left to stop. */
   reported: () => boolean;
   /** The CURRENT segment is inside Pi's in-process retry, so ending the child
@@ -332,7 +393,14 @@ export function observeReviewBounds(
         /* child already gone — the kill below still fires */
       }
     }
-    if (o.skillRead.shouldKill()) {
+    // #1827 round 2 — a killing bound that has ALREADY armed owns this child's
+    // end: the caps' kill is in flight with its own cause. Ending the child
+    // here would overwrite that cause with `review-skill-reread`, the less
+    // specific diagnosis of what cost the money (see spawn-review-bounds.ts),
+    // so the kill stands down — exactly as `armChildBound`'s wrap-up steer does
+    // on the same seam. `shouldKill()` has already latched `killed`, so this
+    // branch is reached once and the count stays the operator's evidence.
+    if (o.skillRead.shouldKill() && !o.skillRead.boundArmed()) {
       targets.armBound();
       targets.setKillCause(REVIEW_SKILL_REREAD_KILL);
       targets.kill();
@@ -359,6 +427,11 @@ export function observeReviewBounds(
     !targets.willRetry()
   ) {
     if (o.verdictStop.observe(o.assistantMessageEnd)) {
+      // The fold's single gate: recorded HERE, on the branch that actually ends
+      // the child, and forwarded through `targets.markStopped` to the spawn's
+      // accumulator. Never from the parse alone.
+      o.verdictStop.markStopped();
+      targets.markStopped();
       targets.armBound();
       // NOT `setKillCause`: a clean end is not a kill cause — see
       // spawn-review-bounds.ts for why the stop rides on `reviewStopReason`
