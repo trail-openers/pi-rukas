@@ -35,7 +35,7 @@
  */
 
 import { redactSecrets } from "./secret-patterns.ts";
-import { nameLooksSecret } from "./work-driver-verify-tally.ts";
+import { hasOpaqueRun, nameLooksSecret } from "./work-driver-verify-tally.ts";
 
 /**
  * The shortest separator-free run of base64 alphabet that reads as a KEY BODY
@@ -45,55 +45,45 @@ import { nameLooksSecret } from "./work-driver-verify-tally.ts";
  */
 export const OPAQUE_RUN_MIN = 20;
 
-/** base64 alphabet, plus `=` which only ever pads — so a run of it is a redaction fill. */
-const OPAQUE_RUN_CHARS = "A-Za-z0-9+/=";
-/**
- * Separators SPLIT a line into candidate runs. `+`, `/` and `=` are deliberately
- * NOT among them — they belong to the base64 alphabet, so splitting on them would
- * cut a real key body into short fragments and stop refusing it. `=` is absent
- * from the class only because `=` padding carries no alphabetic character, so a
- * run can never reach the bound on padding alone.
- */
-const RUN_SPLIT_RE = new RegExp(`[^${OPAQUE_RUN_CHARS}]+`);
-/** A long all-hex run is a digest fragment — but only when it carries a digit. */
-const HEX_RUN_RE = /^[0-9a-fA-F]+$/;
-const DIGIT_RE = /[0-9]/;
-/** A long run carrying BOTH letters and digits is a base64-ish key body. */
-const KEY_BODY_RE = new RegExp(`^(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[${OPAQUE_RUN_CHARS}]+$`);
-/** A `+` or `/` inside a long run is not a path separator a sentence carries. */
-const BASE64_PUNCT_RE = /[+/]/;
+/** Padding carries no alphabetic character: a run of it is a redaction fill, not a key. */
+const PADDING_ONLY_RE = /^=+$/;
 
 /**
- * True when one separator-free run of `line` reads as a digest or a key body: long
- * AND either all-hex with a digit (a SHA/MD5 fragment) or letters-mixed-with-digits
- * (a base64 key body), or carrying base64 punctuation no sentence prints. The
- * conjunction is what keeps prose: a run of one letter or of prose words is long
- * without being opaque.
+ * How a line is split into candidate runs. `=` is a SEPARATOR here: the redactor's
+ * own fill is a run of `=`, and no key body needs a `=` to be recognised — every
+ * other base64 character is still inside the run it belongs to.
  */
-function runIsOpaque(run: string): boolean {
-  if (run.length < OPAQUE_RUN_MIN) return false;
-  if (HEX_RUN_RE.test(run) && DIGIT_RE.test(run)) return true;
-  if (KEY_BODY_RE.test(run)) return true;
-  return BASE64_PUNCT_RE.test(run);
-}
+const RUN_SPLIT_RE = /[^A-Za-z0-9+/]+/;
 
 /**
- * True when `line`, as it would be STORED, still carries a run of
- * {@link OPAQUE_RUN_MIN}+ base64 characters. Asked on the redacted text, so a
- * masked span (`[REDACTED]`, a run of `*`) is not itself a refusal: the line is
- * refused only when something the redactor did not recognise still looks like key
- * material.
+ * True when `line` carries a separator-free run of {@link OPAQUE_RUN_MIN}+ base64
+ * characters that reads as key material.
  *
- * The rule is asked per separator-free RUN, never of the whole line — the same
- * splitting shape as `hasOpaqueRun` in `work-driver-verify-tally.ts`. One whole-line
- * regex refused a gate line that merely cites a long `/`-joined path
- * (`see /home/dev/work/src/some/really/long/path/name/index.tsx`): punctuation the
- * sentence joined makes one long `/`-contiguous span whose every run inside it is
- * prose, and an arm that fires on prose is an arm that gets switched off (#1841
- * round 4). Separators split the line; the conjunction above then judges each run.
+ * The run rule is ONE rule, asked per separator-free RUN — `hasOpaqueRun` from
+ * `work-driver-verify-tally.ts`, its own conjunction, its own minimum. A second copy
+ * of "a long run is opaque" is a second rule that drifts, and #1841 round 4 is
+ * precisely what drift looks like: this module used to test ONE WHOLE LINE against a
+ * single `{20,}` regex, so a gate line that merely cited a path
+ * (`see /home/dev/work/src/some/really/long/path/name/index.tsx`) came back refused —
+ * punctuation the sentence joined is one long span to a whole-line test, and every
+ * run inside it is prose. An arm that fires on prose is an arm that gets switched
+ * off, which is how a credential screen dies. The tally's rule was already run-wise
+ * for exactly that reason; the two now cannot disagree.
+ *
+ * The two differences that remain are deliberate and both make THIS arm narrower,
+ * because a verify-evidence line is prose while a tally name is a path:
+ *   - a run of pure `=` padding is never opaque — the redactor's own fill is a run
+ *     of `=` and must not be a refusal;
+ *   - `OPAQUE_RUN_MIN` is this module's own bound, sized to evidence prose.
+ *
+ * Asked on the redacted text, so a masked span (`[REDACTED]`, a run of `*`) is not
+ * itself a refusal: the line is refused only when something the redactor did not
+ * recognise still looks like key material.
  */
 export function carriesOpaqueRun(line: string): boolean {
-  return redactSecrets(line).text.split(RUN_SPLIT_RE).some(runIsOpaque);
+  return redactSecrets(line)
+    .text.split(RUN_SPLIT_RE)
+    .some((run) => !PADDING_ONLY_RE.test(run) && hasOpaqueRun(run, OPAQUE_RUN_MIN));
 }
 
 /**
@@ -107,6 +97,12 @@ export function carriesOpaqueRun(line: string): boolean {
  *     others already calls is a third place its shape can change;
  *   - {@link carriesOpaqueRun} — the post-redaction opaque run, which is what
  *     catches an unprefixed base64 blob no keyword anchors on.
+ *
+ * BOTH channels of the record ask this one (#1841 round 4): the `FAIL`-header DETAIL
+ * channel through {@link harvestHeaderDetails}, the ASSERTION channel through
+ * `guardedPush`'s veto in `work-driver-verify-record.ts`. "Could this line still be
+ * credential material" is ONE question, and a veto the indented route asks while the
+ * unindented one does not is the module's own defect mirrored.
  */
 export function detailLooksCredential(line: string): boolean {
   return nameLooksSecret(line) || carriesOpaqueRun(line);

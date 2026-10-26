@@ -17,7 +17,11 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
 import { harnessInnerLine, isHarnessWrapper } from "./work-driver-verify-failures.ts";
-import { harvestHeaderDetails } from "./work-driver-verify-header-detail.ts";
+import {
+  HEADER_DETAIL_MAX,
+  HEADER_DETAIL_WITHHELD,
+  harvestHeaderDetails,
+} from "./work-driver-verify-header-detail.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 import { harvestConsolidatedTallies } from "./work-driver-verify-tally.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -134,12 +138,16 @@ export interface AssertionLinesOptions {
  * same line unindented was refused.
  *
  * `veto` is the channel's own extra refusal: the assertion channel's is
- * "the shared table does not recognise this line as naming a check", the detail
- * channel's is `detailLooksCredential` (an unprefixed base64 PEM body, a bare
+ * "the shared table does not recognise this line as naming a check, or the
+ * credential screen refuses it", the detail channel's is
+ * `detailLooksCredential` (an unprefixed base64 PEM body, a bare
  * `Authorization: Basic …` or an `ssh-rsa AAAA…` blob survives the keyword-anchored
- * `isNonAssertionLine`, so the detail channel has to ask the opaque-run arm too).
- * Both channels keep the non-assertion veto — a marker or an echoed `$ ` command is
- * not evidence on either route.
+ * `isNonAssertionLine`, so a channel that keeps whole lines of prose has to ask the
+ * opaque-run arm too). Both channels ask the credential screen (#1841 round 4, c):
+ * "could this line still be credential material" is one question and the two
+ * channels used to answer it differently, which is the #1841 round 2 defect mirrored
+ * onto the unindented route. Both channels keep the non-assertion veto — a marker or
+ * an echoed `$ ` command is not evidence on either route.
  *
  * `out` is the channel's list and `seen` the dedupe set SHARED across both, so the
  * same redacted text cannot be given twice as a header detail and an assertion.
@@ -159,9 +167,16 @@ function guardedPush(
   out.push(redacted);
 }
 
-/** The assertion channel's veto: a line the shared table does not accept as an assertion. */
+/**
+ * The assertion channel's veto: a line the shared table does not accept as an
+ * assertion, or one the credential screen refuses. The screen is not redundant with
+ * `isNonAssertionLine`, which anchors on a keyword and so never sees an unprefixed
+ * base64 blob — the very shape this channel is asked about, because an unindented
+ * credential in a gate's output is as publishable as an indented one (#1841
+ * round 4, c).
+ */
 function notAnAssertion(line: string): boolean {
-  return extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION;
+  return extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION || detailLooksCredential(line);
 }
 
 interface AssertionLinesView {
@@ -254,11 +269,16 @@ function assertionLinesView(text: string, opts: AssertionLinesOptions): Assertio
     for (const joined of harvestConsolidatedTallies(view)) push(joined);
   }
   // A `✗` line is the assertion the operator named; when there is one, the
-  // generic error lines around it are noise, not a second diagnosis.
+  // generic error lines around it are noise, not a second diagnosis. The withheld
+  // marker is NOT noise: it is the disclosure that a detail block was cut short, so
+  // it travels beside a `✗` line instead of being dropped with the diagnosis prose
+  // (#1841 round 4, d) — an operator reading a park should still learn that the gate
+  // printed something the screen refused.
   const marked = out.filter((l) => l.startsWith("\u2717"));
+  const withheld = details.filter((l) => l === HEADER_DETAIL_WITHHELD);
   return {
     lines: marked.length > 0 ? marked : out,
-    details: marked.length > 0 ? [] : details,
+    details: marked.length > 0 ? withheld : details,
   };
 }
 

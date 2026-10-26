@@ -25,13 +25,18 @@ import {
 } from "../src/work-driver-corrective-decide.ts";
 import type { CorrectiveGateView } from "../src/work-driver-corrective-decide.ts";
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
+import { isNonAssertionLine } from "../src/work-driver-consolidation-classify.ts";
 import { detailLooksCredential } from "../src/work-driver-verify-credential-screen.ts";
 import {
   HEADER_DETAIL_MAX,
   HEADER_DETAIL_SCAN_MAX,
+  HEADER_DETAIL_WITHHELD,
   harvestHeaderDetails,
 } from "../src/work-driver-verify-header-detail.ts";
-import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts";
+import {
+  consolidatedAssertionLines,
+  failureEvidence,
+} from "../src/work-driver-verify-record.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 import {
   CMD,
@@ -167,12 +172,129 @@ function consolidatedGate(raw: string): CorrectiveGateView {
       `secret detail: the screen itself refuses ${JSON.stringify(secret.trim().slice(0, 32))}`,
     );
   }
-  // A bare base64 blob is refused by the HARVEST too, so it never reaches the
-  // detail channel at all — asked where the reader still exposes it.
+  // A bare base64 blob is refused by the HARVEST too, so its text never reaches the
+  // detail channel at all — asked where the reader still exposes it. What the
+  // harvest returns instead is the one disclosure line (#1841 round 4, d): the walk
+  // still stops, and the developer is told output was withheld rather than left to
+  // read a cut block as a complete one.
   const bare = harvestHeaderDetails(`${FAIL_HEADER}\n      ${CREDENTIAL_DETAILS[3]}`);
   assert(
-    bare.length === 0,
-    `secret detail: a bare base64 blob is not harvested as a detail at all (got ${JSON.stringify(bare)})`,
+    bare.length === 1 && bare[0] === HEADER_DETAIL_WITHHELD,
+    `secret detail: a bare base64 blob is not harvested as a detail, only withheld (got ${JSON.stringify(bare)})`,
+  );
+  assert(
+    bare.every((l) => detailLooksCredential(l) === false),
+    `secret detail: the withheld marker is not itself credential-shaped (got ${JSON.stringify(bare)})`,
+  );
+  // ── #1841 round 4 (a) — the opaque-run arm reads RUNS, not the whole line ──
+  // A long `/`-joined path is prose: punctuation joins it into one long span whose
+  // every run inside it is short. A whole-line regex refused it, and an arm that
+  // fires on prose is an arm that gets switched off. The conjunction that keeps it
+  // is what still refuses the key bodies above, so both halves are pinned here.
+  const longPath = ["see", "/home/dev/work/src/some/really/long/path/name/index.tsx"].join(" ");
+  assert(
+    detailLooksCredential(longPath) === false,
+    `opaque run: a long /-joined path is kept, not refused (${JSON.stringify(longPath)})`,
+  );
+  assert(
+    harvestHeaderDetails(`${FAIL_HEADER}\n      ${longPath}`).includes(longPath),
+    `opaque run: the path survives as a detail the developer is given (got ${JSON.stringify(harvestHeaderDetails(`${FAIL_HEADER}\n      ${longPath}`))})`,
+  );
+  // Padding never stands alone either: a run of `=` is a redaction fill, not a key.
+  assert(
+    detailLooksCredential(`aligned ${"=".repeat(30)} tail`) === false,
+    "opaque run: a run of padding characters is not key material",
+  );
+  // And a real key body's padding is still part of its run, so the arm still fires.
+  assert(
+    detailLooksCredential(`token body ${b64}=`) === true,
+    "opaque run: a padded base64 body is still refused",
+  );
+  // ── #1841 round 4 (b) — the screen is asked BEFORE every other stop in the walk ──
+  // "May this line be published" is a PRIOR question to "is this line the header's
+  // prose": the classifier, the passing-line judge and the dump bound all END the
+  // walk, and once it has ended a line that stopped it is never asked again. Here a
+  // credential-shaped line is ALSO a line the shared table claims as a failure — the
+  // shape that used to stop the walk with its secret un-screened and undisclosed.
+  const pemBody = `-----BEGIN ${"PRIVATE"} KEY----- ${b64}`;
+  const bothStops = `${FAIL_HEADER}\n      key material: ${pemBody}\n      ${FAIL_HEADER_DETAILS[0]}`;
+  const screened = harvestHeaderDetails(bothStops);
+  assert(
+    screened.length === 1 && screened[0] === HEADER_DETAIL_WITHHELD,
+    `stop order: a credential the table also claims is refused and disclosed, not just stopped (got ${JSON.stringify(screened)})`,
+  );
+  assert(
+    !screened.some((l) => l.includes(b64.slice(0, 16))),
+    `stop order: no fragment of that line is published (got ${JSON.stringify(screened)})`,
+  );
+  // The line beneath the refused one is NOT harvested either — the walk stops, which
+  // is what keeps the line beside a refused one from being published on its coattails.
+  assert(
+    !screened.some((l) => l.includes("24639")),
+    "stop order: the block after a refused line contributes nothing",
+  );
+  // A real `formatExecError` wrapper, indented so it is a candidate, carrying a
+  // secret: screened before the #1810 wrapper stop can end the walk past it.
+  const wrapperSecret = `  verify command ${"gate.sh"} failed in /w: dump ${b64}`;
+  const echoed = harvestHeaderDetails(`${FAIL_HEADER}\n${wrapperSecret}`);
+  assert(
+    echoed.length === 1 && echoed[0] === HEADER_DETAIL_WITHHELD,
+    `wrapper echo: a wrapper carrying a secret is screened, not stopped past (got ${JSON.stringify(echoed)})`,
+  );
+  assert(
+    !echoed.some((l) => l.includes(b64.slice(0, 16))),
+    `wrapper echo: no fragment of the wrapper's secret is published (got ${JSON.stringify(echoed)})`,
+  );
+  // A line that merely QUOTES the harness sentence, indented, is prose (#1810 reads
+  // indentation on the raw line): kept when clean, and the screen did not become a
+  // general stop that swallows every line carrying the harness's words.
+  const echoQuote = `      verify command ${"gate.sh"} failed in /w, the ceiling is over`;
+  assert(
+    harvestHeaderDetails(`${FAIL_HEADER}\n${echoQuote}`).length === 1,
+    "wrapper echo: an indented quote of the harness sentence is prose, not a wrapper",
+  );
+  // ── #1841 round 4 (c) — both channels answer the credential question the same way ──
+  // The SAME unprefixed blob, indented under a header and unindented as a bare
+  // assertion-shaped line, must be refused on both routes. Before this round only
+  // the indented route asked the screen, so the unindented one leaked.
+  const bareAssertion = `assertion failed on ${b64}`;
+  assert(
+    consolidatedAssertionLines(`${FAIL_HEADER}\n${bareAssertion}`).every(
+      (l) => !l.includes(b64.slice(0, 16)),
+    ),
+    `assertion channel: the same blob is refused unindented too (got ${JSON.stringify(consolidatedAssertionLines(`${FAIL_HEADER}\n${bareAssertion}`))})`,
+  );
+  // ── #1841 round 4 (d) — a withheld block is disclosed, and survives to the dev ──
+  const withheldRound = decideCorrectiveRound(consolidatedGate(`${FAIL_HEADER}
+      ${FAIL_HEADER_DETAILS[0]}
+      ${b64}`), {
+    eventLog: NO_EVENTS,
+    worktrees: { default: WT },
+  });
+  assert(
+    withheldRound.round === true &&
+      (withheldRound.targets[0]?.lines ?? []).includes(HEADER_DETAIL_WITHHELD),
+    `withheld: the developer is told output was withheld (got ${JSON.stringify(withheldRound.round ? withheldRound.targets[0]?.lines : withheldRound)})`,
+  );
+  assert(
+    withheldRound.round === true &&
+      !(withheldRound.targets[0]?.evidence ?? []).includes(HEADER_DETAIL_WITHHELD),
+    `withheld: the disclosure is prompt-only and never stored (got ${JSON.stringify(withheldRound.round ? withheldRound.targets[0]?.evidence : [])})`,
+  );
+  assert(
+    detailLooksCredential(HEADER_DETAIL_WITHHELD) === false &&
+      isNonAssertionLine(HEADER_DETAIL_WITHHELD) === false,
+    "withheld: the marker passes the two vetoes every kept detail line passes",
+  );
+  // And beside a `✗` line — the case where the diagnosis prose is dropped as noise:
+  // the disclosure is not noise, it is the record that something was refused.
+  const markedWithheld = failureEvidence(`✗ b.ts: expected 0, got 1
+${FAIL_HEADER}
+      ${FAIL_HEADER_DETAILS[0]}
+      ${b64}`);
+  assert(
+    markedWithheld.details.includes(HEADER_DETAIL_WITHHELD),
+    `withheld: the marker travels beside a ✗ line instead of being dropped with the prose (got ${JSON.stringify(markedWithheld.details)})`,
   );
   // And the screen does NOT refuse the #1841 fixture's own prose, which carries
   // long digit runs (`24639`, `24576`) — an arm that fired there would silently
@@ -230,8 +352,8 @@ function consolidatedGate(raw: string): CorrectiveGateView {
   // corrective bound alone, not by a third slice nobody declared.
   const long = harvestHeaderDetails(`${FAIL_HEADER}\n    ${"z".repeat(400)}`);
   assert(
-    long.length === 0,
-    `bounds: a 400-char dump under a header is refused, not silently clipped (got ${JSON.stringify(long.map((l) => l.length))})`,
+    long.length === 1 && long[0] === HEADER_DETAIL_WITHHELD,
+    `bounds: a 400-char dump under a header is refused, not silently clipped — and the refusal is disclosed (got ${JSON.stringify(long.map((l) => l.length))})`,
   );
   // The prose is assembled from words, not one long run: a bare 300-character run
   // of one letter IS the shape the credential screen refuses, and a fixture that

@@ -107,6 +107,7 @@ const TALLY_LINE_MAX = 200;
  * `-i-` suite. This sits BELOW the reach of the separator-aware secret patterns,
  * which need a prefix or a keyword to anchor on — that is why it is here.
  */
+/** The minimum that separates a digest or key body from a long slug. */
 const TALLY_OPAQUE_RUN_MIN = 24;
 const HEX_RUN_RE = /^[0-9a-fA-F]+$/;
 const DIGIT_RE = /[0-9]/;
@@ -114,21 +115,38 @@ const DIGIT_RE = /[0-9]/;
 // name's long run is one alphabet (`a{40}`, `check_` + 30 letters, `y{120}_0`), so
 // the mixed requirement is what separates a key from a slug.
 const KEY_BODY_RE = /^(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[A-Za-z0-9+/]+$/;
+// Two `+`/`/` in a row: base64, and nothing a path or a sentence writes. One of each
+// is a `/`-joined path, which the credential screen has to keep (#1841 round 4).
+const BASE64_PUNCT_RUN_RE = /[+/]{2,}/;
 
-/** True when any separator-free run inside `name` reads as a digest or a key body. */
-function hasOpaqueRun(name: string): boolean {
-  for (const run of name.split(/[^A-Za-z0-9+/]+/)) {
-    if (run.length < TALLY_OPAQUE_RUN_MIN) continue;
-    // A hex run needs a digit to be a digest — `f`.repeat(40) is a slug, and the
-    // hex alphabet is a subset of the name alphabet, so the bare shape test would
-    // refuse every `deadbeef`-style fixture name a gate might really print.
-    if (HEX_RUN_RE.test(run) && DIGIT_RE.test(run)) return true;
-    if (KEY_BODY_RE.test(run)) return true;
-    // A `+` or `/` inside a long run is not a path separator a test name carries —
-    // it is a base64 digit.
-    if (run.includes("+") || run.includes("/")) return true;
-  }
-  return false;
+/**
+ * True when a SINGLE separator-free `run` reads as a digest or a key body: long
+ * AND either all-hex with a digit, or letters-mixed-with-digits, or carrying base64
+ * punctuation no prose prints.
+ *
+ * Two of the three arms are DIGIT-BEARING shapes: a digest has hex digits and a key
+ * body is letters mixed with digits. The third, a long run carrying `+` or `/`, is
+ * the shape a key is written in and the shape prose is not — but a `/` is also what
+ * a sentence puts between path segments, and no sentence prints two of them in a
+ * row. So the arm is a DOUBLE punctuation: a long run with no run of two `+`/`/`
+ * is a path the gate cited, not a key (#1841 round 4, which is how this screen came
+ * to refuse a line for citing a long path). A `+`/`-`-padded or URL-safe body keeps
+ * its `//` and still refuses, and `nameLooksSecret` still catches the shapes whose
+ * own characters the redactor rewrites.
+ *
+ * `min` is a parameter because the caller splits the line, and the right minimum
+ * differs by what the line IS: a tally name is a path, an evidence line is prose.
+ * Both callers pass their own bound and judge one run at a time, so there is one
+ * conjunction in the codebase rather than two that drift.
+ */
+export function hasOpaqueRun(run: string, min: number = TALLY_OPAQUE_RUN_MIN): boolean {
+  if (run.length < min) return false;
+  // A hex run needs a digit to be a digest — `f`.repeat(40) is a slug, and the
+  // hex alphabet is a subset of the name alphabet, so the bare shape test would
+  // refuse every `deadbeef`-style fixture name a gate might really print.
+  if (HEX_RUN_RE.test(run) && DIGIT_RE.test(run)) return true;
+  if (KEY_BODY_RE.test(run)) return true;
+  return BASE64_PUNCT_RUN_RE.test(run);
 }
 
 /**
@@ -144,9 +162,21 @@ function hasOpaqueRun(name: string): boolean {
  * shape needs — printed in full while the tally silently refused the very same
  * token. A veto that is one arm at one sink and three at another is the bug, not
  * the arms.
+ *
+ * The line is split HERE, at the one place that knows what the string is: a name is
+ * a path, and `+`, `/` and `=` stay in the run they belong to.
  */
 export function nameLooksSecret(name: string): boolean {
-  return looksLikeCredential(name) || hasOpaqueRun(name) || redactSecrets(name).text !== name;
+  return (
+    looksLikeCredential(name) ||
+    splitRuns(name).some((run) => hasOpaqueRun(run)) ||
+    redactSecrets(name).text !== name
+  );
+}
+
+/** A line split into candidate base64 runs; the separators themselves are prose. */
+function splitRuns(line: string): string[] {
+  return line.split(/[^A-Za-z0-9+/]+/);
 }
 
 /** The most the ` (+K more)` disclosure may print; beyond it the digit is a claim. */

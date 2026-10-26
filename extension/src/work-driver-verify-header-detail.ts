@@ -43,18 +43,26 @@
  *     trims first would harvest the whole stream.
  *   - **The walk stops at the first line that is not deeper**, at the harness's own
  *     wrapper sentence (#1810 — the harvest is never handed raw record text, and
- *     never harvests through the harness's writing either), at the first line the
- *     shared table claims as a failure or as a passing line, or at the first
- *     credential-shaped line (see below). So the `ok`/`skip` block that
- *     follows the details contributes nothing, and a second `FAIL` header starts
+ *     never harvests through the harness's writing either), or at the first line the
+ *     shared table claims as a failure or as a passing line: so the `ok`/`skip` block
+ *     that follows the details contributes nothing, and a second `FAIL` header starts
  *     its own block instead of extending this one.
+ *   - **The credential screen is asked FIRST**, ahead of every stop above (#1841
+ *     round 4, b, d). Those stops decide whether a line is this header's PROSE, and
+ *     each of them ENDS the walk; whether a line may be PUBLISHED at all is the prior
+ *     question, and once the walk has stopped it cannot be re-asked — a line that
+ *     stopped it earlier was never screened, and the block ended with its secret
+ *     unrefused and undisclosed. So a stop by the screen or the dump bound below is a
+ *     REFUSAL, not a boundary, and appends {@link HEADER_DETAIL_WITHHELD}: the walk
+ *     still stops, and the withheld output is visible. A boundary — indentation, the
+ *     harness's wrapper sentence, a line the table claims — has nothing withheld.
  *   - **Every judge is asked inside the classifier's own scan window**
  *     ({@link FAILURE_LINE_SCAN_MAX}): a gate that prints a 100 KB blob under one
  *     header must not be classified whole. The credential screen
  *     (`detailLooksCredential`, from `work-driver-verify-credential-screen.ts`) is
- *     asked on the same bounded view, and the classifier is asked first because it
- *     carries the keyword/echo/marker veto (`isNonAssertionLine` inside
- *     `extractSpecificAssertion`) — #1841 round 2: an unprefixed PEM body, a bare
+ *     asked on the same bounded view, and on the TRIMMED line — the shape every other
+ *     judge sees, and the only one that separates the harness's own writing from a
+ *     gate's prose that quotes it. #1841 round 2: an unprefixed PEM body, a bare
  *     `Authorization: Basic …` or an `ssh-rsa AAAA…` blob printed under a header
  *     reached the developer prompt, the `corrective-round` event and the write-fence
  *     admission evidence, while the very same line unindented is refused today.
@@ -92,6 +100,15 @@ export const HEADER_DETAIL_MAX = 6;
 export const HEADER_DETAIL_SCAN_MAX = 50;
 
 /**
+ * The one detail line the harvest appends when it withholds the rest of a block
+ * (#1841 round 4, d): the walk still stops, but the developer and the operator can
+ * see that output was cut short rather than that the block ended at its last reason.
+ * Fixed text that names no content, so it can never carry what it stands for; the
+ * suite asserts the credential screen and the non-assertion veto both keep it.
+ */
+export const HEADER_DETAIL_WITHHELD = "[remaining detail lines withheld]";
+
+/**
  * The longest one detail line is kept at. The harvest clips NOTHING itself
  * (#1841 round 3, d — one owner per bound): the two clips that apply to a detail
  * are the record's `redactThenBound` at `ASSERTION_LINE_MAX` and the corrective
@@ -123,8 +140,13 @@ function indentOf(raw: string): number {
  * against harness prose and harvested from it, which is the #1810 defect.
  *
  * @param view the gate's stream, read line by line with the indentation intact
- * @returns the header's detail lines, in stream order, trimmed — `[]` when the
- *   stream holds no `FAIL` header with deeper lines beneath it
+ * @returns the header's detail lines, in stream order, trimmed, with
+ *   {@link HEADER_DETAIL_WITHHELD} appended when the walk stopped on a line it
+ *   REFUSED — the credential screen, or the dump bound below — rather than on a line
+ *   that simply is not a detail. Indentation, the harness's wrapper sentence and a
+ *   line the table claims are BOUNDARIES, not refusals: a boundary has nothing
+ *   withheld to disclose. `[]` when the stream holds no `FAIL` header with deeper
+ *   lines beneath it
  */
 export function harvestHeaderDetails(view: string): string[] {
   const lines = splitLines(view);
@@ -137,9 +159,6 @@ export function harvestHeaderDetails(view: string): string[] {
       if (k - i > HEADER_DETAIL_SCAN_MAX) break;
       const candidate = lines[k] ?? "";
       if (indentOf(candidate) <= indentOf(header)) break;
-      // The harness's own sentence is not a gate's prose beneath a header — it is
-      // what the #1810 guard exists for, and the harvest must never be handed it.
-      if (isHarnessWrapper(candidate)) break;
       const detail = candidate.trim();
       if (detail.length === 0) break;
       // The classifier's own scan window is the bound on what every judge below is
@@ -147,21 +166,40 @@ export function harvestHeaderDetails(view: string): string[] {
       // classified whole.
       const asked =
         detail.length > FAILURE_LINE_SCAN_MAX ? detail.slice(0, FAILURE_LINE_SCAN_MAX) : detail;
+      // The credential screen FIRST, ahead of the harness-wrapper stop (#1841
+      // round 4, b). "May this line be published" is a prior question to "is this
+      // line the header's prose", and once the walk has stopped it cannot be
+      // re-asked: a wrapper carrying a secret used to end the walk un-screened, so
+      // the refusal was silent and the line's neighbourhood was all the developer
+      // saw. Asked on the TRIMMED line — the shape every other judge sees — while
+      // the wrapper stop below reads the RAW one (see #1810).
+      if (detailLooksCredential(asked)) {
+        out.push(HEADER_DETAIL_WITHHELD);
+        break;
+      }
+      // The harness's own sentence is not a gate's prose beneath a header — it is
+      // what the #1810 guard exists for, and the harvest must never be handed it.
+      // Asked on the RAW line, as it always was: the guard reads the harness's own
+      // writing, which the record's unwrap has already cut away above the gate's
+      // stream, so a candidate that still carries it is the harness's own tail.
+      if (isHarnessWrapper(candidate)) break;
       // A line the table claims — a real failure line or a passing one — is not
       // this header's prose: the first is evidence in its own right and the second
       // (`ok`, `skip`, a timing block) is the next block. So a credential line the
       // classifier refuses (a marker, an echoed `$ `, a keyword-shaped credential)
-      // stops the walk here, and the screen below catches the shapes it does not
+      // stops the walk here, and the screen above catches the shapes it does not
       // name — an unprefixed base64 blob, which is neither a failure nor a pass and
       // would otherwise have been kept as prose.
       if (classifyFailureLine(asked) !== undefined) break;
       if (isSuccessLine(asked)) break;
-      // The credential screen, asked on the same bounded view the classifier saw.
-      if (detailLooksCredential(asked)) break;
       // A line past the dump threshold is not a reason: the walk stops rather than
       // clipping one, so no bound this module owns can disagree with the record's
-      // and the decision's (see {@link HEADER_DETAIL_LINE_MAX}).
-      if (detail.length > HEADER_DETAIL_LINE_MAX) break;
+      // and the decision's (see {@link HEADER_DETAIL_LINE_MAX}). A refusal, not an
+      // end, so it is disclosed as one (#1841 round 4, d).
+      if (detail.length > HEADER_DETAIL_LINE_MAX) {
+        out.push(HEADER_DETAIL_WITHHELD);
+        break;
+      }
       out.push(detail);
       taken++;
     }
