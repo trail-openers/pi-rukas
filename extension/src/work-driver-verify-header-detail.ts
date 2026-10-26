@@ -26,33 +26,81 @@
  * readable. Sharing the module would have meant one file with two routes and two
  * bound sets in it, which is exactly the confusion its own docblock warns about.
  *
- * The three bounds it obeys, all stated in {@link HEADER_DETAIL_MAX} /
- * {@link HEADER_DETAIL_LINE_MAX}:
+ * `work-driver-verify-credential-screen.ts` — the tally's three-arm veto and the
+ * post-redaction opaque-run arm that catches an unprefixed base64 blob. It lives
+ * there so the record and the harvest each import ONE secret module: the harvest
+ * asks the classifier (which carries the marker/echo/keyword-credential veto
+ * through `extractSpecificAssertion`) plus that screen, and a detail that still
+ * carries a long base64-shaped run after redaction is refused outright — which is
+ * the arm that catches the unprefixed PEM body, the bare `Authorization: Basic …`
+ * and the `ssh-rsa AAAA…` blob no keyword pattern anchors on (#1841 round 2).
+ *
+ * The bounds it obeys:
  *
  *   - **Indentation is measured BEFORE trimming**, the same rule the tally harvest
  *     uses: "deeper than the header" is a fact about the raw line, and a reader that
  *     trims first would harvest the whole stream.
- *   - **The walk stops at the first line that is not deeper**, or that the shared
- *     table claims as a failure or as a passing line. So the `ok`/`skip` block that
- *     follows the details contributes nothing, and a second `FAIL` header starts its
- *     own block instead of extending this one.
- *   - **At most {@link HEADER_DETAIL_MAX} lines, each cut at
- *     {@link HEADER_DETAIL_LINE_MAX}.** A gate can print an entire file as a diff
- *     under one header; the corrective round gives the developer at most
- *     `CORRECTIVE_MAX_LINES` lines anyway, and the record's own `push` redacts and
- *     clips the whole line again on the way out.
+ *   - **The walk stops at the first line that is not deeper**, at the harness's own
+ *     wrapper sentence (#1810 — the harvest is never handed raw record text, and
+ *     never harvests through the harness's writing either), at the first line the
+ *     shared table claims as a failure or as a passing line, or at the first
+ *     credential-shaped line (see below). So the `ok`/`skip` block that
+ *     follows the details contributes nothing, and a second `FAIL` header starts
+ *     its own block instead of extending this one.
+ *   - **Every judge is asked inside the classifier's own scan window**
+ *     ({@link FAILURE_LINE_SCAN_MAX}): a gate that prints a 100 KB blob under one
+ *     header must not be classified whole. The credential screen
+ *     (`detailLooksCredential`, from `work-driver-verify-credential-screen.ts`) is
+ *     asked on the same bounded view, and the classifier is asked first because it
+ *     carries the keyword/echo/marker veto (`isNonAssertionLine` inside
+ *     `extractSpecificAssertion`) — #1841 round 2: an unprefixed PEM body, a bare
+ *     `Authorization: Basic …` or an `ssh-rsa AAAA…` blob printed under a header
+ *     reached the developer prompt, the `corrective-round` event and the write-fence
+ *     admission evidence, while the very same line unindented is refused today.
+ *     So the walk stops rather than dropping one line silently: dropping is
+ *     what let the line next to a refused one through, and the whole block under such
+ *     a line is a dump, not a diagnosis.
+ *   - **At most {@link HEADER_DETAIL_MAX} lines, gathered from at most
+ *     {@link HEADER_DETAIL_SCAN_MAX} candidate lines,** with no clip of its own
+ *     (see {@link HEADER_DETAIL_LINE_MAX}: a line that long is refused, not cut).
+ *     A gate can print an entire file as a diff under one header; the corrective
+ *     round gives the developer at most `CORRECTIVE_MAX_LINES` lines anyway, and
+ *     the record's `redactThenBound` and the decision's `CORRECTIVE_LINE_MAX` are
+ *     the two bounds that cut what survives.
  */
 
-import { classifyFailureLine, isSuccessLine } from "./work-driver-verify-failures.ts";
+import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
+import {
+  FAILURE_LINE_SCAN_MAX,
+  classifyFailureLine,
+  isHarnessWrapper,
+  isSuccessLine,
+} from "./work-driver-verify-failures.ts";
+import { isFailHeaderLine } from "./work-driver-verify-shapes.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 
-/** A `FAIL  <description>` header: the status token, then a non-space description. */
-const FAIL_HEADER_RE = /^\s*FAIL\s+\S/;
+/**
+ * The most detail lines one header contributes to the evidence. Exported so the
+ * suite can assert it never exceeds the corrective round's own line cap (#1841);
+ * the owner of that cap is `CORRECTIVE_MAX_LINES`, and this is deliberately equal
+ * to it so the harvest never builds evidence the reader is certain to slice away.
+ */
+export const HEADER_DETAIL_MAX = 6;
 
-/** The most detail lines one header contributes to the evidence. */
-const HEADER_DETAIL_MAX = 6;
+/** The most candidate lines one header walks, whatever it prints beneath itself. */
+export const HEADER_DETAIL_SCAN_MAX = 50;
 
-/** The longest one detail line is kept at — a longer one is a dump, not a reason. */
+/**
+ * The longest one detail line is kept at. The harvest clips NOTHING itself
+ * (#1841 round 3, d — one owner per bound): the two clips that apply to a detail
+ * are the record's `redactThenBound` at `ASSERTION_LINE_MAX` and the corrective
+ * round's `CORRECTIVE_LINE_MAX`, in that order, and a private third slice here
+ * would be a bound the developer's line is not actually cut at. The name stays and
+ * the walk below still refuses such a line, because the shape it describes is the
+ * reason the walk is bounded at all: a gate can print an entire file as a diff
+ * under one header, and a line that long is a dump, not a reason — its first
+ * {@link FAILURE_LINE_SCAN_MAX} are all any judge can read anyway.
+ */
 const HEADER_DETAIL_LINE_MAX = 300;
 
 /** Leading-whitespace width of a raw line (the indentation, measured untrimmed). */
@@ -63,9 +111,9 @@ function indentOf(raw: string): number {
 }
 
 /**
- * The evidence lines of one stream: every line that already names something, plus
- * the indented details of every `FAIL` header — which name nothing on their own and
- * would otherwise be dropped.
+ * The indented detail lines of every `FAIL` header in one stream — the lines that
+ * name nothing on their own and would otherwise be dropped. What already names
+ * something is NOT this reader's business: the record's per-line walk keeps those.
  *
  * The caller hands this its OWN UNWRAPPED view of the stream (the per-worktree
  * reader passes the text with each harness wrapper replaced by what
@@ -82,21 +130,38 @@ export function harvestHeaderDetails(view: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const header = lines[i] ?? "";
-    if (!FAIL_HEADER_RE.test(header)) continue;
+    if (!isFailHeaderLine(header)) continue;
     let taken = 0;
     for (let k = i + 1; k < lines.length && taken < HEADER_DETAIL_MAX; k++) {
+      if (k - i > HEADER_DETAIL_SCAN_MAX) break;
       const candidate = lines[k] ?? "";
       if (indentOf(candidate) <= indentOf(header)) break;
+      // The harness's own sentence is not a gate's prose beneath a header — it is
+      // what the #1810 guard exists for, and the harvest must never be handed it.
+      if (isHarnessWrapper(candidate)) break;
       const detail = candidate.trim();
       if (detail.length === 0) break;
+      // The classifier's own scan window is the bound on what every judge below is
+      // ASKED: a gate that prints a 100 KB blob under a header must not be
+      // classified whole.
+      const asked =
+        detail.length > FAILURE_LINE_SCAN_MAX ? detail.slice(0, FAILURE_LINE_SCAN_MAX) : detail;
       // A line the table claims — a real failure line or a passing one — is not
       // this header's prose: the first is evidence in its own right and the second
-      // (`ok`, `skip`, a timing block) is the next block. Either way the walk stops.
-      if (classifyFailureLine(detail) !== undefined) break;
-      if (isSuccessLine(detail)) break;
-      out.push(
-        detail.length > HEADER_DETAIL_LINE_MAX ? detail.slice(0, HEADER_DETAIL_LINE_MAX) : detail,
-      );
+      // (`ok`, `skip`, a timing block) is the next block. So a credential line the
+      // classifier refuses (a marker, an echoed `$ `, a keyword-shaped credential)
+      // stops the walk here, and the screen below catches the shapes it does not
+      // name — an unprefixed base64 blob, which is neither a failure nor a pass and
+      // would otherwise have been kept as prose.
+      if (classifyFailureLine(asked) !== undefined) break;
+      if (isSuccessLine(asked)) break;
+      // The credential screen, asked on the same bounded view the classifier saw.
+      if (detailLooksCredential(asked)) break;
+      // A line past the dump threshold is not a reason: the walk stops rather than
+      // clipping one, so no bound this module owns can disagree with the record's
+      // and the decision's (see {@link HEADER_DETAIL_LINE_MAX}).
+      if (detail.length > HEADER_DETAIL_LINE_MAX) break;
+      out.push(detail);
       taken++;
     }
   }

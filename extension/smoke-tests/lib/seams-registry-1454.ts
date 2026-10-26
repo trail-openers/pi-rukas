@@ -157,6 +157,12 @@ export const SEAMS_1454: Seam[] = [
     // shape suites.
     file: "work-driver-verify-header-detail.ts",
     pending: {},
+    testOnly: {
+      HEADER_DETAIL_MAX:
+        "the per-header line cap; the j-1841 suite asserts it against the corrective round's own CORRECTIVE_MAX_LINES so the harvest never builds evidence the reader slices away (#1841 round 3)",
+      HEADER_DETAIL_SCAN_MAX:
+        "the per-header candidate walk cap; pinned by the j-1841 suite so a gate that prints a document under one header costs a bounded scan",
+    },
     canary: { symbol: "harvestHeaderDetails", importer: "work-driver-verify-record.ts" },
   },
   {

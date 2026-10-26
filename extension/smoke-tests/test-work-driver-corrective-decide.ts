@@ -15,6 +15,8 @@ import {
   decideCorrectiveRound,
 } from "../src/work-driver-corrective-decide.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
+import { detailLooksCredential } from "../src/work-driver-verify-credential-screen.ts";
+import { correctiveRoundFor } from "../src/work-driver-corrective-admission.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
 import {
   FAIL_HEADER,
@@ -325,7 +327,102 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
       given.every((l) => l.length <= CORRECTIVE_LINE_MAX) && given.length <= CORRECTIVE_MAX_LINES,
       "fail-header: the corrective line bounds still hold",
     );
+    // #1841 round 2 (b) — the STORED channel is the assertions alone. This is the
+    // list `work-driver-corrective-round.ts` writes as the `corrective-round`
+    // event's `evidenceLines`, which `correctiveRoundFor(...).evidence` hands the
+    // fix-pass fence to admit a file the round "named": a gate's indented prose
+    // under a header must never widen that fence.
+    const stored = d.targets[0]?.evidence ?? [];
+    assert(
+      stored.includes(FAIL_HEADER) &&
+        !FAIL_HEADER_DETAILS.some((l) => stored.includes(l.trim())),
+      `fail-header: the recorded evidence is the header alone, never a detail line (got ${JSON.stringify(stored)})`,
+    );
+    assert(
+      stored.length < given.length,
+      `fail-header: the prompt is the wider channel, the record the narrower one (stored ${stored.length}, given ${given.length})`,
+    );
+    // The fence reads its admission evidence through `correctiveRoundFor`, whose
+    // `evidence` is `evidenceLines.join("\n")` — so the ONE thing that must never
+    // appear there is a detail line. Asserted against the function the fence calls,
+    // not against the field, so a future join or a widened record fails here.
+    const fenceEvidence = correctiveRoundFor(
+      [
+        {
+          kind: "corrective-round",
+          at: 1,
+          step: "develop",
+          workstreamId: "a",
+          attempt: 1,
+          command: CMD,
+          evidenceLines: stored,
+        },
+      ],
+      "a",
+    )?.evidence;
+    assert(
+      fenceEvidence === stored.join("\n") &&
+        !FAIL_HEADER_DETAILS.some((l) => (fenceEvidence ?? "").includes(l.trim())),
+      `fail-header: the fence's admission evidence is the assertions joined, never a detail (got ${JSON.stringify(fenceEvidence)})`,
+    );
+    // And a credential under the header is refused by the screen the detail channel
+    // asks — the arm `isNonAssertionLine` does not carry (fixtures assembled from
+    // pieces: a literal key-shaped string here trips GitHub push protection).
+    const b64 = "Q29tcGxldGVseUZhcms=".repeat(3);
+    assert(
+      FAIL_HEADER_DETAILS.every((l) => detailLooksCredential(l.trim()) === false) &&
+        detailLooksCredential(`ssh-${"rsa"} AAAA${b64}`) === true,
+      "fail-header: the detail screen refuses an unprefixed base64 blob and leaves the real prose alone",
+    );
   }
+}
+
+// ── #1841 round 2 (c) — a missing-module DETAIL declines the round ─────────
+// The dependency rule used to read the assertions only, so a `FAIL` block whose
+// header named the check and whose DETAILS said `Cannot find module 'zod'` earned a
+// round against a tree whose dependencies are simply missing — the developer was
+// dispatched to "repair" a worktree whose `node_modules` is not there, and the deps
+// hint that names the real cause was suppressed. The check now asks both channels.
+{
+  const missing = `verify command \`${CMD}\` failed in ${WT_A}: ${FAIL_HEADER}\n      Cannot find module 'zod' from x.ts`;
+  assert(
+    ctx(perWorktreeGate(WT_A, missing)).round === false,
+    "missing-module detail: a dependency signature beneath a header declines the round",
+  );
+  // `depsHintApplies` is a SEPARATE reader with its own documented rule — the hint
+  // is suppressed when an ASSERTION was extracted, and here one was (the header),
+  // so the hint is suppressed and the operator sees no deps sentence at all. That
+  // asymmetry is the residual of this case, recorded rather than papered over:
+  // what protects the cycle is the DECISION, which reads both channels and
+  // declines. The assertion-only stream the old rule saw carried no signature,
+  // which is exactly how the round used to be spent on a missing dependency.
+  assert(
+    depsHintApplies(missing) === false,
+    "missing-module detail: the hint follows its own assertion rule (suppressed here — the decision is what declines)",
+  );
+  // Control beside it: the same header with an ordinary detail earns the round.
+  assert(
+    ctx(perWorktreeGate(WT_A, `verify command \`${CMD}\` failed in ${WT_A}: ${FAIL_HEADER_STREAM}`))
+      .round === true,
+    "missing-module detail control: an ordinary detail still earns the round",
+  );
+}
+
+// ── #1841 round 2 — a credential under a header never reaches the developer ─
+// Fixtures are ASSEMBLED at runtime from pieces; a literal key-shaped string in
+// this file trips GitHub push protection.
+{
+  const b64 = "Q29tcGxldGVseUZhcms=".repeat(3);
+  const tell = b64.slice(0, 12);
+  const secret = `verify command \`${CMD}\` failed in ${WT_A}: ${FAIL_HEADER}\n      ssh-${"rsa"} AAAA${b64}`;
+  const d = ctx(perWorktreeGate(WT_A, secret));
+  assert(d.round === true, "secret detail: the header still earns the round");
+  const given = d.round ? (d.targets[0]?.lines ?? []) : [];
+  const stored = d.round ? (d.targets[0]?.evidence ?? []) : [];
+  assert(
+    !given.some((l) => l.includes(tell)) && !stored.some((l) => l.includes(tell)),
+    `secret detail: no credential reaches the prompt or the fence evidence (prompt ${JSON.stringify(given)}, record ${JSON.stringify(stored)})`,
+  );
 }
 
 if (exit !== 0) process.exit(exit);
