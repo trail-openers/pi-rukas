@@ -23,8 +23,7 @@ import { plainVerifyFailure } from "./work-develop-verify-failure.ts";
 import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
-import { assertionLines } from "./work-driver-verify-record.ts";
-import { consolidatedAssertionLines, failHeaderEvidence } from "./work-driver-verify-record.ts";
+import { failureEvidence } from "./work-driver-verify-record.ts";
 import type { verifyStepOutcome } from "./work-driver-verify.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -53,7 +52,19 @@ export type CorrectiveGateView = Pick<
 export interface CorrectiveTarget {
   id: string;
   cwd: string;
+  /**
+   * What the developer is GIVEN: the assertions, plus the `FAIL`-header details.
+   * `lines` is the same list the round dispatches and records, and
+   * {@link evidence} is the prompt-only superset — the two are kept apart so the
+   * stored event and the fence see assertions alone (#1841 round 2, b).
+   */
   lines: string[];
+  /**
+   * The lines the round's STORED record is built from: assertions only. A
+   * `FAIL`-header detail is a gate's prose, and prose must not authorise the
+   * write-fence to admit a file the round "named".
+   */
+  evidence: string[];
 }
 
 export type CorrectiveDecision =
@@ -67,7 +78,11 @@ export type CorrectiveDecision =
       skipped: string[];
     };
 
-/** The lines a developer is given for one workstream: bounded, each cut. */
+/**
+ * The lines a developer is GIVEN for one workstream: bounded, each cut. The
+ * `#`1841 detail channel is part of this list and of NO stored field — see
+ * {@link CorrectiveTarget.given}.
+ */
 function boundedLines(lines: readonly string[]): string[] {
   return lines
     .slice(0, CORRECTIVE_MAX_LINES)
@@ -108,27 +123,35 @@ export function decideCorrectiveRound(
   const worktrees = input.worktrees;
   const records = run.perWorktree;
   if (records.length > 0) {
-    // Every assertion line the round would show, checked for the dependency signature.
-    const all = records.flatMap((r) => assertionLines(r.text));
-    if (all.some(looksLikeMissingDeps))
+    // One read per record, both channels (#1841 round 3, c). The dependency check
+    // asks BOTH: the assertions and the header's details (#1841 round 2, c), so a
+    // `FAIL` block whose prose says `Cannot find module 'zod'` declines the round
+    // even though no assertion line carries the signature — a developer dispatched
+    // to it would be dispatched to repair a tree whose deps are missing.
+    const views = records.map((r) => ({ cwd: r.cwd, ev: failureEvidence(r.text) }));
+    if (views.some((v) => [...v.ev.assertions, ...v.ev.details].some(looksLikeMissingDeps)))
       return no("an evidence line names a missing dependency; the deps hint stays");
     const targets: CorrectiveTarget[] = [];
     const skipped: string[] = [];
-    for (const r of records) {
-      const id = Object.keys(worktrees).find((k) => worktrees[k] === r.cwd);
+    for (const v of views) {
+      const id = Object.keys(worktrees).find((k) => worktrees[k] === v.cwd);
       if (id === undefined) {
-        skipped.push(`${r.cwd}: no workstream owns this worktree`);
+        skipped.push(`${v.cwd}: no workstream owns this worktree`);
         continue;
       }
-      // #1841 — the lines the developer is GIVEN are the assertions plus any
-      // `FAIL`-header details; the gate below stays on `assertionLines` alone, so a
-      // stream that names no check still declines instead of earning a round on prose.
-      const lines = assertionLines(r.text);
-      if (lines.length === 0) {
-        skipped.push(`${id} (${r.cwd}): its failure carries no assertion line`);
+      // #1841 — the gate stays on the ASSERTIONS, so a stream that names no check
+      // still declines instead of earning a round on prose; the developer is GIVEN
+      // the details beside them, and the round RECORDS the assertions alone.
+      if (v.ev.assertions.length === 0) {
+        skipped.push(`${id} (${v.cwd}): its failure carries no assertion line`);
         continue;
       }
-      targets.push({ id, cwd: r.cwd, lines: boundedLines(failHeaderEvidence(r.text)) });
+      targets.push({
+        id,
+        cwd: v.cwd,
+        lines: boundedLines(v.ev.given),
+        evidence: boundedLines(v.ev.assertions),
+      });
     }
     if (targets.length === 0) return no("the per-worktree failures carry no specific failing line");
     return { round: true, command: run.command, source: "per-workstream", targets, skipped };
@@ -140,19 +163,20 @@ export function decideCorrectiveRound(
   // same lines.
   if (Object.keys(worktrees).length > 1)
     return no("the consolidated failure cannot be attributed to one of several workstreams");
-  const lines = consolidatedAssertionLines(run.consolidatedRaw ?? "");
-  if (lines.some(looksLikeMissingDeps))
+  // One read of the consolidated stream, both channels: the tally harvest is on
+  // this route only, and the dependency check asks assertions AND details.
+  const ev = failureEvidence(run.consolidatedRaw ?? "", { harvestTallies: true });
+  if ([...ev.assertions, ...ev.details].some(looksLikeMissingDeps))
     return no("an evidence line names a missing dependency; the deps hint stays");
-  if (lines.length === 0) return no("the consolidated failure carries no specific failing line");
-  // #1841 — same split as the per-worktree branch: the gate is the assertions, the
-  // evidence includes the `FAIL`-header details.
-  const bounded = boundedLines(
-    failHeaderEvidence(run.consolidatedRaw ?? "", { harvestTallies: true }),
-  );
+  if (ev.assertions.length === 0)
+    return no("the consolidated failure carries no specific failing line");
+  const bounded = boundedLines(ev.given);
+  const evidence = boundedLines(ev.assertions);
   const targets = Object.entries(worktrees).map(([id, cwd]) => ({
     id,
     cwd,
     lines: bounded,
+    evidence,
   }));
   return { round: true, command: run.command, source: "consolidated", targets, skipped: [] };
 }

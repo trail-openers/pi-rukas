@@ -15,11 +15,8 @@ import {
   extractSpecificAssertion,
   isNonAssertionLine,
 } from "./work-driver-consolidation-classify.ts";
-import {
-  classifyFailureLine,
-  harnessInnerLine,
-  isHarnessWrapper,
-} from "./work-driver-verify-failures.ts";
+import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
+import { harnessInnerLine, isHarnessWrapper } from "./work-driver-verify-failures.ts";
 import { harvestHeaderDetails } from "./work-driver-verify-header-detail.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 import { harvestConsolidatedTallies } from "./work-driver-verify-tally.ts";
@@ -66,8 +63,8 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  * dependency check must read every line, not the bounded subset given out.
  *
  * The #1841 `FAIL`-header DETAIL lines are NOT in this list — see
- * {@link failHeaderDetails} for why they are a separate channel, and
- * {@link failHeaderEvidence} for the lines a developer is actually given.
+ * {@link failureEvidence} for the two channels and the lines a developer is
+ * actually given.
  *
  * #1762 round 3 — two rules the wrapper's inner lines used to skip:
  *
@@ -121,17 +118,60 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  * reader that copies them is a reader that forgets one of them (the #1808 round found
  * exactly that). The #1841 `FAIL`-header detail harvest is NOT a route difference:
  * it runs on both, and its lines come back on the separate channel
- * {@link failHeaderDetails} reads.
+ * {@link failureEvidence}'s `details` carries.
  */
 export interface AssertionLinesOptions {
   /** Harvest indented tally name blocks and append them as joined lines. */
   harvestTallies?: boolean;
 }
 
+/**
+ * The shared tail BOTH channels of this reader run through (#1841 round 2): the
+ * #807 non-assertion/secret veto, then redact-then-bound, then dedupe. One
+ * function, because the two channels used to spell the same three steps twice and
+ * the detail channel's copy had NO credential screen of its own — so a credential
+ * printed INDENTED under a `FAIL` header reached the developer prompt while the
+ * same line unindented was refused.
+ *
+ * `veto` is the channel's own extra refusal: the assertion channel's is
+ * "the shared table does not recognise this line as naming a check", the detail
+ * channel's is `detailLooksCredential` (an unprefixed base64 PEM body, a bare
+ * `Authorization: Basic …` or an `ssh-rsa AAAA…` blob survives the keyword-anchored
+ * `isNonAssertionLine`, so the detail channel has to ask the opaque-run arm too).
+ * Both channels keep the non-assertion veto — a marker or an echoed `$ ` command is
+ * not evidence on either route.
+ *
+ * `out` is the channel's list and `seen` the dedupe set SHARED across both, so the
+ * same redacted text cannot be given twice as a header detail and an assertion.
+ */
+function guardedPush(
+  out: string[],
+  seen: Set<string>,
+  line: string,
+  veto: (line: string) => boolean,
+): void {
+  if (line.length === 0) return;
+  if (isNonAssertionLine(line)) return;
+  if (veto(line)) return;
+  const redacted = redactThenBound(line, ASSERTION_LINE_MAX).text;
+  if (redacted.length === 0 || seen.has(redacted)) return;
+  seen.add(redacted);
+  out.push(redacted);
+}
+
+/** The assertion channel's veto: a line the shared table does not accept as an assertion. */
+function notAnAssertion(line: string): boolean {
+  return extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION;
+}
+
 interface AssertionLinesView {
   /** The lines that NAME a failing check, in stream order, deduped and redacted. */
   lines: string[];
-  /** The indented detail lines of any `FAIL` header, same bounds and redaction. */
+  /**
+   * The indented detail lines of any `FAIL` header, same bounds, dedupe and
+   * redaction, and screened for credentials. The developer's DIAGNOSIS — given in
+   * the prompt, NEVER stored as evidence (see {@link failHeaderAssertions}).
+   */
   details: string[];
 }
 
@@ -141,26 +181,14 @@ export function assertionLines(text: string, opts: AssertionLinesOptions = {}): 
 
 /**
  * The ONE walker of a verify failure text. {@link assertionLines},
- * {@link failHeaderDetails} and {@link failHeaderEvidence} are all thin readers of
+ * {@link failureEvidence} and {@link failHeaderEvidence} are all thin readers of
  * this, so the two channels cannot be assembled by a copy that forgets the wrapper
  * cut, the dedupe set or the redaction — the #1762/#1808 defect family.
  */
 function assertionLinesView(text: string, opts: AssertionLinesOptions): AssertionLinesView {
   const seen = new Set<string>();
   const out: string[] = [];
-  const push = (line: string): void => {
-    if (line.length === 0) return;
-    if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) return;
-    // An UNWRAPPED inner line never passes through `extractSpecificAssertion`'s
-    // own guard, because the extractor refuses a multi-line stream and this
-    // function unwraps it. The guard is applied here so both routes answer the
-    // same way for the same text.
-    if (isNonAssertionLine(line)) return;
-    const redacted = redactThenBound(line, ASSERTION_LINE_MAX).text;
-    if (redacted.length === 0 || seen.has(redacted)) return;
-    seen.add(redacted);
-    out.push(redacted);
-  };
+  const push = (line: string): void => guardedPush(out, seen, line, notAnAssertion);
   for (const raw of splitLines(text)) {
     const line = raw.trim();
     if (line.length === 0) continue;
@@ -207,19 +235,18 @@ function assertionLinesView(text: string, opts: AssertionLinesOptions): Assertio
   // only a line the shared table recognises as NAMING a check may be an assertion,
   // and a detail line is prose — it names nothing on its own, which is the whole
   // reason it needs a reader. Its place is beside the header, which is what earns the
-  // round, so `failHeaderDetails` returns them separately and {@link failHeaderEvidence}
-  // is what joins header and details into the lines a developer is given. They keep
-  // the two guards that matter for text printed by a gate: the #807
-  // non-assertion/secret veto (a marker, an echoed `$ ` command, a credential-shaped
-  // line never becomes evidence) and the same redact-then-bound every other stored
-  // verify line goes through, so one ordering rule holds for both channels.
+  // round, so this channel stays out of `lines` and {@link failHeaderEvidence}
+  // is what joins header and details into the lines a developer is given. They run
+  // through the SAME shared tail as every assertion ({@link guardedPush}: the #807
+  // non-assertion/secret veto, the same redact-then-bound every other stored verify
+  // line goes through, the same dedupe set), with the credential screen
+  // (`detailLooksCredential`) as this channel's extra veto: an unprefixed base64
+  // PEM body, a bare `Authorization: Basic …` or an `ssh-rsa AAAA…` blob survives
+  // the keyword-anchored `isNonAssertionLine`, and this channel is the one place a
+  // gate's indented prose is kept whole (#1841 round 2).
   const details: string[] = [];
   for (const detail of harvestHeaderDetails(view)) {
-    if (detail.length === 0 || isNonAssertionLine(detail)) continue;
-    const redacted = redactThenBound(detail, ASSERTION_LINE_MAX).text;
-    if (redacted.length === 0 || seen.has(redacted)) continue;
-    seen.add(redacted);
-    details.push(redacted);
+    guardedPush(details, seen, detail, detailLooksCredential);
   }
   if (opts.harvestTallies === true) {
     for (const joined of harvestConsolidatedTallies(view)) push(joined);
@@ -233,33 +260,68 @@ function assertionLinesView(text: string, opts: AssertionLinesOptions): Assertio
   };
 }
 
+// #1841 round 3 (b) — the detail channel has NO reader of its own any more. The
+// only caller that ever wanted the details alone was the shape suite, and it asks
+// `harvestHeaderDetails` in the module that produces them; an export nothing in
+// production called was a second surface for the same channel to drift on. The two
+// readers that ARE asked are {@link failureEvidence} and the thin wrappers below.
+
 /**
- * #1841 — the lines a `FAIL  <description>` header printed beneath itself, in the
- * reader's output order and redacted the same way every other evidence line is.
+ * The two channels of one verify failure text, read ONCE (#1841 round 3, c).
  *
- * A separate channel, not extra entries in {@link assertionLines}'s list, for the
- * reason in the call above: `assertionLines` is the list of lines that NAME a
- * failing check, and it is what the corrective decision asks for its gate —
- * `extractSpecificAssertion`'s `namesTest` rule is what refuses a bare tally, a
- * filename or harness prose as "the assertion the developer can act on" (#798). The
- * detail lines name nothing on their own, so admitting them there would have
- * loosened the gate that keeps that defect out, and a stream whose only detail lines
- * were harness-adjacent prose could have earned a round on prose. Keeping them apart
- * means the decision still declines a stream that names nothing, while the developer
- * of a stream that DOES name a header is given what to change.
- *
- * Returns `[]` for a stream with no `FAIL` header, so every existing reader of
- * `assertionLines` is unchanged by it.
+ * `decideCorrectiveRound` used to ask two readers over the same stream —
+ * `assertionLines` for its gate and dependency check, `failHeaderEvidence` for what
+ * the developer is given — which walked, deduped and redacted the text twice and let
+ * the two answers drift. One call returns both, and each caller says which channel
+ * it is on.
  */
-export function failHeaderDetails(text: string, opts: AssertionLinesOptions = {}): string[] {
-  return assertionLinesView(text, opts).details;
+export interface FailureEvidence {
+  /** The lines that NAME a failing check. The gate, the dependency check, and the
+   * text the fence is admitted from. */
+  assertions: string[];
+  /** The `FAIL`-header details beside them. Prompt-only (#1841 round 2, b). */
+  details: string[];
+  /** Assertions then details — the lines a corrective developer is GIVEN. */
+  given: string[];
+}
+
+/**
+ * Read one failure text ONCE and return both channels. {@link assertionLines},
+ * {@link assertionLines}, {@link failHeaderAssertions} and
+ * {@link failHeaderEvidence} are thin readers of it.
+ */
+export function failureEvidence(text: string, opts: AssertionLinesOptions = {}): FailureEvidence {
+  const view = assertionLinesView(text, opts);
+  return {
+    assertions: view.lines,
+    details: view.details,
+    given: [...view.lines, ...view.details],
+  };
+}
+
+/**
+ * #1841 round 2 (b) — the lines a corrective round may be STORED from: the
+ * assertions only, never a `FAIL`-header detail. The record's own
+ * `corrective-round` event and the fix-pass fence's admission evidence are built
+ * from this, so the extra diagnosis the developer is shown in its prompt cannot
+ * widen the set of files the round is admitted to have authored.
+ *
+ * Identical to {@link assertionLines} today, and kept as its own name because the
+ * two roles are not the same question — "what names a failing check" (the gate) and
+ * "what may authorise a file" (the fence) — and a caller that asks the second one
+ * by the first name is a caller that starts passing details the moment someone
+ * joins the channels.
+ */
+export function failHeaderAssertions(text: string, opts: AssertionLinesOptions = {}): string[] {
+  return assertionLinesView(text, opts).lines;
 }
 
 /**
  * #1841 — the evidence lines a corrective developer is given for one failure text:
  * the assertions, and beneath them the indented details of any `FAIL` header that
  * produced no assertion of its own. One caller-visible reader so the two channels
- * cannot be assembled in one route and forgotten in the other.
+ * cannot be assembled in one route and forgotten in the other. PROMPT-ONLY: the
+ * stored event and the fence read {@link failHeaderAssertions}.
  */
 export function failHeaderEvidence(text: string, opts: AssertionLinesOptions = {}): string[] {
   const view = assertionLinesView(text, opts);
