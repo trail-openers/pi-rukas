@@ -196,14 +196,11 @@ export interface PipelineState extends IssueClosedState {
    */
   integration?: { integratedAt?: number; reintegrations?: number };
   /**
-   * #378 — the resolved intent. Absent when intent resolution is
-   * disabled or the resolver returned no `## Spec` block.
-   */
-  /**
    * #792 — the plan-time no-diff marker. Set by the intent resolver
    * and nowhere else; a marker without a non-empty evidence string is
    * NOT honoured. Optional; absent = no marker.
    * (Carried on the deliverables of NormalisedSpec; see work-driver-intent.ts.)
+   * #378 — the resolved intent; absent when resolution is off.
    */
   normalisedSpec?: NormalisedSpec;
   /**
@@ -221,11 +218,8 @@ export interface PipelineState extends IssueClosedState {
    * operator does not have to reproduce it.
    */
   lensDiffError?: string;
-  /**
-   * #1634 — the adversarial twin of `lensDiffError`: the git error that stopped
-   * the gate from reading a workstream's diff. Recorded so the handoff names the
-   * failure instead of the operator having to reproduce it.
-   */
+  /** #1634 — adversarial twin of `lensDiffError`: the git error that stopped
+   * the gate reading a workstream's diff. */
   adversarialDiffError?: string;
   mergeHold?: VerifyMergeHold;
   planQuality?: VerifyPlanQuality;

@@ -102,6 +102,10 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
   "adversarial-diff-unreadable": {
     cls: "pi-rukas",
     reason: "the driver could not read the worktree's diff for the adversarial gate",
+    // The `pi-rukas` entries carry no action (test-cause-class.ts): the fix is
+    // ours to ship. The operator action for this cap lives in the ONE place
+    // the queue renders it — work-queue-cap.ts::humanActionFor — next to the
+    // `lens-diff-unreadable` row it mirrors.
     action: null,
   },
   // The reviewer judged the diff and still found issues after its own rounds.
