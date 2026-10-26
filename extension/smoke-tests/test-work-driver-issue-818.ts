@@ -293,7 +293,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         // seam (`git rev-parse --show-toplevel`, then
         // `git diff --end-of-options <base>..HEAD`); this fixture models its
         // worktrees on disk, so both reads answer as a clean tree.
-        verifyExecFn: answerDiffReads(exec),
+        verifyExecFn: answerDiffReads(exec, () => ""),
         adversarialLoopFn: async () =>
           mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
         dispatchFn: mkDispatchFn(dir, 818),

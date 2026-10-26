@@ -167,7 +167,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           // worktrees on disk rather than creating them, so the two reads are
           // answered as what they are: a clean tree. Every other command keeps
           // the fixture's own scripted answers.
-          verifyExecFn: answerDiffReads(exec),
+          verifyExecFn: answerDiffReads(exec, () => ""),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 994),
