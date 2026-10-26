@@ -29,7 +29,6 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
-import { commandOf } from "./argv-shell.ts";
 
 /** The identity every fixture commit carries, so a CI runner with no global
  *  git identity still commits (#1016 hit this through the safety net). */
@@ -76,11 +75,9 @@ export function initCleanRepo(dir: string): string {
 
 /**
  * #1634 — the two git reads the adversarial gate makes of a worktree, matched
- * in BOTH transport forms. `readWorktreeDiff` goes through the driver's exec
- * seam as argv (`execFn("git", { argv, cwd })`); a fixture that instead
- * normalises with `commandOf` sees the shell-form line. Production only ever
- * uses the argv form — the string branch exists for the fakes that already
- * normalise before matching.
+ * on the argv prefix `readWorktreeDiff` issues through the driver's exec seam
+ * (`execFn("git", { argv, cwd })`). That argv form is the only transport
+ * production uses, so it is the only form matched here.
  */
 const GATE_ARGV_READS = [
   ["rev-parse", "--show-toplevel"],
@@ -109,7 +106,11 @@ function gateArgvRead(argv: string[] | undefined): (typeof GATE_ARGV_READS)[numb
  * scripted answers — cherry-pick, push, `gh pr create` — are unaffected.
  *
  * `diffFor` lets a fixture return the diff it wants the gate to see (non-empty
- * = the reviewer actually runs instead of skipping on an empty diff).
+ * = the reviewer actually runs instead of skipping on an empty diff). No caller
+ * uses it yet; it is kept because STEP 3's kill-cause fixture is the case it
+ * exists for. The SHELL-FORM branch this once carried is gone: production's
+ * `readWorktreeDiff` reaches the seam only as `execFn("git", { argv, cwd })`,
+ * and a branch no caller exercises is a branch no test proves.
  */
 export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
   exec: F,
@@ -122,50 +123,8 @@ export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
   });
   return (async (cmd: any, o?: any) => {
     const read = gateArgvRead(o?.argv);
-    // A shell-form fake may already have folded argv into the command string,
-    // in which case `o.argv` is gone and only the line below matches.
-    if (cmd === "git" && read) {
-      const range = o.argv.find((a: string) => a.includes(".."));
-      return read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, range);
-    }
-    const line = typeof cmd === "string" ? commandOf(cmd, o) : "";
-    if (line === "git rev-parse --show-toplevel") return { stdout: `${o?.cwd ?? ""}\n` };
-    if (line.startsWith("git diff --end-of-options ")) {
-      return diff(o?.cwd ?? "", line.slice("git diff --end-of-options ".length));
-    }
-    return exec(cmd, o);
+    if (cmd !== "git" || !read) return exec(cmd, o);
+    const range = o.argv.find((a: string) => a.includes(".."));
+    return read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, range);
   }) as unknown as F;
-}
-
-/**
- * #1634 — answer the LENS step's integrated-diff reads for a fixture whose
- * "remote" is simulated rather than pushed to.
- *
- * `readIntegratedDiff` resolves the mainline and then reads
- * `origin/<mainline>...origin/<branch>` through the plain executor — not the
- * driver's exec seam — so a throwaway clone has no `origin/<branch>` ref and
- * the read fails closed: the cycle parks on `lens-diff-unreadable` before any
- * lens runs. Other driver fixtures dodge that by stubbing `lensReviewFn`,
- * which skips the read and the code around it; answering the reads instead
- * keeps `runLens` itself under test.
- *
- * The three shapes are exactly what `readIntegratedDiff` and `aheadOfBase`
- * issue: the diff, the ref probes, and the `--right-only` commit count. An
- * answer is honest only if the fixture's tree really does carry that content
- * on that ref — the caller passes the diff it committed, never a stand-in.
- */
-export function answerIntegratedDiffReads(
-  cmd: string,
-  o: { argv?: string[] } | undefined,
-  answers: { diff: string; commitsAhead: number },
-): { stdout: string } | undefined {
-  const argv = o?.argv;
-  if (cmd !== "git" || !argv) return undefined;
-  const joined = argv.join(" ");
-  if (argv[0] === "diff" && joined.includes("origin/")) return { stdout: answers.diff };
-  if (argv[0] === "rev-parse" && argv[1] === "--verify" && joined.includes("origin/"))
-    return { stdout: `0000000000000000000000000000000000000000\n` };
-  if (argv[0] === "rev-list" && joined.includes("--right-only"))
-    return { stdout: `${answers.commitsAhead}\n` };
-  return undefined;
 }
