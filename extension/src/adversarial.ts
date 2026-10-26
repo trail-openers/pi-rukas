@@ -18,6 +18,7 @@ import { isToolPathProvenance } from "./adversarial-loop-params.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
 import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
+import { onRereadFailure, rereadStalenessNote } from "./adversarial-reread.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { createUsageTally } from "./adversarial-usage.ts";
@@ -43,6 +44,13 @@ import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 import type { ExecFn } from "./worktree.ts";
 export const MAX_ROUNDS = 3;
 
+/** One round's outcome, as the loop records it for the ledger and the report. */
+interface RoundRecord {
+  round: number;
+  verdict: AdversarialVerdict;
+  ms: number;
+}
+
 /**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
  * call it without the tool-registration layer (PR1 workflow-graph compilation).
@@ -63,20 +71,12 @@ export async function runAdversarialLoop(
 ): Promise<DispatchResult> {
   const start = Date.now();
   const runId = makeRunId();
-  const rounds: Array<{
-    round: number;
-    verdict: AdversarialVerdict;
-    ms: number;
-  }> = [];
-  // #859 — failed re-reads on rounds 2+ of a range the loop computed ITSELF
-  // (`rangeDiffFn` threw): the loop keeps the previous diff, never abandons the
-  // round, and the final result must say so — the caller can re-run that read,
-  // and the note is the operator's record of the staleness.
-  //
-  // #1634 — a re-read the CALLER supplied (`params.getDiff`) failing is NOT
-  // this case. See the catch in the round loop: that error is rethrown, because
-  // on the /work path this loop IS the gate, and a gate must not adjudicate on a
-  // diff it could not read.
+  const rounds: RoundRecord[] = [];
+  // Failed re-reads on rounds 2+ accumulate here and print in the final result,
+  // so the operator can see the round reviewed a stale diff instead of having to
+  // notice it. Who owns the read decides whether a failure lands HERE or leaves
+  // the loop by rethrow — the two cases and why they differ are documented once
+  // in `adversarial-reread.ts` (#859, #1634).
   const diffRereadNotes: string[] = [];
   // The loop's cost tally and the transcript/model of its LAST dispatch
   // (adversarial-usage.ts): every result this loop synthesises reads through it,
@@ -150,10 +150,9 @@ export async function runAdversarialLoop(
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
-  // #1360 — the head the CURRENT round reviews. It starts as the caller's ref
-  // and a fix round that committed changes re-points it at `HEAD`, which is
-  // what `getDiff` then diffs against (the range's head half), so the loop and
-  // the writer never disagree about which commit a round judged.
+  // #1360 — the head the CURRENT round reviews: the caller's ref at first, then
+  // `HEAD` once a fix round commits, which is what `getDiff` diffs against (the
+  // range's head half), so loop and writer never disagree about the judged commit.
   let headRef: string | undefined = params.head;
   /**
    * The diff the CURRENT round reviews, and the range its truncation notice may
@@ -170,10 +169,7 @@ export async function runAdversarialLoop(
   // reviews; that single result feeds both the reviewer's prompt and the
   // `comments:` report line (the last round's). A lost count > 0 does NOT change
   // the verdict. A check that never ran reads as not-run, never as clean.
-  let lastComments: LostCommentResult = {
-    ok: false,
-    reason: "no review round ran",
-  };
+  let lastComments: LostCommentResult = { ok: false, reason: "no review round ran" };
   const commentsLineNow = () => formatReportLine(lastComments);
   // #980 fix — the infra-failure result must carry the values ACCUMULATED up
   // to this point (the transcript/model of the round that just failed), so
@@ -188,7 +184,7 @@ export async function runAdversarialLoop(
   });
   /** The result-state shape the fix-phase failures carry: the same tally, read
    * at call time (adversarial-usage.ts), plus the rounds completed so far. */
-  const roundStateNow = (completed: typeof rounds) => ({
+  const roundStateNow = (completed: RoundRecord[]) => ({
     start,
     usage,
     lastTranscript: tally.lastTranscript,
@@ -196,20 +192,20 @@ export async function runAdversarialLoop(
     rounds: completed,
   });
 
-  // #859 — resolve the diff: a pasted string wins over a ref range (traced);
-  // with no string, base+head compute the range in workCwd (else the process
-  // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
-  // overflow) is returned AS the result — never a fallback to an empty
+  // The diff source for rounds 2+: the caller's `getDiff`, replaced below by a
+  // range reader when this loop computes the range itself (#859). Precedence at
+  // entry — a pasted `diff` string wins over a ref range (traced); with no
+  // string, base+head compute the range in workCwd (else the process cwd). A
+  // failed entry read is returned AS the result, never fallen back to an empty
   // string, which the loop would review as "nothing to change" and approve.
   let getDiff = params.getDiff;
-  /** #1360 — capture what THIS round is about to review, before its reviewer
-   * dispatch, so the identity is the tree the reviewer's prompt carried and not
-   * the tree a later fix round left behind.
-   *
-   * TOOL PATH ONLY. The bindings are consulted only for a `toolPath` row, so on
-   * the driver path this call would be a round of git subprocesses whose answer
-   * nothing reads — `captureRound` is not called there at all, and the writer
-   * receives the row it recorded before #1360. */
+
+  /** #1360 — capture what THIS round is about to review, immediately before its
+   * reviewer dispatch, so the identity is the tree the reviewer's prompt carried
+   * and not one a later fix round left behind. TOOL PATH ONLY: the bindings are
+   * consulted only for a `toolPath` row, so the driver path skips this entirely
+   * (no git subprocesses whose answer nothing reads; its row is byte-identical
+   * to the pre-#1360 one). */
   const captureForRound = async () =>
     captureRound(
       ledgerBinding,
@@ -230,12 +226,10 @@ export async function runAdversarialLoop(
         model: tally.lastModel,
       }),
     );
-  if (params.diff && range) {
-    trace(
-      `adversarial: diff string supplied alongside base=${range.base} head=${range.head} — the diff string wins`,
-    );
-    review = { diff: params.diff };
-  } else if (params.diff) {
+  if (params.diff) {
+    // A pasted diff wins outright, so a caller that sent both gets no range read
+    // and no range in the reviewer's notice (the loop never diffed a range).
+    if (range) trace(`adversarial: diff string wins over ${range.base}...${range.head}`);
     review = { diff: params.diff };
   } else if (range) {
     const cwd = params.workCwd ?? process.cwd();
@@ -252,12 +246,9 @@ export async function runAdversarialLoop(
     getDiff = async () => {
       const r = await rangeDiffFn(cwd, range.base, headRef ?? range.head);
       if (!r.ok) {
-        // #859 — a re-read failure is no longer a silent "" (which the loop
-        // would ignore and review the STALE diff on). Name it in the trace;
-        // the caller surfaces it in the final result.
-        trace(
-          `adversarial: diff re-read failed for range ${range.base}...${range.head}: ${r.reason} — reviewing the previous diff`,
-        );
+        // #859 — a failed range re-read throws rather than answering "" (which
+        // the loop would ignore and review the STALE diff on); the catch in the
+        // round loop traces it and decides what it means.
         throw new Error(r.reason);
       }
       return r.diff;
@@ -272,29 +263,19 @@ export async function runAdversarialLoop(
   // can resolve the orchestrator jobId to its active inner child instead of
   // returning "no such job". Active child is updated below in runPhase.
   markOrchestrator(orchestratorJobId);
-  // Re-read before every review. `fetchDiff` used to run once, before the loop,
-  // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had to
-  // notice the staleness itself.
+  // Findings the earlier rounds raised, carried into each later round's fix
+  // prompt so the fixer sees the whole picture and not only the last verdict.
   const priorFindings: string[] = [];
-
-  // #1634 — the loop may swallow a failed re-read ONLY for a range it computed
-  // itself (`rangeDiffFn`, below). When the caller supplied `getDiff` — the
-  // /work gate's own `readWorktreeDiff` — a failed re-read is the gate's read
-  // failing, and the loop must not adjudicate on a diff it could not read.
-  // Decided HERE, where the substitution happens, rather than by sniffing the
-  // error: a loop that ran `rangeDiffFn` replaced `getDiff`, so a changed
-  // identity is the positive fact that this loop owns the re-read (#859's
-  // keep-the-previous-diff rule) and an unchanged one is the fact that the
-  // caller does.
+  // Whether THIS loop may swallow a failed re-read — decided where the
+  // substitution above decides, from the one fact that settles it (#1634).
   const rereadIsLoopOwn = getDiff !== params.getDiff;
 
   const runPhase = makeRunPhase({
     runId,
     signal,
     orchestratorJobId,
-    // An absent optional stays absent rather than becoming `undefined`: the
-    // spread drops the key entirely, so the phase options are exactly what the
-    // caller supplied.
+    // An absent optional stays absent rather than becoming `undefined`, so the
+    // phase options are exactly what the caller supplied.
     ...(params.onSlow ? { onSlow: params.onSlow } : {}),
     ...(params.pi ? { pi: params.pi } : {}),
     processGroup: params.processGroup,
@@ -305,6 +286,9 @@ export async function runAdversarialLoop(
   for (let round = firstRound; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
     if (round > firstRound && getDiff) {
+      // One attempt per round, deliberately: a diff read is deterministic, so a
+      // second try says the same thing (#1634's park skips the retry ladders for
+      // the same reason). The `try` below decides what a failure means.
       try {
         const fresh = await getDiff();
         // #1360 — a round after a fix pass reviews what the fixer left in the
@@ -319,31 +303,18 @@ export async function runAdversarialLoop(
         // for the range this round actually reviewed.
         review = roundAfterReread(review, range, headRef, true, fresh);
       } catch (err) {
-        // #1634 — a caller-supplied re-read that fails is the GATE's own read
-        // failing, not a transient the loop can ride out. On the /work path
-        // `params.getDiff` is the driver's `readWorktreeDiff`, and this loop is
-        // the thing that decides whether the branch may be committed: carrying
-        // the PREVIOUS round's diff into the reviewer and accepting its verdict
-        // is an APPROVED with no diff behind it. So the failure of a caller's
-        // read is rethrown — the same object, so the caller still recognises it
-        // — and the pass turns it into the no-verdict `diffUnreadable` outcome.
-        // The loop never produces a verdict for a round whose diff it could not
-        // read, and it never dispatches a reviewer against one.
-        if (!rereadIsLoopOwn) throw err;
-        // #859 — a range this loop computed itself is the other case: a failed
-        // re-read is not a reason to abandon the round; the previous diff plus
-        // the live worktree is what the reviewer had before this. Record it, so
-        // the final result names the staleness instead of the operator having to
-        // notice it.
-        const reason = (err as Error).message;
-        trace(`adversarial: diff re-read failed for round ${round}: ${reason}`);
-        // #1816 — and no range for this round either: the diff under review is
-        // a previous round's, so the notice may not name a range this round
-        // never read.
+        // Who owned the read decides what a failed re-read is: a transient the
+        // loop rides out on the previous diff, or the gate's own read failing —
+        // in which case the loop must not produce a verdict for a round whose
+        // diff it could not read, and never dispatches a reviewer against one.
+        // Both branches, and why, are in `adversarial-reread.ts`.
+        const failure = onRereadFailure(round, err, rereadIsLoopOwn);
+        if (failure.action === "rethrow") throw err;
+        // #859 + #1816: the previous diff plus the live worktree is what the
+        // reviewer had before this round, so it reviews that again — and with no
+        // range for this round, since the notice may not name one it never read.
         review = roundAfterReread(review, range, headRef, false, undefined);
-        diffRereadNotes.push(
-          `note: round ${round} diff re-read failed (${reason}) — reviewed the previous diff`,
-        );
+        diffRereadNotes.push(rereadStalenessNote(round, failure.reason));
       }
     }
     lastComments = await roundComments(
@@ -354,9 +325,8 @@ export async function runAdversarialLoop(
       params.commentExecFn,
     );
     // #1360 — capture what THIS round is about to review, immediately before
-    // the reviewer dispatch. Gated on the provenance marker: the driver path
-    // never consults a binding, so it pays for none (no capture, no extra git
-    // subprocess, and its row is byte-identical to the pre-#1360 one).
+    // the reviewer dispatch — gated on the provenance marker, because the driver
+    // path never consults a binding and so pays for none.
     if (toolPath) await captureForRound();
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
