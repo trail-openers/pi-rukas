@@ -8,18 +8,26 @@
  * the same grounds — contributes nothing, and its reason is kept so the
  * cycle's event log and handoff can say what the planner got wrong.
  *
- * #1756 — those checks run on the value Pi PASSED TO THE CHILD, not on the raw
- * arguments: Pi clones them, converts them (`Value.Convert`) and validates the
- * converted result, so a model that sends an array field as a single string is
- * accepted in the child and was refused HERE, as "arguments do not match the
- * report_workstream schema". The child had already recorded the workstream, so
- * the retry under the same id was refused as a duplicate and the whole
- * workstream's paths were lost. Same parent, same schema, two verdicts: Pi's
- * `validateToolArguments` (pi-ai `utils/validation.js`) CLONES the arguments
- * and passes them through `Value.Convert` before checking them, so an array
- * field that arrived as a single string is an one-element array by the time
- * `execute` ran. The parent mirrors that clone-and-convert (`asTheChildSawIt`)
- * and judges, records and folds the CONVERTED value.
+ * #1756 — those checks do NOT run on the raw arguments. Pi's tool validation
+ * (`validateToolArguments` in pi-ai `utils/validation.js`) clones them and runs
+ * `normalizeOptionalNulls` plus `Value.Convert` before its `Check`, so a model
+ * that sends an array field as a single string can be accepted in the child and
+ * refused HERE — the workstream recorded in the child and lost by the driver,
+ * and the planner's retry under the same id then drew the duplicate refusal.
+ *
+ * ROUND 2 — the parent does NOT mirror that conversion. It tried (this branch's
+ * first commit) and got it wrong in both directions: the conversion is done by
+ * whichever TypeBox package the INSTALLED Pi ships — the dev-pinned pi-ai
+ * validates with `typebox` 1.3.x, whose `Convert` refuses string→array and
+ * number→string, while field runs on newer Pi versions coerced a string
+ * `outOfScope` into an array — and Pi's `normalizeOptionalNulls` step was never
+ * mirrored at all. There is no version-independent answer to "what did Pi pass
+ * the child", so the parent stops guessing: the CHILD reports the params object
+ * its `execute` actually recorded (workstream-reporter.ts) and the parent runs
+ * the schema, path and duplicate checks on THAT value. A result with no echo
+ * (an older companion, or a channel that dropped it) is judged on its raw
+ * arguments exactly as before #1756 — the reader never invents a shape nobody
+ * reported.
  *
  * A call with NO result entry is different: the channel that carries results
  * failed, so nothing says the planner did anything wrong. Those calls are
@@ -38,6 +46,7 @@ import {
   WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
   duplicateWorkstreamIdMessage,
+  recordedWorkstreamArgs,
   workstreamPathProblem,
 } from "./plan-workstream-schema.ts";
 import { statReporterPath } from "./reporter-preflight.ts";
@@ -93,28 +102,6 @@ export function emptyWorkstreamReport(): WorkstreamReport {
 
 type ToolUse = { id?: unknown; name?: unknown; arguments?: unknown };
 
-/**
- * The value Pi's tool validation actually checked: a clone of what the model
- * sent, passed through TypeBox `Value.Convert` (#1756). Pi's
- * `validateToolArguments` (pi-ai `utils/validation.js`) runs exactly this
- * clone-then-Convert before its `Check`, so the child's `execute` sees the
- * converted shape — an array field that arrived as one string is an
- * one-element array by then. The clone is what makes the raw transcript safe
- * to hand to the state file: `Value.Convert` mutates its argument in place.
- * A value that no conversion can repair (no `id`, an object where an array
- * belongs) is still invalid here and is refused with the reason it always
- * carried.
- */
-function asTheChildSawIt(args: unknown): unknown {
-  try {
-    return Value.Convert(WORKSTREAM_PARAMETERS, structuredClone(args));
-  } catch {
-    // A clone of the model's arguments can fail (a getter that throws, a
-    // cyclic shape). Then the raw value is what this reader judges, as before.
-    return args;
-  }
-}
-
 function isWorkstreamArgs(v: unknown): v is WorkstreamArgs {
   return Value.Check(WORKSTREAM_PARAMETERS, v);
 }
@@ -122,6 +109,8 @@ function isWorkstreamArgs(v: unknown): v is WorkstreamArgs {
 /**
  * The workstreams a plan dispatch reported. A call whose result is an error is
  * refused with the error text; a call whose result is missing is unreadable.
+ * A call whose result is a success is judged on the value the child echoed, or
+ * on its raw arguments when the result carried no echo (#1756 round 2).
  */
 export function workstreamCallsOf(
   result: Pick<DispatchResult, "toolUses" | "toolResults">,
@@ -166,26 +155,39 @@ export function workstreamCallsOf(
       refuse(rawId, r.text || "refused");
       continue;
     }
-    // Pi validated the call, but the parent judges it again — on the SAME
-    // value Pi validated (#1756), so the two agree: a value the child let
-    // through and this check would refuse must not reach state, and a value the
-    // child accepted must never be refused here for a shape Pi already fixed.
-    const converted = asTheChildSawIt(args);
-    if (!isWorkstreamArgs(converted)) {
-      refuse(rawId, "arguments do not match the report_workstream schema");
+    // The value to judge: what the child says it recorded, when it said. The
+    // parent never converts — it cannot know which TypeBox the installed Pi
+    // used, so only the child's own report is authoritative (#1756 round 2).
+    // No echo (an older companion, or a dropped payload) falls back to the raw
+    // arguments, which is the pre-#1756 behaviour, unchanged.
+    const echoed = recordedWorkstreamArgs(r);
+    const judged = echoed === undefined ? args : echoed;
+    // A child that recorded a different `id` from the one the model asked with
+    // is reporting something the transcript does not contain, so the refusal is
+    // filed under the call the transcript actually holds.
+    const judgedId =
+      judged !== args &&
+      judged &&
+      typeof judged === "object" &&
+      "id" in judged &&
+      typeof (judged as { id: unknown }).id === "string"
+        ? (judged as { id: string }).id
+        : rawId;
+    if (!isWorkstreamArgs(judged)) {
+      refuse(judgedId, "arguments do not match the report_workstream schema");
       continue;
     }
-    const pathProblem = workstreamPathProblem(converted);
+    const pathProblem = workstreamPathProblem(judged);
     if (pathProblem) {
-      refuse(converted.id, pathProblem);
+      refuse(judged.id, pathProblem);
       continue;
     }
-    if (seen.has(converted.id)) {
-      refuse(converted.id, duplicateWorkstreamIdMessage(converted.id));
+    if (seen.has(judged.id)) {
+      refuse(judged.id, duplicateWorkstreamIdMessage(judged.id));
       continue;
     }
-    seen.add(converted.id);
-    accepted.push(workstreamFromArgs(converted));
+    seen.add(judged.id);
+    accepted.push(workstreamFromArgs(judged));
   }
   return {
     workstreams: foldToCeiling(accepted),

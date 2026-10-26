@@ -96,7 +96,12 @@ assert(
 
 {
   const ok = await tool?.execute("1", VALID);
-  assert(ok?.content[0]?.text === "recorded workstream task-a", "a first call is recorded");
+  // The record line now carries the #1756 echo after a newline, so the assertion
+  // is on its first line — the text the model reads.
+  assert(
+    ok?.content[0]?.text.split("\n")[0] === "recorded workstream task-a",
+    "a first call is recorded",
+  );
   let refusal = "";
   try {
     await tool?.execute("2", { ...VALID, scope: "again" });
@@ -109,7 +114,7 @@ assert(
   );
   const distinct = await tool?.execute("3", { ...VALID, id: "task-b" });
   assert(
-    distinct?.content[0]?.text === "recorded workstream task-b",
+    distinct?.content[0]?.text.split("\n")[0] === "recorded workstream task-b",
     "a distinct id after a refusal is recorded",
   );
 }

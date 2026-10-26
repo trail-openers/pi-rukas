@@ -30,6 +30,16 @@ function boundedResultText(blocks: PiContentBlock[]): string {
   return out;
 }
 
+/**
+ * Whether a value survives a JSON round-trip. `undefined`, a function and a
+ * symbol all vanish or throw there, so a value that is not JSON-safe is not a
+ * structured payload at all — keeping it would let the reader see a key whose
+ * value cannot be what the child wrote.
+ */
+function isJsonSafe(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 export function collapseEvents(
   lastAgentEnd: PiJsonEvent | null,
   lastAssistantMessageEnd: PiJsonEvent | null,
@@ -108,6 +118,13 @@ export function collapseEvents(
       // Fail closed: only an explicit `false` is a success (#1652 review).
       isError: m.isError !== false,
       text: boundedResultText(m.content ?? []),
+      // #1756 round 2 — the companion's structured echo rides here. Kept whole
+      // and NOT bounded like `text`: the plan reader parses it, and `text` is
+      // truncated for display, so a bound here would silently destroy a
+      // judgement. Only a JSON-safe value survives the session round-trip, so
+      // anything else is dropped rather than forwarded as a value the reader
+      // could misread as a real echo.
+      ...(isJsonSafe(m.details) ? { details: m.details } : {}),
     }));
 
   // Join with double-newline so distinct text blocks across turns (separated

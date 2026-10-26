@@ -10,10 +10,20 @@
  * (workstreamCallRefusal). A dispatch's duplicate-id set starts empty, as a
  * corrective re-dispatch does in production. The registration itself is covered
  * by test-plan-workstream-tool.ts.
+ *
+ * #1756 round 2 — an accepted result also carries the companion's ECHO of the
+ * arguments it recorded (`details`, plus the text line), because the driver's
+ * reader judges that value rather than the raw call. An entry may override what
+ * the child claims it recorded (`recorded`) to model a companion that accepted
+ * a shape the raw call does not have, or omit the echo entirely (`noEcho`) to
+ * model an older companion. Both are shapes the reader must decide on its own,
+ * so the helper reproduces them rather than a fixture guessing at them.
  */
 
 import { Value } from "@sinclair/typebox/value";
 import {
+  RECORDED_ARGS_DETAILS_KEY,
+  RECORDED_ARGS_TEXT_PREFIX,
   WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
   workstreamCallRefusal,
@@ -25,7 +35,13 @@ export type { WorkstreamArgs };
 export interface PlanResultShape {
   text: string;
   toolUses: unknown[];
-  toolResults: Array<{ toolCallId: string; toolName: string; isError: boolean; text: string }>;
+  toolResults: Array<{
+    toolCallId: string;
+    toolName: string;
+    isError: boolean;
+    text: string;
+    details?: Record<string, unknown>;
+  }>;
 }
 
 /** A plan result whose calls report exactly these workstreams, in order. */
@@ -39,10 +55,18 @@ export function planResultFromCalls(calls: WorkstreamArgs[], text = ""): PlanRes
 /**
  * Calls by raw `args` — used where a test needs a call the companion would
  * refuse. `refused`, when given, models a channel-level refusal (the call never
- * reached the companion) and overrides the companion's own result.
+ * reached the companion) and overrides the companion's own result. `recorded`
+ * overrides what an ACCEPTED call echoes back as the value it stored, and
+ * `noEcho` drops the echo from an accepted result entirely (#1756 round 2).
  */
 export function planResultFromRawCalls(
-  entries: Array<{ id: string; args: Record<string, unknown>; refused?: string }>,
+  entries: Array<{
+    id: string;
+    args: Record<string, unknown>;
+    refused?: string;
+    recorded?: unknown;
+    noEcho?: boolean;
+  }>,
   text = "",
 ): PlanResultShape {
   const accepted = new Set<string>();
@@ -58,18 +82,27 @@ export function planResultFromRawCalls(
     });
     const outcome = entry.refused
       ? { isError: true, text: entry.refused }
-      : companionOutcome(accepted, toolCallId, entry.args);
+      : companionOutcome(accepted, toolCallId, entry.args, entry);
     toolResults.push({ toolCallId, toolName: "report_workstream", ...outcome });
   });
   return { text, toolUses, toolResults };
 }
 
-/** One call's outcome: Pi's schema check, then the companion's refusal rules. */
+/** The result fields a fixture supplies; the two identity fields are added by the caller. */
+type CompanionOutcome = Omit<PlanResultShape["toolResults"][number], "toolCallId" | "toolName">;
+
+/**
+ * One call's outcome: Pi's schema check, then the companion's refusal rules,
+ * then — for an accepted call only — the echo of the recorded value, in both
+ * carriers the real companion writes. A refused call echoes nothing, exactly as
+ * the companion echoes nothing when it throws.
+ */
 function companionOutcome(
   accepted: Set<string>,
   toolCallId: string,
   args: Record<string, unknown>,
-): { isError: boolean; text: string } {
+  entry: { recorded?: unknown; noEcho?: boolean } = {},
+): CompanionOutcome {
   if (!Value.Check(WORKSTREAM_PARAMETERS, args)) {
     return {
       isError: true,
@@ -79,7 +112,16 @@ function companionOutcome(
   const refusal = workstreamCallRefusal(args, accepted);
   if (refusal) return { isError: true, text: refusal };
   accepted.add(args.id as string);
-  return { isError: false, text: `recorded workstream ${args.id}` };
+  // What the companion would have been handed. The helper cannot observe Pi's
+  // conversion, so a test that wants a coerceable shape says so with `recorded`;
+  // otherwise the child recorded what it was sent.
+  const recorded = entry.recorded ?? { ...args };
+  if (entry.noEcho) return { isError: false, text: `recorded workstream ${args.id}` };
+  return {
+    isError: false,
+    text: `recorded workstream ${args.id}\n${RECORDED_ARGS_TEXT_PREFIX}${JSON.stringify(recorded)}`,
+    details: { id: args.id, [RECORDED_ARGS_DETAILS_KEY]: recorded },
+  };
 }
 
 /** The workstream map a plan result's calls produce, read by the PRODUCTION reader. */

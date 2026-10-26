@@ -211,4 +211,18 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     onAbsence:
       "no section, or no CRITICAL bullet in it → no open points; the gate passes and the spec is unchanged",
   },
+  {
+    // #1756 round 2 — not a reply marker but a TOOL RESULT marker: the plan
+    // child's companion appends it to the text of an ACCEPTED `report_workstream`
+    // result, alongside the same JSON on the result's `details`. It is registered
+    // here because the reader treats presence as authoritative and absence as a
+    // distinct answer, which is the axis every marker bug in this repo has lived
+    // on. Both carriers are read by `recordedWorkstreamArgs` (the companion writes
+    // both), so this module is the consumer.
+    token: "RECORDED_WORKSTREAM_ARGS",
+    values: "<compact JSON object of the recorded report_workstream arguments>",
+    consumer: "plan-workstream-schema.ts",
+    onAbsence:
+      "no `details` echo and no text line → the reader falls back to the RAW arguments (the pre-#1756 behaviour) and refuses an invalid call; a present-but-unparseable line is NO echo, never a guessed value",
+  },
 ];

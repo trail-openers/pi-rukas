@@ -72,7 +72,18 @@ export interface DispatchResult {
    * reader that counts calls without this counts refusals too. Absent when
    * the replay carried no tool-result messages.
    */
-  toolResults?: Array<{ toolCallId: string; toolName: string; isError: boolean; text: string }>;
+  toolResults?: Array<{
+    toolCallId: string;
+    toolName: string;
+    isError: boolean;
+    text: string;
+    /**
+     * #1756 round 2 — the tool's own structured payload, carried through from
+     * the child's `toolResult` message. Pi types it `unknown`; the plan reader
+     * is the only consumer and treats a shape it cannot read as no payload.
+     */
+    details?: Record<string, unknown>;
+  }>;
   /**
    * Tool calls counted live from the event stream, when the replay carried
    * none. A child killed mid-flight reports `toolUses: []` because

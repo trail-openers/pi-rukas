@@ -13,12 +13,22 @@
  * re-dispatch starts empty, as the plan step's contract requires) and a declared
  * path that is not plain repo-relative. The parent re-judges both.
  *
+ * #1756 round 2 — an ACCEPTED call also echoes back the arguments `execute` was
+ * handed, in `details` and as a text line (see `RECORDED_ARGS_DETAILS_KEY` in
+ * plan-workstream-schema.ts for why the parent cannot derive that value
+ * itself). The echo is the params object Pi passed in, verbatim — a shallow
+ * copy so a later mutation of the caller's object cannot rewrite what this
+ * result claims. A REFUSED call echoes nothing: nothing was recorded, so there
+ * is nothing to report.
+ *
  * Loaded via `pi --no-extensions --extension <path>` from work-driver-plan.ts;
  * never auto-discovered.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  RECORDED_ARGS_DETAILS_KEY,
+  RECORDED_ARGS_TEXT_PREFIX,
   WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
   workstreamCallRefusal,
@@ -39,9 +49,18 @@ export default function (pi: ExtensionAPI) {
       const refusal = workstreamCallRefusal(args, accepted);
       if (refusal) throw new Error(refusal);
       accepted.add(args.id);
+      // The echo is what THIS function was handed — not what the model sent,
+      // and not what the parent thinks Pi should have sent. `raw` is Pi's
+      // validated clone, so it is the only value both sides can agree on.
+      const recorded = { ...args };
       return {
-        content: [{ type: "text", text: `recorded workstream ${args.id}` }],
-        details: { id: args.id },
+        content: [
+          {
+            type: "text",
+            text: `recorded workstream ${args.id}\n${RECORDED_ARGS_TEXT_PREFIX}${JSON.stringify(recorded)}`,
+          },
+        ],
+        details: { id: args.id, [RECORDED_ARGS_DETAILS_KEY]: recorded },
       };
     },
   });
