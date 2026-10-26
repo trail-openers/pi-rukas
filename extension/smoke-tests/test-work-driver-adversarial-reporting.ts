@@ -15,6 +15,7 @@ import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { appendEvent, initialState, readState, writeState } from "../src/workflow-state.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -88,8 +89,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-485-r1-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // #1634 — the adversarial diff read REFUSES a directory that is not a
+    // repository (it no longer reads "could not tell" as "clean"), so the
+    // worktree this cycle reviews is a real one-commit repo.
+    initCleanRepo(dir);
     let s = initialState(956, 1_000_000);
     s = {
       ...s,
@@ -194,9 +197,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-485-r2-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const { runAdversarial } = await import("../src/work-driver-adversarial.ts");
+    // #1634 — see the note above: a bare directory is a refusal, not a clean tree.
+    initCleanRepo(dir);
     let s = initialState(957, 1_000_000);
     s = {
       ...s,

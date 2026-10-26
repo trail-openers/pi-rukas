@@ -26,7 +26,7 @@
  * `adversarialLoopFn` built from the real retry + infra-result code.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -47,6 +47,7 @@ import {
 } from "../src/work-driver-failure-taxonomy.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -249,7 +250,7 @@ function makeFakePi(): ExtensionAPI {
 async function driverRun(issue: number, script: (string | undefined)[]) {
   const dir = mkdtempSync(path.join(tmpdir(), `adv-provider-cause-${issue}-`));
   try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    initCleanRepo(dir);
     let s = initialState(issue, 1_000_000);
     s = {
       ...s,

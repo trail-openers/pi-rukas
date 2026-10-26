@@ -14,6 +14,7 @@ import path from "node:path";
 import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -77,7 +78,23 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // #286 — this test exercises PR8 per-workstream fanout (adversarial loop
 // verdicts) and does not set up real git diffs. Disable the empty-diff
 // skip so the loop runs as intended.
+// #1634 — the worktrees are now real clean repos, so the read answers "clean"
+// rather than refusing; the skip still has to be disabled for the loops below
+// to run on that (legitimately empty) diff.
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
+
+/** Make one real clean repo per workstream under `<dir>/.worktrees/<id>`.
+ *  #1634: the adversarial diff read REFUSES a directory that is not a git
+ *  repository — the old bare `mkdir` now reads as "could not tell", which
+ *  parks the cycle instead of reaching the loop these tests script. */
+function worktreesFor(dir: string, ids = ["task-a", "task-b", "task-c"]): Record<string, string> {
+  const tree: Record<string, string> = {};
+  for (const id of ids) {
+    tree[id] = `${dir}/.worktrees/${id}`;
+    initCleanRepo(tree[id]);
+  }
+  return tree;
+}
 
 // 33. PR8 — runAdversarial fans out per-workstream for N>1 (instead of
 // reviewing a fragmented `## workstream:` merged diff). Empirical /work
@@ -93,8 +110,6 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   // 33a — all 3 workstreams APPROVED → aggregate adversarial-approved.
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-fanout-ok-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(910, 1_000_000);
     s = {
       ...s,
@@ -102,11 +117,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         ...s.pipelineState,
         currentStep: "adversarial",
         lastCompletedStep: "develop",
-        worktrees: {
-          "task-a": `${dir}/.worktrees/task-a`,
-          "task-b": `${dir}/.worktrees/task-b`,
-          "task-c": `${dir}/.worktrees/task-c`,
-        },
+        worktrees: worktreesFor(dir),
         workstreams: {
           "task-a": { id: "task-a", scope: "a", paths: [], outOfScope: [] },
           "task-b": { id: "task-b", scope: "b", paths: [], outOfScope: [] },
@@ -189,8 +200,6 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   // + cap-hit('adversarial-loop') → cycle routes to handoff.
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-fanout-rej-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(911, 1_000_000);
     s = {
       ...s,
@@ -198,11 +207,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         ...s.pipelineState,
         currentStep: "adversarial",
         lastCompletedStep: "develop",
-        worktrees: {
-          "task-a": `${dir}/.worktrees/task-a`,
-          "task-b": `${dir}/.worktrees/task-b`,
-          "task-c": `${dir}/.worktrees/task-c`,
-        },
+        worktrees: worktreesFor(dir),
         workstreams: {
           "task-a": { id: "task-a", scope: "a", paths: [], outOfScope: [] },
           "task-b": { id: "task-b", scope: "b", paths: [], outOfScope: [] },
@@ -280,8 +285,6 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-rounds-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(912, 1_000_000);
     s = {
       ...s,
@@ -289,10 +292,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         ...s.pipelineState,
         currentStep: "adversarial",
         lastCompletedStep: "develop",
-        worktrees: {
-          "task-a": `${dir}/.worktrees/task-a`,
-          "task-b": `${dir}/.worktrees/task-b`,
-        },
+        worktrees: worktreesFor(dir, ["task-a", "task-b"]),
         workstreams: {
           "task-a": { id: "task-a", scope: "a", paths: [], outOfScope: [] },
           "task-b": { id: "task-b", scope: "b", paths: [], outOfScope: [] },
