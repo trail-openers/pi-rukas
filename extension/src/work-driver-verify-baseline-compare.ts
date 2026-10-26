@@ -303,7 +303,7 @@ export async function compareWithBaseline(
       // `established` further down are answers to one reading of one record — the
       // seam used to re-test `secondRun` inside `confirmRedBase`, which is how a
       // reuse gate and a confirmation come to disagree about a colour.
-      reusedRecordConfirms(reused),
+      reusedRecordConfirms({ ...reused, reused: true }),
     );
     if (confirmation.confirmation !== "confirmed-red") {
       // A reuse the confirmation refuses is not a green base and not a red one: it

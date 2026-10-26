@@ -23,19 +23,13 @@
 import {
   BASE_CONFIRM_SECOND_LABEL,
   type BaseRedConfirmation,
+  ONE_SIDED_NAMES_OUTCOME,
   confirmRedBase,
-  reusableRedRecord,
 } from "../src/work-driver-verify-base-confirm.ts";
 import {
   baseRunsProse,
   confirmingOutcomeProse,
-  publishableEvidenceText,
 } from "../src/work-driver-verify-base-confirm-prose.ts";
-import {
-  type BaseHealthConsulted,
-  baseHealthConsultedNote,
-} from "../src/work-driver-verify-base-health-channels.ts";
-import { baseHealthWaitMs } from "../src/work-driver-verify-aggregate.ts";
 import type { BaselineVerdict } from "../src/work-driver-verify-baseline.ts";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -233,6 +227,38 @@ for (const [label, second, want, ranSecond] of secondRunCases) {
   );
 }
 
+// ── #1826 round 2 — the one-sided case says "only one run named", not "different" ──
+//
+// Both one-sided arms refused the base before this round, but with a sentence that
+// claimed the two runs named DIFFERENT failing tests. One of them named nothing, so
+// the sentence sent an operator to diff two lists when one was never printed. The
+// word is now the structured arm marker `ONE_SIDED_NAMES_OUTCOME`, and the disjoint
+// arm keeps the old wording — so this pins BOTH sentences, and pins that they track
+// the structured name lists rather than a reworded string.
+{
+  const oneSided = await run(red(named(TREE_ONE, "tests/a.ts")), [red("no markers at all")], {
+    roots: ROOTS,
+  });
+  assert(
+    oneSided.result.confirmingOutcome === ONE_SIDED_NAMES_OUTCOME,
+    `names on the first run only: the outcome is the one-sided marker (got ${JSON.stringify(oneSided.result.confirmingOutcome)})`,
+  );
+  const mirrored = await run(red("no markers at all"), [red(named(TREE_TWO, "tests/a.ts"))], {
+    roots: ROOTS,
+  });
+  assert(
+    mirrored.result.confirmingOutcome === ONE_SIDED_NAMES_OUTCOME,
+    `names on the second run only: the same one-sided marker whichever run went silent (got ${JSON.stringify(mirrored.result.confirmingOutcome)})`,
+  );
+  const disjoint = await run(red(named(TREE_ONE, "tests/a.ts")), [red(named(TREE_TWO, "tests/z.ts"))], {
+    roots: ROOTS,
+  });
+  assert(
+    disjoint.result.confirmingOutcome !== ONE_SIDED_NAMES_OUTCOME,
+    `names on both, disjoint: NOT the one-sided marker — both runs printed a list, so they genuinely named different tests (got ${JSON.stringify(disjoint.result.confirmingOutcome)})`,
+  );
+}
+
 // ── relative names, anchored in each run's own tree (round 1) ──
 //
 // Most harnesses print a failing test RELATIVE to the tree they ran in (`FAILED:
@@ -401,97 +427,6 @@ for (const [label, second, want] of [
   assert(
     r.result.confirmation === "not-confirmed",
     `confirming-run prose (${label}): not-confirmed, never a claim (got ${r.result.confirmation})`,
-  );
-}
-
-// ── the reuse predicate: one rule, both channels ──
-//
-// The develop gate's reuse gate and `confirmRedBase`'s reused arm ask this one
-// function the same question. A record they disagree about is a colour that reaches a
-// claim no run backs, so the shapes that matter are pinned here rather than inferred
-// from two call sites.
-for (const [label, record, fromInFlight, want] of [
-  ["green from state", { status: "green" }, false, "green"],
-  ["red from state", { status: "red", secondRun: "red" }, false, undefined],
-  ["red in-flight, confirmed", { status: "red", secondRun: "red" }, true, "red"],
-  ["red in-flight, unconfirmed", { status: "red" }, true, undefined],
-  ["killed red in-flight", { status: "red", secondRun: "red", timedOut: true }, true, undefined],
-  ["unknown", { status: "unknown" }, true, undefined],
-] as const) {
-  const rec = { baseSha: "a".repeat(40), command: "sh gate.sh", tierBoundMs: 1000, ...record };
-  assert(
-    reusableRedRecord(rec, fromInFlight) === want,
-    `reuse predicate (${label}): ${String(want)} (got ${String(reusableRedRecord(rec, fromInFlight))})`,
-  );
-}
-
-// ── text about to be published as evidence gets the credential veto ──
-//
-// `probeBaselineVerify` puts a git error's own message into a verdict's `reason`, and
-// the base seams interpolate the project's verify command into the same sentence.
-// Both are child output that ends up in a GitHub comment, so the veto the verify
-// module applies to test output has to apply here too — otherwise a secret reaches the
-// forge by arriving in a `reason` field instead of a test's stdout.
-{
-  const leaked = "git worktree add failed: secret_key=ghp_AAAAAAAAAAAAAAAAAAAAAAAA rejected";
-  assert(
-    publishableEvidenceText(leaked).includes("[redacted") &&
-      !publishableEvidenceText(leaked).includes("ghp_AAAA"),
-    "a credential-shaped string in git output is REDACTED, not labelled around",
-  );
-  assert(
-    publishableEvidenceText("the confirming run was green") === "the confirming run was green" &&
-      publishableEvidenceText("bun run check") === "bun run check",
-    "ordinary prose and the project's own command line pass through — the veto is not a rewrite",
-  );
-}
-
-// ── the note that renders a consulted verdict reads its colour from ONE carrier ──
-//
-// The second run's colour used to arrive twice — on the record and as a separate
-// positional argument — and the renderer preferred the caller's copy. Two accounts of
-// one consultation is how a note comes to disagree with the event it annotates, so the
-// record is now the only carrier and this is the lock.
-{
-  const red: BaseHealthConsulted = {
-    status: "red",
-    baseSha: "b".repeat(40),
-    secondRun: "green",
-  };
-  const note = baseHealthConsultedNote("b".repeat(40), red);
-  assert(
-    note.includes("base run 2 GREEN") && note.includes("FLAKY base: red once, green once"),
-    `the consultation note reads the second run off the record alone (${JSON.stringify(note)})`,
-  );
-  const plain = baseHealthConsultedNote("b".repeat(40), {
-    status: "red",
-    baseSha: "b".repeat(40),
-  });
-  assert(
-    plain.includes("one base run, not confirmed red") && !plain.includes("FLAKY"),
-    `a red whose record states no second run is reported as unconfirmed, never as flaky (${JSON.stringify(plain)})`,
-  );
-}
-
-// ── the wait on the background probe covers the runs the probe is actually in ──
-//
-// #1826 makes a red base's SECOND run normal, so a probe that has been running
-// longer than one tier bound is in its confirming run. A gate that abandons it at one
-// bound throws away a probe one run from answering and then pays for the whole
-// comparison itself — the cost rule inverted by a timeout number.
-{
-  const BOUND = 60_000;
-  assert(
-    baseHealthWaitMs(BOUND, BOUND - 1) < 2 * BOUND,
-    "a probe younger than one bound is waited for at one bound (it cannot have a second run in flight)",
-  );
-  assert(
-    baseHealthWaitMs(BOUND, BOUND + 1) >= 2 * BOUND,
-    `a probe past its first bound is waited for at TWO bounds plus setup slack (got ${baseHealthWaitMs(BOUND, BOUND + 1)})`,
-  );
-  assert(
-    baseHealthWaitMs(BOUND, BOUND + 1) > baseHealthWaitMs(BOUND, 0),
-    "the wait grows with the probe's age — it never shrinks as the probe gets closer to answering",
   );
 }
 

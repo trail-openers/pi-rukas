@@ -128,7 +128,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     out.red !== undefined &&
       out.red.message.includes("[verify-timeout]") &&
       !out.red.message.includes("ALSO FAILS"),
-    `a killed first run: its evidence is the timeout's own sentence, not a red-base claim (got ${String(out.red?.message?.slice(0, 120))})`,
+    `a killed first run: its evidence is the timeout's own sentence, not a red-base claim (got ${String(out.red?.message.slice(0, 120))})`,
   );
   assert(
     out.verdict?.timedOut === true,
