@@ -20,89 +20,27 @@
  * mirroring test-explore-body-retry.ts.
  */
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import type { NormalisedSpec } from "../src/work-driver-intent.ts";
-import { parseNormalisedSpec, reconcileVerdict } from "../src/work-driver-intent.ts";
-import { readMarker } from "../src/reply-markers.ts";
-import { scratchDir } from "../src/work-driver-workspace.ts";
+import { reconcileVerdict } from "../src/work-driver-intent.ts";
+import { parseNormalisedSpec } from "../src/work-driver-intent.ts";
 import { readState } from "../src/workflow-state.ts";
 import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
+import {
+  citedFilePaths,
+  hasInlineSpecHeading,
+  hasParseableIntentVerdict,
+  recoverOffloadedSpec,
+  resolvesUnderScratch,
+} from "./lib/offload-spec-helpers.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const REPLY_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
 const REPORT_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "674-report.md");
 const REPLY_826_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "826.txt");
-
-// ---- offload helper functions (inlined from task-a's intended module) ----
-
-const VERDICT_VALUES = /(proceed-with-assumptions|proceed|park)/;
-
-function hasParseableIntentVerdict(reply: string): boolean {
-  return readMarker(reply, "INTENT-VERDICT", VERDICT_VALUES) !== undefined;
-}
-
-function hasInlineSpecHeading(reply: string): boolean {
-  let fenced = false;
-  for (const line of reply.split("\n")) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
-      continue;
-    }
-    if (!fenced && /^\s*##\s+Spec\b/.test(line)) return true;
-  }
-  return false;
-}
-
-function citedFilePaths(reply: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const re = /(?<![\w/.\-])(?:[A-Za-z]:[\\\/]|[\w.\-]+(?:\/[\w.\-]+)+\/[\w.\-]+)/g;
-  for (const m of reply.matchAll(re)) {
-    const p = m[0];
-    if (!/[.]\w{1,10}$/.test(p)) continue;
-    if (!seen.has(p)) {
-      seen.add(p);
-      out.push(p);
-    }
-  }
-  return out;
-}
-
-function resolvesUnderScratch(cited: string, repoRoot: string, issue: number): boolean {
-  const dir = scratchDir(repoRoot, issue);
-  const resolved = path.resolve(repoRoot, cited);
-  const relative = path.relative(dir, resolved);
-  if (relative === "") return true;
-  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-}
-
-async function recoverOffloadedSpec(
-  reply: string,
-  repoRoot: string,
-  issue: number,
-): Promise<NormalisedSpec | undefined> {
-  for (const cited of citedFilePaths(reply)) {
-    if (!resolvesUnderScratch(cited, repoRoot, issue)) continue;
-    const resolved = path.resolve(repoRoot, cited);
-    let file: string;
-    try {
-      const st = await stat(resolved);
-      if (!st.isFile()) continue;
-      file = await readFile(resolved, "utf8");
-      if (file.trim() === "") continue;
-    } catch {
-      continue;
-    }
-    const spec = parseNormalisedSpec(file);
-    if (spec !== undefined) return spec;
-  }
-  return undefined;
-}
 
 // ---- test harness ----
 
