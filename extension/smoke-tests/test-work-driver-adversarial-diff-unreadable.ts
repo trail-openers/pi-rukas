@@ -324,20 +324,6 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
 
 // ─────────────────────────── the gate, end to end ───────────────────────────
 
-/** Run the adversarial step over `worktrees`; returns the log + spawn count. */
-async function gateRun(label: string, issue: number, worktrees: Record<string, string>) {
-  const dir = plainDir(label);
-  try {
-    await seed(dir, issue, worktrees);
-    const spawns = { n: 0 };
-    await runWorkDriver(ctxFor(dir, issue, spawns)).catch(() => {});
-    const after = await readState(dir, issue);
-    return { events: after?.eventLog ?? [], spawns: spawns.n };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 {
   // Missing worktree path: the map has the id, the value is undefined, so the
   // gate falls back to repoRoot — which here is a plain directory.

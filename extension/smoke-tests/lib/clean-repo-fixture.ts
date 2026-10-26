@@ -53,7 +53,10 @@ function run(dir: string, args: string[]): string {
  * on an already-initialised dir adds nothing), so a fixture may call it twice.
  *
  * Returns the commit SHA, which a fixture that wants `git diff <baseSha>..HEAD`
- * to be NON-empty then commits a change on top of.
+ * to be NON-empty then commits a change on top of — the shape each caller
+ * builds itself, in the words its own case needs. A helper for that second
+ * step was dropped once no caller used it: an unused export in a shared lib is
+ * a second way to build a fixture that can drift from the first.
  */
 export function initCleanRepo(dir: string): string {
   mkdirSync(dir, { recursive: true });
@@ -68,22 +71,4 @@ export function initCleanRepo(dir: string): string {
   writeFileSync(path.join(dir, ".git", "info", "exclude"), ".pi/\ntmp/\n");
   run(dir, ["commit", "-q", "--allow-empty", "-m", "base"]);
   return run(dir, ["rev-parse", "HEAD"]);
-}
-
-/**
- * `initCleanRepo` plus one COMMITTED change on top, and the SHA of the commit
- * BEFORE it. Use it where the fixture needs the gate to see a NON-empty diff
- * (`git diff <baseSha>..HEAD` is the change) — a clean tree with no baseSha is
- * an empty diff, which skips the review rather than running it.
- */
-export function repoWithCommittedChange(
-  dir: string,
-  file = "a.ts",
-  body = "export const a = 1;\n",
-): { baseSha: string } {
-  const baseSha = initCleanRepo(dir);
-  writeFileSync(path.join(dir, file), body);
-  run(dir, ["add", "--", file]);
-  run(dir, ["commit", "-q", "-m", "the change under review"]);
-  return { baseSha };
 }
