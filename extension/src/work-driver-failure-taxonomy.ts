@@ -82,7 +82,7 @@ export function jitteredMs(baseMs: number, floorMs = 0, rand: () => number = Mat
   return Math.ceil(rand() * Math.max(baseMs, 0));
 }
 
-type FailureTail = {
+export type FailureTail = {
   kind: string;
   errorTail?: string;
   killCause?: string;
@@ -147,6 +147,8 @@ function seamLabelFor(
     case "self-killed:token-budget":
     case "self-killed:plan-timeout":
     case "self-killed:child-bound":
+    // #1827 — a structured kill the rule reads exactly, so no model is asked.
+    case "self-killed:review-skill-reread":
     case "success":
     // #79 — matched only on the provider's own 404 message: exact.
     case "provider-model-unavailable":
@@ -249,13 +251,13 @@ export const FAILURE_REASON_CHARS = 240;
 
 /** Clip to the reason budget, preserving `undefined` — callers distinguish an
  * absent field from an empty one (`?? "connection lost"` style defaults). */
-function clip(text: string | undefined): string | undefined {
+export function clip(text: string | undefined): string | undefined {
   if (text === undefined) return undefined;
   return text.length > FAILURE_REASON_CHARS ? text.slice(0, FAILURE_REASON_CHARS) : text;
 }
 
 /** #79 — `×N in a row` when the loop stopped on a repeating provider error. */
-function repeatsNote(tail: { providerRepeats?: number }): string {
+export function repeatsNote(tail: { providerRepeats?: number }): string {
   const n = tail.providerRepeats ?? 0;
   return n >= 2 ? ` (×${n} in a row — not re-dispatched)` : "";
 }
@@ -313,6 +315,20 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   if (tail.killCause === "child-bound") {
     return { cause: "self-killed:child-bound", shouldRetry: false, maxRetries: 0 };
   }
+  // #1827 — the reviewer skill re-read cap: re-spawning would load the same
+  // SKILL.md and re-read it, so the retry reproduces the kill. Parks like the
+  // other self-kills.
+  if (tail.killCause === "review-skill-reread") {
+    return { cause: "self-killed:review-skill-reread", shouldRetry: false, maxRetries: 0 };
+  }
+  // #1827 — the post-verdict stop is a CLEAN END and carries NO kill cause, so
+  // no tail ever reaches this classifier naming it: the child produced its
+  // verdict, `ok` stayed true, and the router never treats the dispatch as
+  // failed. There is deliberately no branch for it — every cause this function
+  // reads is a failure or a cap, and a "clean end" entered into that table
+  // would be a claim that something can classify a completed review as killed.
+  // If a future shape ever does stamp a cause on a stopped reviewer, it must
+  // reach the `crashed` fallback and be judged, not silently excused here.
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token
@@ -397,100 +413,8 @@ export function stepRetryBudget(
   return infra ? cls.maxRetries : 1;
 }
 
-/**
- * #309 — produce the operator-facing reason string for a dispatch failure.
- * Used by lifecycle emitStepRetry and any downstream reporting. Each cause
- * gets a distinct, human-readable headline so the operator can act on it.
- */
-export function failureCauseReason(tail: {
-  kind: string;
-  errorTail?: string;
-  providerMessage?: string;
-  killCause?: string;
-  providerRepeats?: number;
-}): string {
-  const cls = classifyFailureCause(tail);
-  switch (cls.cause) {
-    case "self-killed:timeout":
-      return "killed by pi-rukas (wall-clock timeout)";
-    case "self-killed:inactivity":
-      return "killed by pi-rukas (inactivity watchdog)";
-    case "self-killed:tool-inactivity":
-      return "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)";
-    case "self-killed:abort":
-      return "cancelled (abort signal)";
-    case "self-killed:loop":
-      return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
-    case "self-killed:token-budget":
-      return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
-    case "self-killed:plan-timeout":
-      return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
-    case "self-killed:child-bound":
-      return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
-    case "rate-limited:429":
-      return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
-    case "rate-limited:burst":
-      return `provider rate-limited (429), asked us to wait ${Math.round((cls.waitMs ?? 0) / 1000)}s — waiting it out and resuming`;
-    case "rate-limited:quota-window":
-      return `provider rate-limited (429), asked us to wait ~${Math.round((cls.waitMs ?? 0) / 3600000)}h — a quota window, not a burst`;
-    case "rate-limited:quota-terminal":
-      return "provider spend cap reached — waiting will not clear this";
-    case "provider-severed":
-      return `provider/transport error: ${clip(tail.providerMessage ?? tail.errorTail) ?? "connection lost"}${repeatsNote(tail)}`;
-    case "provider-model-unavailable":
-      return `provider does not serve the configured model — re-dispatching cannot help: ${clip(tail.providerMessage ?? tail.errorTail)}`;
-    case "crashed":
-      return `subagent failed: ${clip(tail.errorTail) ?? "non-zero exit"}`;
-    case "crashed-unknown":
-      return `subagent failed (unexpected event): ${clip(tail.errorTail) ?? "unknown failure"}`;
-    case "success":
-      return "(success — no failure reason)";
-  }
-}
-
-/**
- * #314 — variant of failureCauseReason that accepts a pre-computed
- * classification to avoid double-calling classifyFailureCause on the
- * same event (e.g. in runWorkDriver's step-completion handler).
- */
-export function failureCauseReasonForClass(
-  tail: { errorTail?: string; providerMessage?: string; providerRepeats?: number },
-  cls: { cause: DispatchFailureCause },
-): string {
-  switch (cls.cause) {
-    case "self-killed:timeout":
-      return "killed by pi-rukas (wall-clock timeout)";
-    case "self-killed:inactivity":
-      return "killed by pi-rukas (inactivity watchdog)";
-    case "self-killed:tool-inactivity":
-      return "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)";
-    case "self-killed:abort":
-      return "cancelled (abort signal)";
-    case "self-killed:loop":
-      return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
-    case "self-killed:token-budget":
-      return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
-    case "self-killed:plan-timeout":
-      return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
-    case "self-killed:child-bound":
-      return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
-    case "rate-limited:429":
-      return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
-    case "rate-limited:burst":
-      return "provider rate-limited (429) within the burst window — waiting it out and resuming";
-    case "rate-limited:quota-window":
-      return "provider rate-limited (429) on a quota window — retrying now cannot help; come back after the reset";
-    case "rate-limited:quota-terminal":
-      return "provider spend cap reached — waiting will not clear this";
-    case "provider-severed":
-      return `provider/transport error: ${clip(tail.providerMessage ?? tail.errorTail) ?? "connection lost"}${repeatsNote(tail)}`;
-    case "provider-model-unavailable":
-      return `provider does not serve the configured model — re-dispatching cannot help: ${clip(tail.providerMessage ?? tail.errorTail)}`;
-    case "crashed":
-      return `subagent failed: ${clip(tail.errorTail) ?? "non-zero exit"}`;
-    case "crashed-unknown":
-      return `subagent failed (unexpected event): ${clip(tail.errorTail) ?? "unknown failure"}`;
-    case "success":
-      return "(success — no failure reason)";
-  }
-}
+// The two reason renderers live in work-driver-failure-reason.ts (§12 size
+// split) and are re-exported here so every caller keeps importing the operator
+// vocabulary from the classifier's module. The split is a file boundary, not an
+// API change — and keeping them beside each other is the point.
+export { failureCauseReason, failureCauseReasonForClass } from "./work-driver-failure-reason.ts";

@@ -139,6 +139,8 @@ export function armCapSession(
     /** Steering seam (F2); undefined for callers without a job. */
     onSteer?: (message: string, source: SteerSource) => void;
     runningState: RunningState;
+    /** #1827 — see `CapSessionOpts.boundArmed`. */
+    boundArmed?: () => boolean;
   },
 ): CapSession {
   child.on("exit", () => {
@@ -159,6 +161,7 @@ export function armCapSession(
     capKillGraceMs: capKillGraceMs(),
     childExited: flags.childExited,
     turns: () => session.runningState.turns,
+    boundArmed: session.boundArmed,
   });
 }
 
@@ -204,4 +207,32 @@ export function armAbortSignal(
     signal.addEventListener("abort", onAbort, { once: true });
   }
   return () => signal.removeEventListener("abort", onAbort);
+}
+
+/**
+ * #1827 — the four kill-cause stderr lines, moved verbatim out of `spawn.ts`
+ * for the §12 size cap. They belong beside the flags they report: each line
+ * names the budget that the flag's setter recorded, and the comment-retention
+ * gate #948 keeps the wording identical. `appendStderr` is the spawn's ring
+ * buffer, so the operator sees them in the result's stderr exactly as before.
+ */
+export function traceKillCauses(
+  flags: KillFlags,
+  timeoutMs: number,
+  appendStderr: (s: string) => void,
+): void {
+  if (flags.timedOut()) {
+    appendStderr(`\n[pi-rukas] killed after ${timeoutMs}ms timeout`);
+  }
+  if (flags.inactivityKilled()) {
+    appendStderr(`\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms inactivity`);
+  }
+  if (flags.toolInactivityKilled()) {
+    appendStderr(
+      `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms with a tool call in flight (tool-inactivity)`,
+    );
+  }
+  if (flags.aborted()) {
+    appendStderr("\n[pi-rukas] cancelled by user (Esc)");
+  }
 }

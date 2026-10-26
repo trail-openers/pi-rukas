@@ -142,6 +142,13 @@ export function armChildBound(o: {
   /** False for a child that cannot commit (a read-only role, or one whose cwd is
    *  the shared repo root, where other cycles move HEAD): only `reported` is done. */
   commits: boolean;
+  /**
+   * #1827 ordering — true once a KILLING bound has armed for this child (the
+   * re-read cap's kill, or the post-verdict stop). The wrap-up steer is
+   * advisory: once some bound has decided to end this child, telling it to wrap
+   * up again only adds noise and re-arms the watchdog's notion of life.
+   */
+  boundArmed?: () => boolean;
   graceMs?: number;
   head?: (cwd: string) => Promise<string | undefined>;
 }): ChildBound {
@@ -212,6 +219,9 @@ export function armChildBound(o: {
 
   const wrapUp = () => {
     if (gone() || o.reported()) return;
+    // #1827 — a killing bound already armed: this child is being ended, not
+    // asked to hurry.
+    if (o.boundArmed?.()) return;
     const message = wrapUpText(stopInMs);
     try {
       if (o.onSteer) o.onSteer(message, "driver-child-bound");

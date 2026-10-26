@@ -227,6 +227,31 @@ export function skillLoadProof(
   return "unproven";
 }
 
+/**
+ * #1827 — the ONE predicate shape for "did this tool call open the skill file?",
+ * exported so the reviewer skill re-read cap (`review-bounds.ts`) counts reads
+ * with the same rule this proof uses instead of copying it. A copied predicate
+ * is a second source of truth that drifts: the cap would then stop a child for
+ * reads this module does not credit as loading the skill (or fail to stop ones
+ * it does).
+ *
+ * The candidate spellings are SUPPLIED rather than recomputed:
+ * `skillFileCandidates` / `candidateDirs` resolve paths and can `realpathSync`,
+ * so a caller that asked per tool call of a 400-turn child would pay for the
+ * same resolution thousands of times. `review-bounds.ts` builds the two lists
+ * once per spawn and passes them; they are exactly what a `skillPath` resolves
+ * to, so the cap and this proof cannot disagree about what a skill read is.
+ */
+export function isSkillReadWith(
+  toolName: string,
+  args: Record<string, unknown>,
+  dirs: readonly string[],
+  wants: readonly string[],
+): boolean {
+  if (wants.length === 0) return false;
+  return isSkillRead(toolName.toLowerCase(), args, dirs, wants);
+}
+
 function isSkillRead(
   toolName: string,
   args: Record<string, unknown>,

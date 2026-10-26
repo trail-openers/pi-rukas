@@ -54,6 +54,7 @@ import {
   lensChildBoundMs,
   settledReapMs,
 } from "../src/spawn-child-bound.ts";
+import { adversarialChildBoundMs, reviewSkillReadCap } from "../src/review-bounds.ts";
 import { spawnCap } from "../src/spawn-semaphore.ts";
 import {
   inactivityTimeoutMs,
@@ -393,6 +394,12 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_QUEUE_ORDERING", queueOrderingEnabled],
   ["PI_ENSEMBLE_RESUME", resumeEnabled],
   ["PI_ENSEMBLE_REVIEW_CAP_MS", () => reviewCapMs()],
+  // #1827 — the two reviewer bounds. Both are gated on the dispatch-caps master
+  // switch, so SWITCHES clears that too: a headless run must resolve the same
+  // numbers the live readers do with the caps on, not the ones it sees with them
+  // off.
+  ["PI_ENSEMBLE_REVIEW_SKILL_READS", reviewSkillReadCap],
+  ["PI_ENSEMBLE_ADVERSARIAL_BOUND_MS", adversarialChildBoundMs],
   ["PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS", () => reviewWallClockMs()],
   ["PI_ENSEMBLE_SESSION_REATTACH", sessionReattachEnabled],
   ["PI_ENSEMBLE_TRANSIENT_RETRY", transientRetryEnabled],
@@ -400,6 +407,8 @@ const LIVE: [string, () => unknown][] = [
 // The switch that would override a dimension's own default is cleared too.
 const SWITCHES: Record<string, string> = {
   PI_ENSEMBLE_LOOP_DETECTOR: "PI_ENSEMBLE_DISPATCH_CAPS",
+  PI_ENSEMBLE_REVIEW_SKILL_READS: "PI_ENSEMBLE_DISPATCH_CAPS",
+  PI_ENSEMBLE_ADVERSARIAL_BOUND_MS: "PI_ENSEMBLE_DISPATCH_CAPS",
   PI_ENSEMBLE_PARALLEL_GROUPS: "PI_ENSEMBLE_PARALLEL_WORK",
   PI_ENSEMBLE_SLOW_NOTICE_MS: "PI_ENSEMBLE_SLOW_NOTICE",
   PI_ENSEMBLE_SLOW_NOTICE_TOKENS: "PI_ENSEMBLE_SLOW_NOTICE",

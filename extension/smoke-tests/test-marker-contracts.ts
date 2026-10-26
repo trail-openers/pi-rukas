@@ -62,6 +62,7 @@ for (const c of MARKER_CONTRACTS) {
 {
   const KNOWN_CONSUMERS = [
     "adversarial-verdict.ts",
+    "review-bounds-verdict.ts",
     "work-driver-stepback-ci.ts",
     "work-driver-intent.ts",
     "plan-investigate.ts",

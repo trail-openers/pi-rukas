@@ -124,6 +124,11 @@ export const LENS_MEMBERS: readonly string[] = [...new Set(LENS_ROSTER.map((e) =
 /** Every honoured `PI_ENSEMBLE_*` environment input, sorted by name. */
 export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("ACCEPTANCE_COVERAGE", true),
+  // #1827 — the adversarial reviewer's OWN per-child run bound. The generic
+  // child bound does not reach it (the loop passes no `childBoundMs`), which is
+  // how a reviewer that kept working after `VERDICT:` reached 476 turns and 80M
+  // tokens with no cap firing.
+  ms("ADVERSARIAL_BOUND_MS", 1_800_000),
   flag("ADVERSARIAL_DIFF_CAP", true),
   flag("ADVERSARIAL_EMPTY_SKIP", true),
   ms("ADVERSARIAL_PHASE_BUDGET_MS", 1_800_000),
@@ -319,6 +324,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // The 90-min review-loop budget is enforced at the fix dispatch, not just displayed.
   flag("REVIEW_ENFORCE", true),
   dir("REVIEW_LEDGER_FILE", null, "cycle"),
+  // #1827 — how many times a reviewer may open its OWN skill file before the
+  // run is steered and then ended (`review-skill-reread`). Counts reads, not
+  // tool calls: grep/rg name a path without opening it.
+  int("REVIEW_SKILL_READS", 3),
   input("REVIEW_THRESHOLD", "enum", null, "cycle", {
     values: ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
   }),

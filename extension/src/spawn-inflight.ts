@@ -22,9 +22,11 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import type { ChildProgress } from "./child-progress.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent } from "./progress.ts";
+import type { SkillReadGuard } from "./review-bounds.ts";
 import type { CapSession } from "./spawn-caps.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
@@ -269,6 +271,12 @@ export function createStdoutLineHandler(opts: {
   onProgress?: (snapshot: RunningState) => void;
   onRawEvent?: (event: PiJsonEvent) => void;
   onAgentEnd: (parsed: PiJsonEvent) => void;
+  /**
+   * #1827 — the reviewer skill re-read guard, fed from the same hot path as the
+   * cap observers. Absent (every non-reviewer role, or no driver-supplied skill
+   * path) means the guard observes nothing and can neither steer nor kill.
+   */
+  skillRead?: SkillReadGuard;
 }): (line: string) => {
   kind: string;
   agentEnd: PiJsonEvent | null;
@@ -284,6 +292,7 @@ export function createStdoutLineHandler(opts: {
     onProgress,
     onRawEvent,
     onAgentEnd,
+    skillRead,
   } = opts;
   return (line: string) => {
     const trimmed = line.trim();
@@ -334,6 +343,11 @@ export function createStdoutLineHandler(opts: {
     inFlightTools.observe(parsed);
     // #1567 — record progress (child-progress.ts). Nothing acts on it yet.
     childProgress.observe(parsed);
+    // #1827 — count this child's reads of its OWN skill file. Observation only
+    // here: the caller decides when the count becomes a steer and when it
+    // becomes a kill, because only the caller holds the stdin handle, the steer
+    // seam and the kill path.
+    skillRead?.observe(parsed);
     // Retain only the two events collapseEvents actually reads (the latest
     // agent_end + the latest assistant message_end as fallback). Everything
     // else is already absorbed by ingestEvent into runningState above, and
@@ -353,4 +367,60 @@ export function createStdoutLineHandler(opts: {
     }
     return { kind, agentEnd, assistantMessageEnd };
   };
+}
+
+/**
+ * #1827 — the stdout line pump for one child, moved out of `spawn.ts` for the
+ * §12 size cap (spawn.ts sits at the limit and the reviewer bounds had to add
+ * lines somewhere).
+ *
+ * The body is the same one spawn ran: count the line, run it through
+ * `createStdoutLineHandler`, ignore our own steered-stdin echo, and record what
+ * the handler saw. The one addition is the reviewer-bounds hook, and it is
+ * wrapped in a try/catch that spawn did not have: this is the hot path of a
+ * live child, so a bound that throws must not take the handler — and with it
+ * the child's entire event stream, activity tracking and every watchdog that
+ * reads it — down. A broken cap becomes a traced line and a child that its
+ * ordinary timeouts still end.
+ */
+export function attachStdoutLinePump(opts: {
+  child: ChildProcess;
+  handler: (line: string) => {
+    kind: string;
+    agentEnd: PiJsonEvent | null;
+    assistantMessageEnd: PiJsonEvent | null;
+  };
+  /** Called with every non-echo line's outcome; must not throw (it is ours). */
+  onLine: (res: {
+    kind: string;
+    agentEnd: PiJsonEvent | null;
+    assistantMessageEnd: PiJsonEvent | null;
+  }) => void;
+}): { lines: () => number; close: () => void } {
+  let lines = 0;
+  // `child.stdout` is null before the stdio pipes are up; the readline options
+  // require a stream, so a child without one simply never pumps (the same
+  // shape spawn relied on when it passed the handle directly).
+  const rl = createInterface({ input: opts.child.stdout as NodeJS.ReadableStream });
+  // #1827 round 2 — `close` is called from the spawn's `finally`. It is not
+  // strictly required: readline listens on its INPUT stream, so the child's
+  // exit closes stdout and releases the interface with its `line` listener —
+  // which is why the pump worked without it. It is called anyway because a
+  // child that lingers after `exit` (a grandchild holding the pipe) otherwise
+  // keeps the interface and its listener alive past the spawn that made them.
+  rl.on("line", (line) => {
+    lines += 1;
+    const res = opts.handler(line);
+    // Our own steer acked back — not life, and not a bound's business.
+    if (isStdinEcho(res.kind)) return;
+    try {
+      opts.onLine(res);
+    } catch (err) {
+      // The one caller of this pump feeds the reviewer bounds. A bound that
+      // throws is a broken cap, not a broken child: the stream keeps flowing,
+      // the watchdogs keep their notion of life, and the trace names the fault.
+      traceWarn(`stdout pump: observer failed: ${String(err)}`);
+    }
+  });
+  return { lines: () => lines, close: () => rl.close() };
 }

@@ -76,7 +76,12 @@ export type SteerSource =
    * crossing; notice + steer, never a kill). */
   | "driver-slow-notice"
   /** #1560 — the per-child run bound's wrap-up steer (spawn-child-bound.ts). */
-  | "driver-child-bound";
+  | "driver-child-bound"
+  /** #1827 — the reviewer skill re-read cap's steer: the child has opened its
+   * own SKILL.md past PI_ENSEMBLE_REVIEW_SKILL_READS and is told to stop
+   * reading and review. Distinct from every bound's steer so the operator can
+   * tell which cap is nudging (the next one is the kill). */
+  | "driver-review-skill-reread";
 
 /**
  * The driver-callable steer core (#543 F2).

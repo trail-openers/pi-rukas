@@ -104,9 +104,22 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
   {
     token: "VERDICT",
     values: ["CRITICAL_ISSUES_FOUND", "ISSUES_FOUND", "MINOR_OBSERVATIONS", "APPROVED"],
+    // Two consumers read this token with the shared reader and must not be
+    // conflated: `adversarial-verdict.ts` judges the WHOLE reply, while
+    // `review-bounds-verdict.ts` judges only the closing text block of a
+    // tool-free message (#1827 — the whole-reply read ends a child that merely
+    // echoes the prompt's menu). The row names the loop's consumer; the live
+    // stop's own absence policy is "do not stop", stated in its module header.
     consumer: "adversarial-verdict.ts",
     onAbsence:
       "verdictParsed=false → fix round mid-loop, `incomplete` at the terminal round (never pass, never reject)",
+  },
+  {
+    token: "VERDICT",
+    values: ["CRITICAL_ISSUES_FOUND", "ISSUES_FOUND", "MINOR_OBSERVATIONS", "APPROVED"],
+    consumer: "review-bounds-verdict.ts",
+    onAbsence:
+      "the live post-verdict stop does NOT fire — the child keeps reviewing (#1827: a menu echo or a fenced example must never end a review it never performed)",
   },
   {
     token: "ci-status",

@@ -120,6 +120,8 @@ interface Watch {
   now: () => number;
   onSlow?: OnSlowCallback;
   driverOwned?: boolean;
+  /** #1827 — see `SlowWatchInput.boundArmed`. */
+  boundArmed?: () => boolean;
   /** Last delivered snapshot — the timer ticks with nothing new to say (the
    * child is silent), so a timer-driven evaluation replays the latest
    * snapshot rather than a stale one. */
@@ -213,7 +215,9 @@ function deliver(w: Watch, s: RunningState, triggered: string[], excludedMs: num
     }
   }
   // 2 — the one automatic steer, lifecycle-logged through the steer core.
-  if (autoSteerEnabled()) {
+  // #1827 — stands down once a killing bound has armed for this child: the
+  // steer cannot change what happens to it, and its ack counts as stdout life.
+  if (autoSteerEnabled() && !w.boundArmed?.()) {
     let r: unknown;
     try {
       r = (w.steerFn ?? ((id, t, src) => steerChild(id, t, src)))(
@@ -377,6 +381,7 @@ export function watchSlowDispatch(input: SlowWatchInput): SlowWatchHandle {
     now,
     ...(input.onSlow ? { onSlow: input.onSlow } : {}),
     ...(input.driverOwned ? { driverOwned: true } : {}),
+    ...(input.boundArmed ? { boundArmed: input.boundArmed } : {}),
     level: 0,
     lastState: undefined,
     seenProgress: false,

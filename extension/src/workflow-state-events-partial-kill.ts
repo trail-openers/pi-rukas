@@ -61,3 +61,33 @@ export type DispatchStartedEvent = {
   at: number;
   transcriptPath?: string;
 };
+
+/**
+ * #1827 — the structured self-kill cause, spelled ONCE.
+ *
+ * Three unions carry it (`DispatchResult.killCause`, this event's `killCause`,
+ * `AdversarialOutcome.killCause`) and each is written out in full, so adding a
+ * cause has always been a multi-file edit that compiles clean when a member is
+ * missed (test-work-driver-f4-causes.ts exists because of exactly that). The
+ * event member — the one the handoff renderers read — now names this type, so
+ * a cause added here cannot be half-added to the event.
+ */
+export type DispatchFailKillCause =
+  | "timeout"
+  | "inactivity"
+  | "abort"
+  | "loop"
+  | "token-budget"
+  | "plan-timeout"
+  | "tool-inactivity"
+  | "child-bound"
+  | "no-progress"
+  | "stuck-tool"
+  /** #1827 — a reviewer re-read its own skill file past the cap (a failure kill). */
+  | "review-skill-reread";
+// #1827 round 1 — `review-post-verdict` is deliberately absent. This union is
+// the kill-cause vocabulary the handoff renderers and the failure taxonomy read,
+// and a post-verdict stop is a clean end: it now rides on
+// `DispatchResult.reviewStopReason` instead, where no consumer can classify a
+// completed review as failed. A cause belongs here only when ending the child
+// with it means something went wrong.

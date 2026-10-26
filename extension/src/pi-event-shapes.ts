@@ -41,6 +41,48 @@ export interface SpawnOptions extends WriteFenceOpt {
    */
   childBoundMs?: number;
   /**
+   * #1827 — the driver-supplied path to THIS child's own skill (`SKILL.md`
+   * inside it), so the reviewer skill re-read cap counts only reads of that
+   * file. Set by `runLensChild` (its `skillPath`) and by the adversarial
+   * reviewer's phase. Absent = no re-read cap: a child with no skill of its own
+   * cannot be counted against one, and a path guessed here would stop a child
+   * for reads the review never asked for.
+   */
+  reviewSkillPath?: string;
+  /**
+   * #1827 ordering — a getter the CALLER supplies for the slow-run watch, which
+   * lives outside the spawn (in `watchSlowDispatch`) and therefore cannot read
+   * the spawn's own `boundArmed` flag. `spawnSpecialistInner` reads the same
+   * closure both ways, so the two views cannot disagree. Absent = the watch
+   * always steers, which is today's behaviour for every non-bounded caller.
+   */
+  boundArmed?: () => boolean;
+  /**
+   * #1827 ordering — the matching WRITER of `boundArmed`: `spawnSpecialistInner`
+   * calls it the first time one of its killing bounds arms (the reviewer skill
+   * re-read kill, the post-verdict stop), so a caller whose slow-run watch sits
+   * outside the spawn can stand its advisory steer down for the same child.
+   */
+  onBoundArmed?: () => void;
+  /**
+   * #1827 round 4 — OPT IN to the post-verdict stop (review-bounds.ts
+   * `createVerdictStop`). The stop ends the child the moment its reply closes on
+   * a `VERDICT:` marker, and freezes the accumulated reply as the result.
+   *
+   * Role alone cannot decide this. `adversarial-developer` is spawned by two
+   * callers with two DIFFERENT verdict protocols: the adversarial review loop
+   * (`adversarial-phase.ts`, values from `VERDICT_STATUSES`) and the plan gap
+   * gate (`plan-gaps.ts` / `plan-gate-prompt.ts`, whose line is
+   * `VERDICT: READY | NEEDS_ITERATION`). A stop keyed on the role alone would
+   * read the gate's `VERDICT:` line with the review enum's reader — and a child
+   * ended at a marker from a protocol it never agreed to is a review that was
+   * silently cut short. So the caller that wants the stop says so here, and
+   * `createReviewBounds` builds it only for `adversarial-developer` AND only
+   * when this flag is set. The re-read cap stays role-keyed: it counts reads of
+   * the skill the dispatch named, which is the same fact for either protocol.
+   */
+  verdictStop?: true;
+  /**
    * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
    * the running tool. We listen on this and kill the child with SIGTERM so
    * cancellation actually propagates instead of leaving Pi stuck.

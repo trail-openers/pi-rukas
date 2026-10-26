@@ -64,6 +64,18 @@ export function overrideEnvForKillCause(
     case "no-progress":
     case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
+    // #1827 — the reviewer's skill re-read cap: its own knob plus the caps
+    // master switch, so the operator is pointed at the value that stopped the
+    // child (not the inactivity knob, which the fallback would imply).
+    case "review-skill-reread":
+      return "PI_ENSEMBLE_REVIEW_SKILL_READS + PI_ENSEMBLE_DISPATCH_CAPS";
+    // #1827 round 1 — no `review-post-verdict` row, and there must never be
+    // one: this function reads a `DispatchResult.killCause`, and a clean
+    // reviewer stop does not have one. Every member of that union is a failure
+    // or a cap; the stop lives in `reviewStopReason`, which no failure path
+    // reads. The reviewer's own run bound (`PI_ENSEMBLE_ADVERSARIAL_BOUND_MS`)
+    // is named by the `child-bound` row above, which is the cause that stop
+    // would have become.
   }
 }
 

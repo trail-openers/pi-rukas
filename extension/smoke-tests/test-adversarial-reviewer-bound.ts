@@ -1,0 +1,228 @@
+#!/usr/bin/env bun
+/**
+ * #1827 — the adversarial reviewer carries a per-child bound; the fix-pass
+ * developer child does not.
+ *
+ * Before this, `makeRunPhase` passed the inner spawn only
+ * runId/tag/onProgress/onRawEvent/onStdin: no `childBoundMs`, no `onSteer`, so
+ * the only thing that ended a runaway reviewer was the 2-h spawn backstop
+ * (measured: 476 turns / 80M tokens on one round). Both halves matter —
+ * `armChildBound` writes its wrap-up steer to raw `stdin` when no `onSteer` is
+ * supplied, so a bound without the steer seam is a silent kill.
+ *
+ * Offline: spawn.ts is stubbed before `adversarial.ts` loads, so no child runs.
+ * The two roles are driven through the REAL loop (one ISSUES_FOUND round, which
+ * provokes both a review dispatch and a fix dispatch) so role is the only
+ * discriminator — exactly the shape the acceptance criterion is written against.
+ */
+
+import { mock } from "bun:test";
+import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
+
+isolateLedger();
+
+let exit = 0;
+function assert(cond: boolean, msg: string) {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
+}
+
+type SpawnCall = {
+  role: string;
+  tag?: string;
+  childBoundMs?: number;
+  onSteer?: unknown;
+  reviewSkillPath?: string;
+};
+
+const spawnCalls: SpawnCall[] = [];
+
+mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
+  makeRunId: () => "run-1827-bound",
+  spawnSpecialist: async (
+    spec: { role: string },
+    opts: { tag?: string; childBoundMs?: number; onSteer?: unknown; reviewSkillPath?: string },
+  ) => {
+    spawnCalls.push({
+      role: spec.role,
+      tag: opts.tag,
+      childBoundMs: opts.childBoundMs,
+      onSteer: opts.onSteer,
+      reviewSkillPath: opts.reviewSkillPath,
+    });
+    return {
+      role: spec.role,
+      ok: true,
+      text:
+        spec.role === "adversarial-developer"
+          ? "VERDICT: ISSUES_FOUND\n1. silent failure on the bound path"
+          : "fixed",
+      toolUses: [],
+      ms: 1,
+      exitCode: 0,
+    };
+  },
+}));
+
+const realDeck = await import("../src/dispatch-deck.ts");
+mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
+  ...realDeck,
+  startEntry: () => {},
+  updateEntry: () => {},
+  clearEntry: () => {},
+  startBatchEntry: () => {},
+  updateBatchProgress: () => {},
+  clearBatchEntry: () => {},
+}));
+const realRegistry = await import("../src/async-jobs-registry.ts");
+mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () => ({
+  ...realRegistry,
+  childHandles: new Map(),
+  registerChildHandle: () => {},
+  setOrchestratorActiveChild: () => {},
+  markOrchestrator: () => {},
+}));
+const realLedger = await import("../src/adversarial-ledger.ts");
+mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () => ({
+  ...realLedger,
+  writeAdversarialLedgerEntry: () => undefined,
+}));
+
+const { runAdversarialLoop } = await import("../src/adversarial.ts");
+const { adversarialChildBoundMs } = await import("../src/review-bounds.ts");
+const { adversarialSkillPath, skillFileOf } = await import("../src/adversarial-skill-path.ts");
+const { childBoundGraceMs, childBoundSchedule } = await import("../src/spawn-child-bound.ts");
+const { noteCycleDeadline, runWithCycleClock } = await import("../src/cycle-deadline-clock.ts");
+
+const signal = new AbortController().signal;
+
+await runAdversarialLoop(
+  { diff: "diff --git a/a.ts b/a.ts\n+hello", context: "bound", workCwd: process.cwd() },
+  signal,
+  "job-1827-bound",
+);
+
+const reviewer = spawnCalls.find((c) => c.role === "adversarial-developer");
+const fix = spawnCalls.find((c) => c.role === "developer");
+
+// Every review dispatch in the run carries the bound; every fix dispatch lacks
+// it. One round each is what the shape below asserts, and the loop ran both
+// because the reviewer returned ISSUES_FOUND.
+assert(
+  spawnCalls.filter((c) => c.role === "adversarial-developer").every((c) => !!c.childBoundMs),
+  "every reviewer dispatch in the run carries a bound",
+);
+assert(
+  spawnCalls.filter((c) => c.role === "developer").every((c) => c.childBoundMs === undefined),
+  "no fix-pass dispatch carries a bound",
+);
+
+assert(reviewer !== undefined, "loop dispatched the adversarial reviewer");
+assert(
+  reviewer?.childBoundMs === adversarialChildBoundMs(),
+  `reviewer carries its own per-child bound (${adversarialChildBoundMs()}ms)`,
+);
+assert(
+  typeof reviewer?.onSteer === "function",
+  "reviewer carries an onSteer seam (a bound without it kills silently)",
+);
+assert(
+  reviewer?.reviewSkillPath === adversarialSkillPath(),
+  "reviewer is handed the driver-computed path to its own skill",
+);
+assert(
+  typeof reviewer?.reviewSkillPath === "string" &&
+    reviewer.reviewSkillPath.length > 0 &&
+    reviewer.reviewSkillPath.endsWith("adversarial-developer"),
+  "the reviewer skill path is a skill DIRECTORY (its SKILL.md is what the cap counts)",
+);
+assert(
+  skillFileOf(adversarialSkillPath()).endsWith("adversarial-developer/SKILL.md"),
+  "the counted file is <skillDir>/SKILL.md",
+);
+assert(
+  adversarialChildBoundMs() > 0 && adversarialChildBoundMs() <= 30 * 60_000,
+  "the default bound is 30 minutes like a lens child's, so it fires before the 2-h backstop",
+);
+
+// The knob is an operator override, and it must be the one the bound reads.
+{
+  const saved = process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS;
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "60000";
+  assert(adversarialChildBoundMs() === 60_000, "PI_ENSEMBLE_ADVERSARIAL_BOUND_MS overrides");
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "0";
+  assert(
+    adversarialChildBoundMs() === 30 * 60_000,
+    "a non-positive override falls back to the 30-min default (never unbounded)",
+  );
+  // #1827 round 2 — the knob is clamped like every other bound knob: garbage
+  // and a negative fall back, and a huge value cannot ask for a bound past the
+  // ceiling (4 h) that the 2-h backstop could never reach anyway.
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "abc";
+  assert(
+    adversarialChildBoundMs() === 30 * 60_000,
+    "a garbage override falls back to the 30-min default",
+  );
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "-1";
+  assert(
+    adversarialChildBoundMs() === 30 * 60_000,
+    "a negative override falls back to the 30-min default",
+  );
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "86400000"; // 24 h
+  assert(
+    adversarialChildBoundMs() === 4 * 60 * 60_000,
+    "an oversized override is clamped to the 4-h ceiling, not honoured verbatim",
+  );
+  // An EMPTY knob is the operator saying "default", not garbage: no warning,
+  // and the default value.
+  process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = "";
+  assert(
+    adversarialChildBoundMs() === 30 * 60_000,
+    "an empty override means the default, not a warning-worthy value",
+  );
+  if (saved === undefined) delete process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS;
+  else process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = saved;
+}
+
+// The fix pass: neither bound, and no skill path to count against.
+assert(fix !== undefined, "loop dispatched the fix-pass developer");
+assert(fix?.childBoundMs === undefined, "the fix-pass developer gets NO per-child bound");
+assert(fix?.onSteer === undefined, "the fix-pass developer gets NO bound steer seam");
+assert(fix?.reviewSkillPath === undefined, "the fix-pass developer gets NO review skill path");
+
+// ── #1827 round 1 — the reviewer's bound clamps to the cycle deadline like
+// every other child's. It is passed as a plain `childBoundMs` into
+// `armChildBound`, which is where the clamp lives; a bound that ignored the
+// deadline would let a reviewer run past the cycle's own end and have its
+// result killed off by the driver's backstop instead.
+{
+  const grace = childBoundGraceMs();
+  const outside = childBoundSchedule(adversarialChildBoundMs(), grace, Date.now());
+  assert(
+    outside.killAtMs === adversarialChildBoundMs() + grace,
+    "outside a cycle the reviewer runs its full bound plus grace",
+  );
+  await runWithCycleClock(async () => {
+    // A cycle with 12 minutes left: far short of the reviewer's 30-min bound.
+    noteCycleDeadline(Date.now() + 12 * 60_000, 0, "adversarial");
+    const c = childBoundSchedule(adversarialChildBoundMs(), grace, Date.now());
+    assert(
+      c.killAtMs === undefined,
+      "inside a short cycle the deadline takes the kill, not the bound",
+    );
+    assert(
+      c.wrapAtMs > 0 && c.wrapAtMs <= 12 * 60_000,
+      `…and the wrap-up steer is armed inside the deadline (${c.wrapAtMs}ms)`,
+    );
+    assert(
+      c.stopInMs > 0 && c.wrapAtMs + c.stopInMs <= 12 * 60_000,
+      "…with the whole steer-to-kill span inside it",
+    );
+  });
+}
+
+console.log(`\nexit ${exit}`);
+process.exit(exit);

@@ -71,6 +71,14 @@ function laneReason(r: LensRunResult): string {
   if (r.killCause === "loop" || r.killCause === "token-budget") {
     return `stopped by the ${r.killCause} cap (not retried)`;
   }
+  // #1827 — a lens ended for re-reading its skill file is blocked ONLY when it
+  // left no evidence behind (lens-review-child.ts keeps findings/summary and
+  // clears `blocked` otherwise). The lane must name what actually happened:
+  // "failed every retry" would be false — this cause is never retried — and
+  // "unknown failure" sends the operator after a flaky endpoint.
+  if (r.killCause === "review-skill-reread") {
+    return "not reviewed — re-read its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS and left no findings or summary (not retried)";
+  }
   const why = r.parseError ?? "unknown failure";
   if (r.attempts === 0) return `not run — ${why}`;
   return `${why} (${r.attempts} attempt${r.attempts === 1 ? "" : "s"})`;
