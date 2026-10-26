@@ -70,15 +70,6 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY = "0";
 process.env.PI_ENSEMBLE_VERIFY = "0";
-// #1634 — this file is about the OFFLOADED-SPEC seam: whether a reply whose
-// `## Spec` went to a scratch file still yields a spec. The develop step's
-// deliverable-completeness gate (#741) is a different gate with a real
-// corrective dispatch behind it, and this fixture never scripted one — its
-// plan stub hands out paths from the reply, not work any tree contains. Left
-// on, that gate caps `develop-incomplete-deliverables` before the cycle ever
-// reaches the step whose behaviour these cases assert. It has its own suite
-// (test-work-driver-converge.ts); off here, off scope.
-process.env.PI_ENSEMBLE_CONVERGE = "0";
 
 const replyText = readFileSync(REPLY_FIXTURE, "utf8");
 const reportText = readFileSync(REPORT_FIXTURE, "utf8");
@@ -258,6 +249,16 @@ async function runDriverCase(
 }> {
   const dir = await makeRepoWith(prefix, files);
   let exploreDispatches = 0;
+  // #1634 — the develop step's deliverable-completeness gate (#741) is a
+  // different gate from the one this file is about, and it has a corrective
+  // DISPATCH behind it that this fixture never scripted: its plan stub hands
+  // out paths read from the reply, not work any tree contains, so the gate
+  // classifies every deliverable absent and caps `develop-incomplete-deliverables`
+  // before the cycle reaches the step these cases assert on. Disabled for THIS
+  // case only, and restored after — an env var set for the whole process would
+  // reach any other suite that imports this one.
+  const prevConverge = process.env.PI_ENSEMBLE_CONVERGE;
+  process.env.PI_ENSEMBLE_CONVERGE = "0";
   try {
     const ctx: DriverContext = {
       host: makeFakePi(),
@@ -308,6 +309,8 @@ async function runDriverCase(
       exploreDispatches,
     };
   } finally {
+    if (prevConverge === undefined) delete process.env.PI_ENSEMBLE_CONVERGE;
+    else process.env.PI_ENSEMBLE_CONVERGE = prevConverge;
     rmSync(dir, { recursive: true, force: true });
   }
 }
