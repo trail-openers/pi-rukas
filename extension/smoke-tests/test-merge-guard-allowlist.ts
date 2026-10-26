@@ -23,13 +23,14 @@ import {
   ACCEPTED,
   CODES,
   EXPANSION_CANARIES,
-  GLAB_NO_OPT_OUT,
-  NOT_MERGES,
   REFUSED,
-  RESIDUAL,
   longMergeCommand,
   longReadCommands,
 } from "./lib/merge-allowlist-fixtures.ts";
+// The must-NOT-hold tables are a separate module: they are the false-positive
+// half of the same classifier, and a single growing list would eventually prove
+// the guard works by holding more of it.
+import { GLAB_NO_OPT_OUT, NOT_MERGES, RESIDUAL } from "./lib/merge-allowlist-non-merges.ts";
 import { assertBigCommandsInsideBudget } from "./lib/merge-allowlist-harness.ts";
 import { assertStalledGitIsBounded } from "./lib/merge-allowlist-target.ts";
 import {

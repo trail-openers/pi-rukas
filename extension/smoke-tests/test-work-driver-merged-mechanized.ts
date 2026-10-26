@@ -15,7 +15,6 @@ import { type VerifyExecFn, restoreCheckout } from "../src/work-driver-git.ts";
 import {
   deriveMergeMethod,
   executeAndVerifyMerge,
-  isHeadPinRefusal,
   mechanizedMerge,
 } from "../src/work-driver-merged-mechanized.ts";
 import { runMerged } from "../src/work-driver-merged.ts";
@@ -24,6 +23,10 @@ import { prMergeCmd as prMergeCmdCapture } from "../src/forge-commands.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
 import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
+// The exec/context builders are shared with test-work-driver-merged-pin.ts, the
+// #1533 head-pin file split out of this one (§12 size cap): two copies would be
+// two fixtures that can drift while both still pass.
+import { HEAD_OID, mkCtx, mkExec, mkPi } from "./lib/work-driver-merged-pin-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -34,57 +37,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-function mkPi(): ExtensionAPI {
-  return { sendUserMessage: () => {} } as unknown as ExtensionAPI;
-}
-
-interface MockExec {
-  fn: VerifyExecFn;
-  calls: string[];
-}
-function mkExec(
-  o: Record<string, { stdout?: string; stderr?: string; error?: boolean }> = {},
-): MockExec {
-  const calls: string[] = [];
-  const fn: VerifyExecFn = async (rawCmd, opts) => {
-    const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
-    calls.push(cmd);
-    for (const [k, v] of Object.entries(o)) {
-      if (cmd.includes(k)) {
-        if (v.error) {
-          const e = new Error(v.stderr ?? "err") as Error & { stderr?: string };
-          e.stderr = v.stderr;
-          throw e;
-        }
-        return { stdout: v.stdout ?? "", stderr: v.stderr };
-      }
-    }
-    return { stdout: "" };
-  };
-  return { fn, calls };
-}
-
-function mkCtx(
-  issue: number,
-  exec: VerifyExecFn,
-  opts?: { dispatchFn?: DriverContext["dispatchFn"]; repoRoot?: string },
-): DriverContext {
-  return {
-    repoRoot: opts?.repoRoot ?? "/fake",
-    issue,
-    host: mkPi(),
-    verifyExecFn: exec,
-    mergeGrant: true, // #380 — granted the way `/work N --merge` would
-    issueBodyFetcherFn: async () => ({
-      stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody`,
-    }),
-    ...(opts?.dispatchFn ? { dispatchFn: opts.dispatchFn } : {}),
-  } as DriverContext;
-}
-
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
-/** #1533 — the verified head every merge in this file pins to. */
-const HEAD_OID = "7".repeat(39) + "e";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
@@ -530,90 +483,6 @@ setupSpawnGuard();
   assert(
     r.ok === false && r.reason.includes("no merge method permitted"),
     "mechanizedMerge: all methods false → fallback",
-  );
-}
-
-// ---- #1533 — the head pin ----
-
-{
-  // A merge is never attempted with a head the step cannot name precisely: a
-  // missing or malformed OID is a refusal, not an unpinned merge.
-  const { fn, calls } = mkExec({
-    "gh repo view": {
-      stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
-    },
-  });
-  const r = await mechanizedMerge(mkCtx(100, fn), {
-    pipelineState: { prNumber: 999 },
-  } as unknown as WorkState, "abc123");
-  assert(
-    r.ok === false && /40-char SHA/.test(r.reason),
-    `#1533: a malformed verified head refuses the merge with a named reason (got ${JSON.stringify(r)})`,
-  );
-  assert(
-    calls.every((c) => !c.includes("gh pr me" + "rge")),
-    "#1533: and no merge command was issued at all",
-  );
-}
-{
-  // The refused pin is classified BEFORE "already been merged" and before the
-  // permanent-error classifier: read as either, an unmerged PR reports success
-  // or falls through to an LLM ops dispatch that retries the same moved head.
-  for (const [label, stderr] of [
-    [
-      "gh",
-      "pull request 999 headRefOid does not match the value provided by --match-head-commit",
-    ],
-    [
-      "glab",
-      "the provided sha a1b2c3d does not match the MR head_sha 9f8e7d6; the head has changed since the review",
-    ],
-  ] as const) {
-    let viewCount = 0;
-    const base = mkExec({
-      "gh repo view": {
-        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
-      },
-      "gh pr merge": { error: true, stderr },
-    });
-    // The pre-check must say "not merged yet" and the post-verify must say
-    // MERGED: the case then fails if the refusal is swallowed, because a
-    // swallowed refusal would report a successful merge on this fixture.
-    const exec: VerifyExecFn = async (cmd, o) => {
-      if (cmd.includes("gh pr view")) {
-        viewCount++;
-        if (viewCount === 1) return { stdout: "OPEN\n" };
-        throw new Error(`#1533: post-merge verify reached — the merge was not refused (${stderr})`);
-      }
-      return base.fn(cmd, o);
-    };
-    const r = await mechanizedMerge(mkCtx(100, exec), {
-      pipelineState: { prNumber: 999 },
-    } as unknown as WorkState, HEAD_OID);
-    assert(
-      r.ok === false && /head pin refused/.test(r.reason),
-      `#1533: a refused pin (${label}) is a head-pin refusal, not a merge (${JSON.stringify(r)})`,
-    );
-  }
-}
-{
-  // The two classifiers the refusal must NOT be swallowed by, kept honest on
-  // the same input: "already been merged" and the permanent 4xx set.
-  assert(
-    isHeadPinRefusal("pull request headRefOid does not match --match-head-commit") === true,
-    "#1533: the gh spelling of a refused pin is recognised",
-  );
-  assert(
-    isHeadPinRefusal("cannot merge: already been merged") === false,
-    "#1533: an already-merged answer is not read as a refused pin",
-  );
-  assert(
-    isHeadPinRefusal("HTTP 403: Resource not accessible by integration") === false,
-    "#1533: a permanent permission error is not read as a refused pin",
-  );
-  assert(
-    isHeadPinRefusal("GraphQL: field baseRefName does not match") === false,
-    "#1533: a mismatch sentence about something OTHER than the head is not a refused pin",
   );
 }
 

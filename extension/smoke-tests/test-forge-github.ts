@@ -27,20 +27,7 @@ import {
   mkExec,
 } from "./forge-fixtures.ts";
 
-let exitCode = 0;
-function check(name: string, fn: () => void | Promise<void>) {
-  return Promise.resolve()
-    .then(fn)
-    .then(() => console.log(`  ok: ${name}`))
-    .catch((e) => {
-      console.error(`  FAIL: ${name} — ${e?.message ?? e}`);
-      exitCode = 1;
-    });
-}
-
-function assert(cond: unknown, msg: string): asserts cond {
-  if (!cond) throw new Error(msg);
-}
+import { assert, check, forgeExitCode } from "./lib/forge-harness.ts";
 
 async function main() {
   const owner = "acme";
@@ -419,79 +406,6 @@ async function main() {
   // CI watch + CI run are covered by smoke-tests/test-forge-ci-watch.ts
 
   // Merge readiness (GitHub) is covered by test-forge-merge-readiness.ts
-
-  // ── Labels ──────────────────────────────────────────────────────────────
-  console.log("labels:");
-  {
-    const { fn, calls } = mkExec({
-      "gh label create": { stdout: JSON.stringify({ name: "new-label", id: 5, color: "00ff00" }) },
-      "gh issue edit 42 --add-label": { stdout: "" },
-      "gh issue edit 42 --remove-label": { stdout: "" },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("labelCreate returns the label and uses --force (idempotent)", async () => {
-      const label = await forge.labelCreate("new-label", "00ff00");
-      assert(label!.name === "new-label", `name ${label!.name}`);
-      assert(label!.id === 5, `id ${label!.id}`);
-      const cmd = calls.find((c) => c.includes("gh label create"));
-      assert(cmd?.includes("--force"), `idempotency: ${cmd}`);
-    });
-    await check("labelAdd uses --add-label", async () => {
-      await forge.labelAdd("issue", 42, "bug");
-      assert(
-        calls.some((c) => c.includes("--add-label")),
-        "no add-label cmd",
-      );
-    });
-    await check("labelRemove uses --remove-label", async () => {
-      await forge.labelRemove("issue", 42, "bug");
-      assert(
-        calls.some((c) => c.includes("--remove-label")),
-        "no remove-label cmd",
-      );
-    });
-  }
-
-  // ── Attention-gate label lifecycle (needs-human-attention) ──────────────
-  // Mirrors work-driver-handoff.ts: create-if-missing (error swallowed) →
-  // add to the target → read back via issueView. Same lifecycle for PRs.
-  console.log("attention-gate label lifecycle:");
-  {
-    const { fn, calls } = mkExec({
-      "gh label create": { stdout: "{}" },
-      "gh issue edit 42 --add-label": { stdout: "" },
-      "gh pr edit 17 --add-label": { stdout: "" },
-      "gh issue view 42": {
-        stdout: JSON.stringify({ ...GH_ISSUE, labels: [{ name: "needs-human-attention" }] }),
-      },
-    });
-    const forge = createForge(det, { execFn: fn });
-    // 1. Create-if-missing (the handoff swallows "already exists").
-    await forge.labelCreate("needs-human-attention", "FFAA00");
-    // 2. Add to both the issue (attention-gate target) and the PR.
-    await forge.labelAdd("issue", 42, "needs-human-attention");
-    await forge.labelAdd("mr", 17, "needs-human-attention");
-    await check("create-if-missing, add to issue AND mr, read back on issue", async () => {
-      assert(
-        calls.some((c) => c.includes("gh label create") && c.includes("--force")),
-        `create: ${calls}`,
-      );
-      assert(
-        calls.some((c) => c.includes("gh issue edit 42 --add-label")),
-        `issue add: ${calls}`,
-      );
-      // #775 — GitHub has no `mr` subcommand; an mr target maps to `pr`.
-      assert(
-        calls.some((c) => c.includes("gh pr edit 17 --add-label")),
-        `mr add maps to gh pr edit: ${calls}`,
-      );
-      // 3. Read back — the attention gate (work-driver-attention.ts) reads
-      //    the issue's labels to decide refuse/proceed.
-      const names = (await forge.issueView(42)).labels.map((l) => l.name);
-      assert(names.includes("needs-human-attention"), `labels: ${names}`);
-    });
-  }
-
   // ── Repo settings ───────────────────────────────────────────────────────
   console.log("repo settings:");
   {
@@ -512,12 +426,10 @@ async function main() {
   // Mappers (direct) are covered in test-forge-mapping-shapes.ts (the
   // existing home for the GitHub/GitLab mapper shape tests).
 
-  console.log("");
-  if (exitCode !== 0) {
-    console.error("FAILURES — see above");
-    process.exit(1);
-  }
-  console.log("All forge-github tests passed.");
+  // Labels and the attention-gate label lifecycle are in
+  // test-forge-github-labels.ts — the one forge surface whose operations only
+  // mean anything in a particular order, so it is a file of its own.
+  forgeExitCode("All forge-github tests passed.");
 }
 
 main().catch((e) => {
