@@ -53,6 +53,14 @@ export interface SlowWatchInput {
   onSlow?: OnSlowCallback;
   /** The child is the /work driver's, not the PM's — the notice says so. */
   driverOwned?: boolean;
+  /**
+   * #1827 ordering — true once a KILLING bound has armed for this child (the
+   * reviewer re-read cap's kill, or the post-verdict stop). The slow-run
+   * watch's automatic steer is advisory: a child some bound has already decided
+   * to end does not need another steer, and each one lands as a stdout line
+   * that re-arms the watchdog's notion of life.
+   */
+  boundArmed?: () => boolean;
 }
 
 /** The handle `watchSlowDispatch` returns: `stop` releases the watch, and

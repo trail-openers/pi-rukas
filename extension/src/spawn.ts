@@ -33,6 +33,7 @@ import { kickPiResolutionProbe } from "./pi-version-probe.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
+import { createBoundArmed } from "./spawn-bound-armed.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
 import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
@@ -51,6 +52,7 @@ import {
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
+import { failedByKill, wireReviewBounds } from "./spawn-review-bounds.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
@@ -239,6 +241,11 @@ async function spawnSpecialistInner(
   // against double-trigger if Pi emits agent_end more than once for some
   // reason.
   let promptCompleted = false;
+  // #1827 — one-way flag: a KILLING bound has armed, so the four advisory steer
+  // seams (slow notice, turn nudge, child-bound wrap-up, caps steer) stand down.
+  // `armBound` also notifies the caller, whose slow watch lives outside spawn.
+  const boundArmedState = createBoundArmed(() => opts.onBoundArmed?.());
+  const armBound = boundArmedState.arm;
   const completePrompt = () => {
     if (promptCompleted) return;
     promptCompleted = true;
@@ -262,6 +269,8 @@ async function spawnSpecialistInner(
     role: spec.role,
     onSteer: opts.onSteer,
     runningState,
+    // #1827 — by closure, so the caps see the value set later in the spawn.
+    boundArmed: boundArmedState.armed,
   });
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
   // parseable or not. Checked on a coarse interval below.
@@ -280,6 +289,18 @@ async function spawnSpecialistInner(
   const inFlightTools = new InFlightTools();
   // #1567 — what counts as progress, per spawn (child-progress.ts).
   const childProgress = new ChildProgress();
+  // #1827 — the two reviewer bounds (skill re-read cap, post-verdict stop),
+  // armed only for a reviewer role and only with the input each needs. The
+  // decision logic is in review-bounds.ts and the wiring in
+  // spawn-review-bounds.ts; the spawn keeps only the seams it owns.
+  const reviewBounds = wireReviewBounds({
+    child,
+    role: spec.role,
+    opts,
+    completePrompt,
+    armBound,
+    reported: () => promptCompleted,
+  });
   const stdoutRl = createInterface({ input: child.stdout });
   const lineHandler = createStdoutLineHandler({
     start,
@@ -294,6 +315,8 @@ async function spawnSpecialistInner(
       lastAgentEnd = parsed;
       if (!willRetryAfter(parsed)) completePrompt();
     },
+    // #1827 — counts reads of the child's own skill file, from the same calls.
+    ...(reviewBounds.skillRead ? { skillRead: reviewBounds.skillRead } : {}),
   });
   stdoutRl.on("line", (line) => {
     stdoutLines += 1;
@@ -303,6 +326,8 @@ async function spawnSpecialistInner(
     if (res.kind) lastActivityKind = res.kind;
     if (res.agentEnd) lastAgentEnd = res.agentEnd;
     if (res.assistantMessageEnd) lastAssistantMessageEnd = res.assistantMessageEnd;
+    // #1827 — the reviewer bounds see every non-echo line.
+    reviewBounds.observe(res.assistantMessageEnd);
   });
   child.stderr.on("data", (d) => {
     appendStderr(d);
@@ -338,6 +363,8 @@ async function spawnSpecialistInner(
       flags.inactivityKilled() ||
       flags.toolInactivityKilled(),
     commits: spec.role === "developer" && spec.cwd !== undefined,
+    // #1827 — the wrap-up steer stands down once a killing bound has armed.
+    boundArmed: boundArmedState.armed,
   });
 
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
@@ -423,6 +450,9 @@ async function spawnSpecialistInner(
   // contract, resolved by priority in spawn-caps.ts's capKillAttribution.
   capKillAttribution(caps, spec, runningState.totalTokens, appendStderr, result);
   applyChildBound(childBound, result);
+  // #1827 — the reviewer bounds land HERE, after both attribution passes
+  // (spawn-review-bounds.ts says why the ordering is load-bearing).
+  reviewBounds.apply(result, appendStderr);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
   // The cap-kill cause + evidence were already resolved above (capKillAttribution,
@@ -435,7 +465,11 @@ async function spawnSpecialistInner(
   if (result.killCause === "inactivity") result.killBudgetMs = flags.killedBudgetMs();
   if (result.killCause === "tool-inactivity") result.killBudgetMs = flags.killedBudgetMs();
   // A killed child never completed its assignment, whatever its exit code.
-  if (result.killCause) {
+  // #1827 — EXCEPT the post-verdict stop, which is not a kill: the reviewer had
+  // already written its verdict, so it completed the assignment and the loop
+  // must read a verdict rather than an `incomplete`. The stop reason still
+  // travels on the result so the report can say the tail was cut.
+  if (failedByKill(result)) {
     result.ok = false;
     // Only meaningful for a kill; attaching it always would imply we killed
     // every child.

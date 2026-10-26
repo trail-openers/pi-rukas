@@ -25,6 +25,7 @@ import type { ChildProcess } from "node:child_process";
 import type { ChildProgress } from "./child-progress.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent } from "./progress.ts";
+import type { SkillReadGuard } from "./review-bounds.ts";
 import type { CapSession } from "./spawn-caps.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
@@ -269,6 +270,12 @@ export function createStdoutLineHandler(opts: {
   onProgress?: (snapshot: RunningState) => void;
   onRawEvent?: (event: PiJsonEvent) => void;
   onAgentEnd: (parsed: PiJsonEvent) => void;
+  /**
+   * #1827 — the reviewer skill re-read guard, fed from the same hot path as the
+   * cap observers. Absent (every non-reviewer role, or no driver-supplied skill
+   * path) means the guard observes nothing and can neither steer nor kill.
+   */
+  skillRead?: SkillReadGuard;
 }): (line: string) => {
   kind: string;
   agentEnd: PiJsonEvent | null;
@@ -284,6 +291,7 @@ export function createStdoutLineHandler(opts: {
     onProgress,
     onRawEvent,
     onAgentEnd,
+    skillRead,
   } = opts;
   return (line: string) => {
     const trimmed = line.trim();
@@ -334,6 +342,11 @@ export function createStdoutLineHandler(opts: {
     inFlightTools.observe(parsed);
     // #1567 — record progress (child-progress.ts). Nothing acts on it yet.
     childProgress.observe(parsed);
+    // #1827 — count this child's reads of its OWN skill file. Observation only
+    // here: the caller decides when the count becomes a steer and when it
+    // becomes a kill, because only the caller holds the stdin handle, the steer
+    // seam and the kill path.
+    skillRead?.observe(parsed);
     // Retain only the two events collapseEvents actually reads (the latest
     // agent_end + the latest assistant message_end as fallback). Everything
     // else is already absorbed by ingestEvent into runningState above, and

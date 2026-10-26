@@ -139,6 +139,8 @@ export function armCapSession(
     /** Steering seam (F2); undefined for callers without a job. */
     onSteer?: (message: string, source: SteerSource) => void;
     runningState: RunningState;
+    /** #1827 — see `CapSessionOpts.boundArmed`. */
+    boundArmed?: () => boolean;
   },
 ): CapSession {
   child.on("exit", () => {
@@ -159,6 +161,7 @@ export function armCapSession(
     capKillGraceMs: capKillGraceMs(),
     childExited: flags.childExited,
     turns: () => session.runningState.turns,
+    boundArmed: session.boundArmed,
   });
 }
 

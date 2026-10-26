@@ -224,6 +224,13 @@ export interface DispatchResult {
    */
   killedAtCycleDeadline?: boolean;
   /**
+   * #1827 — set when the adversarial reviewer was ended as DONE the moment its
+   * VERDICT appeared (`review-post-verdict`). Not a failure: `ok` stays true and
+   * the reply is the verdict. Recorded so the dispatch report says the harness
+   * cut the post-verdict tail instead of the child finishing on its own.
+   */
+  reviewStopReason?: "review-post-verdict";
+  /**
    * #1789 — the id of the DRIVER dispatch that produced this result, when a
    * driver ran the child (`runSingleDispatch` threads the id `beginDispatch`
    * minted; a PM `dispatch_specialist` leaves it absent). Carried on the result

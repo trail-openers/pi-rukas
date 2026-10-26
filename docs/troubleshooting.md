@@ -1766,6 +1766,24 @@ The value is read **per dispatch**, when the tracker is built, so changing it ne
 
 Crossing an armed budget steers the child to wrap up, then kills it after `PI_ENSEMBLE_CAP_KILL_GRACE_MS` (5 min) with `killCause: token-budget`. `0` or unset means no ceiling (the default). Note what the ceiling does *not* cover and what it actually costs: an armed budget never applies to `ops` children, nor to anything under `PI_ENSEMBLE_DISPATCH_CAPS=0`, and because the kill lands only after the grace period a killed child spends a little **more** than the armed figure. The other roles take the same form: `PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER`, `PI_ENSEMBLE_TOKEN_BUDGET_EXPLORE`, and so on — hyphens in a role name become underscores in the key.
 
+### A reviewer ran for hours after saying it was finished
+
+**Symptom.** An adversarial review or a lens lane costs 80 M tokens or 400+ turns, and its reply opens with "verification complete, writing the verdict" and a parseable `VERDICT:` line — followed by hundreds more tool calls. Nothing capped it: the run completed, the verdict parsed, and the cycle paid for the tail.
+
+**Cause** ([#1827](https://github.com/trail-openers/pi-rukas/issues/1827)). Every cap that watches a child watches for the *wrong* signal here. The loop detector keys on tool+args, so a child that varies what it runs never repeats a fingerprint; the two inactivity watchdogs need silence, and this child is producing output; the token budget is off by default; the child bound was never armed for the adversarial reviewer at all, because `runAdversarialLoop` spawns it with no `childBoundMs`. The same hole let a lens child re-open its own `SKILL.md` for hundreds of turns — alternating `read`, `cat` and `grep`, which is the specific pattern no fingerprint-based cap can see.
+
+**Fixed.** Three structural bounds, all keyed on what the live stream says rather than on how long or how loud the child is:
+
+| Bound | Fires when | Kill cause |
+|---|---|---|
+| Post-verdict stop (`adversarial-developer`) | an assistant `message_end` contains a `VERDICT:` value `parseVerdict` would accept — the child is ended **as done**, its later tool calls never run | `review-post-verdict` (not a failure; `ok` stays true) |
+| Skill re-read cap (both reviewer roles) | the child opens its **own** `SKILL.md` more than `PI_ENSEMBLE_REVIEW_SKILL_READS` (3) times: steer at N+1, end at N+2 | `review-skill-reread` |
+| Adversarial run bound (`adversarial-developer`) | one review round outlives `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS` (30 min): wrap-up steer, then kill after `PI_ENSEMBLE_CHILD_BOUND_GRACE_MS` | `child-bound` |
+
+**What each one deliberately does NOT do.** The post-verdict stop reads the same marker through the same function the loop's final parse uses, over the accumulated assistant text — so it cannot stop a child on text its consumer would not accept. A reply that merely *quotes* the verdict menu (`VERDICT: <APPROVED|ISSUES_FOUND|…>`) is not a value and does not stop; an unparseable marker never stops, and never fabricates a verdict — the child runs on and the loop decides as before. A provider error-stop or an aborted turn is not an answer, so neither triggers the stop. The re-read kill **keeps the child's evidence**: findings and closing summary stand and the lane is not marked `not reviewed`, because a child that opened its skill file N+1 times demonstrably had it loaded and did the review it managed to do (the same rule #952 established for a loop / token-budget kill). A re-read kill with *no* evidence at all stays blocked like any other failed lens, and names the cause rather than "unknown failure". Neither cause is ever retried, by the lens retry loop or by the step router, and neither is promoted into a cap-kill parking field.
+
+**Both bounds are inert** under `PI_ENSEMBLE_DISPATCH_CAPS=0`, like every other cap, and the re-read cap additionally needs the driver to supply the skill path it counts against — a child spawned without one carries no counter at all. Once a child's own `agent_end` has arrived, the re-read kill is suppressed: the cap has nothing left to stop, and killing a child mid-report would throw away the answer it gave. Sources: `review-bounds.ts`, `spawn-review-bounds.ts`, `adversarial-phase.ts`.
+
 ### `ci` step timeout — CI runs > 10 min (PR15)
 
 The `ci` step dispatches `ops` to run `gh run watch <id>`, which blocks until CI completes. Pre-PR15 this inherited ops' 10-min default, so any CI run exceeding 10 min SIGTERM'd mid-watch and routed through `step-failed:ci` handoff (3× this session on a measured cycle's ~15-min pipeline).

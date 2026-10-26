@@ -50,6 +50,21 @@ export interface SpawnOptions extends WriteFenceOpt {
    */
   reviewSkillPath?: string;
   /**
+   * #1827 ordering — a getter the CALLER supplies for the slow-run watch, which
+   * lives outside the spawn (in `watchSlowDispatch`) and therefore cannot read
+   * the spawn's own `boundArmed` flag. `spawnSpecialistInner` reads the same
+   * closure both ways, so the two views cannot disagree. Absent = the watch
+   * always steers, which is today's behaviour for every non-bounded caller.
+   */
+  boundArmed?: () => boolean;
+  /**
+   * #1827 ordering — the matching WRITER of `boundArmed`: `spawnSpecialistInner`
+   * calls it the first time one of its killing bounds arms (the reviewer skill
+   * re-read kill, the post-verdict stop), so a caller whose slow-run watch sits
+   * outside the spawn can stand its advisory steer down for the same child.
+   */
+  onBoundArmed?: () => void;
+  /**
    * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
    * the running tool. We listen on this and kill the child with SIGTERM so
    * cancellation actually propagates instead of leaving Pi stuck.

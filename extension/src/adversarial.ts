@@ -20,7 +20,6 @@ import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
-import { adversarialSkillPath } from "./adversarial-skill-path.ts";
 import { createUsageTally } from "./adversarial-usage.ts";
 import {
   decideLoopAction,
@@ -281,8 +280,6 @@ export async function runAdversarialLoop(
     // caller supplied.
     ...(params.onSlow ? { onSlow: params.onSlow } : {}),
     ...(params.pi ? { pi: params.pi } : {}),
-    // #1827 — only the reviewer role reads it (see adversarial-skill-path.ts).
-    reviewerSkillPath: adversarialSkillPath(),
     processGroup: params.processGroup,
     workCycleTrust: params.workCycleTrust,
   });

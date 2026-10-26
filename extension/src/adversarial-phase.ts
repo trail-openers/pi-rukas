@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { adversarialSkillPath } from "./adversarial-skill-path.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { setOrchestratorActiveChild } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
@@ -44,10 +45,6 @@ export function makeRunPhase(opts: {
   onSlow?: OnSlowCallback;
   /** The parent pi for the slow-run watch (the PM notice half). */
   pi?: ExtensionAPI;
-  /** #1827 — the driver-supplied path to the reviewer's own skill, so the skill
-   * re-read cap counts reads of THAT file and nothing else. Ignored for the fix
-   * pass: the `developer` role gets neither new bound. */
-  reviewerSkillPath?: string;
 }): RunPhase {
   const { runId, signal, orchestratorJobId, processGroup, workCycleTrust } = opts;
   return async (role, tag, prompt, cwd) => {
@@ -67,10 +64,18 @@ export function makeRunPhase(opts: {
       ...(opts.onSlow ? { onSlow: opts.onSlow } : {}),
       ...(opts.pi ? { pi: opts.pi } : {}),
       onRawEvent: slowRaw,
+      // #1827 ordering — once a killing bound has armed for this child, the
+      // slow-run watch stops steering it. The flag is set by the spawn through
+      // the `onBoundArmed` seam below; the watch is created first, so it reads
+      // the closure rather than a snapshot.
+      boundArmed: () => boundArmed,
     });
     // This child's own abort, so dispatch_kill <deckKey> can stop a hung
     // round — the driver passes a loop signal that nothing ever aborts.
     const kill = new AbortController();
+    // #1827 — set true by the spawn the first time one of the reviewer's
+    // killing bounds (the re-read kill, the post-verdict stop) arms.
+    let boundArmed = false;
     const onLoopAbort = () => kill.abort();
     if (signal.aborted) kill.abort();
     else signal.addEventListener("abort", onLoopAbort, { once: true });
@@ -101,7 +106,14 @@ export function makeRunPhase(opts: {
                 onSteer: (message: string, source: SteerSource) => {
                   steerChild(orchestratorJobId, message, source);
                 },
-                ...(opts.reviewerSkillPath ? { reviewSkillPath: opts.reviewerSkillPath } : {}),
+                onBoundArmed: () => {
+                  boundArmed = true;
+                },
+                // #1827 — the path to the reviewer's OWN skill, so the re-read
+                // cap counts reads of that SKILL.md and no other skill file.
+                // Derived here (not passed in) so the cap and the path it counts
+                // cannot drift apart, and so the loop's call site is unchanged.
+                reviewSkillPath: adversarialSkillPath(),
               }
             : {}),
           onProgress: (state) => {

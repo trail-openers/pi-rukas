@@ -26,7 +26,7 @@ export function noticeSubject(text: string): string {
   return text.slice(0, 80);
 }
 
-function fmtElapsed(ms: number): string {
+export function fmtElapsed(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   const m = Math.floor(ms / 60_000);
@@ -35,7 +35,7 @@ function fmtElapsed(ms: number): string {
 }
 
 /** "12.3k" / "1.2M" / "456" — bounded to 4-5 chars regardless of input size. */
-function fmtTokens(n: number | undefined): string {
+export function fmtTokens(n: number | undefined): string {
   if (!n || n <= 0) return "0";
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
@@ -49,7 +49,7 @@ function fmtTokens(n: number | undefined): string {
  * Coder) it's just noise, and per-token billing users can derive their own
  * cost from the token count if needed.
  */
-function fmtUsage(result: {
+export function fmtUsage(result: {
   usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   model?: string;
   provider?: string;
@@ -106,7 +106,7 @@ function rateLimitHeadline(cls: { cause: string; waitMs?: number }): string {
  * that is precisely the case where the report otherwise implies nothing
  * happened. A successful child's activity is already evident from its output.
  */
-function fmtObservedWork(result: DispatchResult): string {
+export function fmtObservedWork(result: DispatchResult): string {
   if (result.ok || !result.observedToolCalls) return "";
   return ` · ${result.observedToolCalls} tool calls before it died`;
 }
@@ -271,7 +271,7 @@ export function isTruncatedNarration(text: string, turns: number): boolean {
  * worktree, classify done/missing/broken, and resume with the full contract
  * — not a blind re-run, which discards the on-disk work.
  */
-function truncationBadge(result: DispatchResult): string {
+export function truncationBadge(result: DispatchResult): string {
   return ` — POSSIBLY-TRUNCATED: final text is a tool-narration line at ${result.usage?.turns ?? 0} turns with no completion summary. Verify on-disk state (git status/log in the target worktree) before re-dispatching: survey disk, classify done/missing/broken, resume with the full contract rather than a blind re-run.`;
 }
 
@@ -312,7 +312,7 @@ function isDeveloperLabel(label: string): boolean {
  * report formatters use for the gate footer, so the single and batch paths
  * cannot drift on what counts as a developer completion.
  */
-function isFinishedDeveloper(label: string, result: DispatchResult): boolean {
+export function isFinishedDeveloper(label: string, result: DispatchResult): boolean {
   return isDeveloperLabel(label) && describeOutcome(result).status === "finished";
 }
 
@@ -444,63 +444,7 @@ export function formatFailReport(jobId: string, label: string, err: Error): stri
   ].join("\n");
 }
 
-export interface BatchReportInput {
-  batchLabel: string;
-  batchId: string;
-  startedAt: number;
-  members: Array<{
-    jobId: string;
-    label: string;
-    result: DispatchResult | { failed: true; error: string };
-    /** #1015 — pre-computed git-state line for developer/ops members. */
-    gitLine?: string;
-  }>;
-}
-
-export function formatBatchReport(input: BatchReportInput): string {
-  const ms = Date.now() - input.startedAt;
-  const totalTokens = input.members.reduce((acc, m) => {
-    if ("failed" in m.result) return acc;
-    const u = m.result.usage;
-    return acc + (u ? u.input + u.output + u.cacheRead + u.cacheWrite : 0);
-  }, 0);
-  const okCount = input.members.filter((m) => !("failed" in m.result) && m.result.ok).length;
-  const tokenTag = totalTokens > 0 ? ` · ${fmtTokens(totalTokens)} tokens` : "";
-  const head = `[ensemble:async] Batch \`${input.batchLabel}\` (batch ${input.batchId}) finished — ${okCount}/${input.members.length} ok, ${fmtElapsed(ms)}${tokenTag}`;
-  const sections = input.members.map((m) => {
-    if ("failed" in m.result) {
-      return `=== ${m.label} (job ${m.jobId}) — FAILED ===\nerror: ${m.result.error.slice(-200)}`;
-    }
-    const turns = m.result.usage?.turns ?? 0;
-    const elapsed = fmtElapsed(m.result.ms);
-    // Same outcome description the single-job report uses. Before this, a child
-    // killed by a 429 read as `fail (exit 0) · (no output)`, which hid the cause
-    // completely and got the failure misdiagnosed as a bad prompt.
-    const { status, bodyPrefix } = describeOutcome(m.result);
-    const text = m.result.text?.trim();
-    const body = bodyPrefix
-      ? [bodyPrefix, ...(text ? ["", text] : [])].join("\n")
-      : text || "(no output)";
-    // #546 — the same truncation tag the single-job report earns, so a
-    // narration-tail child cannot hide inside a batch.
-    const truncated =
-      !m.result.killCause &&
-      !m.result.errorStop &&
-      text !== "" &&
-      isTruncatedNarration(text, turns);
-    const badge = truncated ? truncationBadge(m.result) : "";
-    const gitTail = m.gitLine ? `\n${m.gitLine}` : "";
-    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)}${badge} ===\n${body}${gitTail}`;
-  });
-  // #911 — the gate line appears at most once in the shared footer: any
-  // developer member that actually finished ("finished" via the shared
-  // describeOutcome, not raw ok) is enough, and a batch of non-developers or
-  // failed developers gets no gate line at all.
-  const anyDeveloperFinished = input.members.some(
-    (m) => !("failed" in m.result) && isFinishedDeveloper(m.label, m.result),
-  );
-  const footer = anyDeveloperFinished
-    ? `---\n${GATE_LINE}\n\nYou started this async batch earlier. Continue the workflow.`
-    : "---\nYou started this async batch earlier. Continue the workflow.";
-  return `${head}\n\n${sections.join("\n\n")}\n\n${footer}`;
-}
+// The batch report lives in async-jobs-batch-report.ts (§12 size split) and
+// is re-exported here so every caller keeps importing the report layer from one
+// module — the split is a file boundary, not an API change.
+export { type BatchReportInput, formatBatchReport } from "./async-jobs-batch-report.ts";

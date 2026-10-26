@@ -19,15 +19,14 @@ import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
-import { skillLoadProof } from "./lens-skill-load-proof.ts";
+import { skillLoadGate, traceSkillLoadAbsence } from "./lens-skill-trace.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import { readEnumMarker } from "./reply-markers.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { lensChildBoundMs } from "./spawn-child-bound.ts";
 import { spawnSpecialist } from "./spawn.ts";
-import { trace, traceWarn } from "./trace.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
@@ -151,12 +150,20 @@ export async function runLensChild(opts: {
   // #907 — the CI-wait span feed for this lens child: the watch chains its
   // span tracker in front of the raw-event hook the spawn receives.
   const slowRaw: (event: PiJsonEvent) => void = () => {};
+  // #1827 — set by the spawn the first time the reviewer re-read cap arms its
+  // kill. Declared before the watch so its `boundArmed` getter closes over the
+  // same variable the spawn later writes (read per threshold crossing, not
+  // snapshotted).
+  let lensBoundArmed = false;
   const stopSlow = watchSlowDispatch({
     id: deckKey,
     role: slowRole,
     label: slowLabel,
     ...(opts.pi ? { pi: opts.pi } : {}),
     onRawEvent: slowRaw,
+    // #1827 ordering — the watch stops steering a lens the cap is already
+    // ending; its steer cannot change the outcome.
+    boundArmed: () => lensBoundArmed,
   });
 
   // Retry loop (#3). Up to MAX_LENS_ATTEMPTS attempts on transient
@@ -202,6 +209,13 @@ export async function runLensChild(opts: {
             // that never answers is steered to wrap up, then ended, instead of
             // holding the round until the 2-h spawn backstop.
             childBoundMs: boundMs,
+            // #1827 — the re-read cap counts only reads of THIS lens's
+            // SKILL.md; a read of any other skill file never counts.
+            reviewSkillPath: skillPath,
+            // #1827 — the re-read cap's kill tells this watch to stand down.
+            onBoundArmed: () => {
+              lensBoundArmed = true;
+            },
             signal: kill.signal,
             processGroup: runOpts.processGroup,
             workCycleTrust: runOpts.workCycleTrust,
@@ -325,7 +339,18 @@ export async function runLensChild(opts: {
     // completed before it died; count it like any other dispatch-failed.
     const findings = result ? extractFindings(result.toolUses, lens.name).findings : [];
     const summary = result?.text?.trim() || undefined;
-    const capKill = result?.killCause === "loop" || result?.killCause === "token-budget";
+    const capKill =
+      result?.killCause === "loop" ||
+      result?.killCause === "token-budget" ||
+      // #1827 — `review-skill-reread` belongs in THIS class, not the timeout /
+      // abort class below: it fires only in a child that was actively working
+      // (it opened its own SKILL.md too many times), so its prose is the same
+      // partial review a loop kill preserves. `review-post-verdict` cannot
+      // reach this branch (it ends `ok`) and is listed for symmetry with the
+      // failure taxonomy, so a future shape reporting it as a failure is
+      // treated the same way in both places.
+      result?.killCause === "review-skill-reread" ||
+      result?.killCause === "review-post-verdict";
     // #966 — one source for the placeholder: NO_TEXT_PLACEHOLDER
     // (lens-review-incomplete.ts, where `collapseEvents` declares it).
     const textIsReviewOutput =
@@ -400,39 +425,16 @@ export async function runLensChild(opts: {
   // FOLLOW-UP: promote `unproven` to a block once the shadow log shows no
   // false refutations — the line below is the log, and the enforcement is one
   // `blocked: true` branch on `case "unproven"` here.
-  const skillLoadStatus = readEnumMarker(result.text ?? "", "Skill Load Status", [
-    "SUCCESS",
-    "FAILED",
-  ]);
-  if (skillLoadStatus === "SUCCESS") {
-    // `observedToolCalls` is passed so a replay that is EMPTY on the array but
-    // non-empty on the live count abstains outright (`unverifiable`): the child
-    // made calls the replay did not carry, so the absence of a read from
-    // `toolUses` says nothing about whether it read the skill.
-    const proof = skillLoadProof(result.toolUses, skillPath, result.observedToolCalls);
-    switch (proof) {
-      case "proven":
-        // The marker and the records agree; nothing to say.
-        break;
-      case "unproven":
-        // SHADOW: warn, do not block. traceWarn (not trace) so the line shows
-        // without PI_ENSEMBLE_DEBUG and the operator can see — in a normal run
-        // log — the lens, the verdict it claimed, and the tool names/paths the
-        // proof looked at. That is the evidence the promotion decision needs.
-        traceWarn(
-          `skill load SHADOW: SUCCESS not corroborated (${lens.skill}): no read of ${skillPath} among ${describeToolCalls(result.toolUses)} — NOT blocking (shadow mode; the child's own marker decides)`,
-        );
-        break;
-      case "unverifiable":
-        trace(
-          `skill load SUCCESS unverifiable (${lens.skill}): the child recorded no usable tool calls; treated as absent, not refuted`,
-        );
-        break;
-    }
-  }
-  // The child's own marker is the gate. A `FAILED` self-report blocks with its
-  // findings kept — unchanged from before #995's proof.
-  if (skillLoadStatus === "FAILED") {
+  // The gate is the child's own marker; the #995 proof runs in shadow beside it.
+  // See lens-skill-trace.ts for why the proof does not block.
+  const { status: skillLoadStatus, blocked: skillLoadFailed } = skillLoadGate(
+    result.text ?? "",
+    result.toolUses,
+    result.observedToolCalls,
+    lens.skill,
+    skillPath,
+  );
+  if (skillLoadFailed) {
     return {
       lens: lens.name,
       ok: result.ok,
@@ -476,37 +478,3 @@ export async function runLensChild(opts: {
  * collected — this line reports what the child NAMED, so the operator can see
  * why the proof disagreed with it, including when the model used a spelling
  * the tool would have rejected. */
-function describeToolCalls(toolUses: readonly unknown[]): string {
-  const names: string[] = [];
-  const paths: string[] = [];
-  for (const tu of toolUses ?? []) {
-    if (!tu || typeof tu !== "object") continue;
-    const call = tu as Record<string, unknown>;
-    const name = typeof call.name === "string" ? call.name : "?";
-    if (names.length < 8 && !names.includes(name)) names.push(name);
-    const args =
-      call.arguments && typeof call.arguments === "object"
-        ? (call.arguments as Record<string, unknown>)
-        : {};
-    for (const key of ["path", "file_path"]) {
-      const v = args[key];
-      if (typeof v === "string" && v.trim() && paths.length < 8 && !paths.includes(v)) {
-        paths.push(v);
-      }
-    }
-  }
-  const seen = names.length > 0 ? names.join(", ") : "(none)";
-  const withPaths = paths.length > 0 ? `; paths ${paths.join(", ")}` : "";
-  return `${toolUses?.length ?? 0} tool call(s) [tools ${seen}]${withPaths}`;
-}
-
-// #872 — honor-system absence is traced, not blocked: the marker was not
-// emitted, but the pre-spawn statSync in `runLensChild` is the executed
-// evidence the skill exists, so an absent marker never blocks — and a SUCCESS
-// whose read the child did not perform is downgraded to FAILED above rather
-// than reaching this line.
-function traceSkillLoadAbsence(lensSkill: string, status: string | undefined): void {
-  if (status === undefined) {
-    trace(`skill load status absent (${lensSkill}) — pre-spawn stat passed; marker not emitted`);
-  }
-}

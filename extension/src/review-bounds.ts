@@ -38,11 +38,13 @@
  * every other cap.
  */
 
+import path from "node:path";
 import { VERDICT_STATUSES } from "./adversarial-verdict.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import { isSkillFileRead } from "./lens-skill-load-proof.ts";
-import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
+import type { DispatchResult } from "./types.ts";
 
 /** A child that re-read its skill file past the cap. */
 export const REVIEW_SKILL_REREAD_KILL = "review-skill-reread" as const;
@@ -156,6 +158,26 @@ export interface VerdictStop {
  * verdict in one block and its findings in the next must not be judged by a
  * different rule than `parseVerdict` will judge the finished reply by.
  */
+/**
+ * Which bounds a given spawn gets, decided in ONE place so a role cannot be
+ * half-bounded. The re-read cap needs a driver-supplied skill path; the
+ * post-verdict stop is the adversarial reviewer's alone — it is the only role
+ * whose reply ends on a VERDICT marker, and stopping a lens child at a marker
+ * that never appears would cut reviews short.
+ */
+export function createReviewBounds(
+  role: string,
+  opts: Pick<SpawnOptions, "reviewSkillPath">,
+  reported: () => boolean,
+): { skillRead?: SkillReadGuard; verdictStop?: VerdictStop } {
+  return {
+    ...(opts.reviewSkillPath !== undefined && isReviewerRole(role)
+      ? { skillRead: createSkillReadGuard({ skillPath: opts.reviewSkillPath, reported }) }
+      : {}),
+    ...(role === "adversarial-developer" ? { verdictStop: createVerdictStop() } : {}),
+  };
+}
+
 export function createVerdictStop(): VerdictStop {
   const parts: string[] = [];
   let stopped: string | undefined;
@@ -179,3 +201,75 @@ export function createVerdictStop(): VerdictStop {
 
 /** The steer source naming the re-read cap (distinct from every other bound's). */
 export const SKILL_REREAD_STEER_SOURCE: SteerSource = "driver-review-skill-reread";
+
+/**
+ * What the two reviewer bounds need from the spawn, and nothing more. The
+ * spawn keeps the kill and the reporting; this seam exists so the decision
+ * logic sits with the counters it acts on rather than inflating `spawn.ts`
+ * past its size cap.
+ */
+export interface ReviewBoundTargets {
+  /** The child's stdin, for the steer when the caller supplied no steer seam. */
+  writeSteer: (message: string) => void;
+  /** The driver's steer seam, when the caller has one (lifecycle-tagged). */
+  onSteer?: (message: string, source: SteerSource) => void;
+  /** End the child. The caller's own kill path (guarded, traced). */
+  kill: () => void;
+  /** The prompt's `agent_end` arrived — the post-verdict end also closes stdin. */
+  completePrompt: () => void;
+  /** A killing bound has armed: the advisory steers stand down (#1827 ordering). */
+  armBound: () => void;
+  /** Record the cause the spawn applies AFTER `applyChildBound`. */
+  setKillCause: (cause: DispatchResult["killCause"]) => void;
+}
+
+/**
+ * The one call the spawn makes per stdout line for a reviewer child: it lets
+ * each bound decide, and reports what it decided through `targets`.
+ *
+ * Runs AFTER the line handler has fed every other observer, so stopping a
+ * child never depends on this hook being first. Both bounds are inert when
+ * their guard is absent (a non-reviewer role, or no driver-supplied skill
+ * path), which is the shape every developer / ops child takes.
+ */
+export function observeReviewBounds(
+  o: {
+    skillRead?: SkillReadGuard;
+    verdictStop?: VerdictStop;
+    /** The assistant `message_end` this line carried, or null. */
+    assistantMessageEnd: PiJsonEvent | null;
+  },
+  targets: ReviewBoundTargets,
+): void {
+  if (o.skillRead) {
+    // One steer on the (N+1)-th read, then the kill on the (N+2)-th. The steer
+    // goes through the driver's seam when the caller has one (so the lifecycle
+    // record names the source) and to raw stdin otherwise — the same fallback
+    // `armChildBound` uses.
+    const steer = o.skillRead.steerText();
+    if (steer !== undefined) {
+      targets.armBound();
+      try {
+        if (targets.onSteer) targets.onSteer(steer, SKILL_REREAD_STEER_SOURCE);
+        else targets.writeSteer(steer);
+      } catch {
+        /* child already gone — the kill below still fires */
+      }
+    }
+    if (o.skillRead.shouldKill()) {
+      targets.setKillCause(REVIEW_SKILL_REREAD_KILL);
+      targets.kill();
+    }
+  }
+  // The post-verdict stop ends the child as DONE, not killed: the reviewer's
+  // answer is in hand, so the child is ended NOW and none of its later tool
+  // calls run. `completePrompt` closes stdin exactly as a normal end would.
+  if (o.verdictStop && o.assistantMessageEnd && !o.verdictStop.status()) {
+    if (o.verdictStop.observe(o.assistantMessageEnd)) {
+      targets.armBound();
+      targets.setKillCause(REVIEW_POST_VERDICT_STOP);
+      targets.completePrompt();
+      targets.kill();
+    }
+  }
+}

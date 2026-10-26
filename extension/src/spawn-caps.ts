@@ -28,6 +28,11 @@ import type { SteerSource } from "./dispatch-steer.ts";
 import { type LoopDetector, createLoopDetector, loopDetectorEnabled } from "./loop-detector.ts";
 import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
+// `resolveKillCause` moved to spawn-kill-cause.ts (§12 size split) and is
+// re-exported here so the caps module keeps the surface its callers and tests
+// import — the split is a file boundary, not an API change.
+export { resolveKillCause } from "./spawn-kill-cause.ts";
+import { resolveKillCause } from "./spawn-kill-cause.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { TokenBudgetTracker, tokenBudgetEnvKey } from "./spawn-support.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -37,54 +42,6 @@ import type { DispatchResult } from "./types.ts";
 /** The shared kill: SIGTERM to the whole process group, then SIGKILL (#1024). */
 function killChild(child: ChildProcess): void {
   killProcessTree(child);
-}
-
-/**
- * #543 — killCause priority: loop > inactivity = tool-inactivity >
- * token-budget > stuck-tool > no-progress > child-bound (#1567) > timeout > abort (the most specific wins — the #296
- * invariant; #296's three values are untouched). The two silence kills rank
- * equal: same poll, one budget armed at a time (#951), so their relative
- * order cannot change an outcome.
- *
- * NOTE — ordering of token-budget vs timeout is a deliberate DEVIATION from
- * the literal spec sentence ("loop > inactivity > timeout > abort"): a
- * budget-killed child that ALSO tripped the wall-clock backstop must be
- * attributed to token-budget (its retry semantics and env override differ —
- * PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>, not PI_ENSEMBLE_SPAWN_TIMEOUT_MS), and the
- * budget is the more specific diagnosis of what actually cost the money.
- */
-export function resolveKillCause(facts: {
-  loopKilled: boolean;
-  inactivityKilled: boolean;
-  toolInactivityKilled: boolean;
-  timedOut: boolean;
-  tokenBudgetKilled: boolean;
-  /** #1567 — the child-supervision kills. Optional while no piece emits
-   * them; each enforcing piece passes its own flag. */
-  stuckToolKilled?: boolean;
-  noProgressKilled?: boolean;
-  childBoundKilled?: boolean;
-  aborted: boolean;
-}): DispatchResult["killCause"] {
-  if (facts.loopKilled) return "loop";
-  // #951 — the two silence kills are ranked equal (see module doc): a poll
-  // sets at most one, so the order here cannot matter.
-  if (facts.inactivityKilled) return "inactivity";
-  if (facts.toolInactivityKilled) return "tool-inactivity";
-  // C1 — token-budget is checked BEFORE timeout: a child killed by its
-  // token budget that also outlived the wall-clock backstop is a
-  // token-budget kill (see the module doc + the doc comment above).
-  if (facts.tokenBudgetKilled) return "token-budget";
-  // #1567 — below the structural caps, above the 2-h backstop: a child the
-  // supervisor ended that also outlived the backstop is named for the
-  // supervisor's reason. Most specific first: a second call-kill on one
-  // command, then a frozen child, then the plain per-child time limit.
-  if (facts.stuckToolKilled) return "stuck-tool";
-  if (facts.noProgressKilled) return "no-progress";
-  if (facts.childBoundKilled) return "child-bound";
-  if (facts.timedOut) return "timeout";
-  if (facts.aborted) return "abort";
-  return undefined;
 }
 
 /**
@@ -225,6 +182,14 @@ export interface CapSessionOpts {
    * failure. Both grace polls consult this before killing.
    */
   childExited: () => boolean;
+  /**
+   * #1827 ordering — true once a KILLING bound has armed for this child. The
+   * advisory steers (the turn nudge here, the slow-run notice and the
+   * child-bound wrap-up in their own modules) read it and stop: a child already
+   * being ended does not need three more steers telling it to wrap up, and each
+   * one re-arms the inactivity watchdog's idea of life.
+   */
+  boundArmed?: () => boolean;
 }
 
 /** Build the per-spawn cap session. Cheap: all state is per-spawn local. */
@@ -346,6 +311,9 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
     opts.onSteer && opts.turns
       ? (turn: number): void => {
           if (turnNudged) return;
+          // #1827 — a child a killing bound has already armed is on its way
+          // out; nudging it to write a status summary buys nothing.
+          if (opts.boundArmed?.()) return;
           // Read the env var directly (not via turnNudgeAt) so the closure
           // sees the CURRENT value at call time. turnNudgeAt() reads
           // process.env.PI_ENSEMBLE_TURN_NUDGE at module scope, which Bun's
