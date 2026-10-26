@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.19](https://github.com/trail-openers/pi-rukas/compare/v0.14.18...v0.14.19) (2026-10-26)
+
+
+### Bug Fixes
+
+* **verify:** require two red base runs before parking as baseline-red ([#1828](https://github.com/trail-openers/pi-rukas/issues/1828)) ([24e9a1f](https://github.com/trail-openers/pi-rukas/commit/24e9a1f09938d5cc29fdd310907521cb80f0daa8))
+
 ## [0.14.18](https://github.com/trail-openers/pi-rukas/compare/v0.14.17...v0.14.18) (2026-10-25)
 
 
