@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.21](https://github.com/trail-openers/pi-rukas/compare/v0.14.20...v0.14.21) (2026-10-26)
+
+
+### Bug Fixes
+
+* **review:** bound review children with a skill re-read cap and a post-verdict stop ([#1829](https://github.com/trail-openers/pi-rukas/issues/1829)) ([3ab855d](https://github.com/trail-openers/pi-rukas/commit/3ab855d1ee11e7643b1deab29f41f899465e361d)), closes [#1827](https://github.com/trail-openers/pi-rukas/issues/1827)
+
 ## [0.14.20](https://github.com/trail-openers/pi-rukas/compare/v0.14.19...v0.14.20) (2026-10-26)
 
 
