@@ -13,6 +13,10 @@
  * replacement, `BaseHealthRedEvidence`) so the verdict's own colour and tally
  * survive to the seam that does the attributing.
  */
+import {
+  type BaseRedConfirmationResult,
+  baseRunsProse,
+} from "./work-driver-verify-base-confirm.ts";
 import { type RedBaselineVerdict, baselineRedMessage } from "./work-driver-verify-baseline.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -63,21 +67,30 @@ export interface BaseHealthRedEvidence {
   message: string;
   /** The loop's own `FAILED: <n> test(s)` tally, when the stream carried one. */
   tally?: number;
+  /**
+   * #1826 — the two base runs the red rests on, as one clause naming each
+   * run and its outcome. The single-arm prose could not say whether one run or
+   * two said "red", which is the whole question this issue exists to answer.
+   */
+  baseRuns?: string;
 }
 
 /** The red evidence a probe hands to the develop gate, or nothing for no red. */
 export function baseHealthRedEvidence(
   verdict: BaseHealthVerdict,
   arm: RedBaselineVerdict,
+  confirmation?: BaseRedConfirmationResult,
 ): BaseHealthRedEvidence {
   const tally = arm.status === "red" ? summaryCount(arm.rawStream) : undefined;
+  const baseRuns = confirmation === undefined ? "" : baseRunsProse(confirmation);
   return {
-    message: baselineRedMessage(arm, {
+    message: `${baselineRedMessage(arm, {
       cmd: verdict.command,
       baseSha: verdict.baseSha,
       timeoutMs: verdict.tierBoundMs,
       changeFailure: "",
-    }),
+    })}${baseRuns === "" ? "" : ` — ${baseRuns}`}`,
     ...(tally === undefined ? {} : { tally }),
+    ...(baseRuns === "" ? {} : { baseRuns }),
   };
 }

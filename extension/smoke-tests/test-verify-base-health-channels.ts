@@ -54,7 +54,8 @@ import {
   mergeBaseHealthReport,
 } from "../src/work-driver-verify-base-health-channels.ts";
 import type { BaseHealthProbeOutcome } from "../src/work-driver-verify-base-health.ts";
-import { BASELINE_RED_MARKER, compareWithBaseline } from "../src/work-driver-verify-baseline.ts";
+import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
+import { compareWithBaseline } from "../src/work-driver-verify-baseline-compare.ts";
 import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify-pr17.ts";
 import type { BaseHealthKey, BaseHealthVerdict } from "../src/workflow-state-schema-base-health.ts";

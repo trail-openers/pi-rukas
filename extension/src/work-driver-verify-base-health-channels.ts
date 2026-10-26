@@ -33,6 +33,13 @@ export interface BaseHealthConsulted {
   ms?: number;
   /** The red came from the timed-out arm — the operator must not be told to fix a test. */
   timedOut?: true;
+  /**
+   * #1826 — the SECOND base run's colour, when the probe paid for one. The
+   * operator-visible half of the flaky-base record: a red whose confirmation came
+   * back green is not a red base, and the consultation event is the one place a
+   * later reader learns the base was red once and green once rather than red twice.
+   */
+  secondRun?: "green" | "red" | "red-timed-out" | "unknown";
 }
 
 /**
@@ -88,12 +95,28 @@ export function mergeBaseHealthReport(
 }
 
 /** The operator's note for a consulted verdict, as the develop gate records it. */
-export function baseHealthConsultedNote(baseSha: string, report: BaseHealthConsulted): string {
+export function baseHealthConsultedNote(
+  baseSha: string,
+  report: BaseHealthConsulted,
+  secondRun?: BaseHealthConsulted["secondRun"],
+): string {
   const timing =
     report.ms === undefined ? "no suite run of its own" : `its own run measured ${report.ms} ms`;
   const colour =
     report.timedOut === true
       ? `${report.status.toUpperCase()} (probe timed out)`
       : report.status.toUpperCase();
-  return `base-health: the develop gate consulted the background probe — base ${(baseSha || report.baseSha).slice(0, 12)} ${colour} (${timing})`;
+  // #1826 — a RED is only a red base when a SECOND run agrees with it, so the
+  // note says how many runs the colour rests on. The second run's colour is read
+  // from the record first and the caller's copy second: the record is what the
+  // recorder persists, and a note that disagreed with it would be two accounts of
+  // one consultation.
+  const second = secondRun ?? report.secondRun;
+  const runs =
+    second === undefined
+      ? report.status === "red"
+        ? " — one base run, not confirmed red"
+        : ""
+      : ` — base run 2 ${second.toUpperCase()}${second === "green" ? " (FLAKY base: red once, green once)" : ""}`;
+  return `base-health: the develop gate consulted the background probe — base ${(baseSha || report.baseSha).slice(0, 12)} ${colour} (${timing})${runs}`;
 }
