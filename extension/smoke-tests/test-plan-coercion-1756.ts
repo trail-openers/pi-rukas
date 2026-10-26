@@ -65,6 +65,7 @@ import {
   call,
   transcript,
 } from "./lib/plan-echo-fixtures-1756.ts";
+import { runPlanEchoTraceScenarios } from "./plan-echo-trace-1756.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -177,27 +178,11 @@ function assert(cond: boolean, msg: string) {
       `a \`recordedArgs\` that is ${label} is NO echo — the raw arguments are judged (not accepted, not unreadable)`,
     );
   }
-  {
-    // A `details` that is itself an array cannot hold an echo either.
-    const report = workstreamCallsOf({
-      toolUses: [
-        { type: "toolCall", id: "c1", name: "report_workstream", arguments: RAW_STRING_FENCE },
-      ],
-      toolResults: [
-        {
-          toolCallId: "c1",
-          toolName: "report_workstream",
-          isError: false,
-          text: "recorded",
-          details: [RECORDED_ARRAY_FENCE],
-        },
-      ],
-    });
-    assert(
-      report.accepted === 0 && report.refused.length === 1,
-      "a `details` that is an array is NO echo",
-    );
-  }
+  // The trace half of this rule — a carried-but-unusable `details` must trace
+  // differently from no `details` at all, and a model-derived key must not be able
+  // to forge a trace line — is pinned in `plan-echo-trace-1756.ts`, split along
+  // the 500-line cap in the shape `plan-input-gate-scenarios.ts` uses for
+  // `test-plan-provenance.ts`.
 }
 
 // --------------------- 3: an invalid echo is refused by the parent's checks
@@ -265,11 +250,52 @@ function assert(cond: boolean, msg: string) {
     ["replaced outOfScope", { ...RECORDED_ARRAY_FENCE, outOfScope: ["nothing at all"] }],
     ["an id nobody sent", { ...RECORDED_ARRAY_FENCE, id: "task-z" }],
     ["an added key", { ...RECORDED_ARRAY_FENCE, extra: "x" }],
+    // SYMMETRY (#1756 round 3, adversarial, measured): the loop that compared the
+    // echo against the call ran over the CALL's keys only, so an echo could ADD a
+    // schema key the model never sent — a valid `dependsOn`, `integrationTest`,
+    // `introduces` or `consumes` — and reach state as a field the plan never
+    // declared. Each one is tested through the reader, not only the rule.
+    [
+      "an added dependsOn the model never sent",
+      { ...RECORDED_ARRAY_FENCE, dependsOn: ["sneaked-in"] },
+    ],
+    [
+      "an added integrationTest the model never sent",
+      { ...RECORDED_ARRAY_FENCE, integrationTest: "tests/sneaked-in.test.ts" },
+    ],
+    [
+      "an added introduces the model never sent",
+      { ...RECORDED_ARRAY_FENCE, introduces: ["SneakedIn"] },
+    ],
+    [
+      "an added consumes the model never sent",
+      { ...RECORDED_ARRAY_FENCE, consumes: ["SneakedOut"] },
+    ],
+    // The lens security MEDIUM case: a fence the model sent as ONE string that
+    // contained two exclusions may not come back as a list holding only the first.
+    // That is not a coercion, it is the fence half-deleted — and the half that
+    // survives is the harmless one. Its own call, because the fixture above sent
+    // a fence with no comma in it, where a one-element list IS the whole string.
+    [
+      "half a fence — one string echoed as an array with only its first part",
+      {
+        id: "task-a",
+        scope: "a",
+        paths: ["src/a.ts"],
+        outOfScope: ["docs/"],
+      },
+    ],
     ["a dropped key", { id: "task-a", paths: ["src/a.ts"], outOfScope: ["docs/"] }],
     ["a required key nulled", { ...RECORDED_ARRAY_FENCE, scope: null }],
   ] as Array<[string, unknown]>;
   for (const [label, recorded] of notTheCall) {
-    const report = workstreamCallsOf(call("c1", RAW_STRING_FENCE, { recorded }));
+    // The half-fence case's call carries a comma in its fence; every other case
+    // is judged against the shared single-exclusion fixture.
+    const halfFence = label.startsWith("half a fence");
+    const rawArgs = halfFence
+      ? { ...RAW_STRING_FENCE, outOfScope: "docs/, src/secret.ts" }
+      : RAW_STRING_FENCE;
+    const report = workstreamCallsOf(call("c1", rawArgs, { recorded }));
     assert(
       report.accepted === 0 &&
         report.refused.length === 1 &&
@@ -435,5 +461,13 @@ interface RegisteredTool {
     raw: unknown,
   ) => Promise<{ content: { text: string }[]; details: unknown }>;
 }
+
+// --------------------- 8: the trace of an unusable echo (split sibling file)
+
+// The round-3 trace scenarios — a malformed echo vs. no echo at all, and the
+// neutraliser that keeps a model-derived key from forging a WARN line — live in
+// `plan-echo-trace-1756.ts` (the 500-line cap, AGENTS.md §12) and run here so
+// one command covers the reader end to end.
+runPlanEchoTraceScenarios(assert);
 
 process.exit(exit);

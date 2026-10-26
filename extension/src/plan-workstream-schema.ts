@@ -3,7 +3,8 @@
  * that judge a call, shared by the companion extension (workstream-reporter.ts,
  * loaded into the plan child) and the driver's reader (work-driver-plan-calls.ts).
  *
- * Import-free beyond TypeBox and plan-path-shape.ts, on purpose: the companion is
+ * Import-free beyond TypeBox, `plan-path-shape.ts` and `plain-object.ts`, on
+ * purpose: the companion is
  * loaded with `--extension` and must not drag the Pi entrypoint or the driver's
  * module graph into the child. The driver imports from HERE, never from the
  * companion, for the same reason.
@@ -22,7 +23,7 @@
  * `boundOutOfScope`, which clips instead of refusing and records what it did. That
  * bound — and the record's renderer — live in `plan-fence-bound.ts`, which imports
  * the constants declared here (never the other way round, so the companion's graph
- * stays this file plus TypeBox and `plan-path-shape.ts`).
+ * stays this file plus TypeBox, `plain-object.ts` and `plan-path-shape.ts`).
  *
  * What is left here is the shape and the rules that REFUSE: the TypeBox schema, the
  * constants, and the path/duplicate checks. `plannedPathProblem` is the only import.
@@ -31,7 +32,10 @@
  * the rule that BINDS an echo to the call it claims to describe
  * (`recordedWorkstreamArgs`, `recordedWorkstreamDetails`, `echoMatchesCall`). The
  * companion writes it, the driver reads it, and the smoke-test helper replays it,
- * so all three agree on one shape through one exported function.
+ * so all three agree on one shape through one exported function. The plain-object
+ * test the echo's narrowing uses is the shared one in `plain-object.ts` — an
+ * import-free leaf, so the companion's graph stays this file plus TypeBox,
+ * `plan-path-shape.ts` and that leaf.
  *
  * WHY pi-ai/TypeBox is described once, here: the installed Pi's own validation is
  * the thing the echo exists to report, and the dev-pinned `pi-ai` in this
@@ -41,6 +45,7 @@
  */
 
 import { type Static, Type } from "@sinclair/typebox";
+import { isPlainObject } from "./plain-object.ts";
 import { plannedPathProblem } from "./plan-path-shape.ts";
 
 /** Same shape as the markdown parser accepted: lowercase, hyphens and underscores. */
@@ -128,6 +133,10 @@ export const FENCE_CLIP_MARKER = " …[clipped]";
  */
 export const RECORDED_ARGS_DETAILS_KEY = "recordedArgs";
 
+/** The tool name, spelled once: the companion registers it, the transport
+ * carries only its results, and the reader judges only its calls. */
+export const REPORT_WORKSTREAM_TOOL = "report_workstream";
+
 /**
  * The ONE envelope: what a `report_workstream` result's `details` looks like,
  * built by the companion (`workstream-reporter.ts`), by the smoke-test helper
@@ -160,22 +169,9 @@ export function recordedWorkstreamArgs(result: { details?: unknown }): unknown |
   // A missing `details`, one without the key, and a key present with the value
   // `undefined` are each explicitly no echo — never inferred, and never judged
   // as a value.
-  if (!isEchoObject(result.details)) return undefined;
+  if (!isPlainObject(result.details)) return undefined;
   const echoed = result.details[RECORDED_ARGS_DETAILS_KEY];
-  return isEchoObject(echoed) ? echoed : undefined;
-}
-
-/**
- * A value that can BE an echo: an own-property plain object (an `Object.create`
- * with a null prototype is not — the reader must only ever judge values JSON
- * produced or the companion built). Not `plan-provenance.ts`'s `isPlainObject`
- * because importing it here would put the issue-filing provenance module in the
- * companion's import graph; the prototype test is the same one.
- */
-function isEchoObject(v: unknown): v is Record<string, unknown> {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
+  return isPlainObject(echoed) ? echoed : undefined;
 }
 
 /**
@@ -187,15 +183,20 @@ function isEchoObject(v: unknown): v is Record<string, unknown> {
  *
  * What is allowed is EXACTLY what a tool-argument normalisation can do — nothing
  * else, so an echo cannot widen anything:
- *  - every key the echo carries is a schema key, and every key `raw` carries with
- *    a non-null value is carried by the echo (a `raw` key whose value is `null`
- *    may be absent — that is Pi's `normalizeOptionalNulls`);
+ *  - every key the echo carries is a schema key AND a key of `raw` — a key may
+ *    only DISAPPEAR, and only when its `raw` value was `null` (Pi's
+ *    `normalizeOptionalNulls`); nothing may be ADDED, so an echo cannot mint a
+ *    `dependsOn`, `integrationTest`, `introduces` or `consumes` the model never
+ *    sent and have it reach state;
+ *  - every key `raw` carries with a non-null value is carried by the echo;
  *  - a string field matches when `echo === raw`, or `raw` is a number/boolean and
  *    `echo === String(raw)`; `id` must be EXACTLY the raw `id` when the raw `id`
  *    is a string — a coercion never invents a different identity;
  *  - an array field matches when the echo deep-equals `raw` (both arrays), or the
- *    echo deep-equals `[raw]` (`raw` a single string), element by element under
- *    the string rule above;
+ *    echo deep-equals `[raw]` (`raw` a single string whose whole text the one
+ *    element IS — `"docs/, src/secret.ts"` may not echo as `["docs/"]`, which
+ *    would be the fence half-deleted, not coerced), element by element under the
+ *    string rule above;
  *  - a number/boolean field matches under the same two-way string rule.
  *
  * The differing key is named so the caller can trace it.
@@ -204,10 +205,20 @@ export function echoMatchesCall(
   raw: unknown,
   echo: unknown,
 ): { ok: true } | { ok: false; keys: string[] } {
-  if (!isEchoObject(echo) || !isEchoObject(raw)) return { ok: false, keys: ["<not an object>"] };
+  if (!isPlainObject(echo) || !isPlainObject(raw)) return { ok: false, keys: ["<not an object>"] };
   const keys: string[] = [];
   for (const key of Object.keys(echo)) {
     if (!(key in WORKSTREAM_PARAMETERS.properties)) keys.push(`${key}(unknown key)`);
+    // SYMMETRY (#1756 round 3): the loop below checks the echo against every key
+    // `raw` sent; this one checks `raw` against every key the echo sent. Without
+    // it an echo could ADD an optional field the model never sent — a
+    // `dependsOn` that reorders the build, an `introduces` that never existed —
+    // and pass as a coercion, because nothing compared that key to anything.
+    // A null-prototype `raw` is admitted by the leaf, and `in` is also the right
+    // test for it (and for a JSON payload that produced one): `hasOwnProperty`
+    // reports an exotic prototype's keys wrongly, which would silently widen what
+    // an echo may add.
+    else if (!(key in raw)) keys.push(`${key}(added by the echo)`);
   }
   for (const [key, rawValue] of Object.entries(raw)) {
     if (rawValue === null) continue;
@@ -226,14 +237,11 @@ function echoFieldMatches(key: string, raw: unknown, echo: unknown): boolean {
     if (!Array.isArray(echo) || echo.length !== raw.length) return false;
     return raw.every((item, i) => echoScalarMatches(key, item, echo[i]));
   }
-  if (typeof raw === "string") {
-    // A single string may have been normalised into a one-element array.
-    if (Array.isArray(echo)) {
-      return echo.length === 1 && echoScalarMatches(key, raw, echo[0]);
-    }
-    return echoScalarMatches(key, raw, echo);
-  }
-  if (typeof raw === "number" || typeof raw === "boolean") {
+  if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") {
+    // A single scalar may have been normalised into a one-element array. The one
+    // element must stand for the WHOLE scalar (`echoScalarMatches` compares to
+    // `raw` / `String(raw)`, never a prefix of it), so a fence sent as one long
+    // string cannot come back as an array holding only part of it.
     if (Array.isArray(echo)) {
       return echo.length === 1 && echoScalarMatches(key, raw, echo[0]);
     }

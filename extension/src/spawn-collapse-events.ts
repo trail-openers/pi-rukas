@@ -10,18 +10,16 @@ import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
 import { addUsage } from "./pi-usage.ts";
-import { RECORDED_ARGS_DETAILS_KEY, recordedWorkstreamDetails } from "./plan-workstream-schema.ts";
+import { isPlainObject } from "./plain-object.ts";
+import {
+  RECORDED_ARGS_DETAILS_KEY,
+  REPORT_WORKSTREAM_TOOL,
+  recordedWorkstreamDetails,
+} from "./plan-workstream-schema.ts";
 import type { DispatchResult } from "./types.ts";
 
 /** The longest tool-result text kept on a DispatchResult (#1652). */
 const TOOL_RESULT_TEXT_MAX = 300;
-
-/**
- * The `report_workstream` tool's name — the ONLY tool whose `details` this
- * module carries. Named here rather than imported so the collapse path does not
- * pull the plan module graph into every spawn.
- */
-const REPORT_WORKSTREAM_TOOL = "report_workstream";
 
 /**
  * The longest `details` JSON kept on a tool result (#1756 round 2). The plan
@@ -47,12 +45,12 @@ export const TOOL_RESULT_DETAILS_MAX = 64 * 1024;
  */
 function carriedDetails(toolName: string, details: unknown): Record<string, unknown> | undefined {
   if (toolName !== REPORT_WORKSTREAM_TOOL) return undefined;
-  if (!isObjectLike(details)) return undefined;
+  if (!isPlainObject(details)) return undefined;
   const echoed = details[RECORDED_ARGS_DETAILS_KEY];
   // A null / string / array under the key is not a params object anybody
   // recorded; carrying it would let the transport assert an echo the child never
   // built. Omit it and the reader judges the raw arguments.
-  if (!isObjectLike(echoed)) return undefined;
+  if (!isPlainObject(echoed)) return undefined;
   let json: string;
   try {
     json = JSON.stringify(echoed);
@@ -60,11 +58,22 @@ function carriedDetails(toolName: string, details: unknown): Record<string, unkn
     // A value JSON cannot express is not a structured echo anybody recorded.
     return undefined;
   }
-  if (typeof json !== "string" || json.length > TOOL_RESULT_DETAILS_MAX) return undefined;
-  // The envelope is the writer's own function, so the key the transport puts on
-  // the record cannot drift from the key the companion writes and the reader
-  // reads (item: one envelope, three callers).
-  return recordedWorkstreamDetails(echoed);
+  if (json.length > TOOL_RESULT_DETAILS_MAX) return undefined;
+  // The ROUND-TRIPPED value rides, not the child's live object: JSON is the only
+  // thing that crosses the process boundary, so what the driver judges must be
+  // what JSON would have produced — no getters, no exotic prototype, no value a
+  // JSON-inexpressible sibling smuggled next to it. A payload that cannot
+  // round-trip is no echo, same as one that cannot be stringified.
+  try {
+    const carried = JSON.parse(json);
+    if (!isPlainObject(carried)) return undefined;
+    // The envelope is the writer's own function, so the key the transport puts on
+    // the record cannot drift from the key the companion writes and the reader
+    // reads (item: one envelope, three callers).
+    return recordedWorkstreamDetails(carried);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -80,19 +89,6 @@ function boundedResultText(blocks: PiContentBlock[]): string {
     if (out.length >= TOOL_RESULT_TEXT_MAX) return out.slice(0, TOOL_RESULT_TEXT_MAX);
   }
   return out;
-}
-
-/**
- * The own-property plain-object test a structured payload must pass. The same
- * prototype rule `plan-provenance.ts`'s `isPlainObject` makes — kept local
- * rather than imported so the spawn path every dispatch runs through does not
- * gain an edge on the issue-filing provenance module. A value this refuses is
- * dropped by the caller, never forwarded as a payload the reader could misread.
- */
-function isObjectLike(v: unknown): v is Record<string, unknown> {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
 }
 
 export function collapseEvents(

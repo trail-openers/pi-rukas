@@ -81,6 +81,11 @@ const CALL = {
       { ...CALL },
     ],
     [
+      "a whole string standing for a one-element array, punctuation included",
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: "docs/, src/secret.ts" },
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: ["docs/, src/secret.ts"] },
+    ],
+    [
       "a null optional present as null in the echo too",
       { ...CALL, dependsOn: null },
       { ...CALL, dependsOn: null },
@@ -115,6 +120,39 @@ const CALL = {
     ["a minted id", CALL, { ...CALL, id: "task-z" }],
     ["an id coerced from a number", CALL, { ...CALL, id: 5 }],
     ["an added key", CALL, { ...CALL, extra: "x" }],
+    // SYMMETRY (#1756 round 3): an unknown key was refused, but a Schema key the
+    // model never SENT was not — so an echo could mint a whole optional field and
+    // have it reach state. Each of the four optionals is tested on its own, so a
+    // regression that reopens one is named.
+    ["an added dependsOn the call never sent", CALL, { ...CALL, integrationTest: "t.test.ts" }],
+    ["an added integrationTest the call never sent", CALL, { ...CALL, dependsOn: ["x"] }],
+    ["an added introduces the call never sent", CALL, { ...CALL, introduces: ["Foo"] }],
+    ["an added consumes the call never sent", CALL, { ...CALL, consumes: ["Bar"] }],
+    [
+      "an added integrationTest on a call that sent no optional at all",
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: [] },
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: [], integrationTest: "t.ts" },
+    ],
+    [
+      "half a fence: one string echoed as an array holding only its first part",
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: "docs/, src/secret.ts" },
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: ["docs/"] },
+    ],
+    [
+      "half a fence quoted: the element is a prefix of the raw string",
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: "the public API of foo" },
+      { id: "task-a", scope: "s", paths: ["src/a.ts"], outOfScope: ["the public API"] },
+    ],
+    [
+      "a number whose one-element echo is not its String()",
+      { id: "task-a", scope: 7, paths: ["src/a.ts"], outOfScope: [] },
+      { id: "task-a", scope: ["77"], paths: ["src/a.ts"], outOfScope: [] },
+    ],
+    [
+      "an added schema key whose value duplicates a raw one's prefix",
+      CALL,
+      { ...CALL, introduces: ["src/a.ts"] },
+    ],
     ["a dropped non-null key", CALL, { id: "task-a", scope: "the fix", paths: CALL.paths }],
     ["a scope that is simply different", CALL, { ...CALL, scope: "something else" }],
     [
@@ -186,6 +224,26 @@ const CALL = {
       unknownKey.keys.length === 1 &&
       unknownKey.keys[0]?.startsWith("bogus") === true,
     `an unknown key in the echo is named and refused (got ${JSON.stringify(unknownKey)})`,
+  );
+  // The added-field refusal names the key AND says it was added, so an operator
+  // reading the trace can tell "the echo invented a field" from "the echo
+  // changed one" — the two need different follow-ups. The call never sent
+  // `introduces`, and its other fields all match the echo byte for byte, so the
+  // added-key rule is the ONLY rule in the binding that can refuse this pair:
+  // were it removed the result would be `ok`, not a vaguer key name.
+  const added = echoMatchesCall(CALL, { ...CALL, introduces: ["Thing"] });
+  assert(
+    added.ok === false &&
+      added.keys.length === 1 &&
+      added.keys[0] === "introduces(added by the echo)",
+    `a field the echo invented is named as added (got ${JSON.stringify(added)})`,
+  );
+  // A key that exists in the call with a `null` value may still disappear — the
+  // null-drop rule and the added-key rule must not collide.
+  const droppedNull = echoMatchesCall({ ...CALL, integrationTest: null }, { ...CALL });
+  assert(
+    droppedNull.ok === true,
+    `a null optional may still be dropped by the echo (got ${JSON.stringify(droppedNull)})`,
   );
 }
 

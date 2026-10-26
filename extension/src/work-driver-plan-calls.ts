@@ -39,6 +39,7 @@
 
 import path from "node:path";
 import { Value } from "@sinclair/typebox/value";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import {
   WORKSTREAM_ID_MAX,
   WORKSTREAM_ID_PATTERN,
@@ -114,6 +115,22 @@ function isWorkstreamArgs(v: unknown): v is WorkstreamArgs {
 }
 
 /**
+ * A trace-safe form of a model-derived string: a key name or a call id quoted
+ * into a WARN line.
+ *
+ * `neutraliseFenceEntry` is used rather than the call id being interpolated raw:
+ * `toolCallId` is whatever the child's stream named it and the echoed key names
+ * are model text outright, so both are as untrusted as a fence entry, and an
+ * entry that can contain a newline can write its own `WARN work-driver:` line.
+ * The fence renderer owns the one neutraliser (#1744) — control characters
+ * collapsed, backticks gone, the driver's own clip marker stripped — so a forged
+ * second trace line is refused by the same rule a prompt fence is.
+ */
+function traceSafe(value: string): string {
+  return neutraliseFenceEntry(value);
+}
+
+/**
  * The workstreams a plan dispatch reported. A call whose result is an error is
  * refused with the error text; a call whose result is missing is unreadable.
  * A call whose result is a success is judged on the value the child echoed, or
@@ -168,44 +185,45 @@ export function workstreamCallsOf(
     // only the child's own report is authoritative (#1756 round 2). An echo that
     // is not a coercion of this call is REFUSED rather than judged: it is not a
     // report of the call, it is a different call smuggled in on the result, and
-    // accepting one would let an echo replace the authorised `paths` or drop the
-    // fence (`echoMatchesCall`). No echo (an older companion, a dropped payload)
-    // falls back to the raw arguments, which is the pre-#1756 behaviour,
-    // unchanged.
+    // accepting one would let an echo replace the authorised `paths`, drop the
+    // fence, or mint a field the model never sent (`echoMatchesCall`). No echo
+    // (an older companion, a dropped payload) falls back to the raw arguments,
+    // which is the pre-#1756 behaviour, unchanged.
     const echoed = recordedWorkstreamArgs(r);
+    if (r.details !== undefined && echoed === undefined) {
+      // A `details` the transport carried that the reader cannot use: NOT the same
+      // event as "no companion echo", and the two must read apart in a trace
+      // (round 3). An over-capacity payload never reaches here — the transport
+      // drops it, so it is absence, not malformation.
+      traceWarn(
+        `work-driver: report_workstream result ${traceSafe(r.toolCallId)} carried a malformed recorded echo — judged on the raw arguments`,
+      );
+    }
     if (echoed !== undefined) {
       const binding = echoMatchesCall(args, echoed);
       if (!binding.ok) {
         traceWarn(
-          `work-driver: report_workstream result ${r.toolCallId} echoed arguments that are not a coercion of the call — refused (${binding.keys.join(", ")})`,
+          `work-driver: report_workstream result ${traceSafe(r.toolCallId)} echoed arguments that are not a coercion of the call — refused (${binding.keys.map(traceSafe).join(", ")})`,
         );
+        // Every refusal below is filed under the CALL's id: the binding has
+        // already proven an accepted echo's `id` is exactly the raw `id`, so there
+        // is no echoed id left to disagree with it.
         refuse(rawId, ECHO_MISMATCH_REASON);
         continue;
       }
     }
     const judged = echoed === undefined ? args : echoed;
-    // A child that recorded a different `id` from the one the model asked with
-    // is reporting something the transcript does not contain, so the refusal is
-    // filed under the call the transcript actually holds.
-    const judgedId =
-      judged !== args &&
-      judged &&
-      typeof judged === "object" &&
-      "id" in judged &&
-      typeof (judged as { id: unknown }).id === "string"
-        ? (judged as { id: string }).id
-        : rawId;
     if (!isWorkstreamArgs(judged)) {
-      refuse(judgedId, "arguments do not match the report_workstream schema");
+      refuse(rawId, "arguments do not match the report_workstream schema");
       continue;
     }
     const pathProblem = workstreamPathProblem(judged);
     if (pathProblem) {
-      refuse(judged.id, pathProblem);
+      refuse(rawId, pathProblem);
       continue;
     }
     if (seen.has(judged.id)) {
-      refuse(judged.id, duplicateWorkstreamIdMessage(judged.id));
+      refuse(rawId, duplicateWorkstreamIdMessage(judged.id));
       continue;
     }
     seen.add(judged.id);
