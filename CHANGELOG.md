@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.20](https://github.com/trail-openers/pi-rukas/compare/v0.14.19...v0.14.20) (2026-10-26)
+
+
+### Bug Fixes
+
+* **review:** let a fixed line-bearing CRITICAL finding retire on a full review ([#1833](https://github.com/trail-openers/pi-rukas/issues/1833)) ([d9e6c99](https://github.com/trail-openers/pi-rukas/commit/d9e6c995ffad9be9cae17cd48aa8ee8be9a77cc0))
+
 ## [0.14.19](https://github.com/trail-openers/pi-rukas/compare/v0.14.18...v0.14.19) (2026-10-26)
 
 
