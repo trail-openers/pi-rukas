@@ -54,6 +54,7 @@ import {
   GREEN_GATE,
   RED_GATE,
   branchState,
+  baseLeg,
   capsOf,
   consultedEvent,
   keyFor,
@@ -244,12 +245,21 @@ assert(
   rmSync(streamRoot, { recursive: true, force: true });
 }
 
-// ── 16 — the develop gate's reuse rebuilds the arm the record says it was.
+// ── 16 — the develop gate's two base channels, observed end to end.
 //
-// A cached `red` whose probe was killed at the bound is a RED-TIMED-OUT: it
-// earned a colour and no stream, so the failure it writes must name the bound,
-// not an assertion. Rebuilding a plain `red` from it was the #1765
-// lens-round-1 defect — it told an operator to go fix a test nobody ran.
+// A RED this gate pass collected from the background probe is the one colour the
+// develop round may reuse, and #1826 makes the reuse answerable: the arm carries
+// the record's `secondRun: "red"` into `confirmRedBase`, which confirms it with NO
+// suite run and keeps the cycle's `established` claim. A KILLED red is the opposite
+// arm — #1826 gives it no second run and no claim, `compareWithBaseline` refuses its
+// reuse, and the only prose it can legitimately produce is the timeout's own
+// sentence, which its REAL run has to earn (the fixture's gate would otherwise print
+// an assertion for a gate that printed nothing).
+//
+// The two arms travel through one helper, `baseLeg`, because a case written twice
+// drifts: the killed arm's "no confirming tree" assertion and the reuse arm's "no
+// tree at all" assertion are the same observation at two costs, and only one of them
+// can quietly stop being falsifiable.
 for (const timedOut of [false, true]) {
   const reuseRoot = mkdtempSync(path.join(tmpdir(), "pi-base-reuse-"));
   const f = await redGateFixture(reuseRoot, `reuse-arm-${timedOut}`, RED_GATE, {
@@ -257,67 +267,59 @@ for (const timedOut of [false, true]) {
   });
   const bound = (await developTierTimeouts(f.repo)).suite;
   const held = stateWithRedProbe(f.baseSha, CMD, bound, { timedOut });
-  let worktreeAdds = 0;
-  const execFn = async (command: string, o?: Parameters<typeof realExec>[1]) => {
-    const line = o?.argv ? [command, ...o.argv].join(" ") : command;
-    if (line.startsWith("git worktree add")) worktreeAdds += 1;
-    return await realExec(command, o);
-  };
-  const failures: string[] = [
-    "verify command `sh gate.sh` failed in worktree a: expected 1, got 2",
-  ];
-  const notes: string[] = [];
-  const established: boolean[] = [];
-  const attributed = await aggregateVerifyOutcome({
-    execFn,
-    ctx: { host: {}, repoRoot: f.repo, issue: 1765 } as never,
-    cmd: CMD,
-    baseSha: f.baseSha,
-    suiteTimeoutMs: bound,
-    cons: {
-      status: "failed",
-      detail: failures[0],
-      rawFailure: failures[0],
-      timedOut: false,
-    } as never,
-    perWorktreeVerifyFailures: [],
-    failures,
-    notes,
-    // #1809 — the arm under test is the reuse of a RED this gate pass collected
-    // from the background probe, which is the ONLY channel a red reuses through.
-    // The same verdict sitting in `pipelineState` alone is NOT reusable (an
-    // in-state red must re-probe, so one flaky red cannot speak for rounds it did
-    // not run in); that rule is pinned in
-    // `test-verify-base-health-channels.ts`, and by `compareWithBaseline`'s
-    // `fromInFlightProbe` flag in the type.
-    baseHealthProbe: { ...held.pipelineState.baseHealthProbe, fromInFlightProbe: true },
-    onBaselineRedEstablished: (est) => established.push(est),
-  });
+  // #1809/#1826 — the arm under test is the RED this gate pass collected from the
+  // background probe, the ONLY channel a red reuses through, and it carries
+  // `secondRun: "red"` (the fixture's default: the probe watched both runs), which
+  // is what makes the reuse confirmable at all. The same verdict sitting in
+  // `pipelineState` alone is NOT reusable (an in-state red must re-probe, so one
+  // flaky red cannot speak for rounds it did not run in); that rule is pinned in
+  // `test-verify-base-health-channels.ts`, and by the `fromInFlightProbe` flag in
+  // the type. `timedOut` is the KILLED arm, which has no channel to lend through.
+  const leg = await baseLeg(
+    f.repo,
+    f.baseSha,
+    bound,
+    { ...held.pipelineState.baseHealthProbe, ...(timedOut ? {} : { fromInFlightProbe: true }) },
+    timedOut,
+  );
+  // #1826's cost rule, read off the trees: the reuse pays for nothing, and the
+  // killed arm pays for ITS OWN run — exactly the tree the comparison's first run
+  // owns (`-base1`), never the confirming one (`-base2`). See `baseLeg` for why a
+  // tree is observed where a count would have lied.
   assert(
-    worktreeAdds === 0,
-    `reuse arm (timedOut=${timedOut}): no second throwaway worktree (got ${worktreeAdds})`,
+    leg.adds === (timedOut ? 1 : 0) &&
+      leg.ran.length === (timedOut ? 1 : 0) &&
+      (timedOut ? leg.ran[0]?.endsWith("-base1") === true : true),
+    `base leg (timedOut=${timedOut}): ${timedOut ? "the killed arm is never reused: it pays for its own run and no confirming second run" : "the reuse pays for no throwaway worktree at all"} (adds=${leg.adds}, ran in ${JSON.stringify(leg.ran)})`,
   );
   assert(
-    attributed === false,
-    `reuse arm (timedOut=${timedOut}): a reused verdict holds no stream, so it never earns #1349's excuse`,
+    leg.attributed === false,
+    `base leg (timedOut=${timedOut}): ${timedOut ? "a killed run printed no stream, so it excuses nothing" : "a reused verdict holds no stream, so it never earns #1349's excuse"}`,
   );
-  const entry = failures.find((x) => x.startsWith(BASELINE_RED_MARKER)) ?? "";
-  assert(
-    entry.length > 0,
-    `reuse arm (timedOut=${timedOut}): the finding still leads the failures`,
-  );
+  // A KILLED arm raises NO plain `[baseline-red]` finding (a killed run confirms
+  // nothing, #1826) and any `[baseline-red]` line a killed route does write leads
+  // with the timeout's own label — never a red on a test nobody ran (the #1765
+  // lens-round-1 shape). The reuse arm takes the opposite half: an unlabelled
+  // `ALSO FAILS` finding naming the assertion.
   assert(
     timedOut
-      ? entry.includes(VERIFY_TIMEOUT_LABEL) && !entry.includes("assertion at base")
-      : entry.includes("ALSO FAILS") && !entry.includes(VERIFY_TIMEOUT_LABEL),
-    `reuse arm (timedOut=${timedOut}): the ${timedOut ? "timed-out arm names the bound, not an assertion" : "plain red names the assertion, not a bound"} (${entry.slice(0, 120)})`,
+      ? leg.entry === "" ||
+          (leg.entry.includes(VERIFY_TIMEOUT_LABEL) && !leg.entry.includes("ALSO FAILS"))
+      : leg.entry.includes("ALSO FAILS") && !leg.entry.includes(VERIFY_TIMEOUT_LABEL),
+    `base leg (timedOut=${timedOut}): the ${timedOut ? "killed arm raises no plain red-base finding — at most its own timeout sentence" : "reused plain red names the assertion, not a bound"} (${JSON.stringify(leg.entry.slice(0, 120))})`,
   );
-  // #1765 — the CAP's claim is what `reportBaselineLeg` reads, and it must
-  // travel for BOTH arms: the timed-out entry leads with the timeout label, so
-  // prose matching cannot recover the claim from the failure list alone.
+  // The two channels stay distinct in what they SAY as well as what they cost: the
+  // reuse announces that no run paid, the killed arm must not claim a free run it
+  // did not have.
   assert(
-    established.length === 1 && established[0] === true,
-    `reuse arm (timedOut=${timedOut}): the established-red claim reached the callback (${JSON.stringify(established)})`,
+    leg.reuseNotes.length > 0 === !timedOut,
+    `base leg (timedOut=${timedOut}): ${timedOut ? "a killed arm claims no free reuse" : "the reuse says in its own note that no run paid"} (reuse notes ${JSON.stringify(leg.reuseNotes)})`,
+  );
+  // #1765 — the CAP's claim is what `reportBaselineLeg` reads: the reuse carries
+  // it, and a killed arm, which #1826 gives no second run, claims nothing.
+  assert(
+    leg.established.length === 1 && leg.established[0] === !timedOut,
+    `base leg (timedOut=${timedOut}): the established-red claim reached the callback (${JSON.stringify(leg.established)})`,
   );
   rmSync(reuseRoot, { recursive: true, force: true });
 }

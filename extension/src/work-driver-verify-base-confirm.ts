@@ -193,34 +193,25 @@ export async function confirmRedBase(
   // no second run. Both reach here only on the red branch of the callers, so an
   // answer here is a defensive one, never a route a cycle takes.
   if (!isRedBaseline(first)) return decided("not-confirmed", { first }, false);
-  // A REUSED arm's confirmation lives in its RECORD, not in a re-run: `secondRun:
-  // "red"` is the colour the probe itself watched, and the tree that printed the
-  // stream is gone, so a second run would buy evidence the name rule cannot anchor
-  // while paying a full suite run for an answer the record already holds. Short of
-  // this short-circuit the reused colour fell into the "exactly one run named" arm
-  // below and came back `names-disagree` — a confirmation this cycle had already
-  // paid for, thrown away by a comparison it cannot perform.
+  // A REUSED arm is ANSWERED FROM ITS RECORD rather than by re-running the gate.
+  // `secondRun: "red"` is the one thing that may say the base failed twice: the
+  // probe watched both runs when it wrote it, and the throwaway tree that printed
+  // either stream is gone — so a second run here buys a full suite execution for an
+  // answer the cycle already holds, and the name rule could not anchor the pair
+  // anyway (a reused arm carries no stream, so its names are unplaceable and the
+  // pair would come back "exactly one run named", discarding a confirmation this
+  // cycle already paid for).
   //
-  // A reused arm stating any OTHER colour (or nothing) is a colour and not an
-  // answer: it was judged once, which is what #1826 refuses to act on. It is
-  // refused HERE rather than sent to the probe below, because the caller's reuse
-  // branch injects a probe that REJECTS on purpose — reaching it is the failure
-  // that assertion is made of, never a suite run to be quietly paid for.
-  //
-  // `second` is the arm itself, not a run: on a reused arm there is exactly ONE
-  // base run, and the record's `secondRun` field is what says a second was run and
-  // agreed. Handing `baseRunsProse` the same verdict under both labels — which is
-  // what the shape of the type forces, since a `second` is only "absent" when the
-  // question was never asked — keeps the evidence naming BOTH runs (the #1826
-  // requirement) while being honest that this seam watched one.
-  if (first.reused === true && (first.secondRun === undefined || first.secondRun === "red")) {
-    // `second` is the arm itself, not a run: a reused arm has exactly ONE base run,
-    // and the record's `secondRun` field is what says a second was run and agreed.
-    // Handing `baseRunsProse` the same verdict under both labels — which is what the
-    // shape of the type forces, since a `second` is only "absent" when the question
-    // was never asked — keeps the evidence naming BOTH runs (the #1826 requirement)
-    // while `runNames` keeps it from attributing a test to a run that named none.
-    return decided("confirmed-red", { first, second: first }, false);
+  // A record stating any other colour, or nothing, has been judged ONCE, and #1826
+  // does not act on once. That answer is returned, not left to the probe: the
+  // caller's reuse branch injects a probe that REJECTS on purpose — reaching it is
+  // the failure its assertion is made of, never a run to be quietly bought — so a
+  // refusal that fell through would fault the comparison instead of reporting the
+  // colour for what it is.
+  if (first.reused === true) {
+    return first.secondRun === "red"
+      ? decided("confirmed-red", { first, second: first }, false)
+      : decided("not-confirmed", { first }, false);
   }
   const second = await probe(BASE_CONFIRM_SECOND_LABEL, timeoutMs);
   const firstNames = namesOf(first, roots.firstRoot);

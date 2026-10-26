@@ -97,9 +97,20 @@ function reuseCachedVerdict(
   // The in-state red arm is a COLOUR without a stream, exactly as the in-flight
   // one is: whoever recorded it holds the run's evidence, and this call does not.
   // It is a `BaseHealthVerdict`, so `timedOut` is the only arm signal it carries.
-  return cached.timedOut === true
-    ? { status: "red-timed-out", assertion: null }
-    : { status: "red", assertion: null, rawStream: "", probed: false, exitCode: null };
+  // The arm is a COLOUR without a stream — whoever recorded it holds the run's
+  // evidence, and this call does not — and `secondRun` rides on it because the
+  // confirmation downstream reads the ARM, not the caller's record. Rebuilding the
+  // colour alone was the defect: a probe's own confirmed red reached
+  // `confirmRedBase` stating no second run, was refused for want of evidence it had
+  // already paid for, and the cycle lost its `baseline-red` claim — while
+  // `established`, read separately off the caller's record, still said true. The two
+  // halves of one answer had to agree, and only the arm can carry both.
+  return {
+    ...(cached.timedOut === true
+      ? { status: "red-timed-out", assertion: null }
+      : { status: "red", assertion: null, rawStream: "", probed: false, exitCode: null }),
+    ...(cached.secondRun === undefined ? {} : { secondRun: cached.secondRun }),
+  };
 }
 
 /**
@@ -281,7 +292,15 @@ export async function compareWithBaseline(
       () => Promise.reject(new Error("a reused verdict must not run the gate (#1826)")),
       timeoutMs,
     );
-    if (confirmation.confirmation !== "confirmed-red") return undefined;
+    if (confirmation.confirmation !== "confirmed-red") {
+      // A reuse the confirmation refuses is not a green base and not a red one: it
+      // is a colour with no second run behind it, and the operator reading the
+      // handoff has to be able to tell that apart from "the base is fine".
+      opts.notes.push(
+        `baseline verify: the cached RED for base ${baseSha.slice(0, 12)} \`${cmd}\` was refused by the two-run rule (${confirmation.confirmation}) — no baseline-red claim`,
+      );
+      return undefined;
+    }
     const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
     const runs = baseRunsProse(confirmation);
     opts.failures.unshift(

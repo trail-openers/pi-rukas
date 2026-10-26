@@ -23,16 +23,20 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { DriverExecFn } from "../../src/work-driver-context.ts";
-import type { BaseHealthConsulted } from "../../src/work-driver-verify-base-health-channels.ts";
+import type {
+  BaseHealthConsulted,
+} from "../../src/work-driver-verify-base-health-channels.ts";
 import {
   type BaseHealthProbeOutcome,
   baseHealthCacheFile,
 } from "../../src/work-driver-verify-base-health.ts";
 import { developTierTimeouts } from "../../src/work-driver-verify-budget.ts";
 import { recordDevelopGateEvents } from "../../src/work-driver-verify-events.ts";
+import type { ReusableVerdict } from "../../src/work-driver-verify-baseline.ts";
 import type { BaseHealthKey } from "../../src/workflow-state-schema-base-health.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
 import { realExec } from "./restore-start-ref-fixtures.ts";
+import { BASELINE_RED_MARKER } from "../../src/work-driver-verify-baseline.ts";
 import type { redGateFixture } from "./verify-baseline-probe-harness.ts";
 
 /** The project's verify command, as `.pi/verify-cmd` carries it in every case. */
@@ -107,14 +111,7 @@ export async function probe(
   );
   const piDir = path.join(f.repo, ".pi");
   mkdirSync(piDir, { recursive: true });
-  const cmdFile = path.join(piDir, "verify-cmd");
-  if (opts.noCmd === true) rmSync(cmdFile, { force: true });
-  else writeFileSync(cmdFile, `${PROBE_CMD}\n`);
-  // The gate lists a fixed set of paths, so a case whose change adds one of
-  // them has to commit the gate too — `redGateFixture` only rewrites it when the
-  // caller passed `changeGateFiles`.
-  const gate = path.join(f.worktrees.a, "gate.sh");
-  if (existsSync(gate)) await realExec("git", { argv: ["add", "-A"], cwd: f.worktrees.a });
+  writeFixtureCmd(f, opts.noCmd === true);
   const gateRuns: string[] = [];
   let worktreeAdds = 0;
   const execFn: DriverExecFn = async (cmd, o) => {
@@ -211,6 +208,54 @@ export function branchKey(baseSha: string, tierBoundMs = 1): BaseHealthKey {
 }
 
 /**
+ * An executor that makes the project's gate RED, for a case whose subject is the
+ * comparison rather than the repo: the failure carries a `FAILED:` line in the
+ * dialect the assertion extractor reads, and the git calls answer from the real
+ * repository so the comparison's throwaway worktree is a real checkout.
+ *
+ * The counters fill BEFORE each call, because the project's command always throws
+ * — a counter placed after the await records nothing and a case would read "the
+ * consultation paid for its own base" as zero runs, which is the same assertion
+ * inverted. Only a call whose line does not begin with `git` is a suite run: the
+ * comparison builds and removes worktrees, and those git calls carry the checkout
+ * path, which contains the fixture directory's own name, so any looser filter
+ * counts bookkeeping as a suite execution.
+ */
+export function redGateExecCounter(
+  runs: string[],
+  opts: { killed?: boolean } = {},
+): <T = unknown>(cmd: string, o?: { argv?: string[]; cwd?: string }) => Promise<T> {
+  return (async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
+    const line = execLine(cmd, o);
+    if (!line.startsWith("git ")) runs.push(line);
+    if (line.startsWith("git ")) return (await realExec(cmd, o as never)) as T;
+    const e = new Error(`Command failed: ${cmd}`) as Error & {
+      stdout?: string;
+      stderr?: string;
+      code?: number;
+    };
+    // The name is printed under the tree the run actually executed in, which is
+    // the only way a case can observe the name rule's verdict at all: unanchored
+    // names never match, and the confirming run lives in a tree the comparison
+    // names itself (`-base1` / `-base2`), so a hand-written path here would be a
+    // second opinion on where a run ran.
+    // A KILLED arm carries no stream at all — that absence is the whole content of
+    // the arm, and the reason a killed run confirms nothing and excuses nothing.
+    // `execFile` marks the kill on the error, and `probeBaselineVerify` reads that
+    // flag (not the empty output) to tell a killed gate from a red one.
+    if (opts.killed === true) {
+      e.killed = true;
+      throw e;
+    }
+    const tree = o?.cwd ?? "";
+    e.stdout = `FAILED: ${tree}/${RED_GATE[0]}: expected 1, got 2`;
+    e.stderr = "";
+    e.code = 1;
+    throw e;
+  }) as <T>(cmd: string, o?: { argv?: string[]; cwd?: string }) => Promise<T>;
+}
+
+/**
  * Run the probe the way a FRESH CYCLE does — through `applyBaseHealthProbe`, which
  * is the probe body with the single-flight registry in front of it. A case that
  * calls `probe` twice in one process would otherwise have the second call answer
@@ -218,6 +263,104 @@ export function branchKey(baseSha: string, tierBoundMs = 1): BaseHealthKey {
  * real process pays for its own; this is the only way to observe what a new cycle
  * actually pays.
  */
+/**
+ * Install the fixture's verify command and commit the gate script into the change
+ * worktree. `probe` and `freshProbe` each did this inline; `baseLeg` needs it too
+ * and may NOT duplicate it, because a fixture whose setup appears twice can have
+ * the two copies drift and the case that silently loses the gate file reads "no
+ * suite run" as "the seam skipped its run".
+ */
+function writeFixtureCmd(f: Awaited<ReturnType<typeof redGateFixture>>, noCmd: boolean): void {
+  const piDir = path.join(f.repo, ".pi");
+  mkdirSync(piDir, { recursive: true });
+  const cmdFile = path.join(piDir, "verify-cmd");
+  if (noCmd) rmSync(cmdFile, { force: true });
+  else writeFileSync(cmdFile, `${PROBE_CMD}\n`);
+  // The gate lists a fixed set of paths, so a case whose change adds one of
+  // them has to commit the gate too — `redGateFixture` only rewrites it when the
+  // caller passed `changeGateFiles`.
+  const gate = path.join(f.worktrees.a, "gate.sh");
+  if (existsSync(gate)) void realExec("git", { argv: ["add", "-A"], cwd: f.worktrees.a });
+}
+
+/**
+ * One base leg of the develop gate, driven end to end: the change's run fails, the
+ * comparison is handed the cycle's cached base verdict, and everything the case has
+ * to judge comes back in one object. Two cases need this shape at once — the reuse
+ * arm (a red this pass watched twice, which must confirm without paying) and the
+ * killed arm (a colour that must buy its own run and no second one) — and a case
+ * written twice drifts, so the observation lives here and each case states only its
+ * own expectation of cost and prose.
+ *
+ * `timedOut` is the KILLED arm: `execFile` marks a timeout kill on the error and
+ * `probeBaselineVerify` reads THAT flag (not an empty stream) to tell a killed gate
+ * from a red one. Injecting it here is the only honest way to reach that arm — a
+ * real fixture gate would print an assertion for a gate that printed nothing, and
+ * the case would then assert timeout prose about a run that never timed out.
+ *
+ * The counters fill BEFORE each child is awaited: both arms throw, so anything
+ * counted afterwards records nothing and "the leg paid for its own base" reads as
+ * zero runs — the same assertion inverted. Only a call whose line is not a git call
+ * is a suite run, and the tree it ran in is kept, not just counted: the comparison
+ * names its own trees (`-base1` / `-base2`) and `provisionWorktree` pays no git call
+ * of its own, so a count alone cannot tell a run that happened from one that never
+ * asked to.
+ */
+export async function baseLeg(
+  repoRoot: string,
+  baseSha: string,
+  timeoutMs: number,
+  cachedVerdict: ReusableVerdict,
+  timedOut: boolean,
+): Promise<{
+  adds: number;
+  ran: string[];
+  failures: string[];
+  reuseNotes: string[];
+  established: boolean[];
+  entry: string;
+  attributed: boolean;
+}> {
+  const { aggregateVerifyOutcome } = await import("../../src/work-driver-verify-aggregate.ts");
+  const adds: number[] = [];
+  const ran: string[] = [];
+  const execFn = async (command: string, o?: { argv?: string[]; cwd?: string }) => {
+    const line = o?.argv ? [command, ...o.argv].join(" ") : command;
+    if (line.startsWith("git worktree add")) adds.push(1);
+    if (timedOut && !line.startsWith("git ")) {
+      ran.push(o?.cwd ?? "");
+      throw Object.assign(new Error(`Command failed: ${command}`), { killed: true });
+    }
+    return await realExec(command, o as never);
+  };
+  const detail = "verify command `sh gate.sh` failed in worktree a: expected 1, got 2";
+  const failures: string[] = [detail];
+  const notes: string[] = [];
+  const established: boolean[] = [];
+  const attributed = await aggregateVerifyOutcome({
+    execFn,
+    ctx: { host: {}, repoRoot, issue: 1765 } as never,
+    cmd: PROBE_CMD,
+    baseSha,
+    suiteTimeoutMs: timeoutMs,
+    cons: { status: "failed", detail, rawFailure: detail, timedOut: false } as never,
+    perWorktreeVerifyFailures: [],
+    failures,
+    notes,
+    baseHealthProbe: cachedVerdict,
+    onBaselineRedEstablished: (est) => established.push(est),
+  });
+  return {
+    adds: adds.length,
+    ran,
+    failures,
+    reuseNotes: notes.filter((n) => n.includes("paid for")),
+    established,
+    entry: failures.find((x) => x.startsWith(BASELINE_RED_MARKER)) ?? "",
+    attributed,
+  };
+}
+
 export async function freshProbe(
   f: Awaited<ReturnType<typeof redGateFixture>>,
   opts: { noCmd?: boolean; state?: WorkState; key?: BaseHealthKey } = {},
@@ -227,13 +370,7 @@ export async function freshProbe(
   gateRuns: string[];
   worktreeAdds: number;
 }> {
-  const piDir = path.join(f.repo, ".pi");
-  mkdirSync(piDir, { recursive: true });
-  const cmdFile = path.join(piDir, "verify-cmd");
-  if (opts.noCmd === true) rmSync(cmdFile, { force: true });
-  else writeFileSync(cmdFile, `${PROBE_CMD}\n`);
-  const gate = path.join(f.worktrees.a, "gate.sh");
-  if (existsSync(gate)) await realExec("git", { argv: ["add", "-A"], cwd: f.worktrees.a });
+  writeFixtureCmd(f, opts.noCmd === true);
   const gateRuns: string[] = [];
   let worktreeAdds = 0;
   const execFn: DriverExecFn = async (cmd, o) => {

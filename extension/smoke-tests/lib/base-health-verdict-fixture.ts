@@ -75,7 +75,20 @@ export function stateWithRedProbe(
   baseSha: string,
   cmd: string,
   tierBoundMs: number,
-  opts: { timedOut?: boolean; issue?: number; confirmed?: boolean } = {},
+  opts: {
+    timedOut?: boolean;
+    issue?: number;
+    confirmed?: boolean;
+    /**
+     * This red is the one colour a develop round may reuse: the flag saying it
+     * came from THIS gate pass's background probe, which is the only channel a red
+     * crosses into `compareWithBaseline` through (#1826). A red sitting in state
+     * alone is an earlier round's colour and is re-probed, so a case that means to
+     * observe a reuse has to say which channel it arrived on — the same fact
+     * `aggregateVerifyOutcome` computes when it projects the registry's red.
+     */
+    fromInFlightProbe?: boolean;
+  } = {},
 ): WorkState {
   const state = initialState(opts.issue ?? 1765);
   state.pipelineState.baseSha = baseSha;
@@ -92,7 +105,7 @@ export function stateWithRedProbe(
     // comparison to object with — which is exactly how the #1765 defect returned a
     // plain red for a gate that was killed.
     ...(opts.timedOut === true || opts.confirmed === false ? {} : { secondRun: "red" as const }),
-    ...(opts.confirmed === false ? {} : { secondRun: "red" as const }),
+    ...(opts.fromInFlightProbe === true ? { fromInFlightProbe: true as const } : {}),
   };
   return state;
 }
