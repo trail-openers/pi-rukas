@@ -36,6 +36,8 @@ import { capKillOutcomeFields } from "../src/work-driver-adversarial-fanout-capk
 import { __setSleepFn } from "../src/work-driver-step-router.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, writeState } from "../src/workflow-state.ts";
+import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -165,31 +167,34 @@ async function waitsFor(child: () => DispatchResult, issue: number): Promise<num
     slept.push(ms);
   });
   try {
-    // A real git tree holding one COMMITTED change, so `fetchDiff` is non-empty
-    // and the fan-out does not short-circuit the review as "empty diff" and
-    // retry nothing at all — the vacuous shape an earlier draft of this test
-    // had, which made every ladder assertion below read an empty list.
+    // A real git tree holding one COMMITTED change, so the gate's diff read is
+    // non-empty and the fan-out does not short-circuit the review as "empty
+    // diff" and retry nothing at all — the vacuous shape an earlier draft of
+    // this test had, which made every ladder assertion below read an empty list.
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    // #1145 — the isolated git view, not the host's. These calls set only the
+    // GIT_* identity vars over `process.env`, so a host whose global config
+    // signs commits, sets `commit.gpgsign`, or ignores paths could break the
+    // `git commit` below — the fixture's verdict would belong to the machine.
     const git = (args: string[]) =>
-      execFileSync("git", args, {
-        cwd: dir,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          GIT_AUTHOR_NAME: "t",
-          GIT_AUTHOR_EMAIL: "t@t",
-          GIT_COMMITTER_NAME: "t",
-          GIT_COMMITTER_EMAIL: "t@t",
-        },
-      });
+      execFileSync("git", args, { cwd: dir, encoding: "utf8", env: gitTestEnv() });
     git(["init", "-q", "."]);
     // `baseSha` is the commit the reviewer diffs AGAINST, so the content lands
     // in a commit AFTER it — `git diff <baseSha>..HEAD` is then non-empty.
-    git(["commit", "-q", "--allow-empty", "-m", "base"]);
+    git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"]);
     const baseSha = git(["rev-parse", "HEAD"]).trim();
     writeFileSync(path.join(dir, "a.ts"), "export const a = 1;\n");
     git(["add", "a.ts"]);
-    git(["commit", "-q", "-m", "the change under review"]);
+    git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "the change under review"]);
+    // #1634 — the gate no longer shells git itself: `readWorktreeDiff` asks the
+    // driver's exec seam. A catch-all fake therefore reads as "could not tell"
+    // and the cycle parks on `adversarial-diff-unreadable` without ever
+    // dispatching a reviewer — no ladder, no waits, both legs vacuous. Answer
+    // the two reads with what THIS tree really holds: the toplevel is the tree
+    // itself, and the diff is the real `git diff` of the range asked for, read
+    // through the same helper the fixture used to build it. The reviewer then
+    // runs for the same reason it ran on main, and the kill ladder is measured
+    // rather than assumed.
 
     let s: WorkState = initialState(issue, 1_000_000);
     s = {
@@ -217,7 +222,10 @@ async function waitsFor(child: () => DispatchResult, issue: number): Promise<num
       // commit-pr would otherwise run THIS repo's `bun run test` — the whole
       // offline suite — inside a synthetic git tree: minutes of unrelated work
       // per leg, and a gate this test has no business re-proving.
-      verifyExecFn: async () => ({ stdout: "", stderr: "", code: 0 }),
+      verifyExecFn: answerDiffReads(
+        async () => ({ stdout: "", stderr: "", code: 0 }),
+        (cwd, range) => git(["diff", "--end-of-options", range]),
+      ),
       adversarialLoopFn: async () => {
         const r = await runPhaseWithInfraRetry("adversarial-developer", "round1-review", "p", dir, {
           runPhase: async () => {
