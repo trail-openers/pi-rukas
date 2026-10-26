@@ -139,7 +139,26 @@ async function decideMergeAuthority(
   // Tier 2 — prose, judged. A repository may grant the exception in its own
   // words; nothing it writes can create the rule.
   const verdict = await askPolicy(judge, MERGE_POLICY_QUESTION, docs, where);
-  if (verdict.permitted && !verdict.citationFailed) {
+  // A judge that claimed a grant whose quote did not verify. This is tested
+  // FIRST and on `citationFailed` alone, because `PolicyDecision.permitted` is
+  // false in exactly this case by construction — `policyOutcome` marks the
+  // grant failed and never returns `permitted: true` alongside it. Reading
+  // `permitted` here made the whole branch unreachable, so a fabricated quote
+  // was reported as plain "the documents say nothing" (#407's own canary is
+  // what caught this: an unverified grant and an absent rule must not look the
+  // same to the operator, or a hallucinated permission is invisible in the
+  // handoff).
+  if (verdict.citationFailed) {
+    return {
+      granted: false,
+      source: "citation-failed",
+      ...(verdict.quote ? { quote: verdict.quote } : {}),
+      reason:
+        verdict.reason ??
+        `The judge reported a merge grant, but the sentence it quoted was not found in ${verdict.sourceFile ?? "the file it named"} — treating it as no grant.`,
+    };
+  }
+  if (verdict.permitted) {
     return {
       granted: true,
       // `doctrine` is the source a PROSE grant has always reported, and the
@@ -149,16 +168,6 @@ async function decideMergeAuthority(
       source: "doctrine",
       ...(verdict.quote ? { quote: verdict.quote } : {}),
       reason: verdict.reason ?? `The project's own documents permit merging: "${verdict.quote}".`,
-    };
-  }
-  if (verdict.permitted && verdict.citationFailed) {
-    return {
-      granted: false,
-      source: "citation-failed",
-      ...(verdict.quote ? { quote: verdict.quote } : {}),
-      reason:
-        verdict.reason ??
-        `The judge reported a merge grant, but the sentence it quoted was not found in ${verdict.sourceFile ?? "the file it named"} — treating it as no grant.`,
     };
   }
   return {

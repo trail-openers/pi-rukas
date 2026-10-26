@@ -19,6 +19,7 @@ import { listIssueComments, listPrComments, postPrComment } from "./forge-commen
 import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
 import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
+import { mapIssueSearchReply, mapPrListReply } from "./forge-list.ts";
 import {
   ForgeFieldError,
   asArray,
@@ -270,14 +271,7 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       ),
 
     issueSearch: (query, opts) =>
-      run(cmds.issueSearchCmd(forge, query, opts), (stdout) => {
-        const rows = asArray(stdout);
-        return rows.map((raw) => {
-          const o = raw as Record<string, unknown>;
-          if (forge === "github") return mapGhIssue(o);
-          return mapGlIssue(o);
-        });
-      }),
+      run(cmds.issueSearchCmd(forge, query, opts), (stdout) => mapIssueSearchReply(forge, stdout)),
 
     // ── Pull requests / MRs ───────────────────────────────────────────────
 
@@ -296,41 +290,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         return mapGlMr(asRecord(stdout));
       }),
 
-    prList: (opts) =>
-      run(cmds.prListCmd(forge, opts), (stdout) => {
-        // Tolerate both JSON arrays and a bare number (test fakes that
-        // answer `gh pr list --json number --jq '.[0].number'`).
-        const trimmed = stdout.trim();
-        if (trimmed && !trimmed.startsWith("[") && !trimmed.startsWith("{")) {
-          const n = Number.parseInt(trimmed, 10);
-          if (Number.isFinite(n) && n > 0) {
-            return [
-              {
-                number: n,
-                url: "",
-                state: "" as NormalizedPullRequest["state"],
-                title: "",
-                body: "",
-                headRefName: undefined,
-                baseRefName: undefined,
-                author: undefined,
-                mergeable: null,
-                mergeStateStatus: null,
-                labels: [],
-                createdAt: undefined,
-                updatedAt: undefined,
-              },
-            ];
-          }
-          return [];
-        }
-        const rows = asArray(stdout);
-        return rows.map((raw) => {
-          const o = raw as Record<string, unknown>;
-          if (forge === "github") return mapGhPr(o);
-          return mapGlMr(o);
-        });
-      }),
+    // The bare-number tolerance lives in forge-list.ts, not here: it looks like
+    // dead defensive code and is not, so it is written where it is visible.
+    prList: (opts) => run(cmds.prListCmd(forge, opts), (stdout) => mapPrListReply(forge, stdout)),
 
     prCreate: async (title, headBranch, body, opts) => {
       const checkedTitle = (await checkPublicText("pull request title", title)).text;
