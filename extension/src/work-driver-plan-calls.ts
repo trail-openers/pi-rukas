@@ -9,25 +9,24 @@
  * cycle's event log and handoff can say what the planner got wrong.
  *
  * #1756 — those checks do NOT run on the raw arguments. Pi's tool validation
- * (`validateToolArguments` in pi-ai `utils/validation.js`) clones them and runs
- * `normalizeOptionalNulls` plus `Value.Convert` before its `Check`, so a model
- * that sends an array field as a single string can be accepted in the child and
+ * clones them and normalises/coerces them before its `Check`, so a model that
+ * sends an array field as a single string can be accepted in the child and
  * refused HERE — the workstream recorded in the child and lost by the driver,
  * and the planner's retry under the same id then drew the duplicate refusal.
  *
- * ROUND 2 — the parent does NOT mirror that conversion. It tried (this branch's
- * first commit) and got it wrong in both directions: the conversion is done by
- * whichever TypeBox package the INSTALLED Pi ships — the dev-pinned pi-ai
- * validates with `typebox` 1.3.x, whose `Convert` refuses string→array and
- * number→string, while field runs on newer Pi versions coerced a string
- * `outOfScope` into an array — and Pi's `normalizeOptionalNulls` step was never
- * mirrored at all. There is no version-independent answer to "what did Pi pass
- * the child", so the parent stops guessing: the CHILD reports the params object
- * its `execute` actually recorded (workstream-reporter.ts) and the parent runs
- * the schema, path and duplicate checks on THAT value. A result with no echo
- * (an older companion, or a channel that dropped it) is judged on its raw
- * arguments exactly as before #1756 — the reader never invents a shape nobody
- * reported.
+ * ROUND 2 — the parent does NOT mirror that conversion; it tried (this branch's
+ * first commit) and got it wrong in both directions. The full reason — which
+ * TypeBox package the INSTALLED Pi validates with, and why there is no
+ * version-independent answer to "what did Pi pass the child" — is stated ONCE in
+ * plan-workstream-schema.ts, at `RECORDED_ARGS_DETAILS_KEY`; read it there. The
+ * consequence for this reader: the CHILD reports the params object its `execute`
+ * actually recorded (workstream-reporter.ts), the parent BINDS that report to the
+ * call it claims to describe (`echoMatchesCall` — an echo that widens `paths`,
+ * empties `outOfScope` or renames the workstream is refused, not judged), and
+ * only a bound echo goes through the schema, path and duplicate checks. A result
+ * with no echo (an older companion, or a channel that dropped the payload) is
+ * judged on its raw arguments exactly as before #1756 — the reader never invents
+ * a shape nobody reported.
  *
  * A call with NO result entry is different: the channel that carries results
  * failed, so nothing says the planner did anything wrong. Those calls are
@@ -46,6 +45,7 @@ import {
   WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
   duplicateWorkstreamIdMessage,
+  echoMatchesCall,
   recordedWorkstreamArgs,
   workstreamPathProblem,
 } from "./plan-workstream-schema.ts";
@@ -99,6 +99,13 @@ export interface WorkstreamReport {
 export function emptyWorkstreamReport(): WorkstreamReport {
   return { workstreams: {}, accepted: 0, refused: [], unreadable: 0 };
 }
+
+/**
+ * The refusal of a result whose `details` echo does not describe the call it
+ * arrived with (#1756 round 2). Stated here rather than inline so a test can
+ * pin the exact wording the handoff shows.
+ */
+export const ECHO_MISMATCH_REASON = "the recorded workstream does not match the call";
 
 type ToolUse = { id?: unknown; name?: unknown; arguments?: unknown };
 
@@ -155,12 +162,27 @@ export function workstreamCallsOf(
       refuse(rawId, r.text || "refused");
       continue;
     }
-    // The value to judge: what the child says it recorded, when it said. The
-    // parent never converts — it cannot know which TypeBox the installed Pi
-    // used, so only the child's own report is authoritative (#1756 round 2).
-    // No echo (an older companion, or a dropped payload) falls back to the raw
-    // arguments, which is the pre-#1756 behaviour, unchanged.
+    // The value to judge: what the child says it recorded, when it said AND when
+    // what it said is a coercion of the call the transcript holds. The parent
+    // never converts — it cannot know which TypeBox the installed Pi used, so
+    // only the child's own report is authoritative (#1756 round 2). An echo that
+    // is not a coercion of this call is REFUSED rather than judged: it is not a
+    // report of the call, it is a different call smuggled in on the result, and
+    // accepting one would let an echo replace the authorised `paths` or drop the
+    // fence (`echoMatchesCall`). No echo (an older companion, a dropped payload)
+    // falls back to the raw arguments, which is the pre-#1756 behaviour,
+    // unchanged.
     const echoed = recordedWorkstreamArgs(r);
+    if (echoed !== undefined) {
+      const binding = echoMatchesCall(args, echoed);
+      if (!binding.ok) {
+        traceWarn(
+          `work-driver: report_workstream result ${r.toolCallId} echoed arguments that are not a coercion of the call — refused (${binding.keys.join(", ")})`,
+        );
+        refuse(rawId, ECHO_MISMATCH_REASON);
+        continue;
+      }
+    }
     const judged = echoed === undefined ? args : echoed;
     // A child that recorded a different `id` from the one the model asked with
     // is reporting something the transcript does not contain, so the refusal is

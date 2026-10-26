@@ -27,10 +27,17 @@
  * What is left here is the shape and the rules that REFUSE: the TypeBox schema, the
  * constants, and the path/duplicate checks. `plannedPathProblem` is the only import.
  *
- * #1756 round 2 also puts the ECHO here: the key, the prefix and the reader for
- * the value the companion reports back as the arguments it actually recorded
- * (`recordedWorkstreamArgs`). The companion writes it, the driver reads it, and
- * the smoke-test helper replays it, so all three agree on one shape.
+ * #1756 round 2 also puts the ECHO here: the key, the envelope, the reader, and
+ * the rule that BINDS an echo to the call it claims to describe
+ * (`recordedWorkstreamArgs`, `recordedWorkstreamDetails`, `echoMatchesCall`). The
+ * companion writes it, the driver reads it, and the smoke-test helper replays it,
+ * so all three agree on one shape through one exported function.
+ *
+ * WHY pi-ai/TypeBox is described once, here: the installed Pi's own validation is
+ * the thing the echo exists to report, and the dev-pinned `pi-ai` in this
+ * package's devDependencies is NOT what validates a child's call at runtime. Any
+ * other module that needs to say why the parent cannot re-derive the value
+ * (work-driver-plan-calls.ts) points here rather than restating it.
  */
 
 import { type Static, Type } from "@sinclair/typebox";
@@ -92,7 +99,7 @@ export const WORKSTREAM_LIST_MAX = 50;
 export const FENCE_CLIP_MARKER = " …[clipped]";
 
 /**
- * #1756 round 2 — the key under which the companion echoes the arguments it
+ * #1756 round 2 — the ONE key under which the companion echoes the arguments it
  * actually recorded, on the tool result's `details`.
  *
  * WHY THE CHILD REPORTS IT. The parent cannot re-derive this value. Pi's tool
@@ -106,54 +113,145 @@ export const FENCE_CLIP_MARKER = " …[clipped]";
  * it mirrors the installed version) or refuses shapes the child recorded (when
  * it mirrors the pin). Both are wrong, and only one value is in question: the
  * one `execute` was handed. So the child reports that value and the parent
- * judges IT — the parent never converts anything.
+ * judges IT — the parent never converts anything. That is also why the parent
+ * BINDS the echo to the call it claims to describe (`echoMatchesCall`): an
+ * unbound echo is a second channel for the same fields, and one that can widen
+ * `paths` or drop the fence is not evidence, it is an override.
  *
- * TWO CARRIERS, same payload, because `details` has no contract: Pi's
+ * ONE CARRIER. `details` is the carrier; there is no text-line carrier. Pi's
  * `createToolResultMessage` copies `result.details` onto the replayed
- * `toolResult` message today, but the `details` it stamps is typed `unknown` on
- * the parent's read and Pi declares nothing about it, so a future Pi may drop
- * it. The companion therefore also appends the same JSON as one text line
- * prefixed with `RECORDED_WORKSTREAM_ARGS: `, which survives Pi's 300-character
- * bound on a result's text (`TOOL_RESULT_TEXT_MAX` in spawn-collapse-events.ts)
- * for any call a real plan writes, since the echo is what the child was handed
- * and the schema already bounds it.
+ * `toolResult` message, and `collapseEvents` carries it verbatim (the 300-char
+ * `TOOL_RESULT_TEXT_MAX` bound applies to a result's TEXT, which exists for
+ * display — a real call's JSON does not fit it, which is why the text line was
+ * dropped in round 2). Absence of the key is no echo and is not an error: the
+ * reader then judges the raw arguments, exactly as before #1756.
  */
 export const RECORDED_ARGS_DETAILS_KEY = "recordedArgs";
 
-/** The text-line prefix of the same echo; see `RECORDED_ARGS_DETAILS_KEY`. */
-export const RECORDED_ARGS_TEXT_PREFIX = "RECORDED_WORKSTREAM_ARGS: ";
+/**
+ * The ONE envelope: what a `report_workstream` result's `details` looks like,
+ * built by the companion (`workstream-reporter.ts`), by the smoke-test helper
+ * (`smoke-tests/lib/plan-workstream-calls.ts`) and read by the transport
+ * (`spawn-collapse-events.ts`) and the reader (`recordedWorkstreamArgs`). A
+ * writer and a reader that each assembled their own object literal are how the
+ * two sides of this channel drift — the shape and the key have one owner now.
+ * A result that recorded nothing carries no `details` at all; the reader treats a
+ * missing key, an empty `details` and a non-object payload alike as NO echo (see
+ * `recordedWorkstreamArgs`), so a writer never has to invent a sentinel.
+ */
+export function recordedWorkstreamDetails(args: unknown): { [RECORDED_ARGS_DETAILS_KEY]: unknown } {
+  return { [RECORDED_ARGS_DETAILS_KEY]: args };
+}
 
 /**
  * The value the child says it recorded, or undefined when this result carries
- * no echo: an older companion, a channel that dropped both carriers, or a
- * refused call (which records nothing and so says nothing). Presence is never
- * inferred — absence is a distinct answer, and the reader decides what it means.
+ * no echo: an older companion, a channel that dropped the payload, a refused
+ * call (which records nothing and so says nothing), or a `details` whose
+ * `recordedArgs` is not a plain object — a null, string or array there, or a
+ * key present with the value `undefined`, is not a params object anybody
+ * recorded, so it is NO echo and never a judged value.
+ * Presence is never inferred — absence is a distinct answer, and the reader
+ * decides what it means.
+ *
+ * The `details?: unknown` parameter is deliberate: the transport types it
+ * `unknown` (Pi declares no schema for `details`), and this is where it narrows.
  */
-export function recordedWorkstreamArgs(result: {
-  details?: unknown;
-  text?: string;
-}): unknown | undefined {
-  const viaDetails =
-    result.details &&
-    typeof result.details === "object" &&
-    RECORDED_ARGS_DETAILS_KEY in result.details
-      ? (result.details as Record<string, unknown>)[RECORDED_ARGS_DETAILS_KEY]
-      : undefined;
-  if (viaDetails !== undefined) return viaDetails;
-  const text = result.text;
-  if (typeof text !== "string") return undefined;
-  for (const line of text.split("\n")) {
-    if (!line.startsWith(RECORDED_ARGS_TEXT_PREFIX)) continue;
-    try {
-      return JSON.parse(line.slice(RECORDED_ARGS_TEXT_PREFIX.length));
-    } catch {
-      // Truncated by the text bound, or not JSON. A broken echo is NO echo —
-      // the reader then judges raw arguments, as it did before #1756, rather
-      // than inventing a value it cannot read.
-      return undefined;
-    }
+export function recordedWorkstreamArgs(result: { details?: unknown }): unknown | undefined {
+  // A missing `details`, one without the key, and a key present with the value
+  // `undefined` are each explicitly no echo — never inferred, and never judged
+  // as a value.
+  if (!isEchoObject(result.details)) return undefined;
+  const echoed = result.details[RECORDED_ARGS_DETAILS_KEY];
+  return isEchoObject(echoed) ? echoed : undefined;
+}
+
+/**
+ * A value that can BE an echo: an own-property plain object (an `Object.create`
+ * with a null prototype is not — the reader must only ever judge values JSON
+ * produced or the companion built). Not `plan-provenance.ts`'s `isPlainObject`
+ * because importing it here would put the issue-filing provenance module in the
+ * companion's import graph; the prototype test is the same one.
+ */
+function isEchoObject(v: unknown): v is Record<string, unknown> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Why an echo does NOT describe the raw call it arrived with, or undefined when
+ * it is a coercion of it. This is the parent's own check (#1756 round 2, lens
+ * HIGH): an echo is untrusted input, and an unbound one can replace the
+ * authorised `paths`, empty `outOfScope` (deleting the fence the developer is
+ * held to), or mint an id the transcript never contains.
+ *
+ * What is allowed is EXACTLY what a tool-argument normalisation can do — nothing
+ * else, so an echo cannot widen anything:
+ *  - every key the echo carries is a schema key, and every key `raw` carries with
+ *    a non-null value is carried by the echo (a `raw` key whose value is `null`
+ *    may be absent — that is Pi's `normalizeOptionalNulls`);
+ *  - a string field matches when `echo === raw`, or `raw` is a number/boolean and
+ *    `echo === String(raw)`; `id` must be EXACTLY the raw `id` when the raw `id`
+ *    is a string — a coercion never invents a different identity;
+ *  - an array field matches when the echo deep-equals `raw` (both arrays), or the
+ *    echo deep-equals `[raw]` (`raw` a single string), element by element under
+ *    the string rule above;
+ *  - a number/boolean field matches under the same two-way string rule.
+ *
+ * The differing key is named so the caller can trace it.
+ */
+export function echoMatchesCall(
+  raw: unknown,
+  echo: unknown,
+): { ok: true } | { ok: false; keys: string[] } {
+  if (!isEchoObject(echo) || !isEchoObject(raw)) return { ok: false, keys: ["<not an object>"] };
+  const keys: string[] = [];
+  for (const key of Object.keys(echo)) {
+    if (!(key in WORKSTREAM_PARAMETERS.properties)) keys.push(`${key}(unknown key)`);
   }
-  return undefined;
+  for (const [key, rawValue] of Object.entries(raw)) {
+    if (rawValue === null) continue;
+    if (!(key in echo)) {
+      keys.push(`${key}(missing from echo)`);
+      continue;
+    }
+    if (!echoFieldMatches(key, rawValue, echo[key])) keys.push(key);
+  }
+  return keys.length > 0 ? { ok: false, keys } : { ok: true };
+}
+
+/** The two coercions one field of an echo is allowed to be. */
+function echoFieldMatches(key: string, raw: unknown, echo: unknown): boolean {
+  if (Array.isArray(raw)) {
+    if (!Array.isArray(echo) || echo.length !== raw.length) return false;
+    return raw.every((item, i) => echoScalarMatches(key, item, echo[i]));
+  }
+  if (typeof raw === "string") {
+    // A single string may have been normalised into a one-element array.
+    if (Array.isArray(echo)) {
+      return echo.length === 1 && echoScalarMatches(key, raw, echo[0]);
+    }
+    return echoScalarMatches(key, raw, echo);
+  }
+  if (typeof raw === "number" || typeof raw === "boolean") {
+    if (Array.isArray(echo)) {
+      return echo.length === 1 && echoScalarMatches(key, raw, echo[0]);
+    }
+    return echoScalarMatches(key, raw, echo);
+  }
+  // Anything else (a nested object, a function) is not a shape a schema field
+  // holds, so an echo carrying one describes something the model never sent.
+  return false;
+}
+
+/** `id` is identity: an echo may not rename the workstream it reports on. */
+function echoScalarMatches(key: string, raw: unknown, echo: unknown): boolean {
+  if (key === "id" && typeof raw === "string") return echo === raw;
+  if (typeof raw === "string") return echo === raw;
+  if (typeof raw === "number" || typeof raw === "boolean") {
+    return echo === raw || echo === String(raw);
+  }
+  return echo === raw;
 }
 
 /** The `report_workstream` arguments, as Pi validates them. */
