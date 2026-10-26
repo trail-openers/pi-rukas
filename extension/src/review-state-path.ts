@@ -121,8 +121,19 @@ export interface FindingsLocation {
   fellBack: boolean;
 }
 
-/** Process cache keyed on the realpath of the clone's common dir. */
-const resolved = new Map<string, FindingsLocation>();
+/** Process cache keyed on the realpath of the clone's common dir. It carries the
+ * clone's STATE ROOT alongside the location, so a cache hit can hand the creating
+ * path the root its token lives in rather than making it derive one from the
+ * token directory — the two are `dirname`/`dirname` apart and only `computeLocation`
+ * knows which one was hashed.
+ *
+ * Only the NON-override branch ever writes or reads it: `PI_ENSEMBLE_REVIEW_LEDGER_FILE`
+ * is an explicit location that must answer identically however often it is asked,
+ * and keying an entry on the clone's common dir while answering from the override
+ * would let one fixture's answer serve the next one that flips the variable.
+ * That is the whole offline suite's isolation mechanism, so the cache is simply
+ * out of the picture whenever an override is set. */
+const resolved = new Map<string, { loc: FindingsLocation; root: string }>();
 
 /** Clones whose one-time migration this process has already attempted. */
 const attempted = new Set<string>();
@@ -310,11 +321,39 @@ function migrateOnce(commonDir: string, dir: string): void {
   }
 }
 
-/** The answer for a clone whose store could not be relocated: the old place. */
+/** The answer for a clone whose store could not be relocated: the old place.
+ * The `traceWarn` is the operator's only signal that the store did NOT move, so
+ * it is a SIDE EFFECT: `computeLocation` builds this location without warning
+ * (a read of a clone that simply has no store yet is not a fault worth a warn),
+ * and the creating path calls this — or `warnBesideLedger` — whenever it returns
+ * a fallback. Every reason an operator sees in the log therefore names a resolve
+ * that actually tried to create the store. */
 function besideLedger(ledger: string, why: string): FindingsLocation {
-  const dir = path.dirname(ledger);
-  traceWarn(`review-state: the findings store stays beside the ledger at ${dir} — ${why}`);
+  traceWarn(
+    `review-state: the findings store stays beside the ledger at ${ledgerDir(ledger)} — ${why}`,
+  );
+  return fallbackBesideLedger(ledger);
+}
+
+/** The beside-the-ledger location, WITHOUT the warn. A path under the ledger's own
+ * directory and the store's one basename — the same spelling `besideLedger`
+ * returns, so the read-only and creating arms cannot disagree about it. */
+function fallbackBesideLedger(ledger: string): FindingsLocation {
+  const dir = ledgerDir(ledger);
   return { dir, file: path.join(dir, FINDINGS_FILE), ledger, fellBack: true };
+}
+
+/** Warn about a fallback location `computeLocation` already decided, with the
+ * reason only the creating path knows (it is the path that failed to create). */
+function warnBesideLedger(ledger: string, why: string): FindingsLocation {
+  traceWarn(
+    `review-state: the findings store stays beside the ledger at ${ledgerDir(ledger)} — ${why}`,
+  );
+  return fallbackBesideLedger(ledger);
+}
+
+function ledgerDir(ledger: string): string {
+  return path.dirname(ledger);
 }
 
 /**
@@ -326,82 +365,206 @@ function besideLedger(ledger: string, why: string): FindingsLocation {
  * ledger's own directory, warned, and returns a path. A store that cannot move
  * is still a store.
  *
- * `readOnly` (#1832 round 1) answers the SAME question — same override, same
- * common dir, same key, same token, so the probe and the record path can never
- * name two stores for one clone — without the writes: no `mkdir`, no `chmod`, no
- * token minting, no migration, and nothing cached (a read-only resolve must not
- * seed the cache with an answer that predates the first real resolve).
- * `tokenFor`'s own `wx` mint is skipped for the same reason: the probe reads, and
- * a token it invented would strand rows a later process cannot find. When no
- * token has been minted yet, a read-only resolve answers undefined — there is no
- * reachable directory to read, which the probe reports as "could not locate the
- * store" rather than "the store is empty".
+ * `readOnly` (#1832 round 2) answers the SAME question as the creating path —
+ * the location is computed by ONE function, `computeLocation`, which both arms
+ * call, so the probe and the record path cannot name two stores for one clone.
+ * Not the override, not the common-dir lookup, not the key, not the token, and
+ * not the corrupt-token fallback: where the creating path would fall back beside
+ * the ledger, the read-only arm names that SAME beside-the-ledger file (with no
+ * `.corrupt-*` copy, no `mkdir`, no `chmod`, no token minting and nothing
+ * cached — a read-only resolve must not seed the cache with an answer that
+ * predates the first real resolve). A read-only resolve therefore never creates
+ * anything, and `exists` says whether a store already sits at that location.
  */
 export async function findingsStateDir(
   execFn: LedgerExecFn,
   cwd: string,
   opts: { readOnly?: boolean } = {},
 ): Promise<FindingsLocation | undefined> {
-  const readOnly = opts.readOnly === true;
+  const computed = await computeLocation(execFn, cwd);
+  if (!computed) return undefined;
+  if (opts.readOnly === true) return computed.loc;
+
+  const { loc, commonDir, root, key } = computed;
+  const override = process.env[LEDGER_OVERRIDE_ENV]?.trim();
+
+  // An explicit override IS the location: nothing is created, no token is minted
+  // and no migration runs, in either arm. That is not an optimisation — the
+  // override is how every offline fixture isolates its store, and a fixture that
+  // pinned the ledger to a temp file must not have a state root, a token or a
+  // `MIGRATED` marker appear under the real agent dir as a side effect of running
+  // the suite. `computeLocation` already resolved the spelling; both arms return it.
+  if (override) return loc;
+
+  // From here the caller intends to WRITE, which is where every side effect of
+  // the location belongs: the directories, the token, the one-time migration and
+  // the process cache. The location itself was decided by `computeLocation`, so
+  // the steps below can only make it real — they cannot change which file both
+  // arms name.
+  //
+  // `loc.fellBack` from a READ is not an answer for a WRITE. `computeLocation`
+  // reads the token and never mints one (minting on a read path would strand rows
+  // in a directory no later process can find), so a clone whose token has simply
+  // never been minted reads as "no token → fallback". The creating path must
+  // still mint — which is what `tokenFor`'s `wx` protocol exists to do race-safely
+  // — and only a token that stays unreadable or malformed after that mint is the
+  // real fallback. Short-circuiting on the read's answer instead made every fresh
+  // clone's store silently stay beside the ledger, because the first resolve of a
+  // clone is usually a probe.
+  try {
+    makeStateDir(root);
+    const token = tokenFor(root);
+    // No usable token even after the mint: no reachable directory, and a token
+    // kept in this process's memory would strand every row it writes. This is the
+    // same fallback `computeLocation` builds for the read-only arm — the same
+    // helper, so the file both arms name is one spelling.
+    if (!token) return warnBesideLedger(loc.ledger, "the token file is unreadable or malformed");
+    const dir = path.join(root, token);
+    makeStateDir(dir);
+    const created: FindingsLocation = {
+      dir,
+      file: path.join(dir, FINDINGS_FILE),
+      ledger: loc.ledger,
+      fellBack: false,
+    };
+    migrateOnce(commonDir, dir);
+    // The override arm returns before this point, so the cache only ever holds
+    // relocated stores — never an answer derived from `PI_ENSEMBLE_REVIEW_LEDGER_FILE`.
+    if (!override) resolved.set(key, { loc: created, root });
+    return created;
+  } catch (err) {
+    return besideLedger(
+      loc.ledger,
+      `the state dir could not be created: ${(err as Error).message}`,
+    );
+  }
+}
+
+/** What `computeLocation` answers: the location, the clone's git COMMON dir,
+ * the clone's state root, and whether a findings file already sits at `loc.file`. */
+interface ComputedLocation {
+  loc: FindingsLocation;
+  commonDir: string;
+  root: string;
+  /** The cache key: realpath of the common dir, or its resolved path. */
+  key: string;
+  exists: boolean;
+}
+
+/**
+ * THE location computation for the findings store (#1832 round 2): override
+ * precedence, the ledger's common dir, the repo-key hash, the token read, and
+ * the beside-the-ledger fallback when the token is unreadable or malformed. It
+ * has NO side effects — no `mkdir`, no `chmod`, no token minting, no migration,
+ * no cache write — and it never throws for a fault on the way to the relocated
+ * store: any such fault answers with the fallback location, exactly as the
+ * creating path does.
+ *
+ * The creating path (`findingsStateDir` without `readOnly`) calls THIS and then
+ * does its mkdir/chmod/mint/migrate/cache work around the answer it gave; the
+ * read-only path returns the answer verbatim. That is the whole reason the
+ * function is one and not two: a probe with its own copy of these rules drifts,
+ * and drift shows up as the probe vetoing on a store the round cannot see (or
+ * the reverse). `test-review-state-path.ts` pins the two answers file-for-file
+ * across the plain clone, an override, a linked worktree and a corrupt token.
+ *
+ * Answers undefined only for "there is no clone to locate": no ledger at all, or
+ * no git common dir and no location to fall back on.
+ *
+ * `besideLedger`'s fallback location is built here WITHOUT its `traceWarn`: a
+ * clone whose store was simply never created is not a fault, and a read path that
+ * warned on every resolve would bury the warns the creating path exists to emit.
+ * The creating arm warns for the same shape (see `warnBesideLedger`), because
+ * there the fallback IS a failure to create.
+ */
+async function computeLocation(
+  execFn: LedgerExecFn,
+  cwd: string,
+): Promise<ComputedLocation | undefined> {
+  // The override is read BEFORE the ledger is resolved, because the two ledger
+  // resolvers read it differently: `ledgerPathFor` returns an override verbatim
+  // and makes no git call, while `cloneLedgerPathFor` ignores it and resolves the
+  // real common dir. The findings store's historic location is the override's own
+  // directory — that is what the whole offline suite isolates on — so this arm
+  // decides from the override itself and keeps `cloneLedgerPathFor`'s answer only
+  // as the ledger field (unchanged: the store is still guarded by the clone's own
+  // ledger). Reversing this order would move every isolated fixture's store into
+  // the real agent dir.
+  const override = process.env[LEDGER_OVERRIDE_ENV]?.trim();
   const ledger = await cloneLedgerPathFor(execFn, cwd);
   if (!ledger) return undefined;
 
-  // The override keeps the store where the operator (or the whole offline suite)
-  // pointed the ledger: it is an explicit location, and a test that isolates its
-  // ledger by redirecting it must not have its findings land in the real agent
-  // dir. Resolved the same tolerant way `ledgerPathFor` resolves it, so a
-  // relative override cannot put the findings file somewhere the ledger is not.
-  const override = process.env[LEDGER_OVERRIDE_ENV]?.trim();
   if (override) {
     const file = path.isAbsolute(override) ? override : path.resolve(cwd, override);
     const dir = path.dirname(file);
-    return { dir, file: path.join(dir, FINDINGS_FILE), ledger, fellBack: false };
+    const loc = { dir, file: path.join(dir, FINDINGS_FILE), ledger, fellBack: false };
+    return {
+      loc,
+      commonDir: path.dirname(ledger),
+      root: dir,
+      key: path.dirname(ledger),
+      exists: existsSync(loc.file),
+    };
   }
 
   const commonDir = path.dirname(ledger);
+  // The cache is consulted on the NON-override path only (see `resolved`), and
+  // HERE rather than in the creating arm: a clone this process already resolved
+  // answers from the cached entry without a token read, a `mkdir`, or a `wx`
+  // mint. Dropped, that cache hit would fall through to the creating path's token
+  // minting and hand back a brand-new private directory — a second store for a
+  // clone that already has one.
   const key = realOrUndefined(commonDir) ?? path.resolve(commonDir);
   const cached = resolved.get(key);
-  if (cached) return cached;
+  if (cached)
+    return {
+      loc: cached.loc,
+      commonDir,
+      root: cached.root,
+      key,
+      exists: existsSync(cached.loc.file),
+    };
 
-  try {
-    if (!existsSync(commonDir)) {
-      return readOnly
-        ? // No creating variant to fall back on: a read-only caller gets "could not
-          // locate" rather than a fallback path beside a ledger it did not create.
-          undefined
-        : besideLedger(ledger, "the git common dir is absent");
-    }
-    const root = stateRootFor(key);
-    if (readOnly) {
-      const token = readToken(path.join(root, "token"));
-      if (!token) return undefined;
-      return {
+  if (!existsSync(commonDir)) {
+    // Nothing to key on and no ledger directory to sit beside: the clone's git
+    // dir is gone, so there is no location either arm could defend. The creating
+    // path used to answer a fallback path under a directory that does not exist.
+    return undefined;
+  }
+  const root = stateRootFor(key);
+  // A malformed or unreadable token is NOT a private mint: `tokenFor`'s `wx`
+  // protocol is what makes two racing processes agree, and minting here would
+  // name a directory no later process can find. Both arms therefore take the
+  // same fallback — this one reads, the creating path also warns.
+  const token = readToken(path.join(root, "token"));
+  const loc: FindingsLocation = token
+    ? {
         dir: path.join(root, token),
         file: path.join(root, token, FINDINGS_FILE),
         ledger,
         fellBack: false,
-      };
-    }
-    makeStateDir(root);
-    const token = tokenFor(root);
-    // No usable token means no reachable directory: a token kept in this
-    // process's memory would strand every row it writes.
-    if (!token) return besideLedger(ledger, "the token file is unreadable or malformed");
-    const dir = path.join(root, token);
-    makeStateDir(dir);
-    const loc: FindingsLocation = {
-      dir,
-      file: path.join(dir, FINDINGS_FILE),
-      ledger,
-      fellBack: false,
-    };
-    migrateOnce(commonDir, dir);
-    resolved.set(key, loc);
-    return loc;
-  } catch (err) {
-    if (readOnly) return undefined;
-    return besideLedger(ledger, `the state dir could not be created: ${(err as Error).message}`);
-  }
+      }
+    : fallbackBesideLedger(ledger);
+  return { loc, commonDir, root, key, exists: existsSync(loc.file) };
+}
+
+/**
+ * The findings store's location for `cwd`, computed the SAME way the creating
+ * path computes it (#1832 round 2) and with no side effects at all: no `mkdir`,
+ * no `chmod`, no token minting, no migration, and nothing cached. `exists`
+ * distinguishes "there is no store here yet" from "a file sits here that this
+ * process has not read" — the distinction the open-CRITICAL probe needs, because
+ * a store that was never created holds no rows and therefore no CRITICAL, while
+ * a file that cannot be read might. It is derived from the location `computeLocation`
+ * produced, never recomputed, so it can never describe a different file.
+ */
+export async function findingsStoreLocation(
+  execFn: LedgerExecFn,
+  cwd: string,
+): Promise<(FindingsLocation & { exists: boolean }) | undefined> {
+  const computed = await computeLocation(execFn, cwd);
+  if (!computed) return undefined;
+  return { ...computed.loc, exists: computed.exists };
 }
 
 /**
