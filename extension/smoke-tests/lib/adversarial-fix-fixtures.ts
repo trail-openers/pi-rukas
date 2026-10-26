@@ -13,14 +13,36 @@ import type { DispatchResult } from "../../src/types.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { makeFakeGitDirReal } from "./git-worktree-fixture.ts";
 
 const realExec = promisify(exec);
 const realExecFile = promisify(execFile);
 
+/**
+ * A scratch directory that stands in for a driver worktree: it carries a `.git`
+ * ENTRY (so the driver's state file has somewhere to live) but is NOT a
+ * repository.
+ *
+ * #1634 makes that distinction cost something. `readWorktreeDiff` asks git
+ * whether the tree is clean before it calls a blank diff "empty", and for a
+ * directory that was never a repository that probe fails — so the read comes
+ * back UNREADABLE and the step under test runs as an infrastructure failure
+ * instead of the routing case the file names. These tests assert ROUTING
+ * (fix-requested, cap kind, which sibling was re-dispatched) and inject their
+ * own reviewer replies: none of them wants a diff read to fail.
+ *
+ * So the fake is made real here, once, for every caller: `git init` plus one
+ * empty commit costs a few milliseconds per fixture and answers every question
+ * the driver asks of the tree. A fixture that wants a DIFF puts a file in
+ * itself (`devCommit` / `devWrite`); a fixture that wants the empty case still
+ * reads as a POSITIVELY proven clean tree, because the driver's own untracked
+ * records under `.pi/work-state/` and `tmp/issue-<N>/` are not dirt
+ * (`isDriverArtefactPath`).
+ */
 export function tmpDir(label: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), `adv-fix-${label}-`));
   mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
-  return dir;
+  return makeFakeGitDirReal(dir);
 }
 
 /** Run one real git command in `cwd` and return its stdout.

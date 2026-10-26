@@ -19,7 +19,7 @@
  * No real Pi spawn; `dispatchFn` and `issueBodyFetcherFn` are injected,
  * mirroring test-explore-body-retry.ts.
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";

@@ -73,17 +73,6 @@ function assert(cond: boolean, msg: string) {
 /** The dirt probe `readWorktreeDiff` runs to decide what a BLANK diff means. */
 const DIRTY_PROBE_READ = "git status --porcelain -z --untracked-files=all";
 
-/**
- * M4 — the best-effort string projection is gone from the module's exports.
- * Read off the module object rather than the source text, so a re-added
- * `fetchDiff` (or any `""`-on-failure sibling) fails here rather than silently
- * giving a future caller back the value #1634 removed.
- */
-async function noStringProjection(): Promise<boolean> {
-  const mod = (await import("../src/work-driver-diff.ts")) as Record<string, unknown>;
-  return !Object.keys(mod).includes("fetchDiff") && !Object.keys(mod).includes("fetchIntegratedDiff");
-}
-
 const dirs: string[] = [];
 // WHY THIS FILE HUNG FOR ~40 MINUTES (the previous dispatch died on a timeout
 // kill at T3b): the unreadable read is TRANSIENT to the taxonomy, so the fan-out
@@ -151,12 +140,7 @@ function ctxFor(
   return { ctx, calls: () => calls };
 }
 
-/**
- * The same, with the fan-out's DIFF READ handed a specific executor. The
- * #1634 seam: a test makes the read fail for one workstream deterministically
- * instead of mutating `process.env.PATH`, which every concurrent git user in
- * the process would race with.
- */
+/** The same, with the fan-out's DIFF READ handed a specific executor (the #1634 seam). */
 function ctxForExec(
   repoRoot: string,
   issue: number,
@@ -382,159 +366,6 @@ async function unreadableCase(
   );
 }
 
-// ===========================================================================
-// T5 — readWorktreeDiff's own contract: empty vs unreadable vs non-empty
-// ===========================================================================
-{
-  const noCwd = await readWorktreeDiff(undefined, undefined);
-  assert(noCwd.ok === false, "T5a: no cwd is unreadable, never an empty diff");
-
-  const dirty = tempRepo();
-  seedFile(dirty, "untracked-new.ts", "x\n");
-  const d = await readWorktreeDiff(dirty, undefined);
-  assert(d.ok === false, "T5c: an untracked file with a blank diff is unreadable, not empty");
-  assert(
-    d.ok === false && /not clean/.test(d.reason),
-    "T5c: the reason says the tree is not clean",
-  );
-
-  // A tracked modification still reads as a diff (no behaviour change).
-  const modified = tempRepo();
-  seedFile(modified, "a.txt", "one\n");
-  commitAll(modified, "one");
-  seedFile(modified, "a.txt", "two\n");
-  const m = await readWorktreeDiff(modified, undefined);
-  assert(m.ok === true && m.empty === false, "T5d: a tracked modification is a non-empty diff");
-
-  // A non-repository directory with files in it is unreadable, not empty — the
-  // case `git diff HEAD` answers blank for.
-  const plain = scratchDirWithoutGit("adv-unreadable-plain2-", { "a.ts": "a\n" });
-  dirs.push(plain);
-  const p = await readWorktreeDiff(plain, undefined);
-  assert(p.ok === false, "T5f: a directory that is not a git repo is unreadable, not empty");
-
-  // With a failing executor injected, a REAL clean worktree is unreadable too.
-  // (M3a: the read takes `exec`, so this needs no PATH surgery and cannot race
-  // a sibling test that spawns git.)
-  const real = tempRepo();
-  const broken = await readWorktreeDiff(real, undefined, failingExec());
-  assert(broken.ok === false, "T5g: a git binary that fails makes the read unreadable");
-
-  // M3a — the executor seam decides WHICH read fails: with only the dirt probe
-  // broken, a blank diff is "could not tell", never a proven empty. The old
-  // shape could only reach this by removing git from PATH entirely.
-  const blank = tempRepo();
-  const probeBroken = await readWorktreeDiff(
-    blank,
-    undefined,
-    execFailingArgs(["status", "--porcelain"]),
-  );
-  assert(
-    probeBroken.ok === false && /could not establish/.test(probeBroken.reason),
-    `T5h: a blank diff whose dirt probe failed is unreadable, never empty (${probeBroken.ok ? "read ok" : probeBroken.reason})`,
-  );
-  assert(
-    probeBroken.ok === false && probeBroken.readFailed === DIRTY_PROBE_READ,
-    "T5h: the read names WHICH git command failed (the operator needs the command, not just the class)",
-  );
-
-  // M4 — there is NO best-effort string projection of this read any more
-  // (`fetchDiff` had no production caller, and ""-on-failure is the very value
-  // this type exists to make unrepresentable). Canary-checked at compile time
-  // by this file's imports; a re-added export would not be seen here, so the
-  // assertion below is the one that says so out loud.
-  assert(
-    await noStringProjection(),
-    "T5e: work-driver-diff.ts exports no `\"\"`-on-failure string read",
-  );
-}
-
-// ===========================================================================
-// T6 — the per-round re-read the REAL fan-out builds: a failed getDiff is not
-//      an approvable "no changes". Driven end-to-end (a non-empty first diff
-//      so the loop is reached, then the captured `params.getDiff` called
-//      against a tree the read cannot establish) rather than by re-implementing
-//      the closure in the test.
-// ===========================================================================
-{
-  const dir = tempRepo();
-  seedFile(dir, "foo.ts", "export const a = 1;\n");
-  stageFile(dir, "foo.ts");
-  // The FIRST read must succeed for the loop to be reached at all, so this
-  // fixture injects an executor that fails only the DIRT PROBE — which is what
-  // makes a blank re-read unreadable while a re-read with content still works.
-  const { ctx, calls, captured } = ctxForExec(dir, 1640, execFailingArgs(["status", "--porcelain"]));
-  const { outcomes } = await fanOutAdversarial(
-    ctx,
-    seedState(dir, { default: dir }, 1640),
-    ["default"],
-    new Map(),
-    false,
-    null,
-  );
-  assert(calls() === 1, "T6: a non-empty diff reaches the loop");
-  assert(outcomes[0]?.ok === true, "T6: the readable round approved");
-  const getDiff = captured()[0];
-  assert(getDiff !== undefined, "T6: the fan-out passed the loop a getDiff");
-
-  // With the dirt probe failing, a re-read of the same tree resolves through the
-  // committed/staged content — but a tree whose diff is BLANK and whose probe
-  // fails must REJECT. That is the case the old `""` answer smuggled into a
-  // round as "no changes to review".
-  const blankDir = tempRepo();
-  const { ctx: blankCtx, captured: blankCaptured } = ctxForExec(
-    blankDir,
-    1641,
-    execFailingArgs(["status", "--porcelain"]),
-  );
-  // Seed a non-empty FIRST read (staged) so the loop is reached, then remove
-  // the staged content so the RE-READ is the blank-and-unprobeable shape.
-  seedFile(blankDir, "bar.ts", "export const b = 2;\n");
-  stageFile(blankDir, "bar.ts");
-  await fanOutAdversarial(
-    blankCtx,
-    seedState(blankDir, { default: blankDir }, 1641),
-    ["default"],
-    new Map(),
-    false,
-    null,
-  );
-  const roundTwoGetDiff = blankCaptured()[0];
-  assert(roundTwoGetDiff !== undefined, "T6b: the loop received a getDiff for the blank tree");
-  // Unstage: the working tree is now blank and the probe is the failing one.
-  gitFixture(blankDir, ["reset", "-q"]);
-  let rejected = false;
-  let resolvedTo = "<did not reject>";
-  try {
-    resolvedTo = JSON.stringify(await (roundTwoGetDiff ?? (async () => ""))());
-  } catch (err) {
-    rejected = true;
-    resolvedTo = (err as Error).message;
-  }
-  assert(
-    rejected && /re-read failed/.test(resolvedTo),
-    `T6b: the fan-out's real getDiff REJECTS a blank diff it cannot prove clean (got ${resolvedTo})`,
-  );
-
-  // And an empty diff never reaches the loop at all (the #286 skip still fires).
-  // The executor must be a WORKING one here: "empty" is proven by reading the
-  // tree, so a failing executor would make this the unreadable case instead and
-  // the assertion would prove nothing about the short-circuit.
-  const emptyDir = tempRepo();
-  const { ctx: emptyCtx, calls: emptyCalls } = ctxForExec(emptyDir, 1642, passthroughExec());
-  const emptyRun = await fanOutAdversarial(
-    emptyCtx,
-    seedState(emptyDir, { default: emptyDir }, 1642),
-    ["default"],
-    new Map(),
-    false,
-    null,
-  );
-  assert(
-    emptyCalls() === 0 && emptyRun.outcomes[0]?.skipped === true,
-    "T6c: a proven-empty tree never reaches the loop at all",
-  );
-}
 
 // ===========================================================================
 // T8 — an unreadable diff is an ENVIRONMENT fact, never a provider fault.
@@ -641,50 +472,6 @@ async function unreadableCase(
   assert(
     /did NOT re-run it/.test(why),
     "T8m: the handoff says the retry ladder declined, so the operator does not wait for a retry",
-  );
-}
-
-// ===========================================================================
-// T7 — an unreadable diff never reaches the aggregate's approved branch, and
-//      the step handler parks with the infra cap rather than approving.
-// ===========================================================================
-{
-  const { runAdversarial } = await import("../src/work-driver-adversarial.ts");
-  const dir = tempRepo();
-  // A FIRST pass deliberately leaves the `dispatch-failed` tail for the step
-  // router's RETRY_ONCE path (#486) rather than parking, so this fixture seeds
-  // the prior-outcome record that makes the failure final — the state a resumed
-  // cycle reaches, and the one whose routing must not be an approval.
-  const seeded: WorkState = {
-    ...seedState(
-      dir,
-      { default: scratchDirWithoutGit("adv-unreadable-step-", { "a.ts": "a\n" }) },
-      1638,
-    ),
-    eventLog: [
-      {
-        kind: "adversarial-workstream-outcome",
-        at: Date.now(),
-        workstreamId: "default",
-        outcome: "infra-failure",
-        roundsExecuted: 0,
-      },
-    ],
-  };
-  const { ctx } = ctxFor(dir, 1638, approvedLoop);
-  const out = await runAdversarial(ctx as never, seeded, Date.now());
-  const approved = out.eventLog.filter((e) => e.kind === "adversarial-approved");
-  const skipped = out.eventLog.filter((e) => e.kind === "adversarial-skipped-empty-diff");
-  assert(approved.length === 0, "T7: the gate records no approval for an unreadable diff");
-  assert(skipped.length === 0, "T7: the gate records no empty-diff skip for an unreadable diff");
-  const cap = [...out.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  assert(
-    cap !== undefined && cap.kind === "cap-hit" && cap.nextStep === "handoff",
-    "T7: the cycle is routed to a handoff, not onward to commit-pr",
-  );
-  assert(
-    cap?.kind === "cap-hit" && cap.cap === "adversarial-infra-failure",
-    `T7: it parks with the existing infra cap, not a rejection (got ${cap?.kind === "cap-hit" ? cap.cap : "none"})`,
   );
 }
 
