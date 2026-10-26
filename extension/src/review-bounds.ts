@@ -21,12 +21,20 @@
  *      child with kill cause `review-skill-reread`. Once the child has
  *      reported (its prompt's `agent_end` arrived) the re-read cap has nothing
  *      left to stop, so the kill is suppressed.
- *   2. `createVerdictStop` — on each live assistant `message_end`, runs the
- *      SAME `readEnumMarker(text, "VERDICT", VERDICT_STATUSES)` the consumer
- *      (`parseVerdict`) runs, over the ACCUMULATED assistant text so far. One
- *      source of truth, so the live stop and the final parse cannot disagree:
- *      whatever stopped the child is exactly what `parseVerdict` reads. An
- *      absent or unparseable marker never stops.
+ *   2. `createVerdictStop` — on each live assistant `message_end`, reads the
+ *      verdict with the SAME `readEnumMarker(text, "VERDICT", VERDICT_STATUSES)`
+ *      the consumer (`parseVerdict`) runs, but only out of the FINAL text
+ *      block of a message that made NO tool calls. Concretely, a stop needs
+ *      all four: the message carries no `toolCall` block; the marker comes from
+ *      its LAST non-empty text block alone (no cross-message window); that one
+ *      block names exactly ONE distinct value of `VERDICT_STATUSES` (the
+ *      reviewer prompt's own menu names all four, and the adversarial review
+ *      reproduced a child ended on the echoed menu); and the matched line sits
+ *      outside any fenced code block. Anything else does not stop. When a stop
+ *      does fire, the fold sets the result text to this accumulator (see
+ *      `applyReviewBounds`), which is what makes the live status and
+ *      `parseVerdict(result.text)` the same value rather than two readers that
+ *      merely share a function. An absent or unparseable marker never stops.
  *
  * Scope is reviewer roles only — `code-review-specialist` and
  * `adversarial-developer`. The `developer` role `makeRunPhase` also spawns
@@ -38,12 +46,11 @@
  * every other cap.
  */
 
-import { VERDICT_STATUSES } from "./adversarial-verdict.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import { isSkillReadWith } from "./lens-skill-load-proof.ts";
 import { candidateDirs, resolveSkillDir, skillFileCandidates } from "./lens-skill-path.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
-import { readEnumMarker } from "./reply-markers.ts";
+import { verdictEndingMessage } from "./review-bounds-verdict.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -223,24 +230,24 @@ export interface VerdictStop {
 }
 
 /**
- * Assistant text blocks kept verbatim for the marker scan. The stop looks at
- * the NEWEST text plus a small look-back, never at the whole accumulation: a
- * 400-turn reviewer would otherwise re-parse its entire reply on every
- * `message_end`, which is quadratic in a child this bound exists to bound. The
- * look-back covers the one shape a newest-block-only rule misses — the verdict
- * at the end of one block and the findings in the next.
- */
-const VERDICT_SCAN_WINDOW = 8;
-
-/**
  * The live post-verdict stop. Accumulates every text block of every assistant
- * `message_end` (that accumulation is the RESULT), and asks the consumer's own
- * reader whether a verdict is in the tail of it.
+ * `message_end` (that accumulation is the RESULT the spawn reports when the
+ * stop fires), and decides from the message it is handed — never from a
+ * cross-message window. The first version read the newest eight blocks joined,
+ * so a menu echoed three turns earlier was still in the scan of the turn that
+ * stopped the child.
  *
- * The scan is a window, the stored text is not: `parseVerdict` will later read
- * the whole accumulated reply, so a verdict the window happened to miss is
- * still the verdict the loop reports — it simply costs one extra turn of tail
- * rather than a disagreeing verdict.
+ * The decision itself is `verdictEndingMessage` in review-bounds-verdict.ts:
+ * the LAST non-empty text block of a tool-free message, naming exactly one
+ * distinct verdict, on a line outside any fence. The reviewer's own brief
+ * quotes all four values as a menu, so "the marker appears somewhere in the
+ * tail" was never a question that could distinguish a verdict from a quotation.
+ *
+ * `text()` returns the whole accumulation, and the fold sets `result.text` to
+ * it whenever the stop fired — so the status the stop recorded and
+ * `parseVerdict(result.text).status` are the same value, and the findings text
+ * `parseVerdict` records alongside the status is the reviewer's whole report
+ * rather than its last paragraph.
  */
 export function createVerdictStop(): VerdictStop {
   // The same master switch as the re-read cap: with `PI_ENSEMBLE_DISPATCH_CAPS=0`
@@ -259,21 +266,15 @@ export function createVerdictStop(): VerdictStop {
       const msg = event.message;
       if (event.type !== "message_end" || msg?.role !== "assistant") return stopped !== undefined;
       if (msg.stopReason === "error" || msg.stopReason === "aborted") return stopped !== undefined;
-      let added = false;
       for (const block of msg.content ?? []) {
-        if (block.type === "text" && block.text) {
-          parts.push(block.text);
-          added = true;
-        }
+        if (block.type === "text" && block.text) parts.push(block.text);
       }
       if (stopped) return true;
       if (!active) return false;
-      // An event that added no text cannot carry a verdict; re-scanning the
-      // unchanged tail of the accumulation for it is the quadratic cost this
-      // window exists to remove.
-      if (!added) return false;
-      const tail = parts.slice(-VERDICT_SCAN_WINDOW).join("\n");
-      const hit = readEnumMarker(tail, "VERDICT", VERDICT_STATUSES);
+      // One reader, one rule, on the message in hand: no text block, a tool
+      // call anywhere in the message, or a last block that does not close on a
+      // single unfenced verdict — all return undefined and the child runs on.
+      const hit = verdictEndingMessage(msg);
       if (hit) stopped = hit;
       return stopped !== undefined;
     },

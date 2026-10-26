@@ -39,11 +39,7 @@ import {
   createVerdictStop,
   observeReviewBounds,
 } from "../src/review-bounds.ts";
-import {
-  applyReviewBounds,
-  endedAtVerdictStop,
-  failedByKill,
-} from "../src/spawn-review-bounds.ts";
+import { applyReviewBounds, endedAtVerdictStop, failedByKill } from "../src/spawn-review-bounds.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -86,7 +82,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   stop.observe(turn(text("Verification complete.\n\nVERDICT: APPROVED\n\nAll gates green.")));
 
   // The collapsed reply is the placeholder `collapseEvents` stamps for a child
-  // that produced no text — the case the accumulated reply exists to fill in.
+  // that produced no text — one of the forms the frozen accumulation replaces.
   const result = baseResult({ text: NO_TEXT_PLACEHOLDER });
   applyReviewBounds(
     {
@@ -216,7 +212,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     "the re-read cause still names its own knob",
   );
   assert(
-    !("review-post-verdict" in (stopped as Record<string, unknown> ? stopped : {})) ||
+    !("review-post-verdict" in ((stopped as Record<string, unknown>) ? stopped : {})) ||
       stopped.reviewStopReason === REVIEW_POST_VERDICT_STOP,
     "the stop never arrives wearing a killCause",
   );
@@ -301,7 +297,9 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
 
 // ── (6) the post-verdict stop stands down when the child has reported or the
 // current segment will retry: in both cases the reply is being delivered or is
-// about to be REPLAYED, so ending the child there discards it.
+// about to be REPLAYED, so ending the child there discards it. What the stop
+// accepts, and what the fold freezes when it fires, is pinned in
+// test-review-post-verdict-freeze.ts (the file-size split).
 {
   const stops = (over: Partial<ReviewBoundTargets>) => {
     const calls: string[] = [];
@@ -324,15 +322,13 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   const normal = stops({});
   // `markStopped` sits with the kill, not with the parse: it is what the fold
   // reads a clean end from, so it is recorded only on the branch that ends the
-  // child (the fold's own gate is pinned in section (7)).
+  // child (the fold's own gate is pinned in
+  // test-review-post-verdict-freeze.ts).
   assert(
     normal.join(",") === "markStopped,armBound,completePrompt,kill",
     `the stop records the end, then arms, closes stdin and kills (${normal.join(",")})`,
   );
-  assert(
-    !normal.some((c) => c.startsWith("cause:")),
-    "…and records no kill cause whatsoever",
-  );
+  assert(!normal.some((c) => c.startsWith("cause:")), "…and records no kill cause whatsoever");
   assert(
     stops({ reported: () => true }).length === 0,
     "no stop while the child has reported (its answer is in flight)",
@@ -343,11 +339,16 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   );
 }
 
-// ── (7) #1827 round 2 — the fold folds ONLY when the stop actually fired, and
-// only replaces a collapsed reply that said nothing.
+// ── (7) is the fold's own file: test-review-post-verdict-freeze.ts (#1827
+// round 3 — the freeze; split out for the 500-line cap).
+
+// ── (7) #1827 round 3 — the fold folds ONLY when the stop actually fired, and
+// when it fired the frozen accumulation IS the result text — unconditionally,
+// so parseVerdict(result.text) can never disagree with the stop's status.
 {
   // (a) A verdict PARSED but never acted on — the shape with the caps off, or
-  // of a verdict that arrived after the child had reported — stamps NOTHING.
+  // of a verdict that arrived after the child had reported — stamps NOTHING
+  // and leaves the collapsed reply exactly as it was.
   const stop = createVerdictStop();
   stop.observe(turn(text("VERDICT: APPROVED")));
   assert(stop.status() === "APPROVED", "a parsed verdict is available to the fold");
@@ -360,45 +361,65 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     (s) => lines.push(s),
     () => undefined,
   );
-  assert(
-    untouched.reviewStopReason === undefined,
-    "an unfired stop stamps no reviewStopReason",
-  );
+  assert(untouched.reviewStopReason === undefined, "an unfired stop stamps no reviewStopReason");
   assert(
     untouched.text === "VERDICT: APPROVED\n\nfull collapsed reply",
     "…and leaves the collapsed reply alone",
   );
   assert(lines.length === 0, "…and writes no attribution line");
 
-  // (b) A fired stop fills in a collapsed reply that carried nothing readable —
-  // empty, or either placeholder `collapseEvents` stamps.
-  for (const empty of ["", "(no output)", "(thinking content only - no text output)"]) {
-    const r = baseResult({ text: empty });
+  // (b) A fired stop replaces the reply in EVERY form, including one that
+  // already looked fine. The round-2 rule (replace only when the collapse was
+  // empty/a placeholder) is what this replaces: a collapsed reply that dropped
+  // or reordered the matched line left parseVerdict(result.text) disagreeing
+  // with the status that ended the child.
+  const DISAGREES = "Review complete.\n\nVERDICT: APPROVED\n\n(nothing to report)";
+  const cases: [string, string][] = [
+    ["", "empty"],
+    ["(no output)", "(no output)"],
+    ["(thinking content only - no text output)", "thinking-only placeholder"],
+    // The CRITICAL case: a non-empty collapsed reply whose own last VERDICT
+    // line is a DIFFERENT value from the one the stop matched.
+    [DISAGREES, "a collapsed reply carrying another verdict"],
+  ];
+  for (const [collapsed, label] of cases) {
+    const fired = createVerdictStop();
+    fired.observe(turn(text("Findings: the unbounded scan in observe().")));
+    fired.observe(turn(text("VERDICT: ISSUES_FOUND")));
+    fired.markStopped();
+    const r = baseResult({ text: collapsed });
     applyReviewBounds(
-      { stoppedByVerdict: true, verdictText: stop.text(), verdictStatus: stop.status() },
+      {
+        stoppedByVerdict: true,
+        verdictText: fired.text(),
+        verdictStatus: fired.status(),
+      },
       r,
       () => undefined,
       () => undefined,
     );
     assert(
-      r.text === "VERDICT: APPROVED" && r.reviewStopReason === REVIEW_POST_VERDICT_STOP,
-      `a fired stop replaces the no-reply form ${JSON.stringify(empty)} with the accumulation`,
+      r.text === fired.text() && r.reviewStopReason === REVIEW_POST_VERDICT_STOP,
+      `a fired stop replaces ${label} with the frozen accumulation`,
+    );
+    assert(
+      parseVerdict(r.text).status === fired.status() && fired.status() === "ISSUES_FOUND",
+      `…so parseVerdict(result.text) equals the stop's status (${label})`,
     );
   }
 
-  // (c) A fired stop does NOT overwrite a collapsed reply that says something:
-  // the collapse is the normal result and carries filtering the accumulator
-  // does not, so replacing it unconditionally would downgrade a good child.
+  // (c) An empty accumulation cannot wipe the result: nothing was frozen, so
+  // the collapsed reply stays and the clean end is still recorded.
   const kept = baseResult({ text: "collapsed reply that already has the verdict" });
   applyReviewBounds(
-    { stoppedByVerdict: true, verdictText: "different accumulation", verdictStatus: "APPROVED" },
+    { stoppedByVerdict: true, verdictText: "   ", verdictStatus: "APPROVED" },
     kept,
     () => undefined,
     () => undefined,
   );
   assert(
     kept.text === "collapsed reply that already has the verdict",
-    "a fired stop keeps the collapsed text when it is not empty/placeholder",
+    "a fired stop with nothing accumulated keeps the collapsed text",
   );
   assert(
     kept.reviewStopReason === REVIEW_POST_VERDICT_STOP,

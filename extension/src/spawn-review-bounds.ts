@@ -16,13 +16,13 @@
  * one of them forgot to exempt silently marks a completed review as failed. A
  * clean end therefore lives in its own field, `reviewStopReason`, which no
  * failure path reads. `ok` stays true and the reply is the accumulated
- * assistant text the stop parsed its verdict out of (the SAME string
- * `parseVerdict` reads, which is what keeps the live stop and the loop's final
- * parse from disagreeing).
+ * assistant text the stop parsed its verdict out of — set as `result.text`
+ * whenever the stop fired, which is what makes the stop's status and
+ * `parseVerdict(result.text).status` one value rather than two readers that
+ * merely share a function.
  */
 
 import type { ChildProcess } from "node:child_process";
-import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import {
   REVIEW_POST_VERDICT_STOP,
@@ -167,7 +167,8 @@ export interface ReviewBoundOutcome {
    *  with `PI_ENSEMBLE_DISPATCH_CAPS=0` a verdict is still parsed into the
    *  accumulation and this stays false, so nothing is stamped. */
   stoppedByVerdict: boolean;
-  /** The accumulated assistant text the verdict was parsed out of. */
+  /** The accumulated assistant text the verdict was parsed out of. When the
+   *  stop fired this becomes `result.text` outright — the frozen reply. */
   verdictText?: string;
   /** The parsed verdict, for the stderr line that names what was accepted. */
   verdictStatus?: string;
@@ -208,17 +209,18 @@ export function applyReviewBounds(
     }
   }
   if (!outcome.stoppedByVerdict) return;
-  // #1827 round 2 — replace the collapsed reply with the accumulation ONLY
-  // when the collapse produced nothing to read: an empty string or one of the
-  // two placeholders `collapseEvents` stamps (`"(no output)"`, or the
-  // thinking-only marker from `lens-review-incomplete.ts`). The collapsed text
-  // is the normal result and carries the model/tool-use filtering the
-  // accumulator does not, so overwriting it unconditionally would downgrade a
-  // good result on a child that happened to print a verdict.
-  if (replaceableText(result.text)) {
-    const accumulated = outcome.verdictText?.trim();
-    if (accumulated) result.text = accumulated;
-  }
+  // #1827 round 3 — when the stop FIRED, the result text IS the frozen
+  // accumulation, unconditionally. The round-2 rule replaced the collapsed
+  // reply only when it was empty or a placeholder, which left the two readers
+  // free to disagree: `collapseEvents` filters model/tool-use noise and can end
+  // up dropping or reordering the very line the stop matched, so
+  // `parseVerdict(result.text)` could report a different status from the stop
+  // that ended the child. The stop's own word is the authoritative end of this
+  // review, so its accumulator wins outright. When the stop did NOT fire we
+  // return above and the collapsed reply is left alone — the accumulation runs
+  // whatever the caps say, and an unfired stop has no authority over the text.
+  const accumulated = outcome.verdictText?.trim();
+  if (accumulated) result.text = accumulated;
   // A provider error-stop is still the fault it was: ending the child at its
   // verdict does not turn a severed stream into a completed turn.
   result.ok = !result.errorStop;
@@ -228,16 +230,6 @@ export function applyReviewBounds(
   appendStderr(
     `\n[pi-rukas] ended the reviewer at its VERDICT marker (${outcome.verdictStatus ?? "unknown"}) — its post-verdict tool calls were stopped`,
   );
-}
-
-/** The two spellings of "this child gave no reply": the thinking-only marker
- *  and the empty-reply fallback, both from `collapseEvents`. */
-const NO_REPLY_PLACEHOLDERS: readonly string[] = [NO_TEXT_PLACEHOLDER, "(no output)"];
-
-/** Is the collapsed result text one the accumulated reply may stand in for? */
-function replaceableText(text: string | undefined): boolean {
-  const t = text?.trim() ?? "";
-  return t === "" || NO_REPLY_PLACEHOLDERS.includes(t);
 }
 
 /**
