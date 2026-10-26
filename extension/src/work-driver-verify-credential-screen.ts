@@ -60,15 +60,17 @@ const RUN_SPLIT_RE = /[^A-Za-z0-9+/]+/;
  * characters that reads as key material.
  *
  * The run rule is ONE rule, asked per separator-free RUN — `hasOpaqueRun` from
- * `work-driver-verify-tally.ts`, its own conjunction, its own minimum. A second copy
- * of "a long run is opaque" is a second rule that drifts, and #1841 round 4 is
- * precisely what drift looks like: this module used to test ONE WHOLE LINE against a
- * single `{20,}` regex, so a gate line that merely cited a path
- * (`see /home/dev/work/src/some/really/long/path/name/index.tsx`) came back refused —
- * punctuation the sentence joined is one long span to a whole-line test, and every
- * run inside it is prose. An arm that fires on prose is an arm that gets switched
- * off, which is how a credential screen dies. The tally's rule was already run-wise
- * for exactly that reason; the two now cannot disagree.
+ * `work-driver-verify-tally.ts`, its own conjunction, its own minimum, and NO path
+ * exemption. A second copy of "a long run is opaque" is a second rule that drifts, and
+ * #1841 is what drift looks like in both directions: this module used to test ONE WHOLE
+ * LINE against a single `{20,}` regex, so a gate line that merely cited a path came back
+ * refused — punctuation the sentence joined is one long span to a whole-line test — and
+ * the revision that fixed it exempted runs whose `/`-separated pieces all looked like
+ * path segments, which a key body split into two short-enough pieces walks through
+ * (#1841 round 5: the exemption is deleted, and the run rule is main's rule again). The
+ * run split is what keeps the arm off prose — every run inside a `/`-joined path is
+ * short, so the sentence above is judged piece by piece and not as a span — and the
+ * refusal of a long path is the deliberate cost.
  *
  * The two differences that remain are deliberate and both make THIS arm narrower,
  * because a verify-evidence line is prose while a tally name is a path:
