@@ -19,6 +19,7 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../src/dispatch.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { cleanTreeDiffExec } from "./lib/git-worktree-fixture.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
@@ -111,6 +112,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           repoRoot: dir,
           issue: 991,
           issueBodyFetcherFn: mockIssueBodyOk,
+          diffExecFn: cleanTreeDiffExec(),
           verifyExecFn: hollowExec,
           dispatchFn: async (_pi, spec, opts) => {
             const label = opts?.label ?? spec.role;
@@ -197,6 +199,10 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           issue: 992,
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
+          // #1634 — the fixture declares worktree paths it never creates, so the
+          // gate's own diff read would call them unreadable and the cycle would
+          // park on an infra failure before reaching the commit-pr gate R4 tests.
+          diffExecFn: cleanTreeDiffExec(),
           adversarialLoopFn: async () =>
             mkResult({
               role: "adversarial-developer",
@@ -300,6 +306,10 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           issue: 993,
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
+          // #1634 — the fixture declares worktree paths it never creates, so the
+          // gate's own diff read would call them unreadable and the cycle would
+          // park on an infra failure before reaching the commit-pr gate R4 tests.
+          diffExecFn: cleanTreeDiffExec(),
           adversarialLoopFn: async () =>
             mkResult({
               role: "adversarial-developer",

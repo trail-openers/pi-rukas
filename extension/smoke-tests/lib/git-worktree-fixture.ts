@@ -264,6 +264,90 @@ export function execFailingArgs(failWhenArgsInclude: readonly string[]): ExecFn 
   };
 }
 
+/** A 40-hex object id for a stubbed `rev-parse --verify` (the shape `refResolves` demands). */
+const STUB_OBJECT_ID = `${"f".repeat(39)}1`;
+
+/** The argv `readWorktreeDiff`'s dirt probe sends (work-driver-diff.ts). */
+const WORKTREE_DIFF_STATUS_ARGV = ["status", "--porcelain", "-z", "--untracked-files=all"] as const;
+
+/**
+ * Does `cmd` (as `commandOf` renders it) name a dirty-worktree probe that also
+ * asks about UNTRACKED files?
+ *
+ * The mechanized-commit fixtures script `git status --porcelain` to make each
+ * worktree look dirty to the develop/commit-pr gates. Those reads now arrive in
+ * ARGV form, so a `cmd.startsWith("git status --porcelain")` test matches only
+ * the shell-string caller and the argv one falls through to the stub's default
+ * `{stdout:""}` — a worktree that reads clean, and an integration the fixture
+ * meant to exercise never runs. Both spellings render to the same string here.
+ *
+ * It is deliberately NOT a bare `git status --porcelain` match: `git status
+ * --ignored=matching --porcelain -uall` is a DIFFERENT question ("what residue
+ * did the cycle leave behind?") and the fixtures whose whole point is a dirty
+ * or residue-laden root distinguish the two. Requiring an untracked flag keeps
+ * that distinction, and every untracked flag `git` accepts appears here so a
+ * future rename in `src/` widens the match rather than silently narrowing it.
+ */
+export function isDirtyWorktreeRead(cmd: string): boolean {
+  if (!cmd.startsWith("git status --porcelain")) return false;
+  return /(?:^|\s)(?:-z|-u|-uall|--untracked-files(?:=\S+)?)(?:\s|$)/.test(cmd);
+}
+
+/**
+ * The argv-form sibling of `isDirtyWorktreeRead`, for a stub that receives the
+ * raw `opts.argv` (work-driver-diff.ts's dirt probe and its `-z` twin).
+ */
+export function isDirtyWorktreeArgv(argv: readonly string[] | undefined): boolean {
+  if (!argv) return false;
+  return (
+    argv.length >= WORKTREE_DIFF_STATUS_ARGV.length &&
+    WORKTREE_DIFF_STATUS_ARGV.every((tok, i) => argv[i] === tok)
+  );
+}
+
+/**
+ * An executor that answers the adversarial diff read the way a real, committed,
+ * CLEAN tree does, without the tree existing.
+ *
+ * Dozens of driver fixtures declare worktree paths they never create
+ * (`${dir}/.worktrees/task-a`) because the test exercises a step AFTER the
+ * review — commit-pr consolidation, the converge gate, deck ownership, routing.
+ * That was harmless while `readWorktreeDiff` answered `""` for every failure
+ * mode and the gate read `""` as approved-with-zero-rounds. Since #1634 a tree
+ * that is not a repository (or has vanished) is the UNREADABLE class and the
+ * gate parks the cycle on an infrastructure failure, so a fixture that never
+ * reaches the step it names is measuring something else.
+ *
+ * The alternative — `driverWorktrees()` on the map — is the right answer when
+ * the test inspects the tree (the fix pass writes into it, a status read is
+ * asserted). It is the wrong answer when the fixture's whole point is the
+ * driver's own untracked records sitting inside the tree: a real repository
+ * then sees `.pi/verify-cmd` and friends as dirt, and the read legitimately
+ * refuses to call the diff empty. This executor is the third option: it answers
+ * the five git calls `readWorktreeDiff` makes — `rev-parse --verify --quiet HEAD`
+ * (a HEAD exists), the committed range (blank), `diff HEAD` (blank) and
+ * `status --porcelain -z` (no entries) — so the read returns
+ * `{ ok: true, empty: true }` and the gate records its normal empty-diff skip.
+ *
+ * It is scoped to `ctx.diffExecFn`, which reaches the fan-out's FIRST read and
+ * its per-round re-read and NOTHING else: every other git call in the cycle
+ * still goes through the test's own `verifyExecFn` stub or the real `execp`.
+ * A command it does not recognise resolves to an empty stdout rather than
+ * throwing, so a stray call cannot manufacture an unreadable verdict; if that
+ * ever hides a real question, `passthroughExec()` is the sibling for a fixture
+ * whose tree really is a repository.
+ */
+export function cleanTreeDiffExec(): ExecFn {
+  return async (_cmd, opts) => {
+    const argv = opts?.argv ?? [];
+    // Only the HEAD probe prints anything; every other call (the range diff,
+    // the fallback diff, the porcelain probe) answers with a blank stdout,
+    // which is what a clean committed tree prints.
+    const stdout = argv[0] === "rev-parse" ? `${STUB_OBJECT_ID}\n` : "";
+    return { stdout, stderr: "" };
+  };
+}
+
 /**
  * #1634 — upgrade the very common `mkdtempSync` + `mkdirSync(<dir>/.git/info)`
  * fake-tree fixture into something git can actually answer, WITHOUT changing

@@ -19,7 +19,13 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { git, singleState, tmpDir, twoWorkstreamState } from "./lib/adversarial-fix-fixtures.ts";
+import {
+  cleanTreeDiffExec,
+  git,
+  singleState,
+  tmpDir,
+  twoWorkstreamState,
+} from "./lib/adversarial-fix-fixtures.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
@@ -80,6 +86,14 @@ function ctxFor(
     issue: 1114,
     issueBodyFetcherFn: async () => ({ stdout: "mock" }),
     adversarialLoopFn: loop,
+    // #1634 — these fixtures are scratch trees, not repositories, so the gate's
+    // own diff read would call them UNREADABLE and the step would run as an
+    // infrastructure failure instead of the routing case each block names. The
+    // tests inject their own reviewer replies and never inspect the diff; this
+    // answers the read the way a clean committed tree would. Case A writes a
+    // dirty file on purpose, and the read agrees — an empty range plus one
+    // porcelain entry is exactly "uncommitted work the diff did not show".
+    diffExecFn: cleanTreeDiffExec(),
     dispatchFn: async (_pi, spec) => {
       devSpawns.push(spec.role);
       throw new Error(`stub dispatcher: ${spec.role}`);
