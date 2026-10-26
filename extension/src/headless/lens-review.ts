@@ -19,6 +19,7 @@
  */
 
 import type { LensLedgerOutcome } from "../lens-ledger.ts";
+import { forcedFullText } from "../lens-review-delta-disclose.ts";
 import type { LensReviewSummary, Verdict } from "../lens-review-format.ts";
 import { runLensReview } from "../lens-review.ts";
 import { admitLensRound } from "../lens-round-cap.ts";
@@ -124,7 +125,22 @@ export async function runLensReviewVerb(
       bySeverity: summary.bySeverity,
       findings: summary.findings,
       ...(summary.note ? { note: summary.note } : {}),
-      ...(summary.deltaReview ? { deltaReview: summary.deltaReview } : {}),
+      // #1832 — mirror the forced-full marker so a headless caller sees a
+      // review that was full BECAUSE a CRITICAL row is pending, not one that
+      // was full by default.
+      ...(summary.deltaReview
+        ? {
+            deltaReview: {
+              ...summary.deltaReview,
+              ...(summary.deltaReview.forcedFull
+                ? {
+                    forcedFull: summary.deltaReview.forcedFull,
+                    forcedFullText: forcedFullText(summary.deltaReview.forcedFull),
+                  }
+                : {}),
+            },
+          }
+        : {}),
       ...(summary.usage ? { usage: summary.usage } : {}),
       ...(ledger ? { ledger } : {}),
     },

@@ -12,6 +12,7 @@ import { diffBaseOf } from "./lens-review-changed-ranges.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   type AutoDeltaInfo,
+  type ForcedFullReason,
   deltaFallbackNote,
   deltaReviewOf,
 } from "./lens-review-delta-disclose.ts";
@@ -196,6 +197,9 @@ export async function runLensReview(opts: {
   // review — a computed diff is never silently empty, never an approval
   // (same rule as #384). Blocked rows use the EXPECTED roster above.
   let delta: AutoDeltaInfo | undefined;
+  /** #1832 — set when the automatic delta stood down for a full review; the
+   * summary's `deltaReview.forcedFull` renders it in the `Mode:` line. */
+  let forcedFull: ForcedFullReason | undefined;
   let diff = "";
   let context: string;
   // #1128 — the automatic delta reads the SAME ledger key the round cap
@@ -219,6 +223,7 @@ export async function runLensReview(opts: {
   });
   if (resolved.kind === "ok") {
     diff = resolved.diff ?? "";
+    forcedFull = resolved.forcedFull;
     if (resolved.delta) {
       delta = {
         since: resolved.delta.since,
@@ -485,7 +490,13 @@ export async function runLensReview(opts: {
       // budget) is surfaced on the summary so the driver emits the fixed-literal
       // cap-hit (F4g) instead of a silent 1-of-6 loss.
       ...capKillSummary(lensResults),
-      ...(delta ? { deltaReview: deltaReviewOf(delta) } : {}),
+      ...(delta
+        ? { deltaReview: deltaReviewOf(delta) }
+        : forcedFull
+          ? // #1832 — a full review with no delta to describe: the marker alone
+            // carries the reason to the `Mode:` line and the headless JSON.
+            { deltaReview: { since: "", head: "", forcedFull } }
+          : {}),
     },
     hasCritical,
   );

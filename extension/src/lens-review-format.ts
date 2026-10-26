@@ -88,7 +88,18 @@ export interface LensReviewSummary {
    * as distinct from an operator-supplied `since`. The findings it produced are
    * findings on the DELTA; a later full review still owns the rest of the branch.
    */
-  deltaReview?: { since: string; head: string; auto?: boolean; fallback?: string };
+  deltaReview?: {
+    since: string;
+    head: string;
+    auto?: boolean;
+    fallback?: string;
+    /** #1832 — this review ran FULL although an automatic delta was available,
+     * because an open CRITICAL row is pending (`open-critical`) or the findings
+     * store could not be read (`findings-unreadable`). A CRITICAL row retires
+     * only on a complete full review, so the delta stands down. When this is the
+     * only field set, `since`/`head` are empty: there is no delta to name. */
+    forcedFull?: "open-critical" | "findings-unreadable";
+  };
   /**
    * #973 — the no-review outcome (decision 4): the delta was empty (nothing
    * changed since the last recorded lens run), so no review ran at all. The

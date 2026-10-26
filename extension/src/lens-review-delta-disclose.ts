@@ -26,6 +26,28 @@ export interface AutoDeltaInfo {
   head: string;
   auto?: boolean;
   fallback?: string;
+  /** Why a review that an automatic delta WOULD have produced instead ran as a
+   * full review (#1832). Set only on a NON-delta outcome — a delta and a
+   * forced-full veto are mutually exclusive — and rendered in the `Mode:` line
+   * so the operator can tell a forced full review from an ordinary one. */
+  forcedFull?: ForcedFullReason;
+}
+
+/** #1832 — the two reasons the automatic delta stands down for a full review. */
+export type ForcedFullReason = "open-critical" | "findings-unreadable";
+
+/**
+ * #1832 — the `Mode:` line's parenthetical for a forced full review, and the
+ * only place its wording is built. An open CRITICAL row can only retire on a
+ * COMPLETE full review (`rowFate` resolves nothing on a delta), so the automatic
+ * delta stands down when one is pending; an unreadable findings store gets the
+ * same treatment, because "unreadable" is not "absent" and a delta chosen on
+ * that reading is the very delta the fix exists to prevent.
+ */
+export function forcedFullText(reason: ForcedFullReason): string {
+  return reason === "open-critical"
+    ? "forced: an open CRITICAL finding is pending"
+    : "forced: the findings memory could not be read";
 }
 
 /** The fallback sentence, built once for every surface that discloses it (the
@@ -48,10 +70,12 @@ export function deltaReviewOf(delta: AutoDeltaInfo): {
   since: string;
   head: string;
   fallback?: string;
+  forcedFull?: ForcedFullReason;
 } {
   return {
     since: delta.since,
     head: delta.head,
     ...(delta.fallback ? { fallback: delta.fallback } : {}),
+    ...(delta.forcedFull ? { forcedFull: delta.forcedFull } : {}),
   };
 }

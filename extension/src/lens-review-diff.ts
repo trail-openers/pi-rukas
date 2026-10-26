@@ -37,10 +37,11 @@ import {
   resolveDeltaSince,
   writeCarriedEntry,
 } from "./lens-review-auto-delta.ts";
-import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
+import type { AutoDeltaInfo, ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import type { Verdict } from "./lens-review.ts";
 import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
+import { branchHasOpenCriticalRow } from "./review-findings-critical-probe.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
 
@@ -175,6 +176,18 @@ export async function resolveDeltaDiff(
  * range. An empty delta is the no-review outcome (decision 4 — no fan-out,
  * no ledger entry); a problem is a block.
  *
+ * #1832 — one thing vetoes the AUTOMATIC delta: a still-open, line-bearing
+ * CRITICAL row on the branch (or a findings store that cannot be read to rule
+ * one out). `rowFate` resolves a CRITICAL row only on a COMPLETE full review,
+ * so a delta-only follow-up could never retire one, and one since-fixed
+ * CRITICAL would hold every later verdict — and the merge guard — blocked
+ * forever. The veto sits HERE rather than at the two callers (the
+ * `dispatch_lens_review` tool and the /work lens step) so one rule covers both.
+ * It applies to the AUTOMATIC delta only: an explicit `since` is an operator's
+ * instruction and still wins. When the veto produces an EMPTY range (the tip is
+ * the recorded head) the outcome is the existing #1176 carry / no-review path —
+ * a forced full review never turns an unchanged tip into a blocked review.
+ *
  * Every `ok` outcome says WHO produced its diff. `diffSource: "caller"` is the
  * pasted-string arm — a value the review never read from git, which the advisory
  * split therefore does not judge findings against; `"computed"` is every
@@ -196,6 +209,10 @@ export async function resolveReviewDiff(opts: {
       kind: "ok";
       diff: string;
       delta?: AutoDeltaInfo;
+      /** #1832 — set on an `ok` outcome that is a FULL review because the
+       * automatic delta stood down (an open CRITICAL row is pending, or the
+       * findings store is unreadable). Never set together with `delta`. */
+      forcedFull?: ForcedFullReason;
       /** Who produced `diff` — see the header: only a `computed` range is the
        * split's source of truth for what the PR changed. */
       diffSource: "caller" | "computed";
@@ -230,11 +247,16 @@ export async function resolveReviewDiff(opts: {
   // resolves to undefined and the review is full.
   const autoSince =
     !opts.full && !opts.since && opts.branch
-      ? await resolveDeltaSince(opts.branch, opts.head, opts.cwd)
+      ? await vetoAutoDeltaForOpenCritical(
+          opts.branch,
+          opts.cwd,
+          await resolveDeltaSince(opts.branch, opts.head, opts.cwd),
+        )
       : undefined;
-  const since = opts.since ?? autoSince;
+  const forcedFullReason = autoSince?.reason;
+  const since = opts.since ?? autoSince?.since;
   // #1128 — the automatic delta resolves its hunk-level patch first.
-  if (autoSince) return resolveAutoDelta(opts, autoSince);
+  if (autoSince?.since) return resolveAutoDelta(opts, autoSince.since);
   if (since) {
     const d = await resolveDeltaDiff(since, opts.head, opts.cwd);
     if (d.noReview) {
@@ -252,6 +274,11 @@ export async function resolveReviewDiff(opts: {
       head: d.head,
     };
   }
+  // #1832 — the automatic delta was available but stood down. Record why, and
+  // let the full-range arm below produce the whole-branch diff. When that range
+  // turns out empty the existing #1176 paths decide it, so this never becomes a
+  // blocked review for a tip with nothing new on it.
+  const forcedFull = opts.full || opts.since ? undefined : forcedFullReason;
   const resolution = await resolveLensDiff(opts);
   if (resolution.problem) {
     return { kind: "blocked", problem: resolution.problem };
@@ -270,7 +297,34 @@ export async function resolveReviewDiff(opts: {
     diffSource: resolution.diffSource ?? "caller",
     ...(resolution.base !== undefined ? { base: resolution.base } : {}),
     ...(opts.head !== undefined ? { head: opts.head } : {}),
+    ...(forcedFull ? { forcedFull } : {}),
   };
+}
+
+/**
+ * #1832 — veto the automatic delta when an open, line-bearing CRITICAL row may
+ * still be standing on this branch. Returns the delta's `since` when it may be
+ * used, and `undefined` (→ a full review) when it may not, with `reason` saying
+ * which of the two causes fired.
+ *
+ * The probe is consulted only when an automatic delta actually resolved: with
+ * no ledger entry there is no delta to veto and no round to force, and a review
+ * that was already going to be full costs no extra read.
+ */
+async function vetoAutoDeltaForOpenCritical(
+  branch: string,
+  cwd: string | undefined,
+  autoSince: string | undefined,
+): Promise<{ since: string | undefined; reason?: ForcedFullReason }> {
+  if (!autoSince) return { since: undefined };
+  const probe = await branchHasOpenCriticalRow(cwd ?? process.cwd(), branch);
+  if (probe.kind === "absent") return { since: autoSince };
+  const reason: ForcedFullReason =
+    probe.kind === "present" ? "open-critical" : "findings-unreadable";
+  trace(
+    `lens-review: automatic delta since ${autoSince.slice(0, 8)} vetoed — full review (${reason})`,
+  );
+  return { since: undefined, reason };
 }
 
 type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
