@@ -42,6 +42,7 @@ import {
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 import { forgePublishCheck } from "./work-driver-commit-hygiene.ts";
 export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
 import type {
@@ -359,7 +360,12 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       );
     },
 
-    prMerge: async (number, method: "squash" | "merge" | "rebase" = "squash", subject?: string) => {
+    prMerge: async (
+      number,
+      headOid,
+      method: "squash" | "merge" | "rebase" = "squash",
+      subject?: string,
+    ) => {
       // #1788 — the squash subject a driver composes from the issue title is
       // published as the commit message on main, so it is a public text surface
       // like a title or a body, and it is checked before the merge runs. A
@@ -368,7 +374,15 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         subject === undefined
           ? undefined
           : (await checkPublicText("merge commit subject", subject)).text;
-      return run(cmds.prMergeCmd(forge, number, method, mergeSubject), (stdout) => stdout);
+      // #1533 — the pin is part of this seam's contract, so a call that cannot
+      // name the head it approves fails HERE rather than emitting an unpinned
+      // command. The adapter is the one place the command is built.
+      if (!isFullCommitSha(headOid)) {
+        throw new Error(
+          `pr merge of PR ${number} refuses: the head OID to pin is missing or not a full 40-char SHA`,
+        );
+      }
+      return run(cmds.prMergeCmd(forge, number, headOid, method, mergeSubject), (stdout) => stdout);
     },
 
     prReady: (number) => run(cmds.prReadyCmd(forge, number), () => undefined),

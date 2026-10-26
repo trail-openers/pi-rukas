@@ -30,6 +30,9 @@ resetDenylistCacheForTests();
 
 const shellExec: VerifyExecFn = (async () => ({ stdout: "MERGED\n", stderr: "" })) as VerifyExecFn;
 
+/** #1533 — every merge now names the verified head it is pinned to. */
+const HEAD_OID = "cd34".repeat(10);
+
 /** A forge whose `prMerge` refuses the way the real adapter does: by throwing. */
 function throwingForge(): Forge {
   const err = new PublicHygieneError(
@@ -55,6 +58,7 @@ function throwingForge(): Forge {
       shellExec,
       dir,
       `feat: ship ${TERM}`,
+      HEAD_OID,
       async () => throwingForge(),
     );
   } catch (err) {
@@ -87,6 +91,7 @@ function throwingForge(): Forge {
     shellExec,
     dir,
     "feat: a clean subject",
+    HEAD_OID,
     async () => boomForge,
   )) as { ok?: boolean; reason?: string };
   assert(
@@ -112,6 +117,7 @@ function throwingForge(): Forge {
       exec,
       dir,
       `feat: ship ${TERM}`,
+      HEAD_OID,
       async () => undefined,
     );
   } catch (err) {

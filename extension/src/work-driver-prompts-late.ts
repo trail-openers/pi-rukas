@@ -1,3 +1,4 @@
+import { prMergeCmd } from "./forge-commands.ts";
 /**
  * /work driver — inline prompt builders for the late pipeline steps.
  *
@@ -334,6 +335,10 @@ export function inlineMergePrompt(
   prNumber: number,
   mergeMethod: MergeMethod,
   scratchDirAbs: string,
+  // #1533 — the head this cycle's review covered. REQUIRED: the fallback merges
+  // the same thing the mechanized path was refused, so it must carry the same
+  // pin or the fallback is the way past the pin.
+  headOid: string,
 ): string {
   const issueList = issues.map((n) => `#${n}`).join(", ");
   const issueLines = issues
@@ -344,9 +349,10 @@ export function inlineMergePrompt(
     "",
     "CI is green and lens-review APPROVED. Merge the PR:",
     "",
-    `  1. \`gh pr merge ${prNumber} --${mergeMethod} --delete-branch\` — use the specified merge method. Do NOT change it.`,
+    `  1. \`${prMergeCmd("github", prNumber, headOid, mergeMethod)}\` — use the specified merge method AND the specified head pin. Do NOT change either.`,
+    `     The pin is not decoration: it is the commit this cycle's review covered (${headOid}). If the forge has a different head, the command refuses, and that refusal is the answer — see step 3.`,
     "  2. On success, `gh pr merge` prints the merge commit SHA. End your reply with `merge-commit: <sha>` so the driver captures it on the merged event.",
-    "  3. If the merge fails (auth, branch protection, conflicts, missing required review), report the gh error verbatim and end with `merge-commit: FAILED — <one-line reason>` — DO NOT retry. The driver routes failures through cap-hit handoff.",
+    "  3. If the merge fails (auth, branch protection, conflicts, missing required review, or the head no longer matching the pin), report the gh error verbatim and end with `merge-commit: FAILED — <one-line reason>` — DO NOT retry, and above all DO NOT re-run the merge without the pin or with a different one. The driver routes failures through cap-hit handoff.",
     "",
     "Active issues that will auto-close on merge:",
     issueLines,

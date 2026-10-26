@@ -32,6 +32,7 @@
 
 import type { DecisionWhere } from "./decision-seam.ts";
 import { mergeEvidenceViewCmd, prChecksCmd } from "./forge-commands.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import {
   type DoctrineDoc,
@@ -128,6 +129,16 @@ export async function resolveMergeAuthority(
 // persisted field and the runtime type).
 export type { EvidenceFailureKind } from "./workflow-state-cap.ts";
 
+/**
+ * #1533 — the full 40-char commit OID the CLI reports for the PR head, or
+ * `undefined`. Deliberately NOT `isFullCommitSha` here: this function keeps the
+ * raw value so the caller can name what it got when the shape is wrong (an
+ * abbreviated OID, a branch name) instead of reporting a bare absence.
+ */
+function readOid(value: unknown): string | undefined {
+  return typeof value === "string" && /^[0-9a-fA-F]{7,40}$/.test(value) ? value : undefined;
+}
+
 export interface MergeEvidence {
   ok: boolean;
   /** Why not, when `ok` is false — operator-facing. */
@@ -138,6 +149,19 @@ export interface MergeEvidence {
   failing: string[];
   /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
   inconclusive: string[];
+  /**
+   * #1533 — the PR head the CI verdict was read at, from the SAME bounded read
+   * that supplied `mergeStateStatus`. One read, one moment: the pin and the CI
+   * answer describe the same state of the forge, so a head that moved between
+   * the two cannot be papered over by two reads that disagree.
+   *
+   * `undefined` means the read did not answer, failed, or answered with
+   * something that is not a commit OID — all three are refusals, never a
+   * license to merge unpinned. The merged step decides; this type only reports.
+   */
+  headOid?: string;
+  /** Why `headOid` is absent, in the operator's words (names the failed read). */
+  headOidError?: string;
 }
 
 interface PrCheckRow {
@@ -173,12 +197,19 @@ export async function gatherMergeEvidence(
   prNumber: number,
 ): Promise<MergeEvidence> {
   let state: { mergeStateStatus?: string; state?: string };
+  // #1533 — the head OID the CI verdict was read at, from this one read.
+  let headOid: string | undefined;
+  let headOidError: string | undefined;
   try {
     const { stdout } = await execFn(mergeEvidenceViewCmd(prNumber), {
       cwd: repoRoot,
       maxBuffer: 256 * 1024,
     });
-    const parsed = JSON.parse(stdout) as { mergeStateStatus?: unknown; state?: unknown };
+    const parsed = JSON.parse(stdout) as {
+      mergeStateStatus?: unknown;
+      state?: unknown;
+      headRefOid?: unknown;
+    };
     state = {
       // `mergeStateStatus` is a string the CLI passes through; it lands
       // verbatim in operator-facing handoffs, so bound it on read — every
@@ -189,6 +220,17 @@ export async function gatherMergeEvidence(
           : undefined,
       state: typeof parsed.state === "string" ? parsed.state : undefined,
     };
+    const raw = typeof parsed.headRefOid === "string" ? parsed.headRefOid.trim() : undefined;
+    if (raw === undefined || raw === "") {
+      headOidError = `the PR-state read returned no head OID for PR #${prNumber}`;
+    } else if (!isFullCommitSha(raw)) {
+      // Named rather than blanked: an abbreviated or non-hex value is a
+      // different fault from an absent one, and the operator has to be able to
+      // tell "the forge said nothing" from "the forge said something odd".
+      headOidError = `the PR-state read returned a head OID that is not a full 40-char SHA for PR #${prNumber} (got ${raw.slice(0, 48)})`;
+    } else {
+      headOid = raw;
+    }
   } catch (err) {
     return {
       ok: false,
@@ -196,6 +238,7 @@ export async function gatherMergeEvidence(
       reason: `could not read PR state: ${(err as Error).message?.slice(0, 160)}`,
       failing: [],
       inconclusive: [],
+      headOidError: `the PR-state read for PR #${prNumber} failed: ${(err as Error).message?.slice(0, 120)}`,
     };
   }
 
@@ -284,6 +327,8 @@ export async function gatherMergeEvidence(
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive,
+      ...(headOid ? { headOid } : {}),
+      ...(headOidError ? { headOidError } : {}),
     };
   }
   if (inconclusive.length > 0) {
@@ -293,6 +338,8 @@ export async function gatherMergeEvidence(
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive,
+      ...(headOid ? { headOid } : {}),
+      ...(headOidError ? { headOidError } : {}),
     };
   }
   // `mergeStateStatus` is the authoritative verdict — it already encodes the
@@ -306,6 +353,8 @@ export async function gatherMergeEvidence(
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive,
+      ...(headOid ? { headOid } : {}),
+      ...(headOidError ? { headOidError } : {}),
     };
   }
   if (!rowsRead) {
@@ -323,6 +372,8 @@ export async function gatherMergeEvidence(
         mergeStateStatus: state.mergeStateStatus,
         failing: [],
         inconclusive: [],
+        ...(headOid ? { headOid } : {}),
+        ...(headOidError ? { headOidError } : {}),
       };
     }
     return {
@@ -333,6 +384,8 @@ export async function gatherMergeEvidence(
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive: [],
+      ...(headOid ? { headOid } : {}),
+      ...(headOidError ? { headOidError } : {}),
     };
   }
   if (rows.length === 0) {
@@ -342,9 +395,19 @@ export async function gatherMergeEvidence(
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive: [],
+      ...(headOid ? { headOid } : {}),
+      ...(headOidError ? { headOidError } : {}),
     };
   }
-  return { ok: true, mergeStateStatus: state.mergeStateStatus, failing: [], inconclusive: [] };
+  return {
+    ok: true,
+    mergeStateStatus: state.mergeStateStatus,
+    failing: [],
+    inconclusive: [],
+    // #1533 — the verified head rides out with the verdict it describes.
+    ...(headOid ? { headOid } : {}),
+    ...(headOidError ? { headOidError } : {}),
+  };
 }
 
 /**

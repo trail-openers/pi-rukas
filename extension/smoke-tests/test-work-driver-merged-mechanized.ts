@@ -15,10 +15,12 @@ import { type VerifyExecFn, restoreCheckout } from "../src/work-driver-git.ts";
 import {
   deriveMergeMethod,
   executeAndVerifyMerge,
+  isHeadPinRefusal,
   mechanizedMerge,
 } from "../src/work-driver-merged-mechanized.ts";
 import { runMerged } from "../src/work-driver-merged.ts";
 import { inlineMergePrompt } from "../src/work-driver-prompts-late.ts";
+import { prMergeCmd as prMergeCmdCapture } from "../src/forge-commands.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
 import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
@@ -81,6 +83,8 @@ function mkCtx(
 }
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
+/** #1533 — the verified head every merge in this file pins to. */
+const HEAD_OID = "7".repeat(39) + "e";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
@@ -148,7 +152,7 @@ setupSpawnGuard();
 {
   const { fn } = mkExec({ "gh pr view": { stdout: "MERGED\n" } });
   assert(
-    (await executeAndVerifyMerge(123, "squash", fn, "/fake")).merged === true,
+    (await executeAndVerifyMerge(123, "squash", fn, "/fake", undefined, HEAD_OID)).merged === true,
     "executeAndVerifyMerge: already merged → short-circuit",
   );
 }
@@ -158,7 +162,7 @@ setupSpawnGuard();
     "gh pr merge": { stdout: "Merged" },
   });
   assert(
-    (await executeAndVerifyMerge(123, "squash", fn, "/fake")).merged === true,
+    (await executeAndVerifyMerge(123, "squash", fn, "/fake", undefined, HEAD_OID)).merged === true,
     "executeAndVerifyMerge: merge + verify succeeds",
   );
 }
@@ -172,10 +176,60 @@ setupSpawnGuard();
     "gh pr view": { error: true, stderr: "not found" },
     "gh pr merge": { stdout: "Merged" },
   });
-  const r = await executeAndVerifyMerge(123, "squash", fn, "/fake");
+  const r = await executeAndVerifyMerge(123, "squash", fn, "/fake", undefined, HEAD_OID);
   assert(
     "ok" in r && r.ok === false && /permanent gh error/.test(r.reason),
     "executeAndVerifyMerge: permanent post-verify failure → ok:false (NOT merged-with-warning)",
+  );
+}
+
+{
+  // #1533 — the adapter seam is the other half of the pin: the direct path is
+  // pinned above, and production walks the adapter path. `executeAndVerifyMerge`
+  // forwards the verified OID to `forge.prMerge`, which is where the command
+  // bytes are built (test-forge-github.ts pins those); this asserts the OID
+  // reaches that seam rather than being dropped on the way.
+  const { fn } = mkExec({
+    "gh pr view": { stdout: "OPEN\n" },
+    "gh repo view": {
+      stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+    },
+  });
+  const forwarded: Array<string | undefined> = [];
+  const fakeForge = {
+    prView: async () => ({ state: "OPEN" }),
+    // Argument order is the seam's own (number, headOid, method, subject):
+    // #1533 moved the pin ahead of the optional arguments so it cannot be
+    // omitted, and the assertion is that the OID ARRIVES there.
+    prMerge: async (_n: number, oid?: string, _m?: string, _s?: string) => {
+      forwarded.push(oid);
+      return "Merged";
+    },
+  };
+  const r = await executeAndVerifyMerge(
+    123,
+    "squash",
+    fn,
+    "/fake",
+    undefined,
+    HEAD_OID,
+    async () => fakeForge as never,
+  );
+  assert(
+    "merged" in r && r.merged === true,
+    `#1533: adapter path merges (${JSON.stringify(r)})`,
+  );
+  assert(
+    forwarded.length === 1 && forwarded[0] === HEAD_OID,
+    `#1533: the verified head reaches forge.prMerge as the pin (${JSON.stringify(forwarded)})`,
+  );
+  // And the command those bytes produce is the accepted pinned form — built by
+  // the same builder the adapter uses, not restated here as free-standing text.
+  assert(
+    prMergeCmdCapture("github", 123, HEAD_OID, "squash").includes(
+      `--match-head-commit ${HEAD_OID}`,
+    ),
+    "#1533: the builder's adapter command carries the pin",
   );
 }
 
@@ -348,6 +402,7 @@ setupSpawnGuard();
   const r = await mechanizedMerge(
     { repoRoot: "/fake", issue: 100, host: mkPi() } as DriverContext,
     { pipelineState: { prNumber: 999 } } as unknown as WorkState,
+    HEAD_OID,
   );
   assert(
     r.ok === false && !/disabled|MECHANIZE_OPS/.test(r.reason),
@@ -379,7 +434,7 @@ setupSpawnGuard();
     };
     const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
       pipelineState: { prNumber: 999 },
-    } as unknown as WorkState);
+    } as unknown as WorkState, HEAD_OID);
     assert(
       r.ok === true && r.method === "squash",
       "mechanizedMerge: happy path squash from repo settings",
@@ -413,7 +468,7 @@ setupSpawnGuard();
     };
     const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
       pipelineState: { prNumber: 999 },
-    } as unknown as WorkState);
+    } as unknown as WorkState, HEAD_OID);
     assert(
       r.ok === true && r.method === "rebase",
       "mechanizedMerge: rebase derived from repo settings",
@@ -421,6 +476,12 @@ setupSpawnGuard();
     assert(
       mergeCmd.includes("--rebase"),
       "mechanizedMerge: derived method reaches gh pr merge --rebase",
+    );
+    // #1533 — the DIRECT-exec fallback builds its own command line, so it is
+    // the path that would silently merge unpinned. The pin must be on it.
+    assert(
+      mergeCmd.includes(`--match-head-commit ${HEAD_OID}`),
+      `#1533: the direct-path merge command carries the pin (--match-head-commit <verified head>): ${mergeCmd}`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -434,10 +495,94 @@ setupSpawnGuard();
   });
   const r = await mechanizedMerge(mkCtx(100, fn), {
     pipelineState: { prNumber: 999 },
-  } as unknown as WorkState);
+  } as unknown as WorkState, HEAD_OID);
   assert(
     r.ok === false && r.reason.includes("no merge method permitted"),
     "mechanizedMerge: all methods false → fallback",
+  );
+}
+
+// ---- #1533 — the head pin ----
+
+{
+  // A merge is never attempted with a head the step cannot name precisely: a
+  // missing or malformed OID is a refusal, not an unpinned merge.
+  const { fn, calls } = mkExec({
+    "gh repo view": {
+      stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+    },
+  });
+  const r = await mechanizedMerge(mkCtx(100, fn), {
+    pipelineState: { prNumber: 999 },
+  } as unknown as WorkState, "abc123");
+  assert(
+    r.ok === false && /40-char SHA/.test(r.reason),
+    `#1533: a malformed verified head refuses the merge with a named reason (got ${JSON.stringify(r)})`,
+  );
+  assert(
+    calls.every((c) => !c.includes("gh pr me" + "rge")),
+    "#1533: and no merge command was issued at all",
+  );
+}
+{
+  // The refused pin is classified BEFORE "already been merged" and before the
+  // permanent-error classifier: read as either, an unmerged PR reports success
+  // or falls through to an LLM ops dispatch that retries the same moved head.
+  for (const [label, stderr] of [
+    [
+      "gh",
+      "pull request 999 headRefOid does not match the value provided by --match-head-commit",
+    ],
+    [
+      "glab",
+      "the provided sha a1b2c3d does not match the MR head_sha 9f8e7d6; the head has changed since the review",
+    ],
+  ] as const) {
+    let viewCount = 0;
+    const base = mkExec({
+      "gh repo view": {
+        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+      },
+      "gh pr merge": { error: true, stderr },
+    });
+    // The pre-check must say "not merged yet" and the post-verify must say
+    // MERGED: the case then fails if the refusal is swallowed, because a
+    // swallowed refusal would report a successful merge on this fixture.
+    const exec: VerifyExecFn = async (cmd, o) => {
+      if (cmd.includes("gh pr view")) {
+        viewCount++;
+        if (viewCount === 1) return { stdout: "OPEN\n" };
+        throw new Error(`#1533: post-merge verify reached — the merge was not refused (${stderr})`);
+      }
+      return base.fn(cmd, o);
+    };
+    const r = await mechanizedMerge(mkCtx(100, exec), {
+      pipelineState: { prNumber: 999 },
+    } as unknown as WorkState, HEAD_OID);
+    assert(
+      r.ok === false && /head pin refused/.test(r.reason),
+      `#1533: a refused pin (${label}) is a head-pin refusal, not a merge (${JSON.stringify(r)})`,
+    );
+  }
+}
+{
+  // The two classifiers the refusal must NOT be swallowed by, kept honest on
+  // the same input: "already been merged" and the permanent 4xx set.
+  assert(
+    isHeadPinRefusal("pull request headRefOid does not match --match-head-commit") === true,
+    "#1533: the gh spelling of a refused pin is recognised",
+  );
+  assert(
+    isHeadPinRefusal("cannot merge: already been merged") === false,
+    "#1533: an already-merged answer is not read as a refused pin",
+  );
+  assert(
+    isHeadPinRefusal("HTTP 403: Resource not accessible by integration") === false,
+    "#1533: a permanent permission error is not read as a refused pin",
+  );
+  assert(
+    isHeadPinRefusal("GraphQL: field baseRefName does not match") === false,
+    "#1533: a mismatch sentence about something OTHER than the head is not a refused pin",
   );
 }
 

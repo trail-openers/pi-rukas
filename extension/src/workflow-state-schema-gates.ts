@@ -42,6 +42,24 @@ export interface VerifyMergeHold {
    * outstanding, so the merge is held however permissive the grant is.
    */
   unresolvedReviewFindings?: boolean;
+  /**
+   * #1533 — the PR head the merged step verified (the OID the CI evidence was
+   * read at, and the OID the merge would have been pinned to). Present only when
+   * the head check refused the merge.
+   */
+  reviewedHead?: string;
+  /**
+   * #1533 — the head the branch was actually on when the step looked. With
+   * `reviewedHead` these are the two SHAs the park names; absent when the read
+   * that failed was the head itself (there was nothing to compare against).
+   */
+  headAtMerge?: string;
+  /**
+   * #1533 — why the head check refused: the failed read or the identity
+   * mismatch, in the operator's words. Distinct from `evidenceReason`, which is
+   * the CI gate's verdict — a cycle held on the head has green CI.
+   */
+  headCheckReason?: string;
 }
 
 /**

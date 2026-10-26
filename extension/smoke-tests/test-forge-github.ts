@@ -58,9 +58,23 @@ async function main() {
     const cmd = forgeCommands.issueEditCmd("github", 42, "/tmp/x/body.md");
     assert(cmd.includes("--body-file /tmp/x/body.md"), `got ${cmd}`);
   });
+  await check("prMergeCmd pins the merge to the verified head (#1533)", () => {
+    const oid = "a".repeat(40);
+    const cmd = forgeCommands.prMergeCmd("github", 17, oid, "squash");
+    assert(cmd === `gh pr merge 17 --squash --delete-branch --match-head-commit ${oid}`, `got ${cmd}`);
+  });
+  await check("prMergeCmd refuses a head OID that is not a full 40-char SHA", () => {
+    let threw = false;
+    try {
+      forgeCommands.prMergeCmd("github", 17, "abc123", "squash");
+    } catch {
+      threw = true;
+    }
+    assert(threw, "an abbreviated OID is not a pin — the builder throws rather than emitting it");
+  });
   await check("prMergeCmd uses --squash --delete-branch", () => {
-    const cmd = forgeCommands.prMergeCmd("github", 17, "squash");
-    assert(cmd === "gh pr merge 17 --squash --delete-branch", `got ${cmd}`);
+    const cmd = forgeCommands.prMergeCmd("github", 17, "b".repeat(40), "squash");
+    assert(cmd.startsWith("gh pr merge 17 --squash --delete-branch"), `got ${cmd}`);
   });
   await check("prCreateCmd uses --head", () => {
     const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", { baseBranch: "main" });
@@ -332,12 +346,27 @@ async function main() {
     });
     const forge = createForge(det, { execFn: fn });
     await check("prMerge uses --squash --delete-branch", async () => {
-      const out = await forge.prMerge(17);
+      const out = await forge.prMerge(17, "c".repeat(40));
       assert(out.includes("Merged"), `got ${out}`);
       const cmd = calls.find((c) => c.includes("gh pr merge"));
       assert(cmd !== undefined, "no merge cmd");
       assert(cmd!.includes("--squash"), `no --squash: ${cmd}`);
       assert(cmd!.includes("--delete-branch"), `no --delete-branch: ${cmd}`);
+    });
+    // #1533 — the pin is part of the seam's contract: an adapter that dropped
+    // it would merge whatever head the forge holds, unreviewed.
+    await check("prMerge pins the command with --match-head-commit <oid>", async () => {
+      const cmd = forgeCommands.prMergeCmd("github", 17, "d".repeat(40), "squash");
+      assert(cmd.includes(`--match-head-commit ${"d".repeat(40)}`), `got ${cmd}`);
+    });
+    await check("prMerge refuses to build an unpinned command", async () => {
+      let threw = false;
+      try {
+        await forge.prMerge(17, "");
+      } catch {
+        threw = true;
+      }
+      assert(threw, "a missing head OID is refused at the seam, not merged unpinned");
     });
   }
 

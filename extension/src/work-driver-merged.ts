@@ -25,8 +25,10 @@ import {
   mergeAuthorityEnabled,
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
+import { verifyMergeHead } from "./work-driver-merged-head.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
+import { workstreamCount } from "./work-driver-merged-workstreams.ts";
 import { clearHostParkSignals } from "./work-driver-park-memory-host.ts";
 import { clearParkRecords } from "./work-driver-park-record.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
@@ -137,12 +139,16 @@ export async function runMerged(
   let mergeMethod: MergeMethod = "squash";
   let preDispatch = state;
   let mergeSucceeded = false;
+  // #1533 — the head this step verified, which the merge is pinned to. Set only
+  // past the head check; the LLM fallback prompt carries the same value so the
+  // fallback path cannot merge what the mechanized path refused to.
+  let verifiedHead = "";
+  const headNotes: string[] = [];
 
   // #380 — two independent gates, both defaulting to "no". Merging is the
   // one irreversible act in the cycle and had neither; a green PR ≠ permission.
   if (mergeAuthorityEnabled()) {
-    const execFnAuth = ctx.verifyExecFn ?? execp;
-    // #406 — doctrine is read at the BASE commit, never from the working tree.
+    const execFnAuth = ctx.verifyExecFn ?? execp; // #406 — doctrine is read at the BASE commit, never from the working tree.
     // This step runs after commit-pr integrated the developer's patches, so an
     // AGENTS.md read from disk here would include any grant a subagent just
     // wrote for itself. Reading at base makes such a patch inert without
@@ -180,10 +186,24 @@ export async function runMerged(
       ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
       : undefined;
     const routedRoundCap = heldByUnresolvedReview(state.eventLog);
-    if (!authority.granted || !evidence?.ok || routedRoundCap) {
+    // #1533 — the head the merge is pinned to, and why the step refuses to merge
+    // without one. Computed here, beside the evidence read it comes from, so the
+    // CI verdict and the pin describe the same moment on the forge.
+    const headCheck =
+      authority.granted && evidence?.ok && !routedRoundCap
+        ? await verifyMergeHead(
+            execFnAuth,
+            ctx.repoRoot,
+            state.pipelineState.branchName,
+            evidence.headOid ?? "",
+            workstreamCount(state),
+          )
+        : undefined;
+    if (!authority.granted || !evidence?.ok || routedRoundCap || headCheck?.ok !== true) {
       trace(
-        `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}`,
+        `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}${headCheck && !headCheck.ok ? `, head=${headCheck.refusal.reason}` : ""}`,
       );
+      const refusal = headCheck && !headCheck.ok ? headCheck.refusal : undefined;
       const held: WorkState = {
         ...state,
         pipelineState: {
@@ -197,6 +217,12 @@ export async function runMerged(
             ...(evidence?.failureKind ? { evidenceFailureKind: evidence.failureKind } : {}),
             ...(evidence?.inconclusive?.length ? { inconclusive: evidence.inconclusive } : {}),
             ...(routedRoundCap ? { unresolvedReviewFindings: true } : {}),
+            // #1533 — the two SHAs a head refusal names, structured rather than
+            // left in prose: the queue's park reason and the handoff renderers
+            // read them off the state file.
+            ...(refusal?.reviewedHead ? { reviewedHead: refusal.reviewedHead } : {}),
+            ...(refusal?.foundHead ? { headAtMerge: refusal.foundHead } : {}),
+            ...(refusal?.reason ? { headCheckReason: refusal.reason } : {}),
           },
         },
       };
@@ -208,13 +234,21 @@ export async function runMerged(
         nextStep: "handoff",
       });
     }
+    verifiedHead = headCheck.headOid;
+    headNotes.push(headCheck.note);
   }
 
   // Try mechanized merge first.
-  const mechResult = await mechanizedMerge(ctx, state);
+  const mechResult = await mechanizedMerge(ctx, state, verifiedHead);
   if (mechResult.ok) {
     mergeMethod = mechResult.method;
     mergeSucceeded = true;
+    // The head-check note rides the merged event so the record says what the
+    // step actually verified (for a grouped cycle: that the identity comparison
+    // did not apply, not that it passed).
+    for (const note of headNotes) {
+      if (note) mechResult.notes.push(note);
+    }
     // Mechanized merge succeeded — build the same event shapes the
     // dispatch path produces so downstream (merged event) is identical.
     // Record it; do not dispatch it. `runSingleDispatch` really spawns, and
@@ -248,7 +282,13 @@ export async function runMerged(
     // Always resolve the merge method for the fallback prompt.
     mergeMethod = mechResult.method ?? "squash";
     next = await runSingleDispatch(ctx, preDispatch, "merged", "ops", "ops:merge", now, () =>
-      inlineMergePrompt(issues, prNumber, mergeMethod, scratchDir(ctx.repoRoot, state.issue)),
+      inlineMergePrompt(
+        issues,
+        prNumber,
+        mergeMethod,
+        scratchDir(ctx.repoRoot, state.issue),
+        verifiedHead,
+      ),
     );
   }
 

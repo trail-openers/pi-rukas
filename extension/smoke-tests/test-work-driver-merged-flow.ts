@@ -77,9 +77,17 @@ function mkState(issue: number, pr: number, branch: string): WorkState {
       lastCompletedStep: "ci",
       branchName: branch,
       prNumber: pr,
+      // #1533 — the merged step verifies the PR head against this OID before it
+      // merges, and the fixture's `git rev-parse` answers carry it, so the
+      // identity check sees a head that matches. A cycle whose state carries no
+      // reviewed head parks instead (see the mismatch case there).
+      reviewedHeadSha: VERIFIED_HEAD,
     },
   } as WorkState;
 }
+
+/** #1533 — the head these fixtures review and pin. */
+const VERIFIED_HEAD = "1".repeat(39) + "a";
 
 /**
  * #380 — answer the merge gate's evidence probe green. The gate itself is
@@ -116,7 +124,12 @@ function mkExecFull(calls: string[], branch: string, throwFirstView: boolean): V
         stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       };
     if (cmd.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
-    if (cmd.includes("git rev-parse")) return { stdout: `${branch}\n` };
+    if (line.includes("git rev-parse")) {
+      // #1533 — the merged step's identity read resolves the PR head ref; the
+      // fixture answers it with the head the cycle reviewed, so the pin matches.
+      if (/refs?\/|remotes\//.test(line)) return { stdout: `${VERIFIED_HEAD}\n` };
+      return { stdout: `${branch}\n` };
+    }
     return { stdout: "" };
   };
 }

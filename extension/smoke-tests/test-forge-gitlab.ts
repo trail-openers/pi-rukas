@@ -28,10 +28,18 @@ async function main() {
   console.log("command strings:");
   await check("SAFETY: prMergeCmd ALWAYS passes --auto-merge=false on GitLab", () => {
     for (const method of ["squash", "merge", "rebase"] as const) {
-      const cmd = forgeCommands.prMergeCmd("gitlab", 17, method);
+      const cmd = forgeCommands.prMergeCmd("gitlab", 17, "e".repeat(40), method);
       assert(cmd.includes("--auto-merge=false"), `${method}: missing --auto-merge=false: ${cmd}`);
       assert(cmd.includes(`--${method}`), `${method}: missing --${method}: ${cmd}`);
     }
+  });
+  // #1533 — glab has no `--match-head-commit`; its pin is `--sha <oid>`. The
+  // asymmetry is pinned here so a future edit cannot silently drop the GitLab
+  // pin while the GitHub one stays.
+  await check("#1533: prMergeCmd pins the GitLab merge with --sha <oid>", () => {
+    const oid = "f".repeat(40);
+    const cmd = forgeCommands.prMergeCmd("gitlab", 17, oid, "squash");
+    assert(cmd === `glab mr merge 17 --squash --auto-merge=false --sha ${oid}`, `got ${cmd}`);
   });
   await check("prCreateCmd uses --target-branch (no --head flag)", () => {
     const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", { baseBranch: "main" });
@@ -218,11 +226,15 @@ async function main() {
       assert(cmd!.includes("--description-file"), `--description-file: ${cmd}`);
     });
     await check("mrMerge ALWAYS passes --auto-merge=false (SAFETY)", async () => {
-      const out = await forge.prMerge(17);
+      const out = await forge.prMerge(17, "a1".repeat(20));
       assert(out.includes("Merged"), `got ${out}`);
       const cmd = calls.find((c) => c.includes("glab mr merge"));
       assert(cmd !== undefined, `no merge cmd: ${calls}`);
       assert(cmd!.includes("--auto-merge=false"), `SAFETY: missing --auto-merge=false: ${cmd}`);
+      assert(
+        cmd!.includes(`--sha ${"a1".repeat(20)}`),
+        `#1533: missing the head pin --sha: ${cmd}`,
+      );
     });
     await check("mrDiff returns the diff text", async () => {
       const diff = await forge.prDiff(17);

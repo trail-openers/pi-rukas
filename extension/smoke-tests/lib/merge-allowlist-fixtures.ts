@@ -44,6 +44,14 @@ export function longReadCommands(): string[] {
 /** `[command, forge, prNumber, repo]` — every form the reader accepts. */
 export type AcceptedRow = [string, "github" | "gitlab", number | undefined, string | undefined];
 
+/**
+ * #1533 — a full 40-char head OID, the shape the driver pins with. The
+ * pre-existing rows used the `abc123` token, which only proves the flag is
+ * known; the driver emits a full SHA and a guard that rejected one would be a
+ * merge that cannot happen.
+ */
+export const FULL_OID = "0123456789abcdef0123456789abcdef01234567";
+
 export const ACCEPTED: AcceptedRow[] = [
   ["gh pr merge 17", "github", 17, undefined],
   ["gh pr merge", "github", undefined, undefined],
@@ -64,6 +72,22 @@ export const ACCEPTED: AcceptedRow[] = [
     undefined,
   ],
   ["gh pr merge 17 --match-head-commit=abc123", "github", 17, undefined],
+  // #1533 — the driver's own pinned merge, in the exact bytes it emits, so the
+  // guard's grammar and the driver's builder cannot drift. GitHub spells the
+  // pin `--match-head-commit`, GitLab's `glab mr merge` has no such flag and
+  // pins with `--sha`.
+  [
+    `gh pr merge 17 --squash --delete-branch --match-head-commit ${FULL_OID}`,
+    "github",
+    17,
+    undefined,
+  ],
+  [
+    `glab mr merge 17 --squash --auto-merge=false --sha ${FULL_OID}`,
+    "gitlab",
+    17,
+    undefined,
+  ],
   ["gh pr merge 17 --subject 17", "github", 17, undefined],
   ["gh -R o/r pr merge 17", "github", 17, "o/r"],
   ["gh --repo o/r pr merge 17 --squash", "github", 17, "o/r"],

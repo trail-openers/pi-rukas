@@ -9,6 +9,7 @@
  */
 
 import type { ForgeType } from "./forge-detect.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 
 /** Shell-quote a single argument (the command seam is a shell string). */
 export function shq(arg: string): string {
@@ -239,15 +240,44 @@ export function prMergeSubjectFlag(subject: string | undefined): string {
   return ` --subject ${shq(s)}`;
 }
 
+/**
+ * #1533 — the head pin, forge-conditional.
+ *
+ * An approval covers ONE commit. Without the pin the driver's merge acts on
+ * whatever head the forge holds when the command runs, so a push landing after
+ * the review and before the merge is merged unreviewed. GitHub takes
+ * `--match-head-commit <oid>` (gh refuses when the PR head has moved);
+ * GitLab's `glab mr merge` has no such flag and takes `--sha <oid>` instead.
+ * The two spellings are deliberately named in the tests rather than silently
+ * unified — a pin that only exists for one forge is not a pin.
+ */
+export function prMergeHeadPinFlag(forge: ForgeType, headOid: string): string {
+  // Fail closed at the single place the pin is written: an OID that is not a
+  // full 40-char SHA would be interpolated into a shell string as-is, and an
+  // abbreviated or non-hex value is exactly the "I meant this commit" claim
+  // the pin exists to make precisely.
+  if (!isFullCommitSha(headOid)) {
+    throw new Error("merge head pin: not a full 40-char commit SHA");
+  }
+  return forge === "github" ? ` --match-head-commit ${shq(headOid)}` : ` --sha ${shq(headOid)}`;
+}
+
 export function prMergeCmd(
   forge: ForgeType,
   number: number,
+  // #1533 — the head OID to pin, REQUIRED and declared before the optional
+  // `subject`: a required parameter may not follow an optional one, and this
+  // ordering is what makes an unpinned merge a compile error rather than an
+  // `undefined` that silently produces the old, unpinned command.
+  headOid: string,
   method: "squash" | "merge" | "rebase" = "squash",
   subject?: string,
 ): string {
   const subjectFlag = prMergeSubjectFlag(subject);
-  if (forge === "github") return `gh pr merge ${number} --${method} --delete-branch${subjectFlag}`;
-  return `glab mr merge ${number} --${method} --auto-merge=false${subjectFlag}`;
+  const pin = prMergeHeadPinFlag(forge, headOid);
+  if (forge === "github")
+    return `gh pr merge ${number} --${method} --delete-branch${subjectFlag}${pin}`;
+  return `glab mr merge ${number} --${method} --auto-merge=false${subjectFlag}${pin}`;
 }
 
 export function prDiffCmd(forge: ForgeType, number: number): string {
