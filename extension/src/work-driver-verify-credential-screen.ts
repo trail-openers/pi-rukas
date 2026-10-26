@@ -104,11 +104,19 @@ export function carriesOpaqueRun(line: string): boolean {
  * credential material" is ONE question, and a veto the indented route asks while the
  * unindented one does not is the module's own defect mirrored.
  *
- * The screen is asked on the line as it STANDS, not on its redaction. A line whose
- * credential the patterns already saw masks to prose and stays (`✗ token mismatch,
- * got [REDACTED]` is the evidence of a real assertion, #1762 round 1); a line whose
- * body the patterns never recognised masks to itself and is refused here.
+ * The screen is asked on the line AS IT WOULD BE STORED — its redaction — and on
+ * that view ONLY. A line whose credential the patterns already saw masks to prose
+ * and stays (`✗ token mismatch, got [REDACTED]` is the evidence of a real assertion,
+ * #1762 round 1); a line whose body the patterns never recognised masks to itself
+ * and is refused here. Asking either arm on the RAW line makes the mask invisible to
+ * the screen whose whole rule is to honour it: the GitHub-token arm rewrites
+ * `got ghp_Q7wErT6y…`, so the raw line read secret while its stored form did not,
+ * the assertion channel's veto refused it, and the line the redactor had already made
+ * publishable was DROPPED rather than masked — the behaviour
+ * `test-verify-failure-shapes-c-1762.ts` pins, and the reason the #1841 screen must
+ * not simply be layered on top of the #1762 one. An unprefixed blob masks to itself,
+ * so both arms still refuse it unchanged (#1841 round 2).
  */
 export function detailLooksCredential(line: string): boolean {
-  return nameLooksSecret(line) || carriesOpaqueRun(line);
+  return nameLooksSecret(redactSecrets(line).text) || carriesOpaqueRun(line);
 }
