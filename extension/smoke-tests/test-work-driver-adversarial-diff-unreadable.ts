@@ -23,13 +23,17 @@
  * depends on the host home path.
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { readWorktreeDiff } from "../src/work-driver-diff-read.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -46,21 +50,21 @@ process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
 
-const git = (cwd: string, ...args: string[]) => {
-  const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
-  return execFileSync("git", args, {
+/**
+ * One git command in a fixture tree, with an ISOLATED git view
+ * (`gitTestEnv()`, #1145): the identity is carried on the command line and the
+ * four isolation levers are set, so what these fixtures assert is what git
+ * reports and not what this machine's global config or ignore file happens to
+ * hide. Same helper the other git fixtures use, for the same reason.
+ */
+const git = (cwd: string, ...args: string[]): string => {
+  const r = spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
     cwd,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: "t",
-      GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t",
-      GIT_COMMITTER_EMAIL: "t@t",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_SYSTEM: "/dev/null",
-    },
+    env: gitTestEnv(),
   });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr}`);
+  return (r.stdout ?? "").trim();
 };
 
 function makeFakePi(): ExtensionAPI {
@@ -100,7 +104,10 @@ function repoDir(label: string, dirty: boolean): string {
 }
 
 async function seed(dir: string, issue: number, worktrees: Record<string, string>) {
-  const workstreams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }> = {};
+  const workstreams: Record<
+    string,
+    { id: string; scope: string; paths: string[]; outOfScope: string[] }
+  > = {};
   for (const id of Object.keys(worktrees)) {
     workstreams[id] = { id, scope: id, paths: [], outOfScope: [] };
   }
@@ -149,7 +156,10 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
   const dir = plainDir("unit-nonrepo");
   try {
     const r = await readWorktreeDiff(dir);
-    assert(!r.ok, `non-repository directory → not ok (${r.ok ? "returned a diff" : r.reason.slice(0, 60)})`);
+    assert(
+      !r.ok,
+      `non-repository directory → not ok (${r.ok ? "returned a diff" : r.reason.slice(0, 60)})`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -284,7 +294,9 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
       "a full 40-hex baseSha → the committed range is read",
     );
     assert(
-      argvs.some((a) => a.length === 3 && a[0] === "diff" && a[1] === "--end-of-options" && a[2] === sha),
+      argvs.some(
+        (a) => a.length === 3 && a[0] === "diff" && a[1] === "--end-of-options" && a[2] === sha,
+      ),
       "a full 40-hex baseSha → git is asked for ONE `diff <sha>` (base vs working tree)",
     );
     assert(
@@ -383,9 +395,7 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
     );
     assert(spawns.n === 0, "non-repository worktree → the reviewer was never spawned");
     assert(
-      events.some(
-        (e) => e.kind === "cap-hit" && e.cap === "adversarial-diff-unreadable",
-      ),
+      events.some((e) => e.kind === "cap-hit" && e.cap === "adversarial-diff-unreadable"),
       "non-repository worktree → parks with `adversarial-diff-unreadable`",
     );
   } finally {
@@ -435,7 +445,10 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
       "clean worktree → still records the empty-diff skip",
     );
     const approved = events.find((e) => e.kind === "adversarial-approved");
-    assert(approved?.kind === "adversarial-approved" && approved.rounds === 0, "clean worktree → still approved with rounds 0");
+    assert(
+      approved?.kind === "adversarial-approved" && approved.rounds === 0,
+      "clean worktree → still approved with rounds 0",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

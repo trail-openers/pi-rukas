@@ -21,14 +21,20 @@
  * switched off by counting the pass's git invocations: `rev-parse
  * --show-toplevel` appears once per read, so the Nth toplevel probe is the Nth
  * read, and `failFrom` is which read stops answering.
+ *
+ * #1634 round 2 — the loop itself is now also proved not to swallow the throw
+ * (`smoke-tests/test-adversarial-reread-throws.ts` drives the REAL
+ * `runAdversarialLoop`). What THIS file pins is the other half: that the driver
+ * GATE — `runAdversarial` and its event log — parks with the read's cap when the
+ * re-read dies, with no `adversarial-approved` and no empty-diff skip.
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 let exit = 0;
@@ -68,18 +74,25 @@ function dirtyRepo(label: string): { dir: string; baseSha: string } {
   return { dir, baseSha: base };
 }
 
+/** The driver's exec seam, typed once — the shape every fake below must satisfy. */
+type VerifyExec = NonNullable<DriverContext["verifyExecFn"]>;
+
 /**
  * A fake exec for the gate's reads. Every git call the read makes carries
- * `--end-of-options` (the diff) or `--show-toplevel`; counting the toplevel
- * probes counts the reads, and the `failFrom`-th one throws the way a real
- * `git diff` throws when the tree disappears under the cycle. Any OTHER git
- * call answers as a clean tree: the pass also asks git for a fix-delta and a
- * few refs around the review, and a fake that threw there would fail the case
- * for the wrong reason.
+ * `--show-toplevel` or `diff --end-of-options`; counting the toplevel probes
+ * counts the reads, and the `failFrom`-th one throws the way a real `git diff`
+ * throws when the tree disappears under the cycle. Any OTHER git call answers as
+ * a clean tree: the pass also asks git for a fix-delta and a few refs around the
+ * review, and a fake that threw there would fail the case for the wrong reason.
+ *
+ * Typed as the seam itself (`DriverContext["verifyExecFn"]`), so the options
+ * object the production read passes — `argv`, `cwd`, `timeout`, `maxBuffer` —
+ * is checked against the real declaration rather than a hand-narrowed copy of
+ * it, and a signature drift fails the type check instead of the case.
  */
-function readExec(opts: { failFrom: number }) {
+function readExec(opts: { failFrom: number }): VerifyExec {
   let toplevels = 0;
-  return (async (_cmd: string, o?: { argv?: string[] }) => {
+  return async (_cmd, o) => {
     const argv = o?.argv ?? [];
     if (argv.includes("--show-toplevel")) {
       toplevels++;
@@ -88,7 +101,7 @@ function readExec(opts: { failFrom: number }) {
     }
     if (argv.includes("rev-parse")) return { stdout: `${o?.cwd ?? ""}\n` };
     return { stdout: "diff --git a/b.ts b/b.ts\n+export const b = 2;\n" };
-  }) as unknown as DriverContext["verifyExecFn"];
+  };
 }
 
 function mkOps(): DispatchResult {
@@ -149,7 +162,12 @@ async function gateWithReread(opts: { rounds: number; failFrom: number; label: s
         _signal: AbortSignal,
       ) => {
         for (let r = 2; r <= opts.rounds; r++) {
-          const fresh = await params.getDiff!();
+          // The re-read door is the param the production pass is required to
+          // hand the loop when it passes a `diff`; `getDiff` is optional on the
+          // seam's own type, so the fixture asserts its presence rather than
+          // telling the compiler to look away.
+          if (!params.getDiff) throw new Error("the pass handed the loop no getDiff");
+          const fresh = await params.getDiff();
           reloaded++;
           void fresh;
         }

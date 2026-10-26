@@ -21,8 +21,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { DriverContext } from "../../src/work-driver-context.ts";
-import { gitTestEnv } from "./git-test-env.ts";
 import { commandOf } from "./argv-shell.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * Git rejects a commit without an identity, and CI containers have none.
@@ -80,17 +80,28 @@ export function initCleanRepo(dir: string): string {
  * production uses, so it is the only form matched here.
  *
  * The diff read is ONE call — `git diff --end-of-options <baseSha>` (or
- * `HEAD`) — comparing the base against the WORKING TREE. The positional is
- * whatever argv carries after the flag, so a fixture whose base is a 40-hex id
- * and one whose base is absent both match without this helper knowing either.
+ * `HEAD`) — comparing the base against the WORKING TREE. `readWorktreeDiff`
+ * validates `base` before it reaches git, so the positional is a 40-hex SHA when
+ * the cycle recorded one and `HEAD` when it did not; `GateDiffArgv` states that
+ * exactly, so a fixture that matches some other argv fails to compile rather
+ * than answering a command production never sends.
  */
 const GATE_ARGV_READS = [
   ["rev-parse", "--show-toplevel"],
   ["diff", "--end-of-options"],
 ] as const;
 
-function gateArgvRead(argv: string[] | undefined): (typeof GATE_ARGV_READS)[number] | undefined {
+/** The gate's ONE diff argv, typed as the shape `readWorktreeDiff` builds. */
+export type GateDiffArgv = readonly ["diff", "--end-of-options", string];
+
+/** The gate's toplevel probe. */
+type GateToplevelArgv = readonly ["rev-parse", "--show-toplevel"];
+
+function gateArgvRead(argv: string[] | undefined): GateDiffArgv | GateToplevelArgv | undefined {
   if (!argv) return undefined;
+  if (argv.length === 3 && argv[0] === "diff" && argv[1] === "--end-of-options") {
+    return ["diff", "--end-of-options", argv[2]];
+  }
   return GATE_ARGV_READS.find((read) => read.every((part, i) => argv[i] === part));
 }
 
@@ -129,10 +140,13 @@ function gateArgvRead(argv: string[] | undefined): (typeof GATE_ARGV_READS)[numb
  * holding unrecoverable work (#1170), and these fixtures never reach that
  * guard with the tree present, because a scripted fake answers `git worktree
  * add` too. A fixture that needs a real worktree at the path (the ones that
- * assert on the integrate step's own loss guard) creates it itself with
- * `addWorktree`. Keyed on the CALL's transport: a shell-form call is the shape a
- * scripted fake produces (they all normalise with `commandOf` before matching),
- * while an argv call is production's and must never touch the disk.
+ * assert on the integrate step's own loss guard) creates it itself with a plain
+ * `git worktree add` through its own scripted exec — this wrapper makes bare
+ * directories and nothing else, because a directory it invented where a real
+ * worktree lives is the #1170 shape. Keyed on the CALL's transport: a shell-form
+ * call is the shape a scripted fake produces (they all normalise with
+ * `commandOf` before matching), while an argv call is production's and must
+ * never touch the disk.
  */
 export function answerDiffReads(
   exec: NonNullable<DriverContext["verifyExecFn"]>,
@@ -179,9 +193,13 @@ export function answerDiffReads(
   // path as far as the gate is concerned, and M3 is that fixture.
   const materialise = (cmd: unknown, cwd: string | undefined): void => {
     if (typeof cmd !== "string" || !cwd?.startsWith("/")) return;
-    // A failure to create the directory the read is about is a broken fixture,
-    // not a state to answer around: swallow it and the gate fails closed with
-    // "could not resolve worktree path", and the reader blames the driver.
+    // A failure to create the directory the read is about is a BROKEN FIXTURE,
+    // not a state to answer around. Throwing is the point: swallow it and the
+    // gate fails closed with "could not resolve worktree path", and the reader
+    // blames the driver for a bug that lives in the fixture. `mkdirSync` throws
+    // on any real failure (EACCES, ELOOP, a file in the way); the one case that
+    // is NOT a failure is the directory already being there, which is what
+    // `recursive: true` makes a no-op.
     mkdirSync(cwd, { recursive: true });
   };
   // The directory exists for the gate's `realpathSync` and for nothing else:
@@ -206,9 +224,7 @@ export function answerDiffReads(
     // in which case `o.argv` is gone and only the line below matches.
     if (cmd === "git" && read) {
       materialise(cmd, o?.cwd);
-      const target = read[0] === "diff" ? o.argv[2] : undefined;
-      const answered =
-        read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, target);
+      const answered = read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, read[2]);
       // The toplevel probe is the read that NEEDED the directory; the diff read
       // is the last one the gate makes, so the tree is residue from here on.
       if (read[0] !== "rev-parse") dematerialise(cmd, o.cwd);

@@ -31,6 +31,7 @@
  */
 
 import { mock } from "bun:test";
+import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -78,7 +79,7 @@ async function mockSpawns(reviewerReplies: string[], fixText = "applied the fix"
         ok: true,
         text:
           spec.role === "adversarial-developer"
-            ? reviewerReplies[reviewCount.n++] ?? "VERDICT: APPROVED"
+            ? (reviewerReplies[reviewCount.n++] ?? "VERDICT: APPROVED")
             : fixText,
         toolUses: [],
         ms: 1,
@@ -118,11 +119,9 @@ async function mockSpawns(reviewerReplies: string[], fixText = "applied the fix"
 // the whole file, every block after the first would drive the loop against the
 // FIRST block's mock and read its prompts. The pure modules below are mocked by
 // no one, so they import once.
-const {
-  DiffRereadError,
-  diffUnreadableOutcome,
-  isDiffRereadError,
-} = await import("../src/work-driver-adversarial-fanout-diff.ts");
+const { DiffRereadError, diffUnreadableOutcome, isDiffRereadError } = await import(
+  "../src/work-driver-adversarial-fanout-diff.ts"
+);
 const { interpretReview } = await import("../src/work-driver-adversarial-fix.ts");
 
 /** Install this case's mocks, then resolve a FRESH `runAdversarialLoop`. */
@@ -166,7 +165,7 @@ const CWD = process.cwd();
     return isDiffRereadError(err) ? "diffUnreadable" : "threw";
   };
   let routed = "no throw";
-  let result;
+  let result: DispatchResult | undefined;
   try {
     result = await runAdversarialLoop(
       {
@@ -277,8 +276,7 @@ const CWD = process.cwd();
   );
   const round2 = prompts.filter((p) => p.role === "adversarial-developer")[1];
   assert(
-    round2 !== undefined &&
-      round2.prompt.includes("export const a = 1") &&
+    round2?.prompt.includes("export const a = 1") === true &&
       !round2.prompt.includes("export const a = 2"),
     "#859 control: the round reviewed the PREVIOUS diff, not the one the failed read was for",
   );
