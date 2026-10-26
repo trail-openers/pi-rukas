@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
+import { verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
@@ -52,7 +53,18 @@ await assertDefaultVerifyBound(assert);
 const root = mkdtempSync(path.join(tmpdir(), "pi-baseline-red-"));
 type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 
-async function run(name: string, outcomeFor: (where: "base" | "change") => Outcome) {
+async function run(
+  name: string,
+  outcomeFor: (where: "base" | "change", baseRun?: 1 | 2) => Outcome,
+  // The callbacks the gate's tail rule (`reportBaselineLeg`) is asked to fire. A
+  // case that never passes them cannot tell a claim from a finding, which is the
+  // distinction #1826 turns on for the killed arm: the timeout's sentence still
+  // leads the evidence, and neither the cap's claim nor #1349's excuse may follow.
+  baselineCallbacks: {
+    onBaselineAttributed?: () => void;
+    onBaselineRedEstablished?: (established: boolean) => void;
+  } = {},
+) {
   const repo = path.join(root, name, "repo");
   mkdirSync(repo, { recursive: true });
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");
@@ -70,16 +82,17 @@ async function run(name: string, outcomeFor: (where: "base" | "change") => Outco
   // The integration root ignores its own worktrees, as the driver arranges.
   writeFileSync(path.join(repo, ".git", "info", "exclude"), ".worktrees/\ntmp/\n");
 
-  const baselineDir = path.join(repo, ".worktrees", "baseline-verify-9");
+  const baselineDir = path.join(repo, ".worktrees", "baseline-verify-9-base1");
+  const secondBaselineDir = path.join(repo, ".worktrees", "baseline-verify-9-base2");
   const verifyRuns: Array<"base" | "change"> = [];
   let baselineHadChange: boolean | undefined;
   const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
     cmd = commandOf(cmd, o);
     if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
-    const where = o?.cwd === baselineDir ? "base" : "change";
+    const where = o?.cwd === baselineDir || o?.cwd === secondBaselineDir ? "base" : "change";
     if (where === "base") baselineHadChange = existsSync(path.join(baselineDir, "change.txt"));
     verifyRuns.push(where);
-    const r = outcomeFor(where);
+    const r = outcomeFor(where, o?.cwd === secondBaselineDir ? 2 : 1);
     if (r.ok) return { stdout: "" };
     const e = new Error(`Command failed: ${cmd}`) as Error & {
       stdout?: string;
@@ -111,9 +124,20 @@ async function run(name: string, outcomeFor: (where: "base" | "change") => Outco
     workstreamBaseShas: undefined,
     failures,
     notes,
+    ...baselineCallbacks,
   });
   const listed = (await git(repo, ["worktree", "list"])).stdout;
-  return { failures, notes, verifyRuns, baselineHadChange, baseSha, state, listed, baselineDir };
+  return {
+    failures,
+    notes,
+    verifyRuns,
+    baselineHadChange,
+    baseSha,
+    state,
+    listed,
+    baselineDir,
+    secondBaselineDir,
+  };
 }
 
 const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin console`\n";
@@ -129,8 +153,8 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
 {
   const r = await run("red-at-base", () => ({ ok: false, stdout: CARGO }));
   assert(
-    r.verifyRuns.filter((w) => w === "base").length === 1,
-    "red at base: the baseline is run exactly once after the failure",
+    r.verifyRuns.filter((w) => w === "base").length === 2,
+    `red at base: the baseline is run TWICE after the failure (#1826 — one red run is not a red base; got ${r.verifyRuns.filter((w) => w === "base").length})`,
   );
   assert(
     r.baselineHadChange === false,
@@ -143,6 +167,10 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
   );
   assert(first.includes(r.baseSha.slice(0, 12)), "red at base: the finding names the base sha");
   assert(
+    first.includes("base run 1") && first.includes("base run 2"),
+    `red at base: the finding names BOTH base runs (got ${first.slice(0, 200)})`,
+  );
+  assert(
     first.includes("error: test failed, to rerun pass `--bin console`") &&
       first.includes("SAME assertion"),
     "red at base: the finding names the base assertion and that the change's run shares it",
@@ -152,8 +180,14 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
     `red at base: the finding survives the 800-char evidence bound (${first.length})`,
   );
   assert(r.failures.length > 1, "red at base: the change's own failures are kept, not replaced");
-  assert(!r.listed.includes("baseline-verify-9"), "red at base: the temporary worktree is removed");
-  assert(!existsSync(r.baselineDir), "red at base: the temporary directory is gone");
+  assert(
+    !r.listed.includes("baseline-verify-9"),
+    "red at base: the temporary worktrees are removed",
+  );
+  assert(
+    !existsSync(r.baselineDir) && !existsSync(r.secondBaselineDir),
+    "red at base: BOTH temporary directories are gone",
+  );
   let st = r.state;
   st = {
     ...st,
@@ -213,11 +247,20 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
 
 // 5 — a run killed at its timeout is reported as a timeout, everywhere.
 await pinDefaultVerifyTimeout(async () => {
-  const r = await run("timeout", () => ({
-    ok: false,
-    stdout: "ok    no product or host names in platform files\n",
-    killed: true,
-  }));
+  const attributed: boolean[] = [];
+  const established: boolean[] = [];
+  const r = await run(
+    "timeout",
+    () => ({
+      ok: false,
+      stdout: "ok    no product or host names in platform files\n",
+      killed: true,
+    }),
+    {
+      onBaselineAttributed: () => attributed.push(true),
+      onBaselineRedEstablished: (e) => established.push(e),
+    },
+  );
   const all = r.failures.join("\n");
   assert(
     !all.includes("no specific assertion could be extracted") &&
@@ -228,12 +271,125 @@ await pinDefaultVerifyTimeout(async () => {
     r.failures.some((f) => f.includes(`${BOUND} timeout on the CONSOLIDATED tree`)),
     "timeout: the consolidated run is reported as exceeding its bound",
   );
+  // #1826 — a killed FIRST base run is no longer evidence about the base: it
+  // judged nothing, so it triggers no second run, raises no baseline-red claim on
+  // either channel, and leaves the change's own timeout entry as the park's
+  // evidence. The `[verify-timeout]` line above is what an operator now reads for
+  // this shape, and no assertion in the handoff quotes a base it never saw.
   assert(
-    (r.failures[0] ?? "").startsWith(BASELINE_RED_MARKER) &&
-      (r.failures[0] ?? "").includes(`${BOUND} timeout on a clean checkout`),
-    "timeout: a base run that also times out says the gate cannot finish inside its bound",
+    !r.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)),
+    "timeout: a base run killed at its bound raises no [baseline-red] finding (a killed run confirms nothing, #1826)",
+  );
+  assert(
+    r.verifyRuns.filter((w) => w === "base").length === 1,
+    `timeout: the killed base run is not re-run to confirm it (got ${r.verifyRuns.filter((w) => w === "base").length} base runs)`,
+  );
+  // The killed arm's own route, kept: no second run, no two-run claim on either
+  // channel, and the base reported as NOT ESTABLISHED rather than red.
+  assert(
+    r.notes.some((n) => n.startsWith("baseline verify not established")),
+    "timeout: the base is reported as not established rather than red",
+  );
+  // Its evidence is the timeout's own sentence, and cap precedence routes that
+  // sentence ahead of anything else (#1404), so the killed arm cannot reach the cap
+  // #1826 withholds: the claim is the `[baseline-red]` entry standing alone as the
+  // gate's whole verdict, and a killed run's entry leads with `[verify-timeout]`.
+  const baselineEntries = r.failures.filter((f) => f.startsWith(BASELINE_RED_MARKER));
+  assert(
+    baselineEntries.length <= 1 && baselineEntries.every((f) => f.includes("[verify-timeout]")),
+    `timeout: the killed base raises no plain [baseline-red] claim — at most the timeout's own entry (${JSON.stringify(baselineEntries.map((f) => f.slice(0, 60)))})`,
+  );
+  // The two claims the gate's tail rule reads, asked of the real caller rather than
+  // inferred from prose: a killed base run raises NEITHER. #1349's excuse rides on
+  // `onBaselineAttributed` (voided: a killed run holds no stream), and the cap's
+  // claim rides on `onBaselineRedEstablished` — whose `false` is what stops the
+  // cycle parking as `verify-baseline-red:develop`, since no path reaching that cap
+  // exists without the claim having fired. Asking `verifyCapFor` with the claim
+  // hard-coded to false would test the router's argument, not the gate's answer.
+  assert(
+    attributed.length === 0,
+    `timeout: a killed base run earns #1349's excuse for nothing (got ${JSON.stringify(attributed)})`,
+  );
+  assert(
+    established.length === 1 && established[0] === false,
+    `timeout: the killed base reports itself NOT established to the cap (got ${JSON.stringify(established)})`,
+  );
+  assert(
+    !r.notes.some((n) => n.includes("FLAKY")),
+    "timeout: a killed base run is not recorded as a flaky base — it never asked for a second run",
   );
 });
+
+// 5b — a base that is RED once and GREEN once is not a baseline-red park: the
+// failure is attributed to the change exactly as a green base attributes it, and
+// the flaky base is recorded (#1826's central case — the four cycles in one
+// 40-minute window that parked while a fifth on the same mainline merged).
+{
+  // Both arms red through the FIRST base run and the second green is what the
+  // fixture's per-cwd switch expresses; the change's own run must stay red or
+  // the comparison is never reached at all.
+  const r = await run("red-then-green", (w, baseRun) =>
+    w === "base"
+      ? baseRun === 2
+        ? { ok: true }
+        : { ok: false, stdout: CARGO }
+      : { ok: false, stdout: CARGO },
+  );
+  assert(
+    r.verifyRuns.filter((w) => w === "base").length === 2,
+    `red then green: the confirming run was paid for (got ${r.verifyRuns.filter((w) => w === "base").length})`,
+  );
+  assert(
+    !r.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)),
+    "red then green: no baseline-red finding — one red base run is not a red base",
+  );
+  assert(
+    r.failures.length > 0,
+    "red then green: the change's own failure still blocks, attributed as on a green base",
+  );
+  assert(
+    r.notes.some((n) => n.startsWith("baseline verify not established") && n.includes("#1826")),
+    "red then green: a note says the base was not confirmed, in the terms of the rule",
+  );
+  assert(
+    r.notes.some(
+      (n) => n.includes("FLAKY") && n.includes("base run 1") && n.includes("base run 2"),
+    ),
+    `red then green: the flaky base is recorded, naming both runs (got ${JSON.stringify(r.notes.filter((n) => n.includes("FLAKY")))})`,
+  );
+}
+
+// 5c — the park's handoff names BOTH base runs and their outcomes.
+{
+  const r = await run("red-at-base-explain", () => ({ ok: false, stdout: CARGO }));
+  const first = r.failures[0] ?? "";
+  let st = appendEvent(r.state, {
+    kind: "cap-hit",
+    at: 0,
+    cap: "verify-baseline-red:develop",
+    reviewRound: 0,
+    nextStep: "handoff",
+    evidence: first,
+  });
+  st = {
+    ...st,
+    pipelineState: {
+      ...st.pipelineState,
+      verifyEvidence: { step: "develop", failures: r.failures, at: 0 },
+    },
+  };
+  const explained = explainCap("verify-baseline-red:develop", st);
+  assert(
+    explained.includes("base run 1") && explained.includes("base run 2"),
+    "handoff: explainCap(verify-baseline-red:develop) names both base runs (got the first 200: " +
+      explained.slice(0, 200) +
+      ")",
+  );
+  assert(
+    /base run 1: FAILED[\s\S]*base run 2: FAILED/.test(explained),
+    "handoff: both runs are named WITH their outcomes, not just counted",
+  );
+}
 
 rmSync(root, { recursive: true, force: true });
 process.exit(exit);

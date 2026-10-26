@@ -25,7 +25,10 @@
  * waits for it.
  */
 
-import { awaitInflightBaseHealth } from "./work-driver-base-health-inflight.ts";
+import {
+  awaitInflightBaseHealth,
+  inflightBaseHealthStartedAt,
+} from "./work-driver-base-health-inflight.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
@@ -34,7 +37,8 @@ import type {
   BaseHealthReport,
 } from "./work-driver-verify-base-health-channels.ts";
 import { baseHealthConsultedNote } from "./work-driver-verify-base-health-channels.ts";
-import { baselineExplainsChange, compareWithBaseline } from "./work-driver-verify-baseline.ts";
+import { compareWithBaseline } from "./work-driver-verify-baseline-compare.ts";
+import { baselineExplainsChange } from "./work-driver-verify-baseline.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isValidSha, isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -73,7 +77,32 @@ export function reportBaselineLeg(
   callbacks: { onBaselineRedOnly?: () => void; onBaselineRedEstablished?: () => void },
 ): void {
   if (leg.established) callbacks.onBaselineRedEstablished?.();
+  // The excuse claim keys on the finding's PRESENCE, so a killed first run claims
+  // neither channel: `confirmRedBase` refuses it a second run (nothing judged is
+  // nothing to confirm) and `compareWithBaseline` withholds `established`, but the
+  // timeout's own sentence still leads the evidence — the operator's actionable
+  // line — and presence alone must not read as a claim (#1826).
   if (leg.red) callbacks.onBaselineRedOnly?.();
+}
+
+/**
+ * How long the develop gate waits on the background probe.
+ *
+ * One tier bound covers a probe that ran once. Once the probe has STARTED its
+ * confirming run the wait must cover TWO bounded runs plus the git work overhead of
+ * setting each tree up, or the gate abandons a probe that is one run away from
+ * answering and pays for the whole comparison itself (#1826 makes a red's second run
+ * normal, so this is the common shape rather than a rare one).
+ *
+ * `startedAt` comes from the registry entry, which knows when the probe began; the
+ * overhead allowance is one tier bound's worth of slack, which is the same order as
+ * the worktree provisioning a run sits behind.
+ */
+export function baseHealthWaitMs(tierBoundMs: number, probeStartedAgoMs: number): number {
+  // A probe younger than the tier bound cannot have finished its first run, so a
+  // second run cannot be in progress and one bound is the whole wait.
+  const twoRuns = probeStartedAgoMs > tierBoundMs ? 2 : 1;
+  return twoRuns * tierBoundMs + tierBoundMs / 4;
 }
 
 /**
@@ -102,7 +131,16 @@ async function collectBackgroundBaseHealth(
 ): Promise<BaseHealthVerdict | undefined> {
   if (!isValidSha(baseSha)) return undefined;
   const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: suiteTimeoutMs };
-  const consulted = await awaitInflightBaseHealth(key, suiteTimeoutMs);
+  // A probe already past its first tier bound is in its CONFIRMING run, so the wait
+  // covers two bounded runs plus the setup overhead each sits behind; abandoning it
+  // at one bound would throw away a probe one run from answering and pay for the
+  // whole comparison instead.
+  const startedAt = inflightBaseHealthStartedAt(key);
+  const waitMs =
+    startedAt === undefined
+      ? suiteTimeoutMs
+      : baseHealthWaitMs(suiteTimeoutMs, Date.now() - startedAt);
+  const consulted = await awaitInflightBaseHealth(key, waitMs);
   // Nothing registered is not an error and not a verdict: it is the shape after a
   // resume in a new process, or when the probe's switches were off. The gate then
   // answers for the base on its own evidence, exactly as it did before #1765.
@@ -113,11 +151,27 @@ async function collectBackgroundBaseHealth(
   // cost. `ran` and "did this come from the registry" are NOT reported — the only
   // producer of this record is the registry read, so the latter was a constant, and
   // no renderer ever showed the former. Both were dead fields wearing documentation.
+  //
+  // #1826 — and the second base run's colour travels with it, because a red that
+  // came back green on the confirmation is a FLAKY base: the record of that is
+  // otherwise the probe's local `notes`, which reach no operator. The colour is
+  // read off the VERDICT the probe wrote (its one durable statement about the
+  // second run), never off the consultation, so the two halves of the report
+  // cannot disagree about what the probe saw.
+  // #1826 — and the second base run's colour travels WITH the record, because a red
+  // that came back green on the confirmation is a FLAKY base: the record of that is
+  // otherwise the probe's local `notes`, which reach no operator. It rides on the
+  // `BaseHealthConsulted` the gate is handed, which is the one carrier — the note
+  // renderer reads it from the record and nothing else, so a consultation and its
+  // note cannot be two accounts of one probe.
   onConsulted?.({
     status: consulted.verdict.status,
     baseSha,
     ...(consulted.outcome.ms === undefined ? {} : { ms: consulted.outcome.ms }),
     ...(consulted.verdict.timedOut === true ? { timedOut: true as const } : {}),
+    ...(consulted.verdict.secondRun === undefined
+      ? {}
+      : { secondRun: consulted.verdict.secondRun }),
   });
   return consulted.verdict;
 }
@@ -235,14 +289,26 @@ export async function aggregateVerifyOutcome(args: {
             // base and its assertion, and a second line saying the same colour
             // would be two records of one consultation. The consultation record
             // still carries the red's colour and measured ms for the event log.
-            if (consulted.status !== "red") {
+            //
+            // #1826 round 2 — the decision is made on the STRUCTURED fields (the
+            // consulted `status` and the record's `secondRun`), never by matching
+            // the rendered note: the renderer is how the fact is printed, and a
+            // reworded sentence must not silently change which consultations get
+            // recorded. Same rule as `confirmingRunWasFlaky` in the comparison seam.
+            if (consulted.status !== "red" || consulted.secondRun === "green") {
+              // A RED whose confirmation came back green is the note exception's
+              // exception: it is a FLAKY base, and the only operator-visible
+              // record of that is this consultation line, so the colour and the
+              // second run's colour are reported rather than swallowed (#1826).
               notes.push(baseHealthConsultedNote(baseSha ?? "", consulted));
             }
             report.consulted = consulted;
             // #1809 fix round — a consulted RED is kept OUT of the report's
-            // `collected` half (the only writer of `pipelineState.baseHealthProbe`):
-            // the state field survives a develop round and a red is never cached
-            // across rounds. It still answers for THIS gate pass, which is what
+            // `collected` half (the only writer of `pipelineState.baseHealthProbe`).
+            // Two locks, one field: a red is never cached across rounds, AND a
+            // consulted red is a single run until the confirmation ran, so
+            // persisting it would hand the next develop pass a colour it never
+            // earned twice. It still answers for THIS gate pass, which is what
             // `fromInFlightProbe` on the reuse below says — without it
             // `compareWithBaseline` would read this as an ordinary in-state verdict,
             // an in-state red is unreusable there by design, and this cycle would
@@ -271,6 +337,15 @@ export async function aggregateVerifyOutcome(args: {
     // this cycle wrote, and a registry entry could answer for a different run. The
     // registry's own RED is flagged as this gate pass's, which is the only channel
     // `compareWithBaseline` accepts a red through.
+    //
+    // #1826 — and it carries `secondRun` verbatim. Without this projection the
+    // reuse arm was rebuilt from the consultation's three fields, so a record the
+    // probe had confirmed by watching BOTH base runs reached the comparison
+    // looking like a single unconfirmed run: the gate paid to re-ask a question
+    // that had been answered, its name rule then had no trees to anchor in (the
+    // probe's throwaway checkouts are gone by now), and every legitimate red base
+    // this path carried came back "names-disagree" — the defect that would have
+    // made the two-run rule refuse every real red base.
     const verdictForReuse =
       baseHealthProbe ??
       (inflight === undefined
@@ -282,6 +357,7 @@ export async function aggregateVerifyOutcome(args: {
               command: cmd,
               tierBoundMs: suiteTimeoutMs,
               ...(inFlightTimedOut ? { timedOut: true as const } : {}),
+              ...(inflight.secondRun === undefined ? {} : { secondRun: inflight.secondRun }),
               fromInFlightProbe: true as const,
             }
           : inflight);
@@ -294,7 +370,7 @@ export async function aggregateVerifyOutcome(args: {
         timedOut: isVerifyTimeoutFailure(f),
       })),
     ];
-    const verdict = await compareWithBaseline(execFn, {
+    const comparison = await compareWithBaseline(execFn, {
       repoRoot: ctx.repoRoot,
       baseSha: baseSha as string,
       issue: ctx.issue,
@@ -311,7 +387,7 @@ export async function aggregateVerifyOutcome(args: {
       // cycle already holds.
       ...(verdictForReuse !== undefined ? { cachedVerdict: verdictForReuse } : {}),
     });
-    if (verdict === undefined) {
+    if (comparison === undefined) {
       onBaselineRedEstablished?.(false);
       return false;
     }
@@ -321,7 +397,10 @@ export async function aggregateVerifyOutcome(args: {
     // from the same `cmd`), and the `red-timed-out` arm leads its failure entry
     // with `[verify-timeout]`, so prose could never have told it from a killed
     // run. A reused verdict is still the base's colour, so it still raises the cap.
-    onBaselineRedEstablished?.(true);
+    // #1826 — and `established` is the two-run answer beneath it: a base red twice
+    // (or a reuse whose record states a confirmed second run). A single red run
+    // never reaches here, so neither claim channel can fire on one.
+    onBaselineRedEstablished?.(comparison.established);
     // #1765 — the excuse question is #1349's and stays its answer; what changed is
     // how the develop gate RAISES the cap on it. It used to require the probe's
     // entry to be the gate's ONLY failure at its own position, so one foreign
@@ -330,7 +409,10 @@ export async function aggregateVerifyOutcome(args: {
     // three develop rounds on a base nothing could pass. A reused verdict
     // states the base's colour only: no stream, so
     // nothing to match the change's failures against, so never an excuse.
-    const attributed = verdict.reused !== true && baselineExplainsChange(verdict, changeFailures);
+    const attributed =
+      comparison.established &&
+      comparison.verdict.reused !== true &&
+      baselineExplainsChange(comparison.verdict, changeFailures);
     if (attributed) onBaselineAttributed?.();
     return attributed;
   }

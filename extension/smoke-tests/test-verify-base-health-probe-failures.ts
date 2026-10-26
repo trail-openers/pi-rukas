@@ -108,8 +108,14 @@ for (const [label, shape, throwWhere, expect] of [
   // printed nothing of its own, and an executor that threw never reached it.
   // What must hold for every arm is the answer and the evidence decision below.
   assert(
-    gateRuns.length === (shape === "executor-threw" ? 0 : 1),
-    `executor ${label}: the gate ran ${shape === "executor-threw" ? "not at all (the executor failed first)" : "exactly once"} (got ${gateRuns.length}) — the case is not vacuous`,
+    gateRuns.length === (shape === "executor-threw" ? 0 : shape === "red" ? 2 : 1),
+    `executor ${label}: the gate ran ${
+      shape === "executor-threw"
+        ? "not at all (the executor failed first)"
+        : shape === "red"
+          ? "twice — once for the first red and once to confirm it (#1826)"
+          : "exactly once, because a run that reached no verdict owes no confirmation"
+    } (got ${gateRuns.length}) — the case is not vacuous`,
   );
   assert(
     out?.verdict?.status === expect,
@@ -214,8 +220,8 @@ for (const [label, shape, throwWhere, expect] of [
     await keyFor(f.repo, f.baseSha),
   );
   assert(
-    gateCalls === 1,
-    `rejected gate: the gate arm really ran once (got ${gateCalls}) — the case is not vacuous`,
+    gateCalls >= 1 && gateCalls <= 2,
+    `rejected gate: the gate arm really ran (${gateCalls} — one run, or two when the first rejection read as a red that owed a confirmation) — the case is not vacuous`,
   );
   // The distinction the case must keep: a rejection is NOT reported as a GREEN,
   // and no green is written for it. Whether the arm still reads as a red is the

@@ -36,6 +36,7 @@ import {
   readBaseHealthCache,
 } from "../src/work-driver-verify-base-health.ts";
 import { developTierTimeouts } from "../src/work-driver-verify-budget.ts";
+import { compareWithBaseline } from "../src/work-driver-verify-baseline-compare.ts";
 import { initialState } from "../src/workflow-state.ts";
 import {
   PROBE_CMD as CMD,
@@ -45,6 +46,7 @@ import {
   capsOf,
   freshProbe,
   probe,
+  redGateExecCounter,
   settled,
 } from "./lib/base-health-probe-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
@@ -205,6 +207,100 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     command: CMD,
     tierBoundMs: 1,
   };
+  // #1826 — the cache and the state carry reds, so both readers are checked
+  // against the two-run rule: a record that states no confirmed second run is
+  // still READABLE (the parser refuses nothing), and it is the CLAIM that is
+  // withheld, not the row. `usableVerdict` keeps such a record usable so the
+  // comparison can re-confirm it rather than re-probe from nothing.
+  const noSecond = JSON.stringify({
+    verdict: { status: "red", baseSha: f.baseSha, command: CMD, tierBoundMs: red.tierBoundMs },
+  });
+  const readBare = await readBaseHealthCache(async () => noSecond, f.repo);
+  assert(
+    readBare?.status === "red" && readBare.secondRun === undefined,
+    "red cache: a red with no secondRun field still reads back — it is a colour, not a claim",
+  );
+  // The fixture's `.pi/work-state/` exists only once a cycle has written there (the
+  // probe's own cache write is what creates it), and a red NEVER takes that write —
+  // so this case, which stages a red record by hand, has to create the directory
+  // the same way the driver's first green would.
+  mkdirSync(path.join(f.repo, ".pi", "work-state"), { recursive: true });
+  writeFileSync(baseHealthCacheFile(f.repo), noSecond);
+  // The cache is read on ONE condition and it is not this one: `cachedBaseHealth`
+  // may answer for a cycle only with a GREEN, because "a red is never cached across
+  // cycles" is enforced at the read, not the write. So the row stays readable — that
+  // is the parser's business — and the probe never sees it. The anti-vacuity half is
+  // the pair below: a red this cycle DID watch is handed out with its evidence, so
+  // the assertion above is not a case of a probe that could not produce one.
+  // The same gate the develop gate's consultation runs through, with the row in
+  // place: it returns the red it watched itself, never the row, and says what the
+  // row was. A case that only looked at `out.red === undefined` would be satisfied
+  // by a probe that could not produce an evidence at all.
+  // #1826 — the row on disk is not the only thing that must not speak for a
+  // cycle. The in-flight probe's red is the ONE red a develop round may reuse, and
+  // it reuses only a record whose own `secondRun` field says a second run agreed:
+  // the probe's confirmation is the only thing a reuse has behind it, because the
+  // throwaway checkouts that printed the stream are gone and the reuse pays for
+  // nothing. A record written by an older build states no such field, and reusing
+  // it would be the single-red park this issue exists to end.
+  const reuseRuns: string[] = [];
+  const confirmedRe = await compareWithBaseline(redGateExecCounter(reuseRuns), {
+    repoRoot: f.repo,
+    baseSha: f.baseSha,
+    issue: 1826,
+    cmd: CMD,
+    timeoutMs: second.out.verdict?.tierBoundMs ?? bound,
+    changeFailures: [{ text: "1 failed", timedOut: false }],
+    failures: [],
+    notes: [],
+    cachedVerdict: { ...second.out.verdict, fromInFlightProbe: true },
+  });
+  assert(
+    confirmedRe?.established === true &&
+      confirmedRe.verdict?.reused === true &&
+      reuseRuns.length === 0,
+    `red cache: the in-flight red this pass collected IS reused, and its record's own confirmation carries the claim — no run paid for it (established=${confirmedRe?.established}, reused=${confirmedRe?.verdict?.reused}, ${reuseRuns.length} runs)`,
+  );
+  // A SECOND base, because the comparison's own runs register in the same
+  // single-flight registry the branch-step probe uses: a second consultation for
+  // the SAME key would answer from the first one's in-flight entry and report "two
+  // runs paid for" as whatever the first run happened to cost.
+  const staleRuns: string[] = [];
+  const staleRe = await compareWithBaseline(redGateExecCounter(staleRuns), {
+    repoRoot: f.repo,
+    baseSha: (await realExec("git", { argv: ["rev-parse", "HEAD"], cwd: f.repo })).stdout.trim(),
+    issue: 1826,
+    cmd: CMD,
+    timeoutMs: second.out.verdict?.tierBoundMs ?? bound,
+    changeFailures: [{ text: "1 failed", timedOut: false }],
+    failures: [],
+    notes: [],
+    cachedVerdict: {
+      status: "red",
+      baseSha: f.baseSha,
+      command: CMD,
+      tierBoundMs: second.out.verdict?.tierBoundMs ?? bound,
+      fromInFlightProbe: true,
+    },
+  });
+  assert(
+    staleRe?.verdict?.reused !== true && staleRuns.length === 2,
+    `red cache: an in-flight red with no stated second run pays for BOTH runs again rather than reusing a colour (reused=${staleRe?.verdict?.reused}, ${staleRuns.length} runs)`,
+  );
+  const unreadableSecond = JSON.stringify({
+    verdict: {
+      status: "red",
+      baseSha: f.baseSha,
+      command: CMD,
+      tierBoundMs: red.tierBoundMs,
+      secondRun: "ok",
+    },
+  });
+  assert(
+    (await readBaseHealthCache(async () => unreadableSecond, f.repo)) === undefined,
+    "red cache: a PRESENT but unreadable secondRun makes the whole record unusable — re-probe (#1826, the same rule as timedOut)",
+  );
+  // The `read` twin the pair above reads its row through.
   const read = await readBaseHealthCache(async () => JSON.stringify({ verdict: red }), f.repo);
   assert(
     read?.status === "red",
@@ -223,8 +319,8 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   );
   const third = await freshProbe(f, { state: held });
   assert(
-    third.gateRuns.length === 1 && third.out.verdict?.status === "red",
-    "red cache: an in-state red does NOT let the probe skip its own run",
+    third.gateRuns.length >= 1 && third.out.verdict?.status === "red",
+    `red cache: an in-state red does NOT let the probe skip its own run (${third.gateRuns.length} runs, verdict=${third.out.verdict?.status})`,
   );
 }
 

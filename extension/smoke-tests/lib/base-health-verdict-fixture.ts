@@ -75,7 +75,20 @@ export function stateWithRedProbe(
   baseSha: string,
   cmd: string,
   tierBoundMs: number,
-  opts: { timedOut?: boolean; issue?: number } = {},
+  opts: {
+    timedOut?: boolean;
+    issue?: number;
+    confirmed?: boolean;
+    /**
+     * This red is the one colour a develop round may reuse: the flag saying it
+     * came from THIS gate pass's background probe, which is the only channel a red
+     * crosses into `compareWithBaseline` through (#1826). A red sitting in state
+     * alone is an earlier round's colour and is re-probed, so a case that means to
+     * observe a reuse has to say which channel it arrived on — the same fact
+     * `aggregateVerifyOutcome` computes when it projects the registry's red.
+     */
+    fromInFlightProbe?: boolean;
+  } = {},
 ): WorkState {
   const state = initialState(opts.issue ?? 1765);
   state.pipelineState.baseSha = baseSha;
@@ -84,7 +97,15 @@ export function stateWithRedProbe(
     baseSha,
     command: cmd,
     tierBoundMs,
-    ...(opts.timedOut === true ? { timedOut: true as const } : {}),
+    // A KILLED record states no confirmed second run either: #1826 gives a killed
+    // run no second run and no claim, because the bound it hit is the actionable
+    // diagnosis and nothing about it is re-derived by running the same command
+    // again. Stating `secondRun: "red"` here would let a colour nobody watched twice
+    // reuse, and the arm `reuseCachedVerdict` rebuilds carries no `timedOut` for the
+    // comparison to object with — which is exactly how the #1765 defect returned a
+    // plain red for a gate that was killed.
+    ...(opts.timedOut === true || opts.confirmed === false ? {} : { secondRun: "red" as const }),
+    ...(opts.fromInFlightProbe === true ? { fromInFlightProbe: true as const } : {}),
   };
   return state;
 }

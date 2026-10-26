@@ -1,3 +1,4 @@
+import { baseRunsProse } from "./work-driver-verify-base-confirm-prose.ts";
 /**
  * work-driver-verify-base-park — #1765: the prose rules that read a probe
  * entry, and the record a probe leaves for the develop gate.
@@ -13,6 +14,7 @@
  * replacement, `BaseHealthRedEvidence`) so the verdict's own colour and tally
  * survive to the seam that does the attributing.
  */
+import type { BaseRedConfirmationResult } from "./work-driver-verify-base-confirm.ts";
 import { type RedBaselineVerdict, baselineRedMessage } from "./work-driver-verify-baseline.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -63,21 +65,34 @@ export interface BaseHealthRedEvidence {
   message: string;
   /** The loop's own `FAILED: <n> test(s)` tally, when the stream carried one. */
   tally?: number;
+  /**
+   * #1826 — the two base runs the red rests on, as one clause naming each
+   * run and its outcome. The single-arm prose could not say whether one run or
+   * two said "red", which is the whole question this issue exists to answer.
+   */
+  baseRuns?: string;
 }
 
 /** The red evidence a probe hands to the develop gate, or nothing for no red. */
 export function baseHealthRedEvidence(
   verdict: BaseHealthVerdict,
   arm: RedBaselineVerdict,
+  confirmation?: BaseRedConfirmationResult,
 ): BaseHealthRedEvidence {
+  // The arm decides the sentence, so a killed base is never dressed as a plain red:
+  // `baselineRedMessage` writes the bound's line for `red-timed-out` and an
+  // assertion's line for `red`, and rebuilding one from the other is the #1765
+  // lens-round-1 defect that told an operator to fix a test nobody ran.
   const tally = arm.status === "red" ? summaryCount(arm.rawStream) : undefined;
+  const baseRuns = confirmation === undefined ? "" : baseRunsProse(confirmation);
   return {
-    message: baselineRedMessage(arm, {
+    message: `${baselineRedMessage(arm, {
       cmd: verdict.command,
       baseSha: verdict.baseSha,
       timeoutMs: verdict.tierBoundMs,
       changeFailure: "",
-    }),
+    })}${baseRuns === "" ? "" : ` — ${baseRuns}`}`,
     ...(tally === undefined ? {} : { tally }),
+    ...(baseRuns === "" ? {} : { baseRuns }),
   };
 }

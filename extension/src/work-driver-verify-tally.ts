@@ -131,6 +131,24 @@ function hasOpaqueRun(name: string): boolean {
   return false;
 }
 
+/**
+ * The THREE-ARM veto a failing-test name must pass before anything prints it.
+ *
+ * One definition, because the same string reaches two publishers. The tally
+ * harvest refuses such a name outright (a name that cannot be named is not
+ * evidence), and the base-run prose in
+ * `work-driver-verify-base-confirm-prose.ts` must refuse it before a
+ * `[baseline-red]` finding, a handoff note or a forge comment quotes it. The
+ * prose used to ask only the credential-shape arm, so a bare live-mode secret key, a JWT
+ * or a long hex digest — none of which carries the `key=`/`token:` anchor that
+ * shape needs — printed in full while the tally silently refused the very same
+ * token. A veto that is one arm at one sink and three at another is the bug, not
+ * the arms.
+ */
+export function nameLooksSecret(name: string): boolean {
+  return looksLikeCredential(name) || hasOpaqueRun(name) || redactSecrets(name).text !== name;
+}
+
 /** The most the ` (+K more)` disclosure may print; beyond it the digit is a claim. */
 const TALLY_OMITTED_DISPLAY_MAX = 999;
 
@@ -205,14 +223,8 @@ export function harvestConsolidatedTallies(raw: string): string[] {
       const name = candidate.trim();
       if (name.length === 0 || name.length > TALLY_NAME_LINE_MAX) break;
       if (!NAME_LINE_RE.test(name)) break;
-      if (looksLikeCredential(name)) break;
-      // Two more shape checks, both aimed at the token-shaped name the credential
-      // patterns do not reach: an unbroken base64/hex run (a digest, a key fragment,
-      // a PEM body line), and anything the redactor would alter. Both are asked of
-      // the NAME alone, never of the tally line, so the guard cannot refuse the very
-      // tally it is reporting.
-      if (hasOpaqueRun(name)) break;
-      if (redactSecrets(name).text !== name) break;
+      // All three arms, from their one owner — see {@link nameLooksSecret}.
+      if (nameLooksSecret(name)) break;
       if (classifyFailureLine(name) !== undefined) break;
       if (isSuccessLine(name)) break;
       const next = names.length === 0 ? name : `${joined}, ${name}`;
