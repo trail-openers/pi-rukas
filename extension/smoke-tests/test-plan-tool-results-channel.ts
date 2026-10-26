@@ -8,8 +8,9 @@
  */
 
 import type { PiJsonEvent, PiMessage } from "../src/pi-event-shapes.ts";
-import { collapseEvents } from "../src/spawn-collapse-events.ts";
-import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
+import { RECORDED_ARGS_DETAILS_KEY } from "../src/plan-workstream-schema.ts";
+import { TOOL_RESULT_DETAILS_MAX, collapseEvents } from "../src/spawn-collapse-events.ts";
+import { ECHO_MISMATCH_REASON, workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { planRefusalsSection } from "../src/work-driver-pr-sections.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
 
@@ -46,7 +47,6 @@ function toolResult(toolCallId: string, isError: boolean, text: string): PiMessa
     content: [{ type: "text", text }],
   } as PiMessage;
 }
-
 function collapse(messages: PiMessage[]) {
   const agentEnd = { type: "agent_end", messages } as PiJsonEvent;
   return collapseEvents(agentEnd, null, "explore", 10, 0, "");
@@ -130,6 +130,121 @@ const ARGS_B = { id: "task-b", scope: "b", paths: ["src/b.ts"], outOfScope: [] }
     result.toolResults === undefined && workstreamCallsOf(result).unreadable === 1,
     "a toolResult without a toolCallId is ignored, so its call stays unreadable",
   );
+}
+
+{
+  // #1756 round 2 — the `details` channel: report_workstream's echo survives the
+  // collapse whole (it is the value the reader judges), and no other tool's
+  // `details` rides the transport at all.
+  const echo = { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: ["docs/"] };
+  const result = collapse([
+    assistantCalls([{ id: "call-1", args: ARGS_A }]),
+    {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "report_workstream",
+      isError: false,
+      content: [{ type: "text", text: "recorded workstream task-a" }],
+      details: { [RECORDED_ARGS_DETAILS_KEY]: echo },
+    } as PiMessage,
+  ]);
+  assert(
+    JSON.stringify(
+      (result.toolResults?.[0]?.details as Record<string, unknown>)?.[RECORDED_ARGS_DETAILS_KEY],
+    ) === JSON.stringify(echo),
+    "a report_workstream result's `details.recordedArgs` survives collapseEvents intact",
+  );
+  // The echo the child built is a report of a DIFFERENT fence than the call
+  // asked for, so the binding refuses it — the transport carrying a payload does
+  // not make the reader believe it. The faithful case (echo === the call's own
+  // fields) is what reaches state, pinned below.
+  const mismatched = workstreamCallsOf(result);
+  assert(
+    mismatched.accepted === 0 && mismatched.refused[0]?.reason === ECHO_MISMATCH_REASON,
+    "an echo that does not describe the call is refused even though the transport carried it",
+  );
+  const faithful = collapse([
+    assistantCalls([{ id: "call-1", args: ARGS_A }]),
+    {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "report_workstream",
+      isError: false,
+      content: [{ type: "text", text: "recorded workstream task-a" }],
+      details: { [RECORDED_ARGS_DETAILS_KEY]: { ...ARGS_A } },
+    } as PiMessage,
+  ]);
+  assert(
+    workstreamCallsOf(faithful).accepted === 1,
+    "the echoed value reaches the reader and is what it accepts, end to end through collapseEvents",
+  );
+  const otherTool = collapse([
+    {
+      role: "assistant",
+      model: "test-model",
+      content: [{ type: "toolCall", id: "call-9", name: "bash", arguments: { cmd: "ls" } }],
+    } as PiMessage,
+    {
+      role: "toolResult",
+      toolCallId: "call-9",
+      toolName: "bash",
+      isError: false,
+      content: [{ type: "text", text: "ok" }],
+      details: { [RECORDED_ARGS_DETAILS_KEY]: echo, huge: "x".repeat(10_000) },
+    } as PiMessage,
+  ]);
+  assert(
+    otherTool.toolResults?.[0]?.details === undefined,
+    "a non-report_workstream tool's `details` is not carried — no arbitrary payload rides every DispatchResult",
+  );
+  {
+    // Over the cap the key is omitted entirely rather than truncated: half an
+    // echo would be a judgement nobody made, while no echo is the reader's
+    // known fallback (judge the raw arguments).
+    const huge = collapse([
+      assistantCalls([{ id: "call-1", args: ARGS_A }]),
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "report_workstream",
+        isError: false,
+        content: [{ type: "text", text: "recorded" }],
+        details: {
+          [RECORDED_ARGS_DETAILS_KEY]: {
+            ...echo,
+            outOfScope: ["x".repeat(TOOL_RESULT_DETAILS_MAX)],
+          },
+        },
+      } as PiMessage,
+    ]);
+    assert(
+      huge.toolResults?.[0]?.details === undefined,
+      `a \`details\` over ${TOOL_RESULT_DETAILS_MAX} bytes is dropped, not truncated`,
+    );
+    assert(
+      workstreamCallsOf(huge).accepted === 1,
+      "the dropped echo costs nothing: the raw arguments are still judged, as before #1756",
+    );
+  }
+  {
+    // A non-object payload under the key is not carried either — the transport
+    // does not assert an echo the child never built.
+    const notAnEcho = collapse([
+      assistantCalls([{ id: "call-1", args: ARGS_A }]),
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "report_workstream",
+        isError: false,
+        content: [{ type: "text", text: "recorded" }],
+        details: { [RECORDED_ARGS_DETAILS_KEY]: "task-a" },
+      } as PiMessage,
+    ]);
+    assert(
+      notAnEcho.toolResults?.[0]?.details === undefined,
+      "a `recordedArgs` that is not an object is not carried",
+    );
+  }
 }
 
 {

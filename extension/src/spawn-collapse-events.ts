@@ -10,10 +10,59 @@ import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
 import { addUsage } from "./pi-usage.ts";
+import { RECORDED_ARGS_DETAILS_KEY } from "./plan-workstream-schema.ts";
 import type { DispatchResult } from "./types.ts";
 
 /** The longest tool-result text kept on a DispatchResult (#1652). */
 const TOOL_RESULT_TEXT_MAX = 300;
+
+/**
+ * The `report_workstream` tool's name — the ONLY tool whose `details` this
+ * module carries. Named here rather than imported so the collapse path does not
+ * pull the plan module graph into every spawn.
+ */
+const REPORT_WORKSTREAM_TOOL = "report_workstream";
+
+/**
+ * The longest `details` JSON kept on a tool result (#1756 round 2). The plan
+ * child's companion echoes the arguments it recorded there and the driver judges
+ * that value, so it must survive the collapse — but a tool's `details` is an
+ * arbitrary `unknown` the extension author chose, and some tools put large
+ * payloads there. This is the bound that keeps a runaway `details` from becoming
+ * a second unbounded channel on every DispatchResult: past it the key is
+ * omitted, which the reader reads as NO echo and handles as it always did (judge
+ * the raw arguments). Generous against the schema's own ceilings, which bound
+ * one `report_workstream` call to a few tens of KB at the very most.
+ */
+export const TOOL_RESULT_DETAILS_MAX = 64 * 1024;
+
+/**
+ * The `details` to carry for one tool result: only `report_workstream`'s, only
+ * the `recordedArgs` key the plan reader consumes, and only within
+ * `TOOL_RESULT_DETAILS_MAX`. Everything else — another tool's payload, a
+ * non-JSON-serialisable value, an over-capacity one — is omitted, and omission
+ * is the reader's "no echo" answer, never a guessed one. `details` stays
+ * `unknown` at the transport: this module does not know the echo's shape and the
+ * reader narrows it (plan-workstream-schema.ts).
+ */
+function carriedDetails(toolName: string, details: unknown): Record<string, unknown> | undefined {
+  if (toolName !== REPORT_WORKSTREAM_TOOL) return undefined;
+  if (!isObjectLike(details)) return undefined;
+  const echoed = details[RECORDED_ARGS_DETAILS_KEY];
+  // A null / string / array under the key is not a params object anybody
+  // recorded; carrying it would let the transport assert an echo the child never
+  // built. Omit it and the reader judges the raw arguments.
+  if (!isObjectLike(echoed)) return undefined;
+  let json: string;
+  try {
+    json = JSON.stringify(echoed);
+  } catch {
+    // A value JSON cannot express is not a structured echo anybody recorded.
+    return undefined;
+  }
+  if (typeof json !== "string" || json.length > TOOL_RESULT_DETAILS_MAX) return undefined;
+  return { [RECORDED_ARGS_DETAILS_KEY]: echoed };
+}
 
 /**
  * The text of a tool result's blocks, accumulated block by block and stopped at
@@ -31,13 +80,16 @@ function boundedResultText(blocks: PiContentBlock[]): string {
 }
 
 /**
- * Whether a value survives a JSON round-trip. `undefined`, a function and a
- * symbol all vanish or throw there, so a value that is not JSON-safe is not a
- * structured payload at all — keeping it would let the reader see a key whose
- * value cannot be what the child wrote.
+ * The own-property plain-object test a structured payload must pass. The same
+ * prototype rule `plan-provenance.ts`'s `isPlainObject` makes — kept local
+ * rather than imported so the spawn path every dispatch runs through does not
+ * gain an edge on the issue-filing provenance module. A value this refuses is
+ * dropped by the caller, never forwarded as a payload the reader could misread.
  */
-function isJsonSafe(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
+function isObjectLike(v: unknown): v is Record<string, unknown> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
 export function collapseEvents(
@@ -112,20 +164,24 @@ export function collapseEvents(
       (m): m is PiMessage & { toolCallId: string } =>
         m.role === "toolResult" && typeof m.toolCallId === "string",
     )
-    .map((m) => ({
-      toolCallId: m.toolCallId,
-      toolName: m.toolName ?? "",
-      // Fail closed: only an explicit `false` is a success (#1652 review).
-      isError: m.isError !== false,
-      text: boundedResultText(m.content ?? []),
-      // #1756 round 2 — the companion's structured echo rides here. Kept whole
-      // and NOT bounded like `text`: the plan reader parses it, and `text` is
-      // truncated for display, so a bound here would silently destroy a
-      // judgement. Only a JSON-safe value survives the session round-trip, so
-      // anything else is dropped rather than forwarded as a value the reader
-      // could misread as a real echo.
-      ...(isJsonSafe(m.details) ? { details: m.details } : {}),
-    }));
+    .map((m) => {
+      const toolName = m.toolName ?? "";
+      const details = carriedDetails(toolName, m.details);
+      return {
+        toolCallId: m.toolCallId,
+        toolName,
+        // Fail closed: only an explicit `false` is a success (#1652 review).
+        isError: m.isError !== false,
+        text: boundedResultText(m.content ?? []),
+        // #1756 round 2 — the companion's structured echo rides here, bounded
+        // and filtered by `carriedDetails`: only report_workstream's, only the
+        // key the reader reads, only within the cap. Kept whole and NOT bounded
+        // like `text`, which is truncated for display — a bound on the judgement
+        // channel would silently destroy it, so an over-capacity payload is
+        // dropped entirely and read as no echo instead of half a judgement.
+        ...(details === undefined ? {} : { details }),
+      };
+    });
 
   // Join with double-newline so distinct text blocks across turns (separated
   // by tool calls in between) stay visually delimited instead of concatenated.

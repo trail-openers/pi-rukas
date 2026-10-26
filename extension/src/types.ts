@@ -79,10 +79,13 @@ export interface DispatchResult {
     text: string;
     /**
      * #1756 round 2 — the tool's own structured payload, carried through from
-     * the child's `toolResult` message. Pi types it `unknown`; the plan reader
-     * is the only consumer and treats a shape it cannot read as no payload.
+     * the child's `toolResult` message for the ONE tool that needs it
+     * (`report_workstream`, spawn-collapse-events.ts). Typed `unknown`
+     * deliberately: Pi declares no schema for `details`, so the only consumer
+     * (the plan reader) narrows it and treats a shape it cannot read as no
+     * payload at all.
      */
-    details?: Record<string, unknown>;
+    details?: unknown;
   }>;
   /**
    * Tool calls counted live from the event stream, when the replay carried
