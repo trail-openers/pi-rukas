@@ -297,9 +297,13 @@ export async function compareWithBaseline(
     return undefined;
   }
   // #1826 — one red run of the gate is not a red base. A first `red-timed-out`
-  // triggers no second run and keeps today's routing: no baseline-red claim, and
-  // the timeout's own evidence (the cap router already routes a killed run ahead
-  // of the base claim, so it is still the actionable timeout it was).
+  // triggers no second run (nothing judged is nothing to confirm) and keeps
+  // today's EVIDENCE: the finding is written, because "the gate cannot finish on a
+  // clean checkout of the base whatever the diff contains" is the operator's
+  // actionable sentence for this shape and nothing else says it. What the killed
+  // arm does NOT get is the CLAIM — `established` stays false, so neither the
+  // #1765 cap claim nor #1349's excuse can be built on a run that reached no
+  // verdict, and the cap router keeps routing the timeout ahead of the base.
   //
   // A REUSED arm arrives with no tree to anchor its names in: the throwaway
   // checkout that printed the stream has been removed, so the name rule ("do the

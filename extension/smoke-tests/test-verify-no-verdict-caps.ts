@@ -124,19 +124,38 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
     }
     wts[id] = wt;
   }
-  const baselineDir = path.join(repo, ".worktrees", "baseline-verify-9");
+  // #1826 gives each base run its own throwaway tree (`…-base1`, `…-base2`), so the
+  // fixture names both: a case that only knew one tree would have its second run
+  // read as a run of the CHANGE, which is how a red base quietly becomes a green one.
+  const baseDir = (label: string) => path.join(repo, ".worktrees", `baseline-verify-9-${label}`);
   const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
     cmd = commandOf(cmd, o);
     if (!cmd.includes("scripts/verify.sh"))
       return { stdout: (await sh(o?.cwd ?? repo, cmd)).stdout };
-    const atBase = o?.cwd === baselineDir;
+    const run1 = o?.cwd === baseDir("base1");
+    // A killed FIRST base run asks for no confirming run (#1826), so the second
+    // tree exists only for a base that is red on the arm being read.
+    const secondRunReached = baseKind !== "timeout";
+    const atBase = run1 || (secondRunReached && o?.cwd === baseDir("base2"));
+    if (cmd.includes("scripts/verify.sh")) gateRuns.push(o?.cwd ?? "");
     if (atBase && !baseRed) return { stdout: "" };
     const e = new Error(`Command failed: ${cmd}`) as Error & {
       stdout?: string;
       stderr?: string;
       killed?: boolean;
     };
-    if (atBase && baseKind === "timeout") e.killed = true;
+    // A killed FIRST base run is the whole shape of the "timeout" case: #1826 asks
+    // for no confirming run, because a run that judged nothing has nothing to
+    // confirm. #1765 lens round 1 is the other half of the shape — a killed run's
+    // stream is read by NO seam (no tally, no assertion, no exit code), so the
+    // killed arm throws here, before any stdout is composed: handing a stream back
+    // would let the comparison's extractor match a test the gate never ran.
+    if (run1 && baseKind === "timeout") {
+      e.killed = true;
+      e.stdout = "";
+      e.stderr = "";
+      throw e;
+    }
     e.stdout =
       atBase && baseKind !== "timeout" && baseKind !== "green" ? BASE_OUTPUT[baseKind] : CARGO;
     e.stderr = "";
@@ -155,6 +174,8 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
     } as never;
   }
   const failures: string[] = [];
+  /** Gate executions by tree, so "the base was probed" is a count, not a claim. */
+  const gateRuns: string[] = [];
   let baselineRedOnly = false;
   // #1765 — the CAP's claim travels through `reportBaselineLeg`, not through
   // `onBaselineRedOnly`: the excuse claim (above) is voided by one foreign
@@ -177,7 +198,13 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
       },
     },
   );
-  return { failures, baselineRedOnly, baselineRedEstablished };
+  return {
+    failures,
+    baselineRedOnly,
+    baselineRedEstablished,
+    gateRuns,
+    baseDirs: [baseDir("base1"), baseDir("base2")],
+  };
 }
 
 {
@@ -249,10 +276,46 @@ for (const [base, why] of [
   ["timeout", "the base timed out while the change fails on a real assertion"],
 ] as const) {
   const r = await develop(base, base, false);
+  const baseRunCount = r.gateRuns.filter((c) => r.baseDirs.includes(c)).length;
   assert(
-    r.failures[0]?.startsWith(BASELINE_RED_MARKER) === true,
-    `${why}: the baseline finding still leads the evidence`,
+    baseRunCount === (base === "timeout" ? 1 : 2),
+    `${why}: the base was run ${base === "timeout" ? "ONCE (a killed run asks for no confirmation)" : "TWICE"} (got ${baseRunCount} of ${JSON.stringify(r.gateRuns.map((c) => c.split("/").pop()))}) — the case is not vacuous`,
   );
+  // The killed arm's route, asserted as the route rather than as a colour: no
+  // second run, and no two-run claim on either channel. `established` is what the
+  // cap and #1349's excuse are both built from, so this is the sentence #1826
+  // withholds from a run that judged nothing — and the finding that DOES lead is
+  // the timeout's own, which cap precedence already routes as `verify-timeout`.
+  if (base === "timeout") {
+    assert(
+      !r.baselineRedEstablished && !r.baselineRedOnly,
+      "the base timed out: neither the cap claim nor the excuse claim is raised (a killed run confirms nothing)",
+    );
+  }
+  // The killed arm's evidence is the timeout's own `[baseline-red] …` sentence,
+  // which is why the cap router sends it to `verify-timeout:<step>` (#1404); the
+  // two red arms lead with the plain `[baseline-red]` marker. Either way the
+  // baseline's verdict leads the list — that is what "the finding leads the
+  // evidence" means, and asking for the marker alone here would ask a killed run
+  // to print a colour it never reached.
+  if (base === "timeout") {
+    // The killed arm raises NOTHING about the base: no two-run claim on either
+    // channel, no finding leading the list, and the base runned exactly once —
+    // which is #1826's route for a run that judged nothing, and the shape the cap
+    // router then reads as the change's own failure (verify-timeout precedence is
+    // #1404's, tested by the routing cases at the top of this file).
+    assert(
+      !r.baselineRedEstablished &&
+        !r.baselineRedOnly &&
+        !r.failures.some((f) => f.startsWith(BASELINE_RED_MARKER)),
+      `${why}: a killed base run raises no baseline finding and no claim on either channel`,
+    );
+  } else {
+    assert(
+      r.failures[0]?.startsWith(BASELINE_RED_MARKER) === true,
+      `${why}: the baseline finding still leads the evidence (${String(r.failures[0]?.slice(0, 70))})`,
+    );
+  }
   const cap = verifyCapFor("develop", r.failures, r.baselineRedOnly);
   assert(cap === "verify-failed:develop", `${why}: parks verify-failed:develop (got ${cap})`);
 }

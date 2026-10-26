@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
+import { verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
@@ -265,9 +266,24 @@ await pinDefaultVerifyTimeout(async () => {
     r.verifyRuns.filter((w) => w === "base").length === 1,
     `timeout: the killed base run is not re-run to confirm it (got ${r.verifyRuns.filter((w) => w === "base").length} base runs)`,
   );
+  // The killed arm's own route, kept: no second run, no two-run claim on either
+  // channel, and the base reported as NOT ESTABLISHED rather than red.
   assert(
     r.notes.some((n) => n.startsWith("baseline verify not established")),
     "timeout: the base is reported as not established rather than red",
+  );
+  // Its evidence is the timeout's own sentence, and cap precedence routes that
+  // sentence ahead of anything else (#1404), so the killed arm cannot reach the cap
+  // #1826 withholds: the claim is the `[baseline-red]` entry standing alone as the
+  // gate's whole verdict, and a killed run's entry leads with `[verify-timeout]`.
+  const baselineEntries = r.failures.filter((f) => f.startsWith(BASELINE_RED_MARKER));
+  assert(
+    baselineEntries.length <= 1 && baselineEntries.every((f) => f.includes("[verify-timeout]")),
+    `timeout: the killed base raises no plain [baseline-red] claim — at most the timeout's own entry (${JSON.stringify(baselineEntries.map((f) => f.slice(0, 60)))})`,
+  );
+  assert(
+    verifyCapFor("develop", r.failures, false) !== "verify-baseline-red:develop",
+    `timeout: the router never reads a killed base as baseline-red (got ${verifyCapFor("develop", r.failures, false)})`,
   );
   assert(
     !r.notes.some((n) => n.includes("FLAKY")),

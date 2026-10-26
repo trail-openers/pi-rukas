@@ -21,6 +21,7 @@ import { trace } from "./trace.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import {
   BASE_CONFIRM_FIRST_LABEL,
+  BASE_CONFIRM_SECOND_LABEL,
   baseRunsProse,
   confirmRedBase,
 } from "./work-driver-verify-base-confirm.ts";
@@ -32,6 +33,7 @@ import {
 import {
   type BaselineVerdict,
   type RedBaselineVerdict,
+  baselineProbeWorktreePath,
   isRedBaseline,
   probeBaselineVerify,
 } from "./work-driver-verify-baseline.ts";
@@ -110,6 +112,8 @@ export async function runBaseHealthProbe(
   // the tree-naming rule — and the confirmation's distinct label is what makes it
   // a FRESH tree rather than the first run's, which a project gate that writes
   // into its own checkout would have inherited.
+  const tree = (label: string) =>
+    baselineProbeWorktreePath(ctx.repoRoot, `branch-${ctx.issue}-${label}`);
   const baseRun = (label: string, boundMs: number): Promise<BaselineVerdict> =>
     probeBaselineVerify(execFn, {
       repoRoot: ctx.repoRoot,
@@ -129,7 +133,10 @@ export async function runBaseHealthProbe(
   // open. A first `red-timed-out` or `unknown` triggers NO second run and keeps
   // today's routing; a green triggers none.
   const confirmation = isRedBaseline(probe)
-    ? await confirmRedBase(probe, (label, boundMs) => baseRun(label, boundMs), key.tierBoundMs)
+    ? await confirmRedBase(probe, (label, boundMs) => baseRun(label, boundMs), key.tierBoundMs, {
+        firstRoot: tree(BASE_CONFIRM_FIRST_LABEL),
+        secondRoot: tree(BASE_CONFIRM_SECOND_LABEL),
+      })
     : undefined;
   const ms = Date.now() - startedAt;
   // The FIRST run's own wall clock, not the two runs summed, whenever a second
@@ -174,6 +181,13 @@ export async function runBaseHealthProbe(
     // assertion to reason from — see `BaseHealthVerdict.timedOut`.
     ...(timedOut ? { timedOut: true as const } : {}),
   };
+  // A FIRST run killed at its bound keeps its own route, two-run rule and all.
+  // `confirmRedBase` asks for no second run when the first was killed — a run that
+  // judged nothing has nothing to confirm — so `confirmed` is false for it and the
+  // red arm below would otherwise drop the only evidence this shape produces: the
+  // `[baseline-red]` entry naming the bound. Cap precedence still routes it as
+  // `verify-timeout:<step>`, which is the actionable diagnosis (#1404), and a
+  // cycle that cannot reach a verdict must not lose the sentence that says so.
   if (confirmed) {
     // Deliberately NOT cached across cycles: each cycle re-probes, so one flaky red
     // cannot speak for cycles it never ran in. The verdict is handed out with the
@@ -187,8 +201,15 @@ export async function runBaseHealthProbe(
       verdict,
       red: baseHealthRedEvidence(verdict, probe as RedBaselineVerdict, confirmation),
       notes: [
-        `base-health: base ${baseSha.slice(0, 12)} is RED — the gate was already red, red on both base runs`,
-        `base-health: ${baseRunsProse(confirmation ?? { first: probe })}`,
+        `base-health: base ${baseSha.slice(0, 12)} is RED — ${
+          confirmed
+            ? "the gate was already red, red on both base runs"
+            : "the gate was killed at its bound, so it reached no verdict on the base"
+        }`,
+        // A killed first run has no second run to name — `confirmRedBase` asked for
+        // none — so the prose is built from the one arm that exists rather than
+        // from a confirmation that never happened.
+        `base-health: ${baseRunsProse(confirmation ?? { confirmation: "not-confirmed", first: probe, ranSecond: false })}`,
       ],
     };
   }
@@ -226,6 +247,14 @@ export async function runBaseHealthProbe(
     ran: true,
     ms: probeMs,
     verdict,
+    // #1826 — a first run KILLED at its bound keeps the evidence today's route
+    // produced for it: the finding is the timeout's own sentence, which is the
+    // operator's actionable line for this shape ("the gate cannot finish on a clean
+    // checkout of the base whatever the diff contains"), and cap precedence routes it
+    // as `verify-timeout:<step>` (#1404), never as a base claim. It carries no
+    // two-run prose because there was no second run: `confirmRedBase` asked for none,
+    // and a run that judged nothing has nothing to confirm.
+    ...(timedOut ? { red: baseHealthRedEvidence(verdict, probe as RedBaselineVerdict) } : {}),
     notes: [
       `base-health: not established — ${verdict.reason ?? "the probe reached no verdict"}; the cycle proceeds`,
       // #1826 — the flaky base is recorded where the operator can read it: the
@@ -233,7 +262,7 @@ export async function runBaseHealthProbe(
       // runs, so "red once, green once" survives the probe's own scope.
       ...(confirmation?.second === undefined ||
       confirmation.confirmation === "confirmed-red" ||
-      probe.status === "red-timed-out"
+      timedOut
         ? []
         : [`base-health: ${baseRunsProse(confirmation)}`]),
     ],

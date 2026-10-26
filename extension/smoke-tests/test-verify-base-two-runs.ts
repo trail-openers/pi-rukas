@@ -89,9 +89,7 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     `red then green: two runs in two distinct trees (${JSON.stringify(gateCwds.map((c) => probeRunLabel(c)))})`,
   );
   assert(
-    out.notes.some(
-      (n) => n.includes("base run 1: FAILED") && n.includes("base run 2: PASSED"),
-    ),
+    out.notes.some((n) => n.includes("base run 1: FAILED") && n.includes("base run 2: PASSED")),
     `red then green: the notes record the flaky base for the operator (got ${JSON.stringify(out.notes)})`,
   );
 }
@@ -120,9 +118,25 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     gateRuns.length === 1,
     `a killed first run: the gate ran ONCE — no second run is paid for to confirm a run that judged nothing (got ${gateRuns.length})`,
   );
+  // The killed arm keeps the evidence today's route produced for it: the finding
+  // exists, and it is the TIMEOUT's own sentence — which is why cap precedence
+  // routes it as `verify-timeout:<step>` (#1404) and why the two-run claim, the
+  // `[baseline-red]` finding alone, is not what a killed run raises. What it must
+  // never become is a red on a test nobody ran: the arm is reached by `killed`
+  // alone, and a killed run supplies no stream for an assertion to be read out of.
   assert(
-    out.red === undefined && out.verdict?.timedOut === true,
-    `a killed first run: no red evidence, and the record still says it was the killed arm (red=${String(out.red !== undefined)}, timedOut=${String(out.verdict?.timedOut)})`,
+    out.red !== undefined &&
+      out.red.message.includes("[verify-timeout]") &&
+      !out.red.message.includes("ALSO FAILS"),
+    `a killed first run: its evidence is the timeout's own sentence, not a red-base claim (got ${String(out.red?.message?.slice(0, 120))})`,
+  );
+  assert(
+    out.verdict?.timedOut === true,
+    `a killed first run: the record still says it was the killed arm (timedOut=${String(out.verdict?.timedOut)})`,
+  );
+  assert(
+    !out.notes.some((n) => n.includes("base run 2")),
+    `a killed first run: no second run is named in the notes — none was paid for (got ${JSON.stringify(out.notes)})`,
   );
 }
 
