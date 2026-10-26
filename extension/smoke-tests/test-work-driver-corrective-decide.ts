@@ -16,6 +16,12 @@ import {
 } from "../src/work-driver-corrective-decide.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
+import {
+  FAIL_HEADER,
+  FAIL_HEADER_DETAILS,
+  FAIL_HEADER_PASSING,
+  FAIL_HEADER_STREAM,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -273,6 +279,53 @@ const ctx = (gate: CorrectiveGateView, eventLog: WorkEvent[] = NO_EVENTS) =>
     d.round === true && (d.skipped[0] ?? "").includes(WT_B),
     "skipped: the report names the worktree that was skipped",
   );
+}
+
+// ── #1841: a FAIL header whose only evidence is its indented details ────────
+// The park this closes: a gate whose whole failing block is
+//
+//     FAIL  the shell line budget (scripts/budget.max)
+//           check-lines: 24639 lines, over the ceiling of 24576.
+//           Take out 63 lines.
+//     ok    shellcheck and the shell tests of the change
+//     skip  the workspace's tests
+//
+// named no failing line at all, so `assertionLines` returned [] and the decision
+// declined with "the per-worktree failures carry no specific failing line" — a
+// develop round that one dispatch could have fixed parked instead. With the
+// `fail-header` arm the header classifies, the round is earned, and the developer is
+// given the indented lines that say WHAT to change rather than only which check went
+// red. The ok/skip lines beside the block never reach them.
+{
+  const header = `verify command \`${CMD}\` failed in ${WT_A}: ${FAIL_HEADER_STREAM}`;
+  const d = ctx(perWorktreeGate(WT_A, header));
+  assert(
+    d.round === true && d.source === "per-workstream",
+    `fail-header: a FAIL header with indented details earns the corrective round (${JSON.stringify(d)})`,
+  );
+  if (d.round) {
+    const given = d.targets[0]?.lines ?? [];
+    assert(
+      given.includes(FAIL_HEADER),
+      `fail-header: the developer is given the header that names the check (got ${JSON.stringify(given)})`,
+    );
+    assert(
+      FAIL_HEADER_DETAILS.every((l) => given.includes(l.trim())),
+      `fail-header: the developer is given every indented detail line (got ${JSON.stringify(given)})`,
+    );
+    assert(
+      !FAIL_HEADER_PASSING.some((l) => given.includes(l)),
+      `fail-header: the ok/skip lines beside the block are never given (got ${JSON.stringify(given)})`,
+    );
+    assert(
+      !given.some((l) => l.includes("verify command")),
+      `fail-header: no target line opens with the harness sentence (got ${JSON.stringify(given)})`,
+    );
+    assert(
+      given.every((l) => l.length <= CORRECTIVE_LINE_MAX) && given.length <= CORRECTIVE_MAX_LINES,
+      "fail-header: the corrective line bounds still hold",
+    );
+  }
 }
 
 if (exit !== 0) process.exit(exit);

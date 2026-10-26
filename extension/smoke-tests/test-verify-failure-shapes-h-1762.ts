@@ -28,6 +28,8 @@
  * `verify-loop.sh` dialect.
  */
 
+import { decideCorrectiveRound } from "../src/work-driver-corrective-decide.ts";
+import type { CorrectiveGateView } from "../src/work-driver-corrective-decide.ts";
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts";
 import { harvestConsolidatedTallies } from "../src/work-driver-verify-tally.ts";
@@ -36,6 +38,8 @@ import {
   CMD,
   EXAMPLE_STREAM,
   FAIL_HEADER,
+  FAIL_HEADER_DETAILS,
+  FAIL_HEADER_STREAM,
   PAYLOAD_MARKER,
   TALLY_LINE,
   TALLY_NAMES,
@@ -158,6 +162,38 @@ const { assert, failed } = makeAssert();
   assert(
     wrapped.some(joinedForm) && plain.some(joinedForm),
     `#1810: both routes anchor the join on the gate's tally, never on harness prose (wrapped ${JSON.stringify(wrapped)})`,
+  );
+
+  // #1841 — the same guard for the FAIL-header DETAIL harvest, which runs on the
+  // per-worktree route where the tally harvest is deliberately refused. A header
+  // inside the wrapper carries the harness sentence in front of it, so a harvest that
+  // measured indentation on the raw record text would anchor on harness prose and
+  // emit detail lines built out of it — the defect this section exists for, arriving
+  // through the second harvester. The reader hands the harvest its UNWRAPPED view, so
+  // no target line may open with the harness sentence here either.
+  const wrappedHeader = `verify command \`${CMD}\` failed in ${WT}: ${FAIL_HEADER_STREAM}`;
+  const headerGate: CorrectiveGateView = {
+    ok: false,
+    failures: [wrappedHeader],
+    verifyRun: {
+      status: "ran",
+      command: CMD,
+      failures: [wrappedHeader],
+      perWorktree: [{ cwd: WT, text: wrappedHeader }],
+    },
+  };
+  const headerGiven =
+    decideCorrectiveRound(headerGate, {
+      eventLog: [],
+      worktrees: { default: WT },
+    }).targets?.[0]?.lines ?? [];
+  assert(
+    headerGiven.length > 0 && !headerGiven.some((l) => l.startsWith("verify command")),
+    `#1810 fail-header: a wrapped header yields no target line opening with the harness sentence (got ${JSON.stringify(headerGiven)})`,
+  );
+  assert(
+    FAIL_HEADER_DETAILS.every((l) => headerGiven.includes(l.trim())),
+    `#1810 fail-header: wrapped, the details still travel beside the header (got ${JSON.stringify(headerGiven)})`,
   );
 }
 

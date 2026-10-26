@@ -20,6 +20,7 @@ import {
   harnessInnerLine,
   isHarnessWrapper,
 } from "./work-driver-verify-failures.ts";
+import { harvestHeaderDetails } from "./work-driver-verify-header-detail.ts";
 import { splitLines } from "./work-driver-verify-support.ts";
 import { harvestConsolidatedTallies } from "./work-driver-verify-tally.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -63,6 +64,10 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  * Every line of `text` a developer can act on: the lines the extractor accepts
  * as an assertion (a `✗` line, a compiler or linter error). Uncapped — the
  * dependency check must read every line, not the bounded subset given out.
+ *
+ * The #1841 `FAIL`-header DETAIL lines are NOT in this list — see
+ * {@link failHeaderDetails} for why they are a separate channel, and
+ * {@link failHeaderEvidence} for the lines a developer is actually given.
  *
  * #1762 round 3 — two rules the wrapper's inner lines used to skip:
  *
@@ -110,17 +115,37 @@ export function newVerifyRecordSlot(): VerifyRecordSlot {
  */
 /**
  * Options distinguishing the two routes into this reader. `harvestTallies` is the
- * ONLY route difference: the consolidated route holds the gate's raw stream and so
- * can read a script's tally block; every other route holds harness prose and must
- * not. Dedupe, redaction and ranking are shared — a second reader that copies them
- * is a reader that forgets one of them (the #1808 round found exactly that).
+ * `harvestTallies` is the ONLY route difference: the consolidated route holds the
+ * gate's raw stream and so can read a script's tally block; every other route holds
+ * harness prose and must not. Dedupe, redaction and ranking are shared — a second
+ * reader that copies them is a reader that forgets one of them (the #1808 round found
+ * exactly that). The #1841 `FAIL`-header detail harvest is NOT a route difference:
+ * it runs on both, and its lines come back on the separate channel
+ * {@link failHeaderDetails} reads.
  */
 export interface AssertionLinesOptions {
   /** Harvest indented tally name blocks and append them as joined lines. */
   harvestTallies?: boolean;
 }
 
+interface AssertionLinesView {
+  /** The lines that NAME a failing check, in stream order, deduped and redacted. */
+  lines: string[];
+  /** The indented detail lines of any `FAIL` header, same bounds and redaction. */
+  details: string[];
+}
+
 export function assertionLines(text: string, opts: AssertionLinesOptions = {}): string[] {
+  return assertionLinesView(text, opts).lines;
+}
+
+/**
+ * The ONE walker of a verify failure text. {@link assertionLines},
+ * {@link failHeaderDetails} and {@link failHeaderEvidence} are all thin readers of
+ * this, so the two channels cannot be assembled by a copy that forgets the wrapper
+ * cut, the dedupe set or the redaction — the #1762/#1808 defect family.
+ */
+function assertionLinesView(text: string, opts: AssertionLinesOptions): AssertionLinesView {
   const seen = new Set<string>();
   const out: string[] = [];
   const push = (line: string): void => {
@@ -159,19 +184,86 @@ export function assertionLines(text: string, opts: AssertionLinesOptions = {}): 
   }
   // The tally harvest is gathered HERE so it goes through the same `push` as every
   // other line: same dedupe (`seen`), same redact-then-bound, same `✗` preference.
+  //
+  // The reader's own view of the stream, not `text`: a wrapper line is replaced
+  // by what sits behind it (empty when the wrapper carries no gate stream), so
+  // the harness sentence can never be the tally the harvest anchors its join on —
+  // nor the header a detail block is measured against (#1810).
+  const view = splitLines(text)
+    .map((l) => (isHarnessWrapper(l) ? (harnessInnerLine(l) ?? "") : l))
+    .join("\n");
+  // #1841 — a `FAIL  <description>` header names WHICH check went red; the lines
+  // indented beneath it say what to change, and on their own they name nothing, so
+  // the per-line walk above drops them. They are the developer's diagnosis and must
+  // reach the corrective prompt, so they are gathered here rather than left to the
+  // table. Harvested on BOTH routes (unlike the tally harvest below, which stays
+  // consolidated-only) and always on this unwrapped view, so a header inside a
+  // harness wrapper is measured against the gate's own text and no detail line can
+  // ever open with the harness sentence (#1810's guard, which is why the harvest is
+  // never handed `text`).
+  //
+  // They do NOT go through `push`: that gate is
+  // `extractSpecificAssertion(...) !== NO_SPECIFIC_ASSERTION`, whose rule is that
+  // only a line the shared table recognises as NAMING a check may be an assertion,
+  // and a detail line is prose — it names nothing on its own, which is the whole
+  // reason it needs a reader. Its place is beside the header, which is what earns the
+  // round, so `failHeaderDetails` returns them separately and {@link failHeaderEvidence}
+  // is what joins header and details into the lines a developer is given. They keep
+  // the two guards that matter for text printed by a gate: the #807
+  // non-assertion/secret veto (a marker, an echoed `$ ` command, a credential-shaped
+  // line never becomes evidence) and the same redact-then-bound every other stored
+  // verify line goes through, so one ordering rule holds for both channels.
+  const details: string[] = [];
+  for (const detail of harvestHeaderDetails(view)) {
+    if (detail.length === 0 || isNonAssertionLine(detail)) continue;
+    const redacted = redactThenBound(detail, ASSERTION_LINE_MAX).text;
+    if (redacted.length === 0 || seen.has(redacted)) continue;
+    seen.add(redacted);
+    details.push(redacted);
+  }
   if (opts.harvestTallies === true) {
-    // The reader's own view of the stream, not `text`: a wrapper line is replaced
-    // by what sits behind it (empty when the wrapper carries no gate stream), so
-    // the harness sentence can never be the tally the harvest anchors its join on.
-    const view = splitLines(text)
-      .map((l) => (isHarnessWrapper(l) ? (harnessInnerLine(l) ?? "") : l))
-      .join("\n");
     for (const joined of harvestConsolidatedTallies(view)) push(joined);
   }
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis.
   const marked = out.filter((l) => l.startsWith("\u2717"));
-  return marked.length > 0 ? marked : out;
+  return {
+    lines: marked.length > 0 ? marked : out,
+    details: marked.length > 0 ? [] : details,
+  };
+}
+
+/**
+ * #1841 — the lines a `FAIL  <description>` header printed beneath itself, in the
+ * reader's output order and redacted the same way every other evidence line is.
+ *
+ * A separate channel, not extra entries in {@link assertionLines}'s list, for the
+ * reason in the call above: `assertionLines` is the list of lines that NAME a
+ * failing check, and it is what the corrective decision asks for its gate —
+ * `extractSpecificAssertion`'s `namesTest` rule is what refuses a bare tally, a
+ * filename or harness prose as "the assertion the developer can act on" (#798). The
+ * detail lines name nothing on their own, so admitting them there would have
+ * loosened the gate that keeps that defect out, and a stream whose only detail lines
+ * were harness-adjacent prose could have earned a round on prose. Keeping them apart
+ * means the decision still declines a stream that names nothing, while the developer
+ * of a stream that DOES name a header is given what to change.
+ *
+ * Returns `[]` for a stream with no `FAIL` header, so every existing reader of
+ * `assertionLines` is unchanged by it.
+ */
+export function failHeaderDetails(text: string, opts: AssertionLinesOptions = {}): string[] {
+  return assertionLinesView(text, opts).details;
+}
+
+/**
+ * #1841 — the evidence lines a corrective developer is given for one failure text:
+ * the assertions, and beneath them the indented details of any `FAIL` header that
+ * produced no assertion of its own. One caller-visible reader so the two channels
+ * cannot be assembled in one route and forgotten in the other.
+ */
+export function failHeaderEvidence(text: string, opts: AssertionLinesOptions = {}): string[] {
+  const view = assertionLinesView(text, opts);
+  return [...view.lines, ...view.details];
 }
 
 /**
@@ -180,7 +272,8 @@ export function assertionLines(text: string, opts: AssertionLinesOptions = {}): 
  * (2)` with the names indented beneath it) appended AFTER the assertions, so an
  * assertion the gate printed outranks a tally and the joined tally costs ONE
  * `CORRECTIVE_MAX_LINES` slot and is cut at `CORRECTIVE_LINE_MAX` like any other
- * evidence line. Names are never emitted on their own.
+ * evidence line. Names are never emitted on their own. The #1841 `FAIL`-header
+ * detail harvest runs on BOTH routes, so it is not part of what this option adds.
  *
  * A one-line wrapper over the SAME reader, kept under this name because
  * `work-driver-corrective-decide.ts` and the shape suite call it. It exists so the

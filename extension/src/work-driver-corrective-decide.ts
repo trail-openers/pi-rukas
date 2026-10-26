@@ -24,7 +24,7 @@ import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import { assertionLines } from "./work-driver-verify-record.ts";
-import { consolidatedAssertionLines } from "./work-driver-verify-record.ts";
+import { consolidatedAssertionLines, failHeaderEvidence } from "./work-driver-verify-record.ts";
 import type { verifyStepOutcome } from "./work-driver-verify.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
@@ -120,12 +120,15 @@ export function decideCorrectiveRound(
         skipped.push(`${r.cwd}: no workstream owns this worktree`);
         continue;
       }
+      // #1841 — the lines the developer is GIVEN are the assertions plus any
+      // `FAIL`-header details; the gate below stays on `assertionLines` alone, so a
+      // stream that names no check still declines instead of earning a round on prose.
       const lines = assertionLines(r.text);
       if (lines.length === 0) {
         skipped.push(`${id} (${r.cwd}): its failure carries no assertion line`);
         continue;
       }
-      targets.push({ id, cwd: r.cwd, lines: boundedLines(lines) });
+      targets.push({ id, cwd: r.cwd, lines: boundedLines(failHeaderEvidence(r.text)) });
     }
     if (targets.length === 0) return no("the per-worktree failures carry no specific failing line");
     return { round: true, command: run.command, source: "per-workstream", targets, skipped };
@@ -141,7 +144,11 @@ export function decideCorrectiveRound(
   if (lines.some(looksLikeMissingDeps))
     return no("an evidence line names a missing dependency; the deps hint stays");
   if (lines.length === 0) return no("the consolidated failure carries no specific failing line");
-  const bounded = boundedLines(lines);
+  // #1841 — same split as the per-worktree branch: the gate is the assertions, the
+  // evidence includes the `FAIL`-header details.
+  const bounded = boundedLines(
+    failHeaderEvidence(run.consolidatedRaw ?? "", { harvestTallies: true }),
+  );
   const targets = Object.entries(worktrees).map(([id, cwd]) => ({
     id,
     cwd,

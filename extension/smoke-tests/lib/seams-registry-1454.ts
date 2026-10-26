@@ -149,6 +149,17 @@ export const SEAMS_1454: Seam[] = [
     canary: { symbol: "harvestConsolidatedTallies", importer: "work-driver-verify-record.ts" },
   },
   {
+    // #1841 — the indented detail lines a `FAIL  <description>` header prints
+    // beneath it. `assertionLines` in `work-driver-verify-record.ts` is its one
+    // production caller, and it calls it on BOTH routes (per-worktree and
+    // consolidated), which is what separates it from the consolidated-only tally
+    // harvest above. Pinned by the FAIL-header cases of the corrective-decide and
+    // shape suites.
+    file: "work-driver-verify-header-detail.ts",
+    pending: {},
+    canary: { symbol: "harvestHeaderDetails", importer: "work-driver-verify-record.ts" },
+  },
+  {
     // #1454 r3 — the operator sentence for a refused claims registration,
     // split from work-driver-explain.ts for the 500-line gate (the same seam
     // -other/-lens/-verify use). Dispatched by explainCap's exhaustive switch;
