@@ -23,7 +23,7 @@
  * depends on the host home path.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -219,6 +219,106 @@ const approveKinds = ["adversarial-approved", "adversarial-skipped-empty-diff"] 
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ───────── #1634: the base is a full sha, and the path is a real directory ─────────
+
+{
+  // A baseSha that is not a 40-hex object id NEVER reaches git's argv. The old
+  // ref-shaped pattern admitted a leading `-` — which git reads as an OPTION —
+  // and any symbolic ref, whose movement silently changes what the gate
+  // compared. The read must fall back to `git diff HEAD` without ever handing
+  // git the rejected value.
+  const dir = repoDir("unit-badsha", true);
+  try {
+    const argvs: string[][] = [];
+    const r = await readWorktreeDiff(dir, "--output=/tmp/pwned", async (_cmd, opts) => {
+      const argv = opts?.argv ?? [];
+      argvs.push(argv);
+      if (argv.includes("--show-toplevel")) return { stdout: `${opts?.cwd}\n` };
+      return { stdout: "diff --git a/a.ts b/a.ts\n" };
+    });
+    assert(r.ok, "a non-sha baseSha still reads the uncommitted diff");
+    assert(
+      argvs.length > 0 &&
+        argvs.every((a) => a.every((t) => !t.includes("pwned") && !t.startsWith("--output"))),
+      "a non-sha baseSha never reaches git's argv",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // A real 40-hex base IS used, so the pinned comparison is the primary read.
+  const dir = repoDir("unit-goodsha", false);
+  try {
+    const sha = git(dir, "rev-parse", "HEAD").trim();
+    writeFileSync(path.join(dir, "c.ts"), "export const c = 3;\n");
+    git(dir, "add", "c.ts");
+    git(dir, "commit", "-q", "-m", "the change under review");
+    const argvs: string[][] = [];
+    const r = await readWorktreeDiff(dir, sha, async (_cmd, opts) => {
+      const argv = opts?.argv ?? [];
+      argvs.push(argv);
+      if (argv.includes("--show-toplevel")) return { stdout: `${opts?.cwd}\n` };
+      return { stdout: "diff --git a/c.ts b/c.ts\n+export const c = 3;\n" };
+    });
+    assert(
+      r.ok && r.diff.includes("export const c = 3;"),
+      "a full 40-hex baseSha → the committed range is read",
+    );
+    assert(
+      argvs.some((a) => a.some((t) => t === `${sha}..HEAD`)),
+      "a full 40-hex baseSha → git is asked for <sha>..HEAD",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  // #1634 — a worktree reached through a SYMLINK (or with a trailing slash) is
+  // still its own toplevel. The old check compared the two STRINGS, so a
+  // perfectly readable tree rejected itself as "not its own worktree root".
+  // `realpathSync` resolves both sides, and an unresolvable path fails closed.
+  const parent = plainDir("unit-paths");
+  const repo = path.join(parent, "real");
+  const link = path.join(parent, "link");
+  try {
+    mkdirSync(repo, { recursive: true });
+    git(repo, "init", "-q", "-b", "main", ".");
+    git(repo, "commit", "-q", "--allow-empty", "-m", "base");
+    symlinkSync(repo, link);
+    const fakeGit = async (_cmd: string, opts?: { argv?: string[]; cwd?: string }) => {
+      const argv = opts?.argv ?? [];
+      // Answer as git does: the toplevel is the REAL directory, not the link.
+      if (argv.includes("--show-toplevel")) return { stdout: `${repo}\n` };
+      return { stdout: "" };
+    };
+    const viaLink = await readWorktreeDiff(link, undefined, fakeGit);
+    assert(
+      viaLink.ok,
+      `a symlinked worktree whose toplevel resolves to the same directory → ok (${viaLink.ok ? "ok" : viaLink.reason})`,
+    );
+    const trailing = await readWorktreeDiff(`${repo}/`, undefined, fakeGit);
+    assert(
+      trailing.ok,
+      `a worktree path with a trailing slash → ok (${trailing.ok ? "ok" : trailing.reason})`,
+    );
+    const gone = await readWorktreeDiff(path.join(parent, "nope"), undefined, fakeGit);
+    assert(!gone.ok, "an unresolvable worktree path → not ok (fails closed, never a pass)");
+    // The negative still holds after resolving: a DIFFERENT directory is not
+    // this one's toplevel, and that is what the whole probe exists to catch.
+    const other = await readWorktreeDiff(repo, undefined, async (_cmd, opts) => {
+      const argv = opts?.argv ?? [];
+      if (argv.includes("--show-toplevel")) return { stdout: `${parent}\n` };
+      return { stdout: "" };
+    });
+    assert(!other.ok, "a path whose toplevel is a different directory → still not ok");
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
   }
 }
 
