@@ -225,5 +225,29 @@ function turn(...blocks: PiContentBlock[]): PiJsonEvent {
   assert(s.status() === undefined, "…and a text turn without a marker does not either");
 }
 
+// (8) the master switch: with `PI_ENSEMBLE_DISPATCH_CAPS=0` the stop never
+// ends the child — but the accumulated reply is still the result, because the
+// accumulator is the report and the cap governs only the KILL.
+{
+  const saved = process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+  process.env.PI_ENSEMBLE_DISPATCH_CAPS = "0";
+  const s = createVerdictStop();
+  assert(
+    !s.observe(turn(text("VERDICT: APPROVED"))),
+    "PI_ENSEMBLE_DISPATCH_CAPS=0: the verdict does not stop the child",
+  );
+  assert(s.status() === undefined, "…records no verdict…");
+  assert(
+    parseVerdict(s.text()).status === "APPROVED",
+    "…yet still accumulates the reply the loop will parse",
+  );
+  if (saved === undefined) delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+  else process.env.PI_ENSEMBLE_DISPATCH_CAPS = saved;
+  // …and with the caps back on the same reply DOES stop it, so (8) is not just
+  // "nothing ever stops".
+  const on = createVerdictStop();
+  assert(on.observe(turn(text("VERDICT: APPROVED"))), "with the caps on, it stops again");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

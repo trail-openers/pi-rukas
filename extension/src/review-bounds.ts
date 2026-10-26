@@ -205,6 +205,13 @@ const VERDICT_SCAN_WINDOW = 8;
  * rather than a disagreeing verdict.
  */
 export function createVerdictStop(): VerdictStop {
+  // The same master switch as the re-read cap: with `PI_ENSEMBLE_DISPATCH_CAPS=0`
+  // no bound of ours ends a child, and docs/configuration.md says so. The stop
+  // is gated at the decision rather than at the accumulator — the accumulation
+  // is the RESULT the spawn reports, so it must keep collecting text whatever
+  // the caps say. A disabled stop can never report a status, so the caller's
+  // kill branch is unreachable and the reviewer runs its natural tail.
+  const active = capsOn();
   const parts: string[] = [];
   let stopped: string | undefined;
   return {
@@ -220,6 +227,7 @@ export function createVerdictStop(): VerdictStop {
         }
       }
       if (stopped) return true;
+      if (!active) return false;
       // An event that added no text cannot carry a verdict; re-scanning the
       // unchanged tail of the accumulation for it is the quadratic cost this
       // window exists to remove.
