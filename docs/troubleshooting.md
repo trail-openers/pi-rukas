@@ -3065,6 +3065,8 @@ Mode: full review (forced: the findings memory could not be read)
 
 The second line means the store could not be read to rule a pending CRITICAL out — an unreadable store is never read as "no findings", so the safe round runs. An explicit `since` is your instruction and still wins; a branch whose tip is the recorded head stays on the existing carry / no-review outcome, so forcing a full round never turns an unchanged tip into a blocked review. The retired row then appears under *"Resolved since last round"* with its reason and stops appearing under the carried heading, and the round's ledger row records `hasCritical: false`, which is what the merge guard reads.
 
+**Which review each path runs:** the /work lens step already hands the review the whole integrated branch diff it read itself (`runLens` pastes `origin/<mainline>...origin/<branch>` and passes no `base`/`head`/`since`/`full`), so every /work round is a full review by construction and a fixed CRITICAL retires there by the fate rule alone — the forced-full veto governs `dispatch_lens_review`'s automatic delta, the only shape that can otherwise keep a follow-up round from re-reading the whole branch.
+
 **Known limit:** a CRITICAL whose cited line survives because the fix landed ELSEWHERE (the cited line still exists verbatim, elsewhere in the file, or its problem was fixed by a change to a caller) still carries — the lens-side re-verification for that case is a separate follow-up.
 
 ## The offline smoke suite
