@@ -37,6 +37,7 @@ import { continueHumanAction, isContinueCap } from "./work-driver-continue-pr-ex
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import {
   type EvidenceFailureKind,
+  type MergeHeadHold,
   mergeHoldAction,
   mergeHoldGrantAction,
 } from "./work-driver-merge-authority.ts";
@@ -123,6 +124,11 @@ export function humanActionFor(
    * group. Defaults to `primary` — a cycle park's `--restart` must re-run every
    * member, not only the one issue the call happened to name. */
   issues: number[] = [primary],
+  /** #1533 — the parked cycle's `pipelineState.mergeHold`, when the caller has
+   * the state. The head-check action renders the two SHAs from the state file
+   * rather than re-deriving them here; `undefined` (a queue summary written
+   * before #1533, or a caller with no state) keeps the CI-flavoured action. */
+  hold?: MergeHeadHold,
 ): string {
   // #1101 — a group the queue never dispatched, because a dependency settled
   // non-merged, an ordering cycle has no valid order, or a wait outlasted its
@@ -189,7 +195,7 @@ export function humanActionFor(
   // human decision. Telling the operator to `--restart` here would rebuild
   // work that is already done and open a duplicate PR.
   const heldMerge = reason.match(
-    /awaiting-human-merge:(granted|no-authority):pr(\d+)(?::tooling)?/,
+    /awaiting-human-merge:(granted|no-authority):pr(\d+)(?::tooling)?(?::head)?/,
   );
   if (heldMerge) {
     const granted = heldMerge[1] === "granted";
@@ -198,11 +204,17 @@ export function humanActionFor(
     // `parkReason` above), so the queue cannot drift from the state file:
     // untagged reasons keep the CI-flavoured action, as do pre-#745 files.
     const failureKind: EvidenceFailureKind = heldMerge[3] === "tooling" ? "tooling" : "ci";
+    // #1533 — the `:head` tag says WHICH gate refused; the two SHAs come from
+    // the caller's `mergeHold` (never re-derived here), so a park whose reason
+    // predates #1533 — or a caller that passed no state — keeps the CI-flavoured
+    // action rather than printing two `unknown`s.
+    const head = heldMerge[4] === ":head" ? hold : undefined;
     return granted
       ? mergeHoldAction(
           { granted, source: "doctrine" },
           Number(heldMerge[2]) || undefined,
           failureKind,
+          head,
         )
       : mergeHoldGrantAction(pr);
   }

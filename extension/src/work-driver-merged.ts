@@ -25,7 +25,10 @@ import {
   mergeAuthorityEnabled,
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
+import { verifyMergeHead } from "./work-driver-merged-head.ts";
+import { heldForMissingApproval } from "./work-driver-merged-hold.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
+import { hasGitDir } from "./work-driver-merged-repo.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
 import { clearHostParkSignals } from "./work-driver-park-memory-host.ts";
 import { clearParkRecords } from "./work-driver-park-record.ts";
@@ -137,12 +140,19 @@ export async function runMerged(
   let mergeMethod: MergeMethod = "squash";
   let preDispatch = state;
   let mergeSucceeded = false;
+  // #1533 — the head this step verified, which the merge is pinned to. Set only
+  // past the head check; the LLM fallback prompt carries the same value so the
+  // fallback path cannot merge what the mechanized path refused to. `undefined`
+  // rather than `""`: an empty string is neither a value nor an absence, and the
+  // merge paths below take `string | undefined` and refuse the absence — they do
+  // not have to guess what an empty OID meant (round-1 lens HIGH).
+  let verifiedHead: string | undefined;
+  const headNotes: string[] = [];
 
   // #380 — two independent gates, both defaulting to "no". Merging is the
   // one irreversible act in the cycle and had neither; a green PR ≠ permission.
   if (mergeAuthorityEnabled()) {
-    const execFnAuth = ctx.verifyExecFn ?? execp;
-    // #406 — doctrine is read at the BASE commit, never from the working tree.
+    const execFnAuth = ctx.verifyExecFn ?? execp; // #406 — doctrine is read at the BASE commit, never from the working tree.
     // This step runs after commit-pr integrated the developer's patches, so an
     // AGENTS.md read from disk here would include any grant a subagent just
     // wrote for itself. Reading at base makes such a patch inert without
@@ -180,41 +190,88 @@ export async function runMerged(
       ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
       : undefined;
     const routedRoundCap = heldByUnresolvedReview(state.eventLog);
-    if (!authority.granted || !evidence?.ok || routedRoundCap) {
+    // #1533 — the head the merge is pinned to, and why the step refuses to merge
+    // without one. Computed here, beside the evidence read it comes from, so the
+    // CI verdict and the pin describe the same moment on the forge.
+    const headCheck =
+      authority.granted && evidence?.ok && !routedRoundCap
+        ? await verifyMergeHead(
+            execFnAuth,
+            ctx.repoRoot,
+            state.pipelineState.branchName,
+            evidence,
+            // The reviewed-head comparison needs a real clone to read the review
+            // ledger from, so it is attempted only when the cycle has a repository
+            // on disk. Everything else — a resumed or hand-built state file, a
+            // fixture with no clone — gets the pin and an honest note; parking
+            // those on "no git remote found" would be the driver inventing a fault
+            // the cycle never had. See `verifyMergeHead` and `hasGitDir` for why
+            // the probe is a leaf. Grouped cycles take the SAME rule: the lens
+            // review covers the one integrated branch the merge merges.
+            hasGitDir(ctx.repoRoot) ? undefined : { skipIdentity: true },
+          )
+        : undefined;
+    if (!authority.granted || !evidence?.ok || routedRoundCap || headCheck?.ok !== true) {
       trace(
-        `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}`,
+        `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}${headCheck && !headCheck.ok ? `, head=${headCheck.refusal.reason}` : ""}`,
       );
-      const held: WorkState = {
-        ...state,
-        pipelineState: {
-          ...state.pipelineState,
-          currentStep: "merged",
-          mergeHold: {
-            authorityGranted: authority.granted,
-            authoritySource: authority.source,
-            ...(authority.quote ? { authorityQuote: authority.quote } : {}),
-            ...(evidence?.reason ? { evidenceReason: evidence.reason } : {}),
-            ...(evidence?.failureKind ? { evidenceFailureKind: evidence.failureKind } : {}),
-            ...(evidence?.inconclusive?.length ? { inconclusive: evidence.inconclusive } : {}),
-            ...(routedRoundCap ? { unresolvedReviewFindings: true } : {}),
-          },
+      return appendEvent(
+        heldForMissingApproval(state, authority, evidence, routedRoundCap, headCheck),
+        {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "awaiting-human-merge",
+          reviewRound: state.pipelineState.reviewRound,
+          nextStep: "handoff",
         },
-      };
-      return appendEvent(held, {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap: "awaiting-human-merge",
-        reviewRound: held.pipelineState.reviewRound,
-        nextStep: "handoff",
-      });
+      );
     }
+    verifiedHead = headCheck.headOid;
+    headNotes.push(headCheck.note);
+  }
+
+  // #1533 — a cycle that reaches this point WITHOUT a verified head has not
+  // passed the head check, whatever made it get here: the authority gate off
+  // (`PI_ENSEMBLE_MERGE_AUTHORITY=0`) disables only the permission and evidence
+  // gate, so the head is still read with the same bounded read and the merge is
+  // still pinned. Unreadable head → refuse, exactly as the gated path does —
+  // disabling the authority question was never a licence to merge an
+  // unverified commit.
+  if (verifiedHead === undefined) {
+    trace("work-driver: merge held — no verified head OID to pin the merge to");
+    const held: WorkState = {
+      ...state,
+      pipelineState: {
+        ...state.pipelineState,
+        currentStep: "merged",
+        mergeHold: {
+          authorityGranted: true,
+          authoritySource: "none",
+          headCheckReason:
+            "no verified head OID was read for this cycle, so there is no commit to pin the merge to",
+        },
+      },
+    };
+    return appendEvent(held, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "awaiting-human-merge",
+      reviewRound: held.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
   }
 
   // Try mechanized merge first.
-  const mechResult = await mechanizedMerge(ctx, state);
+  const mechResult = await mechanizedMerge(ctx, state, verifiedHead);
   if (mechResult.ok) {
     mergeMethod = mechResult.method;
     mergeSucceeded = true;
+    // The head-check note rides the merged event so the record says what the
+    // step actually verified (for a cycle whose comparison did not run: that it
+    // did not run, not that it passed).
+    for (const note of headNotes) {
+      if (note) mechResult.notes.push(note);
+    }
     // Mechanized merge succeeded — build the same event shapes the
     // dispatch path produces so downstream (merged event) is identical.
     // Record it; do not dispatch it. `runSingleDispatch` really spawns, and
@@ -248,7 +305,13 @@ export async function runMerged(
     // Always resolve the merge method for the fallback prompt.
     mergeMethod = mechResult.method ?? "squash";
     next = await runSingleDispatch(ctx, preDispatch, "merged", "ops", "ops:merge", now, () =>
-      inlineMergePrompt(issues, prNumber, mergeMethod, scratchDir(ctx.repoRoot, state.issue)),
+      inlineMergePrompt(
+        issues,
+        prNumber,
+        mergeMethod,
+        scratchDir(ctx.repoRoot, state.issue),
+        verifiedHead,
+      ),
     );
   }
 
@@ -313,6 +376,15 @@ export async function runMerged(
       // not to mainline. Without a recorded startRef (pre-#1093 state) the
       // target stays mainline.
       const startRef = state.pipelineState.startRef;
+      // `restoreCheckout` and its restore primitive are argv-form (#1093): they
+      // call `execFn("git", { argv: ["checkout", ref, "--"] })`, so the command
+      // they ask for is `git checkout main --`, not what the string form would
+      // have joined. Handing them a shell-only executor would run `git` with no
+      // arguments at all — every restore silently doing nothing while reading as
+      // success, because a bare `git` exits 0 with usage on stderr.
+      // A cycle that merged nothing has nothing to restore: the short-circuit and
+      // fallback cases must not pay for git calls they should not make, and an
+      // empty restoration is not the same as a completed one.
       if (mainline || startRef) {
         // #289 — restoreCheckout runs `git checkout <target>` + `branch -d`
         // (and `pull --ff-only` when the target is mainline) at repoRoot. A

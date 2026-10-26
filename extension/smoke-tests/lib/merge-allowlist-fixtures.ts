@@ -44,6 +44,14 @@ export function longReadCommands(): string[] {
 /** `[command, forge, prNumber, repo]` — every form the reader accepts. */
 export type AcceptedRow = [string, "github" | "gitlab", number | undefined, string | undefined];
 
+/**
+ * #1533 — a full 40-char head OID, the shape the driver pins with. The
+ * pre-existing rows used the `abc123` token, which only proves the flag is
+ * known; the driver emits a full SHA and a guard that rejected one would be a
+ * merge that cannot happen.
+ */
+export const FULL_OID = "0123456789abcdef0123456789abcdef01234567";
+
 export const ACCEPTED: AcceptedRow[] = [
   ["gh pr merge 17", "github", 17, undefined],
   ["gh pr merge", "github", undefined, undefined],
@@ -64,6 +72,22 @@ export const ACCEPTED: AcceptedRow[] = [
     undefined,
   ],
   ["gh pr merge 17 --match-head-commit=abc123", "github", 17, undefined],
+  // #1533 — the driver's own pinned merge, in the exact bytes it emits, so the
+  // guard's grammar and the driver's builder cannot drift. GitHub spells the
+  // pin `--match-head-commit`, GitLab's `glab mr merge` has no such flag and
+  // pins with `--sha`.
+  [
+    `gh pr merge 17 --squash --delete-branch --match-head-commit ${FULL_OID}`,
+    "github",
+    17,
+    undefined,
+  ],
+  [
+    `glab mr merge 17 --squash --auto-merge=false --sha ${FULL_OID}`,
+    "gitlab",
+    17,
+    undefined,
+  ],
   ["gh pr merge 17 --subject 17", "github", 17, undefined],
   ["gh -R o/r pr merge 17", "github", 17, "o/r"],
   ["gh --repo o/r pr merge 17 --squash", "github", 17, "o/r"],
@@ -444,57 +468,4 @@ export const EXPANSION_CANARIES: Array<[string, "refused" | "none", string?]> = 
   // The xargs / alias indirections the docs named: held, never "not a merge".
   ["echo 17 | xargs -I{} gh pr merge {}", "refused", "forbidden-char:|"],
   ["alias m='gh pr merge'; m 17", "refused", "forbidden-char:;"],
-];
-
-/** Commands that are not merges at all: the reader must answer `none`. */
-export const NOT_MERGES: string[] = [
-  "gh pr view 17 --json mergeable,mergeStateStatus",
-  "gh pr list --state merged",
-  "gh pr checks 17",
-  "git merge --ff-only origin/main",
-  'git commit -m "fix: x"',
-  "rg merge src/",
-  "echo merge",
-  "gh pr comment 5 --body-file x.md",
-  "gh pr view 17; gh pr checks 17 && echo done",
-  "gh api repos/o/r/pulls/17 --jq .mergeable",
-  "cd x && git merge origin/main",
-  "gh pr view 17 --json mergeable,mergeStateStatus,mergedAt,mergeCommit",
-  "gh api graphql -f query='{ viewer { login } }'",
-  "glab api graphql -f query='{ currentUser { username } }'",
-  "gh pr view 17 $'x'",
-  "gh pr ready 17",
-  "gh pr review 17 --approve",
-  "gh issue create --title merge-bot --body-file x.md",
-  // #1417 — the create exemption narrowed to what is provably inert: a bare
-  // creation, or a creation whose prose lives in a FILE the guard cannot read
-  // (the guard's own documented remedy for a merge word in prose, and the
-  // shape forge-commands.ts posts with). A title is prose and stays exempt.
-  "gh pr create --title merge-the-branch",
-  "gh pr create --title x --head b --body-file b.md",
-  'gh pr create --title "refuse merge shapes" --body-file x.md',
-  "gh issue create --title 'merge the thing' --body-file b.md",
-  "gh pr create --title x",
-  "",
-];
-
-/**
- * The residual (#962): a merge assembled entirely from expansions spells no
- * merge word, so the reader answers `none` for it. Out of scope under the
- * honest-but-forgetful threat model — see "The documented residual" in
- * docs/troubleshooting.md, which this table is the executable counterpart of.
- */
-export const RESIDUAL: string[] = [
-  "gh pr m$X 17",
-  "$G pr m$X 17",
-  "gh pr m$(echo e)rge 17",
-  "gh pr m?rge 17",
-  "bash x.sh",
-];
-
-/** glab merges missing the `--auto-merge=false` opt-out: refused by name. */
-export const GLAB_NO_OPT_OUT: string[] = [
-  "glab mr merge 12",
-  "glab -R g/p mr merge 3 --squash",
-  "glab mr merge 12 -m --auto-merge=false",
 ];

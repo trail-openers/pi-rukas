@@ -26,7 +26,7 @@ import {
   recoveryStepsForCap,
 } from "./work-driver-handoff-recovery.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
-import { mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
+import { mergeHeadHoldNote, mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
 import {
   type WorkState,
   filesPresentFromConsolidation,
@@ -148,6 +148,12 @@ export function recoveryCommandsMarkdown(
     );
     if (toolingNote) {
       lines.push(`# ${toolingNote}`);
+    }
+    // #1533 — the head check's refusal with BOTH SHAs (the lens review's OID and
+    // the head at merge time), so the markdown handoff says what the chat does.
+    const headNote = mergeHeadHoldNote(hold);
+    if (headNote) {
+      lines.push(`# ${headNote}`);
     }
   } else if (cap === "existing-pr-detected") {
     const pr = ps.existingPr;

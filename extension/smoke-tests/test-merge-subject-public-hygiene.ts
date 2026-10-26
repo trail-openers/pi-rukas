@@ -73,6 +73,9 @@ process.env.PI_ENSEMBLE_FORGE = "";
 
 const NO_FORGE = async () => undefined;
 
+/** #1533 — every merge now names the verified head it is pinned to. */
+const HEAD_OID = "ab12".repeat(10);
+
 try {
   // 1. A dirty subject is refused BEFORE anything is execed. The denylist is
   //    re-read per case (the reader caches on path and mtime, and a scratch file
@@ -97,6 +100,7 @@ try {
       dirty.exec,
       repoRoot,
       `feat: ship ${TERM}`,
+      HEAD_OID,
       NO_FORGE,
     );
   } catch (err) {
@@ -133,6 +137,7 @@ try {
     clean.exec,
     repoRoot,
     "feat(x): wire the build",
+    HEAD_OID,
     NO_FORGE,
   );
   assert(
@@ -154,6 +159,7 @@ try {
     bare.exec,
     repoRoot,
     undefined,
+    HEAD_OID,
     NO_FORGE,
   );
   assert(
@@ -186,6 +192,7 @@ try {
       addr.exec,
       repoRoot,
       "fix: point at 10.1.2.3",
+      HEAD_OID,
       NO_FORGE,
     );
   } catch (err) {
@@ -260,6 +267,7 @@ try {
     gitExec,
     gitDir,
     `feat: ship ${TERM}`,
+    HEAD_OID,
     NO_FORGE,
   );
   assert(
@@ -285,6 +293,7 @@ try {
     gitExec,
     gitDir,
     `feat: ship ${TERM}`,
+    HEAD_OID,
     NO_FORGE,
   );
   assert(

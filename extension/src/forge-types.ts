@@ -253,6 +253,12 @@ export interface Forge {
   prDraft(number: number): Promise<void>;
   prMerge(
     number: number,
+    // #1533 — the head OID the merge must match. Declared BEFORE the optional
+    // `subject` because a REQUIRED parameter may not follow an optional one:
+    // this ordering is what makes an unpinned merge a compile error at every
+    // call site instead of an undefined that silently builds the old command.
+    /** The PR head OID the merge must match; REQUIRED. */
+    headOid: string,
     method?: "squash" | "merge" | "rebase",
     subject?: string,
   ): Promise<string>;

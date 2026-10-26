@@ -23,6 +23,8 @@ import type { WorkState } from "../src/workflow-state.ts";
 import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
 
 let exit = 0;
+/** #1533 — every merge names the verified head it is pinned to. */
+const HEAD_OID = "9".repeat(39) + "a";
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
   else {
@@ -144,7 +146,7 @@ function parkedConsolidatedState(): WorkState {
     if (cmd.includes("gh pr merge")) return { stdout: "Merged" };
     return { stdout: "" };
   };
-  const r = await mechanizedMerge(mkCtx(100, exec), state);
+  const r = await mechanizedMerge(mkCtx(100, exec), state, HEAD_OID);
   assert(
     r.ok === true,
     `#810: mechanizedMerge succeeds for a parked consolidated single-commit branch (got: ${JSON.stringify(r)})`,
@@ -177,7 +179,7 @@ function parkedConsolidatedState(): WorkState {
     if (cmd.includes("gh pr merge")) return { stdout: "Merged" };
     return { stdout: "" };
   };
-  const r = await mechanizedMerge(mkCtx(200, exec), state);
+  const r = await mechanizedMerge(mkCtx(200, exec), state, HEAD_OID);
   assert(r.ok === true, `#810: normal (non-parked) merge succeeds (got: ${JSON.stringify(r)})`);
   const mergeCmd = calls.find((c) => c.includes("gh pr merge"));
   assert(

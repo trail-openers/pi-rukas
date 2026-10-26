@@ -230,6 +230,11 @@ const EXPECTED: Record<string, number> = {
   "lens-review-residuals.ts": 1,
   "work-driver-continue-pr-branch.ts": 1,
   "work-driver-continue-pr-guard.ts": 1,
+  // #1533 — the merged step fetches `<remote>/<branch>` and `<remote>/<mainline>`
+  // before it trusts any patch identity, so its one network git call is a
+  // killGroup call like every other one: a wedged fetch must not sit on the
+  // merge step with no bound.
+  "work-driver-merged-identity.ts": 1,
 };
 
 function sourceFiles(dir: string): string[] {

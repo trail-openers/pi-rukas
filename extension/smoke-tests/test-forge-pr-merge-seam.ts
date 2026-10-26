@@ -30,6 +30,9 @@ const DETECTION = {
   source: "remote",
 } as const;
 
+/** #1533 — `prMerge` now requires the head OID the merge is pinned to. */
+const HEAD_OID = "5".repeat(39) + "a";
+
 /**
  * Run `body` with `PI_ENSEMBLE_PUBLIC_DENYLIST` pointed at a temp file holding
  * `term` — never the operator's real `~/.config/pi-rukas/public-denylist`,
@@ -69,7 +72,7 @@ export async function forgePrMergeSeam(
   });
   let thrown: unknown;
   try {
-    await forge.prMerge(7, "squash", `feat(x): wire ${term} into the build`);
+    await forge.prMerge(7, HEAD_OID, "squash", `feat(x): wire ${term} into the build`);
   } catch (err) {
     thrown = err;
   }
@@ -93,13 +96,13 @@ export async function forgePrMergeSeam(
   // A clean subject reaches the exec, and no subject at all (gh composes one
   // from the PR) is nobody's business to refuse.
   execed.length = 0;
-  await forge.prMerge(7, "squash", "feat(x): wire the build");
+  await forge.prMerge(7, HEAD_OID, "squash", "feat(x): wire the build");
   assert(
     published().length === 1 && published()[0]?.includes("gh pr merge 7"),
     "a clean subject reaches the merge command",
   );
   execed.length = 0;
-  await forge.prMerge(7);
+  await forge.prMerge(7, HEAD_OID);
   assert(published().length === 1, "no subject at all is not refused — gh composes one");
 }
 

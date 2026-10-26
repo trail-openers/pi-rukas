@@ -14,6 +14,7 @@
 import { PLAN_VERDICTS } from "./workflow-state-events-caps.ts";
 import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
+import { mergeHoldHeadFindings } from "./workflow-state-schema-merge-hold.ts";
 import { prDraftFindings } from "./workflow-state-schema-pr-draft.ts";
 import { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 import {
@@ -248,6 +249,9 @@ export function validateDiscriminants(state: unknown): string[] {
     // absent validates (a cycle that never opened its PR as a draft).
     out.push(...prDraftFindings(ps.prDraft));
     out.push(...deferredProtectedFindings(ps.deferredProtected));
+    // #1533 — the merge hold's head-pin fields: two OIDs the handoff's manual
+    // merge command is built from, so their shape is checked at read.
+    out.push(...mergeHoldHeadFindings(ps.mergeHold));
     // The five consolidation / cap-checkpoint records below (#540/#543/#728/
     // #778/#875/#1153/#1414) are checked in their own module — the same #533
     // "type-check the untyped cast" rule as `prDraft` and

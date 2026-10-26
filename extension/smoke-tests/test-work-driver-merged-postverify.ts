@@ -26,6 +26,8 @@ import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
 setupSpawnGuard();
 
 let exit = 0;
+/** #1533 — every merge names the verified head it is pinned to. */
+const HEAD_OID = "8".repeat(39) + "f";
 let passCount = 0;
 function assert(cond: boolean, msg: string) {
   passCount++;
@@ -101,7 +103,7 @@ function mkExec(
     }
     return fn(cmd);
   };
-  const r = await executeAndVerifyMerge(42, "squash", fn2, "/fake");
+  const r = await executeAndVerifyMerge(42, "squash", fn2, "/fake", undefined, HEAD_OID);
   // First marker of THIS suite: proves postverify executes its own
   // assertions (previously masked by the imported executable test's
   // process.exit, issue #356).
@@ -133,7 +135,7 @@ function mkExec(
     }
     return fn(cmd);
   };
-  const r = await executeAndVerifyMerge(42, "squash", fn2, "/fake");
+  const r = await executeAndVerifyMerge(42, "squash", fn2, "/fake", undefined, HEAD_OID);
   assert(
     "ok" in r && r.ok === false,
     "#356: post-verify non-MERGED state → ok:false (genuine failure)",
@@ -164,7 +166,7 @@ function mkExec(
     }
     return fn(cmd);
   };
-  const r = await executeAndVerifyMerge(42, "squash", fn2, "/fake");
+  const r = await executeAndVerifyMerge(42, "squash", fn2, "/fake", undefined, HEAD_OID);
   assert("merged" in r && r.merged === true, "#356: connection reset → merged:true");
   assert(
     r.merged && /connection reset/.test(r.warningNote ?? ""),
@@ -196,7 +198,7 @@ function mkExec(
     }
     return { stdout: "" };
   };
-  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"));
+  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"), HEAD_OID);
   assert(r.ok === true, "#356: mechanizedMerge — transient post-verify → ok:true");
   assert(r.ok && r.notes.length === 1, "#356: exactly one warning note");
   assert(
@@ -227,7 +229,7 @@ function mkExec(
     }
     return { stdout: "" };
   };
-  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"));
+  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"), HEAD_OID);
   assert(r.ok === false, "#356: mechanizedMerge — non-MERGED post-verify → ok:false");
   assert(
     "reason" in r && /state is OPEN/.test(r.reason),
@@ -248,7 +250,7 @@ function mkExec(
     if (cmd.includes("gh pr merge")) return { stdout: "Merged" };
     return { stdout: "" };
   };
-  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"));
+  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"), HEAD_OID);
   assert(r.ok === true && r.notes.length === 0, "#356: happy path — no warning notes");
 }
 
@@ -271,7 +273,7 @@ function mkExec(
     }
     return { stdout: "" };
   };
-  const r = await executeAndVerifyMerge(42, "squash", fn, "/fake");
+  const r = await executeAndVerifyMerge(42, "squash", fn, "/fake", undefined, HEAD_OID);
   assert(
     "ok" in r && r.ok === false,
     "#356: permanent 401 post-verify → ok:false (NOT a false success)",
@@ -294,7 +296,7 @@ function mkExec(
     }
     return { stdout: "" };
   };
-  const r = await executeAndVerifyMerge(42, "squash", fn, "/fake");
+  const r = await executeAndVerifyMerge(42, "squash", fn, "/fake", undefined, HEAD_OID);
   assert("ok" in r && r.ok === false, "#356: permanent 404/not-found post-verify → ok:false");
 }
 
@@ -315,7 +317,7 @@ function mkExec(
     }
     return { stdout: "" };
   };
-  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"));
+  const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"), HEAD_OID);
   assert(r.ok === false, "#356: mechanizedMerge — permanent post-verify → ok:false (ops fallback)");
   assert(
     r.ok === false && /HTTP 401/.test(r.reason),
@@ -333,7 +335,7 @@ function mkExec(
     }
     return { stdout: "" };
   };
-  const r = await executeAndVerifyMerge(42, "squash", fn, "/fake");
+  const r = await executeAndVerifyMerge(42, "squash", fn, "/fake", undefined, HEAD_OID);
   assert("merged" in r && r.merged === true, "#356: transient 502 → merged:true (unchanged)");
   assert(
     r.merged &&

@@ -14,17 +14,16 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ShellExecFn } from "./exec.ts";
-import { prMergeSubjectFlag } from "./forge-commands.ts";
 import { PublicHygieneError } from "./public-hygiene-config.ts";
-import { driverPublishCheck } from "./public-hygiene-driver.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { mergeSubjectForState } from "./work-driver-merge-subject.ts";
+import { executeAndVerifyMergeDirect } from "./work-driver-merged-direct.ts";
 import type { WorkState } from "./workflow-state.ts";
-import type { ExecFn } from "./worktree.ts";
 
 /**
  * The SHELL-ONLY seam of this module (#1279). `ShellExecFn` declares no `argv`,
@@ -56,7 +55,15 @@ function refusalMessage(err: unknown): string {
 }
 
 /** Valid merge methods — maps to the forge adapter's `prMerge` method argument. */
-export type MergeMethod = "squash" | "merge" | "rebase";
+export type { MergeMethod } from "./work-driver-merged-pin.ts";
+// Re-exported, not merely imported: the pin's classifier is this module's
+// refusal contract, and the test that pins the classification ORDER (a refused
+// read before the already-merged tolerance and before the permanent bucket)
+// reaches it through the module whose merge paths apply it. Importing it here
+// and keeping it private would leave that ordering unpinnable.
+export { isHeadPinRefusal, pinRefusalReason } from "./work-driver-merged-pin.ts";
+import { isHeadPinRefusal, pinRefusalReason } from "./work-driver-merged-pin.ts";
+import type { MergeMethod } from "./work-driver-merged-pin.ts";
 
 /**
  * Derive the merge method from repo settings via the forge adapter.
@@ -149,7 +156,12 @@ export async function executeAndVerifyMerge(
   method: MergeMethod,
   execFn: VerifyExecFn,
   repoRoot: string,
-  subject?: string,
+  subject: string | undefined,
+  // #1533 — the verified PR head OID the merge is pinned to. `string | undefined`
+  // so the absence is representable and narrowed below (never cast, never an
+  // empty-string sentinel): a merge command built from a value nobody vouched for
+  // is the defect, and the refusal below is what the caller parks with.
+  headOid: string | undefined,
   // The forge-resolution seam. Production leaves it undefined and the adapter
   // path is chosen by `forgeForCycle`, exactly as before; a test that exists to
   // cover the DIRECT-exec fallback passes `() => undefined` rather than hoping a
@@ -164,6 +176,20 @@ export async function executeAndVerifyMerge(
   // the adapter itself.
   visibility?: VisibilityFn,
 ): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
+  // Fail closed on the shape before anything is read or executed: an OID that
+  // is not a full 40-char SHA is not a claim about one commit, and the command
+  // builders refuse to render it anyway — naming the reason here is what the
+  // merged step parks with.
+  if (headOid === undefined || !isFullCommitSha(headOid)) {
+    return {
+      ok: false,
+      reason: `refusing to merge PR #${prNumber}: the verified head OID is missing or not a full 40-char SHA`,
+    };
+  }
+  // Narrowed once, at the only refusal that can produce an unpinned merge below:
+  // every call after this line passes THIS binding, so no path can reach a
+  // command builder with the un-narrowed optional.
+  const pinned = headOid;
   const forge = resolveForge
     ? await resolveForge({ repoRoot }, execFn)
     : await forgeForCycle({ repoRoot }, execFn);
@@ -174,7 +200,15 @@ export async function executeAndVerifyMerge(
     // fallback and is checked there, on the single path that builds the
     // command — checking it here as well would state the same rule twice,
     // in two places that can then disagree.
-    return executeAndVerifyMergeDirect(prNumber, method, execFn, repoRoot, subject, visibility);
+    return executeAndVerifyMergeDirect(
+      prNumber,
+      method,
+      execFn,
+      repoRoot,
+      subject,
+      pinned,
+      visibility,
+    );
   }
   // First check: is the PR already merged? (idempotent on resume)
   try {
@@ -198,7 +232,7 @@ export async function executeAndVerifyMerge(
   // cycle would die instead of parking with the reason the guard gave. Same
   // shape as every other refusal in this function: `{ ok: false, reason }`.
   try {
-    await forge.prMerge(prNumber, method, subject);
+    await forge.prMerge(prNumber, pinned, method, subject);
   } catch (err) {
     if (isPublicHygieneRefusal(err)) {
       const reason = refusalMessage(err);
@@ -207,6 +241,14 @@ export async function executeAndVerifyMerge(
     }
     const e = err as Error & { stderr?: string };
     const message = (e.stderr ?? e.message ?? "").toString();
+    // #1533 — BEFORE the "already been merged" tolerance and the permanent-error
+    // classifier: a refused pin is neither. Read as success it would report a
+    // merge that never happened; read as an ordinary failure it would fall back
+    // to an LLM ops dispatch against the same moved head.
+    if (isHeadPinRefusal(message)) {
+      trace(`work-driver: PR #${prNumber} head pin refused — no merge`);
+      return { ok: false, reason: pinRefusalReason(message) };
+    }
     // If the error indicates the PR is already merged, treat as success.
     if (/already been merged/i.test(message)) {
       trace(`work-driver: PR #${prNumber} was already merged during the merge invocation`);
@@ -263,123 +305,6 @@ export async function executeAndVerifyMerge(
 }
 
 /**
- * The direct-exec fallback for `executeAndVerifyMerge` when the forge is
- * undetermined (no remote, unknown host). This is the pre-S4 code path,
- * kept so the test fakes (which mock `gh pr view` / `gh pr merge` by
- * substring) keep working unchanged.
- */
-async function executeAndVerifyMergeDirect(
-  prNumber: number,
-  method: MergeMethod,
-  execFn: VerifyExecFn,
-  repoRoot: string,
-  subject?: string,
-  visibility?: VisibilityFn,
-): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
-  // First check: is the PR already merged? (idempotent on resume)
-  try {
-    const { stdout } = await execFn(`gh pr view ${prNumber} --json state --jq '.state'`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (stdout.trim() === "MERGED") {
-      trace(`work-driver: PR #${prNumber} already merged, skipping merge invocation`);
-      return { merged: true };
-    }
-  } catch (err) {
-    trace(`work-driver: pre-check gh pr view failed: ${(err as Error).message?.slice(0, 120)}`);
-  }
-
-  // The subject a squash merge writes to main is public text, and this is the
-  // one forge write a cycle cannot undo. The forge adapter's `prMerge` checks it
-  // through `checkPublicText`; this direct-exec fallback builds the same command
-  // itself and reaches no adapter, so it goes through the SAME driver seam —
-  // one rule, one owner, one public-only gate, and a fallback that cannot become
-  // the way past either. The pure `publicTextRefusal` it used to call asked
-  // nothing about the repository, so a private project had its merge subject
-  // refused here while the adapter path skipped the same text (#1788 round 2).
-  // It returns the function's OWN failure shape rather than throwing, for the
-  // reason spelled out on the adapter path above: `runMerged` routes on the
-  // result, and a merge the guard refused is a merge that parks with a reason,
-  // not an exception that escapes the step.
-  // `mergeSubject` is the subject the merge actually writes: the checked text,
-  // with this clone's paths rewritten out of it on a public target (#1788
-  // follow-up). A local rather than a reassignment of the parameter.
-  let mergeSubject = subject;
-  if (subject !== undefined) {
-    const checked = await driverPublishCheck("merge commit subject", subject, {
-      command: "gh pr merge",
-      cwd: repoRoot,
-      // `VerifyExecFn` and the guard's `ExecFn` differ only in optionality of
-      // the options bag; the seam accepts either shape and passes it through.
-      exec: execFn as unknown as ExecFn,
-      visibility,
-      repoRoot,
-    });
-    if (checked.refusal !== undefined) {
-      const refusal = checked.refusal;
-      trace(`work-driver: merge subject refused for PR #${prNumber}: ${refusal.slice(0, 200)}`);
-      return { ok: false, reason: refusal };
-    }
-    mergeSubject = checked.text;
-  }
-
-  // Execute the merge.
-  try {
-    await execFn(
-      `gh pr merge ${prNumber} --${method} --delete-branch${prMergeSubjectFlag(mergeSubject)}`,
-      {
-        cwd: repoRoot,
-        maxBuffer: 1024 * 1024,
-      },
-    );
-  } catch (err) {
-    const e = err as Error & { stderr?: string };
-    const message = (e.stderr ?? e.message ?? "").toString();
-    if (/already been merged/i.test(message)) {
-      trace(`work-driver: PR #${prNumber} was already merged during gh pr merge invocation`);
-      return { merged: true };
-    }
-    return {
-      ok: false,
-      reason: `gh pr merge failed: ${message.slice(0, 300)}`,
-    };
-  }
-
-  // Post-merge verification: gh pr view must return MERGED.
-  try {
-    const { stdout } = await execFn(`gh pr view ${prNumber} --json state --jq '.state'`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (stdout.trim() !== "MERGED") {
-      return {
-        ok: false,
-        reason: `gh pr merge succeeded but PR #${prNumber} state is ${stdout.trim()}, not MERGED`,
-      };
-    }
-  } catch (err) {
-    const e = err as Error & { stderr?: string };
-    const msg = e.message ?? "unknown";
-    const permanent = /\b(401|403|404)\b|not found|could not resolve/i.test(
-      `${e.stderr ?? ""}\n${msg}`,
-    );
-    if (permanent) {
-      trace(`work-driver: permanent post-merge verification failure: ${msg.slice(0, 200)}`);
-      return {
-        ok: false,
-        reason: `post-merge verification failed with a permanent gh error: ${msg.slice(0, 300)}`,
-      };
-    }
-    const note = `post-merge verification inconclusive (gh pr view error: ${msg.slice(0, 200) ?? "unknown"})`;
-    trace(`work-driver: ${note}`);
-    return { merged: true, warningNote: note };
-  }
-
-  return { merged: true };
-}
-
-/**
  * Mechanized merge: derive method → execute → verify.
  *
  * ANY failure returns `{ok: false, reason}` — the caller in runMerged
@@ -392,6 +317,13 @@ async function executeAndVerifyMergeDirect(
 export async function mechanizedMerge(
   ctx: CycleContext,
   state: WorkState,
+  // #1533 — the head the merged step verified. `string | undefined` rather than
+  // a required `string`: the step produces one whenever the merge gate runs, and
+  // this signature is where the absence is refused. A merge with no pin is the
+  // defect this ticket removes, so the builder has no unpinned form — and the
+  // absence must be representable, because "we could not verify a head" is the
+  // very answer the caller needs to distinguish from a pin.
+  headOid: string | undefined,
 ): Promise<
   | { ok: true; method: MergeMethod; notes: string[] }
   | { ok: false; reason: string; method?: MergeMethod }
@@ -408,6 +340,16 @@ export async function mechanizedMerge(
   const prNumber = state.pipelineState.prNumber;
   if (!prNumber) {
     return { ok: false, reason: "prNumber not set in pipeline state" };
+  }
+  // Checked before the method derivation so a cycle with nothing to pin does
+  // not even read the repo settings; the merged step parks with this reason.
+  // `isFullCommitSha` takes a `string`, so the absence is narrowed here rather
+  // than passed through the shape check.
+  if (headOid === undefined || !isFullCommitSha(headOid)) {
+    return {
+      ok: false,
+      reason: `refusing to merge PR #${prNumber}: the verified head OID is missing or not a full 40-char SHA`,
+    };
   }
 
   // Derive merge method from GitHub repo settings.
@@ -432,6 +374,7 @@ export async function mechanizedMerge(
     execFn,
     ctx.repoRoot,
     subject,
+    headOid,
   );
   if (!("merged" in mergeResult)) {
     return { ok: false, reason: mergeResult.reason, method: methodResult.method };

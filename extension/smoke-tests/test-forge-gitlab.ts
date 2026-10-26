@@ -28,10 +28,18 @@ async function main() {
   console.log("command strings:");
   await check("SAFETY: prMergeCmd ALWAYS passes --auto-merge=false on GitLab", () => {
     for (const method of ["squash", "merge", "rebase"] as const) {
-      const cmd = forgeCommands.prMergeCmd("gitlab", 17, method);
+      const cmd = forgeCommands.prMergeCmd("gitlab", 17, "e".repeat(40), method);
       assert(cmd.includes("--auto-merge=false"), `${method}: missing --auto-merge=false: ${cmd}`);
       assert(cmd.includes(`--${method}`), `${method}: missing --${method}: ${cmd}`);
     }
+  });
+  // #1533 — glab has no `--match-head-commit`; its pin is `--sha <oid>`. The
+  // asymmetry is pinned here so a future edit cannot silently drop the GitLab
+  // pin while the GitHub one stays.
+  await check("#1533: prMergeCmd pins the GitLab merge with --sha <oid>", () => {
+    const oid = "f".repeat(40);
+    const cmd = forgeCommands.prMergeCmd("gitlab", 17, oid, "squash");
+    assert(cmd === `glab mr merge 17 --squash --auto-merge=false --sha ${oid}`, `got ${cmd}`);
   });
   await check("prCreateCmd uses --target-branch (no --head flag)", () => {
     const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", { baseBranch: "main" });
@@ -218,11 +226,15 @@ async function main() {
       assert(cmd!.includes("--description-file"), `--description-file: ${cmd}`);
     });
     await check("mrMerge ALWAYS passes --auto-merge=false (SAFETY)", async () => {
-      const out = await forge.prMerge(17);
+      const out = await forge.prMerge(17, "a1".repeat(20));
       assert(out.includes("Merged"), `got ${out}`);
       const cmd = calls.find((c) => c.includes("glab mr merge"));
       assert(cmd !== undefined, `no merge cmd: ${calls}`);
       assert(cmd!.includes("--auto-merge=false"), `SAFETY: missing --auto-merge=false: ${cmd}`);
+      assert(
+        cmd!.includes(`--sha ${"a1".repeat(20)}`),
+        `#1533: missing the head pin --sha: ${cmd}`,
+      );
     });
     await check("mrDiff returns the diff text", async () => {
       const diff = await forge.prDiff(17);
@@ -243,105 +255,6 @@ async function main() {
       assert(checks.length === 2, `len ${checks.length}`);
       assert(checks[0]!.name === "build", "first name");
       assert(checks[0]!.state === "SUCCESS", `state ${checks[0]!.state}`);
-    });
-  }
-
-  // ── Merge readiness (GitLab composition) ────────────────────────────────
-  // Each case gets its own exec fake; the MR payload is the variable.
-  console.log("merge readiness (GitLab):");
-  const readinessCase = async (
-    label: string,
-    mrPayload: Record<string, unknown> | { error: true; stderr: string },
-    expect: { ok: boolean; readiness?: string; reasonIncludes?: string },
-  ) => {
-    const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": {
-        ...("error" in mrPayload ? { error: true, stderr: mrPayload.stderr } : { stdout: JSON.stringify(mrPayload) }),
-      },
-      "glab api /projects/:id/pipelines/5001/jobs": { stdout: JSON.stringify(GL_JOBS) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check(label, async () => {
-      const result = await forge.mergeReadiness(17);
-      if (expect.ok === false) {
-        assert(result.ok === false, `should fail: ${JSON.stringify(result)}`);
-        if (expect.reasonIncludes && !result.ok) {
-          assert(result.reason.includes(expect.reasonIncludes), `reason ${result.reason}`);
-        }
-      } else {
-        assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
-        if (result.ok && expect.readiness) {
-          assert(result.readiness === expect.readiness, `readiness ${result.readiness}`);
-        }
-      }
-    });
-  };
-  await readinessCase("readiness CLEAN (can_be_merged + no conflicts + approvals=0)", GL_MR, {
-    ok: true,
-    readiness: "CLEAN",
-  });
-  await readinessCase("readiness UNKNOWN (checking)", GL_MR_CHECKING, {
-    ok: true,
-    readiness: "UNKNOWN",
-  });
-  await readinessCase("readiness DIRTY (has_conflicts)", {
-    ...GL_MR,
-    detailed_merge_status: "has_conflicts",
-    has_conflicts: true,
-  }, { ok: true, readiness: "DIRTY" });
-  await readinessCase("readiness fails closed (discussions unresolved + status blocked)", {
-    ...GL_MR,
-    detailed_merge_status: "blocked_by_discussions",
-    blocking_discussions_resolved: false,
-  }, { ok: false });
-  await readinessCase("readiness fails closed (approvals_left missing)", (() => {
-    const m = { ...GL_MR };
-    delete (m as Record<string, unknown>).approvals_left;
-    return m;
-  })(), { ok: false, reasonIncludes: "approvals_left" });
-  await readinessCase("readiness fails closed (unmapped detailed_merge_status)", {
-    ...GL_MR,
-    detailed_merge_status: "brand_new_state",
-  }, { ok: false, reasonIncludes: "brand_new_state" });
-  await readinessCase("readiness fails closed (API error)", { error: true, stderr: "404 Not Found" }, {
-    ok: false,
-  });
-
-  // ── composeGlReadiness (direct, table-driven) ───────────────────────────
-  console.log("composeGlReadiness table:");
-  const cases: Array<[string, boolean, boolean, number, string]> = [
-    ["can_be_merged", false, true, 0, "CLEAN"],
-    ["succeeding", false, true, 0, "CLEAN"],
-    ["has_conflicts", true, true, 0, "DIRTY"],
-    ["blocked_by_discussions", false, false, 0, "FAIL"],
-    ["blocked_by_pipeline_status", false, true, 0, "DIRTY"],
-    ["checking", false, true, 0, "UNKNOWN"],
-    ["unknown_state", false, true, 0, "FAIL"],
-  ];
-  for (const [status, conflicts, discussions, approvals, expected] of cases) {
-    await check(`  ${status} → ${expected}`, () => {
-      let threw: string | undefined;
-      let readiness: string | undefined;
-      try {
-        readiness = composeGlReadiness({
-          detailed_merge_status: status,
-          has_conflicts: conflicts,
-          blocking_discussions_resolved: discussions,
-          approvals_left: approvals,
-          state: "opened",
-        }).readiness;
-      } catch (e) {
-        threw = (e as Error).message;
-      }
-      if (expected === "FAIL") {
-        assert(threw !== undefined, "should have thrown");
-        if (status === "unknown_state") assert(threw!.includes("unmapped"), `wrong: ${threw}`);
-        if (status === "blocked_by_discussions") {
-          assert(threw!.includes("blocking_discussions_resolved"), `wrong: ${threw}`);
-        }
-      } else {
-        assert(readiness === expected, `got ${readiness}`);
-      }
     });
   }
 

@@ -27,6 +27,8 @@ import {
   writeStateSync,
 } from "../../src/workflow-state.ts";
 import {
+  EVIDENCE_HEAD,
+  FIXTURE_PATCH_ID,
   FIXTURE_PR,
   type MergeExecLog,
   type MergeVerdict,
@@ -208,6 +210,30 @@ export async function mergedRun(opts: {
    * assertion that reads the env AFTER the case would read the restored value.
    */
   captureEnv?: string[];
+  /**
+   * #1533 — the OID the cycle's lens row records as the reviewed head. Defaults
+   * to the head the evidence probe reports ("nothing moved since the review"),
+   * which is the merging case. Pass another OID for the moved-head scenarios:
+   * the merged step then fetches and compares patch identities at both commits.
+   */
+  reviewedHead?: string;
+  /**
+   * #1533 — `false` seeds NO lens row: the never-reviewed park. Distinct from a
+   * row whose `headSha` is unusable, which is its own case.
+   */
+  reviewRow?: boolean;
+  /**
+   * #1533 — the OID `git rev-parse origin/<branch>` answers, i.e. where the
+   * branch actually is when the merged step fetches it. Defaults to the reviewed
+   * head; a moved-head case passes the NEW commit.
+   */
+  fetchedHead?: string;
+  /**
+   * #1533 — the patch identity the FETCHED head carries. Defaults to the
+   * fixture's id, i.e. "the move changed nothing but the base" — the mainline
+   * merged in. A different id is an unreviewed push.
+   */
+  fetchedPatchId?: string;
 }): Promise<{
   code: number;
   state: WorkState | undefined;
@@ -215,13 +241,24 @@ export async function mergedRun(opts: {
   baseSha: string;
   env: Record<string, string | undefined>;
 }> {
-  const repo = headlessRepo(opts.grant);
+  // #1533 — the ledger row is keyed on the SAME branch name this state file
+  // carries: the head check looks a LENS row up by the cycle's branch, and a
+  // fixture whose two disagreed would park every case on "no lens row on file".
+  const repo = headlessRepo(
+    opts.grant,
+    "headless-s5-",
+    `feature/issue-${opts.issue}`,
+    opts.reviewRow ?? true,
+    opts.reviewedHead ?? EVIDENCE_HEAD,
+  );
   const log: MergeExecLog = {
     calls: [],
     mergeCmds: [],
     prViewAnswers: [],
     issueViewCmds: [],
     unexpected: [],
+    headFetches: [],
+    headReads: [],
     doctrineReads: [],
   };
   let code = -1;
@@ -254,7 +291,15 @@ export async function mergedRun(opts: {
             merge: opts.merge,
             repoRoot: repo.repoRoot,
             refuseDoctrine: opts.refuseDoctrine,
-          },
+            // #1533 — the head the branch is AT when the merged step fetches it,
+            // and the patch identity that head carries. Both default to the
+            // reviewed values (nothing moved), so the ordinary merging cases pay
+            // no fetch at all; a moved-head case passes them to drive the
+            // identity comparison without a real remote.
+            fetchedHead: opts.fetchedHead ?? EVIDENCE_HEAD,
+            fetchedPatchId: opts.fetchedPatchId ?? FIXTURE_PATCH_ID,
+            // A lens row whose `headSha` is not a usable OID is its own case.
+            lensHeadSha: opts.reviewedHead ?? EVIDENCE_HEAD,          },
           log,
         ),
         ...(opts.judge ? { policyJudgeFn: opts.judge } : {}),

@@ -8,7 +8,7 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -77,6 +77,84 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 // PR17 — the outcome-verification gate is disabled globally here; dedicated
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
+// #1533 — the head the evidence read reports, and the patch identity the review
+// ledger records for the cycle's branch. Equal identities are what let a merge
+// through; these fixtures assert the MECHANISM (dispatch fires, the merged event
+// carries the SHA), so they are seeded to agree. The disagreement cases — a
+// moved head, an unreviewed branch, a refused pin — are in
+// test-work-driver-merged-head.ts and test-work-driver-merged-pin.ts.
+const VERIFIED_HEAD = "a".repeat(40);
+const REVIEWED_PATCH = "b".repeat(40);
+/**
+ * Seed the per-clone review ledger the merged step's identity check reads
+ * (#1533) with one PASSING adversarial row for `branch` whose patch identity
+ * is the one the exec fake above answers. Without it the step refuses the merge
+ * ("no adversarial row on file") — correct for a real cycle nobody reviewed,
+ * and not what these cases are about. The no-row and mismatch cases live in
+ * test-work-driver-merged-head.ts.
+ */
+/**
+ * The exec fake for a fixture whose merge is meant to REACH the merge: the
+ * #380 evidence probe answered green, and (since #1533) every read the head
+ * verification makes — the head OID from the same response, the fetch, the
+ * mainline, the identity, the ledger's git dir. A fixture that answers only
+ * the evidence probe gets its merge HELD, which is right for a real cycle
+ * whose head cannot be substantiated and wrong for these cases, so the gate's
+ * whole read set is answered here rather than in two divergent copies.
+ */
+function mergeGateExec(dir: string): NonNullable<DriverContext["verifyExecFn"]> {
+  return async (cmd: string, o?: { argv?: string[] }) => {
+    // argv callers pass the executable as `cmd` and the words as `argv`.
+    const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
+    if (line.includes("mergeStateStatus")) {
+      return {
+        stdout: JSON.stringify({
+          mergeStateStatus: "CLEAN",
+          state: "OPEN",
+          headRefOid: VERIFIED_HEAD,
+        }),
+      };
+    }
+    if (line.includes("gh pr checks")) {
+      return { stdout: JSON.stringify([{ name: "ci", bucket: "pass" }]) };
+    }
+    if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
+    if (line.includes("git config --get remote.")) return { stdout: "https://x.invalid/r.git\n" };
+    if (line.includes("git fetch")) return { stdout: "" };
+    if (line.includes("git rev-parse --git-common-dir")) return { stdout: `${dir}/.git\n` };
+    if (line.includes("git merge-base")) return { stdout: `${VERIFIED_HEAD}\n` };
+    if (line.includes("git patch-id")) return { stdout: `${REVIEWED_PATCH} x\n` };
+    if (line.includes("git check-ref-format")) return { stdout: "" };
+    if (line.includes("git rev-parse")) return { stdout: `${VERIFIED_HEAD}\n` };
+    return { stdout: "" };
+  };
+}
+
+function seedLedger(dir: string, branch: string): void {
+  // #1533 — the merged step's identity check reads the latest LENS row for the
+  // branch (the six-pass review is the driver's own review of this branch), so
+  // this fixture seeds one whose `headSha` is the head the exec seam reports and
+  // whose `patchId` is what its `git patch-id` answers. An adversarial row is not
+  // enough: the check that once merged unreviewed content trusted exactly that,
+  // and the row it now requires is what makes a merge here mean "reviewed".
+  writeFileSync(
+    path.join(dir, ".git", "review-ledger.json"),
+    JSON.stringify({
+      entries: [
+        {
+          branch,
+          kind: "lens",
+          patchId: REVIEWED_PATCH,
+          headSha: VERIFIED_HEAD,
+          passed: true,
+          at: 1,
+          round: 1,
+          hasCritical: false,
+        },
+      ],
+    }),
+  );
+}
 
 // 35. PR10 — parsePerIssueVerdicts pure helper.
 {
@@ -175,6 +253,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    seedLedger(dir, "feature/issue-950");
     let s = initialState(950, 1_000_000);
     s = {
       ...s,
@@ -191,15 +270,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // tests cover the merge MECHANISM, so they grant it the way `--merge`
     // would and answer `gh` green. The gate is covered by
     // test-merge-authority.ts, and by the no-grant case at the end of this file.
-    const greenGh = async (cmd: string) => {
-      if (cmd.includes("mergeStateStatus")) {
-        return { stdout: JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" }) };
-      }
-      if (cmd.includes("gh pr checks")) {
-        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass" }]) };
-      }
-      return { stdout: "" };
-    };
+    const greenGh = mergeGateExec(dir);
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
       host: makeFakePi().pi,
@@ -247,6 +318,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    seedLedger(dir, "feature/issue-951");
     let s = initialState(951, 1_000_000);
     s = {
       ...s,
@@ -263,15 +335,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // tests cover the merge MECHANISM, so they grant it the way `--merge`
     // would and answer `gh` green. The gate is covered by
     // test-merge-authority.ts, and by the no-grant case at the end of this file.
-    const greenGh = async (cmd: string) => {
-      if (cmd.includes("mergeStateStatus")) {
-        return { stdout: JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" }) };
-      }
-      if (cmd.includes("gh pr checks")) {
-        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass" }]) };
-      }
-      return { stdout: "" };
-    };
+    const greenGh = mergeGateExec(dir);
     const ctx: DriverContext = {
       host: makeFakePi().pi,
       repoRoot: dir,

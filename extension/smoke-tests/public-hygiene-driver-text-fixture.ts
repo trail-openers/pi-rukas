@@ -20,6 +20,9 @@
 import type { createForge } from "../src/forge.ts";
 import { assert } from "./merge-guard-helpers.ts";
 
+/** #1533 — `prMerge` now requires the head OID the merge is pinned to. */
+const HEAD_OID = "6".repeat(39) + "b";
+
 /**
  * The driver-authored commit message, checked at the forge seam, plus the squash
  * subject (block 7c) which is the one forge write a cycle cannot undo.
@@ -87,7 +90,7 @@ export async function driverAuthoredText(
   execed.length = 0;
   let mergeThrown: unknown;
   try {
-    await forge.prMerge(7, "squash", `feat(x): wire ${term} into the build`);
+    await forge.prMerge(7, HEAD_OID, "squash", `feat(x): wire ${term} into the build`);
   } catch (err) {
     mergeThrown = err;
   }
@@ -103,13 +106,13 @@ export async function driverAuthoredText(
   );
   assert(published().length === 0, "nothing was execed: the merge did not happen");
   execed.length = 0;
-  await forge.prMerge(7, "squash", "feat(x): wire the build").catch(() => undefined);
+  await forge.prMerge(7, HEAD_OID, "squash", "feat(x): wire the build").catch(() => undefined);
   assert(
     published().some((c) => c.includes("--subject")),
     "a clean subject reaches the merge command",
   );
   execed.length = 0;
-  await forge.prMerge(7, "squash", undefined).catch(() => undefined);
+  await forge.prMerge(7, HEAD_OID, "squash", undefined).catch(() => undefined);
   assert(
     published().every((c) => !c.includes("--subject")),
     "no subject at all is not refused — gh composes one",

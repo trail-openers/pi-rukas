@@ -15,9 +15,12 @@
  *
  *   gh pr checks --json: bucket, completedAt, description, event, link,
  *                        name, startedAt, state, workflow
- *   gh pr view  --json:  (mergeStateStatus, mergeable, state — a subset of
- *                        the supported pr view set, pinned for the same
- *                        reason the checks set is pinned)
+ *   gh pr view  --json:  (mergeStateStatus, mergeable, state, headRefOid — a
+ *                        subset of the supported pr view set, pinned for the
+ *                        same reason the checks set is pinned). `headRefOid`
+ *                        was added by #1533 so the merge pin and the CI verdict
+ *                        come from ONE read; it is a supported `pr view` field
+ *                        (verified against gh 2.102.0 on this host).
  *
  * The GitLab side of the fix (the MR API call and the open-pipeline jobs
  * call) is a bare `glab api` GET that takes no field list at all, which is
@@ -56,8 +59,19 @@ const GH_PR_CHECKS_FIELDS = new Set([
   "workflow",
 ]);
 
-/** The `pr view` fields the merge-evidence gate actually requests. */
-const GH_PR_VIEW_EVIDENCE_FIELDS = new Set(["mergeStateStatus", "mergeable", "state"]);
+/**
+ * The `pr view` fields the merge-evidence gate actually requests.
+ *
+ * `headRefOid` (#1533) is the commit OID the driver pins its merge to: the
+ * evidence read is the single moment the forge is observed, so the CI verdict
+ * and the pin cannot come from two reads that disagree.
+ */
+const GH_PR_VIEW_EVIDENCE_FIELDS = new Set([
+  "mergeStateStatus",
+  "mergeable",
+  "state",
+  "headRefOid",
+]);
 
 function requestedFields(cmd: string, flag: string): string[] {
   const match = cmd.match(new RegExp(`${flag}\\s+(\\S+)`));
@@ -90,7 +104,7 @@ function requestedFields(cmd: string, flag: string): string[] {
   const cmd = mergeEvidenceViewCmd(17);
   const fields = requestedFields(cmd, "--json");
   assert(
-    cmd === "gh pr view 17 --json mergeStateStatus,mergeable,state",
+    cmd === "gh pr view 17 --json mergeStateStatus,mergeable,state,headRefOid",
     `exact argv: ${cmd}`,
   );
   assert(

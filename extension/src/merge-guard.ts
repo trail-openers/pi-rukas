@@ -97,6 +97,7 @@ import {
   readPrCommentBodies,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
+import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
 import { GLAB_AUTO_MERGE_REFUSAL, holdReasonText, renderHold } from "./merge-refusals.ts";
 import {
   type MergeExecFn,
@@ -398,16 +399,20 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // #1360 — a non-passing row's `detail` is quoted in the refusal, so an
     // operator told "no passing review" can see the review DID run and why its
     // row does not count (a narrowed range, a moved head, an edited tree).
-    const adv = latestEntry(entries, branch, "adversarial");
-    if (!adv || !adv.passed) {
-      return block(adversarialRefusal(branch, adv));
-    }
-    if (adv.patchId !== currentPatchId) {
+    // #1533 — the comparison itself is `compareAdversarialIdentity`, shared with
+    // the driver's merged step so the two cannot drift on what "same reviewed
+    // patch" means; the refusals below stay the guard's own words.
+    const advVerdict = compareAdversarialIdentity(entries, branch, currentPatchId);
+    if (!advVerdict.ok) {
+      if (advVerdict.cause === "patch-changed") {
+        return block(
+          `adversarial review is stale: ledger patchId ${advVerdict.reviewedPatchId.slice(0, 8)} ≠ current ${advVerdict.currentPatchId.slice(0, 8)} — the branch changed after the review; re-run adversarial_loop`,
+        );
+      }
       return block(
-        `adversarial review is stale: ledger patchId ${adv.patchId.slice(0, 8)} ≠ current ${currentPatchId.slice(0, 8)} — the branch changed after the review; re-run adversarial_loop`,
+        adversarialRefusal(branch, advVerdict.cause === "no-entry" ? undefined : advVerdict.entry),
       );
     }
-
     // Lens: the strict rule first — the LATEST entry must be `passed`
     // (any patchId). When it refuses, the #973 round-cap path is consulted:
     // an ISSUES_FOUND entry with no CRITICAL, >= 3 rounds, an approving

@@ -98,10 +98,13 @@ export function worktreeAwareRecoverySteps(
         lines: [`git push -u origin ${ps.branchName}`],
       },
       // #810 — the PR title threaded in by the caller; absent → no subject flag.
+      // #1533 — and the head the merged step verified, so the recovery command
+      // the operator follows is pinned to the commit the review covered.
       consolidatedMergeStep(
         forge,
         ps.prNumber,
         isConsolidatedPark(state) ? mergeSubject : undefined,
+        ps.mergeHold?.headAtMerge ?? ps.mergeHold?.reviewedHead,
       ),
       {
         section: "worktree-work-consolidated",

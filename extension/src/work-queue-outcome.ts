@@ -135,6 +135,9 @@ export async function classify(
   }
 
   const { reason, failedStep } = parkReason(st);
+  // #1533 — the head-check fields the queue action renders, read from the same
+  // state file the reason came from (never re-derived at the action site).
+  const mergeHold = st?.pipelineState?.mergeHold;
   const systemic = state.isSystemic(st);
   if (systemic.systemic || state.haltOnFailure()) {
     state.halted = true;
@@ -145,13 +148,13 @@ export async function classify(
       outcome: "halted",
       reason: why,
       failedStep,
-      humanAction: humanActionFor(reason, primary),
+      humanAction: humanActionFor(reason, primary, [primary], mergeHold),
     });
     void notify({
       kind: "halted",
       issues: g.issues,
       reason: why,
-      action: humanActionFor(reason, primary),
+      action: humanActionFor(reason, primary, [primary], mergeHold),
     });
     finishGroup(state, g.id);
     return;
@@ -164,7 +167,7 @@ export async function classify(
     outcome: "parked",
     reason,
     failedStep,
-    humanAction: humanActionFor(reason, primary),
+    humanAction: humanActionFor(reason, primary, [primary], mergeHold),
   });
   // #388 — one notification per parked group, carrying the action rather than
   // the event. A merged group is never notified: nothing is asked of the
@@ -174,7 +177,7 @@ export async function classify(
     kind: /awaiting-human-merge/.test(reason) ? "awaiting-merge" : "parked",
     issues: g.issues,
     reason,
-    action: humanActionFor(reason, primary),
+    action: humanActionFor(reason, primary, [primary], mergeHold),
   });
   finishGroup(state, g.id);
 }

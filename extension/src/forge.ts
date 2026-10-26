@@ -19,6 +19,7 @@ import { listIssueComments, listPrComments, postPrComment } from "./forge-commen
 import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
 import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
+import { mapIssueSearchReply, mapPrListReply } from "./forge-list.ts";
 import {
   ForgeFieldError,
   asArray,
@@ -42,6 +43,7 @@ import {
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 import { forgePublishCheck } from "./work-driver-commit-hygiene.ts";
 export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
 import type {
@@ -269,14 +271,7 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       ),
 
     issueSearch: (query, opts) =>
-      run(cmds.issueSearchCmd(forge, query, opts), (stdout) => {
-        const rows = asArray(stdout);
-        return rows.map((raw) => {
-          const o = raw as Record<string, unknown>;
-          if (forge === "github") return mapGhIssue(o);
-          return mapGlIssue(o);
-        });
-      }),
+      run(cmds.issueSearchCmd(forge, query, opts), (stdout) => mapIssueSearchReply(forge, stdout)),
 
     // ── Pull requests / MRs ───────────────────────────────────────────────
 
@@ -295,41 +290,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         return mapGlMr(asRecord(stdout));
       }),
 
-    prList: (opts) =>
-      run(cmds.prListCmd(forge, opts), (stdout) => {
-        // Tolerate both JSON arrays and a bare number (test fakes that
-        // answer `gh pr list --json number --jq '.[0].number'`).
-        const trimmed = stdout.trim();
-        if (trimmed && !trimmed.startsWith("[") && !trimmed.startsWith("{")) {
-          const n = Number.parseInt(trimmed, 10);
-          if (Number.isFinite(n) && n > 0) {
-            return [
-              {
-                number: n,
-                url: "",
-                state: "" as NormalizedPullRequest["state"],
-                title: "",
-                body: "",
-                headRefName: undefined,
-                baseRefName: undefined,
-                author: undefined,
-                mergeable: null,
-                mergeStateStatus: null,
-                labels: [],
-                createdAt: undefined,
-                updatedAt: undefined,
-              },
-            ];
-          }
-          return [];
-        }
-        const rows = asArray(stdout);
-        return rows.map((raw) => {
-          const o = raw as Record<string, unknown>;
-          if (forge === "github") return mapGhPr(o);
-          return mapGlMr(o);
-        });
-      }),
+    // The bare-number tolerance lives in forge-list.ts, not here: it looks like
+    // dead defensive code and is not, so it is written where it is visible.
+    prList: (opts) => run(cmds.prListCmd(forge, opts), (stdout) => mapPrListReply(forge, stdout)),
 
     prCreate: async (title, headBranch, body, opts) => {
       const checkedTitle = (await checkPublicText("pull request title", title)).text;
@@ -359,7 +322,12 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       );
     },
 
-    prMerge: async (number, method: "squash" | "merge" | "rebase" = "squash", subject?: string) => {
+    prMerge: async (
+      number,
+      headOid,
+      method: "squash" | "merge" | "rebase" = "squash",
+      subject?: string,
+    ) => {
       // #1788 — the squash subject a driver composes from the issue title is
       // published as the commit message on main, so it is a public text surface
       // like a title or a body, and it is checked before the merge runs. A
@@ -368,7 +336,15 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         subject === undefined
           ? undefined
           : (await checkPublicText("merge commit subject", subject)).text;
-      return run(cmds.prMergeCmd(forge, number, method, mergeSubject), (stdout) => stdout);
+      // #1533 — the pin is part of this seam's contract, so a call that cannot
+      // name the head it approves fails HERE rather than emitting an unpinned
+      // command. The adapter is the one place the command is built.
+      if (!isFullCommitSha(headOid)) {
+        throw new Error(
+          `pr merge of PR ${number} refuses: the head OID to pin is missing or not a full 40-char SHA`,
+        );
+      }
+      return run(cmds.prMergeCmd(forge, number, headOid, method, mergeSubject), (stdout) => stdout);
     },
 
     prReady: (number) => run(cmds.prReadyCmd(forge, number), () => undefined),

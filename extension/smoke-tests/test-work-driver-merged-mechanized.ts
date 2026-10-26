@@ -19,9 +19,14 @@ import {
 } from "../src/work-driver-merged-mechanized.ts";
 import { runMerged } from "../src/work-driver-merged.ts";
 import { inlineMergePrompt } from "../src/work-driver-prompts-late.ts";
+import { prMergeCmd as prMergeCmdCapture } from "../src/forge-commands.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
 import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
+// The exec/context builders are shared with test-work-driver-merged-pin.ts, the
+// #1533 head-pin file split out of this one (§12 size cap): two copies would be
+// two fixtures that can drift while both still pass.
+import { HEAD_OID, mkCtx, mkExec, mkPi } from "./lib/work-driver-merged-pin-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -32,59 +37,16 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-function mkPi(): ExtensionAPI {
-  return { sendUserMessage: () => {} } as unknown as ExtensionAPI;
-}
-
-interface MockExec {
-  fn: VerifyExecFn;
-  calls: string[];
-}
-function mkExec(
-  o: Record<string, { stdout?: string; stderr?: string; error?: boolean }> = {},
-): MockExec {
-  const calls: string[] = [];
-  const fn: VerifyExecFn = async (rawCmd, opts) => {
-    const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
-    calls.push(cmd);
-    for (const [k, v] of Object.entries(o)) {
-      if (cmd.includes(k)) {
-        if (v.error) {
-          const e = new Error(v.stderr ?? "err") as Error & { stderr?: string };
-          e.stderr = v.stderr;
-          throw e;
-        }
-        return { stdout: v.stdout ?? "", stderr: v.stderr };
-      }
-    }
-    return { stdout: "" };
-  };
-  return { fn, calls };
-}
-
-function mkCtx(
-  issue: number,
-  exec: VerifyExecFn,
-  opts?: { dispatchFn?: DriverContext["dispatchFn"]; repoRoot?: string },
-): DriverContext {
-  return {
-    repoRoot: opts?.repoRoot ?? "/fake",
-    issue,
-    host: mkPi(),
-    verifyExecFn: exec,
-    mergeGrant: true, // #380 — granted the way `/work N --merge` would
-    issueBodyFetcherFn: async () => ({
-      stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody`,
-    }),
-    ...(opts?.dispatchFn ? { dispatchFn: opts.dispatchFn } : {}),
-  } as DriverContext;
-}
-
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
-process.env.PI_ENSEMBLE_MERGE_AUTHORITY = "0";
+// #1533 — the merged step verifies the PR head before it merges, and that
+// verification sits behind the same gate as the evidence read. Switching the
+// gate off (as this file used to) also skipped the head check, so the pin tests
+// below would have passed with the check deleted. The gate stays on and each
+// merge fixture answers its `gh pr view` evidence probe green instead.
+// process.env.PI_ENSEMBLE_MERGE_AUTHORITY = "0";
 setupSpawnGuard();
 
 // ---- deriveMergeMethod tests ----
@@ -148,7 +110,7 @@ setupSpawnGuard();
 {
   const { fn } = mkExec({ "gh pr view": { stdout: "MERGED\n" } });
   assert(
-    (await executeAndVerifyMerge(123, "squash", fn, "/fake")).merged === true,
+    (await executeAndVerifyMerge(123, "squash", fn, "/fake", undefined, HEAD_OID)).merged === true,
     "executeAndVerifyMerge: already merged → short-circuit",
   );
 }
@@ -158,7 +120,7 @@ setupSpawnGuard();
     "gh pr merge": { stdout: "Merged" },
   });
   assert(
-    (await executeAndVerifyMerge(123, "squash", fn, "/fake")).merged === true,
+    (await executeAndVerifyMerge(123, "squash", fn, "/fake", undefined, HEAD_OID)).merged === true,
     "executeAndVerifyMerge: merge + verify succeeds",
   );
 }
@@ -172,21 +134,83 @@ setupSpawnGuard();
     "gh pr view": { error: true, stderr: "not found" },
     "gh pr merge": { stdout: "Merged" },
   });
-  const r = await executeAndVerifyMerge(123, "squash", fn, "/fake");
+  const r = await executeAndVerifyMerge(123, "squash", fn, "/fake", undefined, HEAD_OID);
   assert(
     "ok" in r && r.ok === false && /permanent gh error/.test(r.reason),
     "executeAndVerifyMerge: permanent post-verify failure → ok:false (NOT merged-with-warning)",
   );
 }
 
+{
+  // #1533 — the adapter seam is the other half of the pin: the direct path is
+  // pinned above, and production walks the adapter path. `executeAndVerifyMerge`
+  // forwards the verified OID to `forge.prMerge`, which is where the command
+  // bytes are built (test-forge-github.ts pins those); this asserts the OID
+  // reaches that seam rather than being dropped on the way.
+  const { fn } = mkExec({
+    "gh pr view": { stdout: "OPEN\n" },
+    "gh repo view": {
+      stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+    },
+  });
+  const forwarded: Array<string | undefined> = [];
+  const fakeForge = {
+    // #1533 — two reads, and the second is the post-merge verification. An
+    // object-shaped `prView` is what the production path consumes; a fixture
+    // that answered OPEN twice would be asserting a merge the step then
+    // refused to trust.
+    prView: async () => (forwarded.length === 0 ? { state: "OPEN" } : { state: "MERGED" }),
+    // Argument order is the seam's own (number, headOid, method, subject):
+    // #1533 moved the pin ahead of the optional arguments so it cannot be
+    // omitted, and the assertion is that the OID ARRIVES there.
+    prMerge: async (_n: number, oid?: string, _m?: string, _s?: string) => {
+      forwarded.push(oid);
+      return "Merged";
+    },
+  };
+  const r = await executeAndVerifyMerge(
+    123,
+    "squash",
+    fn,
+    "/fake",
+    undefined,
+    HEAD_OID,
+    async () => fakeForge as never,
+  );
+  assert(
+    "merged" in r && r.merged === true,
+    `#1533: adapter path merges (${JSON.stringify(r)})`,
+  );
+  assert(
+    forwarded.length === 1 && forwarded[0] === HEAD_OID,
+    `#1533: the verified head reaches forge.prMerge as the pin (${JSON.stringify(forwarded)})`,
+  );
+  // And the command those bytes produce is the accepted pinned form — built by
+  // the same builder the adapter uses, not restated here as free-standing text.
+  assert(
+    prMergeCmdCapture("github", 123, HEAD_OID, "squash").includes(
+      `--match-head-commit ${HEAD_OID}`,
+    ),
+    "#1533: the builder's adapter command carries the pin",
+  );
+}
+
 // ---- inlineMergePrompt tests ----
 
 {
-  const p = inlineMergePrompt([100], 999, "squash", "/tmp/scratch");
+  const p = inlineMergePrompt([100], 999, "squash", "/tmp/scratch", HEAD_OID);
   assert(p.includes("--squash --delete-branch"), "inlineMergePrompt: includes merge method");
   assert(!/adjust the flags/i.test(p), "inlineMergePrompt: escape clause removed");
   assert(!/AGENTS\.md|CONTRIBUTING\.md/i.test(p), "inlineMergePrompt: no doc refs");
-  assert(p.includes("Do NOT change it"), "inlineMergePrompt: tells agent not to override");
+  assert(
+    p.includes(`--match-head-commit ${HEAD_OID}`),
+    "inlineMergePrompt: the fallback carries the same head pin the mechanized path does",
+  );
+  assert(
+    p.includes("Do NOT change either") &&
+      p.includes("DO NOT re-run the merge without the pin"),
+    "inlineMergePrompt: tells the agent not to drop or change the pin",
+  );
 }
 
 // ---- restoreCheckout tests ----
@@ -261,12 +285,26 @@ setupSpawnGuard();
       // The mainline probe (#1093: a validated ref) must get the branch name;
       // the broader "gh repo view" key below answers the repo-settings query.
       "gh repo view --json defaultBranchRef": { stdout: "main\n" },
+      // #1533 — the merge-evidence probe is a `gh pr view` too, and it PARSES
+      // its answer: the generic "gh pr view" key below (a plain `MERGED` token,
+      // for the pre/post-merge state reads) would otherwise make the gate fail
+      // closed with "could not read PR state" before the merge was attempted.
+      // Listing it first also means the state reads never see the JSON.
+      "mergeStateStatus,mergeable,state": {
+        stdout: `{"mergeStateStatus":"CLEAN","state":"OPEN","headRefOid":"${HEAD_OID}"}`,
+      },
+      "gh pr checks": { stdout: '[{"name":"ci","bucket":"pass"}]' },
       "gh repo view": {
         stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       },
       // executeAndVerifyMerge checks `stdout.trim() === "MERGED"` on the
       // plain-text `--jq '.state'` output — answer with the plain token.
       "gh pr view": { stdout: "MERGED\n" },
+      // The identity comparison needs a git common dir to read the review ledger
+      // from; this fixture's directory is not a clone, so the read fails and the
+      // check degrades to the pin plus an honest note (which is what the merged
+      // step does for a state file with no clone behind it).
+      "git rev-parse --git-common-dir": { error: true, stderr: "not a git repository" },
       "git fetch": { stdout: "" },
       "git rev-parse": { stdout: "feature/issue-476\n" },
       "git check-ref-format": { stdout: "" },
@@ -348,6 +386,7 @@ setupSpawnGuard();
   const r = await mechanizedMerge(
     { repoRoot: "/fake", issue: 100, host: mkPi() } as DriverContext,
     { pipelineState: { prNumber: 999 } } as unknown as WorkState,
+    HEAD_OID,
   );
   assert(
     r.ok === false && !/disabled|MECHANIZE_OPS/.test(r.reason),
@@ -379,7 +418,7 @@ setupSpawnGuard();
     };
     const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
       pipelineState: { prNumber: 999 },
-    } as unknown as WorkState);
+    } as unknown as WorkState, HEAD_OID);
     assert(
       r.ok === true && r.method === "squash",
       "mechanizedMerge: happy path squash from repo settings",
@@ -413,7 +452,7 @@ setupSpawnGuard();
     };
     const r = await mechanizedMerge({ repoRoot: dir, issue: 100, host: mkPi(), verifyExecFn: exec }, {
       pipelineState: { prNumber: 999 },
-    } as unknown as WorkState);
+    } as unknown as WorkState, HEAD_OID);
     assert(
       r.ok === true && r.method === "rebase",
       "mechanizedMerge: rebase derived from repo settings",
@@ -421,6 +460,12 @@ setupSpawnGuard();
     assert(
       mergeCmd.includes("--rebase"),
       "mechanizedMerge: derived method reaches gh pr merge --rebase",
+    );
+    // #1533 — the DIRECT-exec fallback builds its own command line, so it is
+    // the path that would silently merge unpinned. The pin must be on it.
+    assert(
+      mergeCmd.includes(`--match-head-commit ${HEAD_OID}`),
+      `#1533: the direct-path merge command carries the pin (--match-head-commit <verified head>): ${mergeCmd}`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -434,7 +479,7 @@ setupSpawnGuard();
   });
   const r = await mechanizedMerge(mkCtx(100, fn), {
     pipelineState: { prNumber: 999 },
-  } as unknown as WorkState);
+  } as unknown as WorkState, HEAD_OID);
   assert(
     r.ok === false && r.reason.includes("no merge method permitted"),
     "mechanizedMerge: all methods false → fallback",

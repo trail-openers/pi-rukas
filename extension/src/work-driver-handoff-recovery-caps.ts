@@ -8,6 +8,7 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
+import { handoffMergePinFlag } from "./work-driver-handoff-merge-step.ts";
 import { commitPrConsolidationSteps } from "./work-driver-handoff-recovery-commit-pr.ts";
 // #819 — the plan-step recipe lives with its own cap, for this file's budget.
 import { planSpecMismatchSteps } from "./work-driver-handoff-recovery-plan.ts";
@@ -19,7 +20,7 @@ import {
   type RecoveryStep,
   forgeRecoveryLines,
 } from "./work-driver-handoff-recovery.ts";
-import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
+import { mergeHeadHoldNote, mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
 import {
   type CapHitEvent,
   INTEGRATE_CREATE_FAILED_PREFIX,
@@ -139,6 +140,25 @@ export function recoveryStepsForCap(
         // #760); this block keeps its numbered-step framing.
         comment: [`3. ${mergeHoldGrantAction(pr ? `#${pr}` : "the PR")}:`],
         lines: [`/work ${issue} --merge`],
+      });
+    } else if (ps.mergeHold?.headCheckReason) {
+      // #1533 — the head check held this cycle, so a re-run with `--merge`
+      // changes nothing: the gate that refused is the one that compares the
+      // reviewed commit to the branch, and only a human can decide what to do
+      // about a push that landed after the review. The command therefore pins
+      // the head rather than re-running the gate that already said no.
+      const pin = handoffMergePinFlag(forge, ps.mergeHold.headAtMerge ?? ps.mergeHold.reviewedHead);
+      steps.push({
+        section: "awaiting-human-merge",
+        comment: [
+          `3. The head check refused it — ${mergeHeadHoldNote(ps.mergeHold)}`,
+          "   Merge it yourself ONLY if you have looked at what landed after the review, pinned to the reviewed commit:",
+        ],
+        lines: forgeLines(
+          forge,
+          [`gh pr merge ${pr ?? "<pr>"} --squash${pin}`],
+          [`glab mr merge ${pr ?? "<n>"} --squash${pin}`],
+        ),
       });
     }
   } else if (cap === "existing-pr-detected") {
