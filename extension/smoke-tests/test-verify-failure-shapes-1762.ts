@@ -36,7 +36,14 @@ import {
 } from "../src/work-driver-verify-failures.ts";
 import { depsHintStartFor } from "../src/work-driver-verify-inner-line.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
-import { CHECKS_BLOCK, CMD, WT, makeAssert } from "./lib/verify-failure-shapes-fixtures.ts";
+import {
+  CHECKS_BLOCK,
+  CMD,
+  FAIL_HEADER,
+  FAIL_HEADER_PASSING,
+  WT,
+  makeAssert,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
 
@@ -49,6 +56,7 @@ const SHAPES: Array<[string, string, boolean]> = [
   ["error[E0308]: mismatched types", "diagnostic", true],
   ["scripts/pack_release_test.sh: failed checks (1)", "script-tally", true],
   ["scripts/test.sh: 3 failed", "named-file", true],
+  [FAIL_HEADER, "fail-header", true],
   ["not ok 3 - the console's tests", "tap-not-ok", true],
   ["FAILED tests/test_auth.py::test_login", "pytest-failed", true],
   ["ERROR tests/test_auth.py::test_login", "pytest-error", true],
@@ -76,6 +84,20 @@ const SUCCESS = [
   "OK",
   "  ",
 ];
+
+/**
+ * #1841 — the prose negatives, hoisted so the combined-negatives assertion above
+ * reads the SAME list the prose section below asserts one by one. Two copies would
+ * be two lists that drift, and the combined stream is the assertion that matters.
+ */
+const PROSE_NEGATIVES = [
+  "index.ts: fatal error",
+  "index.ts: cannot parse",
+  "src/a.ts: consider this error case",
+  "index.ts: this error is expected in prose",
+  "index.ts: not found in the fixture, which is fine",
+  "a.ts: the parser cannot handle this and that is intentional",
+];
 for (const line of SUCCESS) {
   assert(
     classifyFailureLine(line) === undefined,
@@ -84,20 +106,63 @@ for (const line of SUCCESS) {
 }
 assert(failureLines(SUCCESS.join("\n")).length === 0, "negative: a passing stream yields nothing");
 
+// ── 2a. #1841 — the FAIL header, and the passing tally that vetoes it ───────
+// The PM decision of #1841: the arm classifies whenever `isSuccessLine` does not
+// fire, so a header whose description quotes a zero-count or passing tally is NOT
+// a failure line and earns no corrective round. Both halves are pinned here.
+const FAIL_HEADER_TALLIES = ["0 failed", "0 failures", "3 passed"];
+for (const tally of FAIL_HEADER_TALLIES) {
+  const counted = `FAIL  the shell line budget (${tally})`;
+  assert(
+    classifyFailureLine(counted) === undefined,
+    `fail-header negative: ${JSON.stringify(counted)} reports a passing tally, not a failure`,
+  );
+}
+// #1841 round 2 — a header needs a DESCRIPTION, not a count or a glyph. The arm
+// `/^\s*FAIL\s+\S/` admitted `FAIL 0`, `FAIL 1`, `FAIL ✓ ok` and
+// `FAIL ✓ 12 tests passed`: a status token followed by a digit or a pass/fail glyph
+// names no check, and `FAIL ✓ ok` even harvested the harness's own passing tally as
+// the header's "details". `isSuccessLine` catches a quoted zero-count tally but not
+// a bare `0` or `✓`, so the arm itself refuses both — through the ONE predicate the
+// harvest asks too (`isFailHeaderLine`, no second literal anywhere).
+for (const notHeader of ["FAIL 0", "FAIL 1", "FAIL ✓ ok", "FAIL \u2718 12 tests passed"]) {
+  assert(
+    classifyFailureLine(notHeader) === undefined,
+    `fail-header arm: ${JSON.stringify(notHeader)} is a count or a glyph, not a description`,
+  );
+}
+// The positives beside them: a real description classifies, an extension-bearing
+// target keeps its own (earlier) `named-file` arm, and indentation is allowed.
+assert(
+  classifyFailureLine("FAIL  ./a.test.js")?.shape === "named-file",
+  `fail-header arm: FAIL ./a.test.js stays named-file (got ${JSON.stringify(classifyFailureLine("FAIL  ./a.test.js"))})`,
+);
+assert(
+  classifyFailureLine("  FAIL  the budget check")?.shape === "fail-header",
+  `fail-header arm: an indented FAIL header still classifies (got ${JSON.stringify(classifyFailureLine("  FAIL  the budget check"))})`,
+);
+assert(
+  classifyFailureLine("fail  the budget check") === undefined,
+  "fail-header arm: lowercase fail is prose, not the status token",
+);
+// The passing lines beside the header in the same stream stay non-failures.
+assert(
+  failureLines(FAIL_HEADER_PASSING.join("\n")).length === 0,
+  "fail-header negative: the ok/skip lines beside the header yield no failure line",
+);
+// A stream of the SUCCESS and PROSE negatives together still yields nothing.
+assert(
+  failureLines([...SUCCESS, ...PROSE_NEGATIVES].join("\n")).length === 0,
+  "negatives: a stream of the SUCCESS and PROSE lines yields zero failure lines",
+);
+
 // ── 2b. prose that merely contains a failure VERB is not a named-file line ───
 // The rule these killed: the table matched `error`, `cannot` and
 // `not found` ANYWHERE after an extension-bearing token, with no separator, so
 // ordinary prose classified, became the anchor with `attributed: true`, and
 // could earn the cycle a corrective round over a sentence that names no check.
 {
-  const PROSE = [
-    "index.ts: fatal error",
-    "index.ts: cannot parse",
-    "src/a.ts: consider this error case",
-    "index.ts: this error is expected in prose",
-    "index.ts: not found in the fixture, which is fine",
-    "a.ts: the parser cannot handle this and that is intentional",
-  ];
+  const PROSE = PROSE_NEGATIVES;
   for (const line of PROSE) {
     assert(
       classifyFailureLine(line) === undefined,

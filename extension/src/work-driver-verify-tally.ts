@@ -104,9 +104,12 @@ const TALLY_LINE_MAX = 200;
  * checks (2), not run (0)` is prose whose runs are at most 6, and a rule that
  * flattened the line before asking would refuse every tally in the stream, the
  * guard silently disabling the feature it guards. Both shapes are pinned by the
- * `-i-` suite. This sits BELOW the reach of the separator-aware secret patterns,
- * which need a prefix or a keyword to anchor on — that is why it is here.
+ * `-i-` suite, and the punctuation arm — which refuses a long run that merely CARRIES
+ * a `/`, paths included — by the `-j-` suite. This sits BELOW the reach of the
+ * separator-aware secret patterns, which need a prefix or a keyword to anchor on —
+ * that is why it is here.
  */
+/** The minimum that separates a digest or key body from a long slug. */
 const TALLY_OPAQUE_RUN_MIN = 24;
 const HEX_RUN_RE = /^[0-9a-fA-F]+$/;
 const DIGIT_RE = /[0-9]/;
@@ -114,21 +117,41 @@ const DIGIT_RE = /[0-9]/;
 // name's long run is one alphabet (`a{40}`, `check_` + 30 letters, `y{120}_0`), so
 // the mixed requirement is what separates a key from a slug.
 const KEY_BODY_RE = /^(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[A-Za-z0-9+/]+$/;
+// Any `+` or `/` inside a long run is a base64 DIGIT, not a path separator: origin/
+// main's arm, and the whole of it. There is NO path exemption. An earlier revision
+// exempted a run whose `/`-separated pieces all looked like path segments, and the
+// lens showed a key body split into two short-enough pieces walks through it — the
+// shape a gate's path and a key's body share once both are judged by piece length.
+// What the veto costs is the over-refusal it replaces: a long absolute path in a
+// verify detail line is now withheld (the `[remaining detail lines withheld]` note
+// discloses that something was cut), which is the safe side of the trade — a path
+// the developer cannot read is a lost hint, a key the developer can read is a leak.
+const BASE64_PUNCT_RE = /[+/]/;
 
-/** True when any separator-free run inside `name` reads as a digest or a key body. */
-function hasOpaqueRun(name: string): boolean {
-  for (const run of name.split(/[^A-Za-z0-9+/]+/)) {
-    if (run.length < TALLY_OPAQUE_RUN_MIN) continue;
-    // A hex run needs a digit to be a digest — `f`.repeat(40) is a slug, and the
-    // hex alphabet is a subset of the name alphabet, so the bare shape test would
-    // refuse every `deadbeef`-style fixture name a gate might really print.
-    if (HEX_RUN_RE.test(run) && DIGIT_RE.test(run)) return true;
-    if (KEY_BODY_RE.test(run)) return true;
-    // A `+` or `/` inside a long run is not a path separator a test name carries —
-    // it is a base64 digit.
-    if (run.includes("+") || run.includes("/")) return true;
-  }
-  return false;
+/**
+ * True when a SINGLE separator-free `run` reads as a digest or a key body: long
+ * AND either all-hex with a digit, or letters-mixed-with-digits, or carrying any
+ * base64 punctuation that prose does not print.
+ *
+ * Two of the three arms are DIGIT-BEARING shapes: a digest has hex digits and a key
+ * body is letters mixed with digits. The third is the punctuation arm: a long run
+ * containing ANY `+` or `/` is written in the alphabet a key is written in, and no
+ * shape a gate prints needs the exemption that arm's refusal costs — see the note
+ * above. One rule, in this function, that both callers share.
+ *
+ * `min` is a parameter because the caller splits the line, and the right minimum
+ * differs by what the line IS: a tally name is a path, an evidence line is prose.
+ * Both callers pass their own bound and judge one run at a time, so there is one
+ * conjunction in the codebase rather than two that drift.
+ */
+export function hasOpaqueRun(run: string, min: number = TALLY_OPAQUE_RUN_MIN): boolean {
+  if (run.length < min) return false;
+  // A hex run needs a digit to be a digest — `f`.repeat(40) is a slug, and the
+  // hex alphabet is a subset of the name alphabet, so the bare shape test would
+  // refuse every `deadbeef`-style fixture name a gate might really print.
+  if (HEX_RUN_RE.test(run) && DIGIT_RE.test(run)) return true;
+  if (KEY_BODY_RE.test(run)) return true;
+  return BASE64_PUNCT_RE.test(run);
 }
 
 /**
@@ -144,9 +167,24 @@ function hasOpaqueRun(name: string): boolean {
  * shape needs — printed in full while the tally silently refused the very same
  * token. A veto that is one arm at one sink and three at another is the bug, not
  * the arms.
+ *
+ * The line is split HERE, at the one place that knows what the string is, and every
+ * run is judged by the ONE rule in {@link hasOpaqueRun} — this veto does not get its
+ * own opinion about `/`, and neither does the credential screen. A long run that
+ * carries one is refused whatever it looks like: a path among the refusals is the
+ * accepted cost, decided in the note beside {@link BASE64_PUNCT_RE}.
  */
 export function nameLooksSecret(name: string): boolean {
-  return looksLikeCredential(name) || hasOpaqueRun(name) || redactSecrets(name).text !== name;
+  return (
+    looksLikeCredential(name) ||
+    splitRuns(name).some((run) => hasOpaqueRun(run)) ||
+    redactSecrets(name).text !== name
+  );
+}
+
+/** A line split into candidate base64 runs; the separators themselves are prose. */
+function splitRuns(line: string): string[] {
+  return line.split(/[^A-Za-z0-9+/]+/);
 }
 
 /** The most the ` (+K more)` disclosure may print; beyond it the digit is a claim. */

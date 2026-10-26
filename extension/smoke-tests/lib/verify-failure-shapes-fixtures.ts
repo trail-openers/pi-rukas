@@ -47,6 +47,34 @@ export const TALLY_NAMES = ["lint", "test/b_test.sh"] as const;
 export const TALLY_LINE = "test.sh: failed checks (2), not run (0)";
 
 /**
+ * #1841 — a runner's FAIL HEADER: the status token, then a description naming the
+ * check, with no file name and no extension, above indented detail lines that say
+ * what to change. The shape the failure-line table did not recognise, so a develop
+ * round whose only failure signal was this stream named no failing line and parked
+ * without its corrective round.
+ */
+export const FAIL_HEADER = "FAIL  the shell line budget (scripts/budget.max)";
+
+/** The lines the header prints indented beneath it — the actionable part. */
+export const FAIL_HEADER_DETAILS = [
+  "      check-lines: 24639 lines, over the ceiling of 24576.",
+  "      Take out 63 lines.",
+] as const;
+
+/** The passing lines the same stream prints after the block. */
+export const FAIL_HEADER_PASSING = [
+  "ok    shellcheck and the shell tests of the change",
+  "skip  the workspace's tests",
+] as const;
+
+/** The whole #1841 stream: header, its indented details, then ok/skip lines. */
+export const FAIL_HEADER_STREAM = [
+  FAIL_HEADER,
+  ...FAIL_HEADER_DETAILS,
+  ...FAIL_HEADER_PASSING,
+].join("\n");
+
+/**
  * The whole example stream: the tally, its two indented names, then the payload
  * marker. Synthetic output of a project gate, not this repo's own loop dialect.
  */

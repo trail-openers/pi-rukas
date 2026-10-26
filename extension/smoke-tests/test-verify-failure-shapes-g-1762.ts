@@ -493,5 +493,4 @@ function consolidatedGate(raw: string): CorrectiveGateView {
   );
 }
 
-
 process.exit(failed() ? 1 : 0);

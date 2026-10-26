@@ -163,7 +163,12 @@ async function runCorrectiveRound(
     workstreamId: t.id,
     attempt: 1,
     command,
-    evidenceLines: t.lines.map(oneLine),
+    // #1841 round 2 (b) — the STORED record carries the ASSERTIONS only, never a
+    // `FAIL`-header detail: this list is what the fix-pass fence reads through
+    // `correctiveRoundFor(...).evidence` to admit a file the round "named", and a
+    // gate's prose under a header is not proof the round authored a file. The
+    // developer's prompt still gets the details (`correctiveDevelopPrompt` below).
+    evidenceLines: t.evidence.map(oneLine),
     ...(heads[i] !== undefined ? { headAtRound: heads[i] } : {}),
   }));
   const withRounds = appendEvent(

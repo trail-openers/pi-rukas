@@ -39,6 +39,16 @@ import { recordDevelopVerdict } from "../src/work-driver-develop-verdict.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { type WorkState, initialState, readState } from "../src/workflow-state.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { FAIL_HEADER } from "./lib/verify-failure-shapes-fixtures.ts";
+
+/**
+ * The two indented lines the #1841 header prints beneath itself, spelled here rather
+ * than imported from the shared fixtures: this fixture's stand-in gate must print
+ * exactly these, so pinning them next to the script keeps the echo and the assertion
+ * from drifting apart.
+ */
+const FAIL_HEADER_DETAIL_1 = "check-lines: 24639 lines, over the ceiling of 24576.";
+const FAIL_HEADER_DETAIL_2 = "Take out 63 lines.";
 
 const execFileP = promisify(execFile);
 
@@ -65,16 +75,24 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
  * read-only by the failing run: the next state write then fails, as a crash
  * between the decision and the write-ahead would.
  */
-function checkScript(runsLog: string, plain: boolean, lockDir?: string): string {
-  const body = plain
-    ? 'echo "FAILED: b.ts"; echo "something went wrong"'
-    : 'echo "FAILED: b.ts"; echo "\u2717 b.ts: expected fixed.txt to exist"';
+function checkScript(runsLog: string, plain: boolean, lockDir?: string, failHeader?: boolean): string {
+  const body = failHeader
+    ? `echo "FAILED: b.ts"; echo "${FAIL_HEADER}"; echo "      ${FAIL_HEADER_DETAIL_1}"; echo "      ${FAIL_HEADER_DETAIL_2}"`
+    : plain
+      ? 'echo "FAILED: b.ts"; echo "something went wrong"'
+      : 'echo "FAILED: b.ts"; echo "\u2717 b.ts: expected fixed.txt to exist"';
   const lock = lockDir === undefined ? "" : `chmod 555 ${lockDir}\n`;
   return `#!/bin/sh\necho run >> ${runsLog}\n[ -f work.txt ] || exit 0\n[ -f fixed.txt ] && exit 0\n${lock}${body}\nexit 1\n`;
 }
 
 interface RunOpts {
   plain?: boolean;
+  /**
+   * #1841 — the failing verify prints a `FAIL  <description>` header with two
+   * indented detail lines instead of the `✗` assertion, so the round is earned by
+   * the header alone and the details are the prompt-only channel.
+   */
+  failHeader?: boolean;
   /** The first developer also writes the fix, so the first verify passes. */
   firstFixes?: boolean;
   /** Lock the state directory on the failing verify (the crash simulation). */
@@ -88,7 +106,10 @@ async function fixture(name: string, opts: RunOpts): Promise<{ repo: string; bas
   mkdirSync(path.join(repo, ".pi"), { recursive: true });
   const runsLog = path.join(root, `${name}-runs.log`);
   const lockDir = opts.lockStateOnFail === true ? path.join(repo, ".pi", "work-state") : undefined;
-  writeFileSync(path.join(repo, "check.sh"), checkScript(runsLog, opts.plain === true, lockDir));
+  writeFileSync(
+    path.join(repo, "check.sh"),
+    checkScript(runsLog, opts.plain === true, lockDir, opts.failHeader),
+  );
   writeFileSync(path.join(repo, ".pi", "verify-cmd"), "sh check.sh\n");
   await git(repo, ["init", "-q", "--initial-branch=main"]);
   await git(repo, ["config", "user.email", "t@example.com"]);
@@ -398,6 +419,38 @@ if (process.getuid?.() !== 0) {
   assert(
     lastCap(after) === "verify-failed:develop",
     `after round: a fence failure parks at verify-failed:develop (got ${lastCap(after)})`,
+  );
+}
+
+// ── 10. #1841 — the STORED corrective record is assertions only, never a detail ─
+//
+// The pure decision pins the two channels in test-work-driver-corrective-decide.ts;
+// this drives the REAL record path (`runDevelopTopological` → `decideCorrectiveRound`
+// → the `corrective-round` event) so the field the fix-pass fence reads is the one
+// under test, not a copy of it. A `FAIL  <description>` header earns the round on its
+// own, the developer's prompt is given the indented details, and the event's
+// `evidenceLines` carry the header and NO detail line.
+{
+  const { after, calls } = await run("fail-header", "fix", { failHeader: true });
+  const r = rounds(after);
+  assert(r.length === 1, `fail-header record: exactly one corrective-round record (got ${r.length})`);
+  const stored = r[0]?.kind === "corrective-round" ? r[0].evidenceLines : [];
+  const prompt = correctiveCalls(calls)[0]?.prompt ?? "";
+  assert(
+    stored.includes(FAIL_HEADER),
+    `fail-header record: the stored evidence carries the header that names the check (got ${JSON.stringify(stored)})`,
+  );
+  assert(
+    !stored.some((l) => l.includes(FAIL_HEADER_DETAIL_1) || l.includes(FAIL_HEADER_DETAIL_2)),
+    `fail-header record: no detail line is stored as evidence (got ${JSON.stringify(stored)})`,
+  );
+  assert(
+    prompt.includes(FAIL_HEADER_DETAIL_1) && prompt.includes(FAIL_HEADER_DETAIL_2),
+    "fail-header record: the developer's prompt is given the details the record withholds",
+  );
+  assert(
+    lastCap(after) === undefined,
+    `fail-header record: the round ran and its fix passed (cap ${String(lastCap(after))})`,
   );
 }
 

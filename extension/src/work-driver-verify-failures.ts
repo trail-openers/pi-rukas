@@ -53,6 +53,7 @@ export type FailureShape =
   | "diagnostic"
   | "script-tally"
   | "named-file"
+  | "fail-header"
   | "tap-not-ok"
   | "pytest-failed"
   | "pytest-error"
@@ -86,6 +87,7 @@ export const SHAPE_NAMES_A_CHECK: Record<FailureShape, boolean> = {
   diagnostic: true,
   "script-tally": true,
   "named-file": true,
+  "fail-header": true,
   "tap-not-ok": true,
   "pytest-failed": true,
   "pytest-error": true,
