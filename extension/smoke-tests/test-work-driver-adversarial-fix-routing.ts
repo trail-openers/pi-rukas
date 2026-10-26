@@ -20,6 +20,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { git, singleState, tmpDir, twoWorkstreamState } from "./lib/adversarial-fix-fixtures.ts";
+import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
@@ -92,7 +93,11 @@ function ctxFor(
 {
   const dir = tmpDir("route");
   try {
-    git(dir, "init -q -b main");
+    // #1634 — the adversarial diff read REFUSES a directory that is not its own
+    // worktree root, so the tree under review is a real repo (tmpDir's bare
+    // `.git` scaffold would make a plain `git init` refuse).
+    rmSync(path.join(dir, ".git"), { recursive: true, force: true });
+    initCleanRepo(dir);
     writeFileSync(path.join(dir, "a.txt"), "uncommitted work\n");
     const before = git(dir, "status --porcelain");
     const devSpawns: string[] = [];
@@ -149,6 +154,9 @@ function ctxFor(
 {
   const dir = tmpDir("infra");
   try {
+    // #1634 — see the note in block A: the gate's read must answer, not refuse.
+    rmSync(path.join(dir, ".git"), { recursive: true, force: true });
+    initCleanRepo(dir);
     const devSpawns: string[] = [];
     const seen: Array<number | undefined> = [];
     const ctx = ctxFor(
@@ -182,6 +190,11 @@ function ctxFor(
   const a = tmpDir("ws-a");
   const b = tmpDir("ws-b");
   try {
+    // #1634 — both workstreams' trees must be readable repositories.
+    for (const d of [a, b]) {
+      rmSync(path.join(d, ".git"), { recursive: true, force: true });
+      initCleanRepo(d);
+    }
     const devSpawns: string[] = [];
     const calls: Array<{ id: string; round?: number }> = [];
     const verdicts: Record<string, Status> = { a: "APPROVED", b: "ISSUES_FOUND" };
@@ -256,6 +269,11 @@ function ctxFor(
   const a2 = tmpDir("mix-a");
   const b2 = tmpDir("mix-b");
   try {
+    // #1634 — both workstreams' trees must be readable repositories.
+    for (const d of [a2, b2]) {
+      rmSync(path.join(d, ".git"), { recursive: true, force: true });
+      initCleanRepo(d);
+    }
     const ctx = ctxFor(
       a2,
       async (params) =>
@@ -328,6 +346,9 @@ function seededLog(): WorkState["eventLog"] {
 {
   const dir = tmpDir("cap-critical");
   try {
+    // #1634 — see the note in block A.
+    rmSync(path.join(dir, ".git"), { recursive: true, force: true });
+    initCleanRepo(dir);
     const seen: number[] = [];
     const ctx = ctxFor(
       dir,
@@ -350,6 +371,9 @@ function seededLog(): WorkState["eventLog"] {
 {
   const dir = tmpDir("cap-issues");
   try {
+    // #1634 — see the note in block A.
+    rmSync(path.join(dir, ".git"), { recursive: true, force: true });
+    initCleanRepo(dir);
     const ctx = ctxFor(
       dir,
       async (params) => review("ISSUES_FOUND", params.reportRound ?? 0, "minor-ish"),
