@@ -17,9 +17,14 @@
  *      file → `carry`. The cited line itself still exists, possibly moved.
  *   5. The cited line is past the end of the head file → `resolve("line-past-eof")`
  *      on a complete full review, else `carry`.
- *   6. A CRITICAL row is never resolved by a code change → `carry`.
- *   7. A row with no `lineHash` (written before the field existed) cannot prove
- *      its cited line changed → `carry`.
+ *   6. A CRITICAL row retires ONLY on a complete full review that no longer
+ *      reports it and whose head lacks BOTH its window hash and its cited-line
+ *      hash → `resolve("code-gone")`; on a delta or an incomplete round it
+ *      `carry`s (#1832). Before #1832 this arm was an unconditional `carry`, and
+ *      one since-fixed CRITICAL kept every later verdict blocking forever.
+ *   7. A row with no `lineHash` (written before the field existed, or a CRITICAL
+ *      whose cited line was never hashable) cannot prove its cited line changed
+ *      → `carry`. This carry still applies to a CRITICAL: no hash, no proof.
  *   8. On a DELTA round, the row's cited line falls outside the delta's changed
  *      line ranges → `carry`. The round saw neither the code nor a re-report of
  *      it, so it has no evidence either way (#1125 decision 5).
@@ -33,8 +38,8 @@
  * neighbouring line (a comment inserted in the ±2 window) therefore cannot clear
  * a finding by omission.
  *
- * Trust assumption: step 9 resolves a non-CRITICAL row whose cited line changed
- * with no re-report. That is safe only because the round covered that line and
+ * Trust assumption: step 9 resolves a row whose cited line changed with no
+ * re-report. That is safe only because the round covered that line and
  * re-reported a finding that is still real — a lens that still sees the problem
  * reports it again and the row is matched, not resolved. On a delta round the
  * coverage is the delta alone, which is why step 8 restricts the rule to the
@@ -228,7 +233,17 @@ function linesFate(
   if (index.windows.has(row.snippetHash)) return CARRY;
   if (row.lineHash !== undefined && index.lineHashes.has(row.lineHash)) return CARRY;
   if (row.line > lines.length) return full ? { kind: "resolve", reason: "line-past-eof" } : CARRY;
-  if (row.severity === "CRITICAL" || row.lineHash === undefined) return CARRY;
+  // #1832 — a CRITICAL retires on evidence, but on the strongest evidence the
+  // round can offer and nothing weaker: BOTH hashes absent (steps 3-4 already
+  // carried anything that survives anywhere in the head file), the row not
+  // re-reported (a re-report is matched in `applyFindingRound` and never comes
+  // here), and a COMPLETE full review. A delta or an incomplete round saw too
+  // little to retire a CRITICAL, and a CRITICAL with no `lineHash` has no proof
+  // its cited line changed at all, so both cases carry.
+  if (row.severity === "CRITICAL") {
+    return full && row.lineHash !== undefined ? { kind: "resolve", reason: "code-gone" } : CARRY;
+  }
+  if (row.lineHash === undefined) return CARRY;
   // Did this round review the stored line? A full review covers the whole
   // branch. A delta covers only its changed ranges, and the check is on the
   // STORED line: the caller's ranges are head-line numbers, and only the row's
