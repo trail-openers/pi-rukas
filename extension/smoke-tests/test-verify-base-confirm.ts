@@ -35,6 +35,7 @@ import {
   type BaseHealthConsulted,
   baseHealthConsultedNote,
 } from "../src/work-driver-verify-base-health-channels.ts";
+import { baseHealthWaitMs } from "../src/work-driver-verify-aggregate.ts";
 import type { BaselineVerdict } from "../src/work-driver-verify-baseline.ts";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -434,20 +435,14 @@ for (const [label, record, fromInFlight, want] of [
 {
   const leaked = "git worktree add failed: secret_key=ghp_AAAAAAAAAAAAAAAAAAAAAAAA rejected";
   assert(
-    publishableEvidenceText(leaked).includes("[redacted"),
-    "a credential-shaped string in git output is not published",
+    publishableEvidenceText(leaked).includes("[redacted") &&
+      !publishableEvidenceText(leaked).includes("ghp_AAAA"),
+    "a credential-shaped string in git output is REDACTED, not labelled around",
   );
   assert(
-    !publishableEvidenceText(leaked).includes("ghp_AAAA"),
-    "the veto REMOVES the secret rather than labelling around it",
-  );
-  assert(
-    publishableEvidenceText("the confirming run was green") === "the confirming run was green",
-    "ordinary prose passes through untouched — the veto is not a rewrite",
-  );
-  assert(
-    publishableEvidenceText("bun run check") === "bun run check",
-    "the project's own command line passes through — it is normally publishable",
+    publishableEvidenceText("the confirming run was green") === "the confirming run was green" &&
+      publishableEvidenceText("bun run check") === "bun run check",
+    "ordinary prose and the project's own command line pass through — the veto is not a rewrite",
   );
 }
 
@@ -475,6 +470,28 @@ for (const [label, record, fromInFlight, want] of [
   assert(
     plain.includes("one base run, not confirmed red") && !plain.includes("FLAKY"),
     `a red whose record states no second run is reported as unconfirmed, never as flaky (${JSON.stringify(plain)})`,
+  );
+}
+
+// ── the wait on the background probe covers the runs the probe is actually in ──
+//
+// #1826 makes a red base's SECOND run normal, so a probe that has been running
+// longer than one tier bound is in its confirming run. A gate that abandons it at one
+// bound throws away a probe one run from answering and then pays for the whole
+// comparison itself — the cost rule inverted by a timeout number.
+{
+  const BOUND = 60_000;
+  assert(
+    baseHealthWaitMs(BOUND, BOUND - 1) < 2 * BOUND,
+    "a probe younger than one bound is waited for at one bound (it cannot have a second run in flight)",
+  );
+  assert(
+    baseHealthWaitMs(BOUND, BOUND + 1) >= 2 * BOUND,
+    `a probe past its first bound is waited for at TWO bounds plus setup slack (got ${baseHealthWaitMs(BOUND, BOUND + 1)})`,
+  );
+  assert(
+    baseHealthWaitMs(BOUND, BOUND + 1) > baseHealthWaitMs(BOUND, 0),
+    "the wait grows with the probe's age — it never shrinks as the probe gets closer to answering",
   );
 }
 
