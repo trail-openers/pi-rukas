@@ -19,6 +19,10 @@
  * so the probe reads exactly this fixture's store. Fixtures are sequential and
  * each cleans up before the next — two live fixtures would share the process env
  * var and the first's writes would resolve against the second clone.
+ *
+ * The probe's own behaviour (read-only, three answers, the shared row predicate)
+ * is `test-review-findings-critical-probe.ts`; what lives here is the DECISION the
+ * probe feeds, including the `forcedFullDetail` that reaches the `Mode:` line.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -38,6 +42,7 @@ function assert(cond: boolean, msg: string) {
 
 const { resolveReviewDiff } = await import("../src/lens-review-diff.ts");
 const { forcedFullText } = await import("../src/lens-review-delta-disclose.ts");
+import type { ForcedFullReason } from "../src/lens-review-delta-disclose.ts";
 const { renderSummary } = await import("../src/lens-review-render.ts");
 
 const branch = "feature/work";
@@ -124,7 +129,7 @@ const opts = (dir: string) => ({ base: "main", head: "feature/work", branch, cwd
     );
     const d = await resolveReviewDiff(opts(r.dir));
     assert(
-      d.kind === "ok" && d.delta === undefined && d.forcedFull === "open-critical",
+      d.kind === "ok" && d.delta === undefined && d.forcedFull?.kind === "open-critical",
       "an open line-bearing CRITICAL → no delta; a full review marked forced: open-critical",
     );
     if (d.kind === "ok") {
@@ -139,7 +144,8 @@ const opts = (dir: string) => ({ base: "main", head: "feature/work", branch, cwd
   }
 }
 
-// (3) An unreadable findings store forces a full round too, with its own reason.
+// (3) An unreadable findings store forces a full round too, with its own reason
+// AND the cause the probe read, so the operator knows which repair to make.
 {
   const r = await mkRepo();
   writeLedger(r.ledgerFile, seededLedger(r.c1));
@@ -148,8 +154,16 @@ const opts = (dir: string) => ({ base: "main", head: "feature/work", branch, cwd
     writeFileSync(findingsFile(r.ledgerFile), "{ not json");
     const d = await resolveReviewDiff(opts(r.dir));
     assert(
-      d.kind === "ok" && d.delta === undefined && d.forcedFull === "findings-unreadable",
+      d.kind === "ok" && d.delta === undefined && d.forcedFull?.kind === "findings-unreadable",
       "an unparseable findings store → forced full (findings-unreadable), never read as absent",
+    );
+    assert(
+      d.kind === "ok" && (d.forcedFullDetail ?? "").includes("JSON"),
+      `the forced reason carries WHY the read failed (got ${JSON.stringify(d.kind === "ok" ? d.forcedFullDetail : undefined)})`,
+    );
+    assert(
+      d.kind === "ok" && forcedFullText(d.forcedFull as ForcedFullReason).includes("JSON"),
+      "and the Mode: wording includes that cause rather than a generic warning",
     );
   } finally {
     cleanup(r.dir, r.ledgerFile);
@@ -191,7 +205,8 @@ const opts = (dir: string) => ({ base: "main", head: "feature/work", branch, cwd
 }
 
 // (6) The Mode: line renders both reasons distinctly from an ordinary full
-// review and from a delta.
+// review and from a delta — reading the summary's OWN `forcedFull` field, not a
+// `deltaReview` carrying empty sentinels (#1832 round 1).
 {
   const base = {
     verdict: "APPROVED" as const,
@@ -201,32 +216,49 @@ const opts = (dir: string) => ({ base: "main", head: "feature/work", branch, cwd
     findings: [],
     usage: undefined,
   };
-  const line = (forcedFull?: "open-critical" | "findings-unreadable") =>
-    renderSummary(
-      {
-        ...base,
-        ...(forcedFull ? { deltaReview: { since: "", head: "", forcedFull } } : {}),
-      },
-      3,
-    )
+  const line = (forcedFull?: ForcedFullReason) =>
+    renderSummary({ ...base, ...(forcedFull ? { forcedFull } : {}) }, 3)
       .split("\n")
       .find((l) => l.startsWith("Mode:")) ?? "";
   assert(
-    line("open-critical") === `Mode: full review (${forcedFullText("open-critical")})`,
+    line({ kind: "open-critical" }) ===
+      `Mode: full review (${forcedFullText({ kind: "open-critical" })})`,
     "Mode: line names the pending-CRITICAL reason verbatim",
   );
   assert(
-    line("findings-unreadable") === `Mode: full review (${forcedFullText("findings-unreadable")})`,
+    line({ kind: "findings-unreadable" }) ===
+      `Mode: full review (${forcedFullText({ kind: "findings-unreadable" })})`,
     "Mode: line names the unreadable-store reason verbatim",
   );
+  assert(
+    line({ kind: "findings-unreadable", detail: "not valid JSON" }) ===
+      "Mode: full review (forced: the findings memory could not be read (not valid JSON))",
+    "Mode: line includes the read failure's cause when the probe had one",
+  );
   assert(line() === "Mode: full review (the whole branch diff)", "ordinary full review unchanged");
+  // A delta's Mode: line never mentions a forced full review, and a summary that
+  // carries BOTH (never produced today) renders the delta — the range is the
+  // load-bearing disclosure.
   const delta =
     renderSummary({ ...base, deltaReview: { since: "a".repeat(40), head: "b".repeat(40) } }, 3)
       .split("\n")
       .find((l) => l.startsWith("Mode:")) ?? "";
   assert(
-    delta.startsWith("Mode: delta review since"),
-    "a delta review still renders its own Mode: line",
+    delta.startsWith("Mode: delta review since") && !delta.includes("forced"),
+    "a delta review still renders its own Mode: line, with no forced-full text",
+  );
+  assert(
+    !renderSummary(
+      {
+        ...base,
+        deltaReview: { since: "a".repeat(40), head: "b".repeat(40) },
+        forcedFull: { kind: "open-critical" },
+      },
+      3,
+    )
+      .split("\n")
+      .some((l) => l.startsWith("Mode:") && l.includes("forced")),
+    "a delta outcome never renders the forced reason beside its own range",
   );
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 /**
- * #1832 — driver-level proof that a FIXED CRITICAL lens finding retires.
+ * #1832 — driver-level proof that a FIXED CRITICAL lens finding retires, on the
+ * base/head COMPUTED-RANGE shape.
  *
  * This is the acceptance criterion the resolver-seam test cannot reach: it runs
  * the /work lens step (`runLens`) with `lensReviewFn` UNSET, so the real
@@ -9,6 +10,15 @@
  * cited code. Before #1832 round 2 was an automatic delta (which can never
  * resolve a row), the CRITICAL row carried, and both verdicts were
  * CRITICAL_ISSUES_FOUND with no new CRITICAL — a /work cycle that always parks.
+ *
+ * WHICH ARGUMENTS THIS DRIVES (read this before adding a case): the wrapper
+ * injects `base`/`head` so the review resolves its diff from a computed range,
+ * which is the only shape that reaches the automatic-delta decision and therefore
+ * the #1832 forced-full veto. That is NOT what `runLens` sends in production: the
+ * driver hands the review a PASTED `diff` and no refs at all, and on those
+ * arguments every round is full by construction. The sibling
+ * `test-work-driver-critical-retire-pasted-diff.ts` pins the driver's own
+ * arguments verbatim and proves the retirement there, without the veto.
  *
  * What is asserted at the driver level:
  *   - round 1: CRITICAL_ISSUES_FOUND, `hasCritical: true` on its ledger row, and
@@ -155,7 +165,6 @@ async function main() {
       };
     };
 
-    const ghCalls: string[] = [];
     /** Each round's real summary, captured by the wrapper below. */
     const rounds: Array<Awaited<ReturnType<typeof runLensReview>>> = [];
     /** The ledger row each round recorded, read after that round completed. */
@@ -231,7 +240,6 @@ async function main() {
       },
       verifyExecFn: async (cmd: string, opts?: { argv?: string[] }) => {
         if (/^gh\b/.test(commandOf(cmd, opts))) {
-          ghCalls.push(cmd);
           return { stdout: "https://example.test/pull/1#issuecomment-1\n" };
         }
         return realExec(cmd, opts);
@@ -304,11 +312,11 @@ async function main() {
     // The key the delta decision uses is `budgetKey.key ?? branchResolved`, both
     // of which resolve to BRANCH here — the same key the probe reads.
     assert(
-      r2?.deltaReview?.forcedFull === "open-critical",
-      `round 2 ran as a FORCED FULL review, not a delta (got ${JSON.stringify(r2?.deltaReview)})`,
+      r2?.forcedFull?.kind === "open-critical" && r2.deltaReview === undefined,
+      `round 2 ran as a FORCED FULL review, not a delta (got forcedFull ${JSON.stringify(r2?.forcedFull)}, deltaReview ${JSON.stringify(r2?.deltaReview)})`,
     );
     assert(
-      rounds[0]?.deltaReview === undefined,
+      rounds[0]?.deltaReview === undefined && rounds[0]?.forcedFull === undefined,
       "round 1 was an ordinary full review (no delta to veto, no forced marker)",
     );
     const rows2 = await readBranchRows(repo, BRANCH);
@@ -336,11 +344,11 @@ async function main() {
     );
   } finally {
     process.env.PATH = origPath;
-    if (origLedger === undefined) process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = undefined;
+    if (origLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = origLedger;
-    if (origSkills === undefined) process.env.PI_ENSEMBLE_SKILLS_DIR = undefined;
+    if (origSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
     else process.env.PI_ENSEMBLE_SKILLS_DIR = origSkills;
-    if (origAgent === undefined) process.env.PI_AGENT_DIR = undefined;
+    if (origAgent === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = origAgent;
     rmSync(root, { recursive: true, force: true });
   }

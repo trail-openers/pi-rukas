@@ -14,7 +14,8 @@ import {
   type AutoDeltaInfo,
   type ForcedFullReason,
   deltaFallbackNote,
-  deltaReviewFieldOf,
+  deltaReviewOf,
+  forcedFullFieldOf,
 } from "./lens-review-delta-disclose.ts";
 import { blockedReviewSummary, blockedRowsForRoster } from "./lens-review-diff-blocked.ts";
 import {
@@ -198,7 +199,7 @@ export async function runLensReview(opts: {
   // (same rule as #384). Blocked rows use the EXPECTED roster above.
   let delta: AutoDeltaInfo | undefined;
   /** #1832 — set when the automatic delta stood down for a full review; the
-   * summary's `deltaReview.forcedFull` renders it in the `Mode:` line. */
+   * summary's own `forcedFull` field renders it in the `Mode:` line. */
   let forcedFull: ForcedFullReason | undefined;
   let diff = "";
   let context: string;
@@ -490,7 +491,8 @@ export async function runLensReview(opts: {
       // budget) is surfaced on the summary so the driver emits the fixed-literal
       // cap-hit (F4g) instead of a silent 1-of-6 loss.
       ...capKillSummary(lensResults),
-      ...deltaReviewFieldOf(delta, forcedFull),
+      ...(delta ? { deltaReview: deltaReviewOf(delta) } : {}),
+      ...forcedFullFieldOf(forcedFull),
     },
     hasCritical,
   );

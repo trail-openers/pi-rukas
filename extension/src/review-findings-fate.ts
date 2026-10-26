@@ -90,6 +90,38 @@ const NOT_REPORTED: RowFate = { kind: "resolve", reason: "not-reported" };
 /** The snippet hash of a finding with no resolvable line. */
 const NO_LINE_SNIPPET = snippetHashAt([], undefined);
 
+/**
+ * THE predicate for "an open, line-bearing CRITICAL that a complete full review
+ * could retire" (#1832) — one definition for the two questions that must agree.
+ *
+ * The fate rule below (step 6) resolves such a row only on a complete full
+ * review; the open-CRITICAL probe (review-findings-critical-probe.ts) asks
+ * whether a row this predicate accepts is still on the branch, and answers "no
+ * delta" when one is. When the two disagree the veto is either paid for nothing
+ * (the probe forces a full round the fate rule would never retire anything in)
+ * or lost (a row the rule resolves was never given the full round that resolving
+ * requires). So neither side states the shape; both call this.
+ *
+ * The three conjuncts, each load-bearing:
+ *   - `status === "open"` — an ACCEPTED row is suppressed by an operator decision
+ *     and a round is FORBIDDEN to report it, so a full review proves nothing
+ *     about it; a RESOLVED row is already retired.
+ *   - `severity === "CRITICAL"` — only CRITICAL rows carry the never-resolve
+ *     history this fix is about; a non-CRITICAL row retires on a delta.
+ *   - `line !== undefined && lineHash !== undefined` — the fate rule resolves a
+ *     CRITICAL only with its cited-line hash to compare (`rowFate` step 6/7),
+ *     and a line-less CRITICAL retires as `not-reported` (#1469) on any complete
+ *     full review, delta veto or not.
+ */
+export function isRetirableOpenCriticalRow(row: StoredFinding): boolean {
+  return (
+    row.status === "open" &&
+    row.severity === "CRITICAL" &&
+    row.line !== undefined &&
+    row.lineHash !== undefined
+  );
+}
+
 /** The head file's ±2-line window hashes and cited-line hashes, built once per lines array. */
 interface HeadIndex {
   windows: ReadonlySet<string>;
@@ -239,7 +271,12 @@ function linesFate(
   // re-reported (a re-report is matched in `applyFindingRound` and never comes
   // here), and a COMPLETE full review. A delta or an incomplete round saw too
   // little to retire a CRITICAL, and a CRITICAL with no `lineHash` has no proof
-  // its cited line changed at all, so both cases carry.
+  // its cited line changed at all, so both cases carry. `lineHash` is already
+  // known present here (an absent one returned at step 4's carry for a surviving
+  // line, and the next line carries the rest), so what remains is the
+  // full-review test; the row-shape half of that condition is the shared
+  // `isRetirableOpenCriticalRow` the probe calls, so the two agree by
+  // construction rather than by copy.
   if (row.severity === "CRITICAL") {
     return full && row.lineHash !== undefined ? { kind: "resolve", reason: "code-gone" } : CARRY;
   }

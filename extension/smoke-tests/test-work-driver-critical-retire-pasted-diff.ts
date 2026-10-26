@@ -27,8 +27,8 @@
  *     `hasCritical: false` on the ledger row, and the row resolved `code-gone`.
  *
  * The delta marker is asserted NEGATIVE: on a pasted diff there is no delta to
- * veto, so `deltaReview` stays absent (the marker belongs to the sibling's
- * computed-range shape).
+ * veto, so `deltaReview` stays absent and so does its own top-level companion
+ * `forcedFull` (the marker belongs to the sibling's computed-range shape).
  *
  * Isolation follows the sibling exactly: a real clone with an origin, a stub
  * `vipune` on PATH, a captured `gh`, a private `PI_ENSEMBLE_REVIEW_LEDGER_FILE`
@@ -168,7 +168,6 @@ async function main() {
       };
     };
 
-    const ghCalls: string[] = [];
     const rounds: Array<Awaited<ReturnType<typeof runLensReview>>> = [];
     const argsSeen: ReviewArgs[] = [];
     const ledgerRows: Array<{ round?: number; hasCritical?: boolean; detail?: string }> = [];
@@ -232,7 +231,6 @@ async function main() {
       },
       verifyExecFn: async (cmd: string, opts?: { argv?: string[] }) => {
         if (/^gh\b/.test(commandOf(cmd, opts))) {
-          ghCalls.push(cmd);
           return { stdout: "https://example.test/pull/1#issuecomment-1\n" };
         }
         return realExec(cmd, opts);
@@ -300,8 +298,8 @@ async function main() {
     // On a pasted diff the delta decision is never reached, so there is nothing
     // for the #1832 veto to mark: the marker belongs to the computed-range shape.
     assert(
-      r1?.deltaReview === undefined,
-      `round 1 is a plain full review — no delta, no forced marker (got ${JSON.stringify(r1?.deltaReview)})`,
+      r1?.deltaReview === undefined && r1?.forcedFull === undefined,
+      `round 1 is a plain full review — no delta, no forced marker (got ${JSON.stringify(r1?.deltaReview)}/${JSON.stringify(r1?.forcedFull)})`,
     );
     assert(
       ledgerRows[0]?.round === 1 && ledgerRows[0]?.hasCritical === true,
@@ -345,8 +343,8 @@ async function main() {
       "round 2 reports no CRITICAL finding at all",
     );
     assert(
-      r2?.deltaReview === undefined,
-      `round 2 stayed a full review on the driver's arguments — no delta (got ${JSON.stringify(r2?.deltaReview)})`,
+      r2?.deltaReview === undefined && r2?.forcedFull === undefined,
+      `round 2 stayed a full review on the driver's arguments — no delta, no forced marker (got ${JSON.stringify(r2?.deltaReview)}/${JSON.stringify(r2?.forcedFull)})`,
     );
     const rows2 = await readBranchRows(repo, BRANCH);
     const row2 = rows2.find((r) => r.severity === "CRITICAL");
@@ -372,11 +370,11 @@ async function main() {
     );
   } finally {
     process.env.PATH = origPath;
-    if (origLedger === undefined) process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = undefined;
+    if (origLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = origLedger;
-    if (origSkills === undefined) process.env.PI_ENSEMBLE_SKILLS_DIR = undefined;
+    if (origSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
     else process.env.PI_ENSEMBLE_SKILLS_DIR = origSkills;
-    if (origAgent === undefined) process.env.PI_AGENT_DIR = undefined;
+    if (origAgent === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = origAgent;
     rmSync(root, { recursive: true, force: true });
   }

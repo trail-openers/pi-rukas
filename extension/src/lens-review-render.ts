@@ -171,27 +171,22 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
 
   return [
     `Code review verdict (${s.lenses.length} lenses): ${s.verdict}`,
-    ...(s.deltaReview?.forcedFull && !s.deltaReview.since
-      ? // #1832 — a full review with no delta to name: the reason is the whole
-        // line, so the operator can tell a forced full round from an ordinary
-        // one and knows why the follow-up was not a cheap delta.
-        [`Mode: full review (${forcedFullText(s.deltaReview.forcedFull)})`]
-      : s.deltaReview
-        ? [
-            `Mode: delta review since ${s.deltaReview.since.slice(0, 8)}${s.deltaReview.auto ? " (automatic — the last recorded lens run)" : ""} — findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run, not the full branch diff.`,
-            ...(s.deltaReview.fallback
-              ? [
-                  `Delta fallback: ${deltaFallbackText({ since: s.deltaReview.since, fallback: s.deltaReview.fallback })}.`,
-                ]
-              : []),
-            // A delta and a forced-full veto are mutually exclusive, so this
-            // arm is defensive; a summary carrying both says so rather than
-            // silently dropping the reason.
-            ...(s.deltaReview.forcedFull
-              ? [`Mode: also forced full (${forcedFullText(s.deltaReview.forcedFull)})`]
-              : []),
-          ]
-        : ["Mode: full review (the whole branch diff)"]),
+    ...(s.deltaReview
+      ? [
+          `Mode: delta review since ${s.deltaReview.since.slice(0, 8)}${s.deltaReview.auto ? " (automatic — the last recorded lens run)" : ""} — findings below cover only \`git diff ${s.deltaReview.since}..${s.deltaReview.head}\` since the last recorded lens run, not the full branch diff.`,
+          ...(s.deltaReview.fallback
+            ? [
+                `Delta fallback: ${deltaFallbackText({ since: s.deltaReview.since, fallback: s.deltaReview.fallback })}.`,
+              ]
+            : []),
+        ]
+      : // #1832 — a full review, with the reason when the automatic delta stood
+        // down for one, so the operator can tell a forced full round from an
+        // ordinary one and knows why the follow-up was not a cheap delta. The
+        // reason is its own field, not a `deltaReview` with empty refs.
+        [
+          `Mode: full review (${s.forcedFull ? forcedFullText(s.forcedFull) : "the whole branch diff"})`,
+        ]),
     `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,
     ...blockedBanner,
     ...retryNote,

@@ -125,22 +125,18 @@ export async function runLensReviewVerb(
       bySeverity: summary.bySeverity,
       findings: summary.findings,
       ...(summary.note ? { note: summary.note } : {}),
-      // #1832 — mirror the forced-full marker so a headless caller sees a
-      // review that was full BECAUSE a CRITICAL row is pending, not one that
-      // was full by default.
-      ...(summary.deltaReview
+      // #1832 — mirror the summary's own forced-full field (NOT `deltaReview`:
+      // a forced round is a FULL review and has no delta) so a headless caller
+      // sees a review that was full BECAUSE a CRITICAL row is pending, or
+      // because the findings store could not be read — with the reason's own
+      // wording and detail, not just a boolean.
+      ...(summary.forcedFull
         ? {
-            deltaReview: {
-              ...summary.deltaReview,
-              ...(summary.deltaReview.forcedFull
-                ? {
-                    forcedFull: summary.deltaReview.forcedFull,
-                    forcedFullText: forcedFullText(summary.deltaReview.forcedFull),
-                  }
-                : {}),
-            },
+            forcedFull: summary.forcedFull,
+            forcedFullText: forcedFullText(summary.forcedFull),
           }
         : {}),
+      ...(summary.deltaReview ? { deltaReview: summary.deltaReview } : {}),
       ...(summary.usage ? { usage: summary.usage } : {}),
       ...(ledger ? { ledger } : {}),
     },

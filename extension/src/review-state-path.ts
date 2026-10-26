@@ -145,7 +145,14 @@ function realOrUndefined(p: string): string | undefined {
   }
 }
 
-/** `<agentDir>/review-state/<key>` — the clone's state root, token not yet known. */
+/** `<agentDir>/review-state/<key>` — the clone's state root, token not yet known.
+ *
+ * `commonDirReal` is already the realpath the caller resolved (the cache key in
+ * `findingsStateDir`, and the shared-dir answer in `guessCommonDir`): the hash is
+ * taken over THAT value, so the two paths that derive a root — the creating
+ * resolver and the read-only lookup — cannot key on different strings and answer
+ * about two different stores for one clone.
+ */
 function stateRootFor(commonDirReal: string): string {
   const key = createHash("sha256").update(commonDirReal).digest("hex").slice(0, REPO_KEY_HEX);
   return path.join(agentDir(), STATE_LEAF, key);
@@ -318,11 +325,24 @@ function besideLedger(ledger: string, why: string): FindingsLocation {
  * Never throws: every fault on the way to the relocated store falls back to the
  * ledger's own directory, warned, and returns a path. A store that cannot move
  * is still a store.
+ *
+ * `readOnly` (#1832 round 1) answers the SAME question — same override, same
+ * common dir, same key, same token, so the probe and the record path can never
+ * name two stores for one clone — without the writes: no `mkdir`, no `chmod`, no
+ * token minting, no migration, and nothing cached (a read-only resolve must not
+ * seed the cache with an answer that predates the first real resolve).
+ * `tokenFor`'s own `wx` mint is skipped for the same reason: the probe reads, and
+ * a token it invented would strand rows a later process cannot find. When no
+ * token has been minted yet, a read-only resolve answers undefined — there is no
+ * reachable directory to read, which the probe reports as "could not locate the
+ * store" rather than "the store is empty".
  */
 export async function findingsStateDir(
   execFn: LedgerExecFn,
   cwd: string,
+  opts: { readOnly?: boolean } = {},
 ): Promise<FindingsLocation | undefined> {
+  const readOnly = opts.readOnly === true;
   const ledger = await cloneLedgerPathFor(execFn, cwd);
   if (!ledger) return undefined;
 
@@ -344,8 +364,24 @@ export async function findingsStateDir(
   if (cached) return cached;
 
   try {
-    if (!existsSync(commonDir)) return besideLedger(ledger, "the git common dir is absent");
+    if (!existsSync(commonDir)) {
+      return readOnly
+        ? // No creating variant to fall back on: a read-only caller gets "could not
+          // locate" rather than a fallback path beside a ledger it did not create.
+          undefined
+        : besideLedger(ledger, "the git common dir is absent");
+    }
     const root = stateRootFor(key);
+    if (readOnly) {
+      const token = readToken(path.join(root, "token"));
+      if (!token) return undefined;
+      return {
+        dir: path.join(root, token),
+        file: path.join(root, token, FINDINGS_FILE),
+        ledger,
+        fellBack: false,
+      };
+    }
     makeStateDir(root);
     const token = tokenFor(root);
     // No usable token means no reachable directory: a token kept in this
@@ -363,6 +399,7 @@ export async function findingsStateDir(
     resolved.set(key, loc);
     return loc;
   } catch (err) {
+    if (readOnly) return undefined;
     return besideLedger(ledger, `the state dir could not be created: ${(err as Error).message}`);
   }
 }
