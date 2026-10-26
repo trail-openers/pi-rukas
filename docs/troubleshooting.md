@@ -3050,6 +3050,23 @@ before, so children are covered too.
 
 A corrupt `review-findings.json` is never overwritten — wherever it lives, the state dir or (as the fallback) beside the ledger. The reader and the writer both copy it to `review-findings.json.corrupt-<hash>` — the hash is of the bytes that were copied, so a repeat of the same fault names the same file and never duplicates it — and the round then REFUSES: it does not read the corrupt file as "no memory", because a round recorded on no memory would resolve open rows the unreadable file may still hold. The refusal names the copy and the cause and says `repair or remove <file>, or set PI_ENSEMBLE_REVIEW_LEDGER_FILE to a healthy ledger`; the summary carries it as `findings memory unavailable: …`, and every finding is still reported. Fix or remove the file, then re-run the review. A single malformed row is handled the same way on its own (`<file>.corrupt-<hash of the row>`) while the valid rows carry on.
 
+### A CRITICAL that was fixed keeps every later verdict at CRITICAL_ISSUES_FOUND (#1832)
+
+**Symptom:** lens round 1 files a CRITICAL on a line of a file the PR touches; the very next commit removes that code and the adversarial gate confirms the fix. Rounds 2 and 3 still list it under *"Carried from earlier rounds — still open"*, both verdicts are `CRITICAL_ISSUES_FOUND` with no new CRITICAL, the merge guard's round-cap path refuses (it requires no CRITICAL), and the /work cycle parks. Operator acceptance is no way out either: `acceptFinding` refuses every CRITICAL row.
+
+**The rule now:** a line-bearing CRITICAL row retires as `code-gone` when a **complete full review** no longer reports it AND neither its ±2-line window hash nor its cited-line hash occurs anywhere in the head file. Both hashes are checked, so a moved line or a neighbouring edit still carries the row; a re-report refreshes the hashes and the row stays open. A **delta** or an **incomplete** round resolves nothing, and a CRITICAL with no `lineHash` (a row written before the field existed) has no proof its cited line changed and carries — those three carries are deliberate, not oversights.
+
+**How the round becomes a full one:** a delta-only follow-up could never retire such a row, so when the branch holds an open, line-bearing CRITICAL row the automatic delta stands down and the round runs as a full review by itself — the tool and the /work lens step both get this from the one decision in `resolveReviewDiff`, and you never pass `full: true` for it. The `Mode:` line says which case you are in:
+
+```
+Mode: full review (forced: an open CRITICAL finding is pending)
+Mode: full review (forced: the findings memory could not be read)
+```
+
+The second line means the store could not be read to rule a pending CRITICAL out — an unreadable store is never read as "no findings", so the safe round runs. An explicit `since` is your instruction and still wins; a branch whose tip is the recorded head stays on the existing carry / no-review outcome, so forcing a full round never turns an unchanged tip into a blocked review. The retired row then appears under *"Resolved since last round"* with its reason and stops appearing under the carried heading, and the round's ledger row records `hasCritical: false`, which is what the merge guard reads.
+
+**Known limit:** a CRITICAL whose cited line survives because the fix landed ELSEWHERE (the cited line still exists verbatim, elsewhere in the file, or its problem was fixed by a change to a caller) still carries — the lens-side re-verification for that case is a separate follow-up.
+
 ## The offline smoke suite
 
 ### The offline suite is slow, or a test interferes with its neighbours

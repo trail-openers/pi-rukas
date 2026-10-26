@@ -14,7 +14,7 @@ import {
   type AutoDeltaInfo,
   type ForcedFullReason,
   deltaFallbackNote,
-  deltaReviewOf,
+  deltaReviewFieldOf,
 } from "./lens-review-delta-disclose.ts";
 import { blockedReviewSummary, blockedRowsForRoster } from "./lens-review-diff-blocked.ts";
 import {
@@ -490,13 +490,7 @@ export async function runLensReview(opts: {
       // budget) is surfaced on the summary so the driver emits the fixed-literal
       // cap-hit (F4g) instead of a silent 1-of-6 loss.
       ...capKillSummary(lensResults),
-      ...(delta
-        ? { deltaReview: deltaReviewOf(delta) }
-        : forcedFull
-          ? // #1832 — a full review with no delta to describe: the marker alone
-            // carries the reason to the `Mode:` line and the headless JSON.
-            { deltaReview: { since: "", head: "", forcedFull } }
-          : {}),
+      ...deltaReviewFieldOf(delta, forcedFull),
     },
     hasCritical,
   );

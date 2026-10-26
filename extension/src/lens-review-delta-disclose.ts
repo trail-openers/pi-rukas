@@ -79,3 +79,22 @@ export function deltaReviewOf(delta: AutoDeltaInfo): {
     ...(delta.forcedFull ? { forcedFull: delta.forcedFull } : {}),
   };
 }
+
+/**
+ * The summary's `deltaReview` spread (#1832), built here so the two mutually
+ * exclusive shapes have one definition next to the type that describes them:
+ * a delta describes the range it covered, and a forced-full veto — which is a
+ * FULL review, so there is no range to name — carries the reason alone, with
+ * empty `since`/`head` that `renderSummary` reads as "not a delta".
+ */
+export function deltaReviewFieldOf(
+  delta: AutoDeltaInfo | undefined,
+  forcedFull: ForcedFullReason | undefined,
+): {
+  deltaReview?: { since: string; head: string; fallback?: string; forcedFull?: ForcedFullReason };
+} {
+  if (delta) return { deltaReview: deltaReviewOf(delta) };
+  // A delta and a forced-full veto never co-occur; `delta` wins if a summary
+  // somehow carried both, because the range is the load-bearing disclosure.
+  return forcedFull ? { deltaReview: { since: "", head: "", forcedFull } } : {};
+}
