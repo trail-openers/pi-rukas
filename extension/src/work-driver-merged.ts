@@ -27,6 +27,7 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
+import { hasGitDir } from "./work-driver-merged-repo.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
 import { workstreamCount } from "./work-driver-merged-workstreams.ts";
 import { clearHostParkSignals } from "./work-driver-park-memory-host.ts";
@@ -195,8 +196,18 @@ export async function runMerged(
             execFnAuth,
             ctx.repoRoot,
             state.pipelineState.branchName,
-            evidence.headOid ?? "",
+            evidence,
             workstreamCount(state),
+            // The identity comparison needs a real clone to read the review ledger
+            // from, so it is attempted only when the cycle has a branch name AND a
+            // repository on disk. Everything else — a resumed or hand-built state
+            // file, a fixture with no clone — gets the pin and an honest note;
+            // parking those on "no git remote found" would be the driver inventing
+            // a fault the cycle never had. See `verifyMergeHead` and `hasGitDir`
+            // for why the probe is a leaf.
+            {
+              identityCheck: !!state.pipelineState.branchName && hasGitDir(ctx.repoRoot),
+            },
           )
         : undefined;
     if (!authority.granted || !evidence?.ok || routedRoundCap || headCheck?.ok !== true) {
@@ -353,6 +364,15 @@ export async function runMerged(
       // not to mainline. Without a recorded startRef (pre-#1093 state) the
       // target stays mainline.
       const startRef = state.pipelineState.startRef;
+      // `restoreCheckout` and its restore primitive are argv-form (#1093): they
+      // call `execFn("git", { argv: ["checkout", ref, "--"] })`, so the command
+      // they ask for is `git checkout main --`, not what the string form would
+      // have joined. Handing them a shell-only executor would run `git` with no
+      // arguments at all — every restore silently doing nothing while reading as
+      // success, because a bare `git` exits 0 with usage on stderr.
+      // A cycle that merged nothing has nothing to restore: the short-circuit and
+      // fallback cases must not pay for git calls they should not make, and an
+      // empty restoration is not the same as a completed one.
       if (mainline || startRef) {
         // #289 — restoreCheckout runs `git checkout <target>` + `branch -d`
         // (and `pull --ff-only` when the target is mainline) at repoRoot. A

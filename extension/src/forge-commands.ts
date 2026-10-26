@@ -309,7 +309,11 @@ export function prChecksCmd(forge: ForgeType, number: number): string {
  * `prChecksCmd`.
  */
 export function mergeEvidenceViewCmd(number: number): string {
-  return `gh pr view ${number} --json mergeStateStatus,mergeable,state`;
+  // #1533 — `headRefOid` is requested HERE rather than in a second read: the
+  // OID the merge is pinned to must be the OID the CI verdict was observed at,
+  // and two reads of a moving PR are two moments, not one. Verified against
+  // gh 2.102.0 (`gh pr view <n> --json …,headRefOid` returns it).
+  return `gh pr view ${number} --json mergeStateStatus,mergeable,state,headRefOid`;
 }
 
 // ── CI runs ───────────────────────────────────────────────────────────────

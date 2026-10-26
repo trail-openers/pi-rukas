@@ -14,9 +14,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { ShellExecFn } from "./exec.ts";
-import { prMergeHeadPinFlag, prMergeSubjectFlag } from "./forge-commands.ts";
 import { PublicHygieneError } from "./public-hygiene-config.ts";
-import { driverPublishCheck } from "./public-hygiene-driver.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
@@ -24,8 +22,8 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { mergeSubjectForState } from "./work-driver-merge-subject.ts";
+import { executeAndVerifyMergeDirect } from "./work-driver-merged-direct.ts";
 import type { WorkState } from "./workflow-state.ts";
-import type { ExecFn } from "./worktree.ts";
 
 /**
  * The SHELL-ONLY seam of this module (#1279). `ShellExecFn` declares no `argv`,
@@ -57,51 +55,15 @@ function refusalMessage(err: unknown): string {
 }
 
 /** Valid merge methods — maps to the forge adapter's `prMerge` method argument. */
-export type MergeMethod = "squash" | "merge" | "rebase";
-
-/**
- * #1533 — how a refused head pin presents itself.
- *
- * Both CLIs say the same thing in different words, and neither wording may be
- * read as "already merged" or as a permanent forge error (see the classifier
- * below, which runs BEFORE those two checks). Spellings collected from the
- * upstream sources:
- *
- *  - GitHub CLI (`cli/cli`, `pkg/cmd/pr/merge/merge.go`) renders the API's
- *    `headRefOid` mismatch as a pull-request-state error whose text contains
- *    the flag name — that is the stable token, and gh's surrounding prose is
- *    not. So the token alone never classifies: it is required ALONGSIDE a
- *    mismatch word, so a gh error that merely mentions the flag (an unknown
- *    flag on an old gh, for instance) is not read as a moved head.
- *  - GitLab's `glab mr merge --sha` refuses with the SHA it was given and the
- *    one it found (its MR merge checks `sha` against `diff_refs.head_sha`),
- *    which is the second shape — a mismatch sentence naming SHAs, with or
- *    without the flag name.
- *
- * A pin refusal is never retried and never handed to the LLM-ops fallback:
- * both would be an attempt to merge a head nobody reviewed.
- */
-export function isHeadPinRefusal(message: string): boolean {
-  const m = message.toLowerCase();
-  // The mismatch must be about the HEAD / the pinned commit, not about some
-  // other SHA the error happens to name: `does not match` alone also renders a
-  // base-branch or author mismatch, and those are ordinary merge failures.
-  const mismatch =
-    /\bhead\b[^\n]{0,60}(does not match|no longer match|mismatch|changed|moved)|\bmismatched head\b|\bhead commit\b|\b(?:sha|commit) mismatch\b|\bmismatch\b[^\n]{0,40}\bhead\b/.test(
-      m,
-    );
-  if (!mismatch) return false;
-  // …and the sentence must actually be about the pin: it names the flag, or it
-  // names SHAs (the `--sha` form spells the two OIDs rather than the flag).
-  return m.includes("match-head-commit") || m.includes("--sha") || /[0-9a-f]{7,40}/.test(m);
-}
-
-/** The refusal text of a pin rejection, bounded for the state file. */
-function pinRefusalReason(message: string): string {
-  return `head pin refused: the PR head no longer matches the reviewed commit — ${message
-    .slice(0, 300)
-    .replace(/[\r\n\t]+/g, " ")}`;
-}
+export type { MergeMethod } from "./work-driver-merged-pin.ts";
+// Re-exported, not merely imported: the pin's classifier is this module's
+// refusal contract, and the test that pins the classification ORDER (a refused
+// read before the already-merged tolerance and before the permanent bucket)
+// reaches it through the module whose merge paths apply it. Importing it here
+// and keeping it private would leave that ordering unpinnable.
+export { isHeadPinRefusal, pinRefusalReason } from "./work-driver-merged-pin.ts";
+import { isHeadPinRefusal, pinRefusalReason } from "./work-driver-merged-pin.ts";
+import type { MergeMethod } from "./work-driver-merged-pin.ts";
 
 /**
  * Derive the merge method from repo settings via the forge adapter.
@@ -330,131 +292,6 @@ export async function executeAndVerifyMerge(
     // warning note records that post-merge state verification was
     // inconclusive.
     const note = `post-merge verification inconclusive (prView error: ${msg.slice(0, 200) ?? "unknown"})`;
-    trace(`work-driver: ${note}`);
-    return { merged: true, warningNote: note };
-  }
-
-  return { merged: true };
-}
-
-/**
- * The direct-exec fallback for `executeAndVerifyMerge` when the forge is
- * undetermined (no remote, unknown host). This is the pre-S4 code path,
- * kept so the test fakes (which mock `gh pr view` / `gh pr merge` by
- * substring) keep working unchanged.
- */
-async function executeAndVerifyMergeDirect(
-  prNumber: number,
-  method: MergeMethod,
-  execFn: VerifyExecFn,
-  repoRoot: string,
-  subject: string | undefined,
-  // #1533 — the verified head OID; REQUIRED and already shape-validated by the
-  // caller, so this path cannot merge unpinned while the adapter path is pinned.
-  headOid: string,
-  visibility?: VisibilityFn,
-): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
-  // First check: is the PR already merged? (idempotent on resume)
-  try {
-    const { stdout } = await execFn(`gh pr view ${prNumber} --json state --jq '.state'`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (stdout.trim() === "MERGED") {
-      trace(`work-driver: PR #${prNumber} already merged, skipping merge invocation`);
-      return { merged: true };
-    }
-  } catch (err) {
-    trace(`work-driver: pre-check gh pr view failed: ${(err as Error).message?.slice(0, 120)}`);
-  }
-
-  // The subject a squash merge writes to main is public text, and this is the
-  // one forge write a cycle cannot undo. The forge adapter's `prMerge` checks it
-  // through `checkPublicText`; this direct-exec fallback builds the same command
-  // itself and reaches no adapter, so it goes through the SAME driver seam —
-  // one rule, one owner, one public-only gate, and a fallback that cannot become
-  // the way past either. The pure `publicTextRefusal` it used to call asked
-  // nothing about the repository, so a private project had its merge subject
-  // refused here while the adapter path skipped the same text (#1788 round 2).
-  // It returns the function's OWN failure shape rather than throwing, for the
-  // reason spelled out on the adapter path above: `runMerged` routes on the
-  // result, and a merge the guard refused is a merge that parks with a reason,
-  // not an exception that escapes the step.
-  // `mergeSubject` is the subject the merge actually writes: the checked text,
-  // with this clone's paths rewritten out of it on a public target (#1788
-  // follow-up). A local rather than a reassignment of the parameter.
-  let mergeSubject = subject;
-  if (subject !== undefined) {
-    const checked = await driverPublishCheck("merge commit subject", subject, {
-      command: "gh pr merge",
-      cwd: repoRoot,
-      // `VerifyExecFn` and the guard's `ExecFn` differ only in optionality of
-      // the options bag; the seam accepts either shape and passes it through.
-      exec: execFn as unknown as ExecFn,
-      visibility,
-      repoRoot,
-    });
-    if (checked.refusal !== undefined) {
-      const refusal = checked.refusal;
-      trace(`work-driver: merge subject refused for PR #${prNumber}: ${refusal.slice(0, 200)}`);
-      return { ok: false, reason: refusal };
-    }
-    mergeSubject = checked.text;
-  }
-
-  // Execute the merge.
-  try {
-    await execFn(
-      `gh pr merge ${prNumber} --${method} --delete-branch${prMergeSubjectFlag(mergeSubject)}${prMergeHeadPinFlag("github", headOid)}`,
-      {
-        cwd: repoRoot,
-        maxBuffer: 1024 * 1024,
-      },
-    );
-  } catch (err) {
-    const e = err as Error & { stderr?: string };
-    const message = (e.stderr ?? e.message ?? "").toString();
-    // #1533 — before "already been merged" and before the permanent classifier.
-    if (isHeadPinRefusal(message)) {
-      trace(`work-driver: PR #${prNumber} head pin refused on the direct path — no merge`);
-      return { ok: false, reason: pinRefusalReason(message) };
-    }
-    if (/already been merged/i.test(message)) {
-      trace(`work-driver: PR #${prNumber} was already merged during gh pr merge invocation`);
-      return { merged: true };
-    }
-    return {
-      ok: false,
-      reason: `gh pr merge failed: ${message.slice(0, 300)}`,
-    };
-  }
-
-  // Post-merge verification: gh pr view must return MERGED.
-  try {
-    const { stdout } = await execFn(`gh pr view ${prNumber} --json state --jq '.state'`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (stdout.trim() !== "MERGED") {
-      return {
-        ok: false,
-        reason: `gh pr merge succeeded but PR #${prNumber} state is ${stdout.trim()}, not MERGED`,
-      };
-    }
-  } catch (err) {
-    const e = err as Error & { stderr?: string };
-    const msg = e.message ?? "unknown";
-    const permanent = /\b(401|403|404)\b|not found|could not resolve/i.test(
-      `${e.stderr ?? ""}\n${msg}`,
-    );
-    if (permanent) {
-      trace(`work-driver: permanent post-merge verification failure: ${msg.slice(0, 200)}`);
-      return {
-        ok: false,
-        reason: `post-merge verification failed with a permanent gh error: ${msg.slice(0, 300)}`,
-      };
-    }
-    const note = `post-merge verification inconclusive (gh pr view error: ${msg.slice(0, 200) ?? "unknown"})`;
     trace(`work-driver: ${note}`);
     return { merged: true, warningNote: note };
   }
