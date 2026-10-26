@@ -44,9 +44,12 @@ import {
   FAIL_HEADER_DETAILS,
   FAIL_HEADER_PASSING,
   FAIL_HEADER_STREAM,
+  TALLY_LINE,
+  TALLY_NAMES,
   WT,
   makeAssert,
 } from "./lib/verify-failure-shapes-fixtures.ts";
+import { harvestConsolidatedTallies, nameLooksSecret } from "../src/work-driver-verify-tally.ts";
 
 const { assert, failed } = makeAssert();
 const NO_EVENTS: WorkEvent[] = [];
@@ -209,6 +212,63 @@ function consolidatedGate(raw: string): CorrectiveGateView {
   assert(
     detailLooksCredential(`token body ${b64}=`) === true,
     "opaque run: a padded base64 body is still refused",
+  );
+  // ── #1841 round 5 — the punctuation arm refuses a SINGLE `+`/`/` again ──
+  // The round-4 fix for the path above narrowed this arm to a run of TWO `+`/`/`, and
+  // origin/main's veto for ONE of them went with it: a digit-free base64 body — 24
+  // letters, one separator, 24 letters — is exactly that shape, and both callers
+  // published it. The arm is main's arm again and paths are told apart by SEGMENT
+  // SHAPE, so the two halves of the rule are pinned side by side: one separator in a
+  // long run refuses, many short pieces keep. Both are ASKED OF BOTH CALLERS — the
+  // tally's own veto reads a name at 24 and the credential screen reads prose at 20,
+  // and #1841's defect family is a rule one caller honours and the other does not.
+  const half = 24;
+  const singleSlash = "a".repeat(half) + "/" + "b".repeat(half);
+  const singlePlus = "a".repeat(half) + "+" + "b".repeat(half);
+  const absolutePath = "/home/dev/work/src/some/really/long/path/name/index.tsx";
+  const cases = [
+    ["a single `/`", singleSlash, true],
+    ["a single `+`", singlePlus, true],
+    ["a long absolute path", absolutePath, false],
+  ] as Array<[string, string, boolean]>;
+  for (const [label, run, refused] of cases) {
+    const expectation = refused ? "is refused" : "is kept";
+    assert(
+      nameLooksSecret(run) === refused,
+      `shared rule: the tally veto ${expectation} a long run carrying ${label}`,
+    );
+    assert(
+      detailLooksCredential(`reported ${run}`) === refused,
+      `shared rule: the credential screen ${expectation} a long run carrying ${label}`,
+    );
+    assert(
+      harvestConsolidatedTallies(`${TALLY_LINE}\n    ${run}\n    ${TALLY_NAMES[0]}`).length ===
+        (refused ? 0 : 1),
+      `shared rule: the tally harvest ${refused ? "never names" : "still names"} a run carrying ${label}`,
+    );
+    if (!refused) {
+      assert(
+        harvestHeaderDetails(`${FAIL_HEADER}\n      ${run}`).includes(run),
+        `shared rule: the detail channel still gives the developer the ${label} (got ${JSON.stringify(harvestHeaderDetails(`${FAIL_HEADER}\n      ${run}`))})`,
+      );
+    }
+  }
+  // A path-shaped run is NOT exempt when a piece is key-sized: shape is what tells
+  // the two apart, so one long piece puts the run back on the refuse side.
+  assert(
+    detailLooksCredential(`blob /${"c".repeat(half)}/${"d".repeat(half)}/e`) === true,
+    "path shape: a long piece among short ones is still refused",
+  );
+  // A `+` is never a path separator, so no segment shape rescues a run carrying one.
+  assert(
+    detailLooksCredential(`blob /a/b/c/${"e".repeat(half)}+f`) === true,
+    "path shape: a run carrying `+` is refused whatever its segments look like",
+  );
+  // And neither is a relative run: the exemption is for the absolute paths a gate
+  // cites, and a 24+ character `x/y` with no leading `/` is a blob.
+  assert(
+    detailLooksCredential(`blob ${"g".repeat(12)}/${"h".repeat(12)}/${"i".repeat(4)}`) === true,
+    "path shape: a long run with no leading `/` is refused",
   );
   // ── #1841 round 4 (b) — the screen is asked BEFORE every other stop in the walk ──
   // "May this line be published" is a PRIOR question to "is this line the header's

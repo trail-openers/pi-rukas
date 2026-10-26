@@ -115,29 +115,63 @@ const DIGIT_RE = /[0-9]/;
 // name's long run is one alphabet (`a{40}`, `check_` + 30 letters, `y{120}_0`), so
 // the mixed requirement is what separates a key from a slug.
 const KEY_BODY_RE = /^(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[A-Za-z0-9+/]+$/;
-// Two `+`/`/` in a row: base64, and nothing a path or a sentence writes. One of each
-// is a `/`-joined path, which the credential screen has to keep (#1841 round 4).
-const BASE64_PUNCT_RUN_RE = /[+/]{2,}/;
+// Any `+` or `/` inside a long run is a base64 DIGIT, not a path separator: origin/
+// main's arm, restored. Narrowing it to a DOUBLE punctuation so a long `/`-joined
+// path survived (#1841 round 4) also let a digit-free key body like 24 letters, one
+// `/` and 24 letters through both callers. Paths are told apart by SHAPE instead.
+const BASE64_PUNCT_RE = /[+/]/;
+/**
+ * The longest `/`-separated segment a path still prints — a hard ceiling so a
+ * caller's bound can never widen the exemption to a key body's half. The screen's
+ * own bound is 20; the tally's is 24 and a directory name that long is not a
+ * directory name.
+ */
+const PATH_SEGMENT_MAX = 20;
+/**
+ * The character set a path segment is made of: alphanumeric plus the `-` and `_` a
+ * directory or file name really carries. `+` is NOT in the set — no path prints one,
+ * so a run carrying it is refused whatever its segments look like.
+ */
+const PATH_SEGMENT_BODY = "[A-Za-z0-9_-]";
+/** One path segment: PATH_SEGMENT_BODY pieces joined by `.` (a name and its extension). */
+const PATH_SEGMENT = `${PATH_SEGMENT_BODY}+(?:\.${PATH_SEGMENT_BODY}+)*`;
+// A run is a PATH when its first segment is empty (an absolute path — every path a
+// gate cites, and no base64 body, begins with a `/`) and it then carries two or more
+// segments of PATH_SEGMENT's shape. A key body split by a single `/` has one
+// separator after the empty head and fails; so does a relative `a/b` at 24+ chars,
+// which is a blob the caller would rather refuse.
+const PATH_RUN_RE = new RegExp(`^\/${PATH_SEGMENT}(?:\/${PATH_SEGMENT}){2,}$`);
+/** One `.`-free piece, asked per piece so a long tail is judged by its own length. */
+const PATH_PIECE_RE = new RegExp(`^${PATH_SEGMENT_BODY}+$`);
 
 /**
  * True when a SINGLE separator-free `run` reads as a digest or a key body: long
  * AND either all-hex with a digit, or letters-mixed-with-digits, or carrying base64
- * punctuation no prose prints.
+ * punctuation no prose prints — UNLESS the run is shaped like a path.
  *
  * Two of the three arms are DIGIT-BEARING shapes: a digest has hex digits and a key
- * body is letters mixed with digits. The third, a long run carrying `+` or `/`, is
- * the shape a key is written in and the shape prose is not — but a `/` is also what
- * a sentence puts between path segments, and no sentence prints two of them in a
- * row. So the arm is a DOUBLE punctuation: a long run with no run of two `+`/`/`
- * is a path the gate cited, not a key (#1841 round 4, which is how this screen came
- * to refuse a line for citing a long path). A `+`/`-`-padded or URL-safe body keeps
- * its `//` and still refuses, and `nameLooksSecret` still catches the shapes whose
- * own characters the redactor rewrites.
+ * body is letters mixed with digits. The third is the punctuation arm: a long run
+ * containing ANY `+` or `/` is written in the alphabet a key is written in, and a
+ * path is the only thing a gate prints that shares it. So the arm asks the whole
+ * run and the PATH arm below is the only exemption — one rule, in this function,
+ * that both callers share.
+ *
+ * Why paths are told apart by SHAPE and not by counting punctuation. Narrowing the
+ * arm to a run of TWO `+`/`/` (the first attempt at #1841 round 4) kept a path and
+ * kept a key with it: `a{24}` `/` `b{24}` and `a{24}` `+` `b{24}` each hold one
+ * separator, so both were published while origin/main's veto refused them. What a
+ * real path actually does is divide its run into SHORT pieces — `/home/dev/work/
+ * src/some/really/long/path/name/index.tsx` — while a key body divides it into two
+ * long halves, or does not divide it at all. Piece length is the observable the two
+ * shapes differ on, and the absolute leading `/` plus a `.+`-free segment alphabet
+ * keep a digest or a `+`-bearing body out of the exemption.
  *
  * `min` is a parameter because the caller splits the line, and the right minimum
  * differs by what the line IS: a tally name is a path, an evidence line is prose.
  * Both callers pass their own bound and judge one run at a time, so there is one
- * conjunction in the codebase rather than two that drift.
+ * conjunction in the codebase rather than two that drift. The path exemption is
+ * sized off the CALLER's bound and capped at {@link PATH_SEGMENT_MAX}, so it is
+ * never wider for prose than for a name whatever bound a caller passes.
  */
 export function hasOpaqueRun(run: string, min: number = TALLY_OPAQUE_RUN_MIN): boolean {
   if (run.length < min) return false;
@@ -146,7 +180,44 @@ export function hasOpaqueRun(run: string, min: number = TALLY_OPAQUE_RUN_MIN): b
   // refuse every `deadbeef`-style fixture name a gate might really print.
   if (HEX_RUN_RE.test(run) && DIGIT_RE.test(run)) return true;
   if (KEY_BODY_RE.test(run)) return true;
-  return BASE64_PUNCT_RUN_RE.test(run);
+  if (!BASE64_PUNCT_RE.test(run)) return false;
+  return !looksLikePathRun(run, min);
+}
+
+/**
+ * True when a punctuation-bearing `run` is an ABSOLUTE `/`-joined PATH: it begins
+ * with `/`, {@link PATH_RUN_RE} gives it at least two further segments of
+ * {@link PATH_SEGMENT}'s shape, and every `.`-free piece is shorter than the caller's
+ * bound capped at {@link PATH_SEGMENT_MAX}. A key body split into two long halves
+ * fails the piece test and the leading-`/` test; a blob with no separator fails both.
+ */
+function looksLikePathRun(run: string, min: number): boolean {
+  if (!PATH_RUN_RE.test(run)) return false;
+  const ceiling = Math.min(min, PATH_SEGMENT_MAX);
+  // Asked per `.`-separated piece as well as per `/`-separated segment: `index.tsx`
+  // is a 12-character segment whose `tsx` is a 3-character extension, and a rule that
+  // measured the whole segment would refuse it while every gate prints it. The very
+  // first piece is EMPTY for an absolute path — that is the leading `/`, not a piece.
+  return run
+    .split("/")
+    .every((segment, segmentIndex) => isPathSegment(ceiling, segmentIndex === 0, segment));
+}
+
+/**
+ * True when every `.`-free piece of `segment` fits under `ceiling`. Only the
+ * LEADING segment may open with the empty piece an absolute `/` leaves.
+ */
+function isPathSegment(ceiling: number, leading: boolean, segment: string): boolean {
+  return segment
+    .split(".")
+    .every((piece, pieceIndex) =>
+      leading && pieceIndex === 0 ? piece.length === 0 : isPathPiece(ceiling)(piece),
+    );
+}
+
+/** The predicate for one `.`-free piece of a path segment under a `ceiling`. */
+function isPathPiece(ceiling: number): (piece: string) => boolean {
+  return (piece) => piece.length > 0 && piece.length < ceiling && PATH_PIECE_RE.test(piece);
 }
 
 /**
@@ -164,7 +235,9 @@ export function hasOpaqueRun(run: string, min: number = TALLY_OPAQUE_RUN_MIN): b
  * the arms.
  *
  * The line is split HERE, at the one place that knows what the string is: a name is
- * a path, and `+`, `/` and `=` stay in the run they belong to.
+ * a path, and `+`, `/` and `=` stay in the run they belong to. Whether such a run is
+ * a path or a key is decided once, in {@link hasOpaqueRun} — this veto does not get
+ * its own opinion about `/`, and neither does the credential screen.
  */
 export function nameLooksSecret(name: string): boolean {
   return (
