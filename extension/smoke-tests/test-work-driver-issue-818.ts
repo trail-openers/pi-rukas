@@ -230,7 +230,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       };
       const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
         cmd = commandOf(cmd, o);
-        calls.push(cmd); console.error("CALL ["+cmd.slice(0,60)+"] cwd="+String(o?.cwd).slice(-20));
+        calls.push(cmd);
         if (cmd === "git rev-parse HEAD")
           return { stdout: "1111111111111111111111111111111111111111\n" };
         if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-818\n" };
