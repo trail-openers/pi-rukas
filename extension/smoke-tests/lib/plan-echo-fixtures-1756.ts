@@ -13,7 +13,7 @@
  * the right default for every other plan test and the wrong one here.
  */
 
-import { RECORDED_ARGS_DETAILS_KEY } from "../../src/plan-workstream-schema.ts";
+import { recordedWorkstreamDetails } from "../../src/plan-workstream-schema.ts";
 
 /**
  * The model sent `outOfScope` as ONE string. Whether the installed Pi coerced it
@@ -49,9 +49,10 @@ export function entry(id: string, result: { error?: string; recorded?: unknown }
     toolName: "report_workstream",
     isError: false,
     text: "recorded",
-    // The key is present exactly when the child said anything, so
+    // Built by the companion's own envelope, so a fixture cannot drift from the
+    // writer. The key is present exactly when the child said anything, so
     // `recorded: undefined` models "no echo", not an echo of nothing.
-    ...(result.recorded === undefined ? {} : { details: { [RECORDED_ARGS_DETAILS_KEY]: result.recorded } }),
+    ...(result.recorded === undefined ? {} : { details: recordedWorkstreamDetails(result.recorded) }),
   };
 }
 

@@ -10,7 +10,7 @@ import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
 import { addUsage } from "./pi-usage.ts";
-import { RECORDED_ARGS_DETAILS_KEY } from "./plan-workstream-schema.ts";
+import { RECORDED_ARGS_DETAILS_KEY, recordedWorkstreamDetails } from "./plan-workstream-schema.ts";
 import type { DispatchResult } from "./types.ts";
 
 /** The longest tool-result text kept on a DispatchResult (#1652). */
@@ -61,7 +61,10 @@ function carriedDetails(toolName: string, details: unknown): Record<string, unkn
     return undefined;
   }
   if (typeof json !== "string" || json.length > TOOL_RESULT_DETAILS_MAX) return undefined;
-  return { [RECORDED_ARGS_DETAILS_KEY]: echoed };
+  // The envelope is the writer's own function, so the key the transport puts on
+  // the record cannot drift from the key the companion writes and the reader
+  // reads (item: one envelope, three callers).
+  return recordedWorkstreamDetails(echoed);
 }
 
 /**
