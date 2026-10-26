@@ -42,6 +42,7 @@ import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
 import type { WorkEvent } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { headGitArgvAnswer, headGitStringAnswer } from "./headless-s5-head.ts";
 import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
 import {
   EVIDENCE_HEAD,
@@ -314,62 +315,13 @@ export function mergeExec(
       // mainline. The fixture's `main` is the same answer its `gh repo view`
       // fallback already gives.
       if (sub === "symbolic-ref") return { stdout: "origin/main\n" };
-      if (sub === "merge-base") {
-        // #1533 — the identity's merge base, over refs this remote-less clone
-        // cannot resolve. Answered with a fixed OID so the patch identity is
-        // computed (and compared) rather than the check refusing an unreadable
-        // base; the comparison itself is what the case under test asserts on.
-        log.headReads.push(line);
-        return { stdout: `${EVIDENCE_HEAD}\n` };
-      }
-      if (sub === "check-ref-format") {
-        // #1533 — the branch-name guard for the head read. These fixture repos do
-        // not have the cycle's branch at all, so the real git refused it and the
-        // merged step parked. Answered as valid; the identity comparison is what
-        // the cases assert on, not whether the local branch exists.
-        log.headReads.push(line);
-        return { stdout: "" };
-      }
-      if (sub === "diff") {
-        log.headReads.push(line);
-        return { stdout: "" };
-      }
-      // #1533 — the merged step fetches the head and the mainline before it
-      // trusts any identity, and these throwaway fixture repos have no remote
-      // at all. The head verification's OWN reads (fetch, the rev-parse that
-      // records the fetched head) are answered here rather than against the
-      // origin that does not exist; everything else the whitelist serves still
-      // runs against the real fixture repo, so an unexpected read is still
-      // unexpected. A cycle that reached this fetch with a real remote would
-      // have had one in `git remote`, and the check refuses that case instead.
-      if (sub === "fetch") {
-        log.headFetches.push(line);
-        return { stdout: "" };
-      }
-      if (sub === "rev-parse" && o.argv.some((w) => w.startsWith("origin/"))) {
-        // #1533 — the head verification's read of the fetched head, and the
-        // merge-base computation behind it. Both name `origin/<branch>` refs that
-        // these remote-less fixture repos cannot resolve, so the seam answers
-        // them directly; every other rev-parse still runs against the fixture's
-        // real repo, so an unexpected read stays unexpected. A ref naming the
-        // MAINLINE is the base side of an identity, not the head: it answers with
-        // the base SHA, so the two sides of a comparison are distinguishable.
-        log.headReads.push(line);
-        const target = o.argv.find((w) => w.startsWith("origin/")) ?? "";
-        return { stdout: `${target.endsWith("/main") ? EVIDENCE_BASE : fetchedHead}\n` };
-      }
-      // #1533 — `readyPatchId` resolves the branch tip through `resolveHeadSha`,
-      // which prefixes `-C <cwd>` and therefore is not the `rev-parse` subcommand
-      // at argv[0]. Same reasoning: an `origin/<branch>` ref this fixture cannot
-      // resolve, answered with the OID the evidence probe reported.
-      if (
-        sub === "-C" &&
-        o.argv[2] === "rev-parse" &&
-        o.argv.some((w) => w.startsWith("origin/"))
-      ) {
-        log.headReads.push(line);
-        return { stdout: `${EVIDENCE_HEAD}\n` };
-      }
+      // #1533 — the head verification's own reads (fetch, the ref resolutions and
+      // the identity's base/diff halves) live in headless-s5-head.ts: these fixture
+      // repos have no remote, so those reads must be answered rather than run.
+      // The delegation returns undefined for every read this seam does not
+      // special-case, so the whitelist below still governs everything else.
+      const headAnswer = headGitArgvAnswer(o.argv, log, { fetchedHead });
+      if (headAnswer !== undefined) return headAnswer;
       if (!isKnownGitSubcommand(o.argv)) {
         log.unexpected.push(line);
         return { stdout: "" };
@@ -448,14 +400,8 @@ export function mergeExec(
     // identity over it. Both are STRING-form calls, so the argv branch above
     // never sees them and they landed in `unexpected`. The OID and the patch
     // id are fixed, so the identity comparison the cases assert on runs.
-    if (line.startsWith("git merge-base ") && line.includes("origin/")) {
-      log.headReads.push(line);
-      return { stdout: `${EVIDENCE_HEAD}\n` };
-    }
-    if (line.includes("git patch-id")) {
-      log.headReads.push(line);
-      return { stdout: `${FIXTURE_PATCH_ID} commit\n` };
-    }
+    const headString = headGitStringAnswer(line, log, fetchedPatchId);
+    if (headString !== undefined) return headString;
     // #1533 — the merged step's identity check resolves the mainline through the
     // STRING form of this probe (the argv branch above cannot see it), and this
     // clone has no `refs/remotes/origin/HEAD`: the real git always failed here,

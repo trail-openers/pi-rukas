@@ -26,6 +26,7 @@ import {
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
+import { heldForMissingApproval } from "./work-driver-merged-hold.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { hasGitDir } from "./work-driver-merged-repo.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
@@ -214,34 +215,11 @@ export async function runMerged(
       trace(
         `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}${headCheck && !headCheck.ok ? `, head=${headCheck.refusal.reason}` : ""}`,
       );
-      const refusal = headCheck && !headCheck.ok ? headCheck.refusal : undefined;
-      const held: WorkState = {
-        ...state,
-        pipelineState: {
-          ...state.pipelineState,
-          currentStep: "merged",
-          mergeHold: {
-            authorityGranted: authority.granted,
-            authoritySource: authority.source,
-            ...(authority.quote ? { authorityQuote: authority.quote } : {}),
-            ...(evidence?.reason ? { evidenceReason: evidence.reason } : {}),
-            ...(evidence?.failureKind ? { evidenceFailureKind: evidence.failureKind } : {}),
-            ...(evidence?.inconclusive?.length ? { inconclusive: evidence.inconclusive } : {}),
-            ...(routedRoundCap ? { unresolvedReviewFindings: true } : {}),
-            // #1533 — the two SHAs a head refusal names, structured rather than
-            // left in prose: the queue's park reason and the handoff renderers
-            // read them off the state file.
-            ...(refusal?.reviewedHead ? { reviewedHead: refusal.reviewedHead } : {}),
-            ...(refusal?.foundHead ? { headAtMerge: refusal.foundHead } : {}),
-            ...(refusal?.reason ? { headCheckReason: refusal.reason } : {}),
-          },
-        },
-      };
-      return appendEvent(held, {
+      return appendEvent(heldForMissingApproval(state, authority, evidence, routedRoundCap, headCheck), {
         kind: "cap-hit",
         at: Date.now(),
         cap: "awaiting-human-merge",
-        reviewRound: held.pipelineState.reviewRound,
+        reviewRound: state.pipelineState.reviewRound,
         nextStep: "handoff",
       });
     }

@@ -32,12 +32,11 @@
  */
 
 import { existsSync } from "node:fs";
-import { mergeIdentity } from "./merge-guard-reads.ts";
 import { compareReviewedHead } from "./merge-identity-compare.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { identityBase, ledgerPathFor, remoteName } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
-import { latestEntry, readLedgerAt } from "./review-ledger.ts";
+import { latestEntry, readLedgerFile } from "./review-ledger.ts";
 import { committedPatchIdentity } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
@@ -134,25 +133,31 @@ async function readReviewedHead(
         "no review ledger could be located — the reviewed head cannot be read, so nothing licenses this merge",
     };
   }
-  // The file's absence is a refusal, not "no rows". `readLedgerAt` is the
-  // ledger's permissive read and swallows ENOENT to an empty list, which is the
-  // right contract for a caller asking "what did the review record" and the
-  // wrong one here: "this clone has no ledger at all" and "the ledger holds no
-  // lens row" are different faults with different remedies (a broken or
-  // redirected repository versus a cycle that was never reviewed), and the
-  // operator reading the park needs to know which one they are looking at.
+  // The file's absence is a refusal, not "no rows": "this clone has no ledger at
+  // all" and "the ledger holds no lens row" are different faults with different
+  // remedies (a broken or redirected repository versus a cycle that was never
+  // reviewed), and the operator reading the park needs to know which one they are
+  // looking at. `readLedgerFileSafe` would answer both with an empty list.
   if (!existsSync(ledgerPath)) {
     return {
       ok: false,
       reason: `no review ledger at ${ledgerPath} — the reviewed head cannot be read, so nothing licenses this merge`,
     };
   }
-  // `readLedgerAt` never throws today (every fs and parse fault is swallowed to
-  // "no rows"); the guard keeps a torn file a refusal rather than a merge
-  // whatever its current contract says.
+  // The ledger's own read is deliberately PERMISSIVE: `readLedgerFileSafe` swallows
+  // ENOENT and every parse fault to "no rows", which is right for a caller asking
+  // "what did the review record" (a torn ledger is then an unreviewed branch, and
+  // the guard still refuses) and wrong for a gate that has to tell the operator
+  // WHICH fault it hit. So this step calls the THROWING reader, not the permissive
+  // one: `readLedgerFile` rethrows a malformed file, and the catch below turns it
+  // into a refusal naming the read. The two refusals are the point — an unreadable
+  // file says "could not be read" while a file full of rows the validator rejects
+  // says "no lens review row", because the first is a broken clone and the second
+  // is a cycle that was never reviewed, and an operator chasing a park needs the
+  // distinction rather than one message covering both.
   let entries: LedgerEntry[];
   try {
-    entries = readLedgerAt(ledgerPath);
+    entries = readLedgerFile(ledgerPath).entries;
   } catch (err) {
     return {
       ok: false,
@@ -309,7 +314,7 @@ export async function compareFetchedHead(
   );
   if (!reviewed.ok) {
     return refusal(
-      `could not compute the patch identity at the reviewed head ${reviewedHead.slice(0, 8)}: ${reviewed.reason}`,
+      `could not compute the patch identity at the reviewed head ${reviewedHead.slice(0, 8)} (the head to merge is ${headOid.slice(0, 8)}): ${reviewed.reason}`,
       reviewedHead,
       headOid,
     );

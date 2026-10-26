@@ -90,10 +90,15 @@ const REVIEWED_PATCH = "2".repeat(39) + "b";
 const MERGE_BASE = "3".repeat(39) + "c";
 
 /**
- * The ledger row the merged step's identity check looks for: a PASSING
- * adversarial row on the cycle's branch whose patchId is what the fixture's
- * `git patch-id` answers. Without it the merged step refuses to merge (no row
- * means nobody reviewed this head), which is the #1533 behaviour, not a
+ * The ledger row the merged step's identity check looks for: the latest LENS row
+ * on the cycle's branch, whose `headSha` is the head this fixture reviews and
+ * whose `patchId` is what the fixture's `git patch-id` answers. The check reads
+ * the LENS row rather than the adversarial one because the six-pass review is the
+ * driver's own review of this branch — an adversarial row is written by a gate that
+ * runs pre-commit on a worktree diff, and on the first cut the merged step compared
+ * the verified head with itself and merged unreviewed content while an adversarial
+ * row said everything was fine. Without a lens row the merged step refuses to merge
+ * (no row means nobody reviewed this head), which is the #1533 behaviour, not a
  * fixture these older cases were written against.
  */
 function seedReviewLedger(dir: string, branch: string): void {
@@ -104,8 +109,9 @@ function seedReviewLedger(dir: string, branch: string): void {
       entries: [
         {
           branch,
-          kind: "adversarial",
+          kind: "lens",
           patchId: REVIEWED_PATCH,
+          headSha: VERIFIED_HEAD,
           passed: true,
           at: 1,
           round: 1,

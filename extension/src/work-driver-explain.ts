@@ -6,7 +6,6 @@
  */
 
 import { reviewWallClockMs } from "./review-budget.ts";
-import { childBoundGraceMs } from "./spawn-child-bound.ts";
 import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
@@ -17,6 +16,11 @@ import {
   explainConsolidation,
 } from "./work-driver-explain-consolidation.ts";
 import { explainConvergeIncomplete } from "./work-driver-explain-converge.ts";
+import {
+  explainChildTimeout,
+  explainDeadline,
+  explainDeadlineNoFit,
+} from "./work-driver-explain-deadline.ts";
 import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
 import { explainDevelopCrash } from "./work-driver-explain-develop-crash.ts";
 import { explainLens } from "./work-driver-explain-lens.ts";
@@ -340,22 +344,10 @@ export function explainCap(
     case "develop-child-crash":
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);
-    case "deadline": {
-      // #1238 — the deadline was within the handoff grace at a step boundary,
-      // so no new step started; #1593 — or a step ran past it and its own
-      // verdict (named in the evidence) is not why the cycle stopped.
-      const ev = lastCapHit(state, "deadline")?.evidence ?? "(no detail recorded)";
-      return ev.includes("passed while step")
-        ? `the caller's whole-cycle deadline ended the cycle (${ev}). The step's children were stopped at the deadline, so its verdict judged unfinished work. The handoff below says where the work is — branch, PR, and the round reached — and runs inside the caller's handoff allowance (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS), before its kill. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`
-        : ev.includes("(overdue)")
-          ? `the caller's whole-cycle deadline (${ev}) had already passed when the driver reached a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and runs inside the caller's handoff allowance (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS). Re-run \`/work <issue> --restart\` with the deadline raised or cleared`
-          : `the caller's whole-cycle deadline (${ev}) was within the handoff grace at a step boundary, so the driver started no new step and parked. The handoff below says where the work is — branch, PR, and the round reached — and posts before the deadline so a caller that kills the process at that point sees a handoff, not an aborted in-flight state. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
-    }
-    case "deadline:no-fit": {
-      // #1567 item 6 — time was left, but less than the step needs to be useful.
-      const ev = lastCapHit(state, "deadline:no-fit")?.evidence ?? "(no detail recorded)";
-      return `too little time was left before the caller's whole-cycle deadline for the next step to do useful work (${ev}), so the driver did not start it and parked. Develop and lens-fix need at least 15 minutes, a lens round 10, before the deadline less the handoff grace. The handoff below says where the work is — branch, PR, and the round reached. Re-run \`/work <issue> --restart\` with the deadline raised or cleared`;
-    }
+    case "deadline":
+      return explainDeadline(state);
+    case "deadline:no-fit":
+      return explainDeadlineNoFit(state);
   }
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can
@@ -383,10 +375,7 @@ export function explainCap(
   }
   if (cap.startsWith("verify-failed:")) return explainVerifyFailed(cap, state);
   if (cap.startsWith("verify-timeout:")) return explainVerifyTimeout(cap, state);
-  if (cap.startsWith("child-timeout:")) {
-    // #1560 — the per-child run bound (spawn-child-bound.ts).
-    return `the ${cap.slice("child-timeout:".length)} child outlived its per-child run bound — it was steered to wrap up at the bound and ended ${childBoundGraceMs() / 60_000} minute(s) later without having committed or finished its reply (PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS). Its work is left in the worktree; split the issue or raise the bound`;
-  }
+  if (cap.startsWith("child-timeout:")) return explainChildTimeout(cap);
   const noVerdict = explainNoVerdictCap(cap, state); // #1349
   if (noVerdict !== undefined) return noVerdict;
   // #753 — deferred worktree-creation failure. Its own sentence, because
