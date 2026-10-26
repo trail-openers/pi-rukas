@@ -102,7 +102,13 @@ export function adversarialChildBoundMs(): number {
 }
 
 export interface SkillReadGuard {
-  /** Feed one parsed child event. Counted reads of the skill file only. */
+  /**
+   * Feed one parsed child event. Called from the stdout LINE HANDLER
+   * (`spawn-inflight.ts`), which is the only site that sees every parsed event
+   * exactly once — `observeReviewBounds` deliberately does NOT call this, so
+   * the count has one feed and one owner. Only reads that resolve to the
+   * driver-supplied skill path's `SKILL.md` count.
+   */
   observe(event: PiJsonEvent): void;
   /** The steer to send, once, on the (N+1)-th read. Undefined when not due. */
   steerText(): string | undefined;
@@ -297,10 +303,11 @@ export function observeReviewBounds(
   targets: ReviewBoundTargets,
 ): void {
   if (o.skillRead) {
-    // One steer on the (N+1)-th read, then the kill on the (N+2)-th. The steer
-    // goes through the driver's seam when the caller has one (so the lifecycle
-    // record names the source) and to raw stdin otherwise — the same fallback
-    // `armChildBound` uses.
+    // One steer on the (N+1)-th read, then the kill on the (N+2)-th — both
+    // driven from the count the LINE HANDLER fed, never from an event consumed
+    // twice. The steer goes through the driver's seam when the caller has one
+    // (so the lifecycle record names the source) and to raw stdin otherwise —
+    // the same fallback `armChildBound` uses.
     //
     // #1827 round 1 — the ADVISORY steer does NOT arm the bound. `armBound`
     // stands down every other supervision seam (slow notice, turn nudge,

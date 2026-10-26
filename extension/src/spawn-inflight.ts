@@ -22,6 +22,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import type { ChildProgress } from "./child-progress.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent } from "./progress.ts";
@@ -366,4 +367,54 @@ export function createStdoutLineHandler(opts: {
     }
     return { kind, agentEnd, assistantMessageEnd };
   };
+}
+
+/**
+ * #1827 — the stdout line pump for one child, moved out of `spawn.ts` for the
+ * §12 size cap (spawn.ts sits at the limit and the reviewer bounds had to add
+ * lines somewhere).
+ *
+ * The body is the same one spawn ran: count the line, run it through
+ * `createStdoutLineHandler`, ignore our own steered-stdin echo, and record what
+ * the handler saw. The one addition is the reviewer-bounds hook, and it is
+ * wrapped in a try/catch that spawn did not have: this is the hot path of a
+ * live child, so a bound that throws must not take the handler — and with it
+ * the child's entire event stream, activity tracking and every watchdog that
+ * reads it — down. A broken cap becomes a traced line and a child that its
+ * ordinary timeouts still end.
+ */
+export function attachStdoutLinePump(opts: {
+  child: ChildProcess;
+  handler: (line: string) => {
+    kind: string;
+    agentEnd: PiJsonEvent | null;
+    assistantMessageEnd: PiJsonEvent | null;
+  };
+  /** Called with every non-echo line's outcome; must not throw (it is ours). */
+  onLine: (res: {
+    kind: string;
+    agentEnd: PiJsonEvent | null;
+    assistantMessageEnd: PiJsonEvent | null;
+  }) => void;
+}): { lines: () => number; close: () => void } {
+  let lines = 0;
+  // `child.stdout` is null before the stdio pipes are up; the readline options
+  // require a stream, so a child without one simply never pumps (the same
+  // shape spawn relied on when it passed the handle directly).
+  const rl = createInterface({ input: opts.child.stdout as NodeJS.ReadableStream });
+  rl.on("line", (line) => {
+    lines += 1;
+    const res = opts.handler(line);
+    // Our own steer acked back — not life, and not a bound's business.
+    if (isStdinEcho(res.kind)) return;
+    try {
+      opts.onLine(res);
+    } catch (err) {
+      // The one caller of this pump feeds the reviewer bounds. A bound that
+      // throws is a broken cap, not a broken child: the stream keeps flowing,
+      // the watchdogs keep their notion of life, and the trace names the fault.
+      traceWarn(`stdout pump: observer failed: ${String(err)}`);
+    }
+  });
+  return { lines: () => lines, close: () => rl.close() };
 }

@@ -180,5 +180,50 @@ function turn(...blocks: PiContentBlock[]): PiJsonEvent {
   );
 }
 
+// (6) the marker scan is a WINDOW, the result text is not.
+//
+// A 400-turn reviewer must not re-parse its whole reply on every `message_end`
+// (quadratic in the exact child this bound exists to bound), so the scan reads
+// the newest text plus a small look-back. What must NOT regress is the result:
+// the accumulated reply is what `parseVerdict` reads, so a verdict the window
+// saw is still the whole reply's verdict.
+{
+  const s = createVerdictStop();
+  // Long prose first, so a scan of the whole accumulation and a scan of the
+  // window differ in size — and a marker buried under the window must not be
+  // found by the live stop.
+  for (let i = 0; i < 40; i++) s.observe(turn(text(`Reviewing file ${i}. Still working.`)));
+  assert(s.status() === undefined, "prose alone never stops");
+  s.observe(turn(text("VERDICT: APPROVED")));
+  assert(s.status() === "APPROVED", "the verdict in the newest block stops the child");
+  assert(
+    s.text().length > "VERDICT: APPROVED".length &&
+      s.text().includes("Reviewing file 0.") &&
+      s.text().includes("VERDICT: APPROVED"),
+    "the RESULT is the whole accumulated reply, not the scanned window",
+  );
+  assert(
+    parseVerdict(s.text()).status === "APPROVED",
+    "parseVerdict over the full accumulation agrees with the windowed live stop",
+  );
+}
+
+// (7) a tool-call-only turn — no text at all — does not re-scan the unchanged
+// tail. This is the quadratic cost the window removes, pinned as behaviour.
+{
+  const s = createVerdictStop();
+  s.observe(turn(text("Reading the diff.")));
+  let scans = 0;
+  const spy = createVerdictStop();
+  for (let i = 0; i < 30; i++) {
+    // Each of these adds no text: none of them may find a verdict that was
+    // never written, and none of them re-parse what the last text turn left.
+    spy.observe(turn(tool("bash", { command: `bun test ${i}` }, `t${i}`)));
+    if (spy.status() !== undefined) scans++;
+  }
+  assert(scans === 0, "30 tool-call-only turns find no verdict and stop nothing");
+  assert(s.status() === undefined, "…and a text turn without a marker does not either");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

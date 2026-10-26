@@ -94,6 +94,8 @@ mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () =>
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
 const { adversarialChildBoundMs } = await import("../src/review-bounds.ts");
 const { adversarialSkillPath, skillFileOf } = await import("../src/adversarial-skill-path.ts");
+const { childBoundGraceMs, childBoundSchedule } = await import("../src/spawn-child-bound.ts");
+const { noteCycleDeadline, runWithCycleClock } = await import("../src/cycle-deadline-clock.ts");
 
 const signal = new AbortController().signal;
 
@@ -165,6 +167,37 @@ assert(fix !== undefined, "loop dispatched the fix-pass developer");
 assert(fix?.childBoundMs === undefined, "the fix-pass developer gets NO per-child bound");
 assert(fix?.onSteer === undefined, "the fix-pass developer gets NO bound steer seam");
 assert(fix?.reviewSkillPath === undefined, "the fix-pass developer gets NO review skill path");
+
+// ── #1827 round 1 — the reviewer's bound clamps to the cycle deadline like
+// every other child's. It is passed as a plain `childBoundMs` into
+// `armChildBound`, which is where the clamp lives; a bound that ignored the
+// deadline would let a reviewer run past the cycle's own end and have its
+// result killed off by the driver's backstop instead.
+{
+  const grace = childBoundGraceMs();
+  const outside = childBoundSchedule(adversarialChildBoundMs(), grace, Date.now());
+  assert(
+    outside.killAtMs === adversarialChildBoundMs() + grace,
+    "outside a cycle the reviewer runs its full bound plus grace",
+  );
+  await runWithCycleClock(async () => {
+    // A cycle with 12 minutes left: far short of the reviewer's 30-min bound.
+    noteCycleDeadline(Date.now() + 12 * 60_000, 0, "adversarial");
+    const c = childBoundSchedule(adversarialChildBoundMs(), grace, Date.now());
+    assert(
+      c.killAtMs === undefined,
+      "inside a short cycle the deadline takes the kill, not the bound",
+    );
+    assert(
+      c.wrapAtMs > 0 && c.wrapAtMs <= 12 * 60_000,
+      `…and the wrap-up steer is armed inside the deadline (${c.wrapAtMs}ms)`,
+    );
+    assert(
+      c.stopInMs > 0 && c.wrapAtMs + c.stopInMs <= 12 * 60_000,
+      "…with the whole steer-to-kill span inside it",
+    );
+  });
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

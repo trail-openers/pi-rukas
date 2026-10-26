@@ -131,9 +131,17 @@ const killed = (over: Partial<DispatchResult>): DispatchResult =>
     /return 60 \* 60_000;/.test(support),
     "canary: the tool-inactivity bound is 60 min (a separate knob from the model-silence budget)",
   );
+  // #1827 — the pump (`attachStdoutLinePump`, spawn-inflight.ts) is what counts
+  // the lines now, because spawn.ts had reached the §12 cap; the seam still
+  // tracks both the shape of the silence and the line count it is reported
+  // with, so the assertion follows the rename rather than being dropped.
   const spawn = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
+  const pump = readFileSync(path.join(SRC, "spawn-inflight.ts"), "utf8");
   assert(
-    /lastActivityKind/.test(spawn) && /stdoutLines/.test(spawn),
+    /lastActivityKind/.test(spawn) &&
+      /stdoutPump\.lines\(\)/.test(spawn) &&
+      /attachStdoutLinePump/.test(spawn) &&
+      /lines \+= 1/.test(pump),
     "the shape of the silence is tracked at the spawn seam, where the lines actually arrive",
   );
 }

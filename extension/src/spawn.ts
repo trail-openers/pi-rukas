@@ -20,7 +20,6 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import { preflightChildGuards } from "./child-guards.ts";
 import { ChildProgress } from "./child-progress.ts";
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
@@ -45,10 +44,10 @@ import {
 import {
   InFlightTools,
   attachAbortKill,
+  attachStdoutLinePump,
   createInactivityPoll,
   createStdoutLineHandler,
   createWallClockBackstop,
-  isStdinEcho,
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
@@ -65,7 +64,7 @@ import {
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
-import { armCapSession, declareKillFlags } from "./spawn-watchdog.ts";
+import { armCapSession, declareKillFlags, traceKillCauses } from "./spawn-watchdog.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -260,7 +259,7 @@ async function spawnSpecialistInner(
   // #543 F1/F6 — dispatch caps (loop detector + token budget), and the kill
   // flags the session reads by closure, now live in spawn-watchdog.ts (#1470).
   // Ordering is load-bearing: `declareKillFlags` runs first (the session
-  // closes over the flags), `armCapSession` BEFORE `createInterface` below
+  // closes over the flags), `armCapSession` BEFORE the stdout pump below
   // because the line handler references `caps` on the first stdout line — a
   // `const caps` initialized after the attach would be in the TDZ for any
   // early line (ReferenceError).
@@ -279,7 +278,9 @@ async function spawnSpecialistInner(
   // tuned: `linesSeen: 0` is a provider stall or auth failure, not a hang.
   // Full reasoning in test-kill-attribution.ts.
   let lastActivityKind = "nothing yet";
-  let stdoutLines = 0;
+  // #1827 — the count now lives in the pump (`attachStdoutLinePump`), which is
+  // the only place a line is counted. Read here for the kill attribution's
+  // `linesSeen`.
   // #951 — the in-flight tool-call state (spawn-inflight.ts): the watchdog's
   // silence is a SILENCE, and an in-flight tool is work, not silence. A
   // toolCall block inside an assistant message_end opens a span; the matching
@@ -290,9 +291,8 @@ async function spawnSpecialistInner(
   // #1567 — what counts as progress, per spawn (child-progress.ts).
   const childProgress = new ChildProgress();
   // #1827 — the two reviewer bounds (skill re-read cap, post-verdict stop),
-  // armed only for a reviewer role and only with the input each needs. The
-  // decision logic is in review-bounds.ts and the wiring in
-  // spawn-review-bounds.ts; the spawn keeps only the seams it owns.
+  // armed only for a reviewer role and only with the input each needs; the
+  // seams they act through are the ones this spawn owns.
   const reviewBounds = wireReviewBounds({
     child,
     role: spec.role,
@@ -303,36 +303,40 @@ async function spawnSpecialistInner(
     // The post-verdict stop asks this before ending the child: while Pi is
     // mid-retry the segment in hand is about to be REPLAYED, so a stop that
     // closes stdin now throws the reply away rather than preserving it — the
-    // same gate `onAgentEnd` applies above.
+    // same gate `onAgentEnd` applies below.
     willRetry: () => willRetryAfter(lastAgentEnd),
   });
-  const stdoutRl = createInterface({ input: child.stdout });
-  const lineHandler = createStdoutLineHandler({
-    start,
-    inFlightTools,
-    childProgress,
-    appendStderr,
-    runningState,
-    caps,
-    onProgress: opts.onProgress,
-    onRawEvent: opts.onRawEvent,
-    onAgentEnd: (parsed) => {
-      lastAgentEnd = parsed;
-      if (!willRetryAfter(parsed)) completePrompt();
+  // #1827 — the pump and its bounds live in spawn-inflight.ts: spawn.ts sits at
+  // the §12 size cap, and a bound that throws must not cost a live child its
+  // whole event stream, so the try/catch is inside the pump rather than here.
+  const stdoutPump = attachStdoutLinePump({
+    child,
+    handler: createStdoutLineHandler({
+      start,
+      inFlightTools,
+      childProgress,
+      appendStderr,
+      runningState,
+      caps,
+      onProgress: opts.onProgress,
+      onRawEvent: opts.onRawEvent,
+      onAgentEnd: (parsed) => {
+        lastAgentEnd = parsed;
+        if (!willRetryAfter(parsed)) completePrompt();
+      },
+      // #1827 — counts reads of the child's own skill file, from the same calls.
+      ...(reviewBounds.skillRead ? { skillRead: reviewBounds.skillRead } : {}),
+    }),
+    onLine: (res) => {
+      lastActivityAt = Date.now();
+      if (res.kind) lastActivityKind = res.kind;
+      if (res.agentEnd) lastAgentEnd = res.agentEnd;
+      if (res.assistantMessageEnd) lastAssistantMessageEnd = res.assistantMessageEnd;
+      // #1827 — the reviewer bounds see every non-echo line. The guard is
+      // inside the pump, which is the only caller of the handler; a bound that
+      // throws never costs the child its event stream.
+      reviewBounds.observe(res.assistantMessageEnd);
     },
-    // #1827 — counts reads of the child's own skill file, from the same calls.
-    ...(reviewBounds.skillRead ? { skillRead: reviewBounds.skillRead } : {}),
-  });
-  stdoutRl.on("line", (line) => {
-    stdoutLines += 1;
-    const res = lineHandler(line);
-    if (isStdinEcho(res.kind)) return; // our own steer acked — not life
-    lastActivityAt = Date.now();
-    if (res.kind) lastActivityKind = res.kind;
-    if (res.agentEnd) lastAgentEnd = res.agentEnd;
-    if (res.assistantMessageEnd) lastAssistantMessageEnd = res.assistantMessageEnd;
-    // #1827 — the reviewer bounds see every non-echo line.
-    reviewBounds.observe(res.assistantMessageEnd);
   });
   child.stderr.on("data", (d) => {
     appendStderr(d);
@@ -423,20 +427,9 @@ async function spawnSpecialistInner(
     }
   }
 
-  if (flags.timedOut()) {
-    appendStderr(`\n[pi-rukas] killed after ${timeoutMs}ms timeout`);
-  }
-  if (flags.inactivityKilled()) {
-    appendStderr(`\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms inactivity`);
-  }
-  if (flags.toolInactivityKilled()) {
-    appendStderr(
-      `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms with a tool call in flight (tool-inactivity)`,
-    );
-  }
-  if (flags.aborted()) {
-    appendStderr("\n[pi-rukas] cancelled by user (Esc)");
-  }
+  // The four kill-cause stderr lines are emitted by the module that owns the
+  // flags they report (`traceKillCauses`, spawn-watchdog.ts).
+  traceKillCauses(flags, timeoutMs, appendStderr);
 
   // Final flat string from the ring buffer (bounded; no SlowFlatten on the
   // 64KB total even if the rest of the spawn ran a regex over it).
@@ -472,10 +465,9 @@ async function spawnSpecialistInner(
   if (result.killCause === "inactivity") result.killBudgetMs = flags.killedBudgetMs();
   if (result.killCause === "tool-inactivity") result.killBudgetMs = flags.killedBudgetMs();
   // A killed child never completed its assignment, whatever its exit code.
-  // #1827 — EXCEPT the post-verdict stop, which is not a kill: the reviewer had
-  // already written its verdict, so it completed the assignment and the loop
-  // must read a verdict rather than an `incomplete`. The stop reason still
-  // travels on the result so the report can say the tail was cut.
+  // A post-verdict reviewer stop carries no `killCause` at all, so it falls out
+  // of `failedByKill` by construction and keeps its verdict as the result —
+  // spawn-review-bounds.ts holds the reasoning for the separation.
   if (failedByKill(result)) {
     result.ok = false;
     // Only meaningful for a kill; attaching it always would imply we killed
@@ -483,7 +475,7 @@ async function spawnSpecialistInner(
     result.lastActivity = {
       kind: lastActivityKind,
       agoMs: Date.now() - lastActivityAt,
-      linesSeen: stdoutLines,
+      linesSeen: stdoutPump.lines(),
     };
   }
   if (modelChoice.model && !result.model) {

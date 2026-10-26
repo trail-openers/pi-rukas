@@ -165,7 +165,7 @@ function guard(reported = () => false) {
   else process.env.PI_ENSEMBLE_DISPATCH_CAPS = saved;
 }
 
-// (6) the knob is honoured.
+// (6) the knob is honoured, and only by a value that means something.
 {
   const saved = process.env.PI_ENSEMBLE_REVIEW_SKILL_READS;
   process.env.PI_ENSEMBLE_REVIEW_SKILL_READS = "1";
@@ -176,8 +176,46 @@ function guard(reported = () => false) {
   assert(typeof g.steerText() === "string", "N=1: the 2nd read steers");
   g.observe(turn(tc("read", { path: SKILL_FILE })));
   assert(g.shouldKill(), "N=1: the 3rd read kills");
+
+  // #1827 round 1 — the junk a knob actually receives. An EMPTY value used to
+  // read as `Number("") === 0`, which made every single read a violation: the
+  // first read of a review killed the child. An empty or unset knob is the
+  // operator asking for the default, never for zero.
+  const junk: Array<[string, number]> = [
+    ["", 3],
+    ["   ", 3],
+    ["0", 3],
+    ["-2", 3],
+    ["2.5", 3],
+    ["abc", 3],
+    ["NaN", 3],
+    ["Infinity", 3],
+    ["200", 50],
+  ];
+  for (const [value, want] of junk) {
+    process.env.PI_ENSEMBLE_REVIEW_SKILL_READS = value;
+    assert(
+      reviewSkillReadCap() === want,
+      `PI_ENSEMBLE_REVIEW_SKILL_READS="${value}" resolves to ${want}, never to 0`,
+    );
+    const j = guard();
+    j.observe(turn(tc("read", { path: SKILL_FILE })));
+    assert(j.count() === 1 && !j.shouldKill(), `"${value}": a first read is never a violation`);
+  }
+  process.env.PI_ENSEMBLE_REVIEW_SKILL_READS = "7";
+  assert(reviewSkillReadCap() === 7, "a valid integer override is honoured");
   if (saved === undefined) delete process.env.PI_ENSEMBLE_REVIEW_SKILL_READS;
   else process.env.PI_ENSEMBLE_REVIEW_SKILL_READS = saved;
+}
+
+// (6b) a tool call whose `name` is not a string is skipped, not thrown on: the
+// shape is Pi's and the guard sits on the hot path of a running child.
+{
+  const g = guard();
+  g.observe(turn({ type: "toolCall", id: "weird", name: { o: 1 }, arguments: {} } as never));
+  g.observe(turn({ type: "toolCall", id: "noname", arguments: { path: SKILL_FILE } } as never));
+  g.observe(turn({ type: "toolCall", id: "noargs", name: "read" } as never));
+  assert(g.count() === 0, "a malformed toolCall block counts as nothing and does not throw");
 }
 
 // (7) a stdin echo / an errored turn never counts.

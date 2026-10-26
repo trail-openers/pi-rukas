@@ -57,21 +57,52 @@ for (const [cause, killCause] of [
   );
 }
 
-// #1827 — the two reviewer-bound causes. `review-skill-reread` is a failure
-// kill that must never be retried (a retry re-reads the same SKILL.md); the
-// `review-post-verdict` stop is a CLEAN END, so a tail carrying it classifies
-// as success rather than falling through to the `crashed` shouldRetry:true
-// fallback. Both need a defined reason line, a WHY row, a distinct report
-// headline and an errorTail naming their OWN knobs — the point of this canary
-// is that none of these switches is compile-exhaustive.
+// #1827 — the reviewer-bound cause. `review-skill-reread` is a failure kill
+// that must never be retried (a retry re-reads the same SKILL.md). The
+// `review-post-verdict` STOP is not a cause at all (round 1): it is
+// `DispatchResult.reviewStopReason`, so no tail can carry it and the taxonomy
+// has no row for it — the canary below asserts the vocabulary stays shut to
+// real failures. Both a re-read kill and every other cause still need a
+// defined reason line, a WHY row, a distinct report headline and an errorTail
+// naming their OWN knobs — the point of this canary is that none of these
+// switches is compile-exhaustive.
 for (const [cause, killCause] of [
   ["self-killed:review-skill-reread", "review-skill-reread"],
-  ["success", "review-post-verdict"],
 ] as const) {
   const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
   assert(
     cls.cause === cause && cls.shouldRetry === false && cls.maxRetries === 0,
     `${killCause} → ${cause}, no retry`,
+  );
+}
+
+// (canary, #1827 round 1) The clean end is absent from the kill-cause
+// vocabulary, so a completed adversarial review cannot be classified as a
+// self-kill, capped, or retried by any consumer that keys on the field. The
+// list is written out here deliberately: adding the stop back to the union in
+// src/ without also making it a failure is the regression this pins.
+{
+  const causeUnion: readonly string[] = [
+    "timeout",
+    "inactivity",
+    "abort",
+    "loop",
+    "token-budget",
+    "plan-timeout",
+    "tool-inactivity",
+    "child-bound",
+    "no-progress",
+    "stuck-tool",
+    "review-skill-reread",
+  ];
+  assert(
+    !causeUnion.includes("review-post-verdict"),
+    "review-post-verdict is not a kill cause anywhere in the vocabulary",
+  );
+  const noCause = classifyFailureCause(mkEvent({ kind: "dispatch-failed", killCause: undefined }));
+  assert(
+    !noCause.cause.startsWith("self-killed:"),
+    `a cause-less tail is never a self-kill (got ${noCause.cause})`,
   );
 }
 
@@ -129,11 +160,11 @@ for (const [cause, killCause] of [
     ["token-budget", "token budget"],
     // #951 — tool-inactivity also needs a WHY line.
     ["tool-inactivity", "in flight"],
-    // #1827 — each reviewer-bound cause needs its own WHY row: a re-read kill
-    // says "skill file", a verdict stop says "VERDICT". Without a row the
-    // lookup falls to the generic "was killed by the harness".
+    // #1827 — the re-read kill needs its own WHY row: it says "skill file".
+    // Without a row the lookup falls to the generic "was killed by the
+    // harness". The post-verdict stop has NO row by design — it never reaches
+    // killDetail, which selects a `dispatch-failed` carrying a cause.
     ["review-skill-reread", "skill file"],
-    ["review-post-verdict", "VERDICT"],
   ] as const) {
     const state = {
       ...base,
@@ -166,10 +197,10 @@ for (const [killCause, needle] of [
   ["token-budget", "token budget"],
   // #951 — tool-inactivity also needs a distinct headline.
   ["tool-inactivity", "tool-inactivity"],
-  // #1827 — distinct headlines for the reviewer bounds too. The verdict stop
-  // is a clean end, so its headline names the stop rather than a kill.
+  // #1827 — a distinct headline for the re-read bound too. The verdict stop is
+  // not listed: it sets no cause, so it reads as the ordinary `finished` row it
+  // is (asserted in test-review-post-verdict-result.ts).
   ["review-skill-reread", "skill file"],
-  ["review-post-verdict", "VERDICT marker"],
 ] as const) {
   const report = formatSingleReport(`f4-${killCause}`, "developer", {
     role: "developer",
@@ -206,10 +237,9 @@ for (const [killCause, needle] of [
     // #951 — tool-inactivity names the tool-inactivity knob, NOT the
     // model-silence knob.
     ["tool-inactivity", "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS"],
-    // #1827 — each reviewer bound names its OWN knob, so the operator is not
+    // #1827 — the reviewer bound names its OWN knob, so the operator is not
     // sent to the inactivity timeout or the develop bound for a reviewer kill.
     ["review-skill-reread", "PI_ENSEMBLE_REVIEW_SKILL_READS"],
-    ["review-post-verdict", "PI_ENSEMBLE_ADVERSARIAL_BOUND_MS"],
   ] as const) {
     const ev = await buildCompletionEvent(ctx, "develop", "developer", "developer", {
       role: "developer",

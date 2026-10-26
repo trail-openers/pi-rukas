@@ -163,23 +163,25 @@ export function applyReviewBounds(
   appendStderr: (s: string) => void,
   warn: (s: string) => void = traceWarn,
 ): void {
-  if (outcome.killCause && !result.killCause) {
-    result.killCause = outcome.killCause;
-    // #1827 round 1 — a kill the review bounds recorded but an EARLIER cause
-    // already named is not silently dropped: the two causes contradict each
-    // other and the operator is the only reader who can tell which was the
-    // real end of this child. `outcome.killCause` is only ever
-    // `review-skill-reread` (the post-verdict stop is not a kill — see the
-    // header), so this always means "the re-read cap had decided to end this
-    // child and something else did it first".
-    if (result.killCause !== outcome.killCause) {
-      traceWarn(
-        `reviewer bounds: the re-read cap reached ${outcome.skillReads ?? 0} skill reads but the child was already killed (${result.killCause}); the existing cause stands`,
-      );
-    }
-    if (outcome.killCause === REVIEW_SKILL_REREAD_KILL) {
-      appendStderr(
-        `\n[pi-rukas] killed: re-read its own skill file ${outcome.skillReads ?? 0} times (override: PI_ENSEMBLE_REVIEW_SKILL_READS / PI_ENSEMBLE_DISPATCH_CAPS)`,
+  if (outcome.killCause) {
+    if (!result.killCause) {
+      result.killCause = outcome.killCause;
+      if (outcome.killCause === REVIEW_SKILL_REREAD_KILL) {
+        appendStderr(
+          `\n[pi-rukas] killed: re-read its own skill file ${outcome.skillReads ?? 0} times (override: PI_ENSEMBLE_REVIEW_SKILL_READS / PI_ENSEMBLE_DISPATCH_CAPS)`,
+        );
+      }
+    } else if (result.killCause !== outcome.killCause) {
+      // #1827 round 1 — a kill the review bounds recorded that an EARLIER
+      // cause already named is not silently dropped: the two contradict each
+      // other and the operator is the only reader who can tell which was the
+      // real end of this child. `outcome.killCause` is only ever
+      // `review-skill-reread` (the post-verdict stop is not a kill — see the
+      // header), so this always means "the re-read cap had decided to end this
+      // child and something else did it first". Both causes are named, and no
+      // attribution line is claimed for the kill that did not happen.
+      warn(
+        `reviewer bounds: the re-read cap reached ${outcome.skillReads ?? 0} skill reads but another cause ended the child first (${result.killCause}); the existing cause stands`,
       );
     }
   }

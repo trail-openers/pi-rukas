@@ -160,10 +160,19 @@ assert(thinking.blocked === true, "the all-thinking placeholder does not count a
       reread.maxRetries === 0,
     "the step router never retries a re-read kill",
   );
-  const post = classifyFailureCause({ kind: "dispatch-failed", killCause: "review-post-verdict" });
+  // #1827 round 1 — the post-verdict stop is NOT a kill cause any more, so a
+  // tail cannot carry it: the shape is asserted on the result instead
+  // (test-review-post-verdict-result.ts). What this row pins is the
+  // consequence — nothing in the taxonomy can classify a clean end as a
+  // retryable failure, because no cause for it exists to classify.
+  const post = classifyFailureCause({ kind: "dispatch-failed", killCause: undefined });
   assert(
-    post.cause === "success" && post.shouldRetry === false,
-    "a verdict stop is never a retryable failure",
+    post.cause === "crashed" && post.shouldRetry === true,
+    "a cause-less failed tail is judged on its exit, never excused by a stop row",
+  );
+  assert(
+    !("review-post-verdict" in (post as unknown as Record<string, unknown>)),
+    "and no classification ever names the clean end as a self-kill",
   );
 }
 
@@ -184,9 +193,25 @@ assert(thinking.blocked === true, "the all-thinking placeholder does not count a
     capHitForCapKill({ ...base, killCause: "review-skill-reread" }, 2) === undefined,
     "review-skill-reread is never a fixed-literal cap (it does not own one)",
   );
+  // #1827 round 1 — `review-post-verdict` is no longer a member of the cause
+  // union at all, so the cap path cannot be handed one: the compiler refuses
+  // the call. Asserting the exclusion structurally rather than by value.
+  const causes: readonly string[] = [
+    "timeout",
+    "inactivity",
+    "abort",
+    "loop",
+    "token-budget",
+    "plan-timeout",
+    "tool-inactivity",
+    "child-bound",
+    "no-progress",
+    "stuck-tool",
+    "review-skill-reread",
+  ];
   assert(
-    capHitForCapKill({ ...base, killCause: "review-post-verdict" }, 2) === undefined,
-    "review-post-verdict is never a cap either",
+    !causes.includes("review-post-verdict"),
+    "the clean end is absent from the kill-cause vocabulary entirely",
   );
 }
 
