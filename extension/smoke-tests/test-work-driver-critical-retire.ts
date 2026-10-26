@@ -43,6 +43,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { runLensReview } from "../src/lens-review.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
+import { resetFindingsStateCache } from "../src/review-state-path.ts";
 import { runLens } from "../src/work-driver-lens.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
@@ -111,6 +112,13 @@ async function main() {
     const agentDir = path.join(root, "agent");
     mkdirSync(agentDir, { recursive: true });
     process.env.PI_AGENT_DIR = agentDir;
+    // The state-dir resolver caches its answer per clone for the life of the
+    // process. This fixture repoints BOTH `PI_ENSEMBLE_REVIEW_LEDGER_FILE` (which
+    // pins the findings file beside the override) and `PI_AGENT_DIR`, so without a
+    // reset an earlier resolve in the same process — or a fixture that ran before
+    // this one — would answer for this clone and the round would record into, and
+    // the probe would read, a store that is not this test's.
+    resetFindingsStateCache();
 
     // An installed skill per lens, so the expected roster is complete and the
     // round is not INCOMPLETE for a missing lens (the convention of
@@ -350,6 +358,9 @@ async function main() {
     else process.env.PI_ENSEMBLE_SKILLS_DIR = origSkills;
     if (origAgent === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = origAgent;
+    // Same reason as before the run: the env is restored, so the cached answer
+    // for this clone must go with it rather than outlive the fixture.
+    resetFindingsStateCache();
     rmSync(root, { recursive: true, force: true });
   }
 }

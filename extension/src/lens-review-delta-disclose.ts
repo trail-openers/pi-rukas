@@ -17,6 +17,61 @@
  */
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
+import { branchHasOpenCriticalRow } from "./review-findings-critical-probe.ts";
+import { trace } from "./trace.ts";
+
+/**
+ * #1832 round 1 — the veto's three answers, so its caller SWITCHES on the outcome
+ * instead of reading a `since` that is absent for two different reasons. That
+ * ambiguity was the first cut's shape (`{ since, reason? }`), which let "no delta
+ * was available" and "the delta was vetoed" look identical to anything but this
+ * module's own caller.
+ *
+ * `{ kind: "none" }` means there was no automatic delta to veto at all (no ledger
+ * entry, or a first review): nothing was forced, and the round is full on its own
+ * merits — so it carries NO reason, and the `Mode:` line says "the whole branch
+ * diff" rather than naming a veto nobody made.
+ */
+export type AutoDeltaVeto =
+  | { kind: "delta"; since: string }
+  | { kind: "forced"; reason: ForcedFullReason }
+  | { kind: "none" };
+
+/**
+ * #1832 — veto the automatic delta when an open, line-bearing CRITICAL row may
+ * still be standing on this branch.
+ *
+ * The probe is consulted only when an automatic delta actually resolved: with no
+ * ledger entry there is no delta to veto and no round to force, and a review that
+ * was already going to be full costs no extra read.
+ *
+ * The read is READ-ONLY (#1832 round 1): the probe resolves the store's location
+ * without creating it and never copies an unreadable file aside — a delta decision
+ * that leaves artefacts on disk is a side effect nobody asked for, and the round's
+ * own record path keeps the copy-aside disclosure it always had.
+ *
+ * Lives here, beside the reason it produces and the `forcedFullText` that renders
+ * it, rather than in lens-review-diff.ts (the 500-line gate, and the one place the
+ * reason's shape is defined is the better home for the only thing that constructs
+ * it).
+ */
+export async function vetoAutoDeltaForOpenCritical(
+  branch: string,
+  cwd: string | undefined,
+  autoSince: string | undefined,
+): Promise<AutoDeltaVeto> {
+  if (!autoSince) return { kind: "none" };
+  const probe = await branchHasOpenCriticalRow(cwd ?? process.cwd(), branch);
+  if (probe.kind === "absent") return { kind: "delta", since: autoSince };
+  const reason: ForcedFullReason =
+    probe.kind === "present"
+      ? { kind: "open-critical" }
+      : { kind: "findings-unreadable", detail: probe.reason };
+  trace(
+    `lens-review: automatic delta since ${autoSince.slice(0, 8)} vetoed — full review (${reason.kind}${reason.kind === "findings-unreadable" && reason.detail ? `: ${reason.detail}` : ""})`,
+  );
+  return { kind: "forced", reason };
+}
 
 /** The delta a review ran against. `fallback` is set when an automatic delta
  * could not use its hunk-level method and reviewed the two-dot range instead

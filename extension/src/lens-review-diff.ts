@@ -37,17 +37,15 @@ import {
   resolveDeltaSince,
   writeCarriedEntry,
 } from "./lens-review-auto-delta.ts";
-import type { AutoDeltaInfo, ForcedFullReason } from "./lens-review-delta-disclose.ts";
+import type {
+  AutoDeltaInfo,
+  AutoDeltaVeto,
+  ForcedFullReason,
+} from "./lens-review-delta-disclose.ts";
+import { vetoAutoDeltaForOpenCritical } from "./lens-review-delta-disclose.ts";
 import type { Verdict } from "./lens-review.ts";
-
-/** #1832 round 1 — the veto's discriminated answer; see `vetoAutoDeltaForOpenCritical`. */
-type AutoDeltaVeto =
-  | { kind: "delta"; since: string }
-  | { kind: "forced"; reason: ForcedFullReason }
-  | { kind: "none" };
 import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
-import { branchHasOpenCriticalRow } from "./review-findings-critical-probe.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
 
@@ -314,43 +312,6 @@ export async function resolveReviewDiff(opts: {
       : {}),
   };
 }
-
-/**
- * #1832 — veto the automatic delta when an open, line-bearing CRITICAL row may
- * still be standing on this branch. Returns the delta's `since` when it may be
- * used, and `undefined` (→ a full review) when it may not, with `reason` saying
- * which of the two causes fired.
- *
- * The read is READ-ONLY (#1832 round 1): the probe resolves the store's location
- * without creating it and never copies an unreadable file aside — a delta
- * decision that leaves artefacts on disk is a side effect nobody asked for, and
- * the round's own record path keeps the copy-aside disclosure it always had.
- */
-async function vetoAutoDeltaForOpenCritical(
-  branch: string,
-  cwd: string | undefined,
-  autoSince: string | undefined,
-): Promise<AutoDeltaVeto> {
-  if (!autoSince) return { kind: "none" };
-  const probe = await branchHasOpenCriticalRow(cwd ?? process.cwd(), branch);
-  if (probe.kind === "absent") return { kind: "delta", since: autoSince };
-  const reason: ForcedFullReason =
-    probe.kind === "present"
-      ? { kind: "open-critical" }
-      : { kind: "findings-unreadable", detail: probe.reason };
-  trace(
-    `lens-review: automatic delta since ${autoSince.slice(0, 8)} vetoed — full review (${reason.kind}${reason.kind === "findings-unreadable" && reason.detail ? `: ${reason.detail}` : ""})`,
-  );
-  return { kind: "forced", reason };
-}
-
-/**
- * #1832 round 1 — the three answers the veto gives, so its caller SWITCHES on
- * the outcome instead of reading a `since` that is absent for two different
- * reasons. `{ kind: "none" }` means there was no automatic delta to veto at all
- * (no ledger entry, or a first review): nothing was forced, and the round is
- * full on its own merits.
- */
 
 /** Every `resolveReviewDiff` answer, shared by the delta helpers below. */
 type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;

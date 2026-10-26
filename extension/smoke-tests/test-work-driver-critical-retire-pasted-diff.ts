@@ -46,6 +46,7 @@ import type { LensLedgerOutcome } from "../src/lens-ledger.ts";
 import { setLedgerCriticalSectionHookForTests } from "../src/review-ledger-lock.ts";
 import { latestEntry, readLedgerFileSafe } from "../src/review-ledger-read.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
+import { resetFindingsStateCache } from "../src/review-state-path.ts";
 import { runLens } from "../src/work-driver-lens.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
@@ -119,6 +120,10 @@ async function main() {
     const agentDir = path.join(root, "agent");
     mkdirSync(agentDir, { recursive: true });
     process.env.PI_AGENT_DIR = agentDir;
+    // The state-dir resolver caches per clone for the process's life; this fixture
+    // repoints both the ledger override (which pins the findings file) and the
+    // agent dir, so the cache must not carry an answer from before the repointing.
+    resetFindingsStateCache();
 
     const { LENS_ROSTER } = await import("../src/lens-roster.ts");
     let prec = 10;
@@ -376,6 +381,9 @@ async function main() {
     else process.env.PI_ENSEMBLE_SKILLS_DIR = origSkills;
     if (origAgent === undefined) delete process.env.PI_AGENT_DIR;
     else process.env.PI_AGENT_DIR = origAgent;
+    // Same reason as before the run: the env is restored, so the cached answer
+    // for this clone must go with it rather than outlive the fixture.
+    resetFindingsStateCache();
     rmSync(root, { recursive: true, force: true });
   }
 }
