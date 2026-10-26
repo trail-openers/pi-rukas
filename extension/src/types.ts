@@ -176,7 +176,15 @@ export interface DispatchResult {
     | "tool-inactivity"
     | "child-bound"
     | "no-progress"
-    | "stuck-tool";
+    | "stuck-tool"
+    /** #1827 — a reviewer child re-read its own skill file past
+     * PI_ENSEMBLE_REVIEW_SKILL_READS (steer at N+1, this kill at N+2). A
+     * failure kill: a lens ended by it keeps its evidence and is not retried. */
+    | "review-skill-reread"
+    /** #1827 — the adversarial reviewer's live reply carried a parseable
+     * VERDICT and the child was ended as DONE at that point. Not a failure:
+     * `ok` stays true and the stop reason is reported, never retried. */
+    | "review-post-verdict";
   /**
    * #298 — set only on the SYNTHESIZED adversarial-loop result (role
    * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
@@ -345,6 +353,8 @@ export type DispatchFailureCause =
   /** #754 — the plan step's own wall-clock bound expired; a budget kill, not a provider fault — the plan step's corrective re-dispatch is the recovery, not a wholesale retry. */
   | "self-killed:plan-timeout"
   | "self-killed:child-bound"
+  /** #1827 — a reviewer re-read its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS. A self-inflicted cap: re-spawning reads the same file again, so no retry. */
+  | "self-killed:review-skill-reread"
   | "crashed"
   | "crashed-unknown";
 

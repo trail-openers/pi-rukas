@@ -147,6 +147,8 @@ function seamLabelFor(
     case "self-killed:token-budget":
     case "self-killed:plan-timeout":
     case "self-killed:child-bound":
+    // #1827 — a structured kill the rule reads exactly, so no model is asked.
+    case "self-killed:review-skill-reread":
     case "success":
     // #79 — matched only on the provider's own 404 message: exact.
     case "provider-model-unavailable":
@@ -313,6 +315,21 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   if (tail.killCause === "child-bound") {
     return { cause: "self-killed:child-bound", shouldRetry: false, maxRetries: 0 };
   }
+  // #1827 — the reviewer skill re-read cap: re-spawning would load the same
+  // SKILL.md and re-read it, so the retry reproduces the kill. Parks like the
+  // other self-kills.
+  if (tail.killCause === "review-skill-reread") {
+    return { cause: "self-killed:review-skill-reread", shouldRetry: false, maxRetries: 0 };
+  }
+  // #1827 — the post-verdict stop is a CLEAN END, not a failure: the child
+  // produced its verdict and `ok` stays true, so the router normally never
+  // reaches this classifier for it. An explicit branch sits here so a result
+  // that carries the stop AND reports ok=false cannot fall through to the
+  // `crashed` fallback (shouldRetry:true) and re-run a review whose verdict is
+  // already in hand.
+  if (tail.killCause === "review-post-verdict") {
+    return { cause: "success", shouldRetry: false, maxRetries: 0 };
+  }
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token
@@ -427,6 +444,11 @@ export function failureCauseReason(tail: {
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "self-killed:child-bound":
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
+    // #1827 — the reviewer re-read cap gets its own headline: a child that was
+    // reloading its SKILL.md is not a slow child, and "it ran out of time"
+    // would send the operator after the wrong knob.
+    case "self-killed:review-skill-reread":
+      return "ended by pi-rukas for re-reading its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS (the read/cat/grep alternation no loop detector sees) — retrying would read it again";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
@@ -474,6 +496,9 @@ export function failureCauseReasonForClass(
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "self-killed:child-bound":
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
+    // #1827 — same wording as the sibling reason site: the two must not drift.
+    case "self-killed:review-skill-reread":
+      return "ended by pi-rukas for re-reading its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS (the read/cat/grep alternation no loop detector sees) — retrying would read it again";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":

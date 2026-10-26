@@ -61,6 +61,17 @@ const WHY: Record<string, string> = {
   // corrective re-plan on the incident cycle finished in 37 s).
   "plan-timeout":
     "hit the plan step's own wall-clock bound (PI_ENSEMBLE_PLAN_TIMEOUT_MS, default 30 min) — the bound is on planning, not on the issue: a decomposition either converges quickly or is not converging, and the corrective re-plan the driver attempted did not recover",
+  // #1827 — the reviewer re-read cap. Distinct from `child-bound`: this child
+  // was not slow, it was reloading the same SKILL.md (alternating read/cat/
+  // grep, which no fingerprint-based loop detector can see), so "split the
+  // work" does not apply — re-issuing the same prompt re-reads it again.
+  "review-skill-reread":
+    "re-read its own skill file past the cap — it opened the same SKILL.md over and over (the read/cat/grep alternation no loop detector sees) instead of reviewing; the allowance is PI_ENSEMBLE_REVIEW_SKILL_READS (default 3 reads, steer at N+1, ended at N+2)",
+  // #1827 — not a kill: the reviewer wrote its verdict and this harness ended
+  // the child at that point rather than letting it run 200-300 more tool calls
+  // after the answer was already there. The report carries the verdict.
+  "review-post-verdict":
+    "ended the moment its VERDICT appeared — the answer was already written, and reviewers otherwise keep calling tools for hundreds of turns afterwards (PI_ENSEMBLE_ADVERSARIAL_BOUND_MS is the reviewer's own run bound; this stop is not a failure)",
 };
 
 /**

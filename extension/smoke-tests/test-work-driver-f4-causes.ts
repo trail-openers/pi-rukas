@@ -57,6 +57,24 @@ for (const [cause, killCause] of [
   );
 }
 
+// #1827 — the two reviewer-bound causes. `review-skill-reread` is a failure
+// kill that must never be retried (a retry re-reads the same SKILL.md); the
+// `review-post-verdict` stop is a CLEAN END, so a tail carrying it classifies
+// as success rather than falling through to the `crashed` shouldRetry:true
+// fallback. Both need a defined reason line, a WHY row, a distinct report
+// headline and an errorTail naming their OWN knobs — the point of this canary
+// is that none of these switches is compile-exhaustive.
+for (const [cause, killCause] of [
+  ["self-killed:review-skill-reread", "review-skill-reread"],
+  ["success", "review-post-verdict"],
+] as const) {
+  const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
+  assert(
+    cls.cause === cause && cls.shouldRetry === false && cls.maxRetries === 0,
+    `${killCause} → ${cause}, no retry`,
+  );
+}
+
 // A dispatch-failed with NO structured cause must NOT take the loop branch.
 {
   const cls = classifyFailureCause(
@@ -75,6 +93,8 @@ for (const [cause, killCause] of [
   ["self-killed:token-budget", "token-budget"],
   // #951 — tool-inactivity also needs a defined reason line.
   ["self-killed:tool-inactivity", "tool-inactivity"],
+  // #1827 — the reviewer-bound causes each need their own defined reason line.
+  ["self-killed:review-skill-reread", "review-skill-reread"],
 ] as const) {
   const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
   const reason = failureCauseReason(mkEvent({ killCause, kind: "dispatch-failed" }));
@@ -109,6 +129,11 @@ for (const [cause, killCause] of [
     ["token-budget", "token budget"],
     // #951 — tool-inactivity also needs a WHY line.
     ["tool-inactivity", "in flight"],
+    // #1827 — each reviewer-bound cause needs its own WHY row: a re-read kill
+    // says "skill file", a verdict stop says "VERDICT". Without a row the
+    // lookup falls to the generic "was killed by the harness".
+    ["review-skill-reread", "skill file"],
+    ["review-post-verdict", "VERDICT"],
   ] as const) {
     const state = {
       ...base,
@@ -141,6 +166,10 @@ for (const [killCause, needle] of [
   ["token-budget", "token budget"],
   // #951 — tool-inactivity also needs a distinct headline.
   ["tool-inactivity", "tool-inactivity"],
+  // #1827 — distinct headlines for the reviewer bounds too. The verdict stop
+  // is a clean end, so its headline names the stop rather than a kill.
+  ["review-skill-reread", "skill file"],
+  ["review-post-verdict", "VERDICT marker"],
 ] as const) {
   const report = formatSingleReport(`f4-${killCause}`, "developer", {
     role: "developer",
@@ -177,6 +206,10 @@ for (const [killCause, needle] of [
     // #951 — tool-inactivity names the tool-inactivity knob, NOT the
     // model-silence knob.
     ["tool-inactivity", "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS"],
+    // #1827 — each reviewer bound names its OWN knob, so the operator is not
+    // sent to the inactivity timeout or the develop bound for a reviewer kill.
+    ["review-skill-reread", "PI_ENSEMBLE_REVIEW_SKILL_READS"],
+    ["review-post-verdict", "PI_ENSEMBLE_ADVERSARIAL_BOUND_MS"],
   ] as const) {
     const ev = await buildCompletionEvent(ctx, "develop", "developer", "developer", {
       role: "developer",

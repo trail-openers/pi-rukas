@@ -259,11 +259,15 @@ export async function runLensChild(opts: {
       // just re-loop (the kill is the cap; the retry would undo it 4x).
       // #1564 — nor is a lens ended at its run bound: a retry would spend the
       // bound again on a child that did not answer within it.
+      // #1827 — nor a lens ended for re-reading its skill file: the retry
+      // would reload the same SKILL.md and re-read it, the exact shape the cap
+      // exists to stop.
       if (
         result &&
         (result.killCause === "loop" ||
           result.killCause === "token-budget" ||
-          result.killCause === "child-bound")
+          result.killCause === "child-bound" ||
+          result.killCause === "review-skill-reread")
       ) {
         break;
       }
@@ -330,6 +334,14 @@ export async function runLensChild(opts: {
     // #1564 — a lens ended at its run bound never gave a verdict: its lane is
     // not reviewed (blocked → REVIEW_INCOMPLETE) even when it reported some
     // findings first, which are kept.
+    //
+    // #1827 — a lens ended for re-reading its skill file is NOT in that
+    // class. The re-read cap stops a child that was working (it had the
+    // skill loaded N+1 times, so it demonstrably had it); whatever findings
+    // or closing summary it produced before the kill stand as its review,
+    // exactly like a loop/token-budget cap kill (#952), and the lane is not
+    // incomplete because of it. Only a re-read-killed lens with NO evidence
+    // is blocked, which is the same rule as any other failed lens.
     const bounded = result?.killCause === "child-bound";
     return {
       lens: lens.name,

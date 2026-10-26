@@ -227,6 +227,29 @@ export function skillLoadProof(
   return "unproven";
 }
 
+/**
+ * #1827 — the ONE predicate for "did this tool call open the skill file?",
+ * exported so the reviewer skill re-read cap (`review-bounds.ts`) counts reads
+ * with the same rule this proof uses instead of copying it. A copied predicate
+ * is a second source of truth that drifts: the cap would then stop a child for
+ * reads this module does not credit as loading the skill (or fail to stop ones
+ * it does).
+ *
+ * `skillPath` is the DRIVER-supplied skill path (`path.join(skillsDir,
+ * lens.skill)`), never anything a child wrote — same asymmetry the rest of this
+ * module enforces.
+ */
+export function isSkillFileRead(
+  toolName: string,
+  args: Record<string, unknown>,
+  skillPath: string,
+): boolean {
+  const dir = resolveSkillDir(skillPath ?? "");
+  if (!dir) return false;
+  const wants = skillFileCandidates(dir);
+  return isSkillRead(toolName.toLowerCase(), args, candidateDirs(wants), wants);
+}
+
 function isSkillRead(
   toolName: string,
   args: Record<string, unknown>,

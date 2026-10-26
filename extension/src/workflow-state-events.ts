@@ -205,7 +205,7 @@ export type WorkEvent =
       /** Process-level failure (non-zero exit), distinct from provider-error. */
       exitCode?: number | null;
       errorTail?: string;
-      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout; #951 adds tool-inactivity; #1567 adds child-bound/no-progress/stuck-tool). */
+      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout; #951 adds tool-inactivity; #1567 adds child-bound/no-progress/stuck-tool; #1827 adds review-skill-reread/review-post-verdict). */
       killCause?:
         | "timeout"
         | "inactivity"
@@ -216,7 +216,11 @@ export type WorkEvent =
         | "tool-inactivity"
         | "child-bound"
         | "no-progress"
-        | "stuck-tool";
+        | "stuck-tool"
+        /** #1827 — reviewer re-read its skill file past the cap (a failure kill). */
+        | "review-skill-reread"
+        /** #1827 — reviewer ended as done the moment its verdict appeared (a clean end, not a failure). */
+        | "review-post-verdict";
       /** #543 — the F1 streak evidence at a loop kill (tool + count);
        * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped.
        * #772 — `kind` names which counter fired ("streak" vs the success-keyed

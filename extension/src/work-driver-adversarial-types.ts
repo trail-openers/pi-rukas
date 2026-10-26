@@ -85,7 +85,16 @@ export interface AdversarialOutcome {
     | "plan-timeout"
     | "child-bound"
     | "no-progress"
-    | "stuck-tool";
+    | "stuck-tool"
+    /** #1827 — the reviewer re-read its own skill file past the cap. Carried
+     * for REPORTING only: never promoted into `capKillOutcomeFields` /
+     * `DISPATCH_CAP_KILL_CAUSES`, so it cannot park a cycle on a fixed-literal
+     * cap it does not own. */
+    | "review-skill-reread"
+    /** #1827 — the reviewer was ended as done once its verdict appeared.
+     * Reporting only, same exclusion as `review-skill-reread`, and never a
+     * retry-ladder cause (a clean end is not a fault). */
+    | "review-post-verdict";
   /** #543 — the F1 streak evidence for a loop kill, threaded from the inner
    * spawn's DispatchResult so the driver can persist `capEvidence`. */
   loopEvidence?: { tool: string; count: number };

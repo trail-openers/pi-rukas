@@ -167,6 +167,27 @@ export function describeOutcome(result: DispatchResult): {
       bodyPrefix: null,
     };
   }
+  // #1827 — the reviewer skill re-read cap. Its own headline, not the loop
+  // detector's: "repeated the same tool call" is false for this shape (the
+  // child alternated read/cat/grep, which is exactly why no fingerprint
+  // repeated) and would send the operator to the loop knobs.
+  if (result.killCause === "review-skill-reread") {
+    return {
+      status:
+        "FAILED (self-killed: re-read its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS)",
+      bodyPrefix: null,
+    };
+  }
+  // #1827 — NOT a failure. The reviewer wrote its VERDICT and was ended at that
+  // point rather than running the 200-300-call tail; the report says so in
+  // words because a bare "finished" would hide that the harness stopped the
+  // child, and the stop reason is what an operator goes looking for.
+  if (result.killCause === "review-post-verdict") {
+    return {
+      status: "finished (ended at its VERDICT marker — post-verdict tool calls stopped)",
+      bodyPrefix: null,
+    };
+  }
   if (result.errorStop && isRateLimit429Msg(result.errorStop.message)) {
     // #366's distinction, not a second one. A per-minute token bucket and a
     // 24-hour quota exhaustion arrive as the same status code and differ only
