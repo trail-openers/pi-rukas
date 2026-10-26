@@ -85,6 +85,12 @@ type FailedDispatch = Extract<WorkEvent, { kind: "dispatch-failed" | "dispatch-f
 /** Caps a failed dispatch causes: the failure is read from that dispatch. */
 const DISPATCH_CAPS: ReadonlySet<string> = new Set([
   "adversarial-infra-failure",
+  // #1634 — the gate's own diff read failed. Listed so the synthesised
+  // `dispatch-failed` behind it is read for `cause` / `errorTail`, but its KIND
+  // always comes from the cap (CAP_KIND_WINS below): that event is the driver's
+  // synthesis, not a child that died, and reading its kind off the event would
+  // report a failed `git diff` to a host as `process` — a crashed child.
+  "adversarial-diff-unreadable",
   // #1243 — listed so the failed dispatch behind a provider park is read: its
   // cause, provider message and exit code reach the host, and the KIND still
   // comes from the cap (CAP_KIND_WINS below) rather than from the last event,
@@ -109,6 +115,12 @@ const DISPATCH_CAPS: ReadonlySet<string> = new Set([
  *  exists to explain them (#1403). */
 const CAP_KIND_WINS: ReadonlySet<string> = new Set([
   "develop-child-crash",
+  // #1634 — no child ran. `dispatchKind` would answer `process` for the
+  // synthesised event (no killCause, no provider member), which tells a host a
+  // process failed when the truth is that the driver could not read the tree.
+  // `capKind` has no case for this cap, so it falls to `cap`: the cycle stopped
+  // on the driver's own rule, and nothing about the code was judged.
+  "adversarial-diff-unreadable",
   // #1243 — the outage is the reason, and the cap already says so; a rung of
   // the retry ladder that died of something else must not relabel the park.
   "provider-unavailable",

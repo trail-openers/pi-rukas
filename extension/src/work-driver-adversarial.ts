@@ -15,6 +15,10 @@ import { execp } from "./exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
+import {
+  adversarialDiffUnreadableCapHit,
+  isDiffUnreadableOutcome,
+} from "./work-driver-adversarial-diff-cap.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
 import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
 import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
@@ -126,18 +130,16 @@ export async function runAdversarial(
       return next;
     }
     // #1634 — the shortfall is the driver's own diff READ, so the park names
-    // the read (same routing as the two final-failure branches below).
-    if (infraShortfall.every((o) => o.diffUnreadable)) {
-      next = appendEvent(next, {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap: "adversarial-diff-unreadable",
-        reviewRound: state.pipelineState.reviewRound,
-        nextStep: "handoff",
-        ...(state.pipelineState.adversarialDiffError
-          ? { evidence: state.pipelineState.adversarialDiffError }
-          : {}),
-      });
+    // the read (same routing as the two final-failure branches below), with the
+    // failing outcome's own reason as its evidence.
+    if (infraShortfall.every(isDiffUnreadableOutcome)) {
+      next = appendEvent(
+        next,
+        adversarialDiffUnreadableCapHit(
+          infraShortfall.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
+          state.pipelineState.reviewRound,
+        ),
+      );
       return next;
     }
     const noVerdict = new Set(infraShortfall.map((o) => o.id));
@@ -301,20 +303,17 @@ export async function runAdversarial(
       const names = failed.map((o) => o.id).join(", ");
       // #1634 — a diff nobody could read is not a reviewer that failed to run:
       // it gets the cap that names the read, with the git error as evidence.
-      if (failed.every((o) => o.diffUnreadable)) {
+      if (failed.every(isDiffUnreadableOutcome)) {
         trace(
           `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
         );
-        next = appendEvent(next, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: "adversarial-diff-unreadable",
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-          ...(state.pipelineState.adversarialDiffError
-            ? { evidence: state.pipelineState.adversarialDiffError }
-            : {}),
-        });
+        next = appendEvent(
+          next,
+          adversarialDiffUnreadableCapHit(
+            failed.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
+            state.pipelineState.reviewRound,
+          ),
+        );
         return next;
       }
       trace(
@@ -366,20 +365,17 @@ export async function runAdversarial(
     const names = failed.map((o) => o.id).join(", ");
     // #1634 — every failing workstream failed the same READ, so the park names
     // the read rather than the reviewer.
-    if (failed.every((o) => o.diffUnreadable)) {
+    if (failed.every(isDiffUnreadableOutcome)) {
       trace(
         `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
       );
-      next = appendEvent(next, {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap: "adversarial-diff-unreadable",
-        reviewRound: state.pipelineState.reviewRound,
-        nextStep: "handoff",
-        ...(state.pipelineState.adversarialDiffError
-          ? { evidence: state.pipelineState.adversarialDiffError }
-          : {}),
-      });
+      next = appendEvent(
+        next,
+        adversarialDiffUnreadableCapHit(
+          failed.map((o) => o.errorTail ?? o.rejectionText).find(Boolean),
+          state.pipelineState.reviewRound,
+        ),
+      );
       return next;
     }
     trace(

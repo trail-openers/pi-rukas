@@ -15,6 +15,7 @@
  */
 
 import { redactClip } from "./decision-log.ts";
+import { adversarialDiffUnreadableCapHit } from "./work-driver-adversarial-diff-cap.ts";
 import {
   FAILURE_REASON_CHARS,
   classifyFailureCause,
@@ -80,20 +81,14 @@ export function dispatchFailCapFor(
   // #1634 — an adversarial child that never ran because the driver could not
   // READ the diff is a failed read, not a failed dispatch: it gets the cap that
   // names the read, so the operator is sent to the worktree rather than to the
-  // reviewer. The fan-out stamps this marker on the failure it synthesises for
-  // an unreadable tree (work-driver-adversarial-fanout-diff.ts).
-  if (step === "adversarial" && isDiffUnreadableTail(tail)) return "adversarial-diff-unreadable";
+  // reviewer. The fan-out stamps `diffUnreadable` on the failure it synthesises
+  // for an unreadable tree (work-driver-adversarial-fanout-diff.ts) and the
+  // routing reads THAT, structurally — never a prefix of `errorTail`, which the
+  // reason renderer owns.
+  if (step === "adversarial" && tail?.kind === "dispatch-failed" && tail.diffUnreadable === true) {
+    return "adversarial-diff-unreadable";
+  }
   return `step-failed:${step}`;
-}
-
-/** The marker the fan-out puts on an unreadable-diff failure's error tail. */
-const DIFF_UNREADABLE_MARK = "adversarial could not read the diff for workstream ";
-
-/** Did this failed dispatch record an unreadable diff rather than a dead child? */
-export function isDiffUnreadableTail(tail: DispatchFailureEvent | undefined): boolean {
-  return (tail?.kind === "dispatch-failed" ? (tail.errorTail ?? "") : "").startsWith(
-    DIFF_UNREADABLE_MARK,
-  );
 }
 
 /**
@@ -157,6 +152,19 @@ export function dispatchFailCapHit(
   tail: DispatchFailureEvent | undefined,
 ): Extract<WorkEvent, { kind: "cap-hit" }> {
   const cap = dispatchFailCapFor(step, tail);
+  // #1634 — the read park is built by the ONE helper in
+  // work-driver-adversarial-diff-cap.ts, so its evidence is redacted and
+  // clipped the same way whichever site raises it (this one, or the three in
+  // the step handler). `dispatchFailCapFor` above is what recognises the read,
+  // structurally, from the marker on the event.
+  if (cap === "adversarial-diff-unreadable") {
+    // Built by the ONE helper — which also stamps `at`, so the sites cannot
+    // drift on anything but the reason they were handed.
+    return adversarialDiffUnreadableCapHit(
+      tail?.kind === "dispatch-failed" ? tail.errorTail : undefined,
+      state.pipelineState.reviewRound,
+    );
+  }
   return {
     kind: "cap-hit",
     at: Date.now(),
@@ -164,9 +172,5 @@ export function dispatchFailCapHit(
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
     ...(cap === "provider-unavailable" ? { evidence: providerParkEvidence(tail) } : {}),
-    // #1634 — the read's own git error is the evidence for the read park.
-    ...(cap === "adversarial-diff-unreadable" && tail?.kind === "dispatch-failed"
-      ? { evidence: tail.errorTail }
-      : {}),
   };
 }

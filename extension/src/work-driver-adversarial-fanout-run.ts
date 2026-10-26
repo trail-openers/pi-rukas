@@ -19,7 +19,12 @@ import {
   capKillOutcomeFields,
   retryLadderKillCause,
 } from "./work-driver-adversarial-fanout-capkill.ts";
-import { readDiffOrFailureOutcome } from "./work-driver-adversarial-fanout-diff.ts";
+import {
+  DiffRereadError,
+  diffRereadFailureOutcome,
+  isDiffRereadError,
+  readDiffOrFailureOutcome,
+} from "./work-driver-adversarial-fanout-diff.ts";
 import { interpretReview, reviewRoundFor, reviewTrack } from "./work-driver-adversarial-fix.ts";
 import { roundsRecords } from "./work-driver-adversarial-reentry.ts";
 import { scopeFor } from "./work-driver-adversarial-scope.ts";
@@ -42,8 +47,6 @@ export interface RunOneArgs {
   wsMap: PipelineState["workstreams"];
   /** The outcome a prior pass recorded for this workstream, if any. */
   priorOutcomes: Map<string, string>;
-  /** Thread the read failure to `pipelineState.adversarialDiffError` (#1634). */
-  recordWhy: (why: string) => void;
 }
 
 /**
@@ -86,7 +89,6 @@ export async function runAdversarialWorkstream(
     startedAt,
     priorOutcomes,
     execFn: ctx.verifyExecFn,
-    recordWhy: args.recordWhy,
   });
   if (!read.ok) return read.outcome;
   const diff = read.diff;
@@ -141,9 +143,14 @@ export async function runAdversarialWorkstream(
         // that its earlier objections were already addressed.
         getDiff: async () => {
           const reread = await readWorktreeDiff(cwd, baseSha, ctx.verifyExecFn);
-          // #1634 — a failed re-read THROWS rather than returning "": the loop
-          // keeps the previous round's diff and records the staleness (#859).
-          if (!reread.ok) throw new Error(reread.reason);
+          // #1634 — a failed re-read throws the READ's own failure type, not a
+          // plain Error: the caller below turns it into the same no-verdict
+          // `diffUnreadable` outcome a failed round-1 read produces. It used to
+          // throw a bare Error the reviewer loop caught, noted, and carried on
+          // reviewing the previous round's diff with — to an APPROVED with no
+          // diff behind it (#859's "keep the previous diff" is the wrong rule
+          // for a gate).
+          if (!reread.ok) throw new DiffRereadError(reread.reason);
           return reread.diff;
         },
         // What the fix pass before this re-review changed, to be read first.
@@ -183,6 +190,21 @@ export async function runAdversarialWorkstream(
       orchestratorJobId,
     );
   } catch (err) {
+    // #1634 — a failed re-read is the driver's own read failing, not a child
+    // that died: same no-verdict outcome, same cap, never an approval on the
+    // stale diff the loop would otherwise have carried forward.
+    if (isDiffRereadError(err)) {
+      return diffRereadFailureOutcome({
+        id,
+        cwd,
+        multi,
+        label,
+        jobId: orchestratorJobId,
+        startedAt,
+        priorOutcomes,
+        reason: err.reason,
+      });
+    }
     const errMsg = (err as Error).message?.slice(-200);
     return {
       id,

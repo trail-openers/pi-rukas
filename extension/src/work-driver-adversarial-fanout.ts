@@ -17,6 +17,7 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
+import { isDiffUnreadableOutcome } from "./work-driver-adversarial-diff-cap.ts";
 import {
   capKillOutcomeFields,
   retryLadderKillCause,
@@ -123,25 +124,20 @@ export async function fanOutAdversarial(
   // errorTail. The span is captured by the caller on the ORIGINAL event
   // log — BEFORE this pass's events are appended.
   const passStart = priorBatchSpan ? priorBatchSpan[0] : state.eventLog.length;
-  // #1634 — the per-workstream pass (diff read + reviewer loop) lives in
-  // work-driver-adversarial-fanout-run.ts (§12 size); the read failure is
-  // recorded there on the pipeline state so the handoff names the git error.
+  // #485/#486 — the per-workstream pass (diff read + reviewer loop) lives in
+  // work-driver-adversarial-fanout-run.ts (§12 size). A failed read carries its
+  // own reason on the outcome and on the cap's evidence, so nothing is threaded
+  // through a mutable pipeline-state field (which sibling won the race used to
+  // decide what the handoff said).
   const runOne = (id: string): Promise<AdversarialOutcome> =>
-    runAdversarialWorkstream(id, {
-      ctx,
-      state,
-      multi,
-      wsMap,
-      priorOutcomes,
-      recordWhy: (why) => {
-        next = {
-          ...next,
-          pipelineState: { ...next.pipelineState, adversarialDiffError: why },
-        };
-      },
-    });
+    runAdversarialWorkstream(id, { ctx, state, multi, wsMap, priorOutcomes });
 
-  const isTransient = (o: AdversarialOutcome): boolean => isTransientAdversarialOutcome(o);
+  const isTransient = (o: AdversarialOutcome): boolean =>
+    // #1634 — the driver's own diff read is DETERMINISTIC: a re-run of a
+    // missing worktree or a failing `git diff` says the same thing, so the
+    // ladder would only buy waits. Park at once instead of spending the
+    // per-workstream budget and a jittered sleep on it.
+    !isDiffUnreadableOutcome(o) && isTransientAdversarialOutcome(o);
   const classify = (o: AdversarialOutcome) => classifyAdversarialOutcome(o);
 
   // #486 — workstreams that produced a VERDICT (approved / rejected /

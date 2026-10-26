@@ -218,9 +218,6 @@ export interface PipelineState extends IssueClosedState {
    * operator does not have to reproduce it.
    */
   lensDiffError?: string;
-  /** #1634 — adversarial twin of `lensDiffError`: the git error that stopped
-   * the gate reading a workstream's diff. */
-  adversarialDiffError?: string;
   mergeHold?: VerifyMergeHold;
   planQuality?: VerifyPlanQuality;
   /**
