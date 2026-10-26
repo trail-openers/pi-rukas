@@ -29,6 +29,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
+import { commandOf } from "./argv-shell.ts";
 
 /** The identity every fixture commit carries, so a CI runner with no global
  *  git identity still commits (#1016 hit this through the safety net). */
@@ -75,9 +76,15 @@ export function initCleanRepo(dir: string): string {
 
 /**
  * #1634 — the two git reads the adversarial gate makes of a worktree, matched
- * on the argv prefix `readWorktreeDiff` issues through the driver's exec seam
- * (`execFn("git", { argv, cwd })`). That argv form is the only transport
- * production uses, so it is the only form matched here.
+ * on BOTH transport forms. `readWorktreeDiff` goes through the driver's exec
+ * seam as argv (`execFn("git", { argv, cwd })`); a fixture that instead
+ * normalises its incoming call with `commandOf` — as the mechanized-commit,
+ * commit-fallback and issue-818 fixtures all do — presents the shell-form line
+ * with `o.argv` already folded away. Production uses only the argv form; the
+ * string branch exists for the fakes that normalise before matching, and
+ * dropping it makes those three fixtures park on `adversarial-diff-unreadable`
+ * (their catch-all answers the gate's reads with `""`, which the gate
+ * fail-closes on rather than approving).
  */
 const GATE_ARGV_READS = [
   ["rev-parse", "--show-toplevel"],
@@ -106,11 +113,19 @@ function gateArgvRead(argv: string[] | undefined): (typeof GATE_ARGV_READS)[numb
  * scripted answers — cherry-pick, push, `gh pr create` — are unaffected.
  *
  * `diffFor` lets a fixture return the diff it wants the gate to see (non-empty
- * = the reviewer actually runs instead of skipping on an empty diff). No caller
- * uses it yet; it is kept because STEP 3's kill-cause fixture is the case it
- * exists for. The SHELL-FORM branch this once carried is gone: production's
- * `readWorktreeDiff` reaches the seam only as `execFn("git", { argv, cwd })`,
- * and a branch no caller exercises is a branch no test proves.
+ * = the reviewer actually runs instead of skipping on an empty diff) — the
+ * kill-cause fixture is that caller.
+ *
+ * The argv branch also makes the worktree directory exist (`mkdir -p`) before
+ * answering, because `readWorktreeDiff` calls `realpathSync` on BOTH `cwd` and
+ * the value `rev-parse --show-toplevel` printed and fail-closes if either
+ * cannot be resolved. A fixture that models its worktrees in the `## Worktrees`
+ * reply without creating them on disk (mechanized-commit, -fallback, issue-818)
+ * hits that guard: the gate refuses the read because the directory it names
+ * does not exist. Creating the directory lets the wrapper answer the same two
+ * reads it already did, and the answer is now one a real `realpathSync` can
+ * reproduce. The directories live under the fixture's own temp dir, which the
+ * case removes when it finishes.
  */
 export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
   exec: F,
@@ -123,8 +138,21 @@ export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
   });
   return (async (cmd: any, o?: any) => {
     const read = gateArgvRead(o?.argv);
-    if (cmd !== "git" || !read) return exec(cmd, o);
-    const range = o.argv.find((a: string) => a.includes(".."));
-    return read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, range);
+    // A shell-form fake may already have folded argv into the command string,
+    // in which case `o.argv` is gone and only the line below matches.
+    if (cmd === "git" && read) {
+      // The gate `realpathSync`s the worktree path; a fixture that only names
+      // its worktrees in the branch reply has no such directory, and the read
+      // fail-closes on the ENOENT. Make the tree exist before answering.
+      mkdirSync(o.cwd, { recursive: true });
+      const range = o.argv.find((a: string) => a.includes(".."));
+      return read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, range);
+    }
+    const line = typeof cmd === "string" ? commandOf(cmd, o) : "";
+    if (line === "git rev-parse --show-toplevel") return { stdout: `${o?.cwd ?? ""}\n` };
+    if (line.startsWith("git diff --end-of-options ")) {
+      return diff(o?.cwd ?? "", line.slice("git diff --end-of-options ".length));
+    }
+    return exec(cmd, o);
   }) as unknown as F;
 }
