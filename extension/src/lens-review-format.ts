@@ -13,6 +13,7 @@
 import os from "node:os";
 import path from "node:path";
 import type { SuppressedFinding } from "./lens-residuals.ts";
+import type { ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
@@ -89,6 +90,20 @@ export interface LensReviewSummary {
    * findings on the DELTA; a later full review still owns the rest of the branch.
    */
   deltaReview?: { since: string; head: string; auto?: boolean; fallback?: string };
+  /**
+   * #1832 — this review ran FULL although an automatic delta was available,
+   * because an open CRITICAL row is pending (`open-critical`) or the findings
+   * store could not be read (`findings-unreadable`, with `detail` saying why the
+   * read failed). A CRITICAL row retires only on a complete full review, so the
+   * delta stands down.
+   *
+   * #1832 round 1 — its OWN field, not a member of `deltaReview`. A forced full
+   * review HAS no delta, and the first cut rode the reason on `deltaReview` with
+   * empty `since`/`head`: every other reader of that field slices them as refs
+   * and would render `since ` of nothing, so the marker was only ever readable by
+   * the one arm of one renderer that tested for the emptiness.
+   */
+  forcedFull?: ForcedFullReason;
   /**
    * #973 — the no-review outcome (decision 4): the delta was empty (nothing
    * changed since the last recorded lens run), so no review ran at all. The

@@ -27,7 +27,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { execp } from "./exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
+import type { AutoDeltaVeto, ForcedFullReason } from "./lens-review-delta-disclose.ts";
+import { forcedFullText } from "./lens-review-delta-disclose.ts";
 import type { LensReviewSummary, Verdict } from "./lens-review-format.ts";
+import { branchHasOpenCriticalRow } from "./review-findings-critical-probe.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import {
   type LedgerEntry,
@@ -37,7 +40,7 @@ import {
   readLedgerAt,
 } from "./review-ledger.ts";
 import { committedIdentity } from "./review-patch-identity.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 const execFileP = promisify(execFile);
 
@@ -114,6 +117,53 @@ export async function resolveDeltaSince(
   }
   trace(`lens-review: auto since — delta review since ${headSha.slice(0, 8)}`);
   return headSha;
+}
+
+/**
+ * #1832 — veto the automatic delta that `resolveDeltaSince` just produced when an
+ * open, line-bearing CRITICAL row may still be standing on this branch.
+ *
+ * The two sit together because they are the two halves of one decision:
+ * `resolveDeltaSince` answers WHERE a follow-up would start, and this answers
+ * WHETHER it may. `resolveReviewDiff` calls them as one expression, and a reader
+ * who wants to know why a round came out full needs both in view — the base and
+ * the veto — rather than one here and one in the disclosure module.
+ *
+ * The probe is consulted only when an automatic delta actually resolved: with no
+ * ledger entry there is no delta to veto and no round to force, and a review that
+ * was already going to be full costs no extra read.
+ *
+ * The read is READ-ONLY (#1832 round 1): the probe resolves the store's location
+ * without creating it and never copies an unreadable file aside — a delta decision
+ * that leaves artefacts on disk is a side effect nobody asked for, and the round's
+ * own record path keeps the copy-aside disclosure it always had.
+ *
+ * The veto's trace goes through `traceWarn` (#1832 round 2), not the debug-gated
+ * `trace`: a round that is full when its caller asked for a delta should be
+ * findable after the fact without setting `PI_ENSEMBLE_DEBUG` — the forced round
+ * is longer and costs more, and "why is this review full" is the first question it
+ * raises. The reason's WORDING lives with the reason, in
+ * `forcedFullText` (lens-review-delta-disclose.ts), and this trace renders THAT:
+ * #1832 round 3 spelled its own parenthetical here, which is the second definition
+ * of one sentence the disclosure module's header exists to prevent — and the one
+ * that quietly dropped the neutralisation `forcedFullText` applies to the detail.
+ */
+export async function vetoAutoDeltaForOpenCritical(
+  branch: string,
+  cwd: string | undefined,
+  autoSince: string | undefined,
+): Promise<AutoDeltaVeto> {
+  if (!autoSince) return { kind: "none" };
+  const probe = await branchHasOpenCriticalRow(cwd ?? process.cwd(), branch);
+  if (probe.kind === "absent") return { kind: "delta", since: autoSince };
+  const reason: ForcedFullReason =
+    probe.kind === "present"
+      ? { kind: "open-critical" }
+      : { kind: "findings-unreadable", detail: probe.reason };
+  traceWarn(
+    `lens-review: automatic delta since ${autoSince.slice(0, 8)} vetoed — full review (${forcedFullText(reason)})`,
+  );
+  return { kind: "forced", reason };
 }
 
 /** The verdicts a recorded lens entry can carry (the `detail` of a lens row). */

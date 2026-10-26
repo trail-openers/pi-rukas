@@ -22,7 +22,7 @@
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
-import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
+import { deltaFallbackText, forcedFullText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
 import {
   type Finding,
@@ -180,7 +180,13 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
               ]
             : []),
         ]
-      : ["Mode: full review (the whole branch diff)"]),
+      : // #1832 — a full review, with the reason when the automatic delta stood
+        // down for one, so the operator can tell a forced full round from an
+        // ordinary one and knows why the follow-up was not a cheap delta. The
+        // reason is its own field, not a `deltaReview` with empty refs.
+        [
+          `Mode: full review (${s.forcedFull ? forcedFullText(s.forcedFull) : "the whole branch diff"})`,
+        ]),
     `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,
     ...blockedBanner,
     ...retryNote,

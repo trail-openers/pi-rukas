@@ -275,6 +275,10 @@ async function locate(cwd: string): Promise<FindingsLocation | undefined> {
  * decision). The round's own record path does NOT read fail-open: an unreadable
  * findings file fails the round, because a round recorded on "no memory" would
  * resolve rows the unreadable file may still hold.
+ *
+ * #1832 — the "does this branch still hold an open line-bearing CRITICAL?"
+ * question is NOT answerable from this read (fail-open collapses unreadable into
+ * "no rows"), so it lives beside it in review-findings-critical-probe.ts.
  */
 export async function readBranchRows(cwd: string, branch: string): Promise<StoredFinding[]> {
   try {

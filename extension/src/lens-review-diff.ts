@@ -35,9 +35,14 @@ import {
   type CarriedEntry,
   decideEmptyDelta,
   resolveDeltaSince,
+  vetoAutoDeltaForOpenCritical,
   writeCarriedEntry,
 } from "./lens-review-auto-delta.ts";
-import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
+import type {
+  AutoDeltaInfo,
+  AutoDeltaVeto,
+  ForcedFullReason,
+} from "./lens-review-delta-disclose.ts";
 import type { Verdict } from "./lens-review.ts";
 import { resolveAutoHunkDelta, resolveMainlineBase } from "./review-delta-hunks.ts";
 import { computeDeltaDiff, computeRangeDiff } from "./review-diff.ts";
@@ -175,6 +180,18 @@ export async function resolveDeltaDiff(
  * range. An empty delta is the no-review outcome (decision 4 — no fan-out,
  * no ledger entry); a problem is a block.
  *
+ * #1832 — one thing vetoes the AUTOMATIC delta: a still-open, line-bearing
+ * CRITICAL row on the branch (or a findings store that cannot be read to rule
+ * one out). `rowFate` resolves a CRITICAL row only on a COMPLETE full review,
+ * so a delta-only follow-up could never retire one, and one since-fixed
+ * CRITICAL would hold every later verdict — and the merge guard — blocked
+ * forever. The veto sits HERE rather than at the two callers (the
+ * `dispatch_lens_review` tool and the /work lens step) so one rule covers both.
+ * It applies to the AUTOMATIC delta only: an explicit `since` is an operator's
+ * instruction and still wins. When the veto produces an EMPTY range (the tip is
+ * the recorded head) the outcome is the existing #1176 carry / no-review path —
+ * a forced full review never turns an unchanged tip into a blocked review.
+ *
  * Every `ok` outcome says WHO produced its diff. `diffSource: "caller"` is the
  * pasted-string arm — a value the review never read from git, which the advisory
  * split therefore does not judge findings against; `"computed"` is every
@@ -196,6 +213,15 @@ export async function resolveReviewDiff(opts: {
       kind: "ok";
       diff: string;
       delta?: AutoDeltaInfo;
+      /** #1832 — set on EVERY `ok` outcome that is a FULL review because the
+       * automatic delta stood down (an open CRITICAL row is pending, or the
+       * findings store is unreadable), and stamped in ONE place — the `okArm`
+       * helper below — rather than at each arm. Never set together with `delta`:
+       * a delta and a veto are mutually exclusive, and an arm that returns a
+       * `delta` has already returned before the stamp could apply. The reason
+       * carries its own `detail` when the read failed, so there is no separate
+       * detail field to keep in step with it (#1832 round 2). */
+      forcedFull?: ForcedFullReason;
       /** Who produced `diff` — see the header: only a `computed` range is the
        * split's source of truth for what the PR changed. */
       diffSource: "caller" | "computed";
@@ -228,10 +254,16 @@ export async function resolveReviewDiff(opts: {
   // SHA is a strict ancestor of the reviewed head. Every other shape
   // (first review, missing ledger, legacy entry without headSha, non-ancestor)
   // resolves to undefined and the review is full.
-  const autoSince =
+  const veto =
     !opts.full && !opts.since && opts.branch
-      ? await resolveDeltaSince(opts.branch, opts.head, opts.cwd)
-      : undefined;
+      ? await vetoAutoDeltaForOpenCritical(
+          opts.branch,
+          opts.cwd,
+          await resolveDeltaSince(opts.branch, opts.head, opts.cwd),
+        )
+      : ({ kind: "none" } as const);
+  const autoSince = veto.kind === "delta" ? veto.since : undefined;
+  const forcedFullReason = veto.kind === "forced" ? veto.reason : undefined;
   const since = opts.since ?? autoSince;
   // #1128 — the automatic delta resolves its hunk-level patch first.
   if (autoSince) return resolveAutoDelta(opts, autoSince);
@@ -252,6 +284,11 @@ export async function resolveReviewDiff(opts: {
       head: d.head,
     };
   }
+  // #1832 — the automatic delta was available but stood down. Record why, and
+  // let the full-range arm below produce the whole-branch diff. When that range
+  // turns out empty the existing #1176 paths decide it, so this never becomes a
+  // blocked review for a tip with nothing new on it.
+  const forcedFull = opts.full || opts.since ? undefined : forcedFullReason;
   const resolution = await resolveLensDiff(opts);
   if (resolution.problem) {
     return { kind: "blocked", problem: resolution.problem };
@@ -270,10 +307,30 @@ export async function resolveReviewDiff(opts: {
     diffSource: resolution.diffSource ?? "caller",
     ...(resolution.base !== undefined ? { base: resolution.base } : {}),
     ...(opts.head !== undefined ? { head: opts.head } : {}),
+    ...(forcedFull ? { forcedFull } : {}),
   };
 }
 
+/** Every `resolveReviewDiff` answer, shared by the delta helpers below. */
 type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
+
+/**
+ * The single place a full-review `ok` outcome is built (#1832 round 2).
+ *
+ * `resolveReviewDiff` has three arms that can return a FULL review — the explicit
+ * `since` arm returns a delta, so it is not one of them — and the two of them that
+ * can be reached with the veto fired return through here, so every one of them
+ * carries `forcedFull` when it fired. Writing the spread at each arm is
+ * how the field came to be stamped on one and missed on another: an arm without
+ * it reports a forced full review as an ordinary one, and the `Mode:` line the
+ * operator reads says "the whole branch diff" for a round that was forced.
+ */
+function okArm(
+  fields: Omit<Extract<ReviewDiffOutcome, { kind: "ok" }>, "kind" | "forcedFull">,
+  forcedFull: ForcedFullReason | undefined,
+): Extract<ReviewDiffOutcome, { kind: "ok" }> {
+  return { kind: "ok", ...fields, ...(forcedFull ? { forcedFull } : {}) };
+}
 
 /**
  * #1128 — the automatic delta's diff. The hunk-level reviewed patch
@@ -366,13 +423,15 @@ async function emptyAutoDelta(
       problem: "lens review: the full diff returned no content; it is not treated as empty (#384)",
     };
   }
-  return {
-    kind: "ok",
-    diff: full.diff,
-    diffSource: "computed",
-    base,
-    head,
-  };
+  return okArm(
+    {
+      diff: full.diff,
+      diffSource: "computed",
+      base,
+      head,
+    },
+    undefined,
+  );
 }
 
 /**
