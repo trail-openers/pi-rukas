@@ -23,21 +23,30 @@
  */
 
 import { trace } from "./trace.ts";
+import { isDiffUnreadableDispatch } from "./work-driver-adversarial-diff-cap.ts";
 import type { DispatchFailureEvent } from "./work-driver-provider-park.ts";
 import { dispatchFailCapHit } from "./work-driver-provider-park.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 import { appendEvent, persistCycle } from "./workflow-state.ts";
+
+/**
+ * Did this dispatch-failure event record the driver's failed diff READ?
+ *
+ * The STEP test stays here (this park belongs to the adversarial step alone);
+ * the MARKER test is the cap module's ONE predicate, so the router and the
+ * three park sites in the step handler cannot diverge on what the marker means.
+ */
+export function isUnreadableDiffTail(step: WorkStep, tail: DispatchFailureEvent): boolean {
+  return (
+    step === "adversarial" && tail.kind === "dispatch-failed" && isDiffUnreadableDispatch(tail)
+  );
+}
 
 /** What the park needs from the cycle: the persistence target and the interrupt signal. */
 export interface DiffReadParkCtx {
   repoRoot: string;
   emitSink: Parameters<typeof persistCycle>[0]["emitSink"];
   signal?: AbortSignal;
-}
-
-/** Did this dispatch-failure event record the driver's failed diff READ? */
-export function isUnreadableDiffTail(step: WorkStep, tail: DispatchFailureEvent): boolean {
-  return step === "adversarial" && tail.kind === "dispatch-failed" && tail.diffUnreadable === true;
 }
 
 /**

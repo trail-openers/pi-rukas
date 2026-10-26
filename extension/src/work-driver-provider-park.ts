@@ -15,7 +15,10 @@
  */
 
 import { redactClip } from "./decision-log.ts";
-import { adversarialDiffUnreadableCapHit } from "./work-driver-adversarial-diff-cap.ts";
+import {
+  adversarialDiffUnreadableCapHit,
+  isDiffUnreadableDispatch,
+} from "./work-driver-adversarial-diff-cap.ts";
 import {
   FAILURE_REASON_CHARS,
   classifyFailureCause,
@@ -81,11 +84,14 @@ export function dispatchFailCapFor(
   // #1634 — an adversarial child that never ran because the driver could not
   // READ the diff is a failed read, not a failed dispatch: it gets the cap that
   // names the read, so the operator is sent to the worktree rather than to the
-  // reviewer. The fan-out stamps `diffUnreadable` on the failure it synthesises
-  // for an unreadable tree (work-driver-adversarial-fanout-diff.ts) and the
-  // routing reads THAT, structurally — never a prefix of `errorTail`, which the
-  // reason renderer owns.
-  if (step === "adversarial" && tail?.kind === "dispatch-failed" && tail.diffUnreadable === true) {
+  // reviewer. Which event says so is the cap module's ONE predicate — the same
+  // one the step handler's park sites and the retry-ladder exemption call — so
+  // the cap, the park and the ladder cannot disagree about one event.
+  if (
+    step === "adversarial" &&
+    tail?.kind === "dispatch-failed" &&
+    isDiffUnreadableDispatch(tail)
+  ) {
     return "adversarial-diff-unreadable";
   }
   return `step-failed:${step}`;

@@ -34,15 +34,17 @@ type FailedDispatch = Extract<WorkEvent, { kind: "dispatch-failed" }>;
 
 /**
  * Did the DRIVER fail to read this workstream's diff (as opposed to the
- * reviewer failing to run)? Reads the structural marker only — never prose.
+ * reviewer failing to run)? Reads the structural marker on the synthesised
+ * `dispatch-failed` — never a prose prefix of `errorTail`, which is text this
+ * module's own renderer owns.
  *
- * Private on purpose: it is the reading behind {@link isDiffUnreadableOutcome},
- * which is the ONE predicate the park and router sites call. The sites that
- * once read the event directly read the outcome instead, so an exported second
- * predicate was a second way to ask the same question — and the pair drifted
- * before this module existed.
+ * This is the ONE predicate for the question, over BOTH shapes the failure
+ * takes: an `AdversarialOutcome` (what the fan-out built) and the
+ * `dispatch-failed` event that outcome carries (what the step router reads off
+ * the log). Two exported predicates used to answer it and the sites picked
+ * between them, which is how the pair drifted apart before this module existed.
  */
-function isDiffUnreadableDispatch(e: FailedDispatch | undefined): boolean {
+export function isDiffUnreadableDispatch(e: FailedDispatch | undefined): boolean {
   return e?.diffUnreadable === true;
 }
 
@@ -52,9 +54,20 @@ function isDiffUnreadableDispatch(e: FailedDispatch | undefined): boolean {
  * rejection — and `skipped` is excluded explicitly: a genuinely empty diff is
  * a read that SUCCEEDED (#286's skip is an approval, so the two must not
  * converge on one predicate).
+ *
+ * Delegates the event half to {@link isDiffUnreadableDispatch} when the
+ * outcome carries one, so a caller that hands over the outcome and a caller
+ * that hands over only its event get the same answer from one place.
  */
 export function isDiffUnreadableOutcome(o: AdversarialOutcome): boolean {
-  return o.diffUnreadable === true && !o.ok && !o.skipped;
+  if (!o.ok && !o.skipped && o.diffUnreadable === true) return true;
+  // An outcome that was never run has no event; one that ran carries its
+  // synthesised failure, whose marker is the same claim made where the event
+  // was built. `failureEvent` is the wide `WorkEvent` union on the outcome type
+  // (the fan-out's batch builder appends it verbatim), so the kind test is what
+  // narrows it to the member that can carry the marker.
+  const e = o.failureEvent;
+  return !o.ok && !o.skipped && e?.kind === "dispatch-failed" && isDiffUnreadableDispatch(e);
 }
 
 /**

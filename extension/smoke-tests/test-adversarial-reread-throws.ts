@@ -41,32 +41,50 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** A small synthetic diff — no cap is involved, so nothing is truncated. */
+/** One diff, distinguished per read so a stale round is tellable from a fresh one. */
 const DIFF = "diff --git a/a.ts b/a.ts\n+export const a = 1;\n";
+const DIFF_FIXED = "diff --git a/a.ts b/a.ts\n+export const a = 2;\n";
 
 type Prompt = { role: string; prompt: string };
 
 /**
  * Mock the inner spawn so no Pi child is spawned, and record every prompt by
- * role. Reviewer replies are read in dispatch order; anything past the end
- * approves.
+ * role.
+ *
+ * The reviewer's replies come from `reviewerReplies` in dispatch order (past the
+ * end: APPROVED). The FIX pass's reply is `fixText` — a fixture that leaves it
+ * empty makes the loop take its "a fix request with no findings is an
+ * infrastructure failure" branch and never reach the round under test, so the
+ * driver-shaped cases must give the fixer something to say.
  */
-async function mockSpawns(reviewerReplies: string[]) {
-  const prompts: Prompt[] = [];
+/**
+ * Every inner dispatch, in order, across the whole file — reset by each case
+ * before it drives the loop. Module-level on purpose: bun re-evaluates a module
+ * on re-import, so an array created per `mockSpawns` call gets detached from the
+ * mock that a re-imported `adversarial.ts` pushes into, and the case then reads
+ * an empty one and concludes nothing was dispatched.
+ */
+const spawnCalls: Prompt[] = [];
+
+async function mockSpawns(reviewerReplies: string[], fixText = "applied the fix") {
+  const prompts = spawnCalls;
   const reviewCount = { n: 0 };
   mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
     makeRunId: () => "run-reread-throws",
-    spawnSpecialist: async (spec: { role: string; prompt: string }) => ({
-      role: spec.role,
-      ok: true,
-      text:
-        spec.role === "adversarial-developer"
-          ? reviewerReplies[reviewCount.n++] ?? "VERDICT: APPROVED"
-          : "fixed",
-      toolUses: [],
-      ms: 1,
-      exitCode: 0,
-    }),
+    spawnSpecialist: async (spec: { role: string; prompt: string }) => {
+      prompts.push({ role: spec.role, prompt: spec.prompt });
+      return {
+        role: spec.role,
+        ok: true,
+        text:
+          spec.role === "adversarial-developer"
+            ? reviewerReplies[reviewCount.n++] ?? "VERDICT: APPROVED"
+            : fixText,
+        toolUses: [],
+        ms: 1,
+        exitCode: 0,
+      };
+    },
   }));
   const realDeck = await import("../src/dispatch-deck.ts");
   mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
@@ -94,13 +112,28 @@ async function mockSpawns(reviewerReplies: string[]) {
   return prompts;
 }
 
-const { runAdversarialLoop } = await import("../src/adversarial.ts");
+// `runAdversarialLoop` is imported INSIDE `drive()` — see there. `mock.module`
+// is process-global and re-registers on every call, while a module imported at
+// top level keeps the bindings it resolved at import time: with one import for
+// the whole file, every block after the first would drive the loop against the
+// FIRST block's mock and read its prompts. The pure modules below are mocked by
+// no one, so they import once.
 const {
   DiffRereadError,
   diffUnreadableOutcome,
   isDiffRereadError,
 } = await import("../src/work-driver-adversarial-fanout-diff.ts");
 const { interpretReview } = await import("../src/work-driver-adversarial-fix.ts");
+
+/** Install this case's mocks, then resolve a FRESH `runAdversarialLoop`. */
+async function driveLoop(reviewerReplies: string[], fixText?: string) {
+  spawnCalls.length = 0;
+  await mockSpawns(reviewerReplies, fixText);
+  const { runAdversarialLoop } = await import("../src/adversarial.ts");
+  // Callers read `spawnCalls` and reset it themselves, exactly the way
+  // `test-adversarial-reread-failure.ts` does.
+  return { runAdversarialLoop, prompts: spawnCalls };
+}
 
 const signal = new AbortController().signal;
 const CWD = process.cwd();
@@ -114,7 +147,11 @@ const CWD = process.cwd();
 // reportOnly review with `reportRound: N` STARTS at round N, so passing 2 would
 // have skipped the very re-read this test exists to drive.
 {
-  const prompts = await mockSpawns(["VERDICT: ISSUES_FOUND\n1. f", "VERDICT: APPROVED"]);
+  const { runAdversarialLoop, prompts } = await driveLoop([
+    "VERDICT: ISSUES_FOUND\n1. f",
+    "VERDICT: ISSUES_FOUND\n1. g",
+    "VERDICT: APPROVED",
+  ]);
   let reads = 0;
   let thrown: unknown;
   const getDiff = async (): Promise<string> => {
@@ -160,6 +197,13 @@ const CWD = process.cwd();
   assert(
     reviews.length === 1,
     `only round 1 dispatched a reviewer — the doomed round 2 dispatched none (got ${reviews.length})`,
+  );
+  // The loop got as far as the fix pass (a genuine ISSUES_FOUND round), so the
+  // only thing that stopped it is the re-read that followed. Without this the
+  // assertion above could pass on a loop that died before round 1.
+  assert(
+    prompts.some((p) => p.role === "developer"),
+    "the round-1 ISSUES_FOUND routed a fix pass — the loop was alive up to the re-read",
   );
 }
 
@@ -207,7 +251,10 @@ const CWD = process.cwd();
 
 // ── the control: the loop's OWN range re-read still keeps the previous diff.
 {
-  const prompts = await mockSpawns(["VERDICT: ISSUES_FOUND\n1. f", "VERDICT: APPROVED"]);
+  const { runAdversarialLoop, prompts } = await driveLoop([
+    "VERDICT: ISSUES_FOUND\n1. f",
+    "VERDICT: APPROVED",
+  ]);
   let calls = 0;
   const result = await runAdversarialLoop(
     { context: "range", base: "main", head: "HEAD", workCwd: CWD },
@@ -215,10 +262,11 @@ const CWD = process.cwd();
     "job-range-control",
     async () => {
       calls += 1;
-      // The FIRST call is round 1's entry read and must not carry the marker
-      // line; the second is round 2's re-read and is what fails.
+      // The FIRST call is round 1's entry read; the second is round 2's re-read
+      // and is what fails. A third would be round 3's — the loop must not get
+      // there, since round 2 approves.
       if (calls === 2) throw new Error("git exploded");
-      return { ok: true as const, diff: DIFF };
+      return { ok: true as const, diff: calls === 1 ? DIFF : DIFF_FIXED };
     },
   );
   assert(calls >= 2, `the range path attempted its re-read (${calls} calls)`);
@@ -229,8 +277,10 @@ const CWD = process.cwd();
   );
   const round2 = prompts.filter((p) => p.role === "adversarial-developer")[1];
   assert(
-    round2 !== undefined && round2.prompt.includes("export const a = 1"),
-    "#859 control: the round reviewed the previous diff rather than dying",
+    round2 !== undefined &&
+      round2.prompt.includes("export const a = 1") &&
+      !round2.prompt.includes("export const a = 2"),
+    "#859 control: the round reviewed the PREVIOUS diff, not the one the failed read was for",
   );
 }
 
