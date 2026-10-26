@@ -1,70 +1,70 @@
 #!/usr/bin/env bun
 /**
- * #1756 — the plan step's reader judges the workstream the CHILD says it
+ * #1756 — the plan step's READER judges the workstream the CHILD says it
  * recorded, never a value the parent derived for itself.
  *
  * The defect, in one line: `workstreamCallsOf` ran `Value.Check` on the RAW
- * `tu.arguments`, but the child had acknowledged arguments Pi already
- * CONVERTED. Pi's tool validation (`validateToolArguments` in pi-ai
- * `utils/validation.js`) clones the arguments and runs `normalizeOptionalNulls`
- * plus TypeBox `Value.Convert` before checking them, so a model that sends an
- * array field as a single string can be ACCEPTED in the child — its `execute`
- * records the workstream and returns a success tool result — and then REFUSED by
- * the parent as "arguments do not match the report_workstream schema". The
- * workstream existed in the child and not in the driver; the planner's retry
- * under the same id then drew the duplicate refusal, and the whole workstream's
- * paths were lost. Field evidence: 6 plan-spec-mismatch parks on releases up to
- * v0.14.17, plus two cycles that needed a corrective plan pass.
+ * `tu.arguments`, but the child had acknowledged arguments Pi already CONVERTED,
+ * so a model that sends an array field as a single string can be ACCEPTED in the
+ * child — its `execute` records the workstream and returns a success tool result
+ * — and then REFUSED by the parent as "arguments do not match the
+ * report_workstream schema". The workstream existed in the child and not in the
+ * driver; the planner's retry under the same id then drew the duplicate refusal,
+ * and the whole workstream's paths were lost. Field evidence: 6
+ * plan-spec-mismatch parks on releases up to v0.14.17, plus two cycles that
+ * needed a corrective plan pass.
  *
  * This file's FIRST fix attempt mirrored Pi: the parent cloned the raw arguments
  * and ran `Value.Convert` on them. The adversarial review measured that the
- * mirror is wrong in both directions, because the conversion is done by whichever
- * TypeBox package the INSTALLED Pi ships — the dev-pinned pi-ai validates with
- * `typebox` 1.3.x, whose `Convert` does NOT coerce string→array or number→string
- * (so six shapes like `id: 5` or `paths: "x"` became acceptable to the parent
- * although the pinned Pi refuses them), while field runs on newer installed Pi
- * versions DID coerce a string `outOfScope` into an array. The mirror also
- * omitted Pi's `normalizeOptionalNulls` step entirely. There is no
- * version-independent answer to "what did Pi pass the child".
+ * mirror is wrong in both directions — see the header of
+ * `RECORDED_ARGS_DETAILS_KEY` in plan-workstream-schema.ts, which owns that
+ * explanation and is the only place it is written.
  *
  * So the parent stops deriving: the companion echoes the params object its
- * `execute` recorded (workstream-reporter.ts) and the reader judges THAT. Both
- * carriers are exercised below — `details` (Pi's `createToolResultMessage`
- * copies `result.details` onto the replayed `toolResult` message, which is the
- * channel `collapseEvents` reads) and the text line the companion appends for a
- * Pi that ever drops `details`.
+ * `execute` recorded (workstream-reporter.ts) and the reader judges THAT — but
+ * only after `echoMatchesCall` has bound the echo to the call it claims to
+ * describe. An echo that widens `paths`, empties `outOfScope` or renames the
+ * workstream is not a report of the call, so the reader refuses it rather than
+ * storing what it says. The RULE itself, judged pure in both directions, is the
+ * other half: test-plan-echo-binding-1756.ts.
  *
  * What this file pins, in order:
  *   1. a raw call whose array field arrived as a string, with a SUCCESS result
  *      echoing the recorded array, is ACCEPTED and stored as the echoed array;
  *   2. the same raw call with a success result that carries NO echo is refused
- *      exactly as before this branch — the parent never guesses;
- *   3. an echoed value that is itself invalid (`id: 5`, a `..` path) is refused
- *      by the parent's own checks: the echo is untrusted input, not a passport;
+ *      exactly as before this branch — the parent never guesses — and a
+ *      `details.recordedArgs` that is not a params object (null, a string, an
+ *      array, an absent key) is NO echo, never a judged value;
+ *   3. an echoed value the schema or the path rule rejects is refused by the
+ *      parent's own checks: the echo is untrusted input, not a passport;
+ *   3b. an echo that is NOT a coercion of its own call is refused with the
+ *      binding reason and stores nothing — widened `paths`, an emptied
+ *      `outOfScope`, an id nobody sent — while a real coercion is accepted;
  *   4. an ERROR result is refused with the error text, echoed value or not;
  *   5. duplicates still collapse to one workstream on the echoed ids;
- *   6. the read does not rewrite the transcript it was handed (neither carrier
- *      is written through — this is a regression pin, not a claim about
- *      `Value.Convert`, which this reader no longer calls);
- *   7. the CHILD side: the companion's accepted result carries the echo in BOTH
- *      carriers and its refused call carries none.
+ *   6. the read does not rewrite the transcript it was handed (a regression pin,
+ *      not a claim about `Value.Convert`, which this reader no longer calls);
+ *   7. the CHILD side: the companion's accepted result carries the one bound
+ *      carrier and its refused call carries none.
  *
  * Pure over DispatchResult-shaped objects, like test-plan-workstream-reader.ts
  * (which keeps the reader's other invariants): no child process, no state file.
- * Blocks 1-6 build their `toolUses`/`toolResults` by hand rather than through
- * lib/plan-workstream-calls.ts, because they must place the two carriers
- * independently — one with `details` only, one with the text line only, one with
- * neither — and the helper always writes both.
+ * Blocks 1-6 place the carrier by hand through lib/plan-echo-fixtures-1756.ts,
+ * because they must model a result with it, without it, and with a payload that
+ * is not a params object.
  */
 
 import { Value } from "@sinclair/typebox/value";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  RECORDED_ARGS_DETAILS_KEY,
-  RECORDED_ARGS_TEXT_PREFIX,
-} from "../src/plan-workstream-schema.ts";
+import { RECORDED_ARGS_DETAILS_KEY } from "../src/plan-workstream-schema.ts";
 import workstreamReporter from "../src/workstream-reporter.ts";
-import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
+import { ECHO_MISMATCH_REASON, workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
+import {
+  RAW_STRING_FENCE,
+  RECORDED_ARRAY_FENCE,
+  call,
+  transcript,
+} from "./lib/plan-echo-fixtures-1756.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -74,56 +74,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-type ResultEntry = {
-  toolCallId: string;
-  toolName: string;
-  isError: boolean;
-  text: string;
-  details?: Record<string, unknown>;
-};
-
-/** The transcript of one `report_workstream` call, and the result for it. */
-function call(
-  id: string,
-  args: unknown,
-  result: { error?: string; recorded?: unknown } = {},
-) {
-  return {
-    toolUses: [{ type: "toolCall", id, name: "report_workstream", arguments: args }],
-    toolResults: [entry(id, result)],
-  };
-}
-
-function entry(id: string, result: { error?: string; recorded?: unknown } = {}): ResultEntry {
-  if (result.error !== undefined) {
-    return { toolCallId: id, toolName: "report_workstream", isError: true, text: result.error };
-  }
-  const text = `recorded workstream\n${RECORDED_ARGS_TEXT_PREFIX}${JSON.stringify(result.recorded)}`;
-  return {
-    toolCallId: id,
-    toolName: "report_workstream",
-    isError: false,
-    // The two carriers arrive separately so a test can drop one of them.
-    text: result.recorded === undefined ? "recorded" : text,
-    ...(result.recorded === undefined
-      ? {}
-      : { details: { [RECORDED_ARGS_DETAILS_KEY]: result.recorded } }),
-  };
-}
-
-/** A transcript from several per-call pieces. */
-function transcript(
-  ...parts: Array<{ toolUses: unknown[]; toolResults: ResultEntry[] }>
-) {
-  return {
-    toolUses: parts.flatMap((p) => p.toolUses),
-    toolResults: parts.flatMap((p) => p.toolResults),
-  };
-}
-
-const RAW_STRING_FENCE = { id: "task-a", scope: "a", paths: ["src/a.ts"], outOfScope: "docs/" };
-const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
 
 // --------------------- 1: the child's echo is what lands, and what is judged
 
@@ -148,24 +98,16 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
   );
 }
 {
-  // Same judgement through the TEXT carrier alone: a Pi that ever drops
-  // `details` must not change the verdict.
-  const viaTextOnly = {
-    toolUses: [{ type: "toolCall", id: "c1", name: "report_workstream", arguments: RAW_STRING_FENCE }],
-    toolResults: [
-      {
-        toolCallId: "c1",
-        toolName: "report_workstream",
-        isError: false,
-        text: `recorded workstream task-a\n${RECORDED_ARGS_TEXT_PREFIX}${JSON.stringify(RECORDED_ARRAY_FENCE)}`,
-      },
-    ],
-  };
-  const report = workstreamCallsOf(viaTextOnly);
+  // A `scope` the child received as a number, reported as its string: the scalar
+  // coercion a normalisation does, and still the same workstream.
+  const report = workstreamCallsOf(
+    call("c1", { id: "task-a", scope: 7, paths: ["src/a.ts"], outOfScope: ["docs/"] }, {
+      recorded: { id: "task-a", scope: "7", paths: ["src/a.ts"], outOfScope: ["docs/"] },
+    }),
+  );
   assert(
-    report.accepted === 1 &&
-      JSON.stringify(report.workstreams["task-a"]?.outOfScope) === JSON.stringify(["docs/"]),
-    "the same echo carried as one text line instead of `details` is judged identically",
+    report.accepted === 1 && report.workstreams["task-a"]?.scope === "7",
+    "a number scope reported as its string is accepted",
   );
 }
 {
@@ -186,8 +128,8 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
 // --------------------- 2: no echo → the parent refuses rather than guesses
 
 {
-  // The identical raw call, but the result carries neither carrier (an older
-  // companion, or a channel that dropped both). This is the pre-#1756
+  // The identical raw call, but the result carries no `details` at all (an older
+  // companion, or a channel that dropped the payload). This is the pre-#1756
   // behaviour, and it is a REFUSAL — not an acceptance on a shape the parent
   // invented, and not a result-channel failure.
   const report = workstreamCallsOf(call("c1", RAW_STRING_FENCE, {}));
@@ -204,37 +146,66 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
   );
 }
 {
-  // A malformed echo (truncated by the text bound, or not JSON) is NO echo.
-  const report = workstreamCallsOf({
-    toolUses: [
-      {
-        type: "toolCall",
-        id: "c1",
-        name: "report_workstream",
-        arguments: RAW_STRING_FENCE,
-      },
-    ],
-    toolResults: [
-      {
-        toolCallId: "c1",
-        toolName: "report_workstream",
-        isError: false,
-        text: `recorded workstream task-a\n${RECORDED_ARGS_TEXT_PREFIX}{"id":"task-a","outOfSc`,
-      },
-    ],
-  });
-  assert(
-    report.accepted === 0 && report.refused.length === 1 && report.unreadable === 0,
-    "a truncated or unparseable echo is treated as no echo, so the raw arguments are judged",
-  );
+  // A `details` whose `recordedArgs` is present but is not a params object is NO
+  // echo, never a judged value: the reader falls back to the raw arguments and
+  // refuses them, exactly as with no carrier at all.
+  for (const [label, payload] of [
+    ["null", null],
+    ["a string", "task-a"],
+    ["an array", ["task-a"]],
+    ["undefined (a present-but-undefined key)", undefined],
+  ] as Array<[string, unknown]>) {
+    const report = workstreamCallsOf({
+      toolUses: [
+        { type: "toolCall", id: "c1", name: "report_workstream", arguments: RAW_STRING_FENCE },
+      ],
+      toolResults: [
+        {
+          toolCallId: "c1",
+          toolName: "report_workstream",
+          isError: false,
+          text: "recorded workstream task-a",
+          details: { [RECORDED_ARGS_DETAILS_KEY]: payload },
+        },
+      ],
+    });
+    assert(
+      report.accepted === 0 &&
+        report.refused.length === 1 &&
+        report.unreadable === 0 &&
+        report.refused[0]?.reason === "arguments do not match the report_workstream schema",
+      `a \`recordedArgs\` that is ${label} is NO echo — the raw arguments are judged (not accepted, not unreadable)`,
+    );
+  }
+  {
+    // A `details` that is itself an array cannot hold an echo either.
+    const report = workstreamCallsOf({
+      toolUses: [
+        { type: "toolCall", id: "c1", name: "report_workstream", arguments: RAW_STRING_FENCE },
+      ],
+      toolResults: [
+        {
+          toolCallId: "c1",
+          toolName: "report_workstream",
+          isError: false,
+          text: "recorded",
+          details: [RECORDED_ARRAY_FENCE],
+        },
+      ],
+    });
+    assert(
+      report.accepted === 0 && report.refused.length === 1,
+      "a `details` that is an array is NO echo",
+    );
+  }
 }
 
 // --------------------- 3: an invalid echo is refused by the parent's checks
 
 {
-  // `id: 5`: the child claims it recorded something the schema never accepts —
-  // whether from an older companion or a Pi whose Convert stringified it, the
-  // parent does not pass it through.
+  // The child claims it recorded shapes the schema never accepts — whether from
+  // an older companion or a Pi whose Convert stringified them, the parent does
+  // not pass any of them through.
   const invalid = [
     { args: RAW_STRING_FENCE, recorded: { ...RECORDED_ARRAY_FENCE, id: 5 } },
     { args: RAW_STRING_FENCE, recorded: { ...RECORDED_ARRAY_FENCE, paths: ["../secrets/.env"] } },
@@ -251,19 +222,62 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
     call("c1", RAW_STRING_FENCE, { recorded: { ...RECORDED_ARRAY_FENCE, id: 5 } }),
   );
   assert(
-    schemaCase.refused[0]?.reason === "arguments do not match the report_workstream schema",
-    "an echoed `id: 5` is refused with the schema reason, not accepted because a child said so",
+    schemaCase.refused[0]?.reason === ECHO_MISMATCH_REASON ||
+      schemaCase.refused[0]?.reason === "arguments do not match the report_workstream schema",
+    `an echoed \`id: 5\` is refused, not accepted because a child said so (got ${schemaCase.refused[0]?.reason})`,
   );
+  // A `..` path the CALL did not send is caught by the binding before the path
+  // rule ever sees it — the stronger guarantee: an echo cannot put a traversing
+  // path into the authorised set at all.
   const pathCase = workstreamCallsOf(
     call("c1", RAW_STRING_FENCE, {
       recorded: { ...RECORDED_ARRAY_FENCE, paths: ["../secrets/.env"] },
     }),
   );
   assert(
-    pathCase.refused[0]?.reason.startsWith("paths:") === true &&
-      pathCase.refused[0]?.reason.includes("..") === true,
-    "an echoed path with a `..` segment is refused by the path rule",
+    pathCase.refused[0]?.reason === ECHO_MISMATCH_REASON,
+    "an echo whose `paths` differ from the call's is refused by the binding, so no traversing path enters through it",
   );
+  const pathRuleCase = workstreamCallsOf(
+    call(
+      "c1",
+      { id: "task-a", scope: "a", paths: ["../secrets/.env"], outOfScope: ["docs/"] },
+      { recorded: { id: "task-a", scope: "a", paths: ["../secrets/.env"], outOfScope: ["docs/"] } },
+    ),
+  );
+  assert(
+    pathRuleCase.refused[0]?.reason.startsWith("paths:") === true &&
+      pathRuleCase.refused[0]?.reason.includes("..") === true,
+    "a call whose OWN path traverses is refused by the path rule, bound echo or not",
+  );
+}
+
+// --------------------- 3b: an echo that is not its own call is refused
+
+{
+  // The lens HIGH + MEDIUM cases: each is a VALID schema value, so the schema
+  // check cannot see it — only the comparison to the call can. None may store
+  // anything.
+  const notTheCall = [
+    ["widened paths", { ...RECORDED_ARRAY_FENCE, paths: ["src/a.ts", "src/secret.ts"] }],
+    ["replaced paths", { ...RECORDED_ARRAY_FENCE, paths: ["src/other.ts"] }],
+    ["emptied outOfScope", { ...RECORDED_ARRAY_FENCE, outOfScope: [] }],
+    ["replaced outOfScope", { ...RECORDED_ARRAY_FENCE, outOfScope: ["nothing at all"] }],
+    ["an id nobody sent", { ...RECORDED_ARRAY_FENCE, id: "task-z" }],
+    ["an added key", { ...RECORDED_ARRAY_FENCE, extra: "x" }],
+    ["a dropped key", { id: "task-a", paths: ["src/a.ts"], outOfScope: ["docs/"] }],
+    ["a required key nulled", { ...RECORDED_ARRAY_FENCE, scope: null }],
+  ] as Array<[string, unknown]>;
+  for (const [label, recorded] of notTheCall) {
+    const report = workstreamCallsOf(call("c1", RAW_STRING_FENCE, { recorded }));
+    assert(
+      report.accepted === 0 &&
+        report.refused.length === 1 &&
+        report.refused[0]?.reason === ECHO_MISMATCH_REASON &&
+        Object.keys(report.workstreams).length === 0,
+      `an echo that is ${label} is refused as not-the-call and stores nothing (got ${JSON.stringify(report.refused)})`,
+    );
+  }
 }
 
 // --------------------- 4: an error result is refused with its text
@@ -284,25 +298,31 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
 // --------------------- 5: the duplicate rule outlives the echo
 
 {
-  // The two calls ask with different raw shapes; both report the same id, so
-  // only the first may be kept.
+  // Both echoes are faithful reports of their OWN calls (each call's scope
+  // matches its own echo), so it is the DUPLICATE rule that refuses the second —
+  // not the binding. Two calls cannot share one echo.
   const report = transcript(
     call("c1", RAW_STRING_FENCE, { recorded: RECORDED_ARRAY_FENCE }),
-    call("c2", { ...RAW_STRING_FENCE, scope: "again" }, { recorded: RECORDED_ARRAY_FENCE }),
+    call(
+      "c2",
+      { ...RAW_STRING_FENCE, scope: "again" },
+      { recorded: { ...RECORDED_ARRAY_FENCE, scope: "again" } },
+    ),
   );
   const read = workstreamCallsOf(report);
   assert(
     read.accepted === 1 &&
       read.refused.length === 1 &&
-      read.refused[0]?.reason.includes("task-a") === true,
-    "a second call whose echoed id is already held is refused as a duplicate",
+      read.refused[0]?.reason.includes("task-a") === true &&
+      read.refused[0]?.reason.includes("already reported") === true,
+    `a second call whose echoed id is already held is refused as a duplicate (got ${JSON.stringify(read.refused)})`,
   );
 }
 
 // --------------------- 6: the read rewrites nothing it was handed
 
 {
-  // Neither carrier is written through, so the replay keeps holding the shape
+  // The carrier is not written through, so the replay keeps holding the shape
   // the model actually sent. Regression pin for the reader — the parent no
   // longer calls `Value.Convert` at all, so this is not a claim about it.
   const args = structuredClone(RAW_STRING_FENCE);
@@ -345,7 +365,7 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
 
   const ok = await tool?.execute("1", VALID);
   assert(
-    ok?.content[0]?.text.startsWith("recorded workstream task-a") === true,
+    ok?.content[0]?.text.split("\n")[0] === "recorded workstream task-a",
     "the companion still answers an accepted call with its record line",
   );
   assert(
@@ -354,8 +374,9 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
     "an accepted result's `details` echo the exact params object execute was handed",
   );
   assert(
-    ok?.content[0]?.text.includes(`${RECORDED_ARGS_TEXT_PREFIX}${JSON.stringify(VALID)}`) === true,
-    "the same value is on the result's text line, for a channel that drops `details`",
+    Object.keys((ok?.details as Record<string, unknown>) ?? {}).join() ===
+      RECORDED_ARGS_DETAILS_KEY,
+    "`details` carries the one key the reader reads — nothing else rides the channel",
   );
   // The echo the companion writes is the shape the reader judges, end to end.
   const roundTrip = workstreamCallsOf({
@@ -366,7 +387,7 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
         toolName: "report_workstream",
         isError: false,
         text: ok?.content[0]?.text ?? "",
-        details: ok?.details as Record<string, unknown>,
+        details: ok?.details,
       },
     ],
   });
@@ -377,8 +398,7 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
 
   // A refused call records nothing, so it has nothing to report. The companion
   // refuses by THROWING (Pi turns that into an error tool result with no
-  // `details`), so both refusal shapes are checked: the throw carries no echo,
-  // and the only result the process produced is the accepted one.
+  // `details`), so the throw is what is checked.
   let refusal = "";
   try {
     await tool?.execute("2", { ...VALID, scope: "again" });
@@ -401,7 +421,7 @@ const RECORDED_ARRAY_FENCE = { ...RAW_STRING_FENCE, outOfScope: ["docs/"] };
     badPath = undefined;
   }
   assert(
-    badPath === undefined || !JSON.stringify(badPath).includes(RECORDED_ARGS_TEXT_PREFIX),
+    badPath === undefined || JSON.stringify(badPath).includes(RECORDED_ARGS_DETAILS_KEY) === false,
     "a call the companion refuses carries no echo — nothing was recorded",
   );
 }

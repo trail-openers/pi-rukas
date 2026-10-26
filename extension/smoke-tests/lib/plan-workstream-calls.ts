@@ -12,18 +12,26 @@
  * by test-plan-workstream-tool.ts.
  *
  * #1756 round 2 — an accepted result also carries the companion's ECHO of the
- * arguments it recorded (`details`, plus the text line), because the driver's
- * reader judges that value rather than the raw call. An entry may override what
- * the child claims it recorded (`recorded`) to model a companion that accepted
- * a shape the raw call does not have, or omit the echo entirely (`noEcho`) to
- * model an older companion. Both are shapes the reader must decide on its own,
- * so the helper reproduces them rather than a fixture guessing at them.
+ * arguments it recorded, on `details`, built by the SAME exported envelope the
+ * companion uses (`recordedWorkstreamDetails`), because the driver's reader
+ * judges that value rather than the raw call — and BINDS it to the call, so a
+ * fixture that echoed something else would be refused rather than believed. An
+ * entry may override what the child claims it recorded (`recorded`) to model a
+ * companion that accepted a shape the raw call does not have, or omit the echo
+ * entirely (`noEcho`) to model an older companion. Both are shapes the reader
+ * must decide on its own, so the helper reproduces them rather than a fixture
+ * guessing at them.
+ *
+ * A fixture whose call the real companion would REFUSE (a schema miss, a bad
+ * path, a duplicate id) gets no echo: `companionOutcome` returns the error
+ * result before any echo is built, exactly as the companion throws before it
+ * records anything — a fixture must not model a child that recorded what it
+ * says it refused.
  */
 
 import { Value } from "@sinclair/typebox/value";
 import {
-  RECORDED_ARGS_DETAILS_KEY,
-  RECORDED_ARGS_TEXT_PREFIX,
+  recordedWorkstreamDetails,
   WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
   workstreamCallRefusal,
@@ -93,9 +101,16 @@ type CompanionOutcome = Omit<PlanResultShape["toolResults"][number], "toolCallId
 
 /**
  * One call's outcome: Pi's schema check, then the companion's refusal rules,
- * then — for an accepted call only — the echo of the recorded value, in both
- * carriers the real companion writes. A refused call echoes nothing, exactly as
- * the companion echoes nothing when it throws.
+ * then — for an accepted call ONLY — the echo of the recorded value, in the one
+ * carrier the real companion writes.
+ *
+ * A call the companion would REFUSE gets no echo, and that ordering is the
+ * point: the companion throws before it records anything, so a fixture whose
+ * schema check fails (an 81-character id, a bare string where an array belongs)
+ * or whose refusal rules fire (a bad path, a duplicate id) must model an error
+ * result with no `details` at all. A fixture that echoed the value it says the
+ * child refused would teach the reader to accept exactly the shape the companion
+ * never recorded.
  */
 function companionOutcome(
   accepted: Set<string>,
@@ -119,8 +134,8 @@ function companionOutcome(
   if (entry.noEcho) return { isError: false, text: `recorded workstream ${args.id}` };
   return {
     isError: false,
-    text: `recorded workstream ${args.id}\n${RECORDED_ARGS_TEXT_PREFIX}${JSON.stringify(recorded)}`,
-    details: { id: args.id, [RECORDED_ARGS_DETAILS_KEY]: recorded },
+    text: `recorded workstream ${args.id}`,
+    details: recordedWorkstreamDetails(recorded),
   };
 }
 
