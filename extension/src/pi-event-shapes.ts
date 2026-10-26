@@ -41,6 +41,15 @@ export interface SpawnOptions extends WriteFenceOpt {
    */
   childBoundMs?: number;
   /**
+   * #1827 — the driver-supplied path to THIS child's own skill (`SKILL.md`
+   * inside it), so the reviewer skill re-read cap counts only reads of that
+   * file. Set by `runLensChild` (its `skillPath`) and by the adversarial
+   * reviewer's phase. Absent = no re-read cap: a child with no skill of its own
+   * cannot be counted against one, and a path guessed here would stop a child
+   * for reads the review never asked for.
+   */
+  reviewSkillPath?: string;
+  /**
    * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
    * the running tool. We listen on this and kill the child with SIGTERM so
    * cancellation actually propagates instead of leaving Pi stuck.

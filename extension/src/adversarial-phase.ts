@@ -12,7 +12,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { setOrchestratorActiveChild } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { type SteerSource, steerChild } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import { adversarialChildBoundMs, isReviewerRole } from "./review-bounds.ts";
 import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
@@ -42,6 +44,10 @@ export function makeRunPhase(opts: {
   onSlow?: OnSlowCallback;
   /** The parent pi for the slow-run watch (the PM notice half). */
   pi?: ExtensionAPI;
+  /** #1827 — the driver-supplied path to the reviewer's own skill, so the skill
+   * re-read cap counts reads of THAT file and nothing else. Ignored for the fix
+   * pass: the `developer` role gets neither new bound. */
+  reviewerSkillPath?: string;
 }): RunPhase {
   const { runId, signal, orchestratorJobId, processGroup, workCycleTrust } = opts;
   return async (role, tag, prompt, cwd) => {
@@ -69,6 +75,15 @@ export function makeRunPhase(opts: {
     if (signal.aborted) kill.abort();
     else signal.addEventListener("abort", onLoopAbort, { once: true });
     try {
+      // #1827 — the reviewer child is bounded; the fix pass is not. Before this,
+      // neither `childBoundMs` nor `onSteer` reached either inner child, so the
+      // only thing that ended a runaway reviewer was the 2-h spawn backstop —
+      // measured at 476 turns / 80M tokens on one round. `childBoundMs` alone
+      // is not enough: `armChildBound` writes its wrap-up steer straight to
+      // `stdin` when no `onSteer` is given, so the pair is what makes the bound
+      // observable in the lifecycle. The bound clamps to the cycle deadline
+      // inside `armChildBound`, as every sibling bound does.
+      const reviewer = isReviewerRole(role);
       return await spawnSpecialist(
         { role, prompt, cwd },
         {
@@ -77,6 +92,18 @@ export function makeRunPhase(opts: {
           workCycleTrust,
           runId,
           tag,
+          ...(reviewer
+            ? {
+                childBoundMs: adversarialChildBoundMs(),
+                // The bound's wrap-up steer and the re-read cap's steer both
+                // reach this child through the driver's steer seam (dispatch.ts
+                // pairs the two for exactly this reason).
+                onSteer: (message: string, source: SteerSource) => {
+                  steerChild(orchestratorJobId, message, source);
+                },
+                ...(opts.reviewerSkillPath ? { reviewSkillPath: opts.reviewerSkillPath } : {}),
+              }
+            : {}),
           onProgress: (state) => {
             dispatchDeck.updateEntry(deckKey, state);
             feedSlowProgress(deckKey, state);
