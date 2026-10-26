@@ -136,3 +136,36 @@ export function answerDiffReads<F extends (cmd: any, o?: any) => Promise<any>>(
     return exec(cmd, o);
   }) as unknown as F;
 }
+
+/**
+ * #1634 — answer the LENS step's integrated-diff reads for a fixture whose
+ * "remote" is simulated rather than pushed to.
+ *
+ * `readIntegratedDiff` resolves the mainline and then reads
+ * `origin/<mainline>...origin/<branch>` through the plain executor — not the
+ * driver's exec seam — so a throwaway clone has no `origin/<branch>` ref and
+ * the read fails closed: the cycle parks on `lens-diff-unreadable` before any
+ * lens runs. Other driver fixtures dodge that by stubbing `lensReviewFn`,
+ * which skips the read and the code around it; answering the reads instead
+ * keeps `runLens` itself under test.
+ *
+ * The three shapes are exactly what `readIntegratedDiff` and `aheadOfBase`
+ * issue: the diff, the ref probes, and the `--right-only` commit count. An
+ * answer is honest only if the fixture's tree really does carry that content
+ * on that ref — the caller passes the diff it committed, never a stand-in.
+ */
+export function answerIntegratedDiffReads(
+  cmd: string,
+  o: { argv?: string[] } | undefined,
+  answers: { diff: string; commitsAhead: number },
+): { stdout: string } | undefined {
+  const argv = o?.argv;
+  if (cmd !== "git" || !argv) return undefined;
+  const joined = argv.join(" ");
+  if (argv[0] === "diff" && joined.includes("origin/")) return { stdout: answers.diff };
+  if (argv[0] === "rev-parse" && argv[1] === "--verify" && joined.includes("origin/"))
+    return { stdout: `0000000000000000000000000000000000000000\n` };
+  if (argv[0] === "rev-list" && joined.includes("--right-only"))
+    return { stdout: `${answers.commitsAhead}\n` };
+  return undefined;
+}

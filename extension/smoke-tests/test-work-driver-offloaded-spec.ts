@@ -20,7 +20,7 @@
  * mirroring test-explore-body-retry.ts.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -32,10 +32,13 @@ import { readMarker } from "../src/reply-markers.ts";
 import { scratchDir } from "../src/work-driver-workspace.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
-import { repoWithCommittedChange, answerDiffReads } from "./lib/clean-repo-fixture.ts";
+import {
+  answerDiffReads,
+  answerIntegratedDiffReads,
+  initCleanRepo,
+} from "./lib/clean-repo-fixture.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { commandOf } from "./lib/argv-shell.ts";
-import { mkLensSummary } from "./test-helpers.ts";
 
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const REPLY_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
@@ -212,7 +215,8 @@ function answerWorktreeDiffReads(
   if (cmd !== "git" || !argv) return undefined;
   if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel")
     return { stdout: `${worktreeDir}\n` };
-  if (argv[0] === "diff" && argv[1] === "--end-of-options") return { stdout: "" };
+  if (argv[0] === "diff" && argv[1] === "--end-of-options")
+    return { stdout: `diff --git a/extension/src/offloaded.ts b/extension/src/offloaded.ts\n--- a/extension/src/offloaded.ts\n+++ b/extension/src/offloaded.ts\n+export const deliverable = 1;\n` };
   return undefined;
 }
 
@@ -220,6 +224,32 @@ function answerWorktreeDiffReads(
 // asks about is asked of the real git in that cwd. A fixture whose tree IS a
 // repository has nothing to gain from a scripted stub here — a scripted ""
 // would be read by #1634's gate as "could not tell" and park the cycle.
+/** The untracked files git itself lists in `cwd` (the develop round's work). */
+async function listUntracked(cwd: string): Promise<string[]> {
+  const { spawnSync } = await import("node:child_process");
+  const r = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+    cwd,
+    encoding: "utf8",
+    env: gitTestEnv(),
+  });
+  if (r.status !== 0) return [];
+  return (r.stdout ?? "")
+    .split("\n")
+    .filter((l) => l.startsWith("?? "))
+    .map((l) => l.slice(3));
+}
+
+/** One git command in `cwd`, through the host-isolated view (#1145). */
+function gitIn(cwd: string, args: string[]): string {
+  const r = spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
+    cwd,
+    encoding: "utf8",
+    env: gitTestEnv(),
+  });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr}`);
+  return (r.stdout ?? "").trim();
+}
+
 const realGitExec = async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
   const r = spawnSync(cmd, o?.argv ?? [], { cwd: o?.cwd, encoding: "utf8", env: gitTestEnv() });
   if (r.status !== 0) throw new Error(`git ${o?.argv?.join(" ") ?? cmd} failed: ${r.stderr}`);
@@ -353,8 +383,18 @@ async function runDriverCase(
   // deliverable the spec names. Both of the gate's reads then answer from git
   // itself — toplevel names the directory, `git diff <baseSha>..HEAD` is the
   // change — and a tree nobody can read still parks.
-  const { baseSha } = repoWithCommittedChange(dir);
+  // The fixture's one committed change IS the deliverables the spec names:
+  // the developer writes them into its worktree, and the branch step's
+  // consolidation cherry-picks that commit onto the cycle's branch. Deriving
+  // the list from the reply (and the report it cites) rather than a literal
+  // keeps the tree matched to THIS case's spec, which is what the converge
+  // gate later checks with git.
   const wsId = "default";
+  // The deliverable paths come from the PLAN step's reply, not from this
+  // fixture's file map: they are the workstream's `paths`, and a case whose
+  // spec names none has none to commit. Read once the plan has answered.
+  const deliverablePaths: string[] = [];
+  const baseSha = initCleanRepo(dir);
   const worktreeDir = path.join(dir, ".worktrees", `issue-${issue}-${wsId}`);
   const wt = spawnSync(
     "git",
@@ -366,27 +406,50 @@ async function runDriverCase(
   // it has to exist on disk (a missing cwd is a refused workstream, #746). The
   // deliverable paths the spec's `[paths: …]` slots name are written there as
   // the developer's work, which is what the converge gate later checks.
-  const deliverablePaths: string[] = [
-    "extension/src/work-driver-handoff.ts",
-    "extension/src/work-driver-integrate.ts",
-    "extension/src/work-driver-cherry-pick.ts",
-    "extension/src/workflow-state-schema.ts",
-    "extension/src/work-driver-handoff-recovery.ts",
-    "extension/src/work-driver-handoff-recovery.chat.ts",
-    "extension/src/work-driver-handoff-recovery.md.ts",
-    "extension/src/work-driver-handoff-message.ts",
-    "extension/src/work-driver-worktree-sweep.ts",
-    "extension/src/work-driver-finalize.ts",
-    "extension/src/dispatch-retry.ts",
-    "extension/smoke-tests/test-handoff-rendering.ts",
-    "extension/smoke-tests/test-handoff-tells-the-truth.ts",
-    "extension/smoke-tests/test-work-driver-worktree-sweep.ts",
-    "extension/smoke-tests/test-work-driver-handoff-forge-fallback.ts",
-  ];
   for (const rel of deliverablePaths) {
     const target = path.join(worktreeDir, rel);
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, "export const deliverable = 1;\n");
+  }
+  // #1634 — the cycle's PR surface, as a real cycle has it. Lens review reads
+  // the INTEGRATED diff (`origin/<mainline>...origin/<branch>`) through the
+  // plain executor — no fixture seam reaches it — so in a throwaway repo the
+  // read fails closed and the cycle parks on `lens-diff-unreadable`. The
+  // fixture therefore has what a real clone has, built the way the other
+  // lens-diff fixtures build it (test-work-driver-pr11-lens-diff.ts): a real
+  // mainline branch, a remote-tracking ref at the base commit, and origin/HEAD
+  // naming it. The branch itself is left to the cycle's branch step.
+  const branch = `feature/${issue}`;
+  gitIn(dir, ["config", "user.email", "t@t"]);
+  gitIn(dir, ["config", "user.name", "t"]);
+  gitIn(dir, ["branch", "-m", "main"]);
+  gitIn(dir, ["update-ref", "refs/remotes/origin/main", baseSha]);
+  gitIn(dir, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+  // The branch the cycle's branch step checks out, and its remote-tracking
+  // ref, exist from the start. The driver's integration pushes — it does not
+  // create — so without a ref at the base commit the push fails, the ops
+  // fallback takes over, and the cycle reaches the lens step with no
+  // origin/<branch> at all: an unreadable diff is the honest verdict there,
+  // and this file's claim is the spec, not the PR surface.
+  gitIn(dir, ["branch", "--force", branch, baseSha]);
+  gitIn(dir, ["update-ref", `refs/remotes/origin/${branch}`, baseSha]);
+  let committed = false;
+  /** Commit the deliverables on the cycle's branch — the change under review. */
+  function commitIn(cwd: string, rels: string[]): void {
+    const written: string[] = [];
+    for (const rel of rels) {
+      const target = path.join(cwd, rel);
+      // Skip a path git already tracks, and a name that is a directory in the
+      // tree (a plan path can name a directory; writing a file over one is
+      // EISDIR, and the driver's own gate reads that as a failed workstream).
+      if (existsSync(target) || gitIn(cwd, ["ls-files", "--", rel])) continue;
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, "export const deliverable = 1;\n");
+      written.push(rel);
+    }
+    if (written.length === 0) return;
+    gitIn(cwd, ["add", "--", ...written]);
+    gitIn(cwd, ["commit", "-q", "-m", "the change under review"]);
   }
   const developLog: Array<{ role: string; cwd?: string }> = [];
   let exploreDispatches = 0;
@@ -397,11 +460,25 @@ async function runDriverCase(
       issue,
       issueBodyFetcherFn: async (n, _cwd) => ({ stdout: `title:\tissue #${n}\nstate:\tOPEN\n\nbody for #${n}` }),
       dispatchFn: async (_pi, specArg, opts) => {
+        if (process.env.OFFLOAD_DEBUG) console.log("DISPATCH", opts?.label ?? specArg.role);
         if (opts?.label === "explore") {
           exploreDispatches++;
           return mkResult({ role: "explore", text: reply });
         }
         if (specArg.role === "developer") {
+          // The plan has answered by now, so the deliverables are settled:
+          // commit them on the branch, which is where the cycle's own
+          // consolidation cherry-picks from and what the lens step's
+          // integrated-diff read then reports honestly.
+          if (deliverablePaths.length > 0 && !committed) {
+            committed = true;
+            // On the REPO's branch, not the worktree: the consolidation
+            // cherry-picks this commit onto the cycle's branch, and the lens
+            // step's integrated read reports it as origin/<mainline>...
+            // origin/<branch>. Writing it into the worktree instead leaves a
+            // path as a directory in the tree it lands in.
+            commitIn(dir, deliverablePaths);
+          }
           developLog.push({ role: specArg.role, cwd: specArg.cwd });
           // The developer writes its deliverables into the worktree it was
           // dispatched in, exactly as a real one does — that is what the
@@ -421,7 +498,14 @@ async function runDriverCase(
         if (specArg.role === "ops")
           return mkResult({
             role: "ops",
-            text: `branch: feature/issue-${issue}\n\n## Worktrees\n- ${wsId}: ${worktreeDir}`,
+            text:
+              `branch: ${branch}\n\n## Worktrees\n- ${wsId}: ${worktreeDir}\n\n` +
+              // The branch step records the branch it ACTUALLY created (git's
+              // `rev-parse --abbrev-ref HEAD`, #292), not the name in the
+              // reply — so the branch has to be checked out for the cycle to
+              // have one.
+              `Checked out ${branch}.\n\n` +
+              `commits:\n${deliverablePaths.map((f) => `- ${f}`).join("\n")}`,
           });
         // #1652 — one workstream claiming every path the reply names (the gate's concern).
         if (opts?.label?.startsWith("plan")) {
@@ -429,7 +513,8 @@ async function runDriverCase(
           // The spec may be offloaded to a report file, so scan it as well as the reply.
           const text = [reply, ...Object.values(files).filter((v) => typeof v === "string")].join("\n");
           const found = [...text.matchAll(/extension\/[^\s,\]`'"()]+/g)].map((m) => m[0].replace(/\.$/, ""));
-          const paths = [...new Set(found)];
+          const paths = [...new Set(found)].filter((f) => f.endsWith(".ts"));
+          deliverablePaths.push(...paths.filter((f) => !deliverablePaths.includes(f)));
           return {
             ...mkResult({ role: specArg.role, text: "stub" }),
             ...planResultFromCalls([{ id: wsId, scope: "the fix", paths, outOfScope: [] }]),
@@ -445,14 +530,6 @@ async function runDriverCase(
           loopOutcome: "approved",
           adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
         }) as Awaited<ReturnType<NonNullable<DriverContext["adversarialLoopFn"]>>>,
-      // The six-lens review reads the INTEGRATED diff (origin/<mainline>...
-      // origin/<branch>) through the plain executor, which no fixture seam
-      // reaches — and a throwaway repo has no remote for those refs, so the
-      // read would fail closed. This file's claim is the offloaded SPEC and
-      // the caps around it, so the lens step is injected as the approved stub
-      // every other driver fixture gives it (same shape as
-      // test-work-driver-pr11-lens-diff.ts).
-      lensReviewFn: async () => mkLensSummary(),
       // #1634 — the worktree the gate reads is the one created above: the
       // gate's own diff read is the change under review (an empty one would
       // skip the review), and its toplevel probe names the tree, so both
@@ -467,6 +544,23 @@ async function runDriverCase(
         const gate = answerWorktreeDiffReads(cmd, o, worktreeDir);
         if (gate) return gate;
         const line = commandOf(cmd, o);
+        if (process.env.OFFLOAD_DEBUG) console.log("CMD", line.slice(0, 90));
+        // The lens step's integrated-diff reads (origin/<mainline>...
+        // origin/<branch>) go through the plain executor, not this seam; in a
+        // throwaway clone those refs do not exist and the gate parks on
+        // lens-diff-unreadable before any lens runs. Answered from what the
+        // fixture ACTUALLY contains — the deliverables, one commit ahead — so
+        // runLens stays under test rather than stubbed away.
+        const integrated = answerIntegratedDiffReads(cmd, o, {
+          commitsAhead: 1,
+          diff: deliverablePaths
+            .map(
+              (f) =>
+                `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n+export const deliverable = 1;\n`,
+            )
+            .join("\n"),
+        });
+        if (integrated) return integrated;
         if (line.startsWith("git diff --end-of-options "))
           return { stdout: "diff --git a/extension/src/foo.ts b/extension/src/foo.ts\n" };
         // What the developer produced in this worktree: the deliverable paths
@@ -476,33 +570,30 @@ async function runDriverCase(
           return { stdout: `${deliverablePaths.join("\n")}\n` };
         if (line.startsWith("git status --porcelain"))
           return {
-            stdout: deliverablePaths.map((f) => `?? ${f}`).join("\n") + "\n",
+            // The develop round's work, as git would report it in THIS tree:
+            // the deliverables the developer wrote, untracked (the shape the
+            // safety net and the consolidation commit read).
+            stdout:
+              (
+                await listUntracked(o?.cwd ?? worktreeDir)
+              ).map((f) => `?? ${f}`)
+                .join("\n") + (o?.cwd ? "\n" : ""),
           };
         if (line.startsWith("git rev-parse HEAD")) return { stdout: `${baseSha}\n` };
         // The develop green-check: the worktree's one commit ahead of the base
         // the fixture created it at (what the safety net commits the developer's
         // work into), mirroring what a real develop round leaves behind.
         if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
-        // The lens-review step reads the INTEGRATED diff — origin/<mainline>
-        // ...origin/<branch> — through the plain executor (a remote read no
-        // fixture seam reaches). Answered here as a pushed branch with no
-        // commits ahead of the mainline: the read SUCCEEDS and is empty, which
-        // the gate skips (#286) rather than parking on.
-        if (line.startsWith("git rev-parse --verify --end-of-options origin/"))
-          return { stdout: `${baseSha}\n` };
-        if (line.startsWith("git rev-list --count --right-only --end-of-options origin/"))
-          return { stdout: "0\n" };
-        if (line.startsWith("git diff --end-of-options origin/")) return { stdout: "" };
         return { stdout: "" };
       },
     };
-    if (process.env.OFFLOAD_DEBUG)
-      for (const e of (await readState(dir, issue))?.eventLog ?? [])
-        console.log("EV", JSON.stringify(e).slice(0, 300));
     await runWorkDriver(ctx);
     const after = await readState(dir, issue);
-    if (process.env.OFFLOAD_DEBUG)
-      for (const e of after?.eventLog ?? []) console.log("EV", JSON.stringify(e).slice(0, 300));
+    if (process.env.OFFLOAD_DEBUG) {
+      console.log("BRANCH", after?.pipelineState.branchName, "base", after?.pipelineState.baseSha);
+      console.log("LERR", after?.pipelineState.lensDiffError);
+      for (const e of after?.eventLog ?? []) console.log("EV", JSON.stringify(e).slice(0, 260));
+    }
 
     const caps = (after?.eventLog ?? []).filter(
       (e) => e.kind === "cap-hit",
