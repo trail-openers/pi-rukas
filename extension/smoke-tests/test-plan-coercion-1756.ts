@@ -15,10 +15,10 @@
  * needed a corrective plan pass.
  *
  * This file's FIRST fix attempt mirrored Pi: the parent cloned the raw arguments
- * and ran `Value.Convert` on them. The adversarial review measured that the
- * mirror is wrong in both directions — see the header of
- * `RECORDED_ARGS_DETAILS_KEY` in plan-workstream-schema.ts, which owns that
- * explanation and is the only place it is written.
+ * and ran `Value.Convert` on them, which the adversarial review measured to be
+ * wrong in both directions — see the header of `RECORDED_ARGS_DETAILS_KEY` in
+ * plan-workstream-schema.ts, which owns that explanation and is the only place it
+ * is written.
  *
  * So the parent stops deriving: the companion echoes the params object its
  * `execute` recorded (workstream-reporter.ts) and the reader judges THAT — but
@@ -42,8 +42,8 @@
  *      `outOfScope`, an id nobody sent — while a real coercion is accepted;
  *   4. an ERROR result is refused with the error text, echoed value or not;
  *   5. duplicates still collapse to one workstream on the echoed ids;
- *   6. the read does not rewrite the transcript it was handed (a regression pin,
- *      not a claim about `Value.Convert`, which this reader no longer calls);
+ *   6. the read does not rewrite the transcript it was handed (a regression pin
+ *      on the reader's own mutation behaviour);
  *   7. the CHILD side: the companion's accepted result carries the one bound
  *      carrier and its refused call carries none.
  *
@@ -322,9 +322,9 @@ function assert(cond: boolean, msg: string) {
 // --------------------- 6: the read rewrites nothing it was handed
 
 {
-  // The carrier is not written through, so the replay keeps holding the shape
-  // the model actually sent. Regression pin for the reader — the parent no
-  // longer calls `Value.Convert` at all, so this is not a claim about it.
+  // The reader hands `workstreamFromArgs` the echoed object; if anything in that
+  // path ever mutated it, the transcript the operator inspects would no longer
+  // hold what the child wrote. Pin both sides of the record.
   const args = structuredClone(RAW_STRING_FENCE);
   const recorded = structuredClone(RECORDED_ARRAY_FENCE);
   const before = JSON.stringify(args);
