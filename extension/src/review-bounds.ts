@@ -49,15 +49,15 @@
 import type { SteerSource } from "./dispatch-steer.ts";
 import { isSkillReadWith } from "./lens-skill-load-proof.ts";
 import { candidateDirs, resolveSkillDir, skillFileCandidates } from "./lens-skill-path.ts";
-import { adapterFor } from "./model-adapters.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
-import {
-  type VerdictStatus,
-  appendBounded,
-  verdictEndingMessage,
-} from "./review-bounds-verdict.ts";
+import { type VerdictStop, createVerdictStop } from "./review-bounds-verdict-stop.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+
+// The stop's own module is re-exported here: `review-bounds.ts` is the surface
+// every caller of the reviewer bounds already imports (`spawn-review-bounds.ts`,
+// the smoke tests), and the stop is one of the two bounds that surface offers.
+export { type VerdictStop, createVerdictStop } from "./review-bounds-verdict-stop.ts";
 
 /** A child that re-read its skill file past the cap. */
 export const REVIEW_SKILL_REREAD_KILL = "review-skill-reread" as const;
@@ -213,118 +213,6 @@ export function createSkillReadGuard(o: {
     },
     count: () => reads,
     boundArmed: () => o.boundArmed?.() === true,
-  };
-}
-
-export interface VerdictStop {
-  /** Feed one parsed child event. True once a verdict has been seen. */
-  observe(event: PiJsonEvent): boolean;
-  /** The accumulated assistant text the verdict was parsed from. */
-  text(): string;
-  /** The parsed verdict, once stopped. Typed as `VerdictStatus` (#1827 round 4):
-   *  a bare `string` here let a caller compare the stop's word against a typo the
-   *  compiler could not see, and it is the value the fold reports as accepted. */
-  status(): VerdictStatus | undefined;
-  /** Record that the stop ENDED this child. The only caller is
-   *  `observeReviewBounds`, on the branch that arms, closes stdin and kills — so
-   *  `stopped()` below means "this child was actually ended", never merely "a
-   *  verdict was seen". The fold's SINGLE source of that fact (#1827 round 4 —
-   *  the wiring's duplicate `stoppedByVerdict` boolean is gone, so a clean end
-   *  is recorded in exactly one place). */
-  markEnded(): void;
-  /** The stop FIRED — the child was armed, its stdin closed and ended. */
-  stopped(): boolean;
-}
-
-/**
- * The live post-verdict stop. Accumulates every text block of every assistant
- * `message_end` (that accumulation is the RESULT the spawn reports when the
- * stop fires), and decides from the message it is handed — never from a
- * cross-message window. The first version read the newest eight blocks joined,
- * so a menu echoed three turns earlier was still in the scan of the turn that
- * stopped the child.
- *
- * The decision itself is `verdictEndingMessage` in review-bounds-verdict.ts:
- * the LAST non-empty text block of a tool-free message, naming exactly one
- * distinct verdict, on a line outside any fence. The reviewer's own brief
- * quotes all four values as a menu, so "the marker appears somewhere in the
- * tail" was never a question that could distinguish a verdict from a quotation.
- *
- * `text()` returns the whole accumulation, and the fold sets `result.text` to
- * it whenever the stop fired — so the status the stop recorded and
- * `parseVerdict(result.text).status` are the same value, and the findings text
- * `parseVerdict` records alongside the status is the reviewer's whole report
- * rather than its last paragraph.
- */
-export function createVerdictStop(): VerdictStop {
-  // The same master switch as the re-read cap: with `PI_ENSEMBLE_DISPATCH_CAPS=0`
-  // no bound of ours ends a child, and docs/configuration.md says so. The stop
-  // is gated at the decision rather than at the accumulator — the accumulation
-  // is the RESULT the spawn reports, so it must keep collecting text whatever
-  // the caps say. A disabled stop can never report a status and can never be
-  // marked stopped, so the caller's kill branch is unreachable, the fold stays
-  // silent, and the reviewer runs its natural tail.
-  const active = capsOn();
-  const parts: string[] = [];
-  // Running total of `parts` (plus the "\n" joins), maintained by
-  // `appendBounded` — re-summing the buffer per block was quadratic on a child
-  // that may run 400+ turns.
-  const used = { total: 0 };
-  let stopped: VerdictStatus | undefined;
-  // Set on the branch of `observeReviewBounds` that ends the child, through the
-  // seam below. Distinct from `stopped`, which the parse sets: with the caps off
-  // a verdict is read and nothing is ended.
-  let ended = false;
-  return {
-    observe: (event) => {
-      const msg = event.message;
-      if (event.type !== "message_end" || msg?.role !== "assistant") return stopped !== undefined;
-      if (msg.stopReason === "error" || msg.stopReason === "aborted") return stopped !== undefined;
-      // Resolved ONCE for the message, not once per text block: the adapter is a
-      // property of the model that produced it, and this is the hot path.
-      const adapter = adapterFor(msg.model, msg.provider);
-      for (const block of msg.content ?? []) {
-        // The SAME model-adapter filter `collapseEvents` applies, so a GLM
-        // "None" placeholder never reaches `result.text` through the frozen
-        // reply, and the SAME bounded append: the accumulation is the result the
-        // spawn reports, so it collects under the caps too and must not grow
-        // without limit on a 400-turn child.
-        if (block.type === "text" && block.text && adapter.isArtifactText?.(block.text) !== true) {
-          appendBounded(parts, block.text, used);
-        }
-      }
-      if (stopped) return true;
-      if (!active) return false;
-      // One reader, one rule, on the message in hand: no text block, a tool
-      // call anywhere in the message, or a last block that does not close on a
-      // single unfenced verdict — all return undefined and the child runs on.
-      const hit = verdictEndingMessage(msg);
-      if (hit) {
-        stopped = hit;
-        // #1827 round 5 — the block the stop MATCHED goes in past the budget.
-        // The fold sets `result.text` to this accumulation, so a budget that
-        // dropped the matched line made `parseVerdict(result.text)` disagree
-        // with the very stop that ended the child, and a clean review read as
-        // incomplete. At most one block is ever appended past the cap, so the
-        // memory bound is only ever one closing block over the budget.
-        const last = [...(msg.content ?? [])]
-          .reverse()
-          .find((b) => b.type === "text" && b.text && adapter.isArtifactText?.(b.text) !== true);
-        if (last && last.type === "text" && last.text) {
-          appendBounded(parts, last.text, used, true);
-        }
-      }
-      return stopped !== undefined;
-    },
-    text: () => parts.join("\n"),
-    status: () => stopped,
-    markEnded: () => {
-      ended = true;
-    },
-    // Read at the fold, so it must reflect the ACT of stopping — set on the
-    // branch in `observeReviewBounds` that ends the child — and not merely the
-    // accumulation, which runs whatever the caps say.
-    stopped: () => ended,
   };
 }
 

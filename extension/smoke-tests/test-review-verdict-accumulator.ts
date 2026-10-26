@@ -88,6 +88,7 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
   // because the accumulator is also the reported result.
   const big = createVerdictStop();
   const chunk = "x".repeat(8 * 1024);
+  const CRIT = "VERDICT: CRITICAL_ISSUES_FOUND";
   for (let i = 0; i < 200; i++) big.observe(turn(text(chunk)));
   assert(big.status() === undefined, "an oversized prose stream stops nothing");
   assert(
@@ -101,31 +102,93 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
   // the matched closing block itself — see (12) below, which is what keeps
   // `parseVerdict` over the frozen reply in agreement with the stop.
   const budgeted = createVerdictStop();
-  for (let i = 0; i < 200; i++) budgeted.observe(turn(text(chunk)));
+  // 31 × 8 KB: the head is truncated and room remains — 2 characters for the
+  // block's join plus the whole closing block. That is the ordinary shape of a
+  // long review, and the case the round-4 rule got wrong in the common instance
+  // (it appended nothing once the head looked full).
+  for (let i = 0; i < 31; i++) budgeted.observe(turn(text(chunk)));
   const before = budgeted.text().length;
   budgeted.observe(turn(text("VERDICT: CRITICAL_ISSUES_FOUND")));
   assert(
     budgeted.status() === "CRITICAL_ISSUES_FOUND",
     "the verdict after the budget still stops the child",
   );
-  // #1827 round 5 — and it is APPENDED, because the fold makes this accumulation
-  // `result.text` and `parseVerdict(result.text)` has to read the same verdict
-  // that ended the child. The old assertion pinned the opposite (no growth past
-  // the budget), which was the reported defect.
+  // #1827 round 5 — the matched block is KEPT: its join and its whole text, so
+  // `parseVerdict(result.text)` reads the verdict that ended the child. Under the
+  // round-4 rule this growth was 0 and the reply lost the marker.
   assert(
-    budgeted.text().length > before && budgeted.text().endsWith("VERDICT: CRITICAL_ISSUES_FOUND"),
-    "…and the matched closing block is kept past the budget",
+    budgeted.text().endsWith(`\n${CRIT}`) && budgeted.text().length === before + 1 + CRIT.length,
+    `…and the matched closing block is kept past the budget (+${budgeted.text().length - before})`,
   );
-  // A stop that never fires keeps the budget absolutely: the accumulation is
-  // only ever one matched block over the cap, and only when a stop fired.
-  const quiet = createVerdictStop();
-  for (let i = 0; i < 400; i++) quiet.observe(turn(text(chunk)));
+  budgeted.observe(turn(text("more prose after the stop")));
   assert(
-    quiet.text().length <= VERDICT_ACCUMULATION_BUDGET && quiet.status() === undefined,
-    `an unfired stop stays inside the budget (${quiet.text().length})`,
+    budgeted.text().length === before + 1 + CRIT.length &&
+      budgeted.text().endsWith(`\n${CRIT}`),
+    `…as the only block ever appended past it (+${budgeted.text().length - before})`,
   );
-  // The budget does not narrow what counts as a verdict: the very next reply,
-  // from a stop with room, is recognised identically.
+  // The cap is total for ordinary prose; the single matched block is the only
+  // thing that can pass it, so the memory ceiling is the budget plus one closing
+  // block. Here the block fitted, so the freeze sits under the budget.
+  const overshoot = baseResult({ text: "(no output)" });
+  applyReviewBounds(
+    { stoppedByVerdict: true, verdictText: budgeted.text(), verdictStatus: budgeted.status() },
+    overshoot,
+    () => undefined,
+    () => undefined,
+  );
+  assert(
+    overshoot.text.length <= VERDICT_ACCUMULATION_BUDGET,
+    `a close that fits never passes the cap (${overshoot.text.length - VERDICT_ACCUMULATION_BUDGET})`,
+  );
+  assert(
+    parseVerdict(overshoot.text).status === "CRITICAL_ISSUES_FOUND",
+    "…and the frozen reply parses to the verdict that ended the child",
+  );
+  // The overshoot case: the head has filled the budget to the character, so no
+  // room remains — and the matched block STILL goes in, whole, because a
+  // `VERDICT:` line truncated to a prefix matches no reader. This is the shape
+  // the round-4 rule silently destroyed.
+  const starved = createVerdictStop();
+  for (let i = 0; i < 32; i++) starved.observe(turn(text(chunk)));
+  assert(
+    starved.text().length === VERDICT_ACCUMULATION_BUDGET - 31,
+    `the head fills the budget (${starved.text().length})`,
+  );
+  starved.observe(turn(text(CRIT)));
+  assert(starved.status() === "CRITICAL_ISSUES_FOUND", "a verdict with no room left still stops");
+  // One `\n` from the join, then the block whole: `\n` + 31 chars where the
+  // ordinary rule's room was already spent.
+  assert(
+    starved.text().endsWith(`\n${CRIT}`) &&
+      starved.text().length === VERDICT_ACCUMULATION_BUDGET - 31 + 1 + CRIT.length,
+    `…and is appended whole past the cap, not dropped and not truncated (+${starved.text().length - (VERDICT_ACCUMULATION_BUDGET - 31)})`,
+  );
+  assert(
+    parseVerdict(starved.text()).status === "CRITICAL_ISSUES_FOUND",
+    "…so the frozen reply and the stop agree",
+  );
+  // The head-keeping trade when the close is itself enormous: the head is capped
+  // and the matched block is kept WHOLE — never silently truncated to a prefix no
+  // reader can match, which is the failure the round-4 budget actually shipped.
+  const hugeClose = createVerdictStop();
+  for (let i = 0; i < 200; i++) hugeClose.observe(turn(text(chunk)));
+  const close = `${"z".repeat(40 * 1024)}\n\nVERDICT: APPROVED`;
+  hugeClose.observe(turn(text(close)));
+  assert(hugeClose.status() === "APPROVED", "an oversized closing block still stops the child");
+  assert(
+    hugeClose.text().endsWith(close),
+    "…and is kept whole, not truncated to an unreadable prefix",
+  );
+  assert(
+    parseVerdict(hugeClose.text()).status === "APPROVED",
+    "…so the frozen reply and the stop agree even there",
+  );
+  assert(
+    hugeClose.text().length <= VERDICT_ACCUMULATION_BUDGET + close.length + 2,
+    `…with the cap exceeded by that block alone (${hugeClose.text().length})`,
+  );
+  // The budget is not a filter on which verdicts are RECOGNISED: the very next
+  // reply, from a stop with room, is recognised identically.
   const fresh = createVerdictStop();
   assert(
     fresh.observe(turn(text("VERDICT: CRITICAL_ISSUES_FOUND"))) === true,
@@ -135,23 +198,56 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
 }
 
 
-// ── (12) #1827 round 5 — the reported defect: past the budget the frozen reply
+// (12) #1827 round 5 — the reported defect: past the budget the frozen reply
 // kept the HEAD but lost the verdict, so `parseVerdict(result.text)` disagreed
 // with the stop that ended the child and a CLEAN review read as `incomplete`
 // (the loop's no-marker default is ISSUES_FOUND with verdictParsed false).
-// Eighty turns of 5 KB each is 400 KB, well past the 256 KB budget, and the
-// reply then closes tool-free on the verdict line.
+// Eighty turns of 5 KB fill the 256 KB cap, and the reply then closes tool-free
+// on the verdict line — the ordinary shape of a long review, where the head is
+// truncated and the close must still survive.
 {
   const longTurn = "y".repeat(5 * 1024);
   for (const verdict of ["APPROVED", "MINOR_OBSERVATIONS"] as const) {
     const stop = createVerdictStop();
     for (let i = 0; i < 80; i++) stop.observe(turn(text(longTurn)));
     assert(stop.status() === undefined, `an unfinished ${verdict} reply has no verdict yet`);
+  // 80 × 5 KB = 400 KB: past the cap, so the head IS truncated, and the joined
+  // text sits two characters under it (one join reserved for a block that was
+  // refused) — leaving room for the closing line, which is exactly the case the
+  // round-4 budget got wrong: it refused that block as "at the cap" and the
+  // frozen reply lost the verdict. A reply so long that not even the matched
+  // block fits stays the head-keeping trade pinned in (11).
     assert(
-      stop.text().length > VERDICT_ACCUMULATION_BUDGET * 0.9,
-      `…and the accumulation is past the budget before the verdict (${stop.text().length})`,
+      stop.text().length >= VERDICT_ACCUMULATION_BUDGET - longTurn.length &&
+        stop.text().length <= VERDICT_ACCUMULATION_BUDGET,
+      `the accumulation has filled the cap and still has room for the close (${stop.text().length} of ${VERDICT_ACCUMULATION_BUDGET})`,
     );
     const calls: string[] = [];
+    // A tool call makes the turn incomplete however clean its text reads, and
+    // the accumulator appends a block that goes on to be refused — so this is
+    // also the shape where the forced append costs budget on text that stopped
+    // nothing. It is one block, and it never makes a refusal STOP.
+    observeReviewBounds(
+      {
+        verdictStop: stop,
+        assistantMessageEnd: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              text("Still working."),
+              { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } },
+              text(`Maybe:\n\nVERDICT: ${verdict}`),
+            ],
+          },
+        },
+      } as unknown as { verdictStop: typeof stop; assistantMessageEnd: PiJsonEvent },
+      quietTargets(calls),
+    );
+    assert(
+      calls.length === 0 && stop.status() === undefined,
+      `a verdict alongside a tool call still stops nothing (${calls.join(",")})`,
+    );
     observeReviewBounds(
       {
         verdictStop: stop,
@@ -178,8 +274,8 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
       `…and it is the status that ended the child (${parsed.status} vs ${String(stop.status())})`,
     );
     assert(
-      r.text.length <= VERDICT_ACCUMULATION_BUDGET + longTurn.length + 40,
-      `the freeze is at most the matched block over the budget (${r.text.length})`,
+      r.text.length <= VERDICT_ACCUMULATION_BUDGET,
+      `the freeze never exceeds the budget when there was room (${r.text.length})`,
     );
   }
 }

@@ -49,14 +49,16 @@ export type VerdictStatus = (typeof VERDICT_STATUSES)[number];
  * accumulator stops appending and keeps the HEAD — the head is where a reviewer's
  * findings sit.
  *
- * One exception, and it is the whole reason the budget does not cost a verdict:
- * the text block a stop MATCHED is appended even past the budget (#1827 round 5).
- * The budget alone silently lost the verdict on a long reply, so
- * `parseVerdict(result.text)` reported its `ISSUES_FOUND` default while the stop
- * had ended the child on `APPROVED` — a clean review read as incomplete. The
- * exception is bounded by construction: the accumulator appends at most ONE
- * block past the budget, the one the stop matched, so the freeze is never more
- * than that block over the cap.
+ * The budget rule is total, with ONE exception (which is what the round-4 shape
+ * got wrong): past the budget the accumulator takes NO ordinary block, but the
+ * text block a verdict stop MATCHED is always appended — head + matched block
+ * (#1827 round 5). The fold sets `result.text` to this accumulation, so a budget
+ * that dropped the matched line made `parseVerdict(result.text)` report its
+ * `ISSUES_FOUND` no-marker default while the stop had ended the child on
+ * `APPROVED`: a clean review read as incomplete. The exception is bounded by
+ * construction — the accumulator appends at most ONE block past the cap, the one
+ * it matched — so the memory ceiling is never more than a single closing block
+ * over the budget.
  */
 export const VERDICT_ACCUMULATION_BUDGET = 256 * 1024;
 
@@ -82,11 +84,35 @@ export function appendBounded(
   used: { total: number },
   force = false,
 ): void {
-  const room = VERDICT_ACCUMULATION_BUDGET - used.total;
-  if (room <= 0 && !force) return;
+  // `parts.join("\n")` is Σ length + 2·(n−1): one "\n" seam between neighbours.
+  // `used.total` tracks that join literally — 2 per SEAM, none before the first
+  // block — so `parts.join("\n").length === used.total` at every step, and a
+  // block whose `room` was reserved with its seam truncates into room that already
+  // paid for the join after it. Same total as the old per-call re-sum of
+  // `part.length + 2`, minus the quadratic scan; that identity is what
+  // test-review-verdict-accumulator.ts pins, since it is the only thing proving
+  // the O(1) running total equals the O(n²) sum it replaced.
+  //
+  // `force` is the matched closing block and is NOT capped: it goes in WHOLE,
+  // even with no room left — which is the normal case, since the head has filled
+  // the budget by the time a long reply closes. Truncating it is what the
+  // round-4 shape did: `room` was exhausted, so a capped fill wrote
+  // "VERDICT: CRITI", which matches no reader, so the frozen reply still
+  // disagreed with the stop and a clean review read as incomplete. The ordinary
+  // accumulation reaches the cap and never passes it; only the one matched block
+  // takes it over, by its own length plus its seam.
+  if (force) {
+    if (parts.length > 0) used.total += 1; // one "\n" of join, as `join("\n")` emits
+    parts.push(text);
+    used.total += text.length;
+    return;
+  }
+  const seam = parts.length > 0 ? 2 : 0;
+  const room = VERDICT_ACCUMULATION_BUDGET - used.total - seam;
+  if (room <= 0) return;
   const piece = text.length > room ? text.slice(0, room) : text;
   parts.push(piece);
-  used.total += piece.length + (parts.length > 1 ? 2 : 0); // the "\n" join
+  used.total += seam + piece.length;
 }
 
 /** Lines opening or closing a fenced block. Built once, not per call: this
