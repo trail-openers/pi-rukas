@@ -107,7 +107,11 @@ function runNames(
 /** The names a run carried, bounded so the evidence line stays short. */
 function namesSuffix(names: readonly string[] | undefined): string {
   if (names === undefined) return "";
-  const shown = names.slice(0, 4).join(", ");
+  // Each name is a line the gate printed, and a gate's FAILED: line can carry a
+  // token the project's own output leaked — so every name is vetoed individually
+  // before it is joined. A secret must not reach the forge because it arrived in a
+  // test's NAME rather than in its stdout.
+  const shown = names.slice(0, 4).map(publishableEvidenceText).join(", ");
   return ` — named: ${shown}${names.length > 4 ? `, +${names.length - 4} more` : ""}`;
 }
 
@@ -128,6 +132,6 @@ export function baseRunsProse(result: BaseRedConfirmationResult): string {
       ? result.namesUnplaceable === true
         ? " — the runs' failing-test names could not be placed in either tree, so the claim rests on two red runs rather than on a name match"
         : ""
-      : ` — both runs named: ${result.commonNames.slice(0, 4).join(", ")}`;
+      : ` — both runs named: ${result.commonNames.slice(0, 4).map(publishableEvidenceText).join(", ")}`;
   return `${runLine("base run 1", result.first)}${namesSuffix(runNames(result.first, result.firstNames))}; ${runLine("base run 2", result.second)}${namesSuffix(runNames(result.second, result.secondNames))}${common}`;
 }

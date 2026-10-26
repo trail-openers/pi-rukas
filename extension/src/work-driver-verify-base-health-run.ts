@@ -19,7 +19,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
-import { baseRunsProse, confirmingOutcomeProse } from "./work-driver-verify-base-confirm-prose.ts";
+import {
+  baseRunsProse,
+  confirmingOutcomeProse,
+  publishableEvidenceText,
+} from "./work-driver-verify-base-confirm-prose.ts";
 import {
   BASE_CONFIRM_FIRST_LABEL,
   BASE_CONFIRM_SECOND_LABEL,
@@ -271,7 +275,7 @@ export async function runBaseHealthProbe(
       ? {}
       : { red: baseHealthRedEvidence(verdict, killedFirstArm) }),
     notes: [
-      `base-health: not established — ${verdict.reason ?? "the probe reached no verdict"}; the cycle proceeds`,
+      `base-health: not established — ${publishableEvidenceText(verdict.reason ?? "the probe reached no verdict")}; the cycle proceeds`,
       // #1826 — the flaky base is recorded where the operator can read it: the
       // consultation note the develop gate writes for this verdict names both
       // runs, so "red once, green once" survives the probe's own scope. A killed

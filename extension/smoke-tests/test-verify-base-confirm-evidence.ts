@@ -100,6 +100,41 @@ for (const [label, record, fromInFlight, want] of [
   );
 }
 
+  // #1826 round 3 — the FAILING-TEST NAMES printed beside those same lines are
+  // gate output too. A test name is a line the gate printed, and a harness that
+  // echoes a env blob into a test title puts the token in the name; before this it
+  // reached the [baseline-red] finding, the handoff and the forge unvetted.
+  const leakedName = "tests/login_test.ts password=secret_key=ghp_AAAAAAAAAAAAAAAAAAAA";
+  const leakedNames = baseRunsProse({
+    confirmation: "confirmed-red",
+    first: red(),
+    second: red(),
+    ranSecond: true,
+    firstNames: [leakedName],
+    secondNames: [leakedName],
+    commonNames: [leakedName],
+  });
+  assert(
+    !leakedNames.includes("ghp_") &&
+      !leakedNames.includes("password=") &&
+      leakedNames.includes("[redacted"),
+    `neither the per-run named list nor the common list publishes a credential-shaped test name (${JSON.stringify(leakedNames.slice(0, 160))})`,
+  );
+  const cleanNames = baseRunsProse({
+    confirmation: "confirmed-red",
+    first: red(),
+    second: red(),
+    ranSecond: true,
+    firstNames: ["tests/login_test.ts"],
+    secondNames: ["tests/login_test.ts"],
+    commonNames: ["tests/login_test.ts"],
+  });
+  assert(
+    cleanNames.includes("named: tests/login_test.ts") &&
+      cleanNames.includes("both runs named: tests/login_test.ts"),
+    `ordinary failing-test names still print in full — the name veto is not a rewrite (${JSON.stringify(cleanNames)})`,
+  );
+
 // ── #1826 round 2 — the one-sided sentence, pinned at the prose leaf ──
 //
 // A pair where exactly ONE run named failing tests is refused (`names-disagree`),
