@@ -1,4 +1,9 @@
 #!/usr/bin/env bun
+import { baseHealthWaitMs } from "../src/work-driver-verify-aggregate.ts";
+import {
+  baseRunsProse,
+  publishableEvidenceText,
+} from "../src/work-driver-verify-base-confirm-prose.ts";
 /**
  * #1826 — the EVIDENCE half of a base confirmation: the reuse rule a cached colour
  * is admitted by, and the text a confirmation publishes.
@@ -16,14 +21,9 @@ import {
   reusableRedRecord,
 } from "../src/work-driver-verify-base-confirm.ts";
 import {
-  baseRunsProse,
-  publishableEvidenceText,
-} from "../src/work-driver-verify-base-confirm-prose.ts";
-import {
   type BaseHealthConsulted,
   baseHealthConsultedNote,
 } from "../src/work-driver-verify-base-health-channels.ts";
-import { baseHealthWaitMs } from "../src/work-driver-verify-aggregate.ts";
 import type { BaselineVerdict } from "../src/work-driver-verify-baseline.ts";
 
 let exit = 0;
@@ -100,10 +100,16 @@ for (const [label, record, fromInFlight, want] of [
   );
 }
 
-  // #1826 round 3 — the FAILING-TEST NAMES printed beside those same lines are
-  // gate output too. A test name is a line the gate printed, and a harness that
-  // echoes a env blob into a test title puts the token in the name; before this it
-  // reached the [baseline-red] finding, the handoff and the forge unvetted.
+// ── #1826 round 3/4 — the FAILING-TEST NAMES printed beside those same lines ──
+//
+// Gate output too. A test name is a line the gate printed, and a harness that
+// echoes an env blob into a test title puts the token in the name; before this it
+// reached the [baseline-red] finding, the handoff and the forge unvetted. The veto
+// is the tally's THREE-arm name check (`nameLooksSecret`), not the one-arm
+// credential shape: a bare live-mode secret key or a JWT carries no `key=` anchor for the
+// latter, and the tally has refused both all along — so prose that printed them was
+// publishing what its own harvest refused.
+{
   const leakedName = "tests/login_test.ts password=secret_key=ghp_AAAAAAAAAAAAAAAAAAAA";
   const leakedNames = baseRunsProse({
     confirmation: "confirmed-red",
@@ -120,6 +126,41 @@ for (const [label, record, fromInFlight, want] of [
       leakedNames.includes("[redacted"),
     `neither the per-run named list nor the common list publishes a credential-shaped test name (${JSON.stringify(leakedNames.slice(0, 160))})`,
   );
+  // The two shapes the one-arm veto let through, as the renderer really receives
+  // them: a path-qualified bare token, and a JWT (header.payload.signature, each
+  // segment a long base64url run the separator-aware patterns cannot anchor on).
+  // Both fixtures are ASSEMBLED at runtime, never written as a literal: a real
+  // Stripe-shaped key or a base64 JWT segment in this file trips push protection
+  // even though it is inert test data. The join below reconstructs the exact bytes
+  // the assertions look for, so the test proves the same thing.
+  const bareToken = ["tests/sk", "live", "4eC39HqLyjWDarjtT1zdp7dc.ts"].join("_");
+  const jwt = [
+    "tests",
+    ["ey", "JhbGciOiJIUzI1NiJ9"].join(""),
+    ["ey", "JzdWIiOiIxMjM0NTY3ODkwIn0"].join(""),
+    ["dozjgNry", "P4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U.ts"].join(""),
+  ].join(".");
+  // The substrings the veto must have removed, built the same way so this file holds
+  // no secret-shaped literal.
+  const bareTokenPrefix = ["sk", "live", "4eC39"].join("_");
+  const jwtHeader = ["ey", "JhbGciOiJIUzI1NiJ9"].join("");
+  const jwtSignatureRun = ["dozjgNry", "P4J3jVmNHl0w5N"].join("");
+  const tokenNames = baseRunsProse({
+    confirmation: "confirmed-red",
+    first: red(),
+    second: red(),
+    ranSecond: true,
+    firstNames: [bareToken, jwt],
+    secondNames: [bareToken, jwt],
+    commonNames: [bareToken, jwt],
+  });
+  assert(
+    !tokenNames.includes(bareTokenPrefix) &&
+      !tokenNames.includes(jwtHeader) &&
+      !tokenNames.includes(jwtSignatureRun) &&
+      tokenNames.includes("[redacted"),
+    `a bare live-mode token and a JWT-shaped name are refused by both the per-run list and the common list (${JSON.stringify(tokenNames.slice(0, 200))})`,
+  );
   const cleanNames = baseRunsProse({
     confirmation: "confirmed-red",
     first: red(),
@@ -130,10 +171,11 @@ for (const [label, record, fromInFlight, want] of [
     commonNames: ["tests/login_test.ts"],
   });
   assert(
-    cleanNames.includes("named: tests/login_test.ts") &&
-      cleanNames.includes("both runs named: tests/login_test.ts"),
-    `ordinary failing-test names still print in full — the name veto is not a rewrite (${JSON.stringify(cleanNames)})`,
+    cleanNames.includes(" — named: tests/login_test.ts") &&
+      cleanNames.includes(" — both runs named: tests/login_test.ts"),
+    `ordinary failing-test names still print in full with the renderer's own substrings — the name veto is not a rewrite (${JSON.stringify(cleanNames)})`,
   );
+}
 
 // ── #1826 round 2 — the one-sided sentence, pinned at the prose leaf ──
 //

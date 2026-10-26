@@ -1,3 +1,4 @@
+import { redactSecrets } from "./secret-patterns.ts";
 import { looksLikeCredential } from "./work-driver-verify-assertion.ts";
 /**
  * work-driver-verify-base-confirm-prose — the operator's sentences about the two
@@ -18,10 +19,16 @@ import {
   CONFIRMING_RUN_UNREADABLE,
 } from "./work-driver-verify-base-confirm.ts";
 import type { BaselineVerdict, RedBaselineVerdict } from "./work-driver-verify-baseline.ts";
+import { nameLooksSecret } from "./work-driver-verify-tally.ts";
 
 /**
  * Text that came from git or the executor and is about to be interpolated into
  * PUBLISHED evidence prose (a finding, a note a handoff renders, a forge comment).
+ *
+ * For REASONS — a git error's message, the project's verify command, the
+ * confirming run's sentence. For FAILING-TEST NAMES ask {@link publishableName}
+ * instead: a name is vetoed by all three arms, because the credential shape alone
+ * does not see a bare token (`#1826` round 3).
  *
  * `probeBaselineVerify` puts a git error's message straight into an `unknown`
  * verdict's `reason`, and the base seams also interpolate the project's verify
@@ -35,7 +42,19 @@ import type { BaselineVerdict, RedBaselineVerdict } from "./work-driver-verify-b
  * placeholder, so the note still says what happened without carrying the secret.
  */
 export function publishableEvidenceText(text: string): string {
-  return looksLikeCredential(text) ? "[redacted: credential-shaped output]" : text;
+  return looksLikeCredential(text) || redactSecrets(text).text !== text
+    ? "[redacted: credential-shaped output]"
+    : text;
+}
+
+/**
+ * One failing-test name, vetoed the way the tally vetoes it — all three arms
+ * ({@link nameLooksSecret}), so the prose cannot publish a token the harvest
+ * refuses. A REFUSAL with the same placeholder as {@link publishableEvidenceText}:
+ * the sentence still reports the run, it just does not carry the token.
+ */
+export function publishableName(name: string): string {
+  return nameLooksSecret(name) ? "[redacted: credential-shaped output]" : name;
 }
 
 /**
@@ -111,7 +130,7 @@ function namesSuffix(names: readonly string[] | undefined): string {
   // token the project's own output leaked — so every name is vetoed individually
   // before it is joined. A secret must not reach the forge because it arrived in a
   // test's NAME rather than in its stdout.
-  const shown = names.slice(0, 4).map(publishableEvidenceText).join(", ");
+  const shown = names.slice(0, 4).map(publishableName).join(", ");
   return ` — named: ${shown}${names.length > 4 ? `, +${names.length - 4} more` : ""}`;
 }
 
@@ -132,6 +151,6 @@ export function baseRunsProse(result: BaseRedConfirmationResult): string {
       ? result.namesUnplaceable === true
         ? " — the runs' failing-test names could not be placed in either tree, so the claim rests on two red runs rather than on a name match"
         : ""
-      : ` — both runs named: ${result.commonNames.slice(0, 4).map(publishableEvidenceText).join(", ")}`;
+      : ` — both runs named: ${result.commonNames.slice(0, 4).map(publishableName).join(", ")}`;
   return `${runLine("base run 1", result.first)}${namesSuffix(runNames(result.first, result.firstNames))}; ${runLine("base run 2", result.second)}${namesSuffix(runNames(result.second, result.secondNames))}${common}`;
 }
