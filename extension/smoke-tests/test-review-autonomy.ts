@@ -143,6 +143,13 @@ async function reviewRow(text: string, callerSuppliedDiff: boolean): Promise<Led
   return row;
 }
 
+/**
+ * The patch identity the #1533 head-drift scenario records as REVIEWED, distinct
+ * from every identity the other scenarios write, so the drifted head is the only
+ * thing that differs between that scenario's two guard calls.
+ */
+const REVIEWED_PATCH_ID = "d".repeat(40);
+
 const ISSUES_TEXT = "VERDICT: ISSUES_FOUND\n\n### ISSUES\n- x.txt:1 — the added line lacks a test";
 
 // ── #1125/#1144 — what a finding OUTSIDE the PR's changed lines may do ──────
@@ -285,6 +292,7 @@ async function autonomyScenarios() {
       crit.verdict === "CRITICAL_ISSUES_FOUND" && critRow?.hasCritical === true,
       `#1144: a CRITICAL on a changed line blocks and sets hasCritical (got ${crit.verdict})`,
     );
+
   });
 }
 
@@ -294,6 +302,8 @@ try {
 
   const issues = await reviewRow(ISSUES_TEXT, false);
   const PATCH = issues.patchId;
+/** The patch identity the #1533 head-drift scenario records as reviewed. */
+const REVIEWED_PATCH_ID = "d".repeat(40);
 
   const lensPassedRow: LedgerEntry = {
     branch: BRANCH,
