@@ -97,6 +97,13 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
       "check the reviewer's provider and quota named in the evidence, then re-run `/work {issue}`",
     kindDriven: true,
   },
+  // #1634 — the gate's own read failed, not the reviewer's: nobody judged the
+  // diff, and the driver refused to read "could not tell" as "nothing changed".
+  "adversarial-diff-unreadable": {
+    cls: "pi-rukas",
+    reason: "the driver could not read the worktree's diff for the adversarial gate",
+    action: null,
+  },
   // The reviewer judged the diff and still found issues after its own rounds.
   "adversarial-loop": {
     cls: "change",

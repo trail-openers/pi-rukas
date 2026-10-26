@@ -147,6 +147,9 @@ export function explainCap(
       return explainLens(cap, state);
     case "adversarial-infra-failure":
       return explainOther(cap, state);
+    // #1634 — the adversarial twin of `lens-diff-unreadable`, same renderer family.
+    case "adversarial-diff-unreadable":
+      return explainOther(cap, state);
     case "provider-unavailable": {
       // #1243 — the endpoint caused this park, not the code. Two things the
       // operator (and a headless caller re-queueing on its own) needs, and the

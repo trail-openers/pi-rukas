@@ -141,6 +141,14 @@ export type WorkCapLiteral =
   | "ops-merge-base-mismatch"
   // #486 — infra-failure: adversarial loop failed on infra every attempt.
   | "adversarial-infra-failure"
+  // #1634 — the adversarial gate could not READ the worktree diff it is meant
+  // to review (no worktree path, a directory that is not a repository, or a
+  // `git diff` that threw / exited non-zero). Previously that read returned
+  // "" for every failure and the empty-diff guard APPROVED on it with zero
+  // rounds, so a killed develop round's unreadable tree merged unreviewed.
+  // Same class as `lens-diff-unreadable` (#384) on the pre-commit side: the
+  // no-signal answer must never be approval. Halting is cheap.
+  | "adversarial-diff-unreadable"
   // #1243 — the step parked because the PROVIDER was down, not because the
   // work failed. A transport severance / endpoint timeout / short-burst 429
   // that survived every retry (and, for the adversarial gate, the fan-out's

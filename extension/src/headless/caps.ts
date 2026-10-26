@@ -43,6 +43,10 @@ export type FixedCap = Exclude<WorkCapLiteral, TemplateCap>;
 
 /** Every fixed-literal cap the driver can record, sorted. */
 export const FIXED_CAPS = [
+  // #1634 — the adversarial gate could not read the worktree diff; it halts
+  // rather than approving on the absence of evidence (the #384 lesson, on the
+  // pre-commit read). Sorted where the sort puts it.
+  "adversarial-diff-unreadable",
   "adversarial-infra-failure",
   "adversarial-loop",
   "awaiting-human-merge",

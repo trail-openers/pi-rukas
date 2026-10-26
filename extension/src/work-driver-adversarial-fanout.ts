@@ -22,6 +22,7 @@ import {
   retryLadderKillCause,
 } from "./work-driver-adversarial-fanout-capkill.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
+import { runAdversarialWorkstream } from "./work-driver-adversarial-fanout-run.ts";
 import {
   interpretReview,
   reviewRoundFor,
@@ -43,7 +44,6 @@ import {
   outcomeOf,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { fetchDiff } from "./work-driver-diff.ts";
 import {
   jitteredMs,
   providerRetryWaitMs,
@@ -123,199 +123,23 @@ export async function fanOutAdversarial(
   // errorTail. The span is captured by the caller on the ORIGINAL event
   // log — BEFORE this pass's events are appended.
   const passStart = priorBatchSpan ? priorBatchSpan[0] : state.eventLog.length;
-  const runOne = async (id: string): Promise<AdversarialOutcome> => {
-    const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
-    if (!state.pipelineState.worktrees?.[id])
-      trace(`work-driver: adversarial[${id}] — no worktree, reviewing at repoRoot`);
-    const label = multi ? `adversarial[${id}]` : "adversarial_loop";
-    const scope = scopeFor(wsMap, id);
-    const startedAt = Date.now();
-    const orchestratorJobId = makeRunId();
-    // Per-workstream diff: `git diff <baseSha>..HEAD` from this worktree
-    // — exactly what ONE developer committed. After a developer commit
-    // (post-#453) `git diff HEAD` is empty (HEAD IS the commit), so we
-    // diff against the detach point. Without baseSha we fall back to
-    // `git diff HEAD` (pre-commit semantics for uncommitted work).
-    const baseSha = state.pipelineState.baseSha;
-    const diff = await fetchDiff(cwd, baseSha);
-
-    // #286 — empty-diff short-circuit (a full reviewer spawn on an empty
-    // diff is pure waste; lens review has had this guard since PR6).
-    const emptySkipDisabled = process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP === "0";
-    if (!emptySkipDisabled && !diff.trim()) {
-      trace(`work-driver: adversarial[${id}] skipped — empty diff`);
-      return {
-        id,
-        ok: true,
-        rounds: 0,
-        records: [],
-        infra: false,
-        threw: false,
-        skipped: true,
-        priorInfra: priorOutcomes.get(id) === "infra-failure",
-        completionEvent: {
-          kind: "adversarial-skipped-empty-diff",
-          at: Date.now(),
-          workstreamId: id,
-        },
-        branchEvent: multi
-          ? {
-              kind: "branch-completed",
-              step: "adversarial",
-              workstreamId: id,
-              ok: true,
-              ms: Date.now() - startedAt,
-              at: Date.now(),
-            }
-          : undefined,
-      };
-    }
-
-    const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
-    let result: DispatchResult;
-    try {
-      result = await loopFn(
-        {
-          diff,
-          context: multi
-            ? `/work issue #${ctx.issue}: gating diff for workstream "${id}" before commit (Step 5).`
-            : `/work issue #${ctx.issue}: gating diff before commit (Step 5).`,
-          workCwd: cwd,
-          commentTimeoutMs: verifyTimeoutMs(),
-          commentExecFn: ctx.verifyExecFn,
-          // Re-read before each round. Without this, rounds 2+ are prompted
-          // with the pre-fix diff and the reviewer has to notice for itself
-          // that its earlier objections were already addressed.
-          getDiff: () => fetchDiff(cwd, baseSha),
-          // What the fix pass before this re-review changed, to be read first.
-          fixDelta: await adversarialFixDelta(state, id, cwd),
-          // #278 — the reviewer judges the diff against what was ASKED FOR,
-          // not just against generic code quality. Absent on cycles resumed
-          // from older state files, which degrade to the previous behaviour.
-          issueBody: state.pipelineState.issueBodyArtifact,
-          // #1137 — judge this workstream against its OWN scope; sibling
-          // criteria are listed as out of scope in the prompt.
-          ...(scope !== undefined ? { scope } : {}),
-          // The develop gate (or the fix pass's) passed this command on this
-          // tree to get here; the reviewer must not spend a gate re-proving it.
-          gateCmd: await driverGateCmd(ctx.repoRoot),
-          // #799 — the slow-run recorder collects into the driver's pending
-          // buffer (keyed by this cycle's primary issue); the step boundary
-          // (routeStepOutcome) drains it — the fan-out folds nothing of its
-          // own any more.
-          onSlow: slowRecorder(ctx.issue, "adversarial"),
-          // #912 — caller-supplied branch for the review-ledger write
-          // (driver worktrees are detached; the ledger writer cannot
-          // recover the branch name from a detached HEAD).
-          branch: state.pipelineState.branchName,
-          // #1114 — one reviewer dispatch; the driver routes the verdict.
-          reportOnly: true,
-          reportVerdict: "routed",
-          reportRound: reviewRoundFor(state, id),
-          // #1024 — headless: the cycle's signal reaches the inner children and
-          // each one leads its own process group.
-          processGroup: ctx.processGroup,
-          // #1666 — a headless cycle's inner children run under trust, as interactive ones do.
-          ...cycleChildOpts(ctx),
-        } satisfies Parameters<typeof runAdversarialLoop>[0],
-        // Interactive runs have no cycle signal; spawn-level timeouts in
-        // spawn.ts (per-role) bound the work there.
-        ctx.signal ?? new AbortController().signal,
-        orchestratorJobId,
-      );
-    } catch (err) {
-      const errMsg = (err as Error).message?.slice(-200);
-      return {
-        id,
-        ok: false,
-        rounds: 0,
-        records: [],
-        infra: false,
-        threw: true,
-        skipped: false,
-        priorInfra: priorOutcomes.get(id) === "infra-failure",
-        rejectionText: `adversarial loop threw: ${errMsg}`,
-        errorTail: errMsg,
-        failureEvent: {
-          kind: "dispatch-failed",
-          step: "adversarial",
-          role: "adversarial-loop",
-          jobId: orchestratorJobId,
-          label,
-          ms: Date.now() - startedAt,
-          at: Date.now(),
-          errorTail: errMsg,
-        },
-        branchEvent: multi
-          ? {
-              kind: "branch-completed",
-              step: "adversarial",
-              workstreamId: id,
-              ok: false,
-              ms: Date.now() - startedAt,
-              error: errMsg,
-              at: Date.now(),
-            }
-          : undefined,
-      };
-    }
-
-    const completionEvent = await buildCompletionEvent(
+  // #1634 — the per-workstream pass (diff read + reviewer loop) lives in
+  // work-driver-adversarial-fanout-run.ts (§12 size); the read failure is
+  // recorded there on the pipeline state so the handoff names the git error.
+  const runOne = (id: string): Promise<AdversarialOutcome> =>
+    runAdversarialWorkstream(id, {
       ctx,
-      "adversarial",
-      "adversarial-loop",
-      label,
-      // #298 — a REJECTED verdict is a COMPLETED review, not a dispatch
-      // failure (pre-#298 exitCode=1 recorded it as dispatch-failed with
-      // the escalation menu as errorTail).
-      result.loopOutcome === "rejected" ? { ...result, ok: true, exitCode: 0 } : result,
-    );
-    const records = roundsRecords(result);
-    // #1114 — the verdict decides routing (fix / pass / reject / infra).
-    const reading = interpretReview(result, reviewRoundFor(state, id));
-    const ok = reading.ok;
-    // #485 — rounds are data: the loop's own count when it carried one,
-    // else the count the per-round records describe.
-    // #1114 — plus the rounds this workstream already ran on earlier invocations.
-    const rounds =
-      reviewTrack(state.eventLog, id).rounds + (result.roundsExecuted ?? records.length);
-    return {
-      id,
-      ok,
-      rounds,
-      records,
-      infra: reading.infra || (!ok && result.loopOutcome === "infra-failure"),
-      threw: false,
-      skipped: false,
-      priorInfra: priorOutcomes.get(id) === "infra-failure",
-      rejectionText: ok ? undefined : result.text,
-      fixRequested: reading.fixRequested,
-      fixFindings: reading.fixRequested ? result.text : undefined,
-      // A pass that carried unresolved findings says so in its headline.
-      passFindings: reading.passFindings,
-      errorTail: result.errorStop?.message ?? undefined,
-      providerRepeats: result.providerRepeats,
-      // #543 — thread a loop / token-budget cap kill (+ its trigger
-      // evidence) so the aggregate parks with the fixed-literal cap
-      // INSTEAD of the generic infra cap (see work-driver-adversarial).
-      ...capKillOutcomeFields(result),
-      // #1243 — and the watchdog kill (timeout / inactivity / tool-inactivity /
-      // abort / plan-timeout) for the retry ladder alone. Order matters:
-      // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
-      ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
-      completionEvent,
-      branchEvent: multi
-        ? {
-            kind: "branch-completed",
-            step: "adversarial",
-            workstreamId: id,
-            ok,
-            ms: Date.now() - startedAt,
-            at: Date.now(),
-          }
-        : undefined,
-    };
-  };
+      state,
+      multi,
+      wsMap,
+      priorOutcomes,
+      recordWhy: (why) => {
+        next = {
+          ...next,
+          pipelineState: { ...next.pipelineState, adversarialDiffError: why },
+        };
+      },
+    });
 
   const isTransient = (o: AdversarialOutcome): boolean => isTransientAdversarialOutcome(o);
   const classify = (o: AdversarialOutcome) => classifyAdversarialOutcome(o);

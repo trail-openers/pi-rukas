@@ -284,6 +284,24 @@ export async function runAdversarial(
       );
     } else {
       const names = failed.map((o) => o.id).join(", ");
+      // #1634 — a diff nobody could read is not a reviewer that failed to run:
+      // it gets the cap that names the read, with the git error as evidence.
+      if (failed.every((o) => o.diffUnreadable)) {
+        trace(
+          `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
+        );
+        next = appendEvent(next, {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "adversarial-diff-unreadable",
+          reviewRound: state.pipelineState.reviewRound,
+          nextStep: "handoff",
+          ...(state.pipelineState.adversarialDiffError
+            ? { evidence: state.pipelineState.adversarialDiffError }
+            : {}),
+        });
+        return next;
+      }
       trace(
         `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
       );
@@ -331,6 +349,24 @@ export async function runAdversarial(
         failed.some((o) => (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES))
   ) {
     const names = failed.map((o) => o.id).join(", ");
+    // #1634 — every failing workstream failed the same READ, so the park names
+    // the read rather than the reviewer.
+    if (failed.every((o) => o.diffUnreadable)) {
+      trace(
+        `work-driver: adversarial diff unreadable for [${names}] — parking with cap 'adversarial-diff-unreadable' (no verdict exists; NOT a rejection)`,
+      );
+      next = appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "adversarial-diff-unreadable",
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+        ...(state.pipelineState.adversarialDiffError
+          ? { evidence: state.pipelineState.adversarialDiffError }
+          : {}),
+      });
+      return next;
+    }
     trace(
       `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
     );

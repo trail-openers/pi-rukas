@@ -56,6 +56,11 @@ export interface AdversarialOutcome {
   skipped: boolean;
   /** #486 — a prior run's infra-failure outcome for this workstream. */
   priorInfra: boolean;
+  /** #1634 — the failure was the driver's own diff READ (no worktree, a
+   * non-repository directory, a `git diff` that failed), not the reviewer's
+   * child. The aggregate parks with `adversarial-diff-unreadable` instead of
+   * the reviewer-infra cap, and it never counts as an approval. */
+  diffUnreadable?: boolean;
   /** #486 — a prior run's VERDICT outcome (approved / rejected / skipped-empty-diff). Final and NOT re-run on re-entry; the event loop below re-emits the prior verdict from this record so the log stays complete after the splice replaces the prior pass's batch. */
   priorVerdict?: "approved" | "rejected" | "skipped-empty-diff";
   rejectionText?: string;
