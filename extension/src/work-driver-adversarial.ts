@@ -125,6 +125,21 @@ export async function runAdversarial(
       }
       return next;
     }
+    // #1634 — the shortfall is the driver's own diff READ, so the park names
+    // the read (same routing as the two final-failure branches below).
+    if (infraShortfall.every((o) => o.diffUnreadable)) {
+      next = appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "adversarial-diff-unreadable",
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+        ...(state.pipelineState.adversarialDiffError
+          ? { evidence: state.pipelineState.adversarialDiffError }
+          : {}),
+      });
+      return next;
+    }
     const noVerdict = new Set(infraShortfall.map((o) => o.id));
     const rejectedReal = outcomes.filter((o) => !o.ok && !noVerdict.has(o.id));
     const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);

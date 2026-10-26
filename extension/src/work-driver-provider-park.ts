@@ -76,7 +76,24 @@ export function dispatchFailCapFor(
   step: WorkStep,
   tail: DispatchFailureEvent | undefined,
 ): WorkCapLiteral {
-  return stepParkedOnProvider(tail) ? "provider-unavailable" : `step-failed:${step}`;
+  if (stepParkedOnProvider(tail)) return "provider-unavailable";
+  // #1634 — an adversarial child that never ran because the driver could not
+  // READ the diff is a failed read, not a failed dispatch: it gets the cap that
+  // names the read, so the operator is sent to the worktree rather than to the
+  // reviewer. The fan-out stamps this marker on the failure it synthesises for
+  // an unreadable tree (work-driver-adversarial-fanout-diff.ts).
+  if (step === "adversarial" && isDiffUnreadableTail(tail)) return "adversarial-diff-unreadable";
+  return `step-failed:${step}`;
+}
+
+/** The marker the fan-out puts on an unreadable-diff failure's error tail. */
+const DIFF_UNREADABLE_MARK = "adversarial could not read the diff for workstream ";
+
+/** Did this failed dispatch record an unreadable diff rather than a dead child? */
+export function isDiffUnreadableTail(tail: DispatchFailureEvent | undefined): boolean {
+  return (tail?.kind === "dispatch-failed" ? (tail.errorTail ?? "") : "").startsWith(
+    DIFF_UNREADABLE_MARK,
+  );
 }
 
 /**
@@ -147,5 +164,9 @@ export function dispatchFailCapHit(
     reviewRound: state.pipelineState.reviewRound,
     nextStep: "handoff",
     ...(cap === "provider-unavailable" ? { evidence: providerParkEvidence(tail) } : {}),
+    // #1634 — the read's own git error is the evidence for the read park.
+    ...(cap === "adversarial-diff-unreadable" && tail?.kind === "dispatch-failed"
+      ? { evidence: tail.errorTail }
+      : {}),
   };
 }
