@@ -35,11 +35,13 @@ import {
   REVIEW_POST_VERDICT_STOP,
   REVIEW_SKILL_REREAD_KILL,
   type ReviewBoundTargets,
+  createReviewBounds,
   createSkillReadGuard,
   createVerdictStop,
   observeReviewBounds,
 } from "../src/review-bounds.ts";
 import { applyReviewBounds, endedAtVerdictStop, failedByKill } from "../src/spawn-review-bounds.ts";
+import type { VerdictStatus } from "../src/review-bounds-verdict.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -211,11 +213,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     overrideEnvForKillCause("review-skill-reread").includes("PI_ENSEMBLE_REVIEW_SKILL_READS"),
     "the re-read cause still names its own knob",
   );
-  assert(
-    !("review-post-verdict" in ((stopped as Record<string, unknown>) ? stopped : {})) ||
-      stopped.reviewStopReason === REVIEW_POST_VERDICT_STOP,
-    "the stop never arrives wearing a killCause",
-  );
+  assert(stopped.killCause === undefined, "the stop never arrives wearing a killCause");
 }
 
 // ── (3) a re-read kill is still a FAILURE, and is still attributed.
@@ -337,94 +335,6 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   );
 }
 
-// ── (7) is the fold's own file: test-review-post-verdict-freeze.ts (#1827
-// round 3 — the freeze; split out for the 500-line cap).
-
-// ── (7) #1827 round 3 — the fold folds ONLY when the stop actually fired, and
-// when it fired the frozen accumulation IS the result text — unconditionally,
-// so parseVerdict(result.text) can never disagree with the stop's status.
-{
-  // (a) A verdict PARSED but never acted on — the shape with the caps off, or
-  // of a verdict that arrived after the child had reported — stamps NOTHING
-  // and leaves the collapsed reply exactly as it was.
-  const stop = createVerdictStop();
-  stop.observe(turn(text("VERDICT: APPROVED")));
-  assert(stop.status() === "APPROVED", "a parsed verdict is available to the fold");
-  assert(stop.stopped() === false, "…but the stop has not fired (nothing was ended)");
-  const untouched = baseResult({ text: "VERDICT: APPROVED\n\nfull collapsed reply" });
-  const lines: string[] = [];
-  applyReviewBounds(
-    { stoppedByVerdict: false, verdictText: stop.text(), verdictStatus: stop.status() },
-    untouched,
-    (s) => lines.push(s),
-    () => undefined,
-  );
-  assert(untouched.reviewStopReason === undefined, "an unfired stop stamps no reviewStopReason");
-  assert(
-    untouched.text === "VERDICT: APPROVED\n\nfull collapsed reply",
-    "…and leaves the collapsed reply alone",
-  );
-  assert(lines.length === 0, "…and writes no attribution line");
-
-  // (b) A fired stop replaces the reply in EVERY form, including one that
-  // already looked fine. The round-2 rule (replace only when the collapse was
-  // empty/a placeholder) is what this replaces: a collapsed reply that dropped
-  // or reordered the matched line left parseVerdict(result.text) disagreeing
-  // with the status that ended the child.
-  const DISAGREES = "Review complete.\n\nVERDICT: APPROVED\n\n(nothing to report)";
-  const cases: [string, string][] = [
-    ["", "empty"],
-    ["(no output)", "(no output)"],
-    ["(thinking content only - no text output)", "thinking-only placeholder"],
-    // The CRITICAL case: a non-empty collapsed reply whose own last VERDICT
-    // line is a DIFFERENT value from the one the stop matched.
-    [DISAGREES, "a collapsed reply carrying another verdict"],
-  ];
-  for (const [collapsed, label] of cases) {
-    const fired = createVerdictStop();
-    fired.observe(turn(text("Findings: the unbounded scan in observe().")));
-    fired.observe(turn(text("VERDICT: ISSUES_FOUND")));
-    fired.markEnded();
-    const r = baseResult({ text: collapsed });
-    applyReviewBounds(
-      {
-        stoppedByVerdict: true,
-        verdictText: fired.text(),
-        verdictStatus: fired.status(),
-      },
-      r,
-      () => undefined,
-      () => undefined,
-    );
-    assert(
-      r.text === fired.text() && r.reviewStopReason === REVIEW_POST_VERDICT_STOP,
-      `a fired stop replaces ${label} with the frozen accumulation`,
-    );
-    assert(
-      parseVerdict(r.text).status === fired.status() && fired.status() === "ISSUES_FOUND",
-      `…so parseVerdict(result.text) equals the stop's status (${label})`,
-    );
-  }
-
-  // (c) An empty accumulation cannot wipe the result: nothing was frozen, so
-  // the collapsed reply stays and the clean end is still recorded.
-  const kept = baseResult({ text: "collapsed reply that already has the verdict" });
-  applyReviewBounds(
-    { stoppedByVerdict: true, verdictText: "   ", verdictStatus: "APPROVED" },
-    kept,
-    () => undefined,
-    () => undefined,
-  );
-  assert(
-    kept.text === "collapsed reply that already has the verdict",
-    "a fired stop with nothing accumulated keeps the collapsed text",
-  );
-  assert(
-    kept.reviewStopReason === REVIEW_POST_VERDICT_STOP,
-    "…while still recording the clean end",
-  );
-}
-
 // ── (8) #1827 round 2 — the re-read kill stands down once a KILLING bound has
 // armed: a caps kill is already in flight with its own (more specific) cause,
 // and ending the child here would overwrite it. The steer still fires — it is
@@ -474,6 +384,94 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   assert(
     armedFree.join(",") === "steer,armBound,kill",
     `…and the un-armed guard still arms and kills (${armedFree.join(",")})`,
+  );
+}
+
+// ── (9) #1827 round 4 — the stop is OPT-IN, and stands down behind a cause
+// another pass already named. Both are structural: neither is a prompt that can
+// be ignored, and both close a shape the round-3 head shipped with.
+{
+  const OPT_IN = { verdictStop: true } as const;
+  const SKILL = { reviewSkillPath: SKILL_DIR } as const;
+
+  // (a) The adversarial reviewer WITH the flag gets the stop; the same role
+  // WITHOUT it gets none. This is the plan gap gate's shape: it spawns
+  // `adversarial-developer` with a READY / NEEDS_ITERATION protocol, and a stop
+  // keyed on the role alone would have read its `VERDICT:` line with this
+  // reviewer's enum and ended a gate round that never agreed to that protocol.
+  const opted = createReviewBounds("adversarial-developer", { ...OPT_IN }, () => false);
+  assert(opted.verdictStop !== undefined, "adversarial-developer + verdictStop gets the stop");
+  const notOpted = createReviewBounds("adversarial-developer", {}, () => false);
+  assert(
+    notOpted.verdictStop === undefined,
+    "adversarial-developer WITHOUT the flag gets no stop (the plan gap gate's shape)",
+  );
+  // The gate's own reply therefore accumulates and decides nothing, exactly as a
+  // non-reviewer child's does: no status, no end, no stamp.
+  const gate = createVerdictStop();
+  gate.observe(turn(text("GAP lines reviewed.\n\nVERDICT: READY")));
+  assert(gate.status() === undefined, "a READY verdict from the gate protocol records no verdict");
+  assert(gate.stopped() === false, "…and never reports having ended a child");
+  // A lens child never gets the stop whichever way the flag is set, and the
+  // re-read cap stays role-keyed (the flag is not its opt-in).
+  const lens = createReviewBounds("code-review-specialist", { ...SKILL, ...OPT_IN }, () => false);
+  assert(lens.verdictStop === undefined, "a lens child gets no stop even with the flag set");
+  assert(lens.skillRead !== undefined, "…and still gets the re-read cap from its skill path");
+  const dev = createReviewBounds("developer", { ...SKILL, ...OPT_IN }, () => false);
+  assert(dev.skillRead === undefined, "a developer child gets neither bound");
+  // The stop's verdict must be a member of the enum, not a bare string: the
+  // `VerdictStatus` type is what makes a typo at the fold a compile error.
+  const status: VerdictStatus | undefined = createVerdictStop().status();
+  assert(status === undefined, "a fresh stop reports no verdict, typed as VerdictStatus");
+}
+
+// ── (10) #1827 round 4 — the stop stands down when a KILLING bound has armed,
+// and the fold refuses to stamp a clean end over a cause another pass wrote.
+{
+  // The fold: a result that already carries a kill cause is left exactly as it
+  // is, and the discarded stop is traced (warn-not-drop, as for the re-read kill).
+  const fired = createVerdictStop();
+  fired.observe(turn(text("Findings, then the line.\n\nVERDICT: ISSUES_FOUND")));
+  fired.markEnded();
+  assert(fired.stopped() === true, "the stop records that it ended this child");
+  const killed = baseResult({ ok: false, text: "collapsed reply", killCause: "child-bound" });
+  const lines: string[] = [];
+  const warned: string[] = [];
+  applyReviewBounds(
+    {
+      stoppedByVerdict: true,
+      verdictText: fired.text(),
+      verdictStatus: fired.status(),
+    },
+    killed,
+    (s) => lines.push(s),
+    (s) => warned.push(s),
+  );
+  assert(killed.killCause === "child-bound", "an existing cause keeps the result");
+  assert(killed.ok === false, "…and the child stays failed — the stop does not resurrect it");
+  assert(
+    killed.reviewStopReason === undefined,
+    "…and no clean end is stamped on a killed child",
+  );
+  assert(killed.text === "collapsed reply", "…and the frozen text is not folded in");
+  assert(lines.length === 0, "…and no attribution line is claimed for the stop");
+  assert(warned.length === 1, "…and exactly one warning is traced");
+  assert(
+    /ISSUES_FOUND/.test(warned[0] ?? "") && /child-bound/.test(warned[0] ?? ""),
+    `the warning names both the accepted verdict and the cause that won (got: ${warned[0]})`,
+  );
+  // The same fold with NO cause on the result is the clean end, so (10) is not
+  // simply "the fold never stamps".
+  const clean = baseResult({ text: "collapsed reply" });
+  applyReviewBounds(
+    { stoppedByVerdict: true, verdictText: fired.text(), verdictStatus: fired.status() },
+    clean,
+    () => undefined,
+    () => undefined,
+  );
+  assert(
+    clean.reviewStopReason === REVIEW_POST_VERDICT_STOP && clean.ok === true,
+    "with no cause on the result the clean end is still stamped",
   );
 }
 
