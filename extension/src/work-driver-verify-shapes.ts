@@ -127,6 +127,38 @@ export function matchPreVetoShapes(line: string): FailureLine | undefined {
 }
 
 /**
+ * The header shape: a status token in its own position, then a description that
+ * starts with neither a digit nor a pass/fail glyph. ONE literal, asked only
+ * through {@link isFailHeaderLine} — the harvest asks that predicate, never this.
+ */
+const FAIL_HEADER_RE = /^\s*FAIL\s+(?![0-9\u2713\u2714\u2717\u2718])\S/;
+
+/**
+ * #1841 round 2 — the ONE predicate for a runner's `FAIL  <description>` header,
+ * owned by the table so the header arm and the detail harvest in
+ * `work-driver-verify-header-detail.ts` cannot disagree about what a header is
+ * (a second regex literal is a second answer, and the two drift).
+ *
+ * The description must start with NEITHER a digit NOR a pass/fail glyph. The first
+ * version admitted `FAIL 0`, `FAIL 1`, `FAIL ✓ ok` and `FAIL ✓ 12 tests passed` —
+ * a status token followed by a COUNT or a passing glyph is not a description that
+ * names a check, and every one of those earned a corrective round over a line that
+ * names nothing (`FAIL ✓ ok` even harvested the harness's own passing tally as the
+ * header's "details"). `isSuccessLine` still runs afterwards, so a header whose
+ * description quotes a zero-count tally is refused too; this arm is the half it
+ * cannot see, because `0` and `✓` alone are not tallies.
+ *
+ * Indentation is allowed (a gate nests its status block), lowercase is not (the
+ * status token is uppercase in every dialect the table knows, and `fail x` is
+ * prose). `FAIL a.ts` is answered by the extension-bearing `named-file` arms, which
+ * sit AHEAD of this one in the first-match-wins table — ask this predicate only
+ * where the header shape itself is wanted.
+ */
+export function isFailHeaderLine(line: string): boolean {
+  return FAIL_HEADER_RE.test(line);
+}
+
+/**
  * The table, in priority order, asked AFTER the success veto. The bare
  * `failed-marker` and its count summary come first, then the assertion mark (a
  * line the pre-veto step already answered, kept here so the table is complete on
@@ -221,7 +253,7 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
     shape: "fail-header",
     namesTest: true,
     preVeto: false,
-    test: (l: string) => /^\s*FAIL\s+\S/.test(l),
+    test: isFailHeaderLine,
   },
   // TAP / bats. Anchored with a number so `book`, `token` and `lookup` never match.
   {
