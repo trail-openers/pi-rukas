@@ -1,3 +1,8 @@
+import {
+  baseRunsProse,
+  confirmingOutcomeProse,
+  publishableEvidenceText,
+} from "./work-driver-verify-base-confirm-prose.ts";
 /**
  * work-driver-verify-baseline-compare — #1826: the develop gate's post-failure
  * comparison against the base commit, and the two-run rule that decides whether
@@ -31,8 +36,11 @@ import {
   BASE_CONFIRM_FIRST_LABEL,
   BASE_CONFIRM_SECOND_LABEL,
   type BaseRedConfirmationResult,
-  baseRunsProse,
+  baseRunInLabelledTree,
+  baseRunTreePath,
   confirmRedBase,
+  reusableRedRecord,
+  reusedArmProbe,
 } from "./work-driver-verify-base-confirm.ts";
 import {
   type BaselineVerdict,
@@ -48,14 +56,6 @@ import { boundText } from "./work-driver-verify-develop-helpers.ts";
 import type { BaseHealthKey } from "./workflow-state-schema-base-health.ts";
 import { matchingVerdict } from "./workflow-state-schema-base-health.ts";
 import type { ExecFn } from "./worktree.ts";
-
-/** The args every base run of this comparison needs, as one object. */
-interface BaseRunOpts {
-  repoRoot: string;
-  baseSha: string;
-  cmd: string;
-  env?: NodeJS.ProcessEnv;
-}
 
 /**
  * The rebuild of a cached red into the arm the comparison reasons over.
@@ -80,7 +80,7 @@ function reuseCachedVerdict(
     // or one whose confirmation came back green, unknown or killed. One run saw a
     // red; the confirming run below is what decides whether that is a claim.
     notes.push(
-      `baseline verify: the cached RED for base ${baseSha.slice(0, 12)} \`${cmd}\` states no confirmed second base run, so it is re-confirmed before it may claim the cap (#1826)`,
+      `baseline verify: the cached RED for base ${baseSha.slice(0, 12)} \`${publishableEvidenceText(cmd)}\` states no confirmed second base run, so it is re-confirmed before it may claim the cap (#1826)`,
     );
   }
   // Which CHANNEL the colour came from is an operator fact, read off the flag
@@ -91,8 +91,8 @@ function reuseCachedVerdict(
   // operator is being asked to trust.
   notes.push(
     inFlight
-      ? `baseline verify reused the background base probe's RED of base ${baseSha.slice(0, 12)} for \`${cmd}\` — no second suite run paid for`
-      : `baseline verify reused the cycle's RED base verdict for base ${baseSha.slice(0, 12)} \`${cmd}\` — no second suite run paid for`,
+      ? `baseline verify reused the background base probe's RED of base ${baseSha.slice(0, 12)} for \`${publishableEvidenceText(cmd)}\` — no second suite run paid for`
+      : `baseline verify reused the cycle's RED base verdict for base ${baseSha.slice(0, 12)} \`${publishableEvidenceText(cmd)}\` — no second suite run paid for`,
   );
   // The in-state red arm is a COLOUR without a stream, exactly as the in-flight
   // one is: whoever recorded it holds the run's evidence, and this call does not.
@@ -132,24 +132,52 @@ export interface BaselineComparison {
  * Why a red first run was not confirmed, in the operator's words — the sentence
  * that replaces the park with a note, so the handoff can say what the two runs
  * actually did instead of repeating a colour one of them reached.
+ *
+ * Every arm names the CONFIRMING run's own outcome, from
+ * `confirmingOutcomeProse`: a pair whose second run came back green is never
+ * described as "red", and a run that could not be read never borrows the
+ * killed-at-its-bound sentence. `flaky` says whether the two runs disagreed about
+ * the base (which is what makes the FLAKY note true), not whether a run failed.
  */
 function notConfirmedProse(
   result: BaseRedConfirmationResult,
   timeoutMs: number,
 ): { why: string; flaky: boolean } {
   if (result.confirmation === "names-disagree") {
-    return { why: "the two base runs disagree about which test failed", flaky: true };
+    return {
+      why: "the two base runs named different failing tests",
+      flaky: true,
+    };
   }
-  if (result.second === undefined) {
+  if (result.confirmingOutcome !== undefined) {
+    // A second run that ran and told us nothing conclusive: killed at its bound or
+    // unreadable. Each is named by the confirming run's own arm. The names-disagree
+    // case is handled above, because there the pair disagreed and this function must
+    // not overwrite that with a single run's colour.
+    return { why: result.confirmingOutcome, flaky: confirmingRunWasFlaky(result) };
+  }
+  if (result.second === undefined && !result.ranSecond) {
     return {
       why: `the base run was killed at its ${boundText(timeoutMs)} bound, so it judged nothing`,
       flaky: false,
     };
   }
   return {
-    why: `the second base run was ${result.second.status}, so the base is not established red`,
+    why: `the second base run was ${result.second?.status ?? "not established"}, so the base is not established red`,
     flaky: true,
   };
+}
+
+/**
+ * True when the confirming run DISAGREED with a red first run about the base —
+ * which is the FLAKY shape — and false when it merely failed to judge (killed at
+ * its bound, or a run that could not be read). A run that reached no verdict is not
+ * evidence of a base that changes colour; calling it flaky would tell an operator to
+ * chase a nondeterministic test when the actionable fact is the bound.
+ */
+function confirmingRunWasFlaky(result: BaseRedConfirmationResult): boolean {
+  const outcome = result.confirmingOutcome ?? "";
+  return outcome.includes("green") || outcome.includes("different failing tests");
 }
 
 /**
@@ -178,94 +206,47 @@ export async function compareWithBaseline(
 ): Promise<BaselineComparison | undefined> {
   const { cmd, baseSha, timeoutMs } = opts;
   const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: timeoutMs };
-  // A run already judged for exactly this key. An `unknown` judged nothing, so it
-  // never skips the probe. A GREEN is reusable from either channel; a RED only from
-  // a record that STATES its confirmed second run — and then only from this gate
-  // pass's own in-flight probe (#1826).
-  //
-  // The two rules compose rather than sit side by side. A red whose record states no
-  // `secondRun: "red"` has been judged ONCE, so it is exactly the evidence the two-run
-  // rule refuses to act on and must never skip the probe: an in-state red left by an
-  // earlier develop round, or a red this pass consulted whose confirmation did not
-  // establish, is re-probed. Only the probe's own in-flight red — whose record the
-  // probe wrote with both runs behind it — is reused.
-  // `matchingVerdict` is the reader (shape checks, key match) and its return type
-  // is the stored record's — it rebuilds the object, so a caller's channel flag
-  // does not survive it and nothing downstream may read one. What it DOES pass
-  // through, because the record itself states it, is `secondRun`: the field that
-  // says whether a red was watched twice. Reading the reuse rule off THIS object
-  // rather than the caller's argument is what makes the rule judge the record the
-  // reader accepted, not a hand-built value that merely resembles one.
+  // A run already judged for exactly this key, read through the ONE reader
+  // (`matchingVerdict`: shape checks, then key match). Its return type is the
+  // stored record's — it rebuilds the object, so a caller's channel flag does not
+  // survive it and nothing downstream may read one. What it DOES pass through,
+  // because the record itself states it, is `secondRun`.
   const cached = opts.cachedVerdict ? matchingVerdict(opts.cachedVerdict, key) : undefined;
-  // A GREEN may be reused from either channel; a RED only from this gate pass's own
-  // in-flight probe, and only when its record STATES the confirming run (#1826).
-  // The two halves compose rather than sit side by side: a red whose record states
-  // no `secondRun: "red"` has been judged ONCE, which is exactly the evidence the
-  // two-run rule refuses to act on, so it never skips the probe — an in-state red
-  // left by an earlier develop round, or a red this pass consulted whose
-  // confirmation did not establish, is re-probed.
-  // Read off the CALLER's record, not the reader's product: `matchingVerdict`
-  // rebuilds the object from the fields a stored record may state, and a caller can
-  // hand this seam a `BaseHealthVerdict`-shaped value carrying a channel flag the
-  // reader never sees. `established` is the cap's claim and #1349's excuse claim,
-  // so the fact it rests on — a second run the RECORD states — is read from the
-  // record the caller holds, and a reuse may claim the cap on nothing else.
-  const statesConfirmedSecond = opts.cachedVerdict?.secondRun === "red";
-  // A KILLED red whose record states `secondRun: "red"` is not a confirmation
-  // either: #1826's own table gives a killed run no second run and no claim,
-  // because the bound it hit is the actionable diagnosis and a re-run of the same
-  // command on the same host re-derives nothing about it. Letting such a record
-  // reuse — and so print the "red twice" sentence for a gate nobody watched fail
-  // twice — would be the #1765 lens-round-1 defect wearing the new rule's clothes.
-  // `usableVerdict` admits only `true` for this field, so the narrowing is total:
-  // an arm that is not killed has no field at all, and one that is says so.
-  // Read off the reader's own product. `matchingVerdict` returns `undefined` for a
-  // `timedOut` that is present but not exactly `true`, so on this object the field
-  // is `true | undefined` and the narrowing is total — the comparison cannot be
-  // widened into a silent pass by a future value the reader would simply reject.
-  const killedArm = cached !== undefined && "timedOut" in cached && cached.timedOut === true;
-  const reusable =
-    cached !== undefined &&
-    cached.status !== "unknown" &&
-    !killedArm &&
-    (cached.status === "green" ||
-      (opts.cachedVerdict?.fromInFlightProbe === true && statesConfirmedSecond));
-  if (cached?.status === "green") {
+  // A GREEN reuses from either channel; a RED only from this gate pass's own
+  // in-flight probe, and only when its RECORD states the confirming run; a killed
+  // arm never. The predicate is exported from the module that owns the two-run rule
+  // so the reuse gate and `confirmRedBase`'s reused arm cannot drift into two
+  // answers about one record — and it is read off the reader's product above, not
+  // the caller's argument, so a hand-built value that merely resembles a record
+  // cannot widen it.
+  const fromInFlightProbe = opts.cachedVerdict?.fromInFlightProbe === true;
+  const reusable = reusableRedRecord(cached, fromInFlightProbe);
+  if (reusable === "green") {
     opts.notes.push(
-      `baseline verify reused the cycle's cached GREEN for \`${cmd}\` at base ${baseSha.slice(0, 12)} — no second suite run paid for`,
+      `baseline verify reused the cycle's cached GREEN for \`${publishableEvidenceText(cmd)}\` at base ${baseSha.slice(0, 12)} — no second suite run paid for`,
     );
     return undefined;
   }
-  // Each base run gets its own throwaway tree: the develop step's own probe is
-  // `baseline-verify-<issue>` and the confirming run is
-  // `baseline-verify-<issue>-base2`, so neither inherits the other's checkout and
-  // neither collides with the branch step's `baseline-verify-branch-*` trees.
-  const tree = (label: string) =>
-    baselineProbeWorktreePath(opts.repoRoot, `${opts.issue}-${label}`);
-  const run = (label: string, boundMs: number) =>
-    probeBaselineVerify(execFn, { ...opts, issue: `${opts.issue}-${label}`, timeoutMs: boundMs });
-  // A KILLED arm is never reused: `reuseCachedVerdict` rebuilds it as a bare
-  // `red-timed-out` with no arm signal, and a reused red reaching the confirmation
-  // with no stated second run is confirmed by nothing but the fact that it arrived
-  // through the cache — the #1765 lens-round-1 shape. `reusable` already refuses the
-  // reuse for the cap's sake; this is the same rule at the arm's own gate, so no
-  // later caller can reach that rebuild by arriving a different way.
-  // A KILLED arm is never reused, whatever colour it carries. `matchingVerdict`
-  // rebuilds the record and `ReusableVerdict` has no `timedOut` on it, so the arm
-  // `reuseCachedVerdict` returns cannot state that it was killed — and a reused arm
-  // that cannot state its own arm is one no evidence may be built from. Refusing the
-  // reuse here is what makes the probe run for real and earn the arm itself, rather
-  // than read a killed gate's timeout as a plain red base (#1765 lens round 1).
+  // Each base run gets its own throwaway tree, through the helper BOTH base seams
+  // share: the develop step's own probe is `baseline-verify-<issue>` and the
+  // confirming run is `baseline-verify-<issue>-base2`, so neither inherits the
+  // other's checkout and neither collides with the branch step's
+  // `baseline-verify-branch-*` trees.
+  const tree = (label: string) => baseRunTreePath(opts.repoRoot, opts.issue, label);
+  const run = baseRunInLabelledTree(execFn, {
+    repoRoot: opts.repoRoot,
+    baseSha,
+    cmd,
+    issueLabel: opts.issue,
+    ...(opts.env === undefined ? {} : { env: opts.env }),
+  });
+  // A KILLED arm is never reused — `reusableRedRecord` already refused it, and it
+  // also refuses a red whose record states no confirming second run — so the only
+  // arm that reaches this rebuild is one whose own record says it was watched twice.
   const reused =
-    !reusable || killedArm || cached === undefined
+    reusable !== "red" || cached === undefined
       ? undefined
-      : reuseCachedVerdict(
-          cached,
-          opts.cachedVerdict?.fromInFlightProbe === true,
-          opts.notes,
-          cmd,
-          baseSha,
-        );
+      : reuseCachedVerdict(cached, fromInFlightProbe, opts.notes, cmd, baseSha);
 
   // A REUSED arm is the whole answer about its base, so the confirmation asks for
   // no second run at all — and `reused: true` is what says so to
@@ -289,7 +270,7 @@ export async function compareWithBaseline(
     // for it is the assertion that this seam pays nothing here.
     const confirmation = await confirmRedBase(
       { ...reused, reused: true },
-      () => Promise.reject(new Error("a reused verdict must not run the gate (#1826)")),
+      reusedArmProbe(),
       timeoutMs,
     );
     if (confirmation.confirmation !== "confirmed-red") {
@@ -297,7 +278,7 @@ export async function compareWithBaseline(
       // is a colour with no second run behind it, and the operator reading the
       // handoff has to be able to tell that apart from "the base is fine".
       opts.notes.push(
-        `baseline verify: the cached RED for base ${baseSha.slice(0, 12)} \`${cmd}\` was refused by the two-run rule (${confirmation.confirmation}) — no baseline-red claim`,
+        `baseline verify: the cached RED for base ${baseSha.slice(0, 12)} \`${publishableEvidenceText(cmd)}\` was refused by the two-run rule (${confirmation.confirmation}) — no baseline-red claim`,
       );
       return undefined;
     }
@@ -308,7 +289,11 @@ export async function compareWithBaseline(
     );
     return {
       verdict: { ...reused, reused: true },
-      established: statesConfirmedSecond,
+      // The claim is the RECORD's confirmation, read through the same predicate the
+      // reuse gate used: `reusable === "red"` is exactly "an in-flight red whose
+      // record states `secondRun: \"red\"`", so the note above and the claim below
+      // cannot come from two different readings of one record.
+      established: reusable === "red",
     };
   }
   // The comparison's first base run. A reused arm is that run; everything else
@@ -328,12 +313,12 @@ export async function compareWithBaseline(
   //
   // `matchingVerdict` rebuilds the record from the stored fields, so neither is
   // carried by `cached` itself — the reader keeps only what a cache file may state.
-  const first: BaselineVerdict = reused ?? (await run("base1", timeoutMs));
+  const first: BaselineVerdict = reused ?? (await run(BASE_CONFIRM_FIRST_LABEL, timeoutMs));
   if (!isRedBaseline(first)) {
     opts.notes.push(
       first.status === "green"
-        ? `baseline verify passed — \`${cmd}\` exits 0 on a clean checkout of the base commit ${baseSha.slice(0, 12)}, so the gate was green before this change`
-        : `baseline verify not established — ${first.reason}`,
+        ? `baseline verify passed — \`${publishableEvidenceText(cmd)}\` exits 0 on a clean checkout of the base commit ${baseSha.slice(0, 12)}, so the gate was green before this change`
+        : `baseline verify not established — ${publishableEvidenceText(first.reason)}`,
     );
     return undefined;
   }
@@ -369,7 +354,7 @@ export async function compareWithBaseline(
     // left exactly as the change's own run wrote it.
     const { why, flaky } = notConfirmedProse(confirmation, timeoutMs);
     opts.notes.push(
-      `baseline verify not established — \`${cmd}\` failed once at base ${baseSha.slice(0, 12)} but the base is not confirmed red: ${why}. The failures below are attributed to the change as they would be on a green base (one red base run is not evidence, #1826)`,
+      `baseline verify not established — \`${publishableEvidenceText(cmd)}\` failed once at base ${baseSha.slice(0, 12)} but the base is not confirmed red: ${publishableEvidenceText(why)}. The failures below are attributed to the change as they would be on a green base (one red base run is not evidence, #1826)`,
     );
     if (flaky) {
       opts.notes.push(

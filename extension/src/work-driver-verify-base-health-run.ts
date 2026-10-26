@@ -19,10 +19,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
+import { baseRunsProse, confirmingOutcomeProse } from "./work-driver-verify-base-confirm-prose.ts";
 import {
   BASE_CONFIRM_FIRST_LABEL,
   BASE_CONFIRM_SECOND_LABEL,
-  baseRunsProse,
+  baseRunInLabelledTree,
+  baseRunTreePath,
   confirmRedBase,
 } from "./work-driver-verify-base-confirm.ts";
 import { writeBaseHealthCache } from "./work-driver-verify-base-health.ts";
@@ -107,25 +109,21 @@ export async function runBaseHealthProbe(
   );
   const startedAt = Date.now();
   // One base run of the project's command, on a fresh detached checkout under
-  // `label`. Both the first run and the #1826 confirmation go through here, so
-  // the two cannot disagree about provisioning, the scrubbed env, the bound or
-  // the tree-naming rule — and the confirmation's distinct label is what makes it
-  // a FRESH tree rather than the first run's, which a project gate that writes
-  // into its own checkout would have inherited.
-  const tree = (label: string) =>
-    baselineProbeWorktreePath(ctx.repoRoot, `branch-${ctx.issue}-${label}`);
-  const baseRun = (label: string, boundMs: number): Promise<BaselineVerdict> =>
-    probeBaselineVerify(execFn, {
-      repoRoot: ctx.repoRoot,
-      baseSha,
-      // A label the develop step's `baseline-verify-<issue>` tree can never collide
-      // with: two seams sharing one throwaway checkout is how one step's teardown
-      // removes the other's tree mid-run.
-      issue: `branch-${ctx.issue}-${label}`,
-      cmd,
-      timeoutMs: boundMs,
-      env: verifyChildEnv(),
-    });
+  // `label`, through the helper BOTH base seams share: the first run and the #1826
+  // confirmation cannot then disagree about provisioning, the scrubbed env, the
+  // bound or the tree-naming rule — and the confirmation's distinct label is what
+  // makes it a FRESH tree rather than the first run's, which a project gate that
+  // writes into its own checkout would have inherited.
+  const baseRun = baseRunInLabelledTree(execFn, {
+    repoRoot: ctx.repoRoot,
+    baseSha,
+    cmd,
+    // A namespace the develop step's `baseline-verify-<issue>` trees can never
+    // collide with.
+    issueLabel: `branch-${ctx.issue}`,
+    env: verifyChildEnv(),
+  });
+  const tree = (label: string) => baseRunTreePath(ctx.repoRoot, `branch-${ctx.issue}`, label);
   const probe = await baseRun(BASE_CONFIRM_FIRST_LABEL, key.tierBoundMs);
   const firstEndedAt = Date.now();
   const firstMs = firstEndedAt - startedAt;
@@ -176,10 +174,14 @@ export async function runBaseHealthProbe(
     ...(timedOut || confirmed || firstReason !== undefined
       ? {}
       : {
-          reason:
-            confirmation === undefined || confirmation.second === undefined
-              ? "the base run reached no verdict"
-              : `the base failed once and the confirming run was ${confirmation.second.status} — the base is not established red`,
+          // The reason names the CONFIRMING run's actual outcome, never a colour it
+          // did not reach: green, killed at its bound, could not be read, or a run
+          // that named a different test are four different facts for an operator, and
+          // "the confirming run was red" about a NON-confirmed pair describes a run
+          // nobody watched fail twice.
+          reason: `the base failed once and ${confirmingOutcomeProse(
+            confirmation ?? { confirmation: "not-confirmed", first: probe, ranSecond: false },
+          )} — the base is not established red`,
         }),
     // The one field that says WHICH red this is. The develop gate's reuse rebuilds
     // its arm from this record, and a killed run has no stream, no tally and no
@@ -206,11 +208,11 @@ export async function runBaseHealthProbe(
       verdict,
       red: baseHealthRedEvidence(verdict, probe as RedBaselineVerdict, confirmation),
       notes: [
-        `base-health: base ${baseSha.slice(0, 12)} is RED — ${
-          confirmed
-            ? "the gate was already red, red on both base runs"
-            : "the gate was killed at its bound, so it reached no verdict on the base"
-        }`,
+        // This arm is reached only with a CONFIRMED red, so the sentence has one
+        // shape: the older form carried a "killed at its bound" alternative that
+        // this branch can never take, and a dead clause in an operator's line reads
+        // as a possibility that exists.
+        `base-health: base ${baseSha.slice(0, 12)} is RED — the gate was already red, red on both base runs`,
         // A killed first run has no second run to name — `confirmRedBase` asked for
         // none — so the prose is built from the one arm that exists rather than
         // from a confirmation that never happened.
@@ -264,8 +266,11 @@ export async function runBaseHealthProbe(
       `base-health: not established — ${verdict.reason ?? "the probe reached no verdict"}; the cycle proceeds`,
       // #1826 — the flaky base is recorded where the operator can read it: the
       // consultation note the develop gate writes for this verdict names both
-      // runs, so "red once, green once" survives the probe's own scope.
-      ...(confirmation?.second === undefined ||
+      // runs, so "red once, green once" survives the probe's own scope. A killed
+      // FIRST run is excluded because it had no second run at all, and a confirmed
+      // red never reaches this arm.
+      ...(confirmation === undefined ||
+      confirmation.second === undefined ||
       confirmation.confirmation === "confirmed-red" ||
       timedOut
         ? []

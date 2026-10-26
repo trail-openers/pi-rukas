@@ -23,9 +23,18 @@
 import {
   BASE_CONFIRM_SECOND_LABEL,
   type BaseRedConfirmation,
-  baseRunsProse,
   confirmRedBase,
+  reusableRedRecord,
 } from "../src/work-driver-verify-base-confirm.ts";
+import {
+  baseRunsProse,
+  confirmingOutcomeProse,
+  publishableEvidenceText,
+} from "../src/work-driver-verify-base-confirm-prose.ts";
+import {
+  type BaseHealthConsulted,
+  baseHealthConsultedNote,
+} from "../src/work-driver-verify-base-health-channels.ts";
 import type { BaselineVerdict } from "../src/work-driver-verify-baseline.ts";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -346,15 +355,127 @@ for (const [label, first] of [
   );
 }
 
-// ── a probe that throws is the caller's problem, not a silent red ──
+// ── a confirming run that THREW is not-confirmed, and keeps the first red ──
+//
+// The alternative shapes are both wrong and both were reachable: folding the fault
+// into `unknown` discards the run the cycle already paid for, and treating it as a
+// red confirms a base nobody watched fail. So the answer is a refusal to confirm that
+// keeps the first run's arm, records that a second run was paid for, and says in its
+// own words that the confirming run could not be read.
 {
-  let threw = false;
-  try {
-    await run(red(), [], { throwOn: 1 });
-  } catch {
-    threw = true;
-  }
-  assert(threw, "an injected probe that throws propagates — the rule folds nothing into a red");
+  const threw = await run(red(), [], { throwOn: 1 });
+  assert(
+    threw.confirmation === "not-confirmed",
+    `a confirming run that threw is not-confirmed (got ${threw.confirmation})`,
+  );
+  assert(
+    threw.result.first.status === "red" && threw.result.second === undefined,
+    "a confirming run that threw keeps the first run's red arm and records no confirming run",
+  );
+  assert(
+    threw.result.ranSecond === true && threw.probes.length === 1,
+    `a confirming run that threw is still recorded as PAID FOR (${threw.probes.length} probes, ranSecond=${String(threw.result.ranSecond)})`,
+  );
+  assert(
+    (threw.result.confirmingOutcome ?? "").includes("could not be read"),
+    `a confirming run that threw names its own outcome (got ${JSON.stringify(threw.result.confirmingOutcome)})`,
+  );
+  assert(
+    !confirmingOutcomeProse(threw.result).includes("was green"),
+    `a non-confirmed pair never reports a colour the run did not reach (${JSON.stringify(confirmingOutcomeProse(threw.result))})`,
+  );
+}
+
+// ── the outcome prose names what the confirming run ACTUALLY reached ──
+for (const [label, second, want] of [
+  ["green", green(), "the confirming run was green"],
+  ["killed", killed(), "the confirming run was killed at its bound"],
+  ["unknown", unknown(), "the confirming run could not be read"],
+] as const) {
+  const r = await run(red(), [second]);
+  assert(
+    confirmingOutcomeProse(r.result) === want,
+    `confirming-run prose (${label}): "${want}" (got ${JSON.stringify(confirmingOutcomeProse(r.result))})`,
+  );
+  assert(
+    r.result.confirmation === "not-confirmed",
+    `confirming-run prose (${label}): not-confirmed, never a claim (got ${r.result.confirmation})`,
+  );
+}
+
+// ── the reuse predicate: one rule, both channels ──
+//
+// The develop gate's reuse gate and `confirmRedBase`'s reused arm ask this one
+// function the same question. A record they disagree about is a colour that reaches a
+// claim no run backs, so the shapes that matter are pinned here rather than inferred
+// from two call sites.
+for (const [label, record, fromInFlight, want] of [
+  ["green from state", { status: "green" }, false, "green"],
+  ["red from state", { status: "red", secondRun: "red" }, false, undefined],
+  ["red in-flight, confirmed", { status: "red", secondRun: "red" }, true, "red"],
+  ["red in-flight, unconfirmed", { status: "red" }, true, undefined],
+  ["killed red in-flight", { status: "red", secondRun: "red", timedOut: true }, true, undefined],
+  ["unknown", { status: "unknown" }, true, undefined],
+] as const) {
+  const rec = { baseSha: "a".repeat(40), command: "sh gate.sh", tierBoundMs: 1000, ...record };
+  assert(
+    reusableRedRecord(rec, fromInFlight) === want,
+    `reuse predicate (${label}): ${String(want)} (got ${String(reusableRedRecord(rec, fromInFlight))})`,
+  );
+}
+
+// ── text about to be published as evidence gets the credential veto ──
+//
+// `probeBaselineVerify` puts a git error's own message into a verdict's `reason`, and
+// the base seams interpolate the project's verify command into the same sentence.
+// Both are child output that ends up in a GitHub comment, so the veto the verify
+// module applies to test output has to apply here too — otherwise a secret reaches the
+// forge by arriving in a `reason` field instead of a test's stdout.
+{
+  const leaked = "git worktree add failed: secret_key=ghp_AAAAAAAAAAAAAAAAAAAAAAAA rejected";
+  assert(
+    publishableEvidenceText(leaked).includes("[redacted"),
+    "a credential-shaped string in git output is not published",
+  );
+  assert(
+    !publishableEvidenceText(leaked).includes("ghp_AAAA"),
+    "the veto REMOVES the secret rather than labelling around it",
+  );
+  assert(
+    publishableEvidenceText("the confirming run was green") === "the confirming run was green",
+    "ordinary prose passes through untouched — the veto is not a rewrite",
+  );
+  assert(
+    publishableEvidenceText("bun run check") === "bun run check",
+    "the project's own command line passes through — it is normally publishable",
+  );
+}
+
+// ── the note that renders a consulted verdict reads its colour from ONE carrier ──
+//
+// The second run's colour used to arrive twice — on the record and as a separate
+// positional argument — and the renderer preferred the caller's copy. Two accounts of
+// one consultation is how a note comes to disagree with the event it annotates, so the
+// record is now the only carrier and this is the lock.
+{
+  const red: BaseHealthConsulted = {
+    status: "red",
+    baseSha: "b".repeat(40),
+    secondRun: "green",
+  };
+  const note = baseHealthConsultedNote("b".repeat(40), red);
+  assert(
+    note.includes("base run 2 GREEN") && note.includes("FLAKY base: red once, green once"),
+    `the consultation note reads the second run off the record alone (${JSON.stringify(note)})`,
+  );
+  const plain = baseHealthConsultedNote("b".repeat(40), {
+    status: "red",
+    baseSha: "b".repeat(40),
+  });
+  assert(
+    plain.includes("one base run, not confirmed red") && !plain.includes("FLAKY"),
+    `a red whose record states no second run is reported as unconfirmed, never as flaky (${JSON.stringify(plain)})`,
+  );
 }
 
 rmSync(REAL_ONE, { recursive: true, force: true });

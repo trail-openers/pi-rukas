@@ -193,9 +193,22 @@ export function peekBaseHealthProbe(key: BaseHealthKey): BaseHealthInFlight | un
   return entry.p.catch(() => unanswered("the background probe did not answer"));
 }
 
-/** How many probes this process has registered. */
+/**
+ * How many probes this process has registered.
+ */
 export function inflightBaseHealthCount(): number {
   return registry.size;
+}
+
+/**
+ * When the probe registered for `key` began, or `undefined` when none is running.
+ * The develop gate reads this to size its wait: a probe that started more than one
+ * tier bound ago has finished its first run, so any run it is now in is the
+ * CONFIRMING one, and the wait has to cover a second bounded execution rather than
+ * abandon it at the instant the answer is reachable.
+ */
+export function inflightBaseHealthStartedAt(key: BaseHealthKey): number | undefined {
+  return registry.get(baseHealthKey(key))?.startedAt;
 }
 
 /**

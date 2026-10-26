@@ -25,7 +25,10 @@
  * waits for it.
  */
 
-import { awaitInflightBaseHealth } from "./work-driver-base-health-inflight.ts";
+import {
+  awaitInflightBaseHealth,
+  inflightBaseHealthStartedAt,
+} from "./work-driver-base-health-inflight.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
 import type { CycleContext, DriverExecFn } from "./work-driver-context.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
@@ -83,6 +86,26 @@ export function reportBaselineLeg(
 }
 
 /**
+ * How long the develop gate waits on the background probe.
+ *
+ * One tier bound covers a probe that ran once. Once the probe has STARTED its
+ * confirming run the wait must cover TWO bounded runs plus the git work overhead of
+ * setting each tree up, or the gate abandons a probe that is one run away from
+ * answering and pays for the whole comparison itself (#1826 makes a red's second run
+ * normal, so this is the common shape rather than a rare one).
+ *
+ * `startedAt` comes from the registry entry, which knows when the probe began; the
+ * overhead allowance is one tier bound's worth of slack, which is the same order as
+ * the worktree provisioning a run sits behind.
+ */
+export function baseHealthWaitMs(tierBoundMs: number, probeStartedAgoMs: number): number {
+  // A probe younger than the tier bound cannot have finished its first run, so a
+  // second run cannot be in progress and one bound is the whole wait.
+  const twoRuns = probeStartedAgoMs > tierBoundMs ? 2 : 1;
+  return twoRuns * tierBoundMs + tierBoundMs / 4;
+}
+
+/**
  * Consult the background base probe for this gate's key, and report the verdict
  * to the caller so it lands in state. Answers "nothing" — leave the cap exactly as
  * the gate chose it and let `compareWithBaseline` re-probe — when nothing is
@@ -104,11 +127,20 @@ async function collectBackgroundBaseHealth(
   cmd: string,
   baseSha: string | undefined,
   suiteTimeoutMs: number,
-  onConsulted?: (report: BaseHealthConsulted, secondRun?: BaseHealthVerdict["secondRun"]) => void,
+  onConsulted?: (report: BaseHealthConsulted) => void,
 ): Promise<BaseHealthVerdict | undefined> {
   if (!isValidSha(baseSha)) return undefined;
   const key: BaseHealthKey = { baseSha, command: cmd, tierBoundMs: suiteTimeoutMs };
-  const consulted = await awaitInflightBaseHealth(key, suiteTimeoutMs);
+  // A probe already past its first tier bound is in its CONFIRMING run, so the wait
+  // covers two bounded runs plus the setup overhead each sits behind; abandoning it
+  // at one bound would throw away a probe one run from answering and pay for the
+  // whole comparison instead.
+  const startedAt = inflightBaseHealthStartedAt(key);
+  const waitMs =
+    startedAt === undefined
+      ? suiteTimeoutMs
+      : baseHealthWaitMs(suiteTimeoutMs, Date.now() - startedAt);
+  const consulted = await awaitInflightBaseHealth(key, waitMs);
   // Nothing registered is not an error and not a verdict: it is the shape after a
   // resume in a new process, or when the probe's switches were off. The gate then
   // answers for the base on its own evidence, exactly as it did before #1765.
@@ -126,15 +158,21 @@ async function collectBackgroundBaseHealth(
   // read off the VERDICT the probe wrote (its one durable statement about the
   // second run), never off the consultation, so the two halves of the report
   // cannot disagree about what the probe saw.
-  onConsulted?.(
-    {
-      status: consulted.verdict.status,
-      baseSha,
-      ...(consulted.outcome.ms === undefined ? {} : { ms: consulted.outcome.ms }),
-      ...(consulted.verdict.timedOut === true ? { timedOut: true as const } : {}),
-    },
-    consulted.verdict.secondRun,
-  );
+  // #1826 — and the second base run's colour travels WITH the record, because a red
+  // that came back green on the confirmation is a FLAKY base: the record of that is
+  // otherwise the probe's local `notes`, which reach no operator. It rides on the
+  // `BaseHealthConsulted` the gate is handed, which is the one carrier — the note
+  // renderer reads it from the record and nothing else, so a consultation and its
+  // note cannot be two accounts of one probe.
+  onConsulted?.({
+    status: consulted.verdict.status,
+    baseSha,
+    ...(consulted.outcome.ms === undefined ? {} : { ms: consulted.outcome.ms }),
+    ...(consulted.verdict.timedOut === true ? { timedOut: true as const } : {}),
+    ...(consulted.verdict.secondRun === undefined
+      ? {}
+      : { secondRun: consulted.verdict.secondRun }),
+  });
   return consulted.verdict;
 }
 
@@ -242,49 +280,40 @@ export async function aggregateVerifyOutcome(args: {
     const report: BaseHealthReport = {};
     const inflight =
       baseHealthProbe === undefined
-        ? await collectBackgroundBaseHealth(
-            ctx,
-            cmd,
-            baseSha,
-            suiteTimeoutMs,
-            (consulted, secondRun) => {
-              // One consultation, one record: the note is the operator's record of
-              // the probe — written by the gate that consulted it, the only channel
-              // the probe itself is no longer allowed to touch — and the consultation
-              // record rides on the report below. A RED is the note exception:
-              // `compareWithBaseline` leads `notes` with the finding that names the
-              // base and its assertion, and a second line saying the same colour
-              // would be two records of one consultation. The consultation record
-              // still carries the red's colour and measured ms for the event log.
-              if (consulted.status !== "red" || secondRun === "green") {
-                // A RED whose confirmation came back green is the note exception's
-                // exception: it is a FLAKY base, and the only operator-visible
-                // record of that is this consultation line, so the colour and the
-                // second run's colour are reported rather than swallowed (#1826).
-                notes.push(baseHealthConsultedNote(baseSha ?? "", consulted, secondRun));
-              }
-              report.consulted = {
-                ...consulted,
-                ...(secondRun === undefined ? {} : { secondRun }),
-              };
-              // #1809 fix round — a consulted RED is kept OUT of the report's
-              // `collected` half (the only writer of `pipelineState.baseHealthProbe`).
-              // Two locks, one field: a red is never cached across rounds, AND a
-              // consulted red is a single run until the confirmation ran, so
-              // persisting it would hand the next develop pass a colour it never
-              // earned twice. It still answers for THIS gate pass, which is what
-              // `fromInFlightProbe` on the reuse below says — without it
-              // `compareWithBaseline` would read this as an ordinary in-state verdict,
-              // an in-state red is unreusable there by design, and this cycle would
-              // silently pay for a second suite run it has already had judged.
-              // `baseSha` is non-null: the consultation only happens after
-              // `collectBackgroundBaseHealth` accepted the sha.
-              if (consulted.status === "red") {
-                inFlightRed = true;
-                inFlightTimedOut = consulted.timedOut === true;
-              }
-            },
-          )
+        ? await collectBackgroundBaseHealth(ctx, cmd, baseSha, suiteTimeoutMs, (consulted) => {
+            // One consultation, one record: the note is the operator's record of
+            // the probe — written by the gate that consulted it, the only channel
+            // the probe itself is no longer allowed to touch — and the consultation
+            // record rides on the report below. A RED is the note exception:
+            // `compareWithBaseline` leads `notes` with the finding that names the
+            // base and its assertion, and a second line saying the same colour
+            // would be two records of one consultation. The consultation record
+            // still carries the red's colour and measured ms for the event log.
+            if (consulted.status !== "red" || consulted.secondRun === "green") {
+              // A RED whose confirmation came back green is the note exception's
+              // exception: it is a FLAKY base, and the only operator-visible
+              // record of that is this consultation line, so the colour and the
+              // second run's colour are reported rather than swallowed (#1826).
+              notes.push(baseHealthConsultedNote(baseSha ?? "", consulted));
+            }
+            report.consulted = consulted;
+            // #1809 fix round — a consulted RED is kept OUT of the report's
+            // `collected` half (the only writer of `pipelineState.baseHealthProbe`).
+            // Two locks, one field: a red is never cached across rounds, AND a
+            // consulted red is a single run until the confirmation ran, so
+            // persisting it would hand the next develop pass a colour it never
+            // earned twice. It still answers for THIS gate pass, which is what
+            // `fromInFlightProbe` on the reuse below says — without it
+            // `compareWithBaseline` would read this as an ordinary in-state verdict,
+            // an in-state red is unreusable there by design, and this cycle would
+            // silently pay for a second suite run it has already had judged.
+            // `baseSha` is non-null: the consultation only happens after
+            // `collectBackgroundBaseHealth` accepted the sha.
+            if (consulted.status === "red") {
+              inFlightRed = true;
+              inFlightTimedOut = consulted.timedOut === true;
+            }
+          })
         : undefined;
     // The report's `collected` half is what `recordDevelopGateEvents` writes to
     // `pipelineState.baseHealthProbe`, so it carries a GREEN only: the

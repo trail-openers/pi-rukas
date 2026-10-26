@@ -1,3 +1,4 @@
+import { baseRunsProse } from "./work-driver-verify-base-confirm-prose.ts";
 /**
  * work-driver-verify-base-park — #1765: the prose rules that read a probe
  * entry, and the record a probe leaves for the develop gate.
@@ -13,10 +14,7 @@
  * replacement, `BaseHealthRedEvidence`) so the verdict's own colour and tally
  * survive to the seam that does the attributing.
  */
-import {
-  type BaseRedConfirmationResult,
-  baseRunsProse,
-} from "./work-driver-verify-base-confirm.ts";
+import type { BaseRedConfirmationResult } from "./work-driver-verify-base-confirm.ts";
 import { type RedBaselineVerdict, baselineRedMessage } from "./work-driver-verify-baseline.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";

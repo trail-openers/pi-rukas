@@ -1,3 +1,10 @@
+import {
+  commonNames,
+  everyNameUnplaceable,
+  named,
+  namesOf,
+} from "./work-driver-verify-base-confirm-names.ts";
+import { confirmingOutcomeProse } from "./work-driver-verify-base-confirm-prose.ts";
 /**
  * work-driver-verify-base-confirm — #1826: a base commit is red TWICE before a
  * cycle may park as `verify-baseline-red`.
@@ -48,15 +55,12 @@
  */
 import {
   type BaselineVerdict,
-  type RedBaselineVerdict,
+  baselineProbeWorktreePath,
   isRedBaseline,
+  probeBaselineVerify,
 } from "./work-driver-verify-baseline.ts";
-import {
-  type NameResolution,
-  type NameRoots,
-  compareNames,
-  failingTestNames,
-} from "./work-driver-verify-names.ts";
+import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
+import type { ExecFn } from "./worktree.ts";
 
 /** The label of the first base run of a confirmation — the probe's own tree. */
 export const BASE_CONFIRM_FIRST_LABEL = "base1";
@@ -90,6 +94,134 @@ export interface BaseConfirmRoots {
 export type BaseRedConfirmation = "confirmed-red" | "not-confirmed" | "names-disagree";
 
 /**
+ * The ONE reuse predicate (#1826 round 1): may a cached verdict stand in for a run
+ * of the gate, and in which colour?
+ *
+ * The two develop-gate seams that answer this (`compareWithBaseline`'s reuse gate
+ * and `confirmRedBase`'s reused arm) used to answer it twice, in two vocabularies,
+ * and the two answers could drift — a record one seam reused and the other refused
+ * is a colour that reaches a claim no run backs. One predicate, asked by both.
+ *
+ * The rules it encodes, and why each is drawn where it is:
+ *
+ * - **`unknown` never reuses.** A run that reached no verdict judged nothing, so it
+ *   is not evidence about anything and must not skip the probe.
+ * - **a GREEN reuses from either channel** (the cycle's own state or this gate
+ *   pass's background probe). An immutable commit, judged by the same key.
+ * - **a RED reuses only from this gate pass's own in-flight probe, and only when the
+ *   RECORD states `secondRun: "red"`.** The record is read, not the caller's copy:
+ *   `matchingVerdict` rebuilds the object from the fields a cache file may state,
+ *   so a hand-built value that merely resembles a record cannot widen the rule.
+ *   Anything else has been judged ONCE, which is precisely the evidence #1826
+ *   refuses to act on — including an in-state red left by an earlier develop round,
+ *   which is re-probed so one flaky red cannot speak for rounds it did not run in.
+ * - **a KILLED red never reuses**, whatever colour its record carries. The bound it
+ *   hit is the actionable diagnosis and a re-run on the same host re-derives nothing
+ *   about it; and the arm the reuse rebuilds cannot state that it was killed
+ *   (`ReusableVerdict` has no `timedOut`), so an arm that cannot name its own arm is
+ *   one no evidence may be built from — the #1765 lens-round-1 defect, which read a
+ *   killed gate's timeout as a plain red base.
+ */
+export function reusableRedRecord(
+  cached: BaseHealthVerdict | undefined,
+  /** True when this verdict is the colour THIS gate pass's background probe saw. */
+  fromInFlightProbe: boolean,
+): "green" | "red" | undefined {
+  if (cached === undefined || cached.status === "unknown") return undefined;
+  if (cached.timedOut === true) return undefined;
+  if (cached.status === "green") return "green";
+  return fromInFlightProbe && cached.secondRun === "red" ? "red" : undefined;
+}
+
+/**
+ * What a confirming run that THREW establishes: nothing, and never a red. The arm
+ * the caller keeps, the note it writes, and the reason the record carries all come
+ * from this one value so a paid-for first red cannot collapse into "the base is
+ * fine" and cannot gain a claim it never earned.
+ */
+export const CONFIRMING_RUN_UNREADABLE = "could not be read" as const;
+
+/**
+ * The probe a REUSED arm is confirmed with. It never runs: the record IS the
+ * confirmation, so a reused arm short-circuits before the probe is reached, and the
+ * function handed to that seam is written to be UNCALLABLE — a reuse that quietly
+ * bought a suite run would be the cost rule this issue exists to enforce, lost.
+ */
+export function reusedArmProbe(): () => Promise<BaselineVerdict> {
+  return () => Promise.reject(new Error("a reused verdict must not run the gate (#1826)"));
+}
+
+/**
+ * The ONE "run the project's command once in a labelled throwaway tree" helper
+ * (#1826 round 1, the simplicity lens). Both seams that probe the base build this
+ * call — the branch step's background probe and the develop gate's post-failure
+ * comparison — and each used to spell out its own `probeBaselineVerify` argument
+ * list and its own tree name, which is how two seams drift apart on provisioning,
+ * the scrubbed env, the bound, or the tree-naming rule while both still "work".
+ *
+ * `issueLabel` is the seam's own namespace (`branch-<issue>` for the background
+ * probe, `<issue>` for the develop gate) and is load-bearing: two seams sharing one
+ * throwaway checkout is how one step's teardown removes the other's tree mid-run.
+ * `env` is the scrubbed env the project's command runs with; omitted, the ambient
+ * env is used, exactly as `probeBaselineVerify` defaults it.
+ */
+export function baseRunInLabelledTree(
+  exec: ExecFn,
+  o: {
+    repoRoot: string;
+    baseSha: string;
+    cmd: string;
+    issueLabel: string | number;
+    env?: NodeJS.ProcessEnv;
+  },
+): (label: string, boundMs: number) => Promise<BaselineVerdict> {
+  return (label, boundMs) =>
+    probeBaselineVerify(exec, {
+      repoRoot: o.repoRoot,
+      baseSha: o.baseSha,
+      issue: `${o.issueLabel}-${label}`,
+      // ↑ The caller passes the LABEL ALONE (`base1` / `base2`, i.e.
+      // `BASE_CONFIRM_FIRST_LABEL`), never an already-prefixed name:
+      // `probeBaselineVerify` adds its own `baseline-verify-` prefix and this helper
+      // adds the seam's namespace. A caller that passed `…-base1` would build
+      // `…-base1-base1`, and the tree the run actually executed in would not be the
+      // tree the caller's `tree(label)` computes — so the name rule would anchor the
+      // pair in a directory no run ever had, and every red base would come back
+      // "names could not be placed".
+      cmd: o.cmd,
+      timeoutMs: boundMs,
+      ...(o.env === undefined ? {} : { env: o.env }),
+    });
+}
+
+/** The tree one labelled base run executes in — the root its names are anchored in. */
+export function baseRunTreePath(
+  repoRoot: string,
+  issueLabel: string | number,
+  label: string,
+): string {
+  return baselineProbeWorktreePath(repoRoot, `${issueLabel}-${label}`);
+}
+
+/**
+ * Run the confirming probe and fold a fault into the arm #1826 gives an unreadable
+ * run: `not-confirmed`, keeping the first run's arm. A probe that throws is the
+ * executor's problem, not evidence about the base — but collapsing the first red
+ * into `unknown` would throw away the one run this cycle paid for and re-ask a
+ * question the gate already answered. So the outcome is a refusal to confirm, and
+ * the note says the confirming run could not be read.
+ */
+export async function runConfirmingProbe(
+  probe: () => Promise<BaselineVerdict>,
+): Promise<{ second: BaselineVerdict } | { failed: true }> {
+  try {
+    return { second: await probe() };
+  } catch {
+    return { failed: true };
+  }
+}
+
+/**
  * The two runs a confirmation judged, kept so the evidence can name both.
  * A REUSED arm stands in for its own confirming run: the record states that the
  * probe watched both, which is the whole confirmation, and no second stream
@@ -113,118 +245,20 @@ export interface BaseRedConfirmationResult extends BaseRedConfirmationRuns {
   /** Names both red runs named — the overlap the confirmed-red arm requires. */
   commonNames?: readonly string[];
   /**
+   * #1826 round 1 — what the CONFIRMING run actually reached, in the words the
+   * record and the consultation note must use. Absent when no second run ran, and
+   * never a colour the run did not reach: `"could not be read"` is what a probe that
+   * threw establishes, and the sentence "the confirming run was red" is reserved for
+   * a pair this seam actually watched fail twice.
+   */
+  confirmingOutcome?: string;
+  /**
    * #1826 round 1 — the evidence sentence for the arms a name comparison cannot
    * answer: set when the two runs named failing tests that NO anchored comparison
    * could place, so the confirmation rests on two red runs and the operator is
    * told that rather than a name match that never happened.
    */
   namesUnplaceable?: true;
-}
-
-/**
- * A run's failing-test names: a base run is NAMED iff this list is non-empty.
- *
- * Relative names are ANCHORED here. The loop prints a failure under the tree it
- * executed in, but most harnesses print a path RELATIVE to that tree (`FAILED:
- * tests/a.ts`), and a relative spelling records nothing about which tree printed
- * it — `compareNames` refuses one, so two identically red runs printing
- * `tests/a.ts` came back "disagree" and every legitimate red base written that
- * way was refused. Joining the name with the run's OWN tree root is not a guess:
- * a relative path resolves against the cwd the run executed in, and that tree is
- * the one this seam created and named. A name the join cannot place — because no
- * root survives (a REUSED arm, whose throwaway checkout is already removed) —
- * stays exactly as printed and is counted unplaceable rather than compared, so
- * anchoring can only ever make a name MORE placeable, never place a lie.
- */
-function namesOf(run: BaselineVerdict | undefined, root: string | undefined): string[] | undefined {
-  if (run === undefined || run.status !== "red") return undefined;
-  const names = failingTestNames(run.rawStream);
-  if (names.length === 0) return undefined;
-  // A REUSED arm has no stream and no tree left (see `BaseConfirmRoots`), so its
-  // names stay unanchored — and it never needs the name rule anyway, because its
-  // record already states its second run.
-  const anchorable = run.reused !== true && root !== undefined && root !== "";
-  return anchorable ? names.map((n) => anchorName(n, root as string)) : names;
-}
-
-/** `path` joined under `root` when it is relative; unchanged when absolute. */
-function anchorName(path: string, root: string): string {
-  return path.startsWith("/") ? path : `${root.replace(/\/+$/, "")}/${path}`;
-}
-
-/** True when a run printed any failing-test name at all. */
-function named(names: readonly string[] | undefined): boolean {
-  return names !== undefined && names.length > 0;
-}
-
-/**
- * The names two runs agree on, anchored in their own trees (see `BaseConfirmRoots`).
- *
- * One `NameResolution` memo is threaded through every comparison of the call:
- * `compareNames` re-walks each root and each name through `realpath` unless it is
- * given one, so without it a pair of runs printing C and B names costs 2·C·B
- * stat-heavy walks for a handful of directories that never change inside a call.
- */
-function commonNames(
-  first: readonly string[],
-  second: readonly string[],
-  roots: BaseConfirmRoots,
-): string[] {
-  const resolution: NameResolution = new Map();
-  // The two runs are two trees, so each pair is compared against BOTH roots:
-  // `changeRoots` carries the other run's tree and `probeRoot` this run's, which
-  // is the shape `compareNames` strips on.
-  const anchor = (a: string, b: string): boolean =>
-    compareNames(
-      a,
-      b,
-      { changeRoots: [roots.secondRoot], probeRoot: roots.firstRoot },
-      resolution,
-    ) === "same" ||
-    compareNames(
-      a,
-      b,
-      { changeRoots: [roots.firstRoot], probeRoot: roots.secondRoot },
-      resolution,
-    ) === "same";
-  return first.filter((a) => second.some((b) => anchor(a, b)));
-}
-
-/**
- * True when a run's names are all uncomparable because NO run's names could be
- * placed in a tree at all.
- *
- * Two spellings of one failure — an absolute one from a gate that prints `$PWD`,
- * a relative one from a harness that prints its own cwd-relative path — can
- * never be placed against each other by an anchored comparison, and reporting
- * that as "the runs named different tests" would refuse a base that failed twice
- * in the same way. When every name of BOTH runs comes back unplaceable there is
- * no name evidence either way, so the caller falls back to the arm a stream that
- * named nothing uses: red twice is sufficient, and the evidence says so.
- */
-function everyNameUnplaceable(
-  first: readonly string[],
-  second: readonly string[],
-  roots: BaseConfirmRoots,
-): boolean {
-  const resolution: NameResolution = new Map();
-  const placeable = (name: string): boolean =>
-    second.some(
-      (b) =>
-        compareNames(
-          name,
-          b,
-          { changeRoots: [roots.secondRoot], probeRoot: roots.firstRoot },
-          resolution,
-        ) !== "unknown" ||
-        compareNames(
-          name,
-          b,
-          { changeRoots: [roots.firstRoot], probeRoot: roots.secondRoot },
-          resolution,
-        ) !== "unknown",
-    );
-  return [...first, ...second].every((name) => !placeable(name));
 }
 
 /**
@@ -242,10 +276,12 @@ function decided(
   firstNames?: string[],
   secondNames?: string[],
   commonNames?: string[],
+  confirmingOutcome?: string,
 ): BaseRedConfirmationResult {
   // `unplaceable-names` is an internal arm: it confirms, and callers decide on
-  // `confirmation`, so what they receive is `confirmed-red` with the structured
-  // flag that says the claim rests on two red runs, not on a name comparison.
+  // `confirmation`, so what they receive is `confirmed-red` carrying the structured
+  // flag that says the claim rests on two red runs rather than on a name comparison
+  // nobody made.
   const unplaceable = confirmation === "unplaceable-names";
   return {
     confirmation: unplaceable ? "confirmed-red" : confirmation,
@@ -255,6 +291,7 @@ function decided(
     ...(firstNames === undefined ? {} : { firstNames }),
     ...(secondNames === undefined ? {} : { secondNames }),
     ...(commonNames === undefined ? {} : { commonNames }),
+    ...(confirmingOutcome === undefined ? {} : { confirmingOutcome }),
     ...(unplaceable ? { namesUnplaceable: true as const } : {}),
   };
 }
@@ -317,9 +354,27 @@ export async function confirmRedBase(
       ? decided("confirmed-red", { first, second: first }, false)
       : decided("not-confirmed", { first }, false);
   }
-  const second = await probe(BASE_CONFIRM_SECOND_LABEL, timeoutMs);
+  // A confirming run that THREW is not evidence about the base in either
+  // direction: it is not a red (nothing was watched fail), and it is not a green
+  // (the cycle paid for a first run that did fail). So the answer is a refusal to
+  // confirm that KEEPS the first run's arm, and `ranSecond: true` records that the
+  // second run was paid for. Folding the fault into `unknown` would discard the
+  // paid-for first red; treating it as a red would be the #1765 defect in new
+  // clothes.
+  const ran = await runConfirmingProbe(() => probe(BASE_CONFIRM_SECOND_LABEL, timeoutMs));
+  if ("failed" in ran) {
+    return decided(
+      "not-confirmed",
+      { first },
+      true,
+      undefined,
+      undefined,
+      undefined,
+      `the confirming run ${CONFIRMING_RUN_UNREADABLE}`,
+    );
+  }
+  const second = ran.second;
   const firstNames = namesOf(first, roots.firstRoot);
-  const secondNames = namesOf(second, roots.secondRoot);
   // A killed second run judged nothing, so it confirms nothing — even though
   // `red-timed-out` IS a red arm for today's other seams (a killed run still
   // means "the gate cannot finish"). Reading it as a confirming red is the
@@ -329,8 +384,22 @@ export async function confirmRedBase(
     // Green, unknown or killed: the base is not established red, so the cycle
     // does not park as baseline-red and the develop failure is attributed the
     // way a green base attributes it.
-    return decided("not-confirmed", { first, second }, true, firstNames);
+    return decided(
+      "not-confirmed",
+      { first, second },
+      true,
+      firstNames,
+      undefined,
+      undefined,
+      confirmingOutcomeProse({
+        confirmation: "not-confirmed",
+        first,
+        second,
+        ranSecond: true,
+      }),
+    );
   }
+  const secondNames = namesOf(second, roots.secondRoot);
   if (!named(firstNames) && !named(secondNames)) {
     // Neither run named anything — the non-loop-gate case, and the reason the
     // rule is not "names must overlap": red twice is sufficient here.
@@ -339,7 +408,15 @@ export async function confirmRedBase(
   if (!named(firstNames) || !named(secondNames)) {
     // Exactly one run saw which test broke. That is a disagreement between the
     // runs about what they judged, so it is not baseline-red.
-    return decided("names-disagree", { first, second }, true, firstNames, secondNames);
+    return decided(
+      "names-disagree",
+      { first, second },
+      true,
+      firstNames,
+      secondNames,
+      undefined,
+      "the two runs named different failing tests",
+    );
   }
   // The `unplaceable-names` arm confirms exactly as "neither run named" does, and
   // is reported to the caller as that arm so no caller has to learn a fourth value
@@ -348,7 +425,15 @@ export async function confirmRedBase(
   // above narrow both lists, which is what makes them assignable here.
   if (firstNames === undefined || secondNames === undefined) {
     // Unreachable: the two guards above returned on either list being empty.
-    return decided("names-disagree", { first, second }, true, firstNames, secondNames);
+    return decided(
+      "names-disagree",
+      { first, second },
+      true,
+      firstNames,
+      secondNames,
+      undefined,
+      "the two runs named different failing tests",
+    );
   }
   const both: [readonly string[], readonly string[]] = [firstNames, secondNames];
   if (everyNameUnplaceable(both[0], both[1], roots)) {
@@ -360,66 +445,15 @@ export async function confirmRedBase(
   }
   const common = commonNames(both[0], both[1], roots);
   if (common.length === 0) {
-    return decided("names-disagree", { first, second }, true, firstNames, secondNames);
+    return decided(
+      "names-disagree",
+      { first, second },
+      true,
+      firstNames,
+      secondNames,
+      undefined,
+      "the two runs named different failing tests",
+    );
   }
   return decided("confirmed-red", { first, second }, true, firstNames, secondNames, common);
-}
-
-/** The operator's line for one base run, naming which run it was. */
-function runLine(which: string, run: BaselineVerdict): string {
-  // A REUSED arm is a colour, not a stream: the record carries the arm
-  // (`timedOut`) but no output, so it may be reported as the arm it is and never
-  // as a test the probe watched. Rebuilding a plain `red` from a killed record is
-  // the #1765 lens-round-1 defect — it tells an operator to go fix a test nobody
-  // ran — and it is why this reads the arm before any colour shorthand.
-  if (run.status === "red-timed-out") return `${which}: FAILED, killed at its bound`;
-  if (run.status === "red") return `${which}: FAILED`;
-  if (run.status === "green") return `${which}: PASSED`;
-  return `${which}: not established (${run.reason})`;
-}
-
-/**
- * The names one run's evidence carries, for the operator's line.
- *
- * A REUSED arm is asked for NOTHING: its record has no stream, and the run it
- * describes happened in a tree this seam cannot see. Printing the live second
- * run's names under "base run 1" would attribute a test to a run that named no
- * test — and on a reused arm the whole evidence sentence is the one sentence an
- * operator acts on.
- */
-function runNames(
-  run: BaselineVerdict | RedBaselineVerdict,
-  names: readonly string[] | undefined,
-): readonly string[] | undefined {
-  if (run.status !== "red" && run.status !== "red-timed-out") return names;
-  if (run.reused === true) return undefined;
-  return names === undefined || names.length === 0 ? undefined : [...names];
-}
-
-/** The names a run carried, bounded so the evidence line stays short. */
-function namesSuffix(names: readonly string[] | undefined): string {
-  if (names === undefined) return "";
-  const shown = names.slice(0, 4).join(", ");
-  return ` — named: ${shown}${names.length > 4 ? `, +${names.length - 4} more` : ""}`;
-}
-
-/**
- * The prose that names BOTH base runs, appended to a confirmed-red finding.
- * Today's single-arm message says "the gate was red before this change was
- * written"; an operator reading it cannot tell one run from a confirmation, and
- * the whole point of #1826 is that a single run is not what parked the cycle.
- * Absent for a first run that decided alone (timed-out), which never confirms.
- */
-export function baseRunsProse(result: BaseRedConfirmationResult): string {
-  if (result.second === undefined) return "";
-  // Only an anchored comparison may claim the runs AGREED on a name. When nothing
-  // could be placed the sentence says so, because the alternative — printing the
-  // two runs' names side by side — reads as a comparison this seam never made.
-  const common =
-    result.commonNames === undefined || result.commonNames.length === 0
-      ? result.namesUnplaceable === true
-        ? " — the runs' failing-test names could not be placed in either tree, so the claim rests on two red runs rather than on a name match"
-        : ""
-      : ` — both runs named: ${result.commonNames.slice(0, 4).join(", ")}`;
-  return `${runLine("base run 1", result.first)}${namesSuffix(runNames(result.first, result.firstNames))}; ${runLine("base run 2", result.second)}${namesSuffix(runNames(result.second, result.secondNames))}${common}`;
 }

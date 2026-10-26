@@ -95,23 +95,19 @@ export function mergeBaseHealthReport(
 }
 
 /** The operator's note for a consulted verdict, as the develop gate records it. */
-export function baseHealthConsultedNote(
-  baseSha: string,
-  report: BaseHealthConsulted,
-  secondRun?: BaseHealthConsulted["secondRun"],
-): string {
+export function baseHealthConsultedNote(baseSha: string, report: BaseHealthConsulted): string {
   const timing =
     report.ms === undefined ? "no suite run of its own" : `its own run measured ${report.ms} ms`;
   const colour =
     report.timedOut === true
       ? `${report.status.toUpperCase()} (probe timed out)`
       : report.status.toUpperCase();
-  // #1826 — a RED is only a red base when a SECOND run agrees with it, so the
-  // note says how many runs the colour rests on. The second run's colour is read
-  // from the record first and the caller's copy second: the record is what the
-  // recorder persists, and a note that disagreed with it would be two accounts of
-  // one consultation.
-  const second = secondRun ?? report.secondRun;
+  // #1826 — a RED is only a red base when a SECOND run agrees with it, so the note
+  // says how many runs the colour rests on. The second run's colour has ONE carrier:
+  // the record. It used to arrive a second time as a positional argument the renderer
+  // preferred over the record, which is exactly how a note comes to disagree with the
+  // event it annotates — two accounts of one consultation, no error, no check.
+  const second = report.secondRun;
   const runs =
     second === undefined
       ? report.status === "red"
