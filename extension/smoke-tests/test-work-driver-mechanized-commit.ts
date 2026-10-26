@@ -13,6 +13,7 @@
  */
 
 import { commandOf } from "./lib/argv-shell.ts";
+import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -160,7 +161,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           repoRoot: dir,
           issue: 994,
           issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
+          // #1634 — the adversarial gate reads each worktree's diff through
+          // this seam (`git rev-parse --show-toplevel`, then
+          // `git diff --end-of-options <base>..HEAD`). This fixture models its
+          // worktrees on disk rather than creating them, so the two reads are
+          // answered as what they are: a clean tree. Every other command keeps
+          // the fixture's own scripted answers.
+          verifyExecFn: answerDiffReads(exec),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 994),
