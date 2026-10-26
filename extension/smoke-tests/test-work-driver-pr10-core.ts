@@ -131,14 +131,21 @@ function mergeGateExec(dir: string): NonNullable<DriverContext["verifyExecFn"]> 
 }
 
 function seedLedger(dir: string, branch: string): void {
+  // #1533 — the merged step's identity check reads the latest LENS row for the
+  // branch (the six-pass review is the driver's own review of this branch), so
+  // this fixture seeds one whose `headSha` is the head the exec seam reports and
+  // whose `patchId` is what its `git patch-id` answers. An adversarial row is not
+  // enough: the check that once merged unreviewed content trusted exactly that,
+  // and the row it now requires is what makes a merge here mean "reviewed".
   writeFileSync(
     path.join(dir, ".git", "review-ledger.json"),
     JSON.stringify({
       entries: [
         {
           branch,
-          kind: "adversarial",
+          kind: "lens",
           patchId: REVIEWED_PATCH,
+          headSha: VERIFIED_HEAD,
           passed: true,
           at: 1,
           round: 1,
