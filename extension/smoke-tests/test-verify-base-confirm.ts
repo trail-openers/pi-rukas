@@ -111,13 +111,15 @@ for (const [label, second, want, ranSecond] of secondRunCases) {
 
 // ── the name rule, three arms ──
 {
-  const overlap = await run(red(named("tests/a.ts", "tests/b.ts")), [
-    red(named("tests/b.ts", "tests/c.ts")),
-  ]);
+  const overlap = await run(
+    red(named(TREE_ONE, "tests/a.ts", "tests/b.ts")),
+    [red(named(TREE_TWO, "tests/b.ts", "tests/c.ts"))],
+    { roots: ROOTS },
+  );
   assert(
     overlap.confirmation === "confirmed-red" &&
       overlap.result.commonNames?.length === 1 &&
-      overlap.result.commonNames[0] === "tests/b.ts",
+      overlap.result.commonNames[0] === `${TREE_ONE}/tests/b.ts`,
     `names on both, one common: confirmed-red and the overlap is named (got ${overlap.confirmation}, ${JSON.stringify(overlap.result.commonNames)})`,
   );
   assert(
@@ -126,7 +128,11 @@ for (const [label, second, want, ranSecond] of secondRunCases) {
   );
 }
 {
-  const disjoint = await run(red(named("tests/a.ts")), [red(named("tests/z.ts"))]);
+  const disjoint = await run(
+    red(named(TREE_ONE, "tests/a.ts")),
+    [red(named(TREE_TWO, "tests/z.ts"))],
+    { roots: ROOTS },
+  );
   assert(
     disjoint.confirmation === "names-disagree" &&
       disjoint.result.commonNames === undefined &&
@@ -134,20 +140,24 @@ for (const [label, second, want, ranSecond] of secondRunCases) {
     `names on both, disjoint: names-disagree after one confirming run (got ${disjoint.confirmation}, ${disjoint.probes.length} probes)`,
   );
   assert(
-    disjoint.result.firstNames?.[0] === "tests/a.ts" &&
-      disjoint.result.secondNames?.[0] === "tests/z.ts",
+    disjoint.result.firstNames?.[0] === `${TREE_ONE}/tests/a.ts` &&
+      disjoint.result.secondNames?.[0] === `${TREE_TWO}/tests/z.ts`,
     "names disjoint: both runs' names survive for the operator to read",
   );
 }
 {
-  const oneSided = await run(red(named("tests/a.ts")), [red("no markers at all")]);
+  const oneSided = await run(red(named(TREE_ONE, "tests/a.ts")), [red("no markers at all")], {
+    roots: ROOTS,
+  });
   assert(
     oneSided.confirmation === "names-disagree" &&
       oneSided.result.firstNames !== undefined &&
       oneSided.result.secondNames === undefined,
     `names on exactly one run: names-disagree, never confirmed-red (got ${oneSided.confirmation})`,
   );
-  const otherSide = await run(red("no markers at all"), [red(named("tests/a.ts"))]);
+  const otherSide = await run(red("no markers at all"), [red(named(TREE_TWO, "tests/a.ts"))], {
+    roots: ROOTS,
+  });
   assert(
     otherSide.confirmation === "names-disagree" &&
       otherSide.result.firstNames === undefined &&

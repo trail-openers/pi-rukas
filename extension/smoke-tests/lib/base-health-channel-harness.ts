@@ -46,16 +46,26 @@ export const CMD = "sh gate.sh";
 export const changeFailure = (cmd: string) =>
   `verify command \`${cmd}\` failed in worktree a: 1 failed`;
 
-/** A verdict for a given base, so a probe speaks for the commit the gate judges. */
+/**
+ * A verdict for a given base, so a probe speaks for the commit the gate judges.
+ *
+ * A RED is built as #1826 requires a claim to be built: with the second base
+ * run's colour stated. `secondRun` is the one field that separates "a probe ran
+ * the base twice and both agreed" from a colour an older build recorded, and the
+ * develop gate re-confirms anything without it. A case that wants the unconfirmed
+ * shape passes `confirmed: false`.
+ */
 export const verdict = (
   baseSha: string,
   status: "green" | "red",
   bound: number,
+  opts: { confirmed?: boolean } = {},
 ): BaseHealthVerdict => ({
   status,
   baseSha,
   command: CMD,
   tierBoundMs: bound,
+  ...(status === "red" && opts.confirmed !== false ? { secondRun: "red" as const } : {}),
 });
 
 export interface AggregateRun {
@@ -108,7 +118,8 @@ export async function aggregateWithProbe(
   // gate only reads it — so it is registered here, before the gate runs.
   const registered = startBaseHealthProbe(key, async () => {
     probeStarted += 1;
-    return outcomeFor(f.baseSha, bound);
+    const o = outcomeFor(f.baseSha, bound);
+    return o;
   });
   const state = branchState(f.baseSha);
   const failures = [changeFailure(CMD)];

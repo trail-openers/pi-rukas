@@ -45,8 +45,12 @@
  * cost, its bound, and its fresh tree are the caller's to pin), never treats a
  * killed or unreadable run as a confirming red, and never caches.
  */
-import { type BaselineVerdict, isRedBaseline } from "./work-driver-verify-baseline.ts";
-import { failingTestNames } from "./work-driver-verify-names.ts";
+import {
+  type BaselineVerdict,
+  type RedBaselineVerdict,
+  isRedBaseline,
+} from "./work-driver-verify-baseline.ts";
+import { type NameRoots, compareNames, failingTestNames } from "./work-driver-verify-names.ts";
 
 /** The label of the first base run of a confirmation — the probe's own tree. */
 export const BASE_CONFIRM_FIRST_LABEL = "base1";
@@ -57,6 +61,24 @@ export const BASE_CONFIRM_FIRST_LABEL = "base1";
  * checkout — which is a second source of flakiness, not a control.
  */
 export const BASE_CONFIRM_SECOND_LABEL = "base2";
+
+/**
+ * The two trees a base run's names are anchored in.
+ *
+ * Each run prints its failures under ITS OWN absolute tree, and the two runs of
+ * one confirmation are two different throwaway checkouts of one commit — so raw
+ * string equality between their names is false for every test in the repo, and a
+ * rule built on it would refuse every legitimate red base. This is the same
+ * anchoring #1404's commit-pr attribution uses (`compareNames`): a name must sit
+ * inside one of the trees this seam knows, and the paths RELATIVE to those roots
+ * must be equal.
+ */
+export interface BaseConfirmRoots {
+  /** The first run's throwaway tree. */
+  firstRoot: string;
+  /** The confirming run's throwaway tree. */
+  secondRoot: string;
+}
 
 /** What the two base runs established, as the callers of this rule report it. */
 export type BaseRedConfirmation = "confirmed-red" | "not-confirmed" | "names-disagree";
@@ -74,24 +96,44 @@ export interface BaseRedConfirmationResult extends BaseRedConfirmationRuns {
   /** True when a second run of the gate was paid for. */
   ranSecond: boolean;
   /** The first run's names, when its stream carried them (see the header). */
-  firstNames?: string[];
+  firstNames?: readonly string[];
   /** The confirming run's names, when it ran and its stream carried them. */
-  secondNames?: string[];
+  secondNames?: readonly string[];
   /** Names both red runs named — the overlap the confirmed-red arm requires. */
-  commonNames?: string[];
+  commonNames?: readonly string[];
 }
 
 /** A run's failing-test names: a base run is NAMED iff this list is non-empty. */
-function namesOf(run: BaselineVerdict | undefined): string[] | undefined {
+function namesOf(run: BaselineVerdict | undefined, root: string | undefined): string[] | undefined {
   if (run === undefined || run.status !== "red") return undefined;
+  // A REUSED arm carries the stream the probe read, but the throwaway tree that
+  // printed it is gone — so its names are unplaceable and stay unanchored. That
+  // is the honest shape: `compareNames` cannot put a path in a tree it cannot
+  // name, and an unanchored name matches nothing (see `BaseConfirmRoots`). A
+  // reused arm never needs the name rule anyway — the record already states its
+  // second run — so the roots only matter for runs this seam just watched.
+  if (run.reused === true || root === undefined || root === "") {
+    const bare = failingTestNames(run.rawStream);
+    return bare.length > 0 ? bare : undefined;
+  }
   const names = failingTestNames(run.rawStream);
   return names.length > 0 ? names : undefined;
 }
 
-/** The names two runs agree on, in the first run's order. */
-function intersect(first: readonly string[], second: readonly string[]): string[] {
-  const set = new Set(second);
-  return first.filter((n) => set.has(n));
+/** The names two runs agree on, anchored in their own trees (see `BaseConfirmRoots`). */
+function commonNames(
+  first: readonly string[],
+  second: readonly string[],
+  roots: BaseConfirmRoots,
+): string[] {
+  // The two runs are two trees, so each pair is compared against BOTH roots:
+  // `changeRoots` carries the other run's tree and `probeRoot` this run's, which
+  // is the shape `compareNames` strips on.
+  const anchor = (a: string, b: string): boolean =>
+    compareNames(a, b, { changeRoots: [roots.secondRoot], probeRoot: roots.firstRoot }) ===
+      "same" ||
+    compareNames(a, b, { changeRoots: [roots.firstRoot], probeRoot: roots.secondRoot }) === "same";
+  return first.filter((a) => second.some((b) => anchor(a, b)));
 }
 
 function decided(
@@ -132,6 +174,14 @@ export async function confirmRedBase(
    */
   probe: (label: string, timeoutMs: number) => Promise<BaselineVerdict>,
   timeoutMs: number,
+  /**
+   * The two trees the runs execute in — required to compare their names. Omit
+   * them (or pass empty strings) when a run's tree no longer exists, as for a
+   * REUSED arm whose throwaway checkout was already removed: anchoring is then
+   * impossible, and the caller is asserting that this arm's confirmation came
+   * from its record rather than from a name comparison.
+   */
+  roots: BaseConfirmRoots = { firstRoot: "", secondRoot: "" },
 ): Promise<BaseRedConfirmationResult> {
   // A first `red-timed-out` is a red arm for TODAY's routing (the timeout
   // evidence, the timeout's cap precedence) but it judged nothing, so there is
@@ -143,8 +193,25 @@ export async function confirmRedBase(
   // no second run. Both reach here only on the red branch of the callers, so an
   // answer here is a defensive one, never a route a cycle takes.
   if (!isRedBaseline(first)) return decided("not-confirmed", { first }, false);
+  // A REUSED arm's confirmation lives in its RECORD, not in a re-run: `secondRun:
+  // "red"` is the colour the probe itself watched, and the tree that printed the
+  // stream is gone, so a second run would buy evidence the name rule cannot anchor
+  // while paying a full suite run for an answer the record already holds. Short of
+  // this short-circuit the reused colour fell into the "exactly one run named" arm
+  // below and came back `names-disagree` — a confirmation this cycle had already
+  // paid for, thrown away by a comparison it cannot perform. A fresh arm is
+  // untouched: the probe is called below it, and only below it.
+  if (first.reused === true && first.secondRun === "red") {
+    // `second` is the arm itself, not a run: on a reused arm there is exactly ONE
+    // base run, and the record's `secondRun` field is what says a second was run
+    // and agreed. Handing `baseRunsProse` the same verdict under both labels —
+    // which is what the shape of the type forces, since a `second` is only
+    // "absent" when the question was never asked — keeps the evidence naming BOTH
+    // runs (the #1826 requirement) while being honest that this seam watched one.
+    return decided("confirmed-red", { first, second: first }, false);
+  }
   const second = await probe(BASE_CONFIRM_SECOND_LABEL, timeoutMs);
-  const firstNames = namesOf(first);
+  const firstNames = namesOf(first, roots.firstRoot);
   // A killed second run judged nothing, so it confirms nothing — even though
   // `red-timed-out` IS a red arm for today's other seams (a killed run still
   // means "the gate cannot finish"). Reading it as a confirming red is the
@@ -156,7 +223,7 @@ export async function confirmRedBase(
     // way a green base attributes it.
     return decided("not-confirmed", { first, second }, true, firstNames);
   }
-  const secondNames = namesOf(second);
+  const secondNames = namesOf(second, roots.secondRoot);
   if (firstNames === undefined && secondNames === undefined) {
     // Neither run named anything — the non-loop-gate case, and the reason the
     // rule is not "names must overlap": red twice is sufficient here.
@@ -167,7 +234,7 @@ export async function confirmRedBase(
     // runs about what they judged, so it is not baseline-red.
     return decided("names-disagree", { first, second }, true, firstNames, secondNames);
   }
-  const common = intersect(firstNames, secondNames);
+  const common = commonNames(firstNames, secondNames, roots);
   if (common.length === 0) {
     return decided("names-disagree", { first, second }, true, firstNames, secondNames);
   }
@@ -176,10 +243,33 @@ export async function confirmRedBase(
 
 /** The operator's line for one base run, naming which run it was. */
 function runLine(which: string, run: BaselineVerdict): string {
-  if (run.status === "red") return `${which}: FAILED`;
+  // A REUSED arm is a colour, not a stream: the record carries the arm
+  // (`timedOut`) but no output, so it may be reported as the arm it is and never
+  // as a test the probe watched. Rebuilding a plain `red` from a killed record is
+  // the #1765 lens-round-1 defect — it tells an operator to go fix a test nobody
+  // ran — and it is why this reads the arm before any colour shorthand.
   if (run.status === "red-timed-out") return `${which}: FAILED, killed at its bound`;
+  if (run.status === "red") return `${which}: FAILED`;
   if (run.status === "green") return `${which}: PASSED`;
   return `${which}: not established (${run.reason})`;
+}
+
+/**
+ * The names one run's evidence carries, for the operator's line.
+ *
+ * A REUSED arm is asked for NOTHING: its record has no stream, and the run it
+ * describes happened in a tree this seam cannot see. Printing the live second
+ * run's names under "base run 1" would attribute a test to a run that named no
+ * test — and on a reused arm the whole evidence sentence is the one sentence an
+ * operator acts on.
+ */
+function runNames(
+  run: BaselineVerdict | RedBaselineVerdict,
+  names: readonly string[] | undefined,
+): readonly string[] | undefined {
+  if (run.status !== "red" && run.status !== "red-timed-out") return names;
+  if (run.reused === true) return undefined;
+  return names === undefined || names.length === 0 ? undefined : [...names];
 }
 
 /** The names a run carried, bounded so the evidence line stays short. */
@@ -202,5 +292,5 @@ export function baseRunsProse(result: BaseRedConfirmationResult): string {
     result.commonNames === undefined || result.commonNames.length === 0
       ? ""
       : ` — both runs named: ${result.commonNames.slice(0, 4).join(", ")}`;
-  return `${runLine("base run 1", result.first)}${namesSuffix(result.firstNames)}; ${runLine("base run 2", result.second)}${namesSuffix(result.secondNames)}${common}`;
+  return `${runLine("base run 1", result.first)}${namesSuffix(runNames(result.first, result.firstNames))}; ${runLine("base run 2", result.second)}${namesSuffix(runNames(result.second, result.secondNames))}${common}`;
 }

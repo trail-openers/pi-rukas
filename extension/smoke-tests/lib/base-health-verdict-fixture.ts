@@ -75,7 +75,7 @@ export function stateWithRedProbe(
   baseSha: string,
   cmd: string,
   tierBoundMs: number,
-  opts: { timedOut?: boolean; issue?: number } = {},
+  opts: { timedOut?: boolean; issue?: number; confirmed?: boolean } = {},
 ): WorkState {
   const state = initialState(opts.issue ?? 1765);
   state.pipelineState.baseSha = baseSha;
@@ -85,6 +85,12 @@ export function stateWithRedProbe(
     command: cmd,
     tierBoundMs,
     ...(opts.timedOut === true ? { timedOut: true as const } : {}),
+    // #1826 — a red CLAIM states the confirming run's colour; a red that states no
+    // second run is a colour only, and no reuse may skip the probe on it. Cases
+    // that want the unconfirmed shape (the converse rule) pass `confirmed: false`
+    // rather than editing the record afterwards, so the two shapes stay one call
+    // apart and a reader sees which rule a case is exercising.
+    ...(opts.confirmed === false ? {} : { secondRun: "red" as const }),
   };
   return state;
 }

@@ -69,6 +69,18 @@ export interface ProbeRun {
   outcome: Promise<BaseHealthProbeOutcome | undefined> | undefined;
 }
 
+/**
+ * Which tree a probe run executed in, from its throwaway tree's name. The labels
+ * are the seam's own: the background probe runs `branch-<issue>-base1` and
+ * `branch-<issue>-base2`, and the develop step's comparison runs
+ * `<issue>-base1` / `<issue>-base2` (#1826). A case that wants "did the base run
+ * twice" counts these, never a gate's output.
+ */
+export function probeRunLabel(cwd: string): string | undefined {
+  const base = cwd.replace(/\/+$/, "").split("/").pop() ?? "";
+  if (!base.startsWith("baseline-verify-")) return undefined;
+  return base.endsWith("-base2") ? "base2" : "base1";
+}
 /** A state carrying the branch step's own outputs, as the probe's caller has them. */
 export function branchState(baseSha: string, issue = 1765): WorkState {
   const st = initialState(issue);

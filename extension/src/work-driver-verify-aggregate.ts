@@ -297,6 +297,15 @@ export async function aggregateVerifyOutcome(args: {
     // this cycle wrote, and a registry entry could answer for a different run. The
     // registry's own RED is flagged as this gate pass's, which is the only channel
     // `compareWithBaseline` accepts a red through.
+    //
+    // #1826 — and it carries `secondRun` verbatim. Without this projection the
+    // reuse arm was rebuilt from the consultation's three fields, so a record the
+    // probe had confirmed by watching BOTH base runs reached the comparison
+    // looking like a single unconfirmed run: the gate paid to re-ask a question
+    // that had been answered, its name rule then had no trees to anchor in (the
+    // probe's throwaway checkouts are gone by now), and every legitimate red base
+    // this path carried came back "names-disagree" — the defect that would have
+    // made the two-run rule refuse every real red base.
     const verdictForReuse =
       baseHealthProbe ??
       (inflight === undefined
@@ -308,6 +317,7 @@ export async function aggregateVerifyOutcome(args: {
               command: cmd,
               tierBoundMs: suiteTimeoutMs,
               ...(inFlightTimedOut ? { timedOut: true as const } : {}),
+              ...(inflight.secondRun === undefined ? {} : { secondRun: inflight.secondRun }),
               fromInFlightProbe: true as const,
             }
           : inflight);

@@ -115,6 +115,14 @@ interface RedBaselineExtra {
    * so #1349's `baselineExplainsChange` is not owed it.
    */
   reused?: boolean;
+  /**
+   * #1826 — the second base run's colour, carried on a REUSED arm only. A fresh run
+   * has no second run yet (the confirmation asks for it); a record the probe wrote
+   * states it, and that statement IS the confirmation the reuse stands on. Read
+   * with the same care as the stored field of the same name
+   * (`workflow-state-schema-base-health.ts`).
+   */
+  secondRun?: "green" | "red" | "red-timed-out" | "unknown";
 }
 
 export type RedBaselineVerdict =

@@ -44,6 +44,12 @@ import {
   baselineProbeWorktreePath,
 } from "../src/work-driver-verify-baseline.ts";
 import { developTierTimeouts } from "../src/work-driver-verify-budget.ts";
+import {
+  GATE_ECHO,
+  announceGate,
+  commitAll,
+  probeFailureExecutor,
+} from "./lib/base-health-verdict-fixture.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 import {
   PROBE_CMD as CMD,
@@ -55,6 +61,7 @@ import {
   freshProbe,
   keyFor,
   probe,
+  probeRunLabel,
   settled,
 } from "./lib/base-health-probe-fixture.ts";
 import { realExec } from "./lib/restore-start-ref-fixtures.ts";
@@ -129,8 +136,12 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "red base: the branch step registered a probe (outcome is not undefined) — so the verdict below is read from a probe that ran, not from the fixture inventing one",
   );
   assert(
-    r.gateRuns.length === 1 && r.worktreeAdds === 1,
-    `red base: exactly one gate run in one throwaway tree (got ${r.gateRuns.length} runs / ${r.worktreeAdds} adds)`,
+    r.gateRuns.length === 2 && r.worktreeAdds === 2,
+    `red base: exactly TWO gate runs in two throwaway trees (got ${r.gateRuns.length} runs / ${r.worktreeAdds} adds) — #1826 requires the base to be red twice before anything claims it`,
+  );
+  assert(
+    new Set(r.gateRuns.map((cwd) => probeRunLabel(cwd ?? ""))).size === 2,
+    `red base: the two runs executed in two DISTINCT trees (${JSON.stringify(r.gateRuns.map((c) => probeRunLabel(c ?? "")))}) — a reused checkout would inherit what the first run wrote`,
   );
   const message = out.red?.message ?? "";
   assert(
@@ -142,6 +153,12 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     "red base: the evidence is the baseline-red finding and names the base sha",
   );
   assert(message.includes(CMD), "red base: the evidence names the command the probe ran");
+  assert(
+    message.includes("base run 1") &&
+      message.includes("base run 2") &&
+      (out.red?.baseRuns ?? "").includes("base run 2: FAILED"),
+    `red base: the evidence names BOTH base runs and their outcomes (got ${(out.red?.baseRuns ?? "").slice(0, 160)})`,
+  );
   assert(
     !r.state.eventLog.some((e) => e.kind === "dispatch-started"),
     "red base: the step itself dispatched nothing",
@@ -316,6 +333,10 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     baseSha: f.baseSha,
     command: CMD,
     tierBoundMs: bound,
+    // #1826 — the record a reuse may claim the cap from states the confirming
+    // run's colour too; a red that states nothing is re-confirmed, which is the
+    // converse case, pinned in `test-verify-base-health-cache.ts`.
+    secondRun: "red",
   };
   held.pipelineState.baseHealthProbe = red;
   let worktreeAdds = 0;
@@ -412,9 +433,9 @@ for (const [label, env] of [
 {
   const f = await redGateFixture(root, "label", GREEN_GATE, { "notes.md": "x\n" });
   const r = await probe(f);
-  const branchTree = baselineProbeWorktreePath(f.repo, "branch-1765");
+  const branchTree = baselineProbeWorktreePath(f.repo, "branch-1765-base1");
   assert(
-    branchTree.endsWith(path.join(".worktrees", "baseline-verify-branch-1765")),
+    branchTree.endsWith(path.join(".worktrees", "baseline-verify-branch-1765-base1")),
     `tree name: the branch probe names itself (${branchTree})`,
   );
   assert(

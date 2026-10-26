@@ -205,6 +205,38 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
     command: CMD,
     tierBoundMs: 1,
   };
+  // #1826 — the cache and the state carry reds, so both readers are checked
+  // against the two-run rule: a record that states no confirmed second run is
+  // still READABLE (the parser refuses nothing), and it is the CLAIM that is
+  // withheld, not the row. `usableVerdict` keeps such a record usable so the
+  // comparison can re-confirm it rather than re-probe from nothing.
+  const noSecond = JSON.stringify({
+    verdict: { status: "red", baseSha: f.baseSha, command: CMD, tierBoundMs: bound },
+  });
+  const readBare = await readBaseHealthCache(async () => noSecond, f.repo);
+  assert(
+    readBare?.status === "red" && readBare.secondRun === undefined,
+    "red cache: a red with no secondRun field still reads back — it is a colour, not a claim",
+  );
+  writeFileSync(baseHealthCacheFile(f.repo), noSecond);
+  const reProbe = await freshProbe(f);
+  assert(
+    reProbe.gateRuns.length >= 1 && reProbe.out.red === undefined,
+    `red cache: a cached red that states no second run never answers for a cycle — the probe ran (${reProbe.gateRuns.length} runs) and raised no red evidence`,
+  );
+  const unreadableSecond = JSON.stringify({
+    verdict: {
+      status: "red",
+      baseSha: f.baseSha,
+      command: CMD,
+      tierBoundMs: bound,
+      secondRun: "ok",
+    },
+  });
+  assert(
+    (await readBaseHealthCache(async () => unreadableSecond, f.repo)) === undefined,
+    "red cache: a PRESENT but unreadable secondRun makes the whole record unusable — re-probe (#1826, the same rule as timedOut)",
+  );
   const read = await readBaseHealthCache(async () => JSON.stringify({ verdict: red }), f.repo);
   assert(
     read?.status === "red",
@@ -223,8 +255,8 @@ __setHostBudget({ verifyConcurrency: 0 } as HostBudget);
   );
   const third = await freshProbe(f, { state: held });
   assert(
-    third.gateRuns.length === 1 && third.out.verdict?.status === "red",
-    "red cache: an in-state red does NOT let the probe skip its own run",
+    third.gateRuns.length >= 1 && third.out.verdict?.status === "red",
+    `red cache: an in-state red does NOT let the probe skip its own run (${third.gateRuns.length} runs, verdict=${third.out.verdict?.status})`,
   );
 }
 

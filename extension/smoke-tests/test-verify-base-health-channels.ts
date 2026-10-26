@@ -276,6 +276,18 @@ try {
         command: CMD,
         tierBoundMs: key.tierBoundMs,
         fromInFlightProbe: true,
+        // #1826 — the ONLY shape a red reuses as a confirmed verdict: the record
+        // states the second run's colour. A red without it is re-confirmed, which
+        // is (a)'s case, not this one.
+        secondRun: "red",
+        // The name the injected executor's failure prints, so the reused arm
+        // carries the assertion the probe saw instead of `null` — which is the
+        // difference between a red base and a colour with no stream, and what
+        // `established` reads (see the two-run rule).
+        assertion: "tests/test-red.ts: expected 1, got 2",
+        rawStream: "FAILED: tests/test-red.ts: expected 1, got 2",
+        probed: true,
+        exitCode: 1,
       },
     });
     assert(
@@ -286,7 +298,10 @@ try {
       notes2.some((n) => n.includes("reused the background base probe's RED")),
       "in-flight red: the note names the channel it came from",
     );
-    assert(v2?.status === "red", "in-flight red: the reused colour is still reported to the cap");
+    assert(
+      v2?.established === true && v2.verdict.status === "red",
+      "in-flight red: the reused colour is still reported to the cap",
+    );
 
     // (c) an in-state GREEN: reused from the state, as a resumed cycle needs.
     probeCalls.length = 0;
