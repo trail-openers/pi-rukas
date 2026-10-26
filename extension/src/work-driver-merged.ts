@@ -215,13 +215,16 @@ export async function runMerged(
       trace(
         `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}${headCheck && !headCheck.ok ? `, head=${headCheck.refusal.reason}` : ""}`,
       );
-      return appendEvent(heldForMissingApproval(state, authority, evidence, routedRoundCap, headCheck), {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap: "awaiting-human-merge",
-        reviewRound: state.pipelineState.reviewRound,
-        nextStep: "handoff",
-      });
+      return appendEvent(
+        heldForMissingApproval(state, authority, evidence, routedRoundCap, headCheck),
+        {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "awaiting-human-merge",
+          reviewRound: state.pipelineState.reviewRound,
+          nextStep: "handoff",
+        },
+      );
     }
     verifiedHead = headCheck.headOid;
     headNotes.push(headCheck.note);
