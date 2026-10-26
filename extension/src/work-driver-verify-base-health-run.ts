@@ -168,7 +168,12 @@ export async function runBaseHealthProbe(
     tierBoundMs: key.tierBoundMs,
     ...(secondRun === undefined ? {} : { secondRun }),
     ...(firstReason === undefined ? {} : { reason: firstReason }),
-    ...(confirmed || firstReason !== undefined
+    // A KILLED first run states its arm on the record, and the arm is the only
+    // thing a reuse can carry no field for: `ReusableVerdict` has no `timedOut`, so
+    // a reuse whose record did not say "killed" would rebuild a killed gate's
+    // timeout as a plain red base and write an assertion line for a run that
+    // produced no stream (#1765 lens round 1).
+    ...(timedOut || confirmed || firstReason !== undefined
       ? {}
       : {
           reason:

@@ -74,6 +74,11 @@ export function reportBaselineLeg(
   callbacks: { onBaselineRedOnly?: () => void; onBaselineRedEstablished?: () => void },
 ): void {
   if (leg.established) callbacks.onBaselineRedEstablished?.();
+  // The excuse claim keys on the finding's PRESENCE, so a killed first run claims
+  // neither channel: `confirmRedBase` refuses it a second run (nothing judged is
+  // nothing to confirm) and `compareWithBaseline` withholds `established`, but the
+  // timeout's own sentence still leads the evidence — the operator's actionable
+  // line — and presence alone must not read as a claim (#1826).
   if (leg.red) callbacks.onBaselineRedOnly?.();
 }
 

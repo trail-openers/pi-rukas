@@ -63,6 +63,7 @@ import {
   CMD,
   aggregateWithProbe,
   changeFailure,
+  redBaseExecutor,
   verdict,
 } from "./lib/base-health-channel-harness.ts";
 import { RED_GATE, branchState, keyFor } from "./lib/base-health-probe-fixture.ts";
@@ -212,25 +213,12 @@ try {
     const base = "c".repeat(40);
     const key: BaseHealthKey = { baseSha: base, command: CMD, tierBoundMs: 1_000 };
     const probeCalls: string[] = [];
-    // A RED base: the executor's failure carries a `FAILED:` line, which is the
-    // dialect the assertion extractor reads. A resolved run means green, so an
-    // (a)-style case that returned `{stdout: ""}` would "pass" by judging the
-    // base green and (d)'s anti-vacuity would be the only honest assertion left.
-    const redExec = (async (cmd: string, o?: { argv?: string[] }) => {
-      const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
-      probeCalls.push(line);
-      if (line.includes("worktree add")) return { stdout: "" };
-      if (line.includes("worktree remove")) return { stdout: "" };
-      const e = new Error(`Command failed: ${cmd}`) as Error & {
-        stdout?: string;
-        stderr?: string;
-        code?: number;
-      };
-      e.stdout = "FAILED: tests/test-red.ts: expected 1, got 2";
-      e.stderr = "";
-      e.code = 1;
-      throw e;
-    }) as never;
+    // A RED base, from the shared fixture executor: its failure carries a `FAILED:`
+    // line (the dialect the assertion extractor reads), and it records every call
+    // so a reuse is judged by the trees it built. A resolved run means green, so an
+    // (a)-style case that returned `{stdout: ""}` would "pass" by judging the base
+    // green and (d)'s anti-vacuity would be the only honest assertion left.
+    const redExec = redBaseExecutor(probeCalls);
     const common = {
       repoRoot: "/nonexistent",
       baseSha: base,

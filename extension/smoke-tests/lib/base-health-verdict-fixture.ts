@@ -84,12 +84,14 @@ export function stateWithRedProbe(
     baseSha,
     command: cmd,
     tierBoundMs,
-    ...(opts.timedOut === true ? { timedOut: true as const } : {}),
-    // #1826 — a red CLAIM states the confirming run's colour; a red that states no
-    // second run is a colour only, and no reuse may skip the probe on it. Cases
-    // that want the unconfirmed shape (the converse rule) pass `confirmed: false`
-    // rather than editing the record afterwards, so the two shapes stay one call
-    // apart and a reader sees which rule a case is exercising.
+    // A KILLED record states no confirmed second run either: #1826 gives a killed
+    // run no second run and no claim, because the bound it hit is the actionable
+    // diagnosis and nothing about it is re-derived by running the same command
+    // again. Stating `secondRun: "red"` here would let a colour nobody watched twice
+    // reuse, and the arm `reuseCachedVerdict` rebuilds carries no `timedOut` for the
+    // comparison to object with — which is exactly how the #1765 defect returned a
+    // plain red for a gate that was killed.
+    ...(opts.timedOut === true || opts.confirmed === false ? {} : { secondRun: "red" as const }),
     ...(opts.confirmed === false ? {} : { secondRun: "red" as const }),
   };
   return state;

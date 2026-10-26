@@ -51,14 +51,25 @@ const killed = (): BaselineVerdict => ({ status: "red-timed-out", assertion: nul
 const unknown = (): BaselineVerdict => ({ status: "unknown", reason: "worktree add failed" });
 
 /**
- * The loop's own triad: per-file markers plus a summary whose count agrees with
- * them. Anything else and `failingTestNames` returns `[]`, which is the
- * "no names" arm — so a case that wants names has to print this shape rather
- * than any line beginning `FAILED:`.
+ * The two trees one confirmation runs in. A name is compared ANCHORED in the tree
+ * that printed it (`BaseConfirmRoots`): the same test appears under a different
+ * absolute prefix in each throwaway checkout, so raw string equality between the
+ * two runs' names is false for every test in the repo, and a rule built on it would
+ * refuse every legitimate red base. A bare, unplaceable name matches nothing.
  */
-const named = (...paths: string[]): string =>
+const TREE_ONE = "/tmp/pi-confirm/tree-one";
+const TREE_TWO = "/tmp/pi-confirm/tree-two";
+const ROOTS = { firstRoot: TREE_ONE, secondRoot: TREE_TWO };
+
+/**
+ * The loop's own triad: per-file markers anchored in the tree that ran, plus a
+ * summary whose count agrees with them. Anything else and `failingTestNames`
+ * returns `[]`, which is the "no names" arm — so a case that wants names has to
+ * print this shape rather than any line beginning `FAILED:`.
+ */
+const named = (tree: string, ...paths: string[]): string =>
   [
-    ...paths.map((p) => `FAILED: ${p}`),
+    ...paths.map((p) => `FAILED: ${tree}/${p}`),
     `FAILED: ${paths.length} test(s) — ${paths.join(", ")}`,
   ].join("\n");
 
@@ -72,7 +83,7 @@ interface Recorded {
 async function run(
   first: BaselineVerdict,
   arms: BaselineVerdict[],
-  opts: { throwOn?: number } = {},
+  opts: { throwOn?: number; roots?: typeof ROOTS } = {},
 ): Promise<Recorded> {
   const probes: Array<{ label: string; timeoutMs: number }> = [];
   const result = await confirmRedBase(
@@ -85,6 +96,7 @@ async function run(
       return arms[probes.length - 1] ?? green();
     },
     BOUND,
+    opts.roots ?? { firstRoot: "", secondRoot: "" },
   );
   return { confirmation: result.confirmation, probes, result };
 }

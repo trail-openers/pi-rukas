@@ -159,3 +159,30 @@ export async function aggregateWithProbe(
     probeStarted,
   };
 }
+
+/**
+ * The RED-base executor the reuse cases drive the comparison with.
+ *
+ * Its failure carries a `FAILED:` line, which is the dialect the assertion
+ * extractor reads: an executor that merely rejected would judge the base green by
+ * omission and leave the anti-vacuity assertion as the only honest one in the file.
+ * `calls` collects every command it was asked to run, so "no second suite run was
+ * paid for" is a count of the worktree builds and not an inference from prose.
+ */
+export function redBaseExecutor(
+  calls: string[],
+): <T = unknown>(cmd: string, o?: { argv?: string[] }) => Promise<T> {
+  return (async (cmd: string, o?: { argv?: string[] }) => {
+    calls.push(o?.argv ? [cmd, ...o.argv].join(" ") : cmd);
+    if (calls[calls.length - 1]?.includes("worktree")) return { stdout: "" } as T;
+    const e = new Error(`Command failed: ${cmd}`) as Error & {
+      stdout?: string;
+      stderr?: string;
+      code?: number;
+    };
+    e.stdout = "FAILED: tests/test-red.ts: expected 1, got 2";
+    e.stderr = "";
+    e.code = 1;
+    throw e;
+  }) as <T>(cmd: string, o?: { argv?: string[] }) => Promise<T>;
+}

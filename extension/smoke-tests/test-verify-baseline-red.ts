@@ -56,6 +56,14 @@ type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 async function run(
   name: string,
   outcomeFor: (where: "base" | "change", baseRun?: 1 | 2) => Outcome,
+  // The callbacks the gate's tail rule (`reportBaselineLeg`) is asked to fire. A
+  // case that never passes them cannot tell a claim from a finding, which is the
+  // distinction #1826 turns on for the killed arm: the timeout's sentence still
+  // leads the evidence, and neither the cap's claim nor #1349's excuse may follow.
+  baselineCallbacks: {
+    onBaselineAttributed?: () => void;
+    onBaselineRedEstablished?: (established: boolean) => void;
+  } = {},
 ) {
   const repo = path.join(root, name, "repo");
   mkdirSync(repo, { recursive: true });
@@ -116,6 +124,7 @@ async function run(
     workstreamBaseShas: undefined,
     failures,
     notes,
+    ...baselineCallbacks,
   });
   const listed = (await git(repo, ["worktree", "list"])).stdout;
   return {
@@ -238,11 +247,20 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
 
 // 5 — a run killed at its timeout is reported as a timeout, everywhere.
 await pinDefaultVerifyTimeout(async () => {
-  const r = await run("timeout", () => ({
-    ok: false,
-    stdout: "ok    no product or host names in platform files\n",
-    killed: true,
-  }));
+  const attributed: boolean[] = [];
+  const established: boolean[] = [];
+  const r = await run(
+    "timeout",
+    () => ({
+      ok: false,
+      stdout: "ok    no product or host names in platform files\n",
+      killed: true,
+    }),
+    {
+      onBaselineAttributed: () => attributed.push(true),
+      onBaselineRedEstablished: (e) => established.push(e),
+    },
+  );
   const all = r.failures.join("\n");
   assert(
     !all.includes("no specific assertion could be extracted") &&
@@ -281,9 +299,20 @@ await pinDefaultVerifyTimeout(async () => {
     baselineEntries.length <= 1 && baselineEntries.every((f) => f.includes("[verify-timeout]")),
     `timeout: the killed base raises no plain [baseline-red] claim — at most the timeout's own entry (${JSON.stringify(baselineEntries.map((f) => f.slice(0, 60)))})`,
   );
+  // The two claims the gate's tail rule reads, asked of the real caller rather than
+  // inferred from prose: a killed base run raises NEITHER. #1349's excuse rides on
+  // `onBaselineAttributed` (voided: a killed run holds no stream), and the cap's
+  // claim rides on `onBaselineRedEstablished` — whose `false` is what stops the
+  // cycle parking as `verify-baseline-red:develop`, since no path reaching that cap
+  // exists without the claim having fired. Asking `verifyCapFor` with the claim
+  // hard-coded to false would test the router's argument, not the gate's answer.
   assert(
-    verifyCapFor("develop", r.failures, false) !== "verify-baseline-red:develop",
-    `timeout: the router never reads a killed base as baseline-red (got ${verifyCapFor("develop", r.failures, false)})`,
+    attributed.length === 0,
+    `timeout: a killed base run earns #1349's excuse for nothing (got ${JSON.stringify(attributed)})`,
+  );
+  assert(
+    established.length === 1 && established[0] === false,
+    `timeout: the killed base reports itself NOT established to the cap (got ${JSON.stringify(established)})`,
   );
   assert(
     !r.notes.some((n) => n.includes("FLAKY")),

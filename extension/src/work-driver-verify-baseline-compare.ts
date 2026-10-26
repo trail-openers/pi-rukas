@@ -193,7 +193,13 @@ export async function compareWithBaseline(
   // two-run rule refuses to act on, so it never skips the probe — an in-state red
   // left by an earlier develop round, or a red this pass consulted whose
   // confirmation did not establish, is re-probed.
-  const statesConfirmedSecond = cached?.secondRun === "red";
+  // Read off the CALLER's record, not the reader's product: `matchingVerdict`
+  // rebuilds the object from the fields a stored record may state, and a caller can
+  // hand this seam a `BaseHealthVerdict`-shaped value carrying a channel flag the
+  // reader never sees. `established` is the cap's claim and #1349's excuse claim,
+  // so the fact it rests on — a second run the RECORD states — is read from the
+  // record the caller holds, and a reuse may claim the cap on nothing else.
+  const statesConfirmedSecond = opts.cachedVerdict?.secondRun === "red";
   // A KILLED red whose record states `secondRun: "red"` is not a confirmation
   // either: #1826's own table gives a killed run no second run and no claim,
   // because the bound it hit is the actionable diagnosis and a re-run of the same
@@ -202,7 +208,11 @@ export async function compareWithBaseline(
   // twice — would be the #1765 lens-round-1 defect wearing the new rule's clothes.
   // `usableVerdict` admits only `true` for this field, so the narrowing is total:
   // an arm that is not killed has no field at all, and one that is says so.
-  const killedArm = cached?.timedOut === true;
+  // Read off the reader's own product. `matchingVerdict` returns `undefined` for a
+  // `timedOut` that is present but not exactly `true`, so on this object the field
+  // is `true | undefined` and the narrowing is total — the comparison cannot be
+  // widened into a silent pass by a future value the reader would simply reject.
+  const killedArm = cached !== undefined && "timedOut" in cached && cached.timedOut === true;
   const reusable =
     cached !== undefined &&
     cached.status !== "unknown" &&
@@ -223,8 +233,20 @@ export async function compareWithBaseline(
     baselineProbeWorktreePath(opts.repoRoot, `${opts.issue}-${label}`);
   const run = (label: string, boundMs: number) =>
     probeBaselineVerify(execFn, { ...opts, issue: `${opts.issue}-${label}`, timeoutMs: boundMs });
+  // A KILLED arm is never reused: `reuseCachedVerdict` rebuilds it as a bare
+  // `red-timed-out` with no arm signal, and a reused red reaching the confirmation
+  // with no stated second run is confirmed by nothing but the fact that it arrived
+  // through the cache — the #1765 lens-round-1 shape. `reusable` already refuses the
+  // reuse for the cap's sake; this is the same rule at the arm's own gate, so no
+  // later caller can reach that rebuild by arriving a different way.
+  // A KILLED arm is never reused, whatever colour it carries. `matchingVerdict`
+  // rebuilds the record and `ReusableVerdict` has no `timedOut` on it, so the arm
+  // `reuseCachedVerdict` returns cannot state that it was killed — and a reused arm
+  // that cannot state its own arm is one no evidence may be built from. Refusing the
+  // reuse here is what makes the probe run for real and earn the arm itself, rather
+  // than read a killed gate's timeout as a plain red base (#1765 lens round 1).
   const reused =
-    !reusable || cached === undefined
+    !reusable || killedArm || cached === undefined
       ? undefined
       : reuseCachedVerdict(
           cached,

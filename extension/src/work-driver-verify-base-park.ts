@@ -81,6 +81,10 @@ export function baseHealthRedEvidence(
   arm: RedBaselineVerdict,
   confirmation?: BaseRedConfirmationResult,
 ): BaseHealthRedEvidence {
+  // The arm decides the sentence, so a killed base is never dressed as a plain red:
+  // `baselineRedMessage` writes the bound's line for `red-timed-out` and an
+  // assertion's line for `red`, and rebuilding one from the other is the #1765
+  // lens-round-1 defect that told an operator to fix a test nobody ran.
   const tally = arm.status === "red" ? summaryCount(arm.rawStream) : undefined;
   const baseRuns = confirmation === undefined ? "" : baseRunsProse(confirmation);
   return {
