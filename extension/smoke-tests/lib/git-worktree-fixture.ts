@@ -267,42 +267,49 @@ export function execFailingArgs(failWhenArgsInclude: readonly string[]): ExecFn 
 /** A 40-hex object id for a stubbed `rev-parse --verify` (the shape `refResolves` demands). */
 const STUB_OBJECT_ID = `${"f".repeat(39)}1`;
 
-/** The argv `readWorktreeDiff`'s dirt probe sends (work-driver-diff.ts). */
-const WORKTREE_DIFF_STATUS_ARGV = ["status", "--porcelain", "-z", "--untracked-files=all"] as const;
-
 /**
- * Does `cmd` (as `commandOf` renders it) name a dirty-worktree probe that also
- * asks about UNTRACKED files?
- *
- * The mechanized-commit fixtures script `git status --porcelain` to make each
- * worktree look dirty to the develop/commit-pr gates. Those reads now arrive in
- * ARGV form, so a `cmd.startsWith("git status --porcelain")` test matches only
- * the shell-string caller and the argv one falls through to the stub's default
- * `{stdout:""}` — a worktree that reads clean, and an integration the fixture
- * meant to exercise never runs. Both spellings render to the same string here.
- *
- * It is deliberately NOT a bare `git status --porcelain` match: `git status
- * --ignored=matching --porcelain -uall` is a DIFFERENT question ("what residue
- * did the cycle leave behind?") and the fixtures whose whole point is a dirty
- * or residue-laden root distinguish the two. Requiring an untracked flag keeps
- * that distinction, and every untracked flag `git` accepts appears here so a
- * future rename in `src/` widens the match rather than silently narrowing it.
+ * The leading `-c <key>=<value>` config pairs a hardened git read carries, and
+ * the one flag two of the driver's readers use in addition (`-c` pairs sit
+ * before the subcommand in work-driver-protected-paths-read.ts and
+ * work-driver-diff.ts).
  */
-export function isDirtyWorktreeRead(cmd: string): boolean {
-  if (!cmd.startsWith("git status --porcelain")) return false;
-  return /(?:^|\s)(?:-z|-u|-uall|--untracked-files(?:=\S+)?)(?:\s|$)/.test(cmd);
+function gitConfigArgs(argv: readonly string[], i: number): number {
+  while (argv[i] === "-c" && argv[i + 1] !== undefined) i += 2;
+  return i;
 }
 
 /**
- * The argv-form sibling of `isDirtyWorktreeRead`, for a stub that receives the
- * raw `opts.argv` (work-driver-diff.ts's dirt probe and its `-z` twin).
+ * Do the raw `opts.argv` of a `verifyExecFn` call name a dirty-worktree probe?
+ *
+ * Why this exists at all: the mechanized-commit fixtures script
+ * `git status --porcelain` to make each worktree look dirty to the develop and
+ * commit-pr gates, and matched it with `cmd.startsWith(...)`. The driver's
+ * reads have since moved to the ARGV form (`execGit` / the protected-path and
+ * crash classifiers pass `opts.argv`), and `commandOf` renders those into a
+ * string carrying the leading `-c` config pairs — so the stub's `startsWith`
+ * matched only the shell-string caller, every argv call fell through to the
+ * stub's default `{stdout:""}`, and the fixture silently became "all worktrees
+ * clean": the integration was never attempted and the assertions about
+ * cherry-picks, pushes and PR creation failed for a reason the test does not
+ * describe.
+ *
+ * fixture that scripts "this worktree is dirty" means all of them. Cycle
+ * residue is a separate question with its own spelling
+ * (`git status --ignored=matching --porcelain -uall`, work-driver-ignore-probe.ts)
+ * and stays unmatched here, so the fixtures that distinguish residue from work
+ * keep distinguishing them.
  */
 export function isDirtyWorktreeArgv(argv: readonly string[] | undefined): boolean {
-  if (!argv) return false;
-  return (
-    argv.length >= WORKTREE_DIFF_STATUS_ARGV.length &&
-    WORKTREE_DIFF_STATUS_ARGV.every((tok, i) => argv[i] === tok)
-  );
+  if (!argv?.length) return false;
+  const i = gitConfigArgs(argv, 0);
+  if (argv[i] !== "status") return false;
+  const flags = argv.slice(i + 1);
+  return flags.includes("--porcelain") && !flags.some((f) => f.startsWith("--ignored"));
+}
+
+/** The same question for a stub that sees the command rendered by `commandOf`. */
+export function isDirtyWorktreeRead(cmd: string): boolean {
+  return /^git(?: -c \S+)* status --porcelain/.test(cmd);
 }
 
 /**

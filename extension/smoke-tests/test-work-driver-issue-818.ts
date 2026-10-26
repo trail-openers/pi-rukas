@@ -19,6 +19,11 @@
  */
 
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  cleanTreeDiffExec,
+  isDirtyWorktreeArgv,
+  isDirtyWorktreeRead,
+} from "./lib/git-worktree-fixture.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -225,7 +230,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       };
       const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
         cmd = commandOf(cmd, o);
-        calls.push(cmd);
+        calls.push(cmd); console.error("CALL ["+cmd.slice(0,60)+"] cwd="+String(o?.cwd).slice(-20));
         if (cmd === "git rev-parse HEAD")
           return { stdout: "1111111111111111111111111111111111111111\n" };
         if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-818\n" };
@@ -234,7 +239,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         if (cmd.startsWith("git fetch origin")) return { stdout: "" };
         if (cmd.startsWith("git worktree remove")) return { stdout: "" };
         if (cmd.startsWith("git worktree add")) return { stdout: "" };
-        if (cmd.startsWith("git status --porcelain")) {
+        if (isDirtyWorktreeRead(cmd) || isDirtyWorktreeArgv(o?.argv)) {
           const worktreeAdds = calls.filter((c) => c.startsWith("git worktree add")).length;
           const cwd = o?.cwd ?? "";
           if (worktreeAdds < 3) return { stdout: "" };
@@ -289,6 +294,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         issue: 818,
         issueBodyFetcherFn,
         verifyExecFn: exec,
+        // #1634 — the fixture declares worktree paths it never creates, so the
+        // adversarial gate's own diff read would call them unreadable and park
+        // the cycle on an infra failure before commit-pr ever ran. Answer the
+        // read as a clean committed tree would; the commit-pr stubs below are
+        // untouched and still decide this test's assertions.
+        diffExecFn: cleanTreeDiffExec(),
         adversarialLoopFn: async () =>
           mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
         dispatchFn: mkDispatchFn(dir, 818),

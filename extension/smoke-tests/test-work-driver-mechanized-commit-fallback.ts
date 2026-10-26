@@ -25,6 +25,11 @@ import { runWorkDriver } from "../src/work-driver.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { readState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  cleanTreeDiffExec,
+  isDirtyWorktreeArgv,
+  isDirtyWorktreeRead,
+} from "./lib/git-worktree-fixture.ts";
 import { type WorkstreamArgs, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
@@ -132,7 +137,7 @@ const mkDispatchFn =
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
-          if (cmd.startsWith("git status --porcelain")) {
+          if (isDirtyWorktreeRead(cmd) || isDirtyWorktreeArgv(o?.argv)) {
             const worktreeAdds = calls2.filter((c) => c.startsWith("git worktree add")).length;
             const cwd = o?.cwd ?? "";
             if (worktreeAdds < 3) return { stdout: "" };
@@ -161,6 +166,12 @@ const mkDispatchFn =
           issue: 995,
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
+          // #1634 — the fixture declares worktree paths it never creates, so the
+          // adversarial gate's own diff read would call them unreadable and park
+          // the cycle on an infra failure before commit-pr ever ran. Answer the
+          // read as a clean committed tree would; the commit-pr stubs below are
+          // untouched and still decide this test's assertions.
+          diffExecFn: cleanTreeDiffExec(),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 995, { allowOpsCommitPr: true }),
@@ -242,7 +253,7 @@ const mkDispatchFn =
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
           if (cmd.includes("/issue-998-integrate")) return { stdout: "" };
-          if (cmd.startsWith("git status --porcelain")) {
+          if (isDirtyWorktreeRead(cmd) || isDirtyWorktreeArgv(o?.argv)) {
             const worktreeAdds = callsP.filter((c) => c.startsWith("git worktree add")).length;
             const cwd = o?.cwd ?? "";
             if (worktreeAdds < 3) return { stdout: "" };
@@ -275,6 +286,12 @@ const mkDispatchFn =
           issue: 998,
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
+          // #1634 — the fixture declares worktree paths it never creates, so the
+          // adversarial gate's own diff read would call them unreadable and park
+          // the cycle on an infra failure before commit-pr ever ran. Answer the
+          // read as a clean committed tree would; the commit-pr stubs below are
+          // untouched and still decide this test's assertions.
+          diffExecFn: cleanTreeDiffExec(),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: async (_pi, spec, dOpts) => {
@@ -331,7 +348,7 @@ const mkDispatchFn =
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-996\n" };
-          if (cmd.startsWith("git status --porcelain")) {
+          if (isDirtyWorktreeRead(cmd) || isDirtyWorktreeArgv(o?.argv)) {
             const cwd = o?.cwd ?? "";
             if (cwd.endsWith("/wtb")) return { stdout: "" };
             if (cwd.endsWith("/wta") || cwd.endsWith("/wtc")) return { stdout: " M src/x.rs\n" };
@@ -355,6 +372,12 @@ const mkDispatchFn =
           issue: 996,
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
+          // #1634 — the fixture declares worktree paths it never creates, so the
+          // adversarial gate's own diff read would call them unreadable and park
+          // the cycle on an infra failure before commit-pr ever ran. Answer the
+          // read as a clean committed tree would; the commit-pr stubs below are
+          // untouched and still decide this test's assertions.
+          diffExecFn: cleanTreeDiffExec(),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 996, { allowOpsCommitPr: true }),
@@ -408,7 +431,7 @@ const mkDispatchFn =
           // (caught → treated as "no stale tree", the correct shape for a
           // first-time creation).
           if (cmd.includes("/issue-997-integrate")) return { stdout: "" };
-          if (cmd.startsWith("git status --porcelain")) {
+          if (isDirtyWorktreeRead(cmd) || isDirtyWorktreeArgv(o?.argv)) {
             const cwd = o?.cwd ?? "";
             const worktreeAdds = calls4.filter((c) => c.startsWith("git worktree add")).length;
             // repoRoot is dirty with a tracked-modified file (the #602 shape)
@@ -438,6 +461,12 @@ const mkDispatchFn =
           issue: 997,
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
+          // #1634 — the fixture declares worktree paths it never creates, so the
+          // adversarial gate's own diff read would call them unreadable and park
+          // the cycle on an infra failure before commit-pr ever ran. Answer the
+          // read as a clean committed tree would; the commit-pr stubs below are
+          // untouched and still decide this test's assertions.
+          diffExecFn: cleanTreeDiffExec(),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 997, { allowOpsCommitPr: true }),

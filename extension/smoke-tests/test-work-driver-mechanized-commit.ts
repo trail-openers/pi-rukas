@@ -13,6 +13,11 @@
  */
 
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  cleanTreeDiffExec,
+  isDirtyWorktreeArgv,
+  isDirtyWorktreeRead,
+} from "./lib/git-worktree-fixture.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -53,7 +58,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // M1 — happy path: 3 worktrees consolidated by the driver, PR opened,
     // number parsed; the LLM ops:commit-pr dispatch never fires.
     {
-      const dir = mkdtempSync(path.join(tmpdir(), "mech-happy-"));
+      const dir = mkdtempSync(path.join(tmpdir(), "mech-happy-")); process.env.__DIR = dir;
       try {
         await setupTestRepo(dir);
         const calls: string[] = [];
@@ -72,6 +77,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           cmd = commandOf(cmd, o);
           calls.push(cmd);
+          calls.push("MARK", cmd);
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-994\n" };
@@ -89,7 +95,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           // models that by accepting the remove.
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
-          if (cmd.startsWith("git status --porcelain")) {
+          if (isDirtyWorktreeRead(cmd) || isDirtyWorktreeArgv(o?.argv)) {
             // #393 — worktree paths now come from mechanized branch setup
             // (`.worktrees/issue-994/<workstream>`), not from the ops reply,
             // so key on the workstream id rather than the old /wta,/wtb,/wtc
@@ -161,6 +167,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           issue: 994,
           issueBodyFetcherFn: mockIssueBodyOk,
           verifyExecFn: exec,
+          // #1634 — the fixture declares worktree paths it never creates, so the
+          // adversarial gate's own diff read would call them unreadable and park
+          // the cycle on an infra failure before commit-pr ever ran. Answer the
+          // read as a clean committed tree would; the commit-pr stubs above are
+          // untouched and still decide this test's assertions.
+          diffExecFn: cleanTreeDiffExec(),
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
           dispatchFn: mkDispatchFn(dir, 994),
