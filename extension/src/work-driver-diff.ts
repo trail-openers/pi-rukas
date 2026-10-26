@@ -15,7 +15,10 @@ import { execp } from "./exec.ts";
 import { aheadOfBase, execGit, prRange, treeHasCommit } from "./git-range.ts";
 import { trace } from "./trace.ts";
 import { type StatusEntry, parseStatus } from "./work-develop-git.ts";
+// The merged fan-out lives in its own module (§12 size cap) and is re-exported
+// here so the review gates keep ONE import path for "the diff(s) of this cycle".
 import { fetchAllDiffs } from "./work-driver-diff-merged.ts";
+export { fetchAllDiffs };
 import { resolveMainline } from "./work-driver-git.ts";
 import { isDriverArtefactPath } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
