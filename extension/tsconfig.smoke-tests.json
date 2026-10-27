@@ -87,5 +87,7 @@
     "smoke-tests/lib/fold-two-helpers.ts",
     "smoke-tests/test-workstream-fold-self-fence-1862.ts",
     "smoke-tests/test-plan-normalisation-self-fence-1862.ts",
+    "smoke-tests/test-plan-fence-array-1862.ts",
+    "smoke-tests/test-plan-fence-prose-1862.ts",
   ]
 }

@@ -11,6 +11,7 @@
 
 import { hostBudget } from "./host-resources.ts";
 import { boundOutOfScope, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
+import { proseSelfFenceDrops } from "./plan-fence-prose.ts";
 import { clippedField } from "./plan-fence-record.ts";
 import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
 import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
@@ -44,11 +45,25 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const introduces = args.introduces ?? [];
   const consumes = args.consumes ?? [];
   const integrationTest = args.integrationTest ?? "";
+  const boundedPaths = boundPaths(args.paths);
   const fence = boundOutOfScope(args.outOfScope);
   if (fenceWasBounded(fence)) {
     traceWarn(fenceBoundNotice(`plan workstream '${args.id}'`, fence));
   }
-  const boundedPaths = boundPaths(args.paths);
+  // #1862 (a) — a prose fence over this workstream's OWN files is dropped here,
+  // at the tool boundary, rather than left for the develop gate to demote every
+  // hit from. Only entries naming what THIS call declared go: a sibling's fence
+  // (#572's cross-declaration contract) and prose that names no path stay. The
+  // clip records of a dropped entry go with it, the way `capFenceList` drops a
+  // record whose entry is gone — a record describing a vanished entry is a
+  // disclosure of a loss that did not happen.
+  const proseDrops = proseSelfFenceDrops(boundedPaths.paths, fence.entries);
+  const dropped = new Set(proseDrops.map((d) => d.entry));
+  for (const d of proseDrops) {
+    traceWarn(
+      `work-driver: plan workstream '${args.id}' self-fence dropped — ${JSON.stringify(d.entry)} covers its own declared ${d.path}`,
+    );
+  }
   if (boundedPaths.duplicate > 0) {
     // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same
     // reason (#1744) — an operator greps one channel for every bound the driver
@@ -64,8 +79,8 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
     id: args.id.slice(0, WORKSTREAM_ID_MAX),
     scope: args.scope,
     paths: boundedPaths.paths,
-    outOfScope: fence.entries,
-    ...clippedField(fence.clipped),
+    outOfScope: fence.entries.filter((e) => !dropped.has(e)),
+    ...clippedField(fence.clipped.filter((r) => !(r.kind === "clipped" && dropped.has(r.entry)))),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
     ...(integrationTest ? { integrationTest } : {}),
     ...(introduces.length > 0 ? { introduces } : {}),
