@@ -105,6 +105,17 @@ const inv: MechanicalInventory = { memory: [], related: RELATED, errors: [] };
     refs.map((r) => r.token).join(",") === "1856,1856-2,7",
     `named issues: #N and #N-k both parse (${refs.map((r) => r.token).join(",")})`,
   );
+  // Dedupe is by first occurrence, and it must survive a token that only becomes
+  // a real ref later in the same reply: an unreadable first mention has to stay
+  // unreadable rather than let a later identical token in under it.
+  assert(
+    namedIssueRefs("#1856 then #1856 then #7 and #7").map((r) => r.token).join(",") === "1856,7",
+    "named issues: a repeated token yields ONE ref, in first-occurrence order",
+  );
+  assert(
+    namedIssueRefs("#1856-2 twice: #1856-2").map((r) => r.token).join(",") === "1856-2",
+    "named issues: a split-child token dedupes on its own token, not on its parent",
+  );
   assert(
     namedIssueTokens("duplicates #1856 and #7").join(",") === "1856,7",
     "named issues: the numeric ids are what the state lookup consumes",

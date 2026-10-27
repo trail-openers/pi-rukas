@@ -4,14 +4,18 @@
  *
  * `baseExcludeSection()` renders the same worst-case fixture
  * `test-plan-duplicate-exclusion-budget.ts` builds through the renderer as it
- * stood at HEAD before the budget existed (`plan-duplicate-self.ts`, which has
- * no row clips and no section cap). The bytes are read with `git show`, the
- * three imports it carried are inlined from the SAME revision — the type-only
- * ones erased, the one runtime helper (`truncateForDisclosure`) copied through
- * so what runs is that revision's code and not this tree's — and the result is
- * evaluated from a throwaway module under the OS temp dir. Nothing under version
- * control imports a stale copy, and nothing depends on a scratch directory
- * surviving between runs.
+ * stood BEFORE the budget existed. The revision is pinned, not read from HEAD:
+ * the base is a fact about the cycle (the commit this branch was cut from), and
+ * a base-evidence helper that reads HEAD measures whatever is checked out now —
+ * which, once the fix lands on main, is the fixed renderer itself, and the test
+ * would keep asserting a regression that can no longer be reproduced. If that
+ * pinned blob is ever missing, `baseExcludeSection` throws rather than passing.
+ * The bytes are read with `git show`, the three imports it carried are inlined
+ * from the SAME revision — the type-only ones erased, the one runtime helper
+ * (`truncateForDisclosure`) copied through so what runs is that revision's code
+ * and not this tree's — and the result is evaluated from a throwaway module
+ * under the OS temp dir. Nothing under version control imports a stale copy, and
+ * nothing depends on a scratch directory surviving between runs.
  *
  * If the extraction cannot be performed — no git, no HEAD, an unexpected file
  * shape — this throws. It never returns a number it did not actually measure: a
@@ -39,7 +43,26 @@ export function worstRows(count = 10): unknown[] {
   }));
 }
 
-const REPO = path.resolve(import.meta.dirname, "..", "..");
+/** extension/ — this file lives in `extension/smoke-tests/lib/`. */
+const EXT_DIR = path.resolve(import.meta.dirname, "..", "..");
+/** The repository root, resolved from the checkout rather than assumed. */
+const REPO = execFileSync("git", ["-C", EXT_DIR, "rev-parse", "--show-toplevel"], {
+  encoding: "utf8",
+}).trim();
+
+/**
+ * The commit whose `plan-duplicate-self.ts` renders the section with **no row
+ * clips and no budget** — the state the bound replaced. This is #1856's own
+ * round-1 commit, not the merge base: the file did not exist at `98f02444`, so
+ * the merge base is not the code this bound displaced, and a probe that read
+ * HEAD would eventually measure the fixed renderer and assert a regression that
+ * can no longer be reproduced. A base is a pinned fact about the cycle.
+ *
+ * `baseExcludeSection` throws rather than passing if that blob cannot be read or
+ * no longer carries the unbounded renderer, so a garbage base is a loud failure
+ * instead of a test that quietly stops proving anything.
+ */
+const BASE_REV = "e66eb940";
 
 /** The file at `rev`, read from git. Throws when it cannot be read. */
 function show(rev: string, file: string): string {
@@ -60,15 +83,23 @@ function baseSource(): string {
       `type DuplicateRisk = { level: string; rationale: string; downgradedFrom?: string; downgradeReason?: string; excludedIssues?: Array<{ number: number; state: string; title: string; reason: string }> };\ntype ExcludedDuplicate = { number: number; state: string; title: string; reason: string };`,
     ],
   ] as const;
-  let src = show("HEAD", "extension/src/plan-duplicate-self.ts");
+  let src = show(BASE_REV, "extension/src/plan-duplicate-self.ts");
   for (const [from, to] of imports) {
     if (!src.includes(from)) throw new Error(`base probe: import line not found: ${from}`);
     src = src.replace(from, to);
   }
-  const trunc = show("HEAD", "extension/src/plan-gap-disclosure.ts").match(
+  const trunc = show(BASE_REV, "extension/src/plan-gap-disclosure.ts").match(
     /const RESIDUAL_DISPLAY_MAX = \d+;[\s\S]*?\n}\n/,
   );
-  if (!trunc) throw new Error("base probe: could not locate truncateForDisclosure at HEAD");
+  if (!trunc) throw new Error("base probe: could not locate truncateForDisclosure at the base");
+  // The base is only a base if it is the UNBOUNDED renderer. If that commit ever
+  // grew a budget module, this probe measures a bounded renderer and the test
+  // that compares against it proves nothing — so it says so instead of passing.
+  if (/plan-duplicate-disclosure|EXCLUSION_SECTION_MAX_CHARS/.test(src)) {
+    throw new Error(
+      `base probe: ${BASE_REV} already carries the exclusion budget — the base is no longer the unbounded renderer, so the comparison is void`,
+    );
+  }
   return `${src}\n${trunc[0]}\n`;
 }
 
