@@ -43,6 +43,12 @@ type GrepExecFn = (
   opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
+/** How many notes of EACH kind the persisted unfence record keeps. Matches the
+ * cap `unfenceSummary` applies to its own notes, so the two lists are held to
+ * the same documented bound and neither can push the other out (see
+ * `runPlanNormalisationPass`). */
+const UNFENCE_NOTES_CAP = 10;
+
 /**
  * Fold a port plan into one workstream, then merge workstreams the coupling
  * rules say cannot be built independently. A single-workstream plan is a
@@ -127,16 +133,27 @@ export async function runPlanNormalisationPass(
   // the SAME record so the operator sees one `planQuality.unfence` per plan
   // step. `unfenceSummary` does not count them (their note begins with none of
   // the prefixes it keys on); they reach the persisted `notes` list.
-  const foldNotes = merged.selfFenceDrops.map((r) => r.note);
+  //
+  // ROUND 1 — the two lists are capped SEPARATELY before they are joined. The
+  // pre-fix code joined them and sliced the result to 10, so a plan whose
+  // issue-named pass produced 10 notes showed ten of those and silently lost
+  // every fold drop: the count said `selfFences: 3` and the notes named none of
+  // them, which is the same disclosure failure as not recording the drop at
+  // all. Each half keeps its own 10 (the record's documented cap), so an
+  // operator reading `selfFences: N` can always see the drops themselves.
+  const foldNotes = merged.selfFenceDrops.map((r) => r.note).slice(0, UNFENCE_NOTES_CAP);
   const summary = unfenced.summary
     ? {
         ...unfenced.summary,
-        ...(foldNotes.length > 0
+        ...(unfenced.summary.notes !== undefined || foldNotes.length > 0
           ? {
-              notes: [...(unfenced.summary.notes ?? []), ...foldNotes].slice(0, 10),
-              selfFences: merged.selfFenceDrops.length,
+              notes: [...(unfenced.summary.notes ?? []), ...foldNotes].slice(
+                0,
+                UNFENCE_NOTES_CAP * 2,
+              ),
             }
           : {}),
+        ...(merged.selfFenceDrops.length > 0 ? { selfFences: merged.selfFenceDrops.length } : {}),
       }
     : merged.selfFenceDrops.length > 0
       ? {
@@ -146,7 +163,7 @@ export async function runPlanNormalisationPass(
           rolledBack: 0,
           unresolved: 0,
           selfFences: merged.selfFenceDrops.length,
-          notes: foldNotes.slice(0, 10),
+          notes: foldNotes,
         }
       : undefined;
   return { workstreams: unfenced.workstreams, summary, selfFenceDrops: merged.selfFenceDrops };

@@ -40,6 +40,7 @@
  * Pure, and it emits no trace: each caller owns its own line and its own record.
  */
 
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { normaliseDeclaredPath, pathTokenIn } from "./work-driver-declared-path.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { findFenceContradictions } from "./work-driver-plan-paths.ts";
@@ -90,7 +91,17 @@ export function contradictionPathsByEntry(
  * not tokens, so an entry made of nothing but them names nothing at all. */
 export function pathTokens(entry: string): string[] {
   const out: string[] = [];
-  for (const word of entry.split(/\s+/)) {
+  // The scan runs on the CONTROL-FREE form of the entry. A planner (or a model
+  // echoing terminal colour) can break a directory token with a control byte,
+  // and an entry whose own path token the scan cannot read must never be DROPPED
+  // on the strength of the tokens it did read — that is a fence removed because
+  // of a character nobody can see. Reading the neutralised form instead makes a
+  // control-character-bearing entry fail CLOSED (it stays), while a fence whose
+  // paths are legible is judged on what it really says. The `entry` the record
+  // and the note carry is neutralised again at that point, so nothing raw
+  // reaches the state file either way.
+  const scanned = neutraliseFenceEntry(entry);
+  for (const word of scanned.split(/\s+/)) {
     // A trailing `.` or `/` is sentence punctuation, an internal one is part of
     // the name: `src/legacy.` , `src/legacy/` and `src/legacy` are the three
     // spellings of the same fence. A leading `.` is KEPT, because that is how a
@@ -128,18 +139,22 @@ function tokenCoveredBy(token: string, p: string): boolean {
  * by one of its own non-protected declarations. The first token that fails
  * either test is the finding that holds the whole entry: it is a sibling's path,
  * a protected path, or something nobody declared, and there is no way to remove
- * part of a sentence.
+ * part of a sentence. A token the whole-token rule cannot see at all (an entry
+ * broken by a control byte) also holds the entry, so a fence the driver cannot
+ * fully read is never dropped.
  */
 function proseSelfFence(entry: string, own: readonly string[]): SelfFenceEntryDrop {
   const tokens = pathTokens(entry);
   if (tokens.length === 0) return { drop: false };
+  const scanned = neutraliseFenceEntry(entry);
   let first: string | undefined;
   let named = false;
   for (const token of tokens) {
     // A token the whole-token rule does not see in its own sentence is a token
     // the sentence does not really make (`src/legacy//` matches nothing): it
-    // cannot hold the entry open, and it cannot be the reason the entry goes.
-    if (!pathTokenIn(entry, token)) continue;
+    // cannot be the reason the entry goes, and it cannot be dismissed either —
+    // an unreadable token holds the fence.
+    if (!pathTokenIn(scanned, token)) return { drop: false };
     named = true;
     const owner = own.find((p) => tokenCoveredBy(token, p));
     if (owner === undefined) return { drop: false };

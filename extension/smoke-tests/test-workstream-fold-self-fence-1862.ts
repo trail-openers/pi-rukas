@@ -37,11 +37,7 @@
 
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
-import {
-  foldMerged,
-  foldSelfFenceNotes,
-  foldTwoForTests,
-} from "./lib/fold-two-helpers.ts";
+import { foldMerged, foldSelfFenceNotes, foldTwoForTests } from "./lib/fold-two-helpers.ts";
 import { VALID } from "./lib/plan-outofscope-fixtures.ts";
 
 let exit = 0;
@@ -101,7 +97,12 @@ function fieldHalves(): [Workstream, Workstream] {
     `the removal is recorded as a note naming the entry and the merged workstream (got ${JSON.stringify(notes)})`,
   );
   assert(
-    notes.every((n) => !n.startsWith("unfenced ") && !n.startsWith("kept fence ") && !n.startsWith("unresolved identifier ")),
+    notes.every(
+      (n) =>
+        !n.startsWith("unfenced ") &&
+        !n.startsWith("kept fence ") &&
+        !n.startsWith("unresolved identifier "),
+    ),
     "no note begins with a prefix unfenceSummary counts, so the fold's drops cannot be billed to the issue-named pass",
   );
 }
@@ -113,7 +114,13 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   const [a] = fieldHalves();
   const merged = foldMerged(
     a,
-    workstreamFromArgs({ ...VALID, id: "b", scope: "docs", paths: ["docs/y.md"], outOfScope: [fence] }),
+    workstreamFromArgs({
+      ...VALID,
+      id: "b",
+      scope: "docs",
+      paths: ["docs/y.md"],
+      outOfScope: [fence],
+    }),
   );
   assert(
     !merged.outOfScope.includes(fence),
@@ -121,7 +128,13 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   );
   const notes = foldSelfFenceNotes(
     a,
-    workstreamFromArgs({ ...VALID, id: "b", scope: "docs", paths: ["docs/y.md"], outOfScope: [fence] }),
+    workstreamFromArgs({
+      ...VALID,
+      id: "b",
+      scope: "docs",
+      paths: ["docs/y.md"],
+      outOfScope: [fence],
+    }),
   );
   assert(
     notes.length === 1 && notes[0] !== undefined && notes[0].includes(JSON.stringify(fence)),
@@ -233,7 +246,81 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   );
 }
 
-// ────────────────────────────── 7. the fold stays a fold: the union of paths,
+// ────────────────────────────── 7. #1862 round 1 (SECURITY): the fold may not
+// drop a fence that protects ANYONE but the merged workstream. Before this round
+// the fold's prose reader stopped at the first owned token, so one self-path in a
+// sentence was enough to remove the sentence — and every other path it named with
+// it. Each entry below names an own path AND something the merged workstream does
+// not own outright; all must survive whole.
+{
+  const own = {
+    ...VALID,
+    id: "a",
+    paths: ["src/a.ts", "tests/test_x.py", "agents.json"],
+    outOfScope: [],
+  };
+  const cases: Array<[string, string[]]> = [
+    ["a sibling's file", ["Every file under tests/ and src/b.ts is frozen"]],
+    ["a protected path", ["Every file under tests/ and .github/workflows/ is frozen"]],
+    [
+      "a protected declaration of the merged workstream itself",
+      ["Do not touch tests/ or agents.json here"],
+    ],
+    ["an undeclared subtree", ["Leave tests/ and vendor/ alone"]],
+    ["a third workstream's directory", ["tests/ belongs to no one but src/legacy does"]],
+  ];
+  for (const [what, fences] of cases) {
+    for (const fence of fences) {
+      const result = foldTwoForTests(
+        workstreamFromArgs(own),
+        workstreamFromArgs({ ...VALID, id: "b", paths: ["docs/y.md"], outOfScope: [fence] }),
+      );
+      assert(
+        result.workstream.outOfScope.includes(fence) &&
+          !result.selfFenceDrops.some((r) => r.entry === fence),
+        `a mixed sentence naming ${what} is kept WHOLE and unrecorded (got ${JSON.stringify(result.workstream.outOfScope)}, dropped ${JSON.stringify(result.selfFenceDrops.map((r) => r.entry))})`,
+      );
+    }
+  }
+}
+
+// ────────────────────────────── 8. #1862 round 1 (M4): a fence entry is
+// planner-derived text and the record lands in the state file, the handoff and a
+// trace line, so neither the note nor the record's own `entry` field may carry
+// raw control characters. The escape is built at runtime so this file itself
+// holds no control byte.
+{
+  const ESC = String.fromCharCode(27);
+  // The escape sits between two OWN directory tokens, so it changes nothing
+  // about which paths the sentence fences — the entry is a self-fence with or
+  // without it — and the escape can only reach the operator through the note or
+  // the record's `entry` field. An escape that survives there is a forged line
+  // in the handoff and the state file, not a cosmetic artefact.
+  const injected = `Every file under tests/ and docs/${ESC}[0m is frozen`;
+  const result = foldTwoForTests(
+    workstreamFromArgs({
+      ...VALID,
+      id: "a",
+      paths: ["tests/test_x.py", "docs/y.md"],
+      outOfScope: [],
+    }),
+    workstreamFromArgs({ ...VALID, id: "b", paths: ["docs/y.md"], outOfScope: [injected] }),
+  );
+  const all = [
+    ...result.selfFenceDrops.map((r) => r.note),
+    ...result.selfFenceDrops.map((r) => r.entry),
+  ];
+  assert(
+    all.length > 0,
+    `a self-fence carrying an escape is still recognised and recorded (got ${JSON.stringify(result.workstream.outOfScope)})`,
+  );
+  assert(
+    all.every((s) => !s.includes(ESC) && !/\n|\r/.test(s)),
+    `neither the note nor the record's entry carries the raw escape or a newline (got ${JSON.stringify(all)})`,
+  );
+}
+
+// ────────────────────────────── 9. the fold stays a fold: the union of paths,
 // the scope annotation and the dependsOn re-point are untouched by the new
 // filter, and a fold that drops nothing returns the union exactly as before.
 {

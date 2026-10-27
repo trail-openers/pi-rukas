@@ -43,15 +43,12 @@
  * records (work-develop-symbol-merge.ts).
  */
 import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-crash.ts";
-import {
-  type FoldSelfFenceDrops,
-  collectSelfFenceDrops,
-} from "./work-develop-fence-merge-records.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import { applySafetyNet, safetyNetWorktree } from "./work-driver-safety-net.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
@@ -113,8 +110,10 @@ export type MergePrepOutcome =
       mergeHeads: Record<string, string>;
       /** #1862 — fences the folds dropped for covering the merged workstream's
        * own paths; recorded, not re-judged (the #784 demotion still governs
-       * whatever survives). Record shape: work-develop-fence-merge-records.ts. */
-      selfFenceDrops?: FoldSelfFenceDrops;
+       * whatever survives). The caller persists the notes — a drop only the
+       * outcome carries is a drop the state file never sees. Record shape:
+       * `UnfenceRecord` (work-driver-plan-unfence-notes.ts). */
+      selfFenceDrops?: UnfenceRecord[];
     };
 
 /**
@@ -182,7 +181,7 @@ export async function runMergePrep(
   const merges: Array<{ into: string; from: string }> = [];
   const mergeHeads: Record<string, string> = {};
   const carried: Record<string, boolean> = {};
-  const selfFenceDrops: FoldSelfFenceDrops = [];
+  const selfFenceDrops: UnfenceRecord[] = [];
   let next = stateIn;
   // #1005 — park builds from `next`, which is kept in sync with
   // `stateRef.current` after every successful iteration. The pre-#1005
@@ -231,7 +230,7 @@ export async function runMergePrep(
     }
     const folded = foldWorkstream(workstreams, owner, violator, violatorWs);
     workstreams = folded.workstreams;
-    collectSelfFenceDrops(selfFenceDrops, folded.selfFenceDrops);
+    selfFenceDrops.push(...folded.selfFenceDrops);
     merges.push({ into: owner, from: violator });
     // #1345 — several violators of one owner fold into ONE merged workstream,
     // so its id is recorded once and it is re-dispatched once.
@@ -418,6 +417,18 @@ export async function runMergePrep(
         `merge-and-retry re-dispatch for ${mergedId} failed: ${errMsg} (first attempt discarded: ${discardedShas.join(", ") || "no commit ahead of base"})`,
       );
     }
+  }
+  // #1862 — the fold's self-fence removals PERSIST from here. Both callers
+  // (`runMergeRetryFlow`, `runSymbolMergeRetry`) used to ignore this field, so
+  // the record existed, was read by nobody, and a fence the merge removed was
+  // visible nowhere: not in the state file, not in the handoff. The notes ride
+  // the develop step's one persistence channel (`withPersistNotes`), which is
+  // how every other develop-side disclosure reaches the operator.
+  if (selfFenceDrops.length > 0) {
+    stateRef.current = withPersistNotes(
+      stateRef.current,
+      selfFenceDrops.map((r) => r.note),
+    );
   }
   return {
     state: stateRef.current,
