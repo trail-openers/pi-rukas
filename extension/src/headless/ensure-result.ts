@@ -25,7 +25,12 @@ import { resourceReport } from "../resource-budget.ts";
 import { isTerminalState, readState, workStateFile } from "../workflow-state.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
-import { type IssueResult, notStartedResult, projectIssue } from "./result.ts";
+import {
+  type IssueResult,
+  RESULT_SCHEMA_VERSION,
+  notStartedResult,
+  projectIssue,
+} from "./result.ts";
 
 /** How long the runner waits for its own driver before calling it wedged. */
 const DEFAULT_WEDGE_MS = 6 * 60 * 60_000;
@@ -87,7 +92,7 @@ export async function wedgedRun(
 export function formatResultDocument(run: RunOutcome, json: boolean): string {
   if (json) {
     const doc = {
-      schemaVersion: 5 as const,
+      schemaVersion: RESULT_SCHEMA_VERSION,
       buildCommit: readBuildCommit(),
       buildVersion: readBuildVersion(),
       exitCode: run.exitCode,
@@ -114,33 +119,54 @@ export interface ResultGuaranteeOpts {
 }
 
 /**
- * Run `work` and write EXACTLY ONE result document, whichever way it settles.
+ * Run `work` and leave EXACTLY ONE result document on stdout, whichever way it
+ * settles.
  *
- * `work`'s own printing is suppressed (it returns a value; this renders it), so
- * the single-writer property is structural rather than a count of who got
- * there first. If `work` never settles within `wedgeMs`, the projection from
- * the state files is written instead and the exit code is 30.
+ * The single-writer property is structural: `work` returns a value and this is
+ * the only thing that writes to `write`, so a document cannot be printed twice
+ * and cannot be skipped. The byte-level check below is a second line of defence
+ * for the case where `work` wrote through some other route — an earlier draft
+ * keyed the decision on a `prints` flag describing the caller's INTENT, and
+ * appended a wedge document to a healthy run's own output.
  */
 export async function withResultGuarantee(opts: ResultGuaranteeOpts): Promise<number> {
   const wedgeMs = opts.wedgeMs ?? driverWedgeMs();
   const work = opts.work();
-  if (wedgeMs <= 0) {
-    const run = await work;
-    opts.write(formatResultDocument(run, opts.json));
+  // Byte-level, not "did it call write": the supervisor's stdout is a passthrough
+  // of the runner's, so the only honest test of "produced no result" is that
+  // nothing arrived at all.
+  let wrote = "";
+  const write = (s: string) => {
+    wrote += s;
+    opts.write(s);
+  };
+  const settle = async (value: RunOutcome): Promise<number> => {
+    const run = value;
+    if (wrote.trim() === "") write(formatResultDocument(run, opts.json));
     return run.exitCode;
-  }
+  };
+  if (wedgeMs <= 0) return settle(await work);
   const wedged = new Promise<"wedged">((resolve) => {
     const t = setTimeout(() => resolve("wedged"), wedgeMs);
     t.unref?.();
   });
   const winner = await Promise.race([work, wedged]);
-  if (winner !== "wedged") {
-    opts.write(formatResultDocument(winner, opts.json));
-    return winner.exitCode;
-  }
+  if (winner !== "wedged") return settle(winner);
   const reason = `no driver result within ${wedgeMs}ms — the run was still awaiting a child when the runner stopped waiting`;
+  // A caller that already put a document on the stream does not get a second
+  // one; the wedge exists for the silent case only. Read the BYTES, not a flag:
+  // an earlier draft keyed this on `prints` and appended a wedge document to a
+  // healthy run's own output, because the flag described intent while the
+  // stream described what the host actually sees.
+  if (wrote.trim() !== "") {
+    work.catch(() => undefined);
+    // Something already reached the host, so a second document would break the
+    // contract this module exists to keep. 30 says only what this call knows:
+    // nothing settled in time.
+    return EXIT.crash;
+  }
   const run = await wedgedRun(opts.repoRoot, opts.issues, reason);
-  opts.write(formatResultDocument(run, opts.json));
+  write(formatResultDocument(run, opts.json));
   // A driver that settles later is abandoned: nothing it returns can be printed
   // now, and its locks / groups are released by cli.ts's exit path.
   work.catch(() => undefined);
