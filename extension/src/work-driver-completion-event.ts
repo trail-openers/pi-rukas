@@ -15,6 +15,7 @@
 
 import path from "node:path";
 import { redactClip } from "./decision-log.ts";
+import { PROVIDER_MAX } from "./provider-text-budget.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
@@ -176,21 +177,28 @@ export function runIdOfTranscript(result: DispatchResult, role: string): string 
 }
 
 /**
- * #1798 round 3 — the provider's own words, scrubbed and bounded the way
- * `providerParkEvidence` bounds its concatenation: same `redactClip` seam
- * (redacts FIRST, then clips, so a cut can never leave a credential fragment)
- * and the same `FAILURE_REASON_CHARS` budget, not a second number.
+ * #1798 round 3 — the provider's own words, scrubbed through the same
+ * `redactClip` seam `providerParkEvidence` uses (redacts FIRST, then clips, so
+ * a cut can never leave a credential fragment).
  *
  * Why it belongs HERE rather than only at render: this text is written into the
  * durable state file by `buildCompletionEvent` and onto `ResultFailure` by
  * `failureOf`, both of which an operator's handoff and a headless `--json` print
  * verbatim. A provider body that quotes a request header, a key in an error
  * page, or a stack trail used to land in both. The renderer-side caps
- * (`headless/failure.ts`) stay — they are the tighter, per-surface numbers —
- * but the STORED value is now the clean one.
+ * (`headless/failure.ts`) stay — but they are no longer TIGHTER than this one.
+ *
+ * #1798 round 5 — the budget is `PROVIDER_MAX` (1000), not the 240-character
+ * reason budget. The classifier runs LATER, over the stored text, and matches
+ * the spend-cap / quota-window phrase anywhere in it; at 240 a gateway prefix
+ * pushed that phrase past the cut and a terminal outage read as an ordinary
+ * 429, so the queue kept starting groups into the same cap. The front clip is
+ * kept (a cut may drop the tail, never a credential), and the COMPOSITE
+ * `errorTail` below keeps the reason budget — it is a scrollback sentence, not
+ * the evidence the classifier reads.
  */
 function boundedProviderText(text: string): string {
-  return redactClip(text, FAILURE_REASON_CHARS);
+  return redactClip(text, PROVIDER_MAX);
 }
 
 /**

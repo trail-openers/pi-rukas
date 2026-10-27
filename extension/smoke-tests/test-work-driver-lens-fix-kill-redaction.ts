@@ -32,6 +32,7 @@
  * flag.
  */
 import { buildCompletionEvent } from "../src/work-driver-completion-event.ts";
+import { PROVIDER_MAX } from "../src/provider-text-budget.ts";
 import { FAILURE_REASON_CHARS } from "../src/work-driver-failure-taxonomy.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
@@ -58,21 +59,57 @@ function credential(): string {
 
 const SECRET = credential();
 
+/** The kill clause + note prefix the composite `errorTail` is built from, hoisted
+ *  so the fixture's arithmetic and its assertions read the same numbers. */
+const killClauseLength =
+  "[pi-rukas] killed after 2700000ms timeout (override: PI_ENSEMBLE_SPAWN_TIMEOUT_MS)".length;
+const notePrefix = " · provider error-stop: ";
+
 /** A provider body LONGER than the reason budget, with the credential placed
- *  past `FAILURE_REASON_CHARS` — the position the naive clip-first seam loses.
- *  429 wording up front so the text is still the shape the classifier reads. */
+ *  just INSIDE the store budget but far past `FAILURE_REASON_CHARS` — the one
+ *  position that tests both bounds at once.
+ *
+ *  #1798 round 5 widened the stored `providerMessage` to `PROVIDER_MAX`, so a
+ *  token parked at ~240 now sits early enough to survive every clip. Its
+ *  position is therefore DERIVED, not hardcoded: the token is placed just inside
+ *  the window the composed `errorTail` keeps (the reason budget, less the kill
+ *  clause and the note's own prefix), which is where a truncating seam can still
+ *  pass as a redaction and only `redactClip` saves it. Past that window the
+ *  assertion below would be vacuous — the note's tail is simply gone.
+ *  429 wording up front keeps the shape the classifier reads. */
 function longBodyWithCredentialAfterTheBudget(): string {
   const head = "429 status code — request rejected, see the request header below; ";
-  const filler = "x".repeat(FAILURE_REASON_CHARS - head.length + 40);
-  return `${head}${filler} invalid api key ${SECRET} in request header`;
+  const noteHead = " · provider error-stop: ";
+  // The longest kill clause this file's fixture produces, measured rather than
+  // guessed, so the credential lands where the composite note still shows it.
+  const killClause = "[pi-rukas] killed after 2700000ms timeout (override: PI_ENSEMBLE_SPAWN_TIMEOUT_MS)";
+  const noteBudget = FAILURE_REASON_CHARS - killClause.length - noteHead.length;
+  const leadIn = " invalid api key ";
+  // Token starts `leadIn.length` before the end of the kept note window, so the
+  // marker is IN the tail rather than clipped out of it.
+  const offset = noteBudget - leadIn.length - 12;
+  const filler = "x".repeat(Math.max(offset - head.length, 1));
+  return `${head}${filler}${leadIn}${SECRET} in request header`;
 }
 
 // ───────────────────────── 1. the redaction reaches past the budget ─────────
 {
   const body = longBodyWithCredentialAfterTheBudget();
   assert(
-    body.length > FAILURE_REASON_CHARS && body.includes(SECRET),
-    `the fixture is a >${FAILURE_REASON_CHARS}-char body with the credential after that offset (len=${body.length})`,
+    body.length > 150 && body.includes(SECRET),
+    `the fixture is a provider body carrying the credential (len=${body.length}, token at ${body.indexOf(SECRET)})`,
+  );
+  assert(
+    body.indexOf(SECRET) < FAILURE_REASON_CHARS - killClauseLength - notePrefix.length,
+    `the token sits INSIDE the provider note's slice of the reason budget — the window the composite clip keeps, so the seam must REDACT it rather than rely on the cut dropping it (token at ${body.indexOf(SECRET)}, note window ${FAILURE_REASON_CHARS - killClauseLength - notePrefix.length})`,
+  );
+  assert(
+    body.length > FAILURE_REASON_CHARS - killClauseLength - notePrefix.length,
+    "…and the body reaches PAST that window, so a plain clip would have hidden the token instead of redacting it — the distinction this file exists to keep honest",
+  );
+  assert(
+    body.indexOf(SECRET) < PROVIDER_MAX,
+    `…and inside the widened store budget, so the stored providerMessage still holds it when the seam redacts it (token at ${body.indexOf(SECRET)}, budget=${PROVIDER_MAX})`,
   );
 
   const ev = (await buildCompletionEvent(
@@ -156,9 +193,11 @@ function longBodyWithCredentialAfterTheBudget(): string {
   const provEv = (await buildCompletionEvent(
     lensFixCtx({
       ok: false,
+      role: "developer",
       ms: MIN,
       exitCode: 0,
-      finalAssistantText: "",
+      text: "",
+      toolUses: [],
       errorStop: { reason: "error", message: providerBody },
     }) as never,
     "lens-fix",
@@ -166,9 +205,11 @@ function longBodyWithCredentialAfterTheBudget(): string {
     "lens-fix",
     {
       ok: false,
+      role: "developer",
       ms: MIN,
       exitCode: 0,
-      finalAssistantText: "",
+      text: "",
+      toolUses: [],
       errorStop: { reason: "error", message: providerBody },
     } as never,
   )) as Extract<WorkEvent, { kind: "dispatch-failed-provider" }>;
@@ -178,10 +219,10 @@ function longBodyWithCredentialAfterTheBudget(): string {
   );
   assert(
     provEv.providerMessage !== undefined &&
-      provEv.providerMessage.length <= FAILURE_REASON_CHARS + "[REDACTED]".length &&
+      provEv.providerMessage.length <= PROVIDER_MAX + "[REDACTED]".length &&
       !provEv.providerMessage.includes(SECRET) &&
       provEv.providerMessage.includes("[REDACTED]"),
-    `the provider-kind providerMessage is CLIPPED and REDACTED too (len=${provEv.providerMessage?.length}, budget=${FAILURE_REASON_CHARS})`,
+    `the provider-kind providerMessage is CLIPPED and REDACTED too (len=${provEv.providerMessage?.length}, budget=${PROVIDER_MAX})`,
   );
   // The validator's tolerance, which is the resume-halt fix: a long value from a
   // pre-#1798 state file must NOT refuse the file.

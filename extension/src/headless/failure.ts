@@ -10,6 +10,7 @@
  */
 
 import { redactClip } from "../decision-log.ts";
+import { PROVIDER_MAX } from "../provider-text-budget.ts";
 import type { DispatchFailureCause } from "../types.ts";
 import { classifyFailureCause, failureCauseReason } from "../work-driver-failure-taxonomy.ts";
 import type { WorkEvent, WorkStep } from "../workflow-state-events.ts";
@@ -76,7 +77,9 @@ export interface ResultFailure {
 }
 
 const MESSAGE_MAX = 500;
-const PROVIDER_MAX = 1000;
+// #1798 round 5 — the provider budget now comes from the shared leaf so the
+// STORE side (`boundedProviderText`) and this RENDER side cannot drift apart;
+// the store must never be tighter than what a host is owed.
 const TAIL_MAX = 2000;
 const EVIDENCE_MAX = 2000;
 
