@@ -93,7 +93,7 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
   const ctx = "Done when:\n- the tool registers\n- dryRun never files";
   const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
   assert(
-    directives.operatorOutcomes?.length === 2 &&
+    directives.operatorOutcomes.length === 2 &&
       directives.operatorOutcomes[0] === "the tool registers" &&
       directives.operatorOutcomes[1] === "dryRun never files",
     "outcome heading: bullets populate the operatorOutcomes channel verbatim",
@@ -122,7 +122,7 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
   for (const heading of ["Acceptance:", "DONE WHEN", "Done when:", "DONE-WHEN"]) {
     const { directives } = parseOperatorDirectivesWithLines(`${heading}\n- the tool registers`);
     assert(
-      directives.operatorOutcomes?.length === 1 &&
+      directives.operatorOutcomes.length === 1 &&
         directives.operatorOutcomes[0] === "the tool registers",
       `outcome alias ${JSON.stringify(heading)} opens the outcome channel`,
     );
@@ -136,7 +136,7 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
   );
   assert(
     directives.acceptanceCriteria.length === 1 &&
-      (directives.operatorOutcomes?.length ?? 0) === 0,
+      directives.operatorOutcomes.length === 0,
     "ACCEPTANCE CRITERIA keeps the directive channel (unchanged path, AC-4)",
   );
 }
@@ -175,7 +175,7 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
   for (const [ctx, inventoryLine, consumed] of emptyCases) {
     const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
     assert(
-      (directives.operatorOutcomes?.length ?? 0) === 0 && consumedLines.length === consumed,
+      directives.operatorOutcomes.length === 0 && consumedLines.length === consumed,
       `empty outcome block ${JSON.stringify(ctx)}: no outcome (${consumed} line(s) consumed)`,
     );
     const { inventoryContext } = assemblePriorContext(ctx, EMPTY_INV);
@@ -205,7 +205,7 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
   ];
   for (const [ctx, label] of cases) {
     const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
-    const items = directives.operatorOutcomes ?? [];
+    const items = directives.operatorOutcomes;
     assert(
       items.length > 0 && items[items.length - 1] === "the tool registers",
       `outcome block with a ${label} before the bullets yields the outcome (got ${JSON.stringify(items)})`,
@@ -251,7 +251,7 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     "Done when: the tool registers on start",
   );
   assert(
-    directives.operatorOutcomes?.length === 1 &&
+    directives.operatorOutcomes.length === 1 &&
       directives.operatorOutcomes[0] === "the tool registers on start",
     "outcome heading: colon residual reads as the first item",
   );
@@ -263,7 +263,7 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
   const ctx = "Done when:\n- the tool registers\nDecisions:\n- keep the old flag";
   const { directives } = parseOperatorDirectivesWithLines(ctx);
   assert(
-    directives.operatorOutcomes?.length === 1,
+    directives.operatorOutcomes.length === 1,
     "outcome block: an unrecognised label closes it",
   );
   const { inventoryContext } = assemblePriorContext(ctx, EMPTY_INV);

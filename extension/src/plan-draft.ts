@@ -254,13 +254,10 @@ export function draftSpec(
   // view IS `directives` — the same object both the judging stages and the AC
   // section below read, so a drop is never judged against a different line set
   // than the one that renders. Precedence lives in operatorAcSource.
-  const acSource = directives;
-  // #1151: stage 1 drops items that contradict an operator line; stage 2 drops
-  // items that restate one. Both disclose through `dropped`.
-  const conflicts = applyOperatorConflicts(rawFindings, acSource, priorContext);
+  const conflicts = applyOperatorConflicts(rawFindings, directives, priorContext);
   const duplicates = applyOperatorDedupe(
     conflicts.findings,
-    acSource,
+    directives,
     priorContext,
     conflicts.endorsed,
   );
@@ -300,7 +297,7 @@ export function draftSpec(
   // #1855: an operator OUTCOME block is the same authority source as the
   // directive form — see operatorAcSource (plan-validate.ts), which owns that
   // precedence and the empty-heading rule.
-  const opAcRaw = operatorAcSource(acSource);
+  const opAcRaw = operatorAcSource(directives);
   const opAc = capOperatorItems(opAcRaw);
   const angleAc = dedupeByNormalised(
     itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),

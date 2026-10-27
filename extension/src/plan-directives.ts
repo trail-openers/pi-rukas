@@ -20,6 +20,8 @@
  * plan-draft re-exports for existing consumers.
  */
 
+import { traceWarn } from "./trace.ts";
+
 export interface OperatorDirectives {
   acceptanceCriteria: string[];
   pitfalls: string[];
@@ -47,19 +49,20 @@ export interface OperatorDirectives {
    */
   neverClaim?: string[];
   /**
-   * #1855: the OPERATOR OUTCOME channel — a `Done when` / `Acceptance` /
-   * `Acceptance criteria` heading that is NOT the typed directive form
-   * (`ACCEPTANCE CRITERIA:`). An operator who states the outcome in prose had
-   * those bullets land only in the Prior context inventory, so a feature plan
-   * could never fill its Acceptance criteria section and halted draft-invalid.
-   * Bullets under one of these headings feed the SAME operator-authority AC
-   * source as an ACCEPTANCE CRITERIA block (rendered verbatim, never clipped
-   * or count-capped on the angle cap). A heading whose block holds NO item at
-   * all is NOT an outcome: the channel stays empty and the heading is left
-   * unconsumed, so it stays in the inventory exactly as an unrecognised
-   * heading does. A lead-in line, a blank line or a fence token BEFORE real
-   * bullets does not void the block — the scan runs to the block's terminator
-   * (the same one the main loop applies; see `nextItemInBlock`).
+   * #1855: the OPERATOR OUTCOME channel — a `Done when` heading or a bare
+   * `ACCEPTANCE` heading. `ACCEPTANCE CRITERIA` is NEVER an outcome alias: it
+   * always stays on the directive channel (`acceptanceCriteria`), whatever case
+   * or wrapper chars the operator used. An operator who states the outcome in
+   * prose had those bullets land only in the Prior context inventory, so a
+   * feature plan could never fill its Acceptance criteria section and halted
+   * draft-invalid. Bullets under one of the two outcome headings feed the SAME
+   * operator-authority AC source as an ACCEPTANCE CRITERIA block (rendered
+   * verbatim, never clipped or count-capped on the angle cap). A heading whose
+   * block holds NO item at all is NOT an outcome: the channel stays empty and
+   * the heading is left unconsumed, so it stays in the inventory exactly as an
+   * unrecognised heading does. A lead-in line, a blank line or a fence token
+   * BEFORE real bullets does not void the block — the scan runs to the block's
+   * terminator (the same one the main loop applies; see `nextItemInBlock`).
    *
    * REQUIRED (review round 1): this is the single channel carrying the
    * operator's outcome to both draftSpec call sites, so nothing downstream may
@@ -274,6 +277,10 @@ export function parseOperatorDirectives(context: string | undefined): OperatorDi
  * `consumedLines` only to exclude typed-block lines from the FILED-body
  * Prior context inventory. Untyped prose lines stay unlisted — they are the
  * inventory's only operator content.
+ *
+ * The OUTCOME headings are `DONE WHEN` and a bare `ACCEPTANCE` heading; an
+ * `ACCEPTANCE CRITERIA` heading ALWAYS stays on the directive channel, so
+ * nothing on the directive path is affected by the outcome channel (#1855).
  */
 export function parseOperatorDirectivesWithLines(
   context: string | undefined,
@@ -328,6 +335,12 @@ export function parseOperatorDirectivesWithLines(
         channel === "operatorOutcomes" &&
         nextItemInBlock(lines, i, rest, (m[3] ?? "").toUpperCase() === "END") === undefined
       ) {
+        // A bare `Done when:` whose block yields no item is an OUTCOME the
+        // operator believes they stated and the plan will not carry, so the
+        // demotion is never silent: the heading is traced when it is demoted to
+        // "no outcome" (its lines stay in the inventory, but the AC section will
+        // fall back).
+        traceWarn(`plan: ${JSON.stringify(line)} yields no item — no operator outcome`);
         target = null;
         continue;
       }
