@@ -82,6 +82,11 @@ try {
   const tmp = `${process.env.TMPDIR ?? "/tmp"}/plan-unfence-corr-${process.pid}.md`;
   await Bun.write(tmp, body);
   const prompts: string[] = [];
+  // The corrective plan also declares docs/, so the N=1 docs/test rule would
+  // open that fence itself and the issue-named removal the assertion below
+  // counts would not be attributable to the pass under test. The rule is
+  // judged by test-plan-unfence-issue-named.ts, not here.
+  process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS = "0";
   const ctx = {
     // biome-ignore lint/suspicious/noExplicitAny: the host is unused on this path
     host: {} as any,
@@ -136,6 +141,7 @@ try {
   // pass (or the resume gate) for every suite after this one.
   delete process.env.PI_ENSEMBLE_RESUME;
   delete process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS;
+  delete process.env.PI_ENSEMBLE_UNFENCE_DOCS_TESTS;
 }
 
 console.log(

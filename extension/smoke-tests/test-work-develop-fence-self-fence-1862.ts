@@ -26,6 +26,7 @@ import type { CycleContext, DriverContext } from "../src/work-driver-context.ts"
 import type { DispatchResult } from "../src/types.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { asShellForm } from "./lib/argv-shell.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { git, sh } from "./lib/gate-hang-helpers.ts";
 
 process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
@@ -120,35 +121,42 @@ const dispatch = async (): Promise<DispatchResult> => ({
   ms: 10,
 });
 
-const out = await runMergeRetryFlow(
-  ctx,
-  state,
-  { current: state },
-  ["a", "b"],
-  [
-    { id: "a", ok: true },
-    { id: "b", ok: true },
-  ],
-  verifyExecFn,
-  dispatch,
-);
+// The merge's re-dispatch is a developer-shaped dispatch and this fixture has
+// no frontend-only configuration, so the frontend skip must be off. Pinned for
+// the duration and restored — a bare `process.env.X = ""` at module scope leaks
+// the empty string into every later file in the verify loop, and the plan
+// unfence pass reads that same variable as "configured", so its docs/tests rule
+// then fires on paths the suites beside this one never expected.
+await withEnv({ PI_ENSEMBLE_FRONTEND_ONLY_GLOBS: "" }, async () => {
+  const out = await runMergeRetryFlow(
+    ctx,
+    state,
+    { current: state },
+    ["a", "b"],
+    [
+      { id: "a", ok: true },
+      { id: "b", ok: true },
+    ],
+    verifyExecFn,
+    dispatch,
+  );
 
-const merged = out.pipelineState.workstreams?.["a"];
-assert(
-  merged !== undefined && !merged.outOfScope.includes("b.txt"),
-  `the merge dropped the fence over the merged workstream's own file (got ${JSON.stringify(merged?.outOfScope)})`,
-);
-const notes = out.pipelineState.plumbReports.map((r) => r.body);
-assert(
-  notes.some(
-    (n) =>
-      n.startsWith("self-fence dropped: ") &&
-      n.includes("b.txt") &&
-      n.includes("(merged workstream)"),
-  ),
-  `the removal is PERSISTED — a note in the state file names the dropped entry (got ${JSON.stringify(notes)})`,
-);
+  const merged = out.pipelineState.workstreams?.["a"];
+  assert(
+    merged !== undefined && !merged.outOfScope.includes("b.txt"),
+    `the merge dropped the fence over the merged workstream's own file (got ${JSON.stringify(merged?.outOfScope)})`,
+  );
+  const notes = out.pipelineState.plumbReports.map((r) => r.body);
+  assert(
+    notes.some(
+      (n) =>
+        n.startsWith("self-fence dropped: ") &&
+        n.includes("b.txt") &&
+        n.includes("(merged workstream)"),
+    ),
+    `the removal is PERSISTED — a note in the state file names the dropped entry (got ${JSON.stringify(notes)})`,
+  );
 
-void sh;
-rmSync(root, { recursive: true, force: true });
-process.exit(exit);
+  rmSync(root, { recursive: true, force: true });
+  process.exit(exit);
+});
