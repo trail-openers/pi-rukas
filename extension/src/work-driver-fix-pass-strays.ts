@@ -31,16 +31,32 @@
  * component) before the first `git` runs.
  */
 
-import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { isPlainRepoRelativePath, plannedPathProblem } from "./plan-path-shape.ts";
 import { trace } from "./trace.ts";
 import {
   type GitExec,
   assertInsideWorktrees,
   errText,
+  isValidBaseSha,
   nextRetryAttempt,
   retryPatchPath,
 } from "./work-develop-git.ts";
+import { gitReadTimeoutMs } from "./work-driver-adversarial-fix-git.ts";
+
+/**
+ * The bound on every git call this module makes, reads and writes alike.
+ *
+ * The fix pass's own git reads are bounded by `gitReadTimeoutMs()` (30s) — the
+ * same bound the fence's reads use, so a revert that hangs is diagnosed inside
+ * the same budget as the fence that asked for it. A destructive command with no
+ * bound is worse than one that times out: it holds `index.lock` while it hangs,
+ * which is a second failure the next git call in the worktree inherits.
+ */
+function gitWriteTimeoutMs(): number {
+  return gitReadTimeoutMs();
+}
 
 /** The ref name a revert preserves its pre-revert HEAD under, for attempt `n`. */
 function refFor(issue: number, workstreamId: string, attempt: number): string {
@@ -152,21 +168,27 @@ export async function revertFixPassStrays(
   // is how one path gets checked out and the next staged from a stale answer.
   const state = await readStrayState(req);
   if ("reason" in state) return { reason: state.reason };
+  if (headBefore === undefined)
+    return { reason: "the fix pass recorded no usable pre-pass HEAD — nothing was reverted" };
   const strays = state.strays;
   const preservedRef = fixPassStraysRef(issue, workstreamId, attempt);
   const patchPath = fixPassStraysPatchPath(req.scratchDir, issue, workstreamId, attempt);
 
   // 1 — preserve, or refuse with the tree untouched.
-  const saved = await preserve(req, headBefore as string, preservedRef, patchPath, state);
+  const saved = await preserve(req, headBefore, preservedRef, patchPath, state);
   if (!saved.ok) return { reason: saved.reason };
-  const untrackedCopies = copyUntracked(req, state);
-  if (untrackedCopies === undefined) {
+  const copied = copyUntracked(req, state);
+  if (!copied.ok) {
     return {
-      reason: `refusing to revert the fix pass's untracked out-of-fence files in ${worktree}: their bytes could not be copied to ${req.scratchDir} — an untracked file is in no commit, so without the copy this revert would be the only thing that ever held them`,
+      reason: `refusing to revert the fix pass's untracked out-of-fence files in ${worktree}: ${copied.reason} — an untracked file is in no commit, so without the copy this revert would be the only thing that ever held them`,
     };
   }
+  const untrackedCopies = copied.paths;
 
-  // 2 — revert, path by path.
+  // 2 — revert the strays in two batched calls: one `checkout` for every path
+  // that existed at `headBefore`, one `git rm` for every tracked path the pass
+  // created. Untracked ones are unlinked (no git command can stage what git has
+  // never been told about).
   const failed = await revertPaths(req, git, state);
   if (failed !== undefined) return { reason: failed };
   // Which paths to stage is decided from git's own reads, not from the working
@@ -195,8 +217,17 @@ export async function revertFixPassStrays(
     // role is given only the command that can accept it.
     const restored = state.strays.filter((f) => state.trackedAtBefore.has(f));
     if (restored.length > 0) {
-      await git(["--literal-pathspecs", "add", "--", ...restored], { cwd: worktree });
+      await git(["--literal-pathspecs", "add", "--", ...restored], {
+        cwd: worktree,
+        timeout: gitWriteTimeoutMs(),
+      });
     }
+    // The deletions need no staging call of their own: `revertPaths`' `git rm`
+    // already put them in the index, and `git add -A -- <gone>` refuses a
+    // pathspec that matches no file on disk and no tracked entry (`fatal:
+    // pathspec … did not match any files`) — the deletion is staged, the path
+    // is simply gone from both sides of that match. What the commit needs is
+    // that nothing ELSE gets committed, which the commit call below settles.
     // The same commit form the driver's other in-tree commits use
     // (`work-driver-safety-net.ts`): `--no-verify` because a driver-authored
     // revert is not a developer submission and must not be judged by a
@@ -215,14 +246,27 @@ export async function revertFixPassStrays(
         "user.name=pi-rukas",
         "-c",
         "user.email=driver@localhost",
+        // A git-level prefix, so it goes BEFORE the subcommand: as an argument
+        // after `commit` it is an unknown option and the whole revert fails.
+        "--literal-pathspecs",
         "commit",
         "-q",
         "--no-verify",
         "--allow-empty",
         "-m",
         "revert out-of-fence fix-pass files",
+        // NO pathspec. A pathspec here would be the natural way to bound the
+        // commit to the revert's own paths, and it does not work: `git commit
+        // -- <path>` performs a PARTIAL commit that commits only the named
+        // paths' staged content and LEAVES the rest of the index staged, so a
+        // stray the revert deleted — whose removal `git rm` staged, and which
+        // `commit -- <deleted-path>` cannot match — would survive the commit
+        // still staged in the worktree. The staging above is the bounding
+        // instead: `revertPaths` touches only the strays, and the two `add`
+        // calls above name only the strays, so what is staged beyond the
+        // pre-existing develop index is exactly this revert's paths.
       ],
-      { cwd: worktree, maxBuffer: 256 * 1024 },
+      { cwd: worktree, maxBuffer: 256 * 1024, timeout: gitWriteTimeoutMs() },
     );
   } catch (err) {
     return {
@@ -235,13 +279,32 @@ export async function revertFixPassStrays(
   return { paths: [...state.strays], preservedRef, patchPath, untrackedCopies };
 }
 
-/** The gates that make a revert safe to attempt at all; `undefined` = proceed. */
+/** The gates that make a revert safe to attempt at all; `undefined` = proceed.
+ *  Nothing here touches git: every refusal is decided from the request, so a
+ *  bad target or a bad path never reaches a destructive command. */
 function preflight(req: FixPassStraysRequest): string | undefined {
   if (req.headBefore === undefined || req.headBefore.trim() === "") {
     // #1846 PM decision 2 — with no positively recorded pre-pass head there is
     // no "back to", and inventing one (base, HEAD~1) would delete the pass's own
     // work. This is the park, never a revert with a guessed target.
     return `the fix pass recorded no usable pre-pass HEAD for ${req.workstreamId}, so its out-of-fence files cannot be reverted to a known state — the pass is not reverted`;
+  }
+  // The target must be a full SHA before a single git call reads it. `cat-file`
+  // failing on a garbage rev and failing on an absent path look the same to a
+  // caller that treats "unreadable" as "absent", and "absent" means `git rm`.
+  // Shape first, so a malformed target is refused without asking git anything.
+  if (!isValidBaseSha(req.headBefore)) {
+    return `the fix pass's recorded pre-pass HEAD for ${req.workstreamId} is not a full 40-hex SHA (${JSON.stringify(req.headBefore)}), so it cannot be a revert target — the pass is not reverted`;
+  }
+  // Every stray path is judged before git sees it: these strings become argv
+  // elements of `checkout`/`rm`/`add`, and a leading `-` or a glob character
+  // turns one file argument into a flag or a pattern that matches other files.
+  for (const file of req.strays) {
+    const problem = plannedPathProblem(file);
+    if (problem !== undefined)
+      return `refusing to revert the fix pass's out-of-fence files: ${problem}`;
+    if (!isPlainRepoRelativePath(file))
+      return `refusing to revert the fix pass's out-of-fence files: '${file}' is not a plain repo-relative path`;
   }
   try {
     // Destructive commands run only in a driver-owned worktree, and the patch
@@ -275,9 +338,14 @@ async function preserve(
   const { git, worktree } = req;
   const strays = state.strays;
   try {
-    const head = (await git(["rev-parse", "HEAD"], { cwd: worktree })).stdout.trim();
+    const head = (
+      await git(["rev-parse", "HEAD"], { cwd: worktree, timeout: gitWriteTimeoutMs() })
+    ).stdout.trim();
     if (head === "") throw new Error("the worktree's HEAD could not be read");
-    await git(["update-ref", preservedRef, head], { cwd: worktree });
+    await git(["update-ref", preservedRef, head], {
+      cwd: worktree,
+      timeout: gitWriteTimeoutMs(),
+    });
     mkdirSync(dirname(patchPath), { recursive: true });
     // Untracked strays are in no commit, so a patch cannot hold them: they are
     // copied separately (see `copyUntracked`). A tracked stray can be nothing but
@@ -292,6 +360,7 @@ async function preserve(
     const { stdout: diff } = await git(["diff", "--binary", headBefore, "--", ...strays], {
       cwd: worktree,
       maxBuffer: 64 * 1024 * 1024,
+      timeout: gitWriteTimeoutMs(),
     });
     const hasUntracked = state.present.size > 0;
     if (diff.trim() === "" && !hasUntracked) {
@@ -319,33 +388,62 @@ async function preserve(
 
 /**
  * Copy each untracked stray beside the patch, keeping its path relative to the
- * worktree. Returns the copied paths, or `undefined` when any copy failed — an
- * untracked file exists in no commit, so without this copy the revert would be
- * the only thing that ever removed it.
+ * worktree, and VERIFY each copy before the caller is allowed to remove the
+ * source. An untracked file exists in no commit, so a copy that silently came
+ * out short is the revert destroying the only copy that ever held it; the
+ * reason names WHICH file failed and how, because a refusal that cannot be
+ * acted on is a park the operator cannot diagnose.
  */
-function copyUntracked(req: FixPassStraysRequest, state: StrayState): string[] | undefined {
+function copyUntracked(
+  req: FixPassStraysRequest,
+  state: StrayState,
+): { ok: true; paths: string[] } | { ok: false; reason: string } {
   const copied: string[] = [];
-  try {
-    for (const file of state.strays) {
-      if (!state.untracked.has(file) || !state.present.has(file)) continue;
-      const source = join(req.worktree, file);
-      const dest = join(fixPassStraysUntrackedDir(req.scratchDir), relative(req.worktree, source));
+  for (const file of state.strays) {
+    if (!state.untracked.has(file) || !state.present.has(file)) continue;
+    const source = join(req.worktree, file);
+    const dest = join(fixPassStraysUntrackedDir(req.scratchDir), relative(req.worktree, source));
+    try {
       mkdirSync(dirname(dest), { recursive: true });
       copyFileSync(source, dest);
-      copied.push(file);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `${JSON.stringify(file)} could not be copied to ${dest}: ${errText(err)}`,
+      };
     }
-    return copied;
-  } catch {
-    return undefined;
+    // The copy is the only record an untracked file has, so it is confirmed
+    // against the source rather than trusted: same size, then same bytes.
+    try {
+      const src = readFileSync(source);
+      const dst = readFileSync(dest);
+      if (src.length !== dst.length || !src.equals(dst))
+        return {
+          ok: false,
+          reason: `${JSON.stringify(file)} copied to ${dest} does not match the source (${dst.length} byte(s) against ${src.length})`,
+        };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `${JSON.stringify(file)} could not be read back from ${dest} to confirm the copy: ${errText(err)}`,
+      };
+    }
+    copied.push(file);
   }
+  return { ok: true, paths: copied };
 }
 
 /**
- * Per stray: restore from `headBefore` when the file existed there, remove it
- * when it did not. Tracked-vs-untracked comes from the fence's own read
- * (`treeChanges` merges `ls-files --others`), never from a second question to git
- * about the same file — two answers to "was this file here" is how one path gets
- * checked out and the next deleted.
+ * Restore from `headBefore` every stray that existed there, and remove every
+ * tracked stray the pass created — each in ONE batched call, so the number of
+ * destructive git invocations does not grow with the stray list and one path
+ * cannot be checked out while a sibling is removed by a half-applied loop.
+ *
+ * `--literal-pathspecs` makes a stray named like a glob (`c[1].ts`) one file
+ * rather than a pattern over others. Tracked-vs-untracked comes from the
+ * fence's own read (`treeChanges` merges `ls-files --others`), never from a
+ * second question to git about the same file — two answers to "was this file
+ * here" is how one path gets checked out and the next deleted.
  *
  * Returns `undefined` on success, the refusal text on the first failure. A
  * part-way failure is disclosed as such: the preserved ref and the patch are
@@ -356,21 +454,32 @@ async function revertPaths(
   git: GitExec,
   state: StrayState,
 ): Promise<string | undefined> {
-  const { worktree, headBefore } = req;
+  const { worktree } = req;
+  const headBefore = req.headBefore ?? "";
+  const untrackedFiles = state.strays.filter((f) => state.untracked.has(f));
+  const restored = state.strays.filter(
+    (f) => !state.untracked.has(f) && state.trackedAtBefore.has(f),
+  );
+  const created = state.strays.filter(
+    (f) => !state.untracked.has(f) && !state.trackedAtBefore.has(f),
+  );
   try {
-    for (const file of state.strays) {
-      if (state.untracked.has(file)) {
-        // In no index at all: the unlink IS the removal, and no git command can
-        // stage or restore something git has never been told about.
-        rmSync(join(worktree, file), { force: true });
-        continue;
-      }
-      if (state.trackedAtBefore.has(file)) {
-        await git(["checkout", headBefore as string, "--", file], { cwd: worktree });
-        continue;
-      }
-      // Tracked now, absent at the pre-pass head: the pass created it.
-      await git(["rm", "-q", "--force", "--", file], { cwd: worktree });
+    for (const file of untrackedFiles) {
+      // In no index at all: the unlink IS the removal, and no git command can
+      // stage or restore something git has never been told about.
+      rmSync(join(worktree, file), { force: true });
+    }
+    if (restored.length > 0) {
+      await git(["--literal-pathspecs", "checkout", headBefore, "--", ...restored], {
+        cwd: worktree,
+        timeout: gitWriteTimeoutMs(),
+      });
+    }
+    if (created.length > 0) {
+      await git(["--literal-pathspecs", "rm", "-q", "--force", "--", ...created], {
+        cwd: worktree,
+        timeout: gitWriteTimeoutMs(),
+      });
     }
     return undefined;
   } catch (err) {
@@ -384,10 +493,20 @@ async function revertPaths(
  * `present` / `trackedAtBefore` are the two facts every later step needs, and
  * reading them once (rather than per step, as the revert deletes files) is what
  * keeps the four stages — preserve, copy, revert, stage — working from one
- * picture. An unreadable `cat-file` for one path is `false` in `trackedAtBefore`,
- * which routes that file to `git rm --force`: a removal the preserve step has
- * already covered, so a doubtful read never leaves a stray in the tree the rest
- * of the cycle ships.
+ * picture.
+ *
+ * TWO rules the old shape broke, both about how absence is read out of git:
+ *
+ *   - the target is verified POSITIVELY first (`rev-parse --verify <sha>^{commit}`).
+ *     A read that fails because the object, the rev or the repository is
+ *     unreadable is indistinguishable from one that fails because the path is
+ *     not in the tree — and the second of those routes the file to `git rm`. So
+ *     a target that is not provably a commit refuses, and a failing tree read
+ *     refuses, rather than arriving at "absent at `headBefore`";
+ *   - the membership question is ONE `git ls-tree -r --name-only <sha> --
+ *     <paths…>` instead of one `cat-file -e` per path. One call is one answer
+ *     about one tree; N calls is N chances to disagree with each other, and N
+ *     subprocesses to bound.
  */
 interface StrayState {
   strays: string[];
@@ -402,7 +521,16 @@ interface StrayState {
 type StrayStateResult = StrayState | { reason: string };
 
 async function readStrayState(req: FixPassStraysRequest): Promise<StrayStateResult> {
-  const { git, worktree, headBefore } = req;
+  const { git, worktree } = req;
+  // `preflight` has already refused an absent or malformed target, so the head
+  // is a 40-hex SHA by the time any git call reads it — but it is still
+  // `string | undefined` on the request type, so the narrowing is named here
+  // rather than cast at each call site.
+  const headBefore = req.headBefore;
+  if (headBefore === undefined || !isValidBaseSha(headBefore))
+    return {
+      reason: `the fix pass recorded no usable pre-pass HEAD for ${req.workstreamId}, so its out-of-fence files cannot be reverted to a known state — the pass is not reverted`,
+    };
   const strays = [...req.strays];
   const present = new Set<string>();
   const untracked = new Set<string>();
@@ -410,12 +538,42 @@ async function readStrayState(req: FixPassStraysRequest): Promise<StrayStateResu
   for (const file of strays) {
     if (existsSync(join(worktree, file))) present.add(file);
     if (req.untracked.has(file)) untracked.add(file);
+  }
+  try {
+    // Ask git that the target IS a commit before asking it what that commit
+    // holds. Without this, an unreadable repository and an absent path both look
+    // like "not in the tree", and "not in the tree" is the `git rm` branch.
+    // `^{commit}` written as a plain string constant and concatenated, never
+    // interpolated: inside a template literal git's own `{commit}` suffix reads
+    // as a substitution.
+    const peel = "^{commit}";
+    await git(["rev-parse", "--verify", "--quiet", headBefore + peel], {
+      cwd: worktree,
+      timeout: gitWriteTimeoutMs(),
+    });
+  } catch (err) {
+    return {
+      reason: `the fix pass's recorded pre-pass HEAD ${headBefore} could not be verified as a commit in ${worktree}: ${errText(err)} — nothing was reverted rather than reverting toward a tree the driver cannot read`,
+    };
+  }
+  if (strays.length > 0) {
+    let listed: string;
     try {
-      await git(["cat-file", "-e", `${headBefore}:${file}`], { cwd: worktree });
-      trackedAtBefore.add(file);
-    } catch {
-      // Absent at the pre-pass head — or unreadable, which is treated the same
-      // way on purpose (see the note above).
+      // `--name-only` because the mode and hash add nothing, `-r` so a tree
+      // entry contributes its files, and the pathspec list bounds the read to
+      // the strays. EMPTY output for a path is git's answer "not in this tree";
+      // a git FAILURE is the distinct case this call separates out by throwing.
+      ({ stdout: listed } = await git(
+        ["ls-tree", "-r", "--name-only", "--", headBefore, ...strays],
+        { cwd: worktree, maxBuffer: 4 * 1024 * 1024, timeout: gitWriteTimeoutMs() },
+      ));
+    } catch (err) {
+      return {
+        reason: `the pre-pass tree of ${headBefore} could not be read in ${worktree}: ${errText(err)} — an unreadable tree is not proof that a file was absent before the pass, so nothing was reverted`,
+      };
+    }
+    for (const line of listed.split("\n")) {
+      if (line !== "" && strays.includes(line)) trackedAtBefore.add(line);
     }
   }
   if (present.size === 0) {
@@ -428,35 +586,4 @@ async function readStrayState(req: FixPassStraysRequest): Promise<StrayStateResu
     };
   }
   return { strays, present, untracked, trackedAtBefore };
-}
-
-/**
- * The paths `git status` still reports as changed, i.e. those the revert left a
- * working-tree change for. Read through git rather than `existsSync` because
- * both a restored file and a deleted one may or may not exist on disk, and what
- * the commit needs is the pathspec of what actually changed.
- */
-async function changedPaths(
-  git: GitExec,
-  worktree: string,
-  strays: readonly string[],
-): Promise<string[]> {
-  if (strays.length === 0) return [];
-  try {
-    const { stdout } = await git(
-      ["status", "--porcelain", "--untracked-files=all", "--no-renames", "-z", "--", ...strays],
-      { cwd: worktree },
-    );
-    // NUL-separated (`-z`) so a path with a space or a quote needs no parsing at
-    // all, and unquoted even for a non-ASCII name — `core.quotepath` is off.
-    return stdout
-      .split("\0")
-      .map((entry) => entry.slice(3).trim())
-      .filter((path) => path !== "");
-  } catch {
-    // An unreadable status cannot list the paths — fall back to every stray. The
-    // commit below then either succeeds or refuses with git's own reason, which
-    // is a better answer than silently committing a partial revert.
-    return [...strays];
-  }
 }

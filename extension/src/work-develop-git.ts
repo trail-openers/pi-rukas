@@ -21,10 +21,12 @@ import type { DriverContext } from "./work-driver-context.ts";
 
 export type ExecFn = NonNullable<DriverContext["verifyExecFn"]>;
 
-/** The develop path's git transport: argv only. `args` is the git argv (no `git`). */
+/** The develop path's git transport: argv only. `args` is the git argv (no `git`).
+ *  `timeout` is the per-call bound handed to the executor: a git call that hangs
+ *  holds `index.lock`, so every destructive call the driver makes is bounded. */
 export type GitExec = (
   args: string[],
-  opts: { cwd: string; maxBuffer?: number },
+  opts: { cwd: string; maxBuffer?: number; timeout?: number },
 ) => Promise<{ stdout: string }>;
 
 /** The one adapter from the argv-honouring executor to `GitExec`. */
