@@ -55,6 +55,7 @@
     "smoke-tests/test-fix-pass-strays-revert.ts",
     "smoke-tests/test-fix-pass-strays-transport.ts",
     "smoke-tests/test-fix-pass-strays-commit-bound.ts",
+    "smoke-tests/test-fix-pass-strays-preservation.ts",
     "smoke-tests/test-lens-fix-budget-share.ts",
     "smoke-tests/test-lens-fix-budget-owed-route.ts",
     "smoke-tests/test-review-state-guard.ts",

@@ -106,9 +106,12 @@ export async function revertStraysOnce(
   // `wx` flag, silently replacing the only record of what the earlier revert
   // deleted).
   const scratch = scratchDir(ctx.repoRoot, ctx.issue);
-  const attempt = await nextStrayAttempt(scratch, ctx.issue, id);
+  // The transport is built first so the attempt counter can read the REF
+  // namespace too, not only the patch directory — see `nextStrayAttempt`.
+  const git = runGit(ctx.verifyExecFn ?? argvExecp);
+  const attempt = await nextStrayAttempt(scratch, ctx.issue, id, git, plan.worktree);
   const result = await revertFixPassStrays({
-    git: runGit(ctx.verifyExecFn ?? argvExecp),
+    git,
     worktree: plan.worktree,
     repoRoot: ctx.repoRoot,
     issue: ctx.issue,

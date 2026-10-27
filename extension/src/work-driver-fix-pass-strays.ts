@@ -106,15 +106,55 @@ export function fixPassStraysPatchPath(
  * and the patch from the filesystem would let one of them roll back while the
  * other did not, which is a preserved ref whose patch is a different revert's.
  */
+/**
+ * The attempt number this revert should use: one past the highest record that
+ * already exists, so ref and patch always come in a matched pair and a second
+ * revert (a later pass on the same issue and workstream) writes `-2`, never
+ * `-1` again.
+ *
+ * BOTH halves move together deliberately. Deriving the ref from the event log and
+ * the patch from the filesystem would let one of them roll back while the other
+ * did not, which is a preserved ref whose patch is a different revert's. So the
+ * number is the max over BOTH namespaces this revert owns — the patches
+ * (`fix-pass-strays-<issue>-<id>-N.patch`) AND the refs
+ * (`refs/pi-rukas/fix-pass-strays/<issue>-<id>-N`) — because a revert can leave a
+ * record in one and not the other: an earlier attempt that created its ref and
+ * then failed before the patch write (or, before #1849 reordered the two, after
+ * it) has a ref at N with no patch, and a next attempt that read only the patch
+ * directory would pick N and collide with that ref, replacing the only git-visible
+ * record of what the first revert deleted.
+ */
 export async function nextStrayAttempt(
   scratchDir: string,
   issue: number,
   workstreamId: string,
+  git?: GitExec,
+  worktree?: string,
 ): Promise<number> {
   // `retryPatchPath`'s id grammar is what the patch name embeds, so the same
   // gate decides the number and the name — `nextRetryAttempt` refuses an id it
   // cannot spell into a file, and `-<n>` is appended by that spell.
-  return nextRetryAttempt(scratchDir, `fix-pass-strays-${issue}-${workstreamId}`);
+  const fromPatch = await nextRetryAttempt(scratchDir, `fix-pass-strays-${issue}-${workstreamId}`);
+  if (git === undefined || worktree === undefined) return fromPatch;
+  const refPrefix = `refs/pi-rukas/fix-pass-strays/${issue}-${workstreamId}-`;
+  let fromRef = fromPatch;
+  try {
+    const { stdout } = await git(
+      ["for-each-ref", "--format=%(refname)", "refs/pi-rukas/fix-pass-strays/"],
+      { cwd: worktree, timeout: gitWriteTimeoutMs(), maxBuffer: 4 * 1024 * 1024 },
+    );
+    for (const line of stdout.split("\n")) {
+      const name = line.trim();
+      if (!name.startsWith(refPrefix)) continue;
+      const n = Number(name.slice(refPrefix.length));
+      if (Number.isInteger(n) && n >= 1) fromRef = Math.max(fromRef, n + 1);
+    }
+  } catch {
+    // The ref namespace could not be read. The patch directory still bounds the
+    // number, and a collision with an unreadable namespace then fails on `wx`
+    // (a refusal) rather than on a silent overwrite — the safe direction.
+  }
+  return fromRef;
 }
 
 /** Where the untracked strays' bytes are copied, beside the patch. */
@@ -265,9 +305,11 @@ function preflight(req: FixPassStraysRequest): string | undefined {
  * stays reachable as `git show <ref>:<path>` after the revert. The patch is the
  * record of `headBefore` against the WORKING TREE, which is the only form that
  * also holds a stray the developer left UNCOMMITTED — the ref cannot, because no
- * commit contains it. Each form covers what the other cannot, and the empty-patch
- * guard below is what proves at least one of them actually did. The index is restored afterwards: what this module preserves is content,
- * never a staged index the develop gate might otherwise read.
+ * commit contains it. Each form covers what the other cannot, and the guard below
+ * is what proves at least one of them actually did — per present path, not on the
+ * patch's size alone. The ref is created AFTER the patch write, so a failed
+ * preservation never strands a ref; the index is left as found: what this module
+ * preserves is content, never a staged index the develop gate might otherwise read.
  */
 async function preserve(
   req: FixPassStraysRequest,
@@ -278,45 +320,72 @@ async function preserve(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const { git, worktree } = req;
   const strays = state.strays;
+  // Whether the ref was created, so a failure AFTER it can delete it again: an
+  // orphan `refs/pi-rukas/fix-pass-strays/...` that points at a tree the driver
+  // never reverted is a ref somebody will later trust as the record of a revert
+  // that did not happen.
+  let refCreated: string | undefined;
   try {
     const head = (
       await git(["rev-parse", "HEAD"], { cwd: worktree, timeout: gitWriteTimeoutMs() })
     ).stdout.trim();
     if (head === "") throw new Error("the worktree's HEAD could not be read");
-    await git(["update-ref", preservedRef, head], {
-      cwd: worktree,
-      timeout: gitWriteTimeoutMs(),
-    });
-    mkdirSync(dirname(patchPath), { recursive: true });
-    // Untracked strays are in no commit, so a patch cannot hold them: they are
-    // copied separately (see `copyUntracked`). A tracked stray can be nothing but
-    // an addition relative to `headBefore`, so an empty patch with no untracked
-    // stray to show means the request did not describe the tree, and reverting on
-    // such a read is how content gets lost.
-    // `headBefore` → the WORKING TREE, not `headBefore..HEAD`: a fix pass ends
-    // with the developer's edits still uncommitted, and a HEAD-to-HEAD diff would
-    // write a patch that silently omits every uncommitted line the revert is
-    // about to delete. Diffing against the tree (no second rev) captures the
-    // committed strays and the uncommitted ones in one record.
+    // The patch is written BEFORE the ref exists (#1849). Both writes are
+    // non-destructive — neither touches the tree or the index — so the only thing
+    // the order can cost is a record, and the order that costs nothing is the one
+    // where a failure leaves nothing behind: the `wx` patch write is the step with
+    // a real way to fail (an existing file, an unwritable scratch dir, an ENOSPC
+    // mid-write), and it now runs while there is no ref to clean up. The previous
+    // order created the ref first, so every patch-write failure stranded a ref.
+    //
+    // The patch is `headBefore` → the WORKING TREE, not `headBefore..HEAD`: a fix
+    // pass ends with the developer's edits still uncommitted, and a HEAD-to-HEAD
+    // diff would write a patch that silently omits every uncommitted line the
+    // revert is about to delete. Diffing against the tree (no second rev) captures
+    // the committed strays and the uncommitted ones in one record.
     const { stdout: diff } = await git(["diff", "--binary", headBefore, "--", ...strays], {
       cwd: worktree,
       maxBuffer: 64 * 1024 * 1024,
       timeout: gitWriteTimeoutMs(),
     });
-    const hasUntracked = state.present.size > 0;
-    if (diff.trim() === "" && !hasUntracked) {
+    // The guard is based on what was ACTUALLY PRESERVED, not on the size of the
+    // patch alone (#1849). A tracked stray is nothing but an addition or a
+    // modification relative to `headBefore`, so an empty patch means the diff saw
+    // no committed or uncommitted change for any path in a commit; the only form
+    // that record can take then is a byte copy beside the patch, and there is one
+    // per present untracked stray. So: every present stray must be covered by a
+    // non-empty patch OR by being an untracked file sitting in the tree, and a
+    // present stray covered by neither is the request failing to describe the tree
+    // — which is how content gets deleted with no record of it.
+    const preservedByPatch = diff.trim() !== "";
+    const uncovered = [...state.present].filter(
+      (f) => !preservedByPatch && !(state.untracked.has(f) && state.present.has(f)),
+    );
+    if (uncovered.length > 0) {
       throw new Error(
-        `nothing to preserve — none of ${strays.join(", ")} differs from the pre-pass HEAD in the tree or the commits, and no untracked copy was found`,
+        `nothing to preserve — none of ${strays.join(", ")} differs from the pre-pass HEAD in the tree or the commits, and ${uncovered.map((f) => JSON.stringify(f)).join(", ")} is present but untracked-copyless`,
       );
     }
     // `wx`: never clobber an earlier revert's record.
+    mkdirSync(dirname(patchPath), { recursive: true });
     writeFileSync(patchPath, diff, { flag: "wx" });
-    // The patch read above touched no index and `update-ref` touched no tree, so
+    // The patch is on disk; only now is the content reachable through a ref too.
+    await git(["update-ref", preservedRef, head], {
+      cwd: worktree,
+      timeout: gitWriteTimeoutMs(),
+    });
+    refCreated = preservedRef;
+    // The patch read above touched no index and `update-ref` touches no tree, so
     // the preserve step leaves the worktree byte-identical. It deliberately does
-    // NOT reset the index: the revert commit below stages exactly the paths it
-    // owns, and a reset here would race the next git call for `index.lock`.
+    // NOT reset the index: the revert commit stages exactly the paths it owns, and
+    // a reset here would race the next git call for `index.lock`.
     return { ok: true };
   } catch (err) {
+    // Undo the ref if it got created before something else failed, so a refused
+    // preservation never leaves a ref behind that looks like a revert's record.
+    if (refCreated !== undefined) {
+      await git(["update-ref", "-d", refCreated], { cwd: worktree }).catch(() => undefined);
+    }
     // Nothing has been reverted yet, so the tree is exactly as it arrived. The
     // park says so: a preservation failure is the driver DECLINING the revert,
     // not a half-done one.
