@@ -179,7 +179,10 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
 // summary") is the one with zero existing prompt-text coverage.
 {
   const STOP_SENTENCE =
-    "After writing your summary, STOP — no further tool calls. Do not re-read files, re-run commands or re-scan the diff; the summary is your terminal output.";
+    // #1847 — the sentence now also tells the child its skill is inlined, so a
+    // lens that finished could not go and re-open it (the reload this issue
+    // deletes). The rest of the sentence is unchanged and still exact.
+    "After writing your summary, STOP — no further tool calls. Do not re-read files (your skill is inlined above — do not open it), re-run commands or re-scan the diff; the summary is your terminal output.";
   const findingsBranch = lensPromptFor(LENS_SIMPLE, "diff", "ctx", undefined, EVIDENCE_ROSTER);
   const cleanLaneBranch = lensPromptFor(LENS_SECURITY, "diff", "ctx", undefined, EVIDENCE_ROSTER);
   assert(

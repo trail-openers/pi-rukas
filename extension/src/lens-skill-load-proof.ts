@@ -113,6 +113,16 @@ const PATH_KEY = "path";
 /** Pi's bash tool declares a single string argument named `command`. */
 const COMMAND_KEY = "command";
 
+/**
+ * The tools this proof treats as able to OPEN a file: the `read` tool (whose
+ * `args.path` is compared path-wise) and `bash` (whose `args.command` is
+ * TOKENISED for a reader verb). Exported so a hot-path pre-filter over the same
+ * two shapes (`review-bounds-nested.ts`) derives its tool set from here rather
+ * than keeping a second list that can drift from what the predicate accepts.
+ * The names are lowercase, matching the normalisation `isSkillReadWith` applies.
+ */
+export const SKILL_READ_TOOL_NAMES: ReadonlySet<string> = new Set([...READ_TOOLS, "bash"]);
+
 /** The name of the file that holds a skill lives with the path logic that
  * resolves it (`SKILL_FILE_NAME`, lens-skill-path.ts) — the pre-filter below and
  * the matcher there must not disagree about it.

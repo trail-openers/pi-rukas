@@ -43,21 +43,24 @@ import {
 } from "./spawn-extension-forward.ts";
 import {
   InFlightTools,
-  attachAbortKill,
   attachStdoutLinePump,
   createInactivityPoll,
   createStdoutLineHandler,
-  createWallClockBackstop,
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
-import { failedByKill, wireReviewBounds } from "./spawn-review-bounds.ts";
+import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
+// The two spawn-level KILLING timers owned by neither the caps session nor the run
+// bound (§12 size cap). A child is ended from outside by four owners: these two,
+// the inactivity poll (spawn-inflight.ts), the caps (spawn-caps.ts), the bound.
+import { attachAbortKill, createWallClockBackstop } from "./spawn-supervision.ts";
 import {
   STDERR_TAIL_BYTES,
   assertLiveSpawnAllowed,
   buildChildArgs,
   buildCwdHint,
+  childHasExited,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
@@ -264,6 +267,8 @@ async function spawnSpecialistInner(
   // `const caps` initialized after the attach would be in the TDZ for any
   // early line (ReferenceError).
   const flags = declareKillFlags();
+  // #1847 — THE liveness predicate, shared by all three supervisors.
+  const childExited = () => childHasExited(flags, child);
   const caps = armCapSession(child, flags, {
     role: spec.role,
     onSteer: opts.onSteer,
@@ -306,6 +311,8 @@ async function spawnSpecialistInner(
     // closes stdin now throws the reply away rather than preserving it — the
     // same gate `onAgentEnd` applies below.
     willRetry: () => willRetryAfter(lastAgentEnd),
+    // #1847 — the ONE liveness seam, shared with the caps stack and child bound.
+    exited: childExited,
   });
   // #1827 — the pump and its bounds live in spawn-inflight.ts: spawn.ts sits at
   // the §12 size cap, and a bound that throws must not cost a live child its
@@ -342,10 +349,6 @@ async function spawnSpecialistInner(
   child.stderr.on("data", (d) => {
     appendStderr(d);
   });
-  // Always cap wall-clock — see SPAWN_BACKSTOP_MS and createWallClockBackstop
-  // (spawn-inflight.ts). The backstop catches runaway loops; the inactivity
-  // watchdog below detects true hangs. The kill-cause flags are declared with
-  // the cap session above (read by closure, so they predate `createCapSession`).
   // #1593 — never past what the cycle's deadline leaves (cycle-deadline-clock.ts).
   const bound = clampToCycleDeadline(opts.timeoutMs ?? spawnBackstopMs(), Date.now());
   const timeoutMs = bound.timeoutMs;
@@ -357,7 +360,6 @@ async function spawnSpecialistInner(
     // child that committed or reported is ended as done instead.
     onTimeout: () => childBound.atBackstop(() => flags.setTimedOut(true)),
   });
-
   // #1560 — the per-child run bound: wrap-up steer, then end it (spawn-child-bound.ts).
   const childBound = armChildBound({
     child,
@@ -366,7 +368,7 @@ async function spawnSpecialistInner(
     onSteer: opts.onSteer,
     stdin: child.stdin,
     reported: () => promptCompleted,
-    childExited: flags.childExited,
+    childExited: flags.childExited, // #1847 — same seam as `exited` above.
     preempted: () =>
       flags.aborted() ||
       flags.timedOut() ||
@@ -419,18 +421,18 @@ async function spawnSpecialistInner(
     stdoutPump.close(); // #1827 — why, at `attachStdoutLinePump`
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
-    // Stop the per-spawn permission broker; unlinks the socket file.
-    if (broker) {
-      try {
-        broker.stop();
-      } catch (err) {
-        trace(`spawn[${spec.role}]: broker stop failed: ${(err as Error).message}`);
-      }
+    // Stop the per-spawn permission broker; unlinks the socket file. Neither
+    // teardown step can fail the dispatch: the temp dir is best-effort and a
+    // leftover socket file says nothing about the child's result.
+    try {
+      broker?.stop();
+    } catch (err) {
+      trace(`spawn[${spec.role}]: broker stop failed: ${(err as Error).message}`);
     }
   }
 
-  // The four kill-cause stderr lines are emitted by the module that owns the
-  // flags they report (`traceKillCauses`, spawn-watchdog.ts).
+  // The four kill-cause stderr lines come from the module that owns the flags
+  // they report (`traceKillCauses`, spawn-watchdog.ts).
   traceKillCauses(flags, timeoutMs, appendStderr);
 
   // Final flat string from the ring buffer (bounded; no SlowFlatten on the
@@ -457,15 +459,13 @@ async function spawnSpecialistInner(
   reviewBounds.apply(result, appendStderr, traceWarn);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
-  // The cap-kill cause + evidence were already resolved above (capKillAttribution,
-  // after the stderr lines are appended). The wall-clock budgets for the
-  // timeout/inactivity kills are set HERE — only meaningful for those causes.
-  // #951 — each silence kill records the ACTIVE bound (the one the poll
-  // armed), since exactly one budget is checked per poll.
-  if (result.killCause === "timeout") result.killBudgetMs = timeoutMs;
-  if (result.killCause === "timeout" && bound.clamped) result.killedAtCycleDeadline = true;
-  if (result.killCause === "inactivity") result.killBudgetMs = flags.killedBudgetMs();
-  if (result.killCause === "tool-inactivity") result.killBudgetMs = flags.killedBudgetMs();
+  // #1847 — the wall-clock budget behind each kill, folded onto the result by the
+  // shared helper (spawn-review-bounds.ts), which owns writing kills into results.
+  recordKillBudgets(result, {
+    timeoutMs,
+    clamped: bound.clamped,
+    killedBudgetMs: () => flags.killedBudgetMs(),
+  });
   // A killed child never completed its assignment, whatever its exit code.
   // A post-verdict reviewer stop carries no `killCause` at all, so it falls out
   // of `failedByKill` by construction and keeps its verdict as the result —

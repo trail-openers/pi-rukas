@@ -271,8 +271,9 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     reported: () => false,
     boundArmed: () => false,
     willRetry: () => false,
+    exited: () => false,
   });
-  const guard = createSkillReadGuard({ skillPath: SKILL_DIR, reported: () => false });
+  const guard = createSkillReadGuard({ skillPath: SKILL_DIR });
   for (let i = 0; i < 4; i++) {
     const ev = turn(tool("read", { path: SKILL_FILE }));
     guard.observe(ev);
@@ -310,6 +311,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
       reported: () => false,
       boundArmed: () => false,
       willRetry: () => false,
+      exited: () => false,
       ...over,
     };
     const stop = createVerdictStop();
@@ -362,10 +364,10 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     reported: () => false,
     boundArmed: () => false,
     willRetry: () => false,
+    exited: () => false,
   });
   const guard = createSkillReadGuard({
     skillPath: SKILL_DIR,
-    reported: () => false,
     boundArmed: () => true,
   });
   for (let i = 0; i < 6; i++) {
@@ -374,9 +376,13 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     observeReviewBounds({ skillRead: guard, assistantMessageEnd: ev }, targets());
   }
   assert(guard.count() === 6, "the count still counts while a bound is armed");
+  // #1847 — the steer is gated on the same seam the kill is, so a guard whose
+  // kill stands down never latches `steered` and leaves an unlimited steer
+  // stream behind it: with a killing bound already armed, a stdin that is about
+  // to be killed is not written to again.
   assert(
-    armed.join(",") === "steer",
-    `an armed killing bound means no arm and no kill, only the steer (${armed.join(",")})`,
+    armed.join(",") === "",
+    `an armed killing bound means no arm, no kill and no steer (${armed.join(",")})`,
   );
   // And with no bound armed, the same guard still reaches its kill (section (5)
   // pins the sequence; this pins that the new seam did not disable it). Fresh
@@ -388,7 +394,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     kill: () => armedFree.push("kill"),
     armBound: () => armedFree.push("armBound"),
   });
-  const notArmed = createSkillReadGuard({ skillPath: SKILL_DIR, reported: () => false });
+  const notArmed = createSkillReadGuard({ skillPath: SKILL_DIR });
   for (let i = 0; i < 6; i++) {
     const ev = turn(tool("read", { path: SKILL_FILE }));
     notArmed.observe(ev);
@@ -412,9 +418,9 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   // `adversarial-developer` with a READY / NEEDS_ITERATION protocol, and a stop
   // keyed on the role alone would have read its `VERDICT:` line with this
   // reviewer's enum and ended a gate round that never agreed to that protocol.
-  const opted = createReviewBounds("adversarial-developer", { ...OPT_IN }, () => false);
+  const opted = createReviewBounds("adversarial-developer", { ...OPT_IN });
   assert(opted.verdictStop !== undefined, "adversarial-developer + verdictStop gets the stop");
-  const notOpted = createReviewBounds("adversarial-developer", {}, () => false);
+  const notOpted = createReviewBounds("adversarial-developer", {});
   assert(
     notOpted.verdictStop === undefined,
     "adversarial-developer WITHOUT the flag gets no stop (the plan gap gate's shape)",
@@ -427,10 +433,10 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   assert(gate.stopped() === false, "…and never reports having ended a child");
   // A lens child never gets the stop whichever way the flag is set, and the
   // re-read cap stays role-keyed (the flag is not its opt-in).
-  const lens = createReviewBounds("code-review-specialist", { ...SKILL, ...OPT_IN }, () => false);
+  const lens = createReviewBounds("code-review-specialist", { ...SKILL, ...OPT_IN });
   assert(lens.verdictStop === undefined, "a lens child gets no stop even with the flag set");
   assert(lens.skillRead !== undefined, "…and still gets the re-read cap from its skill path");
-  const dev = createReviewBounds("developer", { ...SKILL, ...OPT_IN }, () => false);
+  const dev = createReviewBounds("developer", { ...SKILL, ...OPT_IN });
   assert(dev.skillRead === undefined, "a developer child gets neither bound");
   // The stop's verdict must be a member of the enum, not a bare string: the
   // `VerdictStatus` type is what makes a typo at the fold a compile error.

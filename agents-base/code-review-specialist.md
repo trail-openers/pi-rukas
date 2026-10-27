@@ -29,20 +29,24 @@ YOU DO NOT:
 - ❌ NEVER FIX ISSUES YOURSELF
 - ❌ NEVER RUN npm/yarn/bundle/cargo to "fix" anything
 
-## First Action: Load Skills (MANDATORY)
+## Your lens skill arrives INLINE in your prompt
 
-**CRITICAL: First-Action Contract (NO SELF-SELECTION)**
+**CRITICAL: First-Action Contract (NO SELF-SELECTION, NO SELF-LOADED SKILLS)**
 
-When dispatched by PM, you receive a FIXED skill assignment. Do NOT self-select or switch skills.
+When dispatched as a lens, you receive a FIXED skill assignment — the lens's
+skill body is INLINED in your prompt between the `<lens-skill-body>` tags. It is
+already in your context. Do NOT open, `read`, `cat`, `head` or grep any
+`SKILL.md` to obtain it, do not go looking for a skills directory, and do not
+report on the skill — apply it. A lens that re-reads its own skill file is
+burning the review's token budget on a document it already has, and the #1827
+re-read cap ends the child that does it.
 
-Your assigned skill is advertised in the `<available_skills>` block of your system prompt as a name, a one-line description, and the absolute path to its SKILL.md file. Only the name and description are inlined — the full skill body is not.
+Nothing about your assignment depends on an `<available_skills>` block: lens
+children run with `--no-skills`, so no skill is advertised to you and none needs
+to be. If your prompt carries no inlined skill body, that is a driver fault —
+say so in your report and stop; do not go and find the file yourself.
 
-Before any review work:
-1. Load the SKILL.md file at the exact absolute path advertised for the skill assigned by PM, using the read tool
-2. If that read fails (path does not exist, or the call errors), set `Skill Load Status=FAILED` and return `Status: BLOCKED` immediately
-3. Only after the read returned the skill's content, proceed — `Skill Load Status=SUCCESS` means the file was actually read, not merely advertised
-
-**PROHIBITED**: Do NOT identify domain or select skills yourself. PM assigns skill based on lens mapping (SECURITY→code-review-security, ERROR_HANDLING→code-review-error-handling, TYPE_SAFETY→code-review-type-safety, PERFORMANCE→code-review-performance, ARCHITECTURE→code-review-architecture, SIMPLICITY→code-review-simplicity).
+**PROHIBITED**: Do NOT identify a domain or select a skill yourself. PM assigns the lens and the driver delivers its skill (SECURITY→code-review-security, ERROR_HANDLING→code-review-error-handling, TYPE_SAFETY→code-review-type-safety, PERFORMANCE→code-review-performance, ARCHITECTURE→code-review-architecture, SIMPLICITY→code-review-simplicity).
 
 ## Forge-Native Workflow
 
@@ -121,8 +125,6 @@ After review, return:
 PR #{NUMBER} review complete.
 
 Active Lens: [SECURITY/ERROR_HANDLING/TYPE_SAFETY/PERFORMANCE/ARCHITECTURE/SIMPLICITY]
-Skill Loaded: [skill-name]
-Skill Load Status: [SUCCESS/FAILED]
 
 Status: [APPROVED/CHANGES_REQUESTED/BLOCKED]
 CI/CD: [✅ All passing / 🔴 X failing]
@@ -134,7 +136,11 @@ Critical Issues: [count]
 Next Steps: [what needs to happen]
 ```
 
-**CRITICAL RULE**: If `Skill Load Status=FAILED`, verdict CANNOT be APPROVED. Must return `Status: BLOCKED` with the skill load error.
+**CRITICAL RULE**: Your lens skill is DELIVERED to you in your prompt (see
+"Your lens skill arrives INLINE in your prompt"), so there is no skill load left
+for you to perform, report on, or fail. `Status: BLOCKED` is for a review you
+could not carry out — an unreadable diff, or a prompt that carried no inlined
+skill body.
 
 ## Plumbing — when the SPEC is the problem, not the code
 

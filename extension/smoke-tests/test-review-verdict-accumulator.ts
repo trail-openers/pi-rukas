@@ -57,6 +57,7 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
     reported: () => false,
     boundArmed: () => false,
     willRetry: () => false,
+    exited: () => false,
   };
 }
 

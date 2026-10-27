@@ -63,8 +63,8 @@ function readForms(): PiContentBlock[] {
   ];
 }
 
-function guard(reported = () => false) {
-  return createSkillReadGuard({ skillPath: SKILL_DIR, reported });
+function guard() {
+  return createSkillReadGuard({ skillPath: SKILL_DIR });
 }
 
 // (1) the alternating read/cat/grep reload shape: steer at N+1, kill at N+2.
@@ -134,15 +134,22 @@ function guard(reported = () => false) {
   assert(g.count() === 2, "cat/head/read all count through the same predicate");
 }
 
-// (4) suppressed once the child has reported: a child that sent its agent_end
-// is being reported, and killing it then would throw away the answer it gave.
+// (4) #1847 — an intermediate `agent_end` does NOT disarm the kill. The guard
+// used to take the spawn's `promptCompleted` flag and stand down on it, but that
+// flag flips on ANY non-retrying `agent_end` and Pi emits one per in-process
+// retry boundary, so "it reported" described a segment while the process kept
+// reading. The parameter is gone from the guard entirely: liveness (`exited`,
+// applied by the caller through `observeReviewBounds`) is the only thing that
+// stands the cap down.
 {
-  let reported = false;
-  const g = guard(() => reported);
+  const g = guard();
   const forms = readForms();
   for (let i = 0; i < reviewSkillReadCap() + 2; i++) g.observe(turn(forms[i % forms.length]));
-  reported = true;
-  assert(!g.shouldKill(), "the re-read kill is suppressed once the child has reported");
+  assert(
+    g.shouldKill(),
+    "#1847: the kill no longer reads a reported-flag at all — the guard has none",
+  );
+  assert(g.count() === reviewSkillReadCap() + 2, "…the count is still the operator's evidence");
 }
 
 // (5) inert under the caps master switch, and with no skill path to count.
@@ -155,7 +162,7 @@ function guard(reported = () => false) {
   assert(g.count() === 0, "PI_ENSEMBLE_DISPATCH_CAPS=0 makes the re-read cap inert");
   assert(g.steerText() === undefined && !g.shouldKill(), "…no steer, no kill");
 
-  const noPath = createSkillReadGuard({ skillPath: "", reported: () => false });
+  const noPath = createSkillReadGuard({ skillPath: "" });
   for (let i = 0; i < 20; i++) noPath.observe(turn(tc("read", { path: SKILL_FILE })));
   assert(
     noPath.count() === 0 && !noPath.shouldKill(),

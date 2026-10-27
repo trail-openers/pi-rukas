@@ -67,7 +67,10 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     ...over,
   } as DispatchResult;
 }
-function quietTargets(calls: string[]): ReviewBoundTargets {
+function quietTargets(
+  calls: string[],
+  over: Partial<ReviewBoundTargets> = {},
+): ReviewBoundTargets {
   return {
     writeSteer: () => undefined,
     kill: () => calls.push("kill"),
@@ -77,6 +80,12 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
     reported: () => false,
     boundArmed: () => false,
     willRetry: () => false,
+    // Alive by default — every case that means otherwise passes `exited` in
+    // `over`. The spread is LAST on purpose: an override that landed before a
+    // default was silently shadowed by it, which is how a liveness case can
+    // read green while judging a live child.
+    exited: () => false,
+    ...over,
   };
 }
 /** The four-line verdict menu, lifted out of the prompt the reviewer is actually
@@ -271,6 +280,77 @@ function reviewerMenu(): string {
   assert(
     parseVerdict(r.text).findings.includes("Two findings"),
     "…and the findings the reviewer wrote reach the loop, not just the token",
+  );
+}
+
+// ── (5) #1847 — the ONE liveness signal owns the stop too. `exited()` is the
+// same seam the caps stack and the child bound read (spawn-support.ts
+// `childHasExited`, ORing the kill flags set on `exit`/`close` with the
+// handle's own `exitCode`/`signalCode`). A child whose process is gone cannot
+// be ended by the stop: `markEnded` records an end that did not happen, the
+// fold then stamps `ok: true` and a `reviewStopReason` on a result the spawn
+// is already assembling from a dead stream, and `killProcessTree` on a reaped
+// pid races whatever the exit path wrote. Silence is the right answer — no
+// arm, no stdin close, no kill, and crucially NO `markEnded()`, which is the
+// fold's single gate for stamping a clean end.
+{
+  const calls: string[] = [];
+  const stop = createVerdictStop();
+  const ev = turn(text("Two findings, then the line.\n\nVERDICT: ISSUES_FOUND"));
+  observeReviewBounds(
+    { verdictStop: stop, assistantMessageEnd: ev },
+    quietTargets(calls, { exited: () => false }),
+  );
+  assert(
+    calls.join(",") === "armBound,completePrompt,kill",
+    `(5) control: while the child lives the stop arms, closes stdin and ends it (got ${calls.join(",")})`,
+  );
+  assert(stop.stopped() === true, "(5) control: and records the end the fold reads");
+
+  const dead: string[] = [];
+  const deadStop = createVerdictStop();
+  observeReviewBounds(
+    { verdictStop: deadStop, assistantMessageEnd: ev },
+    quietTargets(dead, { exited: () => true }),
+  );
+  assert(
+    dead.length === 0,
+    `(5) an exited child is not completed or killed by the stop (got ${dead.join(",") || "nothing"})`,
+  );
+  assert(
+    deadStop.stopped() === false,
+    "(5) …and the fold's single gate stays shut, so no clean end is stamped on a dead child",
+  );
+  // The canary, run as a DIRECT `observe` on the same event rather than through
+  // the gated seam: that proves the fixture is a verdict the stop accepts, so a
+  // green pair above is "the liveness gate refused", never "the fixture matched
+  // nothing". It cannot be read from `deadStop.status()` — the gate sits before
+  // `observe` precisely so an exited child's message cannot latch the stop's
+  // sticky flag or cost a live child its accumulation.
+  // (With `PI_ENSEMBLE_DISPATCH_CAPS=0` the parse itself stands down — see
+  // review-bounds-verdict-stop.ts — and that is a different seam, not this one.)
+  const witness = createVerdictStop();
+  witness.observe(ev);
+  assert(
+    witness.status() === "ISSUES_FOUND" && witness.stopped() === false,
+    `(5) canary: the same event IS an accepted verdict when nothing gates it (status ${String(witness.status())})`,
+  );
+
+  const r = baseResult({ text: DISAGREE_HEAD });
+  const warns: string[] = [];
+  // The fold is asked with the stop's OWN record, exactly as the wiring hands it
+  // (`spawn-review-bounds.ts` reads `verdictStop.stopped()`): the reason this
+  // assertion matters is that `status()` is set while `stopped()` is not, so a
+  // fold that keyed on the status alone would stamp a clean end here.
+  applyReviewBounds(
+    { stoppedByVerdict: deadStop.stopped(), verdictText: deadStop.text(), verdictStatus: deadStop.status() },
+    r,
+    () => undefined,
+    (m) => warns.push(m),
+  );
+  assert(
+    r.reviewStopReason === undefined && r.text === DISAGREE_HEAD && warns.length === 0,
+    "(5) …so the fold leaves the collapsed reply and the result's own ok alone, untraced",
   );
 }
 

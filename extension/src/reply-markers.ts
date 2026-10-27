@@ -96,8 +96,23 @@ export function readEnumMarker<T extends string>(
 export interface MarkerContract {
   token: string;
   values: readonly string[] | string;
+  /** The module that routes on the token, resolved relative to `src/`. The
+   *  canary test asserts the file exists, names the token and carries every
+   *  declared value — which is why a RETIRED marker sets `retired` instead: it
+   *  has no consumer to name, and pointing the row at `reply-markers.ts` (the
+   *  registry's own module) made the check pass by citing the declaration itself.
+   *  That is a gate judging its own input: it could never have noticed the
+   *  consumer going away, because there was never one. */
   consumer: string;
   onAbsence: string;
+  /** Set on a marker the drivers no longer route on. The row stays declared — a
+   *  row that silently disappears is indistinguishable from a row that was never
+   *  needed — but the consumer checks are replaced by `retiredReason` being
+   *  stated, and the canary asserts the token is genuinely NOT read any more. */
+  retired?: boolean;
+  /** What a retired row must state: why nothing reads it, and where the fact it
+   *  used to carry comes from now. Required when `retired` is true. */
+  retiredReason?: string;
 }
 
 export const MARKER_CONTRACTS: readonly MarkerContract[] = [
@@ -196,11 +211,40 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     onAbsence: "undefined — downstream gates that need the PR fail their own checks",
   },
   {
+    // #1847 — RETIRED for lens children; kept here because the reader is a
+    // shared seam and a row that silently disappears is indistinguishable from
+    // a row that was never needed. The token is no longer asked of any lens:
+    // the parent reads `<skillDir>/SKILL.md` itself and inlines the body in the
+    // child's prompt (lens-skill-inline.ts), so there is no read for the child
+    // to self-report and no claim left to corroborate. The #1530 proof
+    // (`skillLoadProof`) and its shadow `traceWarn` are gone from the lens path
+    // — an inline-loaded lens records no read, so keeping them would have warn
+    // fired on every lens in every round. `skillLoadProof` survives because
+    // `isSkillReadWith` — the one predicate the #1827 re-read cap counts with —
+    // lives in the same module.
     token: "Skill Load Status",
     values: ["SUCCESS", "FAILED"],
-    consumer: "lens-review-child.ts",
+    // #1847 — RETIRED, and declared as such rather than pointed at this module.
+    // A retired marker has no consumer; naming `reply-markers.ts` here made the
+    // canary's "the consumer file exists and contains the token" check pass by
+    // citing the registry row itself, so the gate was judging its own declaration
+    // and could never have observed the consumer disappearing. `retired` moves the
+    // obligation to a stated reason plus a real absence assertion in
+    // test-marker-contracts.ts.
+    retired: true,
+    // The token is no longer asked of any lens: the parent reads
+    // `<skillDir>/SKILL.md` itself and inlines the body in the child's prompt
+    // (lens-skill-inline.ts), so there is no read for the child to self-report
+    // and no claim left to corroborate. The #1530 proof (`skillLoadProof`) and
+    // its shadow `traceWarn` are gone from the lens path — an inline-loaded lens
+    // records no read, so keeping them would have warned on every lens in every
+    // round. `skillLoadProof` survives because `isSkillReadWith` — the one
+    // predicate the #1827 re-read cap counts with — lives in the same module.
+    retiredReason:
+      "RETIRED #1847: the parent reads <skillDir>/SKILL.md and inlines the body into the lens prompt (lens-skill-inline.ts), so there is no read for a child to self-report and no claim left to corroborate. Nothing calls readEnumMarker with this token; the driver records the delivery itself as the LensRunResult field skillDelivered, and a stale reply that still emits the marker is inert — it blocks nothing and warns nothing.",
+    consumer: "lens-skill-inline.ts",
     onAbsence:
-      "not blocked — traced; the pre-spawn statSync is the executed evidence the skill exists. The marker is the child's SELF-REPORT and it alone decides the outcome: a parsed FAILED blocks (findings kept), anything else does not. The driver additionally cross-checks a claimed SUCCESS against the child's recorded tool calls (`skillLoadProof`, lens-skill-load-proof.ts) in SHADOW — a refutation (`unproven`) emits a traceWarn naming the lens, the verdict and the tool names/paths seen, and blocks nothing; no recorded tool calls at all reads as absent, never refuted. FOLLOW-UP: promote the cross-check to enforce once the shadow log shows no false refutations (see docs/configuration.md → Skill Load Status marker)",
+      "nothing routes on it either way (#1847): absence is the expected state of every lens reply, and presence is ignored. The delivery fact comes from the driver's own read, not from the child.",
   },
   {
     // Not a child reply: the gap gate writes this section into a filed issue body,

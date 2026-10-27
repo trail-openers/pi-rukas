@@ -105,4 +105,14 @@ export interface LensRunResult {
    * six-lens pass's spend into the cycle total at the emission point.
    */
   usage?: DispatchUsage;
+  /**
+   * #1847 — how the lens got its skill. The PARENT read `<skillDir>/SKILL.md`
+   * before the spawn and put the body in the child's prompt, so the driver
+   * records the fact itself (`skill delivered inline (<skill name>)`) instead
+   * of asking the child to self-report a read it was never asked to perform.
+   * Absent on a row that never spawned — a blocked lens carries its
+   * `parseError` (`skill not installed:` / `skill not readable:`) as the
+   * evidence of what stopped it.
+   */
+  skillDelivered?: string;
 }

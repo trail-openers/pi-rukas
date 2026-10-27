@@ -83,6 +83,18 @@ export function spanEdges(event: PiJsonEvent): SpanEdges {
   // its toolCalls (the agent loop returns before the tool batch), so its
   // blocks would never be closed either.
   if (event.type !== "message_end") return NO_EDGES;
+  return assistantTurnEdges(msg);
+}
+
+/**
+ * The calls an assistant `message_end` opens — the message half of `spanEdges`,
+ * split out because that function was carrying both the flat `tool_execution_*`
+ * shapes and the message shapes, and `spawn.ts` has reached its size cap
+ * (AGENTS.md §12). Same rule as before the split and one owner: **only** a
+ * `message_end` whose role is `assistant` and whose turn was neither errored
+ * nor aborted opens spans.
+ */
+function assistantTurnEdges(msg: NonNullable<PiJsonEvent["message"]>): SpanEdges {
   if (msg.stopReason === "error" || msg.stopReason === "aborted") return NO_EDGES;
   if (msg.role !== "assistant" || !msg.content) return NO_EDGES;
   const opens: SpanOpen[] = [];
@@ -191,66 +203,6 @@ export function createInactivityPoll(opts: {
   );
   interval.unref();
   return () => clearInterval(interval);
-}
-
-/**
- * The wall-clock backstop (#1510 sibling of createInactivityPoll — both are
- * spawn-level timers that KILL, so they share this module). The backstop only
- * catches runaway loops; the inactivity watchdog above detects true hangs
- * without a view on how fast the child's model happens to be.
- *
- * The kill runs on its OWN setTimeout, so a throw escaping it is an uncaught
- * exception at timer level that aborts the parent and takes down every
- * sibling child — the exact shape #1510 guards on the budget path. `timedOut`
- * is set FIRST, so `killCause()` still reports "timeout" when the signal
- * cannot land; the failure is reported at default log level, never swallowed.
- */
-export function createWallClockBackstop(opts: {
-  child: ChildProcess;
-  timeoutMs: number;
-  /** Returns true when it took the kill over itself (#1521: a settled child). */
-  onTimeout: () => boolean | undefined;
-}): () => void {
-  const { child, timeoutMs, onTimeout } = opts;
-  const timeout = setTimeout(() => {
-    if (onTimeout() === true) return;
-    try {
-      killProcessTree(child);
-    } catch (err) {
-      traceWarn(`wall-clock backstop killProcessTree failed: ${String(err)}`);
-    }
-  }, timeoutMs);
-  return () => clearTimeout(timeout);
-}
-
-/**
- * Propagate Pi's user-cancel (Esc) signal: kill the child so the tool-execute
- * promise resolves and Pi un-sticks immediately (#1510 sibling of the two
- * timer kills above — all three reach `killProcessTree` from outside the
- * normal flow, so all three are guarded and reported, never swallowed).
- * Fires once, immediately if the signal is already aborted. Returns the detach
- * the caller runs in its finally block.
- */
-export function attachAbortKill(
-  child: ChildProcess,
-  signal: AbortSignal | undefined,
-  onAbort: () => void,
-): () => void {
-  if (!signal) return () => undefined;
-  const kill = () => {
-    onAbort();
-    try {
-      killProcessTree(child);
-    } catch (err) {
-      traceWarn(`abort killProcessTree failed: ${String(err)}`);
-    }
-  };
-  if (signal.aborted) {
-    kill();
-    return () => undefined;
-  }
-  signal.addEventListener("abort", kill, { once: true });
-  return () => signal.removeEventListener("abort", kill);
 }
 
 /**

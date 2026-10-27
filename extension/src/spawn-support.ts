@@ -8,6 +8,7 @@
  * guideline (AGENTS.md §12, #171).
  */
 
+import type { ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
@@ -190,6 +191,49 @@ export function makeRunId(): string {
  */
 export function willRetryAfter(event: PiJsonEvent | null | undefined): boolean {
   return event?.willRetry === true;
+}
+
+/**
+ * The ONE liveness signal for a spawned child (#1847), and the ONLY exported
+ * form of it: a predicate with both polarities exported lets two supervisors
+ * each pick one and mean opposite things about the same child. Every seam that
+ * decides whether a child may still be killed — the caps stack (`spawn-caps.ts`),
+ * the per-child bound (`spawn-child-bound.ts`'s `gone()`) and the skill re-read
+ * cap (`review-bounds.ts`) — reads this, so no two supervisors can disagree.
+ * Directly pinned by smoke-tests/test-child-has-exited-1847.ts.
+ *
+ * Two halves, and neither is trustworthy alone:
+ *
+ *   - the kill flags' `childExited`, set on `exit` AND `close` by
+ *     `armCapSession` (spawn-watchdog.ts, #543 H1). `close` is the reason the
+ *     handle alone was not enough: `exitCode` settles at `exit` while stdio is
+ *     still draining, and the cap-kill grace window is exactly the interval in
+ *     which the two differ.
+ *   - the handle's `exitCode` / `signalCode`, which Node fills in at `exit`.
+ *     The test is deliberately `== null` rather than `!== null`: Node's contract
+ *     is `number | string | null`, but a fake child that simply omits the two
+ *     leaves them `undefined`, and an exact-`null` test would call every test
+ *     fake exited and make the bound under test unkillable — a whole suite of
+ *     green nothing.
+ *
+ * It replaces the spawn's `promptCompleted` flag as the re-read cap's gate:
+ * that one is set on ANY non-retrying `agent_end`, and Pi emits one per
+ * in-process retry boundary, so it read "this child is done" for a segment of a
+ * review whose process was still running and still opening its skill file. A
+ * child that has exited is never killed by the cap; a child that merely passed
+ * an intermediate `agent_end` still is.
+ *
+ * `flags` is optional because the bounds are wired directly by callers (and
+ * tests) that never ran `armCapSession` and have no kill flags; for those the
+ * handle half decides. Every production caller — `spawn.ts` — passes
+ * `declareKillFlags()`'s accessor.
+ */
+export function childHasExited(
+  flags: { childExited: () => boolean } | undefined,
+  child: ChildProcess,
+): boolean {
+  if (flags?.childExited()) return true;
+  return child.exitCode != null || child.signalCode != null;
 }
 
 /**

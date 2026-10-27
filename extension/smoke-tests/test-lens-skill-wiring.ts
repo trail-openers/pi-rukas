@@ -9,9 +9,10 @@
  *      install.sh, a custom PI_ENSEMBLE_SKILLS_DIR, a deleted/renamed skill
  *      leaving a dangling symlink) was spawned and retried 4x before the
  *      lens blocked with a generic "spawn failed".
- *   2. The child's self-reported `Skill Load Status: [SUCCESS|FAILED]`
- *      (agents-base/code-review-specialist.md) was never parsed — an
- *      explicit FAILED could still ride through to APPROVED.
+ *   2. `runLensChild` reads `<skillDir>/SKILL.md` and INLINES its body into the
+ *      child's prompt (#1847), so a missing OR unreadable body blocks the lens
+ *      before any spawn with a named error, and no lens is ever told to go and
+ *      open its own skill file.
  *
  * This test drives the REAL `runLensReview` (lens-review.ts) with
  * `spawnSpecialist` mocked the way test-loop-detector.ts F1(h) does, and
@@ -25,10 +26,12 @@
  *       only an unrelated skill
  *   (d) a dangling symlink for  → that lens blocked
  *       one skill
- *   (e) a reply with `**Skill Load Status:** FAILED` → that lens blocked,
- *       findings KEPT, verdict not APPROVED
- *   (f) a reply without the marker, clean with a summary →
- *       APPROVED-eligible (verdict APPROVED when all six are clean)
+ *   (e) a reply whose skill body could NOT be read (a SKILL.md whose read
+ *      fails) → that lens blocked, 0 spawns for it — the driver never spawns an
+ *      unguided lens, so there is no self-report left to honour
+ *   (f) a clean reply with a summary → APPROVED-eligible (verdict APPROVED
+ *      when all six are clean), whether or not the child still emits the
+ *      retired `Skill Load Status:` marker — nothing reads it any more
  *
  * `mock.module` isolation (per the F1(h) pattern): the mock is installed
  * BEFORE the first `await import("../src/lens-review.ts")`, so the lens
@@ -41,7 +44,7 @@
  * variable that the installed `spawnSpecialist` closure reads.
  */
 
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mock } from "bun:test";
@@ -86,7 +89,8 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
  * Module-level responder: the installed `spawnSpecialist` closure reads
  * this on every call. Cases set it before calling `runLensReview`.
  * `spawnCalls` records every call (prompt + extraArgs) so the test can
- * assert "spawnSpecialist was never called for the missing skill".
+ * assert "spawnSpecialist was never called for the missing skill" — and, since
+ * #1847, that the lens argv carries `--no-skills` and NOT `--skill`.
  */
 type Responder = (spec: { prompt: string }, opts?: { extraArgs?: string[] }) => unknown;
 let spawnResponder: Responder = () => ({
@@ -120,9 +124,23 @@ const { readEnumMarker } = await import("../src/reply-markers.ts");
 const SIX_SKILLS = LENS_ROSTER.map((l) => l.skill);
 const MISSING_SKILL = "code-review-security";
 const PRESENT_SKILLS = SIX_SKILLS.filter((s) => s !== MISSING_SKILL);
+/** The prose half of a fixture skill — the line the parent must inline. */
+function bodyMarker(s: string): string {
+  return `Body marker for ${s}: check your lane.\n`;
+}
 
 /** Build a fixture skills dir; `present` controls which lens skill dirs
- * exist inside it. Returns the fixture root (and a cleanup fn). */
+ * exist inside it. Returns the fixture root (and a cleanup fn).
+ *
+ * #1847 — the fixture writes the body prose into `SKILL.md` itself, with the
+ * frontmatter above it. The split that used to live here (a separate
+ * `__body.md`, deleted by case (e) to make the body read fail) is DEAD: case (e)
+ * now drives the failure through `setSkillFileReaderForTests`, which is the only
+ * way to fail the parent's read while the roster keeps parsing the same
+ * `SKILL.md`, and nothing has opened `__body.md` since. A file the fixture wrote
+ * and no code read was a fixture that could rot silently. The body stays real
+ * for the same reason as before: a frontmatter-only fixture would inline nothing
+ * and make the "the prompt carries this lens's skill body" assertion vacuous. */
 function fixtureSkillsDir(present: string[], name: string): { dir: string; cleanup: () => void } {
   const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens872-${name}-`)), "skills");
   mkdirSync(dir, { recursive: true });
@@ -134,7 +152,12 @@ function fixtureSkillsDir(present: string[], name: string): { dir: string; clean
   for (const s of present) {
     const skillDir = path.join(dir, s);
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${s}\nprecedence: ${prec}\n---\n`);
+    // A real BODY, not just frontmatter. The parent reads `SKILL.md` and
+    // inlines it into the child's prompt, so a fixture carrying only
+    // frontmatter would inline an empty string and make the "the prompt
+    // carries this lens's skill body" assertion vacuous.
+    const frontmatter = `---\nname: ${s}\nprecedence: ${prec}\n---`;
+    writeFileSync(path.join(skillDir, "SKILL.md"), `${frontmatter}\n\n${bodyMarker(s)}`);
     prec += 10;
   }
   return {
@@ -166,9 +189,12 @@ async function runCase(diff: string, env: string | undefined) {
   }
 }
 
-/** A clean, marker-bearing summary for a non-SECURITY lens. */
+/** A clean summary for a non-SECURITY lens. #1847: the `Skill Loaded:` and
+ * `Skill Load Status:` fields are gone from the lens report contract — the
+ * driver records the inline delivery itself — so this reply carries neither.
+ * A stale reply that still emits them is ignored, which is what (f) pins. */
 const CLEAN_SUMMARY =
-  "Active Lens: LENS\nSkill Loaded: code-review-foo\nSkill Load Status: SUCCESS\n\nStatus: APPROVED\nChecked the diff; nothing in this lens's lane.";
+  "Active Lens: LENS\n\nStatus: APPROVED\nChecked the diff; nothing in this lens's lane.";
 
 /* (a) one lens skill missing → that lens blocked, 0 spawns for it,
  * 5 spawned, REVIEW_INCOMPLETE.
@@ -339,63 +365,7 @@ const CLEAN_SUMMARY =
   }
 }
 
-/* (e) a reply with `**Skill Load Status:** FAILED` → that lens blocked,
- * findings KEPT, verdict not APPROVED. */
-{
-  const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "e");
-  try {
-    spawnCalls.length = 0;
-    spawnResponder = (spec) => {
-      const isSecurity = spec.prompt.includes("**SECURITY**");
-      if (isSecurity) {
-        return {
-          role: "code-review-specialist",
-          ok: true,
-          text: "**Skill Load Status:** FAILED\nThe skill failed to load — blocking this lens.\n",
-          toolUses: [
-            {
-              name: "report_finding",
-              arguments: {
-                severity: "MEDIUM",
-                path: "src/a.ts",
-                line: 1,
-                title: "kept finding",
-              },
-            },
-          ],
-          ms: 10,
-          exitCode: 0,
-        };
-      }
-      return {
-        role: "code-review-specialist",
-        ok: true,
-        text: CLEAN_SUMMARY,
-        toolUses: [],
-        ms: 10,
-        exitCode: 0,
-      };
-    };
-    const summary = await runCase("diff --git a/a b/a", dir);
-    const blockedLens = summary.lenses.find((l) => l.lens === "SECURITY");
-    assert(blockedLens?.blocked === true, "(e) FAILED marker → that lens is blocked");
-    assert(
-      blockedLens?.parseError === "skill load reported FAILED by the child (code-review-security)",
-      "(e) parseError names the child's FAILED status + skill",
-    );
-    eq(blockedLens?.attempts, 1, "(e) the spawn happened once (child reported FAILED)");
-    eq(blockedLens?.findings.length, 1, "(e) FAILED lens's findings are KEPT (not discarded)");
-    eq(summary.verdict, "REVIEW_INCOMPLETE", "(e) verdict is not APPROVED");
-    assert(
-      summary.lenses.filter((l) => l.lens !== "SECURITY").every((l) => !l.blocked),
-      "(e) the other five lenses are clean",
-    );
-  } finally {
-    cleanup();
-  }
-}
-
-/* (f) a reply without the marker, clean with a summary → APPROVED-eligible
+/* (f) a clean reply with a summary → APPROVED-eligible
  * (verdict APPROVED when all six are clean). */
 {
   const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "f");
