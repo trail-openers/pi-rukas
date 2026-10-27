@@ -125,7 +125,11 @@ export async function admitFixPassEntry(
       // slot never matched is `no-slot`; the `admissionRefusal` field is what
       // tells the park reason that the ABSOLUTE gate — not the absence of a
       // slot — is what stopped this file.
-      stray: { file, refused: "no-slot", admissionRefusal: absolute },
+      // #1849 item 8 — `revertible: false` is set HERE, at the point that knows
+      // this file is the fence's or the protected-path gate's decision, so the
+      // revert's eligibility is a fact about the refusal rather than a string
+      // comparison someone downstream has to get right.
+      stray: { file, refused: "no-slot", admissionRefusal: absolute, revertible: false },
     };
   // 1 — the pass's own scope, asked first so no route below spends its budget.
   if (fence.admits.some((a) => admitsEntry(a, file))) return { admitted: true };
@@ -145,17 +149,28 @@ export async function admitFixPassEntry(
     // file's NAME does not overrule the round's bound.
     return {
       admitted: false,
-      stray: { file, refused: decision.refused, correctiveNote: verdict.note },
+      stray: { file, refused: decision.refused, correctiveNote: verdict.note, revertible: true },
     };
   }
   // 4 — the pass's own rules, for a file this pass changed.
-  if (!changedByPass) return { admitted: false, stray: { file, refused: decision.refused } };
+  if (!changedByPass)
+    return { admitted: false, stray: { file, refused: decision.refused, revertible: true } };
   const extra: FixPassAdmission = admitFixPassFile(file, fence, fence.passChanged.length);
   return extra.admitted
     ? { admitted: true, note: extra.note }
     : {
         admitted: false,
-        stray: { file, refused: decision.refused, admissionRefusal: extra.refused },
+        // The pass's OWN rules refused it (`other` / `over-ceiling`) — a file the
+        // pass invented, with no gate claiming it, so the driver may revert it.
+        // `admitFixPassFile` answers `fenced` / `protected` only for a file the
+        // absolute gate above already refused, so this branch cannot be holding
+        // one of those; `absoluteRefusal` is the single predicate for both.
+        stray: {
+          file,
+          refused: decision.refused,
+          admissionRefusal: extra.refused,
+          revertible: absoluteRefusal(file, fence) === undefined,
+        },
       };
 }
 

@@ -471,7 +471,7 @@ export async function postPassFault(
       // deliberately NOT offered: those are the files no admission rule may lift,
       // and silently reverting one would take the protected-path gate's decision
       // away from it.
-      const revertible = strays.every((s) => s.refused !== "fenced" && s.refused !== "protected");
+      const revertible = strays.every((s) => s.revertible);
       return {
         reason: strayReason(plan, strays, basis),
         diffs,

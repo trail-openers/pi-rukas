@@ -48,6 +48,23 @@ export interface Stray {
    * clause carries the whole explanation.
    */
   admissionRefusal?: FixPassAdmissionRefusal;
+  /**
+   * #1849 item 8 — may the driver REVERT this file? Set where the ABSOLUTE
+   * refusal is produced (`absoluteRefusal` in work-driver-fix-pass-admit-file.ts,
+   * and the fence/protected branches of `admitFixPassFile`), i.e. by the code that
+   * knows WHY the file was refused, rather than inferred downstream from the
+   * `refused` / `admissionRefusal` strings by whoever happens to offer the revert.
+   *
+   * `false` means the file sits behind this workstream's `outOfScope` fence or is
+   * a protected path: the decision belongs to the plan or the protected-path gate,
+   * and a revert that quietly deleted one would take that decision away from the
+   * gate that owns it. `postPassFault` therefore offers the revert only when EVERY
+   * stray in the set carries `revertible: true`, so one non-revertible file
+   * removes the whole set from the revert path — which is also why the field is
+   * per stray and not one flag per set: a park reason that names a protected file
+   * and reverts its neighbours would report the neighbours as the whole refusal.
+   */
+  revertible: boolean;
 }
 
 /** A short list for a park reason; "none" beats an empty backtick run. */

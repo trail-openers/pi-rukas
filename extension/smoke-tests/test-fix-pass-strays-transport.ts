@@ -43,7 +43,7 @@ const post = (strays: string[], untracked: string[]): PostPass => ({
   diffs: {},
   admissions: [],
   straysFor: "default",
-  strays: strays.map((file) => ({ file, refused: "no-slot" as const })),
+  strays: strays.map((file) => ({ file, refused: "no-slot", revertible: true } as const)),
   untracked,
 });
 

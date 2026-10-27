@@ -63,7 +63,7 @@ const post: PostPass = {
   admissions: [],
   reason: "stray",
   straysFor: "default",
-  strays: [{ file: "helper.ts", refused: "no-slot" }],
+  strays: [{ file: "helper.ts", refused: "no-slot", revertible: true }],
   untracked: ["scratch-notes.md"],
 };
 

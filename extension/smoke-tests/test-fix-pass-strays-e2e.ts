@@ -124,7 +124,7 @@ function strayPost(file: string, untracked: string[]): PostPass {
     admissions: [],
     reason: "stray",
     straysFor: "default",
-    strays: [{ file, refused: "no-slot" }],
+    strays: [{ file, refused: "no-slot", revertible: true }],
     untracked,
   };
 }

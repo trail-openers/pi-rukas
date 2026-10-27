@@ -259,8 +259,8 @@ console.log("# the step: one revert per pass; a SECOND stray set parks instead")
     admissions: [],
     straysFor: "default",
     strays: [
-      { file: "helper.ts", refused: "no-slot" },
-      { file: "scratch-notes.md", refused: "no-slot" },
+      { file: "helper.ts", refused: "no-slot", revertible: true },
+      { file: "scratch-notes.md", refused: "no-slot", revertible: true },
     ],
     untracked: ["scratch-notes.md"],
   };
@@ -312,7 +312,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
     diffs: {},
     admissions: [],
     straysFor: "default",
-    strays: [{ file: "helper.ts", refused: "no-slot" }],
+    strays: [{ file: "helper.ts", refused: "no-slot", revertible: true }],
     untracked: [],
   };
   const otherPassRevert: FixPassStraysRevertedEvent = {    kind: "fix-pass-strays-reverted",
@@ -450,8 +450,8 @@ console.log("# the revert target is the pass's OWN headBefore, never a round's h
     admissions: [],
     straysFor: "default",
     strays: [
-      { file: "helper.ts", refused: "no-slot" },
-      { file: "b.txt", refused: "no-slot" },
+      { file: "helper.ts", refused: "no-slot", revertible: true },
+      { file: "b.txt", refused: "no-slot", revertible: true },
     ],
     untracked: [],
   };

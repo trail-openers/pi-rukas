@@ -47,7 +47,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
     diffs: {},
     admissions: [],
     straysFor: "default",
-    strays: [{ file: "helper.ts", refused: "no-slot" }],
+    strays: [{ file: "helper.ts", refused: "no-slot", revertible: true }],
     untracked: [],
   };
   const otherPassRevert: FixPassStraysRevertedEvent = {
