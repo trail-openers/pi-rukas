@@ -20,6 +20,8 @@
 import { developNote } from "../src/work-develop-run.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { fixPassFence, fixPassFenceLines } from "../src/work-driver-fix-pass-admission.ts";
+import { fanoutLimitFor } from "../src/work-driver-scope-fanout.ts";
 import {
   assertDevelopPromptTestScope,
   assertSuiteBoundDerivation,
@@ -120,6 +122,39 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     undefined,
   );
   assert(!/OUT OF SCOPE/i.test(bare), "no workstream → no fence section invented");
+
+  // #1846 B6 — the develop prompt's fence block prints the same ceiling the gate
+  // enforces, for the slot count it was built with. A plan-time fence carries
+  // zero admitting slots; recomputing with the pass's own slots must move BOTH
+  // the number in the type and the number in the rendered line, or the fixer is
+  // told a budget the gate is not using.
+  const zero = fixPassFence(
+    {
+      id: "default",
+      declared: ["src/a.ts"],
+      named: [],
+      alreadyChanged: [],
+      outOfScope: [],
+      admittingSlots: 0,
+    },
+    fanoutLimitFor,
+  );
+  const two = fixPassFence(
+    {
+      id: "default",
+      declared: ["src/a.ts"],
+      named: [],
+      alreadyChanged: [],
+      outOfScope: [],
+      admittingSlots: 2,
+    },
+    fanoutLimitFor,
+  );
+  assert(
+    fixPassFenceLines(zero).some((l) => l.includes(`${fanoutLimitFor(1)} file(s)`)) &&
+      fixPassFenceLines(two).some((l) => l.includes(`${fanoutLimitFor(3)} file(s)`)),
+    "the prompt's ceiling line is the value the gate computes for those slots",
+  );
   assert(!bare.includes("undefined"), "canary: and no 'undefined' leaks into the prompt");
   assert(bare.includes("664"), "...but the issue is still there");
 

@@ -193,6 +193,32 @@ const printedPaths = (block: string): string[] =>
     fence.admits.includes("lib/a.ts"),
     "5: the prompt-time fence still states the direct set the fixer is told",
   );
+
+  // 6: the number the prompt prints for the ceiling is the number the gate will
+  // enforce for THAT slot count. The plan-time view is built with zero slots (a
+  // pass has not admitted anything yet); recomputing with the slots the pass
+  // actually used must move the printed ceiling, or the fixer is told a budget
+  // the gate is not using and the ceiling silently widens past what anyone
+  // read.
+  const withSlots = fixPassFence(
+    {
+      id: "default",
+      declared: ["lib/a.ts"],
+      named: [],
+      alreadyChanged: ["lib/a.ts"],
+      outOfScope: [],
+      admittingSlots: 2,
+    },
+    fanoutLimitFor,
+  );
+  assert(
+    withSlots.ceiling === fanoutLimitFor(1 + 2) && withSlots.ceiling > fence.ceiling,
+    `6: the ceiling follows the admitting slots (got ${withSlots.ceiling} vs ${fence.ceiling}; expected ${fanoutLimitFor(3)})`,
+  );
+  assert(
+    fixPassFenceLines(withSlots).some((l) => l.includes(`${withSlots.ceiling} file(s)`)),
+    "6: and the printed line states THAT number, not the plan-time one",
+  );
 }
 
 console.log(`\nexit ${exit}`);
