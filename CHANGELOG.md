@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.28](https://github.com/trail-openers/pi-rukas/compare/v0.14.27...v0.14.28) (2026-10-27)
+
+
+### Bug Fixes
+
+* **plan:** the duplicate check never stops a plan for being its own issue ([#1858](https://github.com/trail-openers/pi-rukas/issues/1858)) ([1e99384](https://github.com/trail-openers/pi-rukas/commit/1e99384de5a9d7c9713c6c31deb87b66eadefe94))
+* **work:** give the lens-fix step the fix pass's scope fence ([#1853](https://github.com/trail-openers/pi-rukas/issues/1853)) ([a9b4a5c](https://github.com/trail-openers/pi-rukas/commit/a9b4a5c94d8ebbee67e51de93ca0e3d0e2df3ddc))
+
 ## [0.14.27](https://github.com/trail-openers/pi-rukas/compare/v0.14.26...v0.14.27) (2026-10-27)
 
 
