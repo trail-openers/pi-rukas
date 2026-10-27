@@ -321,6 +321,18 @@ export async function postPassFault(
   plans: readonly PassPlan[],
   baseSha: string,
   corrective: readonly CorrectiveRoundEvent[] = [],
+  /**
+   * #1852 — skip the no-op check. It exists for the FIX PASS, whose whole point
+   * is that the tree must differ from what the pass found: `plan.before` is
+   * `treeChanges(worktree, baseSha)`, so "byte-identical" means the pass changed
+   * nothing. A LENS FIX has the opposite shape — it is dispatched from a tip the
+   * cycle already reached, so `plan.before` and the post-pass read are identical
+   * BY CONSTRUCTION whenever the fixer's work is one commit at the tip, and the
+   * check would refuse every lens fix that actually fixed something. The lens-fix
+   * gate therefore measures its own delta (`committedChanges(roundTip, head)` plus
+   * the tree's changes) and asks this function only the scope question.
+   */
+  opts: { noOp?: boolean } = {},
 ): Promise<PostPass> {
   const diffs: Record<string, string> = {};
   // #1725 round 3 — one disclosure note per admitted (workstream, file),
@@ -335,7 +347,7 @@ export async function postPassFault(
     after.push(r.value);
     diffs[plan.id] = r.value.diff;
   }
-  const unchanged = unchangedPlans(plans, after);
+  const unchanged = opts.noOp === true ? [] : unchangedPlans(plans, after);
   if (unchanged.length > 0) {
     return {
       reason: `the diff of ${unchanged.join(", ")} is byte-identical to its pre-pass state — nothing was fixed`,

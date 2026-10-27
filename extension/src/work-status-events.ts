@@ -205,7 +205,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
     case "fix-pass-strays-reverted":
       // #1846 — what the driver removed, and where the removed content still
       // lives, so the operator can restore it without opening the state file.
-      return `  fix-pass-strays-reverted · [${e.workstreamId}] reverted ${e.paths.length} out-of-fence file(s): ${fmtList(e.paths)} · preserved ${e.preservedRef} · patch ${e.patchPath}`;
+      // #1852 — the source and the round say WHICH gate reverted it: the fix
+      // pass's own window or one lens-fix round (whose one-shot budget is keyed
+      // on that round, so an operator reading a second-set park must be able to
+      // see the revert that spent the round's allowance).
+      return `  fix-pass-strays-reverted · [${e.workstreamId}]${e.source ? ` ${e.source}` : ""}${e.round !== undefined ? ` round ${e.round}` : ""} reverted ${e.paths.length} out-of-fence file(s): ${fmtList(e.paths)} · preserved ${e.preservedRef} · patch ${e.patchPath}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":

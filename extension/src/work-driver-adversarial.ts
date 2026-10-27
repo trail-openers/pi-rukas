@@ -39,6 +39,12 @@ import {
   noDiffEvidence,
   repoRootOriginalRef,
 } from "./work-driver-lens-fix-commit.ts";
+import {
+  type LensFixRevertOutcome,
+  lensFixFenceCheck,
+  lensFixRevertAlreadyUsed,
+} from "./work-driver-lens-fix-fence-gate.ts";
+import { revertLensFixStrays } from "./work-driver-lens-fix-fence-revert.ts";
 import { lensWorktree } from "./work-driver-lens-fix.ts";
 import { commitLensFixChanges } from "./work-driver-lens.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
@@ -227,6 +233,69 @@ export async function runAdversarial(
       next = gate.state;
       const execFn = ctx.verifyExecFn ?? execp;
       const psFix = state.pipelineState;
+      // #1852 — THE LENS-FIX SCOPE FENCE, run once here, before ANY of the
+      // landing arms below. Every lens-fix push in the driver is reached from
+      // this branch (the worktree arm, the repoRoot arm, the no-committed-fix
+      // re-land, and the bound-kill conversion, which routes back through this
+      // step), so one check here fences the step and no arm has to know it
+      // exists. It reads the fence the fixer's PROMPT printed
+      // (`lensFixFence`, recorded at dispatch time) and measures the round's
+      // delta from the round tip recorded beside it — never a fresh HEAD.
+      const lensTree = lensWorktree(ctx, state);
+      const lensSnap = psFix.lensFixFence;
+      const lensRound = state.pipelineState.reviewRound;
+      const lensId =
+        lensSnap?.workstreamId ??
+        Object.keys(psFix.workstreams ?? {}).find((id) => {
+          const recorded = psFix.worktrees?.[id];
+          return recorded !== undefined && path.resolve(recorded) === path.resolve(lensTree);
+        });
+      const fenceCheck = await lensFixFenceCheck({
+        execFn,
+        ctx,
+        state,
+        snapshot: lensSnap,
+        inWorktree: path.resolve(lensTree) !== path.resolve(ctx.repoRoot),
+        tree: lensTree,
+        round: lensRound,
+        revertAlreadyUsed:
+          lensId !== undefined && lensFixRevertAlreadyUsed(state.eventLog, lensRound, lensId),
+        onRevertible:
+          lensId === undefined || lensSnap === undefined
+            ? undefined
+            : (post, plan) => revertLensFixStrays(ctx, state, execFn, plan, post, lensRound),
+      });
+      if (!fenceCheck.ok) {
+        trace(
+          `work-driver: lens-fix fence parked the round before landing — ${fenceCheck.reason.slice(0, 200)}`,
+        );
+        // Same shape as the #981 reposition park (`parkLensFixReposition`):
+        // one cap-hit the router routes to the handoff, `lensWorktreePath`
+        // naming the tree the operator must open, and the revert's preserved
+        // ref / patch riding on `restoredToRef`/`restoredToPath` when the
+        // driver reverted a first set before refusing this second one.
+        next = appendEvent(next, {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "lens-fix-scope",
+          reviewRound: lensRound,
+          nextStep: "handoff",
+          evidence: fenceCheck.reason,
+          lensWorktreePath: lensTree,
+          ...(fenceCheck.revert
+            ? {
+                restoredToRef: fenceCheck.revert.preservedRef,
+                restoredToPath: fenceCheck.revert.patchPath,
+              }
+            : {}),
+        });
+        next = {
+          ...next,
+          pipelineState: { ...next.pipelineState, currentStep: "handoff" },
+        };
+        return next;
+      }
+      for (const note of fenceCheck.notes) trace(`work-driver: lens-fix fence · ${note}`);
       const fixWorktrees = psFix.worktrees ?? {};
       const inWorktree = Object.values(fixWorktrees).some(
         (p) => path.resolve(p) !== path.resolve(ctx.repoRoot),

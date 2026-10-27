@@ -277,6 +277,19 @@ export type WorkCapLiteral =
   // (kind + git evidence) rides on the cap's evidence; the backup ref for
   // an unlanded/diverged tree rides on the `restoredToRef` field.
   | "lens-fix-reposition"
+  // #1852 — the lens-fix step had no scope fence at all: its prompt printed no
+  // declared paths and no `outOfScope` list, and every landing arm committed and
+  // pushed whatever the fixer wrote anywhere in the tree (one field cycle lost
+  // ~287M tokens of lens-fix work the next round rejected for widening past the
+  // issue fence). The cap the fix pass's fence (`fix-pass-park`) now has for the
+  // lens fix: a change outside the lens workstream's declared paths / the
+  // findings' widening / its `outOfScope` fence, or an unreadable fence read,
+  // parks the cycle BEFORE any landing arm pushes. A revertible stray set is
+  // reverted once per round (the `fix-pass-strays-reverted` record with
+  // `source: "lens-fix"` names the preserved ref and the patch); a second set in
+  // the same round, an outOfScope/protected stray, or a repo-root lens tree
+  // parks here.
+  | "lens-fix-scope"
   // #1263 — a step handler THREW (an fs failure, a bug, an uncaught exec
   // rejection). Routed through runHandoff so the operator gets a comment +
   // label, not just a silent `aborted` state file. Distinct from the
