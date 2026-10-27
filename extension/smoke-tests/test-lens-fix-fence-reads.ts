@@ -15,6 +15,7 @@ import {
   lensFixPlanFromSnapshot,
   lensFixRevertAlreadyUsed,
 } from "../src/work-driver-lens-fix-fence-gate.ts";
+import { lensFixFenceFindings } from "../src/work-driver-lens-fix-fence-validate.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { cycle, snapshotFor, stateFor } from "./lib/lens-fix-gate-fixtures.ts";
@@ -88,6 +89,42 @@ console.log("# the plan is rebuilt from the recorded tip, not a fresh read");
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
+
+console.log("# roundTip is validated as a full 40-hex SHA, not just a string");
+{
+  // The record is read through an untyped cast, so a `roundTip` that is a good
+  // string and a bad revision reaches the gate whole: the delta would then be
+  // measured from something git will not resolve, and `committedChanges` and the
+  // ancestry probe answer "unknown" — which the gate parks on, but for the wrong
+  // reason and only after the readers ran. The shape is refused at the read.
+  const c = cycle("tip-shape");
+  const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
+  const snap = await snapshotFor(c.repoRoot, c.tree, c.roundTip, st);
+  assert(
+    lensFixFenceFindings(snap).length === 0,
+    "non-vacuity: the real record — whose roundTip is a full 40-hex SHA — validates clean",
+  );
+  const shapes: [string, string][] = [
+    ["a1b2c3d", "a 7-char abbreviation"],
+    ["HEAD", "a revision token rather than an id"],
+    [c.roundTip.slice(0, 39), "a 39-char truncation of a real SHA"],
+    [`${c.roundTip.slice(0, 39)}Z`, "a 40-char string that is not hex"],
+    [c.roundTip.toUpperCase(), "a 40-char uppercase SHA"],
+  ];
+  for (const [value, label] of shapes) {
+    const bad = lensFixFenceFindings({ ...snap, roundTip: value });
+    assert(
+      bad.length === 1 && bad[0]?.includes("roundTip") && bad[0].includes("40-hex"),
+      `${label} (${JSON.stringify(value.slice(0, 12))}) is refused, naming roundTip: ${JSON.stringify(bad)}`,
+    );
+  }
+  const missing = lensFixFenceFindings({ ...snap, roundTip: undefined });
+  assert(
+    missing.some((f) => f.includes("roundTip")),
+    "an absent roundTip is refused too (the field is not optional)",
+  );
+  rmSync(c.repoRoot, { recursive: true, force: true });
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

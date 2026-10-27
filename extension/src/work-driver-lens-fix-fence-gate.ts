@@ -40,6 +40,11 @@
  * THE REPO-ROOT ARM IS STRICTER, because there is nothing to revert into: when
  * the lens tree IS the repo root, ANY stray parks (PM decision #1852-1) and the
  * reason says the revert was unavailable because the tree is the repo root.
+ *
+ * SPLIT FOR THE SIZE GATE (#1852 follow-up): the record validator now lives in
+ * `work-driver-lens-fix-fence-validate.ts` and is re-exported from here, so the
+ * gate module keeps holding only the reads that decide a round and the importers
+ * keep resolving the validator from this module.
  */
 
 import path from "node:path";
@@ -58,6 +63,7 @@ import {
 } from "./work-driver-adversarial-fix-scope.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { anchorDirs } from "./work-driver-declared-path.ts";
+import { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
 import type { LensFixPlanRefusal } from "./work-driver-lens-fix-fence.ts";
 import { specPatternSlots } from "./work-driver-spec-slot-admission.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
@@ -426,69 +432,8 @@ function fail(reason: string, notes: string[] = []): LensFixFenceVerdict {
   return { ok: false, reason, notes };
 }
 
-/**
- * The shape of a `LensFixFenceSnapshot` that got into the state file whole
- * enough to be an object but is missing a field, or carries one of the wrong
- *
- * `pipelineState.lensFixFence` is read through an untyped cast in `readState`,
- * so the type is a compile-time claim only: a hand edit, a truncated write, or
- * an older build's partial record reaches the gate as `undefined` fields, and
- * `lensFixPlanFromSnapshot` turns a missing `fence` into a crash and a missing
- * `declared` into a fence that admits nothing and refuses nothing at once. The
- * #533 rule applies here as it does to `prDraft` and `commitPrRoot`: the cast
- * is the only runtime gate, so a partial record is a confident wrong answer and
- * must be reported, not executed. Absent validates (see `lensFixFenceCheck` —
- * no record at all is the older-driver case and is not judged).
- */
-export function lensFixFenceFindings(snapshot: unknown): string[] {
-  if (snapshot === undefined || snapshot === null) return [];
-  if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
-    return ["pipelineState.lensFixFence is not an object"];
-  }
-  const out: string[] = [];
-  const s = snapshot as Record<string, unknown>;
-  for (const field of ["roundTip", "workstreamId", "worktree", "findings"] as const) {
-    if (typeof s[field] !== "string" || s[field] === "") {
-      out.push(`pipelineState.lensFixFence.${field} is missing or not a string`);
-    }
-  }
-  for (const field of ["round"] as const) {
-    if (typeof s[field] !== "number" || !Number.isFinite(s[field] as number)) {
-      out.push(`pipelineState.lensFixFence.${field} is missing or not a finite number`);
-    }
-  }
-  for (const field of ["declared", "named", "candidates"] as const) {
-    if (!Array.isArray(s[field]) || !s[field].every((x) => typeof x === "string")) {
-      out.push(`pipelineState.lensFixFence.${field} is missing or not an array of strings`);
-    }
-  }
-  const fence = s.fence;
-  if (typeof fence !== "object" || fence === null || Array.isArray(fence)) {
-    out.push("pipelineState.lensFixFence.fence is missing or not an object");
-  } else {
-    const f = fence as Record<string, unknown>;
-    if (typeof f.id !== "string" || f.id === "") {
-      out.push("pipelineState.lensFixFence.fence.id is missing or not a string");
-    }
-    if (typeof f.ceilingBasis !== "string") {
-      out.push("pipelineState.lensFixFence.fence.ceilingBasis is missing or not a string");
-    }
-    for (const field of [
-      "admits",
-      "declared",
-      "helperDirs",
-      "passChanged",
-      "outOfScope",
-    ] as const) {
-      if (!Array.isArray(f[field]) || !f[field].every((x) => typeof x === "string")) {
-        out.push(`pipelineState.lensFixFence.fence.${field} is missing or not an array of strings`);
-      }
-    }
-    for (const field of ["ceiling", "admittingSlots"] as const) {
-      if (typeof f[field] !== "number" || !Number.isFinite(f[field] as number)) {
-        out.push(`pipelineState.lensFixFence.fence.${field} is missing or not a finite number`);
-      }
-    }
-  }
-  return out;
-}
+// The record validator is a pure shape check with no git and no worktree, so it
+// lives in its own module (AGENTS.md §12 size cap) and is re-exported here for
+// the importers that have always taken it from the gate: `lensFixFenceCheck`
+// above and `workflow-state-validate.ts` at the state read.
+export { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
