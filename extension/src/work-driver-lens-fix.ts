@@ -18,10 +18,7 @@ import {
   countLensFixEmptyResends,
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
-import {
-  LENS_FIX_NO_WORKSTREAM,
-  lensFixPlanRefusalRecords,
-} from "./work-driver-lens-fix-fence-gate.ts";
+import { lensFixPlanRefusalRecords } from "./work-driver-lens-fix-fence-gate.ts";
 import {
   fenceSnapshot,
   lensWorktree,
