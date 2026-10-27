@@ -40,10 +40,13 @@
  * THE REPO-ROOT ARM IS STRICTER, because there is nothing to revert into: when
  * the lens tree IS the repo root, ANY stray parks (PM decision #1852-1) and the
  * reason says the revert was unavailable because the tree is the repo root. A
- * repo-root round reaches this gate through the recorded refusal the STEP writes
- * (`repo-root-tree` in `work-driver-lens-fix-fence.ts`): with no workstream entry
- * naming the tree there is no snapshot to judge, so the record is what makes the
- * gate run instead of skipping — the round is never left unjudged at the root.
+ * repo-root round with NO workstream entry reaches this gate through the recorded
+ * refusal the step writes (`unrecorded-tree` in `work-driver-lens-fix-fence.ts`):
+ * with nothing naming the tree there is no snapshot to judge, so the record is
+ * what makes the gate run instead of skipping — the round is never left unjudged
+ * at the root. A repo-root round that IS a recorded workstream's tree gets a
+ * fence like any other, because #1852-1 forbids the driver REVERTING at the root,
+ * not JUDGING one there.
  *
  * SPLIT FOR THE SIZE GATE (#1852 follow-up): the record validator lives in
  * `work-driver-lens-fix-fence-validate.ts` and BOTH this gate and
@@ -211,11 +214,12 @@ export const LENS_FIX_NO_WORKSTREAM = "no-workstream";
  * state that never set the field, had no fence to require, and recording it would
  * turn #1852 into a schema break that parks every such cycle.
  *
- * Everything else RECORDS. `unrecorded-tree` and `repo-root-tree` are the two
- * shapes a CURRENT driver reaches (#1852 round 3 item 1): the fixer is dispatched
- * either way, and without a record the gate reads silence, concludes an older
- * driver wrote the state, and lets the round land unchecked. That is the hole
- * #1852 exists to close, so these are fence failures, not state statements.
+ * Everything else RECORDS. `unrecorded-tree` is the shape a CURRENT driver reaches
+ * (#1852 round 3 item 1) — a lens tree no `pipelineState.worktrees` entry names,
+ * repo root included: the fixer is dispatched either way, and without a record the
+ * gate reads silence, concludes an older driver wrote the state, and lets the round
+ * land unchecked. That is the hole #1852 exists to close, so it is a fence failure,
+ * not a state statement.
  */
 export function lensFixPlanRefusalRecords(
   refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_WORKSTREAM,

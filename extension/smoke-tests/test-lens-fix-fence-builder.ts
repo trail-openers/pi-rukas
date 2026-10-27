@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
 import {
+  buildLensFixFence,
   lensFixFenceLines,
   lensFixPassPlan,
 } from "../src/work-driver-lens-fix-fence.ts";
@@ -118,6 +119,64 @@ console.log("# the workstream is found by its recorded tree, not by position");
   );
   assert(id({}, "/x") === undefined, "an empty map yields undefined");
   rmSync(a, { recursive: true, force: true });
+}
+
+console.log("# a repo-root lens tree is fenced when a workstream owns it, refused when none does");
+{
+  // #1852 round 3, corrected after the first cut over-reached. The repo root is
+  // unfenceable only when NO workstream claims it. PM decision #1852-1 forbids the
+  // driver REVERTING at the repo root, not JUDGING a round there, and `fixPassFence`
+  // bounds a root tree completely — `declared`, `named`, `candidates` and the round
+  // tip are all readable. Recording the owned case would park every N=1 repo-root
+  // lens round on `lens-fix-scope` with an in-fence fix already in hand, which is a
+  // worse outcome than the hole it closes, and it is what three older lens-fix tests
+  // (the N=1 shape, `worktrees: { default: dir }` with dir == repoRoot) caught.
+  const repoRoot = repoWithFile("fence-root");
+  const base = { ...initialState(1852, 1_000_000).pipelineState };
+  const tip = git(repoRoot, "rev-parse HEAD").trim();
+  // A state that CAN support a fence: a recorded base SHA and a workstream with
+  // declared paths. Without these the planner refuses on `no-base` / `no-workstream`
+  // instead, which would make this case test the wrong refusal.
+  const fencable = {
+    ...base,
+    baseSha: git(repoRoot, "rev-parse main").trim(),
+    workstreams: { default: { id: "default", scope: "s", paths: ["a.txt"], outOfScope: [] } },
+  };
+  const owned = await buildLensFixFence(
+    defaultExec,
+    repoRoot,
+    { ...initialState(1852, 1_000_000), pipelineState: { ...fencable, worktrees: { default: repoRoot } } },
+    "default",
+    repoRoot,
+    tip,
+    FINDINGS,
+  );
+  assert(
+    owned.record === undefined && owned.snapshot !== undefined,
+    `a repo-root tree a workstream owns gets a real fence (record: ${JSON.stringify(owned.record)})`,
+  );
+  assert(
+    (owned.lines ?? []).length > 0,
+    "and the prompt prints it, so the fixer is told the bounds it is judged by",
+  );
+  const orphan = await buildLensFixFence(
+    defaultExec,
+    repoRoot,
+    { ...initialState(1852, 1_000_000), pipelineState: { ...fencable, worktrees: {} } },
+    undefined,
+    repoRoot,
+    tip,
+    FINDINGS,
+  );
+  assert(
+    orphan.record !== undefined && orphan.snapshot === undefined,
+    `a repo-root tree no workstream claims is a RECORDED refusal, so the gate runs (${JSON.stringify(orphan.record)})`,
+  );
+  assert(
+    (orphan.record ?? "").includes("not a recorded workstream"),
+    "and the reason says what is missing, which is what the handoff prints",
+  );
+  rmSync(repoRoot, { recursive: true, force: true });
 }
 
 console.log(`\nexit ${exit}`);

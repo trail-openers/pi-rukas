@@ -33,16 +33,11 @@ export function refusalReason(refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_W
     case "unrecorded-tree":
       // The reason the operator reads has to say what is missing and what the
       // consequence is: the fixer wrote in a tree no `pipelineState.worktrees`
-      // entry claims, so neither the revert nor the fence has anything to work
-      // with, and the round parks rather than landing unchecked.
+      // entry claims — which includes a lens tree that IS the repo root and
+      // belongs to no workstream, where the driver also never reverts (PM
+      // decision #1852-1), so a stray parks with nothing reverted — and the round
+      // parks rather than landing unchecked.
       return "the lens-fix tree is not a recorded workstream, so no fence bounds it and no recorded tree can hold a revert";
-    case "repo-root-tree":
-      // PM decision #1852-1: at the repo root the driver never reverts, so the
-      // round is judged strictly — ANY stray parks and nothing is pushed. The
-      // record is what makes the gate RUN rather than skip: with no workstream
-      // entry there is no snapshot, and silence here would read as "an older
-      // driver wrote this state".
-      return "the lens-fix tree is the repo root, where the driver never reverts: the round is judged strictly and any stray parks";
     default:
       return refusal.reason;
   }

@@ -40,7 +40,6 @@
  * which the prompt never sees.
  */
 
-import { resolve } from "node:path";
 import {
   type FixExec,
   type GitRead,
@@ -102,30 +101,37 @@ export async function buildLensFixFence(
   roundTip: string,
   findings: string,
 ): Promise<LensFixFenceBuild> {
-  // Two shapes leave this round with no fence, and both are RECORDED (#1852
-  // round 3 item 1), because otherwise the gate's "no fence record, skip" branch
-  // is the answer — the pre-#1852 hole, reached not by a broken git read but by
-  // the ordinary shape of the state.
+  // THREE shapes, and only two of them leave the round with no fence.
   //
   //   - no `pipelineState.worktrees` entry names the lens tree: `fixTree` is the
   //     tree the fixer is dispatched into (`lensWorktree` falls back to
   //     `ctx.repoRoot` when no tree is recorded at all), so nothing has claimed
   //     its strays, `revertStraysOnce` refuses it for want of a recorded tree,
-  //     and the gate has no workstream to judge the delta against;
-  //   - the lens tree IS the repo root: the driver never reverts there (PM
-  //     decision #1852-1), so ANY stray parks — but a park still has to be
-  //     REACHED, and with no workstream record there was no snapshot to judge and
-  //     nothing on the log to make the gate run at all.
+  //     and the gate has no workstream to judge the delta against. RECORDED
+  //     (#1852 round 3 item 1): with no snapshot and nothing on the log, the
+  //     gate's "no fence record, skip" branch was the answer — the pre-#1852 hole
+  //     reached not by a broken git read but by the ordinary shape of the state.
+  //   - a lens tree that IS the repo root AND names no workstream: same hole, and
+  //     the driver never reverts there (PM decision #1852-1), so a stray parks
+  //     with nothing reverted — but a park still has to be REACHED, which needs a
+  //     record for the gate to run on at all.
+  //
+  //   - a lens tree that IS the repo root but IS a recorded workstream's tree:
+  //     NOT a refusal. This is the N=1 cycle whose workstream works in the checkout,
+  //     and `fixPassFence` bounds it completely — `declared`, `named`, `candidates`
+  //     and the round tip are all readable there. Recording it would park every
+  //     N=1 repo-root lens round on `lens-fix-scope` with an in-fence fix in hand,
+  //     which is a worse outcome than the hole it closes. #1852-1's rule is about
+  //     REVERTS at the repo root, not about judging one: the fence is built, the
+  //     gate runs, and a stray in a repo-root tree with a fence still parks on it.
   //
   // A missing base SHA stays UNRECORDED: that really is a state which never had a
   // fence to require, and recording it would make #1852 a schema break.
-  if (fenceId === undefined || resolve(fixTree) === resolve(repoRoot)) {
+  if (fenceId === undefined) {
     return {
       snapshot: undefined,
       lines: undefined,
-      record: refusalReason({
-        kind: fenceId === undefined ? "unrecorded-tree" : "repo-root-tree",
-      }),
+      record: refusalReason({ kind: "unrecorded-tree" }),
     };
   }
   const planned: LensFixPlanned = await lensFixPassPlan(execFn, repoRoot, state.pipelineState, {
@@ -195,11 +201,6 @@ export type LensFixPlanRefusal =
    *  3): `revertStraysOnce` has no recorded tree to revert into and the gate has
    *  no workstream to judge the delta against, so the round cannot be cleared. */
   | { kind: "unrecorded-tree" }
-  /** The lens tree IS `ctx.repoRoot` (#1852 round 3, PM decision #1852-1). The
-   *  driver never reverts at the repo root, so a stray there parks with nothing
-   *  reverted — but the round still has to be JUDGED for that to happen, and a
-   *  repo-root lens tree has no workstream record to build a fence from. */
-  | { kind: "repo-root-tree" }
   /** Every other refusal (an unreadable tree, base or round tip): a fence
    *  should exist and does not, so the round fails closed. */
   | { kind: "unavailable"; reason: string };
