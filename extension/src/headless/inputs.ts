@@ -196,7 +196,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // #1846 — the driver's one-shot revert of a fix pass's out-of-fence files. Off,
   // a first stray set parks on its refusal exactly as it did before #1849 and the
   // operator reverts by hand; nothing else about the pass changes. Reader:
-  // `fixPassStrayRevertEnabled` in work-driver-adversarial-fix.ts.
+  // `fixPassStrayRevertEnabled` in work-driver-fix-pass-revert-step.ts.
   flag("FIX_PASS_STRAY_REVERT", true),
   flag("FORBID_LIVE_SPAWN", false, "test"),
   input("FORGE", "enum", null, "cycle", { values: ["github", "gitlab"] }),

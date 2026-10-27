@@ -25,7 +25,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
-import { type GitExec, runGit } from "../src/work-develop-git.ts";import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
+import { type GitExec, runGit } from "../src/work-develop-git.ts";
+import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
 import { fixPassRevertNote, revertStraysOnce } from "../src/work-driver-fix-pass-revert-step.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import {
@@ -33,17 +34,13 @@ import {
   fixPassStraysRef,
   revertFixPassStrays,
 } from "../src/work-driver-fix-pass-strays.ts";
-import type { FixPassStraysRevertedEvent } from "../src/workflow-state-events-fix-pass-strays.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import type { CorrectiveRoundEvent } from "../src/workflow-state-events-corrective.ts";
 import {
-  devCommit,
   devWrite,
   events,
-  fixCtx,
   git,
   passTreeAt,
-  repoWithFile,
   singleState,
   typedCycleCtx,
   typedPassPlans,
@@ -301,81 +298,13 @@ console.log("# the step: one revert per pass; a SECOND stray set parks instead")
   );
 }
 
-console.log("# the revert counter is per pass and per workstream, not per cycle");
-{
-  // A sibling workstream's revert, or a revert from an EARLIER fix pass, must
-  // not spend this pass's one attempt: the whole eventLog is not the window.
-  const t = passTree();
-  const ctx = typedCycleCtx(t.repoRoot, 1846);
-  const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
-  const post: PostPass = {
-    diffs: {},
-    admissions: [],
-    straysFor: "default",
-    strays: [{ file: "helper.ts", refused: "no-slot", revertible: true }],
-    untracked: [],
-  };
-  const otherPassRevert: FixPassStraysRevertedEvent = {    kind: "fix-pass-strays-reverted",
-    at: 1,
-    // A DIFFERENT workstream's revert — this pass has reverted nothing.
-    workstreamId: "sibling",
-    paths: ["other.ts"],
-    preservedRef: "refs/pi-rukas/fix-pass-strays/1846-sibling-1",
-    patchPath: "/tmp/x.patch",
-  };
-  const state = singleState(t.worktree, [otherPassRevert]);
-  const outcome = await revertStraysOnce(ctx, state, plans, post, 1);
-  assert(
-    outcome?.ok === true,
-    `a sibling workstream's revert does not spend this workstream's attempt (${JSON.stringify(outcome)})`,
-  );
-  // And a revert recorded BEFORE this pass's own request event is an earlier
-  // pass's business, not this pass's budget. The two reverts run in the SAME
-  // tree, because the pass window is a slice of one log: the first revert
-  // restores the stray the second one is about to refuse, which is exactly what
-  // a driver that reverted in pass 1 and re-ran the fixer in pass 2 does.
-  const t2 = passTree();
-  const own = await revertStraysOnce(
-    typedCycleCtx(t2.repoRoot, 1846),
-    singleState(t2.worktree, []),
-    await typedPassPlans(t2.repoRoot, t2.worktree, ["a.txt"], "a.txt: fix it"),
-    post,
-    1,
-  );
-  assert(own?.ok === true, "the fixture's first revert of its own pass succeeds");
-  // The pass's developer goes back to work and produces the stray again — as a
-  // TRACKED stray, i.e. the pass committed it, which is the shape the fence
-  // reports for a file the fixer committed before the post-pass read.
-  devCommit(t2.worktree, "helper.ts", "export const helper = () => 1;\n");
-  if (own?.ok === true) {
-    // Now a NEW pass starts: its request event follows the old revert, and the
-    // same stray set is revertible again.
-    const reopened: WorkState = {
-      ...singleState(t2.worktree, []),
-      eventLog: events(
-        own.event,
-        {
-          kind: "adversarial-fix-requested",
-          at: 2,
-          workstreamId: "default",
-          round: 2,
-          findings: "a.txt: fix it",
-        },
-      ),
-    };
-    const again = await revertStraysOnce(
-      typedCycleCtx(t2.repoRoot, 1846),
-      reopened,
-      await typedPassPlans(t2.repoRoot, t2.worktree, ["a.txt"], "a.txt: fix it"),
-      post,
-      2,
-    );
-    assert(
-      again?.ok === true,
-      `a revert from an EARLIER pass does not spend this pass's attempt (${JSON.stringify(again)})`,
-    );
-  }
-}
+// The counter's SCOPING rule (a sibling workstream's revert, or a revert from an
+// earlier fix pass, must not spend this pass's one attempt) is asserted ONCE, in
+// `test-fix-pass-strays-counter.ts`. It used to be duplicated here verbatim —
+// two copies of the same three assertions, which means a change to the rule has
+// to be made twice and the two copies drift: one keeps passing while the other
+// quietly stops covering anything. What stays in THIS file is what the file is
+// about: the revert's happy path, its refusals, and its target.
 
 console.log("# the revert target is the pass's OWN headBefore, never a round's headAtRound");
 {

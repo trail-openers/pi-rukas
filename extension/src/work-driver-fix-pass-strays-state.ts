@@ -97,8 +97,16 @@ export async function readStrayState(req: FixPassStraysRequest): Promise<StraySt
       // entry contributes its files, and the pathspec list bounds the read to
       // the strays. EMPTY output for a path is git's answer "not in this tree";
       // a git FAILURE is the distinct case this call separates out by throwing.
+      //
+      // #1849 item 9 — `--literal-pathspecs`: this read decides, per stray, whether
+      // the revert CHECKS OUT the pre-pass content or `git rm`s the file. Without
+      // it a stray whose name is also a glob (`c[1].ts`, `a*b.ts`) matches other
+      // files in the tree, so a path that was absent at `headBefore` can be listed
+      // as present — and get checked out from a commit that never held it. The same
+      // flag is already on the `checkout`/`rm` calls in `revertPaths`; making the
+      // READ literal is what keeps the two sides of one decision using one grammar.
       ({ stdout: listed } = await git(
-        ["ls-tree", "-r", "--name-only", "--", headBefore, ...strays],
+        ["--literal-pathspecs", "ls-tree", "-r", "--name-only", "--", headBefore, ...strays],
         { cwd: worktree, maxBuffer: 4 * 1024 * 1024, timeout: gitWriteTimeoutMs() },
       ));
     } catch (err) {

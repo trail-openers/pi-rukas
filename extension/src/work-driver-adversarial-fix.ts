@@ -70,17 +70,6 @@ export { FIX_FINDINGS_MAX };
 const keyOf = (workstreamId: string | undefined): string => workstreamId ?? "default";
 
 /**
- * `PI_ENSEMBLE_FIX_PASS_STRAY_REVERT=0` — the escape hatch for the driver's
- * one-shot stray revert. Off, a first stray set parks on its refusal exactly as
- * it did before #1849, with the operator reverting by hand; nothing else about
- * the pass changes. The other gate kill-switches set "0" or "false".
- */
-export function fixPassStrayRevertEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT;
-  return v !== "0" && v !== "false";
-}
-
-/**
  * The one verdict → action mapping for the review track. Both the live
  * interpretation of a reportOnly result and the rebuild of a single-workstream
  * verdict from the log consume it, so the thresholds cannot drift apart.
@@ -332,12 +321,11 @@ export async function runAdversarialFixPass(
   // and continue when the pass is clean. A SECOND stray set, a fenced or
   // protected stray, or any preservation failure parks exactly as before — the
   // revert is one attempt per pass, not a loop, and it never touches a file an
-  // admission rule was refused for.
+  // admission rule was refused for. #1849 item 9 — the operator's kill switch is
+  // no longer a conjunct here: `revertStraysOnce` checks it itself, so the switch
+  // cannot be bypassed by a caller and reads beside the rule it governs.
   const reverted =
-    fixPassStrayRevertEnabled() &&
-    post.reason !== undefined &&
-    post.straysFor !== undefined &&
-    post.strays !== undefined
+    post.reason !== undefined && post.straysFor !== undefined && post.strays !== undefined
       ? await revertStraysOnce(ctx, restored, plans, post, now, onRevertBoundary)
       : undefined;
   const cleared =

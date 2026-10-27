@@ -21,16 +21,17 @@
  * tree outcome and the event the cycle records, not an internal helper's return.
  * The whole pass (`runAdversarialFixPass`) is driven by
  * `test-work-driver-adversarial-fix-pass.ts`; what only this file covers is the
- * CALLER half of the escape hatch: with the switch off the caller never invokes
- * the revert (`fixPassStrayRevertEnabled() && post.reason && post.straysFor &&
- * post.strays` at its call site), and the revert step itself refuses a repo root
- * — so the tree is left exactly as the pass left it.
+ * escape hatch and the step's own target guard: with
+ * `PI_ENSEMBLE_FIX_PASS_STRAY_REVERT=0` the revert step itself declines (#1849
+ * item 9 moved that check inside `revertStraysOnce`, so no caller can reach the
+ * revert without asking), and with it on the step still refuses a repo root — so
+ * the tree is left exactly as the pass left it either way.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
-import { fixPassStrayRevertEnabled } from "../src/work-driver-adversarial-fix.ts";
+import { fixPassStrayRevertEnabled } from "../src/work-driver-fix-pass-revert-step.ts";
 import { correctiveRoundFor, correctiveRoundsOf } from "../src/work-driver-corrective-admission.ts";
 import { passWindow, revertStraysOnce } from "../src/work-driver-fix-pass-revert-step.ts";
 import { fixPassStraysRef } from "../src/work-driver-fix-pass-strays.ts";
@@ -322,14 +323,31 @@ console.log("# the escape hatch returns the pass to parking on the FIRST stray s
     const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
     devWrite(dir, "lib/helper.ts", "export const helper = () => 2;\n");
     const before = readFileSync(`${dir}/lib/helper.ts`, "utf8");
-    // The caller's guard, read the way `runAdversarialFixPass` reads it at its
-    // own revert call site: with the switch off it never reaches `revertStraysOnce`.
-    const callerWouldRevert = fixPassStrayRevertEnabled();
+    // #1849 item 9 — the switch is now checked INSIDE `revertStraysOnce`, next to
+    // the one-shot rule it governs, so a caller cannot reach the revert without
+    // asking. That is what this asserts: with the switch off the step returns
+    // `undefined` — "a revert is not the answer here" — without ever naming a
+    // tree, which is why the tree must be left alone even though the stray is
+    // present and revertible on its own.
     assert(
-      callerWouldRevert === false,
-      "the switch reads as off, so the caller declines to revert and parks on the first set",
+      fixPassStrayRevertEnabled() === false,
+      "the switch reads as off, so the pass parks on the first set",
     );
     const plans = await typedPassPlans(dir, dir, ["a.txt"], "a.txt: change one to two");
+    const switched = await revertStraysOnce(
+      typedCycleCtx(dir, 1846),
+      st,
+      plans,
+      strayPost("lib/helper.ts", []),
+      Date.now(),
+    );
+    assert(
+      switched === undefined,
+      `the revert step itself declines while the switch is off, whatever the caller asks for (${JSON.stringify(switched)})`,
+    );
+    // And the step's OTHER guard still stands when the switch is on: the same
+    // repo-root tree is refused by the worktree gate, not by the switch.
+    process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT = "1";
     const refused = await revertStraysOnce(
       typedCycleCtx(dir, 1846),
       st,
@@ -339,7 +357,7 @@ console.log("# the escape hatch returns the pass to parking on the FIRST stray s
     );
     assert(
       refused?.ok === false && /not inside/.test(refused.reason),
-      `the revert step itself refuses a repo root, so whatever the switch says the tree is left alone (${JSON.stringify(refused)})`,
+      `with the switch on the revert step still refuses a repo root, so the tree is left alone (${JSON.stringify(refused)})`,
     );
     assert(
       existsSync(`${dir}/lib/helper.ts`) &&

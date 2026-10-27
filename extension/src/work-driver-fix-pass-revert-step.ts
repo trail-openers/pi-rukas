@@ -89,6 +89,21 @@ export type RevertStraysOutcome =
 export type RevertBoundary = () => void;
 
 /**
+ * `PI_ENSEMBLE_FIX_PASS_STRAY_REVERT=0` — the escape hatch for the driver's
+ * one-shot stray revert. Off, a first stray set parks on its refusal exactly as
+ * it did before #1849, with the operator reverting by hand; nothing else about
+ * the pass changes. The other gate kill-switches set "0" or "false".
+ *
+ * #1849 item 9 — it lives next to `revertStraysOnce`, which is the only function
+ * that consults it, so the switch and the rule it switches cannot be edited
+ * apart.
+ */
+export function fixPassStrayRevertEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT;
+  return v !== "0" && v !== "false";
+}
+
+/**
  * Preserve and revert one stray set, at most once per pass.
  *
  * Only a refusal the fence itself reached is offered here: `postPassFault` omits
@@ -109,6 +124,17 @@ export async function revertStraysOnce(
   const id = post.straysFor;
   const strays = post.strays;
   if (id === undefined || strays === undefined || strays.length === 0) return undefined;
+  // #1849 item 9 — the operator's kill switch is checked HERE, next to the rule
+  // it switches off, rather than as one more conjunct in the caller's `reverted`
+  // expression. Two places deciding one switch is how a later caller reaches the
+  // revert without asking: any caller of this function now gets the same answer,
+  // and a reader of the one-shot rule sees the switch beside it. An off switch is
+  // still "no revert, park on the refusal", so it returns `undefined` exactly as
+  // a refusal the fence reached does — the caller's park path is unchanged.
+  if (!fixPassStrayRevertEnabled()) {
+    trace(`work-driver: stray revert disabled for ${id} (PI_ENSEMBLE_FIX_PASS_STRAY_REVERT)`);
+    return undefined;
+  }
   const plan = plans.find((p) => p.id === id);
   if (plan === undefined) return undefined;
   // #1849 item 7 — the plan's `worktree` is a field every caller fills, and the
@@ -265,5 +291,14 @@ const usable = (sha: string | undefined): string | undefined =>
  *  same reason the diff-cap module neutralises a path before printing it. */
 export function fixPassRevertNote(event: FixPassStraysRevertedEvent): string {
   const paths = event.paths.map((p) => neutraliseMarkdownField(p)).join(", ");
-  return `reverted ${event.paths.length} out-of-fence file(s) (${paths}) — preserved at ${event.preservedRef}, patch ${neutraliseMarkdownField(event.patchPath)}`;
+  // The ref and the patch path are built by the driver from the issue number, the
+  // workstream id and the attempt — but the WORKSTREAM ID is not driver-chosen
+  // (it comes from the plan, and a grouped cycle's ids come from the issue body),
+  // and `patchPath` embeds the scratch dir, which embeds `repoRoot`. Both are
+  // therefore rendered through the same neutraliser as the paths: a field this
+  // line prints is a field somebody upstream influenced, and the line lands in the
+  // PR body. #1849 item 9 — the ref used to print raw, so the one token in the
+  // line that named where to recover the content was the one token unescaped.
+  const ref = neutraliseMarkdownField(event.preservedRef);
+  return `reverted ${event.paths.length} out-of-fence file(s) (${paths}) — preserved at ${ref}, patch ${neutraliseMarkdownField(event.patchPath)}`;
 }

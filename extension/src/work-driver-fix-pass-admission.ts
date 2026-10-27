@@ -46,6 +46,7 @@
  * set rather than merely that a list appears.
  */
 
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { anchorDirs, entryPath, fenceMatches, pathTokenIn } from "./work-driver-declared-path.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
@@ -71,25 +72,28 @@ export interface FixPassFence {
    */
   admits: string[];
   /**
-   * The subjects the coupled-test rule couples to: declared, already-changed,
-   * finding-named. These answer "which file is this test ABOUT" — a question a
-   * file the cycle already committed legitimately answers, which is exactly the
-   * provenance the #1698 widening route established.
-   */
-  subjects: string[];
-  /**
    * The subjects the HELPER rule is anchored in: the planner's declared paths
    * plus the finding-named widening, never an already-changed path.
    *
-   * LOAD-BEARING, and not the same set as `subjects`. `alreadyChanged` is the
-   * tree judged against the cycle's BASE, so an earlier develop round's edits
-   * appear in it — and PM decision #1846-2 says a file an earlier agent commit
-   * touched is judged exactly as before this change, by the already-changed rule
-   * alone. Anchoring the helper rule on `subjects` would let a pass create a
-   * file beside something a round before it changed: a widening built on a
-   * widening, which is the round-delta fence #1772 records as rejected. So the
-   * helper route asks this narrower set — which is also what keeps every
-   * refusal the fence made before #1846 a refusal after it.
+   * LOAD-BEARING. `alreadyChanged` is the tree judged against the cycle's BASE,
+   * so an earlier develop round's edits appear in it — and PM decision #1846-2
+   * says a file an earlier agent commit touched is judged exactly as before this
+   * change, by the already-changed rule alone. Anchoring the helper rule on the
+   * wider subject set would let a pass create a file beside something a round
+   * before it changed: a widening built on a widening, which is the round-delta
+   * fence #1772 records as rejected. So the helper route asks this narrower set —
+   * which is also what keeps every refusal the fence made before #1846 a refusal
+   * after it.
+   *
+   * #1849 item 9 — this used to be TWO fields (`helperSubjects` and
+   * `declaredDirs`) plus a third wider anchor set (`dirs`) and a running counter
+   * (`used`), all built by `fixPassFence` and read by nobody: the gate chooses
+   * `helperDirs` per pass, the ceiling reads `ceiling`, and the ladder computes
+   * its own numerator from `passChanged`. A field nothing reads is not inert — it
+   * is a second answer to a question the fence already answered, and the next
+   * reader has to work out which one is live. The subject set itself survives
+   * here, because `helperDirs` is derived from it and the distinction above is
+   * the load-bearing part.
    */
   helperSubjects: string[];
   /** The planner's declared paths, kept so the prompt can name the basis. */
@@ -102,26 +106,14 @@ export interface FixPassFence {
    * empty otherwise (no declared paths and no round — the route admits
    * nothing). See `postPassFault` for why each shape is what it is.
    *
-   * Kept separate from {@link dirs} (route (a)'s and the corrective route's
-   * `anchorDirs(declared ∪ already-changed)`) because this route is one the
-   * pass invented: `alreadyChanged` is the tree judged against the CYCLE BASE
-   * and carries an earlier develop round's edits, and anchoring a route the pass
-   * invented on it is the widening built on a widening that #1772 records as
-   * rejected. PM decision #1846-2: a file an earlier agent commit touched is
-   * judged exactly as before this change.
+   * The set is deliberately NOT `anchorDirs(declared ∪ already-changed)`: this
+   * route is one the pass invented, `alreadyChanged` is the tree judged against
+   * the CYCLE BASE and carries an earlier develop round's edits, and anchoring a
+   * route the pass invented on it is the widening built on a widening that #1772
+   * records as rejected. PM decision #1846-2: a file an earlier agent commit
+   * touched is judged exactly as before this change.
    */
   helperDirs: ReadonlySet<string>;
-  /**
-   * `anchorDirs(declared ∪ named)` — kept for diagnostics and disclosure; the
-   * gate chooses {@link helperDirs} per pass rather than reading this directly.
-   */
-  declaredDirs: ReadonlySet<string>;
-  /**
-   * `anchorDirs(subjects)` — the wider anchor set (declared ∪ already-changed),
-   * route (a)'s and the corrective route's reading of what the workstream owns.
-   * Kept on the view so the disclosure can name it; rule 2 does NOT read it.
-   */
-  dirs: ReadonlySet<string>;
   /**
    * The files this pass itself changed — `treeChanges(worktree, headBefore)`
    * names, the pass's own delta (PM decision #1846-2). `postPassFault` fills it
@@ -142,20 +134,6 @@ export interface FixPassFence {
   ceiling: number;
   /** The denominator behind that ceiling, for the disclosure line. */
   ceilingBasis: string;
-  /**
-   * #1846 — how many files of this pass's OWN delta the fence has counted so
-   * far. `postPassFault` threads the running count in, so the anchored-helper
-   * route sees the same numerator the pass's fan-out check reads and the single
-   * ceiling of PM decision #1846-3 really is one ceiling over every route.
-   */
-  used: number;
-  /**
-   * The already-rendered fence lines, when this view is carried into the fix
-   * prompt (#1846). Plan time leaves it absent — the ceiling is not final
-   * there — and the fix pass fills it before handing develop the overlay, so a
-   * prompt can only ever carry a rendered fence.
-   */
-  fixFenceLines?: readonly string[];
 }
 
 /** Inputs to the fence view — the plan's own fields, already normalised. */
@@ -200,11 +178,8 @@ export function fixPassFence(
   return {
     id: input.id,
     admits: subjects,
-    subjects,
     helperSubjects,
     declared,
-    dirs: anchorDirs(subjects),
-    declaredDirs: anchorDirs(helperSubjects),
     helperDirs: anchorDirs(helperSubjects),
     passChanged: [],
     outOfScope: input.outOfScope.map(entryPath),
@@ -213,7 +188,6 @@ export function fixPassFence(
       declared.length > 0
         ? `${declared.length} declared path(s) plus ${input.admittingSlots} admitting slot(s)`
         : `no declared paths, so ${input.alreadyChanged.length} already-changed file(s) plus ${input.admittingSlots} admitting slot(s)`,
-    used: 0,
   };
 }
 
@@ -254,7 +228,8 @@ const parentOf = (p: string): string => {
 
 /**
  * Is `file` under the directory anchor of a path this pass was asked to work
- * on (rule 2)? The fence passes `declaredDirs`, never `dirs`.
+ * on (rule 2)? The caller passes `fence.helperDirs`, the per-pass set — never a
+ * set derived from the cycle-wide subject list.
  *
  * A root-level file has no anchor: `anchorDirs` never yields "", and a root
  * anchor would make every root file widenable (work-driver-declared-path.ts).
@@ -410,10 +385,23 @@ const EMPTY_DIRS: ReadonlySet<string> = new Set<string>();
 /** How many paths the printed fence names for one rule before it says "more". */
 const PRINTED_PATHS = 12;
 
+/**
+ * One path as the prompt prints it (#1849 item 9).
+ *
+ * Every path in the rendered fence came through the planner, and the planner read
+ * the issue body — so a path is developer-influenced text that this module prints
+ * into a prompt the fixer acts on. `neutraliseMarkdownField` is what the revert's
+ * disclosure line already does for the very same names (`fixPassRevertNote`), and
+ * the fence block is the other half of that disclosure: an unclosed backtick or an
+ * injected heading in a declared path changes what the fixer is told it may touch.
+ * The backticks stay — they mark the token as a path — and the content between
+ * them is neutralised.
+ */
+
 const shown = (paths: readonly string[]): string => {
   const head = paths
     .slice(0, PRINTED_PATHS)
-    .map((p) => `\`${p}\``)
+    .map((p) => `\`${neutraliseMarkdownField(p)}\``)
     .join(", ");
   return paths.length > PRINTED_PATHS ? `${head}, … (${paths.length} total)` : head;
 };

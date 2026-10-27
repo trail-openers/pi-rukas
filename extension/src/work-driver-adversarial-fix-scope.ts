@@ -156,9 +156,6 @@ const fenced = (reason: string): { ok: false; reason: string } => ({
   reason: `scope could not be verified: ${reason}`,
 });
 
-/** No anchors: the anchored-helper route admits nothing (see `postPassFault`). */
-const EMPTY_DIRS: ReadonlySet<string> = new Set<string>();
-
 /**
  * The pre-pass reads for every pending workstream. Any unreadable tree, base
  * or HEAD, or a workstream with no recorded worktree, is a park reason.
@@ -377,6 +374,13 @@ export async function postPassFault(
     // through the ladder: passing only `names` meant an untracked stray never
     // reached `admitFixPassEntry`, so the driver never saw it as a revertible
     // stray and parked on a file it could have reverted itself.
+    //
+    // #1849 item 9 — this is the ONE denominator for BOTH consumers: the ladder
+    // below and the fan-out ceiling at the end of this iteration. The ceiling used
+    // to take a separate `s.value.names` read, i.e. this set minus the untracked
+    // files, so a pass that wandered into untracked files did not count against
+    // the ceiling the fence had just been enforced with — one rule bounding a
+    // smaller set than the one it was paired with is two rules.
     const passFiles = [...new Set([...s.value.names, ...s.value.untracked])];
     // #1846 — the ONE fence view. The pre-#1846 shape rebuilt `allowed` here
     // while the prompt rendered `workstream.paths`, so the fixer was told one
@@ -482,8 +486,9 @@ export async function postPassFault(
     if (plan.declared.length > 0) {
       // One ceiling over every route; its two easy-to-get-wrong rules (per-slot
       // denominator, coupled tests out of the numerator) are stated in
-      // `work-driver-fix-pass-fanout.ts`.
-      const refusal = fixPassFanoutRefusal(plan.id, plan.declared.length, s.value.names, judging, {
+      // `work-driver-fix-pass-fanout.ts`. The numerator is `passFiles` — the one
+      // denominator this iteration computed, shared with the ladder above (item 9).
+      const refusal = fixPassFanoutRefusal(plan.id, plan.declared.length, passFiles, judging, {
         slotCount: admit.admittedSlotCount(plan.id),
         admittedFiles: admit.admittedFiles(plan.id),
       });
