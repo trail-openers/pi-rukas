@@ -22,6 +22,7 @@
  * Run: cd extension && bun run smoke-tests/test-plan-investigation-guard.ts
  */
 import { isCacheEntry } from "../src/plan-investigation-guard.ts";
+import { EXCLUSION_DISCLOSURE_MAX_ROWS } from "../src/plan-duplicate-disclosure.ts";
 import { isProvenanceShape, validateProvenance } from "../src/plan-provenance.ts";
 
 let exit = 0;
@@ -227,6 +228,32 @@ console.log("the rest of the entry still guards:");
         downgradedFrom: "high",
         excludedIssues: [{ number: 1856, state: "OPEN", title: "t", reason: "the subject" }],
       };
+    } else if (what === "excludedIssues past the bound the disclosure budgets") {
+      // #1856 review round 4: the renderer never reads more than
+      // EXCLUSION_DISCLOSURE_MAX_ROWS rows and the producer emits at most one row
+      // per named token, so an array an order of magnitude past that is bytes no
+      // filter wrote — and the guard must not walk an unbounded array from a
+      // hand-edited file.
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "medium",
+        rationale: "self",
+        downgradedFrom: "high",
+        excludedIssues: Array.from({ length: EXCLUSION_DISCLOSURE_MAX_ROWS * 10 + 1 }, (_, i) => ({
+          number: 100 + i,
+          state: "CLOSED",
+          title: "t",
+          reason: "the subject",
+        })),
+      };
+    } else if (what === "excludedIssues with no downgradedFrom to explain them") {
+      // The pair the producer writes: rows always arrive with the downgrade that
+      // produced them. Suppressed candidates claiming that nobody suppressed
+      // anything is a disclosure asserting the opposite of its own bytes.
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "medium",
+        rationale: "self",
+        excludedIssues: [{ number: 1856, state: "OPEN", title: "t", reason: "the subject" }],
+      };
     } else if (what === "an unknown duplicate-risk level") {
       (e.barrier as Record<string, unknown>).duplicateRisk = {
         level: "HIGH",
@@ -252,6 +279,16 @@ console.log("the rest of the entry still guards:");
     // name what it suppressed, and level must be one of the four marker values.
     ["a downgrade that suppressed no issue", "a downgrade that suppressed nothing"],
     ["a downgrade whose level is not medium", "a downgrade of a level that was never high"],
+    // #1856 round 4: the array itself is bounded, and a downgrade and its rows
+    // are a pair in both directions.
+    [
+      "a duplicateRisk whose excludedIssues exceed the bound",
+      "excludedIssues past the bound the disclosure budgets",
+    ],
+    [
+      "a duplicateRisk with excludedIssues and no downgradedFrom",
+      "excludedIssues with no downgradedFrom to explain them",
+    ],
     ["a duplicate-risk level outside the marker's four values", "an unknown duplicate-risk level"],
   ];
   for (const [name, what] of cases) {
