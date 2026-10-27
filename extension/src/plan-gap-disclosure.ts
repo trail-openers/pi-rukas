@@ -6,8 +6,13 @@
  * does not re-export them.
  */
 import { OPEN_POINTS_HEADING, OPEN_POINTS_INTRO } from "./open-points-contract.ts";
+import { duplicateExclusionSection } from "./plan-duplicate-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
-import type { PlanGap } from "./plan-types.ts";
+import { planImageLinksSection } from "./plan-images.ts";
+import type { DuplicateRisk } from "./plan-investigate.ts";
+import { withProvenance } from "./plan-provenance.ts";
+import type { PlanDriverInput, PlanGap } from "./plan-types.ts";
+import type { IssueImage } from "./work-driver-issue-images.ts";
 
 /**
  * The display bound for operator-visible residual findings.
@@ -80,18 +85,26 @@ export function baseFallbackSection(reason: string | undefined): string {
 /**
  * The body that gets filed or shown on a dry run: the spec, then each
  * disclosure section that applies (#1132: open points and the base fallback).
+ *
+ * #1856: `duplicateExclusion` is the pre-rendered duplicate-candidate disclosure
+ * the driver builds in plan-duplicate-self.ts. It is passed in already rendered
+ * (rather than derived here) because the verdict it describes lives on the
+ * investigation barrier, not on the gap data this module owns — and it is
+ * appended at THIS fixed site so no prior-context budget can clip it.
  */
 export function filedBodyOf(
   body: string,
   residual: PlanGap[],
   openPoints: PlanGap[],
   baseFallback: string | undefined,
+  duplicateExclusion = "",
 ): string {
   return [
     body,
     residual.length > 0 ? residualGapsSection(residual) : "",
     openPointsSection(openPoints),
     baseFallbackSection(baseFallback),
+    duplicateExclusion,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -121,4 +134,36 @@ export function settledGapsSection(settled: PlanGap[]): string {
     )
     .join("\n");
   return `\n\nALREADY SETTLED — a prior gap-gate run on this same descriptor raised the findings below. Do NOT re-raise them unless the spec now contradicts them; a finding the spec already addresses is settled.\n${items}`;
+}
+
+/**
+ * The body the pipeline files or shows: every disclosure section that applies,
+ * then the image links, then the caller's provenance wrapped around the whole.
+ *
+ * #1856 — one home so the duplicate-candidate disclosure cannot be appended at
+ * one call site and forgotten at another: `filedBodyOf` receives it already
+ * rendered (it describes the investigation barrier's verdict, not gap data), and
+ * this is the only site that renders it. The pre-#1856 driver built these same
+ * three calls inline; moving them here is the size-cap seam (AGENTS.md §12),
+ * with the ordering preserved exactly.
+ */
+export function finalDraftBody(
+  body: string,
+  residual: PlanGap[],
+  openPoints: PlanGap[],
+  baseFallback: string | undefined,
+  images: IssueImage[],
+  provenance: PlanDriverInput["provenance"],
+  duplicate: { risk: DuplicateRisk | undefined; sourceIssue: number | undefined },
+): string {
+  return withProvenance(
+    filedBodyOf(
+      body,
+      residual,
+      openPoints,
+      baseFallback,
+      duplicateExclusionSection(duplicate.risk, duplicate.sourceIssue),
+    ) + planImageLinksSection(images),
+    provenance,
+  );
 }

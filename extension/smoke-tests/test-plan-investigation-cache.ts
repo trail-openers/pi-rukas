@@ -38,6 +38,10 @@ import {
   pipeline,
   teardownPlanCache,
 } from "./plan-test-stubs.ts";
+import {
+  EXCLUSION_REASON_MAX_CHARS,
+  EXCLUSION_TITLE_MAX_CHARS,
+} from "../src/plan-duplicate-disclosure.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -91,6 +95,20 @@ installForgeStub();
   assert(ctx(undefined) !== ctx(""), "absent context is distinct from the empty string");
   assert(ctx("") !== ctx(" "), "empty context is distinct from whitespace-only");
   assert(ctx(undefined) !== ctx("note"), "key changes with the context");
+  // #1856: the source issue changes the duplicate-risk verdict and the body's
+  // disclosure, so it is a lineage dimension — in BOTH directions. A confirm
+  // that adds or drops the number is a different plan, never a cache hit.
+  const src = (n: number | undefined) => investigationCacheKey({ ...base, sourceIssue: n });
+  assert(src(undefined) !== src(1856), "key changes with the source issue");
+  assert(src(1856) !== src(1857), "one source issue is not another's lineage");
+  // A malformed number must never share the absent case's lineage. `JSON.stringify`
+  // renders NaN as null, so the `?? null` alone would not separate them — what does
+  // is the validation in front of the pipeline (`parseSourceIssueParam` in
+  // plan-tool.ts, `parseIssueFlag` in headless/plan.ts), and test-plan-source-issue
+  // pins both refuse NaN. Asserted here too because the lineage is where a leak
+  // would actually do damage: inheriting another plan's cached duplicate verdict.
+  assert(src(Number.NaN) !== src(undefined), "NaN does not read as an absent source issue");
+  assert(src(Number.NaN) !== src(1856), "NaN does not read as a real issue number");
 }
 
 // ------------------------------------------------------------- hit
@@ -246,6 +264,74 @@ assert(
   "a cached duplicate-risk HIGH still halts with duplicate-risk",
 );
 assert(log.gate === 0, "a cached duplicate-risk HIGH never reaches the gap gate");
+
+// -------------------- #1856: a cached exclusion row must be the shape AND width
+// The disclosure renders `#N (STATE): reason` from these bytes, and the section's
+// character budget is arithmetic over the row clips. A hand-edited entry that
+// carries a 60,000-char reason, a lower-case state, or an id the extractor could
+// never have produced would file straight past the bound the fresh path enforces
+// — so the guard refuses them, and the same entry with a well-formed row still
+// hits, so the tightening is not a blanket rejection of the optional field.
+
+const validExcluded = {
+  number: 103,
+  state: "CLOSED",
+  title: "landed hybrid default",
+  reason: "the issue this plan is for (a plan is not the duplicate of its own subject)",
+};
+
+async function cachedWithExcluded(mutate?: (row: Record<string, unknown>) => void): Promise<{
+  filed: boolean;
+  reason?: string;
+  reused: boolean;
+}> {
+  await newPlanCache();
+  installCountingDispatch([GAP_CRITICAL]);
+  await pipeline({ dryRun: true });
+  await mutateEntry((e) => {
+    const row: Record<string, unknown> = { ...validExcluded };
+    mutate?.(row);
+    e.barrier.duplicateRisk = {
+      level: "medium",
+      rationale: "duplicates #103",
+      downgradedFrom: "high",
+      downgradeReason: "closed prior art",
+      excludedIssues: [row],
+    };
+  });
+  installCountingDispatch([GAP_HIGH]);
+  const r = await pipeline();
+  return { filed: r.filed, reason: r.filingFailure?.reason, reused: r.investigationReused !== undefined };
+}
+
+{
+  const ok = await cachedWithExcluded();
+  assert(
+    ok.filed && ok.reused,
+    `#1856 guard: a well-formed excluded-duplicate row keeps the cache entry well-formed (filed ${ok.filed}, reused ${ok.reused})`,
+  );
+  for (const [label, mutate] of [
+    ["a lower-case state", (row: Record<string, unknown>) => (row.state = "closed")],
+    ["an unknown-to-the-union state", (row: Record<string, unknown>) => (row.state = "wontfix")],
+    ["a non-integer number", (row: Record<string, unknown>) => (row.number = 1.5)],
+    ["a zero number", (row: Record<string, unknown>) => (row.number = 0)],
+    ["a number past MAX_SAFE_INTEGER", (row: Record<string, unknown>) => (row.number = 2 ** 53)],
+    [
+      "a reason past the disclosure clip",
+      (row: Record<string, unknown>) => (row.reason = "r".repeat(EXCLUSION_REASON_MAX_CHARS + 1)),
+    ],
+    [
+      "a title past the disclosure clip",
+      (row: Record<string, unknown>) => (row.title = "t".repeat(EXCLUSION_TITLE_MAX_CHARS + 1)),
+    ],
+  ] as [string, (row: Record<string, unknown>) => void][]) {
+    const r = await cachedWithExcluded(mutate);
+    assert(
+      !r.reused,
+      `#1856 guard: ${label} is a MISS, not a disclosure that overruns the section's bound`,
+    );
+  }
+}
 
 // ------------------------------------------------------------- halted dry run writes nothing
 

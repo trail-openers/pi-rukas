@@ -252,6 +252,21 @@ export function compactedDisclosure(budget: {
 }
 
 /**
+ * The NEVER CLAIM disclosure the driver appends after drafting (#677): the
+ * operator's forbidden phrases caused structured items to be dropped, and the
+ * filed spec names each one. Empty input returns "" so the driver's append is a
+ * no-op and the body stays byte-identical when nothing was dropped. Lives here
+ * beside the compaction disclosure — one module owns "what the body says about
+ * items it had to give up", and plan-driver.ts sits at the 500-line seam.
+ */
+export function neverClaimDisclosureSection(disclosure: string[]): string {
+  if (disclosure.length === 0) return "";
+  return `\n\n> **NEVER CLAIM filter disclosure** — the operator's NEVER CLAIM block caused the following structured items to be dropped before drafting (exact normalised substring match, verbatim-only; paraphrases are not matched and were left in place):\n${disclosure
+    .map((d) => `> ${d}`)
+    .join("\n")}`;
+}
+
+/**
  * The driver's one-line run summary, called at the end of every pipeline run.
  * Lives here because plan-driver.ts sits at the 500-line seam (AGENTS.md §12)
  * and this is self-contained formatting, not orchestration. `structured` is

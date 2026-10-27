@@ -1,3 +1,9 @@
+import {
+  EXCLUSION_DISCLOSURE_MAX_ROWS,
+  EXCLUSION_REASON_MAX_CHARS,
+  EXCLUSION_TITLE_MAX_CHARS,
+} from "./plan-duplicate-disclosure.ts";
+import { isIssueState } from "./plan-duplicate-self.ts";
 /**
  * plan-investigation-guard — the shape guard for a cached /plan dry run (#1377).
  *
@@ -28,7 +34,76 @@ import type { InvestigationCacheEntry } from "./plan-investigation-cache.ts";
 import { isPlainObject, validateProvenance } from "./plan-provenance.ts";
 
 const isStr = (x: unknown): x is string => typeof x === "string";
+const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+
+/**
+ * #1856: the optional fields a duplicate-risk verdict gained. Optional, so an
+ * entry written before the source-issue exclusion existed stays well-formed —
+ * but when present they must be the shapes the disclosure renderer reads, and
+ * the widths the disclosure is BUDGETED at. A hand-edited cache entry whose row
+ * carries a 60,000-char reason would otherwise file through the door the fresh
+ * path's clips closed, straight past the forge's body cap.
+ *
+ * `number` is a positive SAFE integer — `namedIssueRefs` only ever emits those,
+ * so an entry naming an id the extractor could not have produced is not one this
+ * filter wrote. `state` is one of the three values the union admits: the guard
+ * reads bytes nobody normalised, so it admits the normalised form and nothing
+ * else — a lower-case `"closed"` is a MISS, not a closed issue.
+ */
+const isExcludedDuplicate = (x: unknown): boolean =>
+  isShape(x) &&
+  Number.isSafeInteger(x.number) &&
+  typeof x.number === "number" &&
+  (x.number as number) > 0 &&
+  isIssueState(x.state) &&
+  isStr(x.title) &&
+  x.title.length <= EXCLUSION_TITLE_MAX_CHARS &&
+  isStr(x.reason) &&
+  x.reason.length <= EXCLUSION_REASON_MAX_CHARS;
+
+const isRiskLevel = (x: unknown): boolean =>
+  x === "high" || x === "medium" || x === "low" || x === "none";
+
+/**
+ * How long an `excludedIssues` array may be before the guard refuses the entry.
+ *
+ * The renderer never reads more than {@link EXCLUSION_DISCLOSURE_MAX_ROWS} rows,
+ * and the producer — `downgradeSelfDuplicate` — can name at most one row per
+ * `#N` / `#N-k` token in one child reply. An array orders of magnitude past the
+ * itemisation cap is therefore not a verdict this filter wrote: it is a
+ * hand-edited (or corrupted) cache file, and the guard's job is to make that a
+ * MISS. The bound also keeps `every(isExcludedDuplicate)` on a file nobody
+ * authored from turning a cache read into unbounded work.
+ */
+const EXCLUDED_ISSUES_MAX = EXCLUSION_DISCLOSURE_MAX_ROWS * 10;
+
+/** An `excludedIssues` array the disclosure can be budgeted to render. */
+const isExcludedIssues = (x: unknown): x is unknown[] =>
+  Array.isArray(x) && x.length <= EXCLUDED_ISSUES_MAX && x.every(isExcludedDuplicate);
+
+const isDuplicateRisk = (x: unknown): boolean =>
+  isShape(x) &&
+  isRiskLevel(x.level) &&
+  isStr(x.rationale) &&
+  // A downgrade is a CLAIM the operator reads, so it must be internally
+  // consistent: only a HIGH becomes medium, and only when the filter can name
+  // what it suppressed. An inconsistent cached verdict is a miss, not a filing
+  // whose disclosure asserts a suppression nothing produced.
+  (x.downgradedFrom === undefined ||
+    (x.downgradedFrom === "high" &&
+      x.level === "medium" &&
+      isExcludedIssues(x.excludedIssues) &&
+      (x.excludedIssues as unknown[]).length > 0)) &&
+  // #1856 review round 4: the pair holds in the other direction too. Rows with
+  // no `downgradedFrom` are bytes no producer emits — `downgradeSelfDuplicate`
+  // sets both together — and a verdict that suppresses candidates while claiming
+  // nobody suppressed them is the disclosure asserting the opposite of the bytes
+  // it carries. So the pair is required in both directions: the array is only
+  // ever admitted alongside the downgrade that produced it.
+  (x.excludedIssues === undefined ||
+    (x.downgradedFrom !== undefined && isExcludedIssues(x.excludedIssues))) &&
+  (x.downgradeReason === undefined || isStr(x.downgradeReason));
 
 /**
  * A plain object — an `Object` prototype (or a bare `Object.create(null)`) and
@@ -95,8 +170,7 @@ const isBarrier = (x: unknown): boolean =>
   x.findings.every(isFinding) &&
   Array.isArray(x.neverClaimDisclosure) &&
   x.neverClaimDisclosure.every(isStr) &&
-  (x.duplicateRisk === undefined ||
-    (isShape(x.duplicateRisk) && isStr(x.duplicateRisk.level) && isStr(x.duplicateRisk.rationale)));
+  (x.duplicateRisk === undefined || isDuplicateRisk(x.duplicateRisk));
 
 /**
  * The provenance half defers to the ONE validator the feature has, rather than

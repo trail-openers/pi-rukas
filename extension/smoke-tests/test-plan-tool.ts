@@ -75,8 +75,11 @@ registerPlanTool(fakePi);
   assert(!!t, "start_plan_driver registers");
   const props = Object.keys(t?.parameters.properties ?? {});
   // #1377: labels and provenance join the schema (both optional).
+  // #1856: `sourceIssue` joins the schema (optional) after reviewedDigest, so the
+  // pre-#1856 order stays a prefix of it.
   assert(
-    props.join(",") === "descriptor,type,context,dryRun,reviewedDigest,labels,provenance",
+    props.join(",") ===
+      "descriptor,type,context,dryRun,reviewedDigest,sourceIssue,labels,provenance",
     `exact TypeBox schema: ${props.join(", ")}`,
   );
   const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })

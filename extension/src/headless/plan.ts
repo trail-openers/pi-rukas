@@ -3,7 +3,7 @@
  * the compiled /plan pipeline (runPlanPipeline) on the headless DriverHost.
  *
  *   plan <descriptor> (--dry-run | --file) [--type <t>] [--context <text>]
- *        [--reviewed-digest <d>] [--json]
+ *        [--reviewed-digest <d>] [--issue <N>] [--json]
  *   plan <descriptor> --start … | plan --resume <session> (--answer <file> | --retry | --confirm)
  *
  * The second form is a planning session held over several runs, one turn per
@@ -41,6 +41,7 @@ export const PLAN_FLAGS = [
   "--type",
   "--context",
   "--reviewed-digest",
+  "--issue",
   "--json",
   "--start",
   "--resume",
@@ -58,6 +59,27 @@ interface PlanArgs {
   type?: PlanType;
   context?: string;
   reviewedDigest?: string;
+  /** #1856: the existing issue this plan is for (see PlanDriverInput.sourceIssue). */
+  sourceIssue?: number;
+}
+
+/**
+ * #1856 — `--issue <N>` names the existing issue being planned. A positive
+ * integer or a refusal naming what is wrong: a mistyped number must never
+ * silently mean "no source issue", because that is the shape that re-introduces
+ * the self-duplicate halt the flag exists to remove.
+ */
+export function parseIssueFlag(raw: string | undefined): { value?: number; error?: string } {
+  if (raw === undefined) return {};
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return { error: `--issue needs a positive issue number (got "${raw}")` };
+  }
+  const n = Number(trimmed);
+  if (!Number.isSafeInteger(n) || n < 1) {
+    return { error: `--issue needs a positive issue number (got "${raw}")` };
+  }
+  return { value: n };
 }
 
 type TurnArgv =
@@ -69,7 +91,7 @@ export function parsePlanArgs(
 ): PlanArgs | { turn: TurnArgv } | { error: string } {
   const p = parseFlags(argv, {
     bool: ["--dry-run", "--file", "--json", "--start", "--retry", "--confirm"],
-    value: ["--type", "--context", "--reviewed-digest", "--resume", "--answer"],
+    value: ["--type", "--context", "--reviewed-digest", "--issue", "--resume", "--answer"],
   });
   if ("error" in p) return p;
   if (TURN_FLAGS.some((f) => p.bool.has(f) || p.value.has(f))) return parseTurnArgs(p);
@@ -83,12 +105,15 @@ export function parsePlanArgs(
   if (type !== undefined && !(PLAN_TYPES as readonly string[]).includes(type)) {
     return { error: `unknown plan type "${type}" (one of ${PLAN_TYPES.join(", ")})` };
   }
+  const issue = parseIssueFlag(p.value.get("--issue"));
+  if (issue.error) return { error: issue.error };
   return {
     descriptor,
     dryRun,
     type: type as PlanType | undefined,
     context: p.value.get("--context"),
     reviewedDigest: p.value.get("--reviewed-digest"),
+    sourceIssue: issue.value,
   };
 }
 
@@ -117,12 +142,15 @@ function parseTurnArgs(p: ParsedFlags): { turn: TurnArgv } | { error: string } {
       return { error: "plan --start needs exactly one descriptor argument" };
     const descriptor = (p.positional[0] as string).trim();
     if (descriptor === "") return { error: "plan needs a non-empty descriptor" };
+    const issue = parseIssueFlag(p.value.get("--issue"));
+    if (issue.error) return { error: issue.error };
     return {
       turn: {
         kind: "start",
         descriptor,
         type: type as PlanType | undefined,
         context: p.value.get("--context"),
+        sourceIssue: issue.value,
       },
     };
   }
@@ -130,6 +158,9 @@ function parseTurnArgs(p: ParsedFlags): { turn: TurnArgv } | { error: string } {
   if (!isSessionId(id)) return { error: `"${id}" is not a session id` };
   if (p.positional.length > 0 || type !== undefined || p.value.has("--context")) {
     return { error: "--resume takes no descriptor, --type or --context: the session has them" };
+  }
+  if (p.value.has("--issue")) {
+    return { error: "--resume takes no --issue: the session records the issue it plans" };
   }
   const actions = [answerFile !== undefined, p.bool.has("--retry"), p.bool.has("--confirm")];
   if (actions.filter(Boolean).length !== 1) {

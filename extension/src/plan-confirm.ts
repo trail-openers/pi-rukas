@@ -162,7 +162,7 @@ async function verbatimMissReason(
 ): Promise<string> {
   const entry = await readEntryAt(entryFile(cacheDir, inputs));
   if (!entry) {
-    return `no reviewed dry run is cached for these inputs in ${cacheDir} (a fresh clone, a removed cache, or a changed descriptor, context or type)`;
+    return `no reviewed dry run is cached for these inputs in ${cacheDir} (a fresh clone, a removed cache, or a changed descriptor, context, type or source issue)`;
   }
   if (entry.key !== investigationCacheKey(inputs))
     return "origin/<default> moved since the dry run";

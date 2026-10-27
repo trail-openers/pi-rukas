@@ -225,6 +225,17 @@ export const DROPPED_SECTION_HEADING = "## Dropped investigation items";
  *   itself is bounded by the gate's iteration cap;
  * - `openPointsSection` — same 300-char clip, plus the contract intro line;
  * - `baseFallbackSection` — one sentence plus the reason string;
+ * - `duplicateExclusionSection` (plan-duplicate-self.ts) — a fixed lead plus at
+ *   most `EXCLUSION_DISCLOSURE_MAX_ROWS` (10) rows, each carrying one issue
+ *   number, a state word and a reason/clause, plus the "and N more" summary
+ *   line that replaces everything past the cap. #1856 review round 2 measured
+ *   this section at 4,753 chars for 10 fully-loaded rows against a 3,072-char
+ *   budget for ALL the appends below, because the reason a row carries is
+ *   itself composed (a fixed rule sentence plus a quoted clause) and only the
+ *   clause had been clipped. Every interpolable slot is therefore bounded in
+ *   `plan-duplicate-self.ts` and the section's whole width is
+ *   `EXCLUSION_SECTION_MAX_CHARS`, so this one append is arithmetic rather than
+ *   an assumption;
  * - the compaction note (`plan-driver.ts`) and the NEVER CLAIM disclosure, each
  *   a fixed lead plus items already clipped upstream;
  * - `planImageLinksSection` and the provenance wrapper (`provenanceReservation`,

@@ -97,6 +97,25 @@ export interface CacheInputs {
   keySha: string;
   /** Resolved epic recursion depth (`input.depth ?? 0`): it changes drafting and validation. */
   depth?: number;
+  /**
+   * #1856: the existing issue this plan is for. Part of the lineage because it
+   * changes the duplicate-risk verdict and the drafted body's exclusion
+   * disclosure: a cached investigation gathered WITHOUT it must never satisfy a
+   * confirm WITH it (the cached HIGH against the plan's own subject would
+   * re-halt the very plan the field exists to unblock), and one gathered WITH it
+   * must never satisfy a confirm without it (that would let a caller drop the
+   * number and inherit a downgrade it never earned). `undefined` is a distinct
+   * lineage from a number, so `?? null` keeps the two apart — the reasoning
+   * `lineageOf` already applies to `context`.
+   *
+   * The type is `number | undefined`, not a branded positive int, because this
+   * seam is exported and called with whatever the caller holds. `lineageOf`
+   * therefore normalises through {@link lineageSourceIssue} rather than trusting
+   * it: `JSON.stringify` renders `NaN`/`±Infinity` as `null`, which would hand a
+   * malformed value the ABSENT case's lineage — and that lineage is exactly the
+   * one whose cached HIGH has not been through the #1856 post-filter.
+   */
+  sourceIssue?: number;
 }
 
 export interface CachedInvestigation {
@@ -230,9 +249,31 @@ async function planCacheDir(repoRoot: string, commonDir: string): Promise<string
  * the lineage: a sub-issue drafted at depth 3 is a different plan from the same
  * descriptor at depth 0, so a confirm must never file the other one's spec.
  */
+/**
+ * The lineage's view of `sourceIssue`: a real issue number, or `null` for
+ * "none" — never a `JSON.stringify`-collapsible number. `NaN`, `±Infinity` and
+ * `0` are not issue numbers, and a value that is not one may not borrow the
+ * absent case's lineage, so each gets its own stable string identity instead.
+ * The two entry points already refuse these (`parseSourceIssueParam`,
+ * `parseIssueFlag`); this is the seam's own guarantee, because the seam is
+ * exported and its callers are not only those two.
+ */
+function lineageSourceIssue(v: number | undefined): number | string | null {
+  if (v === undefined) return null;
+  return typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : `invalid:${String(v)}`;
+}
+
 function lineageOf(i: Omit<CacheInputs, "keySha">): string {
-  // `?? null` keeps an absent context (undefined) distinct from "" and " ".
-  return digest(["plan-lineage-v1", i.descriptor.trim(), i.context ?? null, i.type, i.depth ?? 0]);
+  // `?? null` keeps an absent context (undefined) distinct from "" and " ", and
+  // an absent source issue (#1856) distinct from any number.
+  return digest([
+    "plan-lineage-v1",
+    i.descriptor.trim(),
+    i.context ?? null,
+    i.type,
+    i.depth ?? 0,
+    lineageSourceIssue(i.sourceIssue),
+  ]);
 }
 
 /** Full cache key: the lineage plus git HEAD. */
