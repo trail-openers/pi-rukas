@@ -169,6 +169,20 @@ async function main(argv: string[]): Promise<number> {
   }
   const cap = captureStrayOutput();
   capture = cap;
+  // #1863 — the RESULT document's sink is the real stdout, not `cap.write`.
+  // `captureStrayOutput` exists to keep the NDJSON stream on stderr pure: every
+  // line it is handed becomes a `log` line (that is how a stray `trace`/`console`
+  // call is kept off stdout). The runner's own result document is not a stray
+  // line, and the first shape of this call routed it through that wrapper — so
+  // the one document `work --json` owes its host was written to stderr, stdout
+  // closed empty, and the supervisor above reported `crash — exited 30 without a
+  // result` for a run whose wedge document had in fact been printed. Measured:
+  // the wedge fired, `formatResultDocument` returned the JSON, the wrapper's
+  // `raw` was the original stderr write, and the supervisor's stdout buffer held
+  // zero chunks. Progress NDJSON still goes to `cap.write`; the document does not.
+  const writeResult = (s: string) => {
+    process.stdout.write(s);
+  };
   // #1863 — the result document is written by `withResultGuarantee` on EVERY
   // path on which the runner terminates, including a driver whose promise never
   // settles. The field shape: the adversarial round-review child was killed at
@@ -194,7 +208,7 @@ async function main(argv: string[]): Promise<number> {
     // (or is the very thing that failed, and its rejection is reported below).
     repoRoot: "",
     issues: args.issues,
-    write: cap.write,
+    write: writeResult,
     work: async () => {
       const repoRoot = await repoRootPromise;
       return runHeadless({

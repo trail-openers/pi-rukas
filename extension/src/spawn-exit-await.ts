@@ -26,15 +26,15 @@
  * re-signals on the way out so a wedged tree is not left running behind the
  * result.
  *
- * The ceiling reads liveness through `childHasExited` — the ONE signal every
- * supervisor already agrees on — rather than counting events, so a child that
- * exited and whose `exit` listener was never dispatched is not mistaken for one
- * that is still running.
+ * The ceiling races the `exit` event itself rather than counting events or
+ * polling liveness: `once(child, "exit")` is the one signal every supervisor
+ * already agrees has fired, and the ceiling only decides when to stop waiting
+ * for it. The exit tuple is completed from `child.exitCode` / `child.signalCode`
+ * when the event arrives without them.
  */
 
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { childHasExited } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -56,8 +56,6 @@ export interface ExitAwaitOpts {
   graceMs?: number;
   /** Re-signal the (still-lingering) tree when the ceiling is reached. */
   kill?: () => void;
-  /** Injectable for tests: the liveness predicate (default `childHasExited`). */
-  exited?: () => boolean;
 }
 
 /**
@@ -85,7 +83,6 @@ export async function awaitExitWithin(
   opts: ExitAwaitOpts = {},
 ): Promise<[number | null, NodeJS.Signals | null]> {
   const graceMs = opts.graceMs ?? EXIT_AWAIT_GRACE_MS;
-  const exited = opts.exited ?? (() => childHasExited(undefined, child));
   const exitEvent = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
   // A rejection from the event helper (no listener error, an aborted emit) is a
   // missing event, not a failed dispatch: it decides "no exit observed".
@@ -116,9 +113,4 @@ export async function awaitExitWithin(
   // child whose fields Node filled in only on `close`).
   const [code, signal] = winner;
   return [code ?? child.exitCode ?? null, signal ?? child.signalCode ?? null];
-}
-
-/** Poll helper the tests use to observe the wedged branch without a real kill. */
-export function exitedHandle(child: ChildProcess): () => boolean {
-  return () => childHasExited(undefined, child);
 }

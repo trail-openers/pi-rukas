@@ -17,6 +17,20 @@
  * and reports `error.code: "crash"` with exit 30. stderr (the NDJSON progress
  * stream) is inherited and never touched.
  *
+ * #1863 — "with a result" is decided by the BYTES, not by the exit code. The
+ * inner runner has its own backstop (`ensure-result.ts`) that prints a
+ * `driver-wedged` document — whose own `exitCode` is 30 — and exits 30 when its
+ * driver never answered. The first shape of this file only asked whether stdout
+ * was non-empty, which the wedge document satisfies; but the passthrough returned
+ * the CHILD's exit code, and a runner that had printed its document and then
+ * been torn down before the code reached the parent got the supervisor's own
+ * `crash`/30 written on top of it. So the passthrough is now keyed on the stdout
+ * carrying a COMPLETE, PARSEABLE result document (`parseResultDocument`) and
+ * returns THAT document's `exitCode` — the child's exit code is the fallback,
+ * not the authority. The `crash` projection remains exactly what a child that
+ * printed nothing, or printed only garbage, gets — crash classification is
+ * otherwise unchanged.
+ *
  * SIGTERM / SIGINT / SIGHUP are forwarded to the child, so the interrupt
  * contract (run.ts) is unchanged. Setting `PI_ENSEMBLE_HEADLESS_SUPERVISED=1`
  * runs `work` in-process, without a supervisor.
@@ -27,7 +41,14 @@ import { resourceReport } from "../resource-budget.ts";
 import { isTerminalState, readState, workStateFile } from "../workflow-state.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
-import { type IssueResult, notStartedResult, projectIssue, resultDocument } from "./result.ts";
+import {
+  type IssueResult,
+  RESULT_SCHEMA_VERSION,
+  type ResultDocument,
+  notStartedResult,
+  projectIssue,
+  resultDocument,
+} from "./result.ts";
 
 export const SUPERVISED_ENV = "PI_ENSEMBLE_HEADLESS_SUPERVISED";
 
@@ -40,6 +61,41 @@ export interface SuperviseOptions {
   /** The child's argv: `[command, ...args]`. Defaults to re-running this CLI. */
   command: string[];
   write?: (s: string) => void;
+}
+
+/**
+ * The last complete result document on a child's stdout, or undefined.
+ *
+ * "Complete" is load-bearing: a runner killed mid-write leaves a truncated line
+ * that is neither nothing nor a document, and calling that a result would pass
+ * a half-written one to the host. So only a line that parses as a result
+ * document — the schema version this build writes, an `issues` array and an
+ * `exitCode` — counts, and the LAST such line wins (a runner that printed a
+ * document and then a stray line still gets its document). Anything else is
+ * garbage, and garbage is what the `crash` projection is for.
+ */
+export function parseResultDocument(out: string): ResultDocument | undefined {
+  const lines = out.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = (lines[i] ?? "").trim();
+    if (line === "" || !line.startsWith("{")) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const doc = parsed as Partial<ResultDocument>;
+    if (
+      doc.schemaVersion === RESULT_SCHEMA_VERSION &&
+      Array.isArray(doc.issues) &&
+      typeof doc.exitCode === "number"
+    ) {
+      return parsed as ResultDocument;
+    }
+  }
+  return undefined;
 }
 
 /** Each issue as its state file shows it; a non-terminal state exits 30. */
@@ -79,9 +135,17 @@ export async function superviseWork(opts: SuperviseOptions): Promise<number> {
   );
   for (const [sig, h] of handlers) process.off(sig, h);
   const out = Buffer.concat(chunks).toString("utf8");
-  if (out.trim() !== "") {
+  // A child that never wrote a byte is indistinguishable from one whose bytes
+  // were lost: `close` fires when the stdio STREAMS end, not when the process
+  // is reaped, so a child that was still running when its pipes closed is
+  // already past the point where anything it prints could be recovered. The
+  // decision therefore reads the bytes (parseResultDocument) and nothing else —
+  // and #1863's wedge document reaches this function exactly like the runner's
+  // own result does, because ensure-result.ts writes it to the same stdout.
+  const answered = parseResultDocument(out);
+  if (answered !== undefined) {
     write(out);
-    return exit.code ?? EXIT.crash;
+    return answered.exitCode ?? exit.code ?? EXIT.crash;
   }
   const how = exit.error
     ? `could not start: ${exit.error.message}`
