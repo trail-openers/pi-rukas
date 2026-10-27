@@ -28,12 +28,16 @@
  *     by `fixPassFence` / `specPatternSlots` exactly as for a fix pass, so the
  *     no-declared-paths shape behaves the same here as it does there.
  *
- * The gate is built ONCE, before the dispatch. `lensFixFenceLines` renders it
- * into both lens-fix prompts and `lensFixPassPlan` carries the same object to
- * the gate at the adversarial step; `test-lens-fix-prompt-fence.ts` pins that
- * the prompt prints the fence the gate reads. The permitted asymmetry is the
- * fix pass's own: the gate fills `passChanged` / `helperDirs` / `admittingSlots`
- * in through `gateFenceView`, which the prompt never sees.
+ * The gate is built ONCE, before the dispatch. `buildLensFixFence` is the ONE
+ * call site of `lensFixPassPlan` the lens-fix step uses — `runLensFix` calls it
+ * twice per round (pre-dispatch, and again after the #981 reposition gate has
+ * moved the tree) and both arms therefore render and record the same way.
+ * `lensFixFenceLines` renders the fence into both lens-fix prompts and
+ * `lensFixPassPlan` carries the same object to the gate at the adversarial step;
+ * `test-lens-fix-prompt-fence.ts` pins that the prompt prints the fence the gate
+ * reads. The permitted asymmetry is the fix pass's own: the gate fills
+ * `passChanged` / `helperDirs` / `admittingSlots` in through `gateFenceView`,
+ * which the prompt never sees.
  */
 
 import { resolve } from "node:path";
@@ -51,9 +55,91 @@ import {
   fixPassFenceLines,
 } from "./work-driver-fix-pass-admission.ts";
 import { namedPaths } from "./work-driver-fix-pass-named.ts";
+import { lensFixPlanRefusalRecords } from "./work-driver-lens-fix-fence-gate.ts";
+import { fenceSnapshot, refusalReason } from "./work-driver-lens-fix-records.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import { specPatternSlots } from "./work-driver-spec-slot-admission.ts";
-import type { PipelineState } from "./workflow-state-schema.ts";
+import type { LensFixFenceSnapshot, PipelineState } from "./workflow-state-schema.ts";
+import type { WorkState } from "./workflow-state.ts";
+
+/** What one build of the lens-fix fence yields: the record the gate reads, the
+ *  block the prompt prints, and whether the build FAILED in a way the gate must
+ *  treat as a refusal (`record`, PM decision #1852 review 1a). */
+export interface LensFixFenceBuild {
+  /** The plan-time snapshot carried on `pipelineState.lensFixFence`, or
+   *  undefined when no fence exists for this round. */
+  snapshot: LensFixFenceSnapshot | undefined;
+  /** The fence block the prompt prints, or undefined when there is none. */
+  lines: string[] | undefined;
+  /** Set when the build failed and the failure is a fence FAILURE rather than a
+   *  statement about the state: the caller records it, because a prompt with no
+   *  fence block must not be the quiet half of a fence the gate then enforces
+   *  from a value nobody built. */
+  record?: string;
+}
+
+/**
+ * Build the lens-fix fence for one round tip (#1852) — the ONE place the step's
+ * fence is planned, rendered and judged.
+ *
+ * ONE builder for the two places `runLensFix` needs a fence: before the prompt is
+ * rendered, and again after the #981 reposition gate has MOVED the tree. The two
+ * call sites used to spell the same plan call, the same render and the same
+ * record-or-trace decision twice, and a rule that lives in two copies is a rule
+ * that drifts — which arm records and which only traces is exactly the #1852
+ * fail-closed decision, and it must not have two answers.
+ *
+ * The tree is built from the tip the caller passes; the tip is never read here,
+ * because which tip the fence is measured from is the caller's decision
+ * (pre-dispatch vs the verified tip) and one tip must appear in both the prompt
+ * and the gate.
+ */
+export async function buildLensFixFence(
+  execFn: FixExec,
+  repoRoot: string,
+  state: WorkState,
+  fenceId: string | undefined,
+  fixTree: string,
+  roundTip: string,
+  findings: string,
+): Promise<LensFixFenceBuild> {
+  // No `pipelineState.worktrees` entry names the lens tree (#1852-8). Like the
+  // missing base SHA, that is a statement about the STATE — an older driver or a
+  // pre-#1852 fixture has no `worktrees` entry naming the tree either — so it is
+  // traced, not recorded, and the gate stands down. The planner's own
+  // `no-workstream` kind never reaches here: this refusal is decided before the
+  // plan runs, so the decision is made once, on the same typed discriminant as
+  // every other refusal below.
+  if (fenceId === undefined) return { snapshot: undefined, lines: undefined };
+  const planned: LensFixPlanned = await lensFixPassPlan(execFn, repoRoot, state.pipelineState, {
+    id: fenceId,
+    worktree: fixTree,
+    roundTip,
+    findings,
+  });
+  if (planned.ok) {
+    return {
+      snapshot: fenceSnapshot(state, planned.value, fixTree),
+      lines: lensFixFenceLines(planned.value),
+    };
+  }
+  // Fail closed on the reads that MEAN a fence existed, and say so in a way that
+  // survives the step: a trace alone cannot tell the gate "this round never had a
+  // fence" from "the fence was lost", because a trace is not in the state file
+  // after a resume.
+  //
+  // But the planner's pre-git refusal — "the state records no base SHA" — is not
+  // that. A state written by an older driver, or one that never set the field, is
+  // in the same shape and had no fence to require. Recording it would turn "no
+  // fence" into a recorded fence failure and park every such cycle, which makes
+  // #1852 a schema break rather than a fence. So it is traced, not recorded, and
+  // the gate — which reads records — does not run. The decision is made on the
+  // planner's TYPED discriminant, never on its wording (#1852 review 1b).
+  const reason = refusalReason(planned.refusal);
+  return lensFixPlanRefusalRecords(planned.refusal)
+    ? { snapshot: undefined, lines: undefined, record: reason }
+    : { snapshot: undefined, lines: undefined };
+}
 
 /** The workstream id of the lens-fix round (PM decision #1852-8). */
 export interface LensFixFenceInput {

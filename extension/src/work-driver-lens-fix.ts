@@ -18,27 +18,14 @@ import {
   countLensFixEmptyResends,
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
-import { lensFixPlanRefusalRecords } from "./work-driver-lens-fix-fence-gate.ts";
-import {
-  fenceSnapshot,
-  lensWorktree,
-  recordFenceUnavailable,
-  refusalReason,
-} from "./work-driver-lens-fix-records.ts";
+import { buildLensFixFence, lensFixWorkstreamId } from "./work-driver-lens-fix-fence.ts";
+import { lensWorktree, recordFenceUnavailable } from "./work-driver-lens-fix-records.ts";
 
 // Re-exported for the importers that have always taken the tree resolver from
 // this module (`work-driver-lens.ts`, `work-driver-adversarial.ts`,
 // `work-retry-tree-clean.ts`); the definition lives with the other #1852
 // record helpers.
 export { lensWorktree };
-import {
-  type LensFixPassPlan,
-  type LensFixPlanRefusal,
-  type LensFixPlanned,
-  lensFixFenceLines,
-  lensFixPassPlan,
-  lensFixWorkstreamId,
-} from "./work-driver-lens-fix-fence.ts";
 import { repositionLensFixWorktree } from "./work-driver-lens-fix-reposition-gate.ts";
 import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -100,82 +87,12 @@ export function inlineLensFixPrompt(
   ].join("\n");
 }
 
-/** What one build of the lens-fix fence yields: the record the gate reads, the
- *  block the prompt prints, and whether the build FAILED in a way the gate must
- *  treat as a refusal (`record`, PM decision #1852 review 1a). */
-interface LensFixFenceBuild {
-  /** The plan-time snapshot carried on `pipelineState.lensFixFence`, or
-   *  undefined when no fence exists for this round. */
-  snapshot: LensFixFenceSnapshot | undefined;
-  /** The fence block the prompt prints, or undefined when there is none. */
-  lines: string[] | undefined;
-  /** Set when the build failed and the failure is a fence FAILURE rather than a
-   *  statement about the state: the caller records it, because a prompt with no
-   *  fence block must not be the quiet half of a fence the gate then enforces
-   *  from a value nobody built. */
-  record?: string;
-}
-
 /**
- * Build the lens-fix fence for one round tip (#1852).
- *
- * ONE builder for the two places `runLensFix` needs a fence: before the prompt is
- * rendered, and again after the #981 reposition gate has MOVED the tree. The two
- * call sites used to spell the same plan call, the same render and the same
- * record-or-trace decision twice, and a rule that lives in two copies is a rule
- * that drifts — which arm records and which only traces is exactly the #1852
- * fail-closed decision, and it must not have two answers.
- *
- * The caller passes the tip it read; the tip is never read here, because which
- * tip the fence is measured from is the caller's decision (pre-dispatch vs the
- * verified tip) and one tip must appear in both the prompt and the gate.
+ * The two arms below both take their fence from `buildLensFixFence`: the
+ * snapshot the gate reads, the block the prompt prints, and the `record` the
+ * caller writes when the build failed in a way the gate must treat as a fence
+ * failure rather than as silence (#1852 review 1a).
  */
-async function buildLensFixFence(
-  execFn: ExecFn,
-  repoRoot: string,
-  state: WorkState,
-  fenceId: string | undefined,
-  fixTree: string,
-  roundTip: string,
-  findings: string,
-): Promise<LensFixFenceBuild> {
-  // No `pipelineState.worktrees` entry names the lens tree (#1852-8). Like the
-  // missing base SHA, that is a statement about the STATE — an older driver or a
-  // pre-#1852 fixture has no `worktrees` entry naming the tree either — so it is
-  // traced, not recorded, and the gate stands down. The planner's own
-  // `no-workstream` kind never reaches here: this refusal is decided before the
-  // plan runs, so the decision is made once, on the same typed discriminant as
-  // every other refusal below.
-  if (fenceId === undefined) return { snapshot: undefined, lines: undefined };
-  const planned: LensFixPlanned = await lensFixPassPlan(execFn, repoRoot, state.pipelineState, {
-    id: fenceId,
-    worktree: fixTree,
-    roundTip,
-    findings,
-  });
-  if (planned.ok) {
-    return {
-      snapshot: fenceSnapshot(state, planned.value, fixTree),
-      lines: lensFixFenceLines(planned.value),
-    };
-  }
-  // Fail closed on the reads that MEAN a fence existed, and say so in a way that
-  // survives the step: a trace alone cannot tell the gate "this round never had a
-  // fence" from "the fence was lost", because a trace is not in the state file
-  // after a resume.
-  //
-  // But the planner's pre-git refusal — "the state records no base SHA" — is not
-  // that. A state written by an older driver, or one that never set the field, is
-  // in the same shape and had no fence to require. Recording it would turn "no
-  // fence" into a recorded fence failure and park every such cycle, which makes
-  // #1852 a schema break rather than a fence. So it is traced, not recorded, and
-  // the gate — which reads records — does not run. The decision is made on the
-  // planner's TYPED discriminant, never on its wording (#1852 review 1b).
-  const reason = refusalReason(planned.refusal);
-  return lensFixPlanRefusalRecords(planned.refusal)
-    ? { snapshot: undefined, lines: undefined, record: reason }
-    : { snapshot: undefined, lines: undefined };
-}
 
 export async function runLensFix(
   ctx: CycleContext,
