@@ -45,6 +45,14 @@ import { execp } from "./exec.ts";
  * file's previous contents, so the writer does not read the ledger itself —
  * `bumpLensRound` in review-ledger.ts is the only read-and-write site of
  * the counter (the writer never touches it).
+ *
+ * The LAST parameter (`baseBranch`) is the PR's own base branch. When the
+ * caller knows it (the tool resolves the PR's base), the patch id is taken
+ * against `<remote>/<baseBranch>` rather than the production mainline, so the
+ * row the #912 guard later reads describes the PR the review ran on. It is
+ * threaded from `admitLensRound`'s admission, so the budget and the row
+ * cannot disagree about which base the round was counted against. Absent
+ * (every existing caller) the identity is the mainline's, exactly as before.
  */
 /**
  * What the fire-and-forget write did. `recorded: false` means the round is NOT
@@ -85,6 +93,10 @@ export function writeLensLedgerEntry(
   resolvedBranch?: string,
   /** #1127 — the operator passed `overrideCap: true`; recorded on the entry. */
   overrideCap?: boolean,
+  /** The PR's base branch (optional): the identity base for this row. See the
+   * module header — it is the WORKING base, and it never relaxes the
+   * production rule in `mergeIdentity`, which still requires the mainline. */
+  baseBranch?: string,
 ): Promise<LensLedgerOutcome> {
   const write = async (): Promise<LensLedgerOutcome> => {
     const c = cwd ?? process.cwd();
@@ -103,7 +115,10 @@ export function writeLensLedgerEntry(
     // The shared working-tree patch id (review-ledger.ts). When untracked
     // files exist the entry is still written for the tracked content, but the
     // gap is traced — see the warning's wording in workingTreePatchId.
-    const computed = await workingTreePatchId(execp, c, { digest: true });
+    const computed = await workingTreePatchId(execp, c, {
+      digest: true,
+      ...(baseBranch ? { baseBranch } : {}),
+    });
     if (computed.warning) trace(`lens-review: ${computed.warning}`);
     if (!computed.patchId) {
       traceWarn(

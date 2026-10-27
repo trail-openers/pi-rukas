@@ -32,7 +32,7 @@
 
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { resolveMainline } from "./mainline.ts";
+import { type MainlineResult, resolveMainline } from "./mainline.ts";
 import type { LedgerExecFn } from "./review-ledger.ts";
 import { LOCAL_GIT_TIMEOUT_MS } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
@@ -423,12 +423,36 @@ export interface IdentityBase {
  * (`mergeIdentity`) both call this, so the identity the guard recomputes is
  * built against the same ref the ledger entry was. A failure is
  * `{ ok: false, reason }` — every caller fails closed.
+ *
+ * `opts.baseBranch` — the WORKING base. A review's identity does not have to
+ * be taken against the PRODUCTION mainline: a project whose release flow is
+ * `feature → staging → (operator publishes prod from main by hand)` opens
+ * every PR against `staging` while `origin/HEAD` still points at `main`, and
+ * there a mainline-based diff is empty for any checkout that sits at/below
+ * main (a branch whose only recent change was a CI fix that has since
+ * landed). An empty diff produces no patch id, and the round cannot be
+ * recorded, so the round-cap gate refuses the review (#1127) — for a reason
+ * that has nothing to do with the round budget. A caller that knows the PR's
+ * own base branch passes it here and the identity follows the PR.
+ *
+ * The field is named `mainline` in the answer either way, because every
+ * consumer of the pair asks "which ref is the identity taken against" — the
+ * #1360 range check and `namedHeadIsTip` included, all of which mean the
+ * BASE, not the production line. `mergeIdentity` never passes an option: the
+ * PRODUCTION merge gate keeps comparing against the resolved mainline, so a
+ * PR whose base is not mainline still fails closed there by name (#1305).
  */
 export async function identityBase(
   execFn: LedgerExecFn,
   cwd: string,
+  opts: { baseBranch?: string } = {},
 ): Promise<{ ok: true; remote: string; mainline: string } | { ok: false; reason: string }> {
-  const mainline = await resolveMainline(cwd, execFn);
+  // A supplied base skips the mainline probe entirely: the caller read the
+  // base off the PR, and a `gh repo view` answer would contradict it.
+  const named = opts.baseBranch?.trim();
+  const mainline: MainlineResult = named
+    ? { ok: true, branch: named }
+    : await resolveMainline(cwd, execFn);
   if (!mainline.ok) {
     return { ok: false, reason: `cannot resolve the mainline branch (${mainline.reason})` };
   }

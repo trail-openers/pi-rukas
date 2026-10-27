@@ -119,6 +119,21 @@ export { remoteName } from "./review-ledger-path.ts";
  * it); the merge-guard and round-cap paths never read it, so they do not pay
  * for it.
  *
+ * `opts.baseBranch` takes the identity against the PR's own base branch
+ * instead of the production mainline (see `identityBase`). That is the
+ * WORKING side of the split: the round budget, the delta base and the ledger
+ * row all describe the PR, so they follow the PR's base. A PR based on an
+ * integration branch (`feature → staging`, prod published from `main` by
+ * hand) has an EMPTY diff against `<remote>/<mainline>` whenever the checkout
+ * sits at/below main, and an empty diff is no patch id — so the round cannot
+ * be recorded and admission refuses. The PRODUCTION gate (`mergeIdentity`)
+ * does NOT take this option and still requires the mainline.
+ *
+ * An empty diff is reported, not silently returned: `warning` names the base
+ * ref and says HEAD sits at/below it, because the caller's fallback text
+ * blames the round cap (#1140 made the caps WARN rather than refuse) and
+ * offers an override that cannot help an empty diff.
+ *
  * `untracked` names the untracked files the worktree diff could not cover.
  * The entry is still written for the tracked content, but the warning is
  * returned so the caller traces it — the gap is visible to the operator.
@@ -126,9 +141,9 @@ export { remoteName } from "./review-ledger-path.ts";
 export async function workingTreePatchId(
   execFn: LedgerExecFn,
   cwd: string,
-  opts: { digest?: boolean } = {},
+  opts: { digest?: boolean; baseBranch?: string } = {},
 ): Promise<{ patchId?: string; untracked: string[]; warning?: string; diffSha256?: string }> {
-  const base = await identityBase(execFn, cwd);
+  const base = await identityBase(execFn, cwd, { baseBranch: opts.baseBranch });
   if (!base.ok) return { untracked: [], warning: `${base.reason} — no ledger entry written` };
   const baseRef = `${base.remote}/${base.mainline}`;
   let mergeBase = "";
@@ -167,7 +182,16 @@ export async function workingTreePatchId(
       warning: `working-tree patch-id failed: ${(err as Error).message?.slice(0, 120)} — no ledger entry written`,
     };
   }
-  if (!patchId) return { patchId: undefined, untracked: [] };
+  if (!patchId)
+    return {
+      patchId: undefined,
+      untracked: [],
+      warning: `the diff of HEAD against ${baseRef} (merge-base ${mergeBase.slice(0, 8)}) is empty — HEAD sits at or below that base, so there is nothing to review against it${
+        opts.baseBranch
+          ? ""
+          : ` (the base came from the resolved mainline; pass the PR's own base branch as \`baseBranch\` when the PR is not based on ${baseRef})`
+      } — no ledger entry written`,
+    };
   // The digest is best-effort for the WRITER: without it the entry is still
   // recorded, and a later carry falls back to a full review (fail closed).
   let diffSha256: string | undefined;

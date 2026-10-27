@@ -144,6 +144,29 @@ export function prViewCmd(forge: ForgeType, number: number): string {
   return `glab mr view ${number} --output json`;
 }
 
+/**
+ * The PR/MR's BASE branch, and nothing else. The `prViewCmd` field list carries
+ * `body` — untrusted author text — and the only reader of this answer is the
+ * review's identity resolution, which needs one field. Same field names the
+ * #912 guard reads (`baseRefName` on GitHub, `target_branch` on GitLab), so
+ * the review and the guard ask one question of one source.
+ */
+export function prBaseBranchCmd(forge: ForgeType, number: number): string {
+  if (forge === "github") return `gh pr view ${number} --json baseRefName`;
+  return `glab mr view ${number} --output json`;
+}
+
+/**
+ * The PR/MR's HEAD branch, and nothing else — the sibling of
+ * `prBaseBranchCmd` for the round budget's fallback key (a detached checkout
+ * keyed on the PR's head branch). `prViewCmd` carries the whole record
+ * including `body`, which this reader does not need and must not pull.
+ */
+export function prHeadBranchCmd(forge: ForgeType, number: number): string {
+  if (forge === "github") return `gh pr view ${number} --json headRefName`;
+  return `glab mr view ${number} --output json`;
+}
+
 export function prListCmd(
   forge: ForgeType,
   opts: { state?: string; sourceBranch?: string } = {},

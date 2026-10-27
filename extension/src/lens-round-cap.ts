@@ -42,6 +42,17 @@
  *     read at call time, skips the budget (no warning) and is recorded on the
  *     ledger entry the run writes. The tool schema has no parameter for it.
  *
+ * The base branch (#1127 working-identity split): a run whose PR is based on
+ * something other than the production mainline — `feature → staging` with prod
+ * published from `main` by hand — must be budgeted and recorded against the
+ * PR's OWN base, not `origin/HEAD`'s target. `admitLensRound` resolves the PR's
+ * base branch (or takes the caller's) and hands it to both the patch-id check
+ * and the ledger writer through `RoundAdmission.baseBranch`, so the budget and
+ * the row can never disagree about which base the round was counted against.
+ * With no PR and no caller-supplied base the identity stays the mainline's —
+ * every existing caller is unchanged. The PRODUCTION rule is untouched:
+ * `mergeIdentity` still refuses a PR that does not merge to the mainline.
+ *
  * Known limit: the in-flight reservation is per Pi process. Across processes,
  * and against a previous run's fire-and-forget ledger write that has not
  * landed yet, the check is best-effort. Within a process the reservation is
@@ -60,6 +71,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { execp } from "./exec.ts";
+import { prBaseBranchFor } from "./lens-budget-key.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
@@ -330,6 +342,10 @@ export type RoundAdmission =
       key?: string;
       /** The round this run is (absent on the override path). */
       round?: number;
+      /** The PR's base branch when one was known — the base this round's patch
+       * id was taken against, and what the caller MUST thread into the ledger
+       * write so the row is keyed on the same identity the budget spent. */
+      baseBranch?: string;
       /** A visible note the caller must surface (e.g. a fallback budget key). */
       note?: string;
       release: RoundRelease;
@@ -348,15 +364,27 @@ const KEY_SOURCE_TEXT = {
  * caller MUST call `release()` once the run settles (the tool does so in a
  * `finally`). Runs before the delta/full decision, so an empty delta also
  * passes through here without consuming a round (it writes no entry).
+ *
+ * `baseBranch` — the PR's own base branch, when the caller knows it. It moves
+ * the WORKING identity (this gate's patch-id check and the ledger row the run
+ * writes) off the production mainline. Absent with a `pr`, the base is read
+ * from the forge; absent both, the mainline is used as before.
  */
 export async function admitLensRound(opts: {
   cwd?: string;
   head?: string;
   pr?: number;
   env?: NodeJS.ProcessEnv;
+  baseBranch?: string;
 }): Promise<RoundAdmission> {
   const cwd = opts.cwd ?? process.cwd();
   const env = opts.env ?? process.env;
+  // The PR's base branch, resolved BEFORE the patch-id check: an integration-
+  // branch PR (`feature → staging`, prod published from `main` by hand) has an
+  // EMPTY diff against the production mainline whenever the checkout sits
+  // at/below main, and the check below would refuse a reviewable PR for a
+  // reason that has nothing to do with the round budget.
+  const baseBranch = opts.baseBranch?.trim() || (await prBaseBranchFor(cwd, opts.pr));
   // Every run is keyed (#1127): the branch, or a fallback key (lens-budget-key.ts).
   const keyed = await resolveBudgetKey({ cwd, head: opts.head, pr: opts.pr });
   const note =
@@ -373,6 +401,7 @@ export async function admitLensRound(opts: {
       admitted: true,
       overrideCap: true,
       key: keyed.key,
+      baseBranch,
       note,
       release: keyed.key ? reserve(keyed.key) : NOOP_RELEASE,
     };
@@ -392,14 +421,25 @@ export async function admitLensRound(opts: {
   // #1127 review — the ledger writer records a round only when it can compute a
   // patch id (mainline, remote, merge-base, patch-id). Admission runs the same
   // computation and refuses when it cannot, so an admitted run always lands an
-  // entry and cannot be re-admitted indefinitely at the same round.
-  const patch = await workingTreePatchId(execp, cwd);
+  // entry and cannot be re-admitted indefinitely at the same round. The PR's
+  // base branch, when known, is part of that same computation (and of the
+  // writer's), so the row is keyed on the identity this gate just verified.
+  const patch = await workingTreePatchId(execp, cwd, {
+    ...(baseBranch ? { baseBranch } : {}),
+  });
   if (!patch.patchId) {
     trace(`lens-round-cap: no patch id (${patch.warning ?? "unknown"}) — refusing (fail closed)`);
+    // The warning IS the diagnosis — it names the base ref the diff was taken
+    // against and says HEAD sits at/below it. The cap is NOT the cause here:
+    // since #1140 the round and streak caps warn rather than refuse, so the
+    // only reasons left for this refusal are no key / no patch id / unreadable
+    // ledger / corrupt counter. Pointing the operator at
+    // PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE would name a knob that cannot help an
+    // empty diff.
     return {
       admitted: false,
       refusal: refusal(
-        `ROUND_CAP_REACHED — the round cannot be recorded: ${patch.warning ?? "no patch id could be computed for the working tree"}. A run that cannot be recorded would not consume a round, so it is refused fail closed. Resolve the mainline/remote state, or have the operator set PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1 if an unbudgeted round is accepted.`,
+        `NO REVIEW — nothing to review: ${patch.warning ?? "no patch id could be computed for the working tree"}. A round that cannot be recorded would not consume a round, so this run is refused fail closed. This is not the round budget: the caps warn since #1140, and no cap override can produce a diff. If a base branch was assumed, pass the PR's own base (the review's identity follows the PR, not the production mainline).`,
       ),
     };
   }
@@ -445,6 +485,7 @@ export async function admitLensRound(opts: {
     overrideCap: false,
     key,
     round: budget.nextRound,
+    baseBranch,
     note: [warning, note].filter(Boolean).join("\n\n") || undefined,
     release: reserve(key, budget.nextRound),
   };

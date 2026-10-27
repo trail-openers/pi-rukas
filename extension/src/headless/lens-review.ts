@@ -94,6 +94,7 @@ export async function runLensReviewVerb(
         pi: ctx.host,
         overrideCap: admission.overrideCap,
         ledgerKey: admission.key,
+        baseBranch: admission.baseBranch,
         onLedgerWrite: (w) => {
           ledgerWrite = w;
         },

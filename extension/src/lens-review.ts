@@ -167,6 +167,11 @@ export async function runLensReview(opts: {
   /** #1127 — the round-budget key the tool admitted this run under (lens-budget-key.ts);
    * keys the ledger entry when no branch resolves. */
   ledgerKey?: string;
+  /** The PR's base branch (optional), supplied by the admission so the ledger
+   * row's patch id is taken against the same base the round budget just
+   * verified. Absent, the identity follows the production mainline exactly as
+   * before. */
+  baseBranch?: string;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -301,6 +306,7 @@ export async function runLensReview(opts: {
         head: opts.head,
         overrideCap: opts.overrideCap,
         ledgerKey: opts.ledgerKey,
+        baseBranch: opts.baseBranch,
       },
       opts.pr,
     );

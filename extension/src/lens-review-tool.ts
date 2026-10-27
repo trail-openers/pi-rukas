@@ -121,6 +121,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
                 ...params,
                 overrideCap: admission.overrideCap,
                 ledgerKey: admission.key,
+                baseBranch: admission.baseBranch,
                 signal,
                 onLedgerWrite: (w) => {
                   ledgerWrite = w;

@@ -18,6 +18,8 @@
  */
 
 import { execp } from "./exec.ts";
+import { prBaseBranchCmd, prHeadBranchCmd } from "./forge-commands.ts";
+import { detectForge } from "./forge-detect.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
@@ -60,7 +62,7 @@ async function soleBranchAt(cwd: string, sha: string): Promise<string | undefine
 /** The PR's head branch (`gh pr view`), or undefined when unavailable. */
 async function prHeadBranch(cwd: string, pr: number): Promise<string | undefined> {
   try {
-    const { stdout } = await execp(`gh pr view ${pr} --json headRefName`, {
+    const { stdout } = await execp(prHeadBranchCmd("github", pr), {
       cwd,
       maxBuffer: 64 * 1024,
       timeout: 30_000,
@@ -69,6 +71,55 @@ async function prHeadBranch(cwd: string, pr: number): Promise<string | undefined
     return typeof raw.headRefName === "string" && raw.headRefName ? raw.headRefName : undefined;
   } catch (err) {
     trace(`lens-budget-key: PR head lookup failed: ${(err as Error).message}`);
+    return undefined;
+  }
+}
+
+/**
+ * The PR's BASE branch — the branch the PR merges INTO, which is what a
+ * review's patch identity is taken against.
+ *
+ * This is the working side of the mainline/working-base split: a project whose
+ * release flow is `feature → staging → (operator publishes prod from main by
+ * hand)` keeps `origin/HEAD` on `main` while every PR is opened against
+ * `staging`. The round budget and the ledger row follow the PR, so both ask
+ * here rather than assuming the production line; the PRODUCTION merge gate
+ * (`mergeIdentity`) never calls it and still requires the mainline (#1305).
+ *
+ * The answer comes from the forge, not from git: `baseRefName` (GitHub) /
+ * `target_branch` (GitLab) are the same fields the #912 guard reads for its
+ * own comparison, so the review and the guard ask one question of one source.
+ * It is read through the canonical `prBaseBranchCmd` seam (forge-commands.ts),
+ * NOT through the full `prView` adapter: that command's field list carries
+ * `body`, and a PR body is untrusted text that would land in this process's
+ * memory for no reason when one bare field answers the question.
+ *
+ * Returns undefined whenever the base is not knowable (no `pr`, unknown forge,
+ * no CLI, malformed JSON) — every caller falls back to the mainline, which is
+ * today's behaviour, so a failed read costs nothing but the fallback.
+ */
+export async function prBaseBranchFor(
+  cwd: string,
+  pr: number | undefined,
+): Promise<string | undefined> {
+  if (!Number.isInteger(pr) || (pr as number) <= 0) return undefined;
+  const number = pr as number;
+  try {
+    const detection = await detectForge(cwd, { allowProbe: false });
+    if (detection.forge === "unknown") {
+      trace(`lens-budget-key: forge unknown for ${cwd} — PR #${number} base branch not resolved`);
+      return undefined;
+    }
+    const { stdout } = await execp(prBaseBranchCmd(detection.forge, number), {
+      cwd,
+      maxBuffer: 64 * 1024,
+      timeout: 30_000,
+    });
+    const raw = JSON.parse(stdout) as { baseRefName?: unknown; target_branch?: unknown };
+    const value = detection.forge === "github" ? raw.baseRefName : raw.target_branch;
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  } catch (err) {
+    trace(`lens-budget-key: PR #${number} base lookup failed: ${(err as Error).message}`);
     return undefined;
   }
 }

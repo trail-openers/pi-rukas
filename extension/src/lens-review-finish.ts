@@ -56,6 +56,10 @@ async function finish(
     /** #1127 — the round-budget key when the branch was not resolved (a
      * branch the commit sits on, the PR head, or `detached:<sha>`). */
     ledgerKey?: string;
+    /** The PR's base branch (optional): the base the row's patch id is taken
+     * against, threaded from the round admission so the row and the budget
+     * agree on it by construction. Absent → the production mainline. */
+    baseBranch?: string;
   } = {},
   pr?: number,
 ): Promise<LensFinishResult> {
@@ -77,6 +81,9 @@ async function finish(
     ledger.ledgerKey ?? branch,
     // #1127 — the operator's round-cap override, recorded on the entry.
     ledger.overrideCap,
+    // The PR's base branch: the identity base for this row, threaded from the
+    // round admission so the row is keyed on the same identity the budget spent.
+    ledger.baseBranch,
   );
   // #973 — the residual-findings disclosure: posted ONLY when the verdict is
   // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual for
