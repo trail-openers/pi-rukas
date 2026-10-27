@@ -12,7 +12,7 @@
 import { hostBudget } from "./host-resources.ts";
 import type { BoundedOutOfScope } from "./plan-fence-bound.ts";
 import { boundOutOfScope, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
-import { proseSelfFenceDrops } from "./plan-fence-prose.ts";
+import { proseSelfFenceDecisions, proseSelfFenceNote } from "./plan-fence-prose.ts";
 import { clippedField } from "./plan-fence-record.ts";
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
@@ -21,6 +21,26 @@ import { trace, traceWarn } from "./trace.ts";
 import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
+
+/**
+ * The boundary's own record for one decided removal — the persisted form when
+ * `neutralise` is true (what a state file may hold), the planner's own text when
+ * it is false (what the gate's view re-adds). Both are built from the SAME
+ * decision, so the two accounts cannot disagree about which entry went.
+ */
+function boundaryRecord(
+  workstreamId: string,
+  entry: string,
+  path: string,
+  neutralise: boolean,
+): UnfenceRecord {
+  return {
+    workstream: workstreamId,
+    path,
+    entry: neutralise ? neutraliseFenceEntry(entry) : entry,
+    note: proseSelfFenceNote(entry, path),
+  };
+}
 
 /**
  * Say each boundary drop on the trace, once. `traceWarn`, not `trace`: an
@@ -45,18 +65,6 @@ function traceBoundaryDrops(drops: UnfenceRecord[], workstreamId: string): Unfen
 }
 
 /**
- * The workstream exactly as the planner reported it: the same build with the
- * PATH-shaped self-fence drop turned off. The plan-quality gate reasons over
- * this (#1167) — see `WorkstreamReport.reported`.
- */
-export function workstreamAsReported(
-  args: WorkstreamArgs,
-  boundedFence?: BoundedOutOfScope,
-): Workstream {
-  return workstreamFromArgs(args, false, boundedFence);
-}
-
-/**
  * A `report_workstream` call's arguments, already checked against the schema by
  * the reader (work-driver-plan-calls.ts). Optional lines add no keys when absent,
  * so a plan without them has the pre-#1322 shape.
@@ -78,20 +86,12 @@ export function workstreamAsReported(
  */
 export function workstreamFromArgs(
   args: WorkstreamArgs,
-  // #1862 — the plan-quality gate builds its view of the SAME accepted calls
-  // with `dropSelfFences` FALSE, so a path-shaped fence over the workstream's own
-  // file is still present when the gate reasons: that contradiction is what
-  // #1167's one-shot corrective steers the planner on. Prose self-fences drop
-  // either way (a sentence is not a fence the develop gate could honour); a
-  // stored, developed workstream always takes the defaults and has both gone.
-  //
-  // `boundedFence` is the same reason as the second flag: a private second build
-  // of one call must not READ AS a second bound the driver applied, so the caller
-  // hands it the bound it already computed and traced. Every bound's line stays
-  // one line per call (`test-plan-outofscope-bound-1744` counts them).
-  dropSelfFences = true,
+  // #1862 — a private second build of one call must not READ AS a second bound
+  // the driver applied, so the caller hands it the bound it already computed and
+  // traced. Every bound's line stays one line per call
+  // (`test-plan-outofscope-bound-1744` counts them).
   boundedFence?: BoundedOutOfScope,
-): Workstream {
+): WorkstreamBuild {
   const dependsOn = args.dependsOn ?? [];
   const introduces = args.introduces ?? [];
   const consumes = args.consumes ?? [];
@@ -111,23 +111,26 @@ export function workstreamFromArgs(
   // records of a dropped entry go with it, the way `capFenceList` drops a record
   // whose entry is gone — a record describing a vanished entry is a disclosure of
   // a loss that did not happen.
-  const proseDrops = dropSelfFences
-    ? traceBoundaryDrops(proseSelfFenceDrops(boundedPaths.paths, fence.entries, args.id), args.id)
-    : // #1167 — the gate's view KEEPS its path-shaped self-fences (that is the
-      // contradiction the corrective steers on), and a removal this site does not
-      // make is a removal whose records must stay too: `capFenceList` drops a
-      // clip record whose entry is gone, and an entry that is still in the list
-      // keeps its record. Dropping the records as well would describe a loss that
-      // did not happen to this map. Prose entries drop either way, with theirs.
-      //
-      // No trace line from this build: `workstreamFromArgs` already emitted the
-      // identical line for the same entry, and an operator greps one line per
-      // bound the driver applied. `dropSelfFences` is the parameter's name rather
-      // than a second spelling of the same idea.
-      proseSelfFenceDrops(boundedPaths.paths, fence.entries, args.id, false).filter((d) =>
-        /\s/.test(d.entry),
-      );
-  const dropped = new Set(proseDrops.map((d) => d.entry));
+  //
+  // #1862 — the drops are RETURNED, not merely traced. The plan-quality gate has
+  // to reason over the plan as the planner reported it (a self-fence this site
+  // deletes is exactly the contradiction #1167's one-shot corrective exists to
+  // point out), and the only sound account of what was taken away is the site
+  // that took it: deriving it afterwards by comparing two maps records drops that
+  // never happened and rescans the fence list per entry. `rawDrops` is the entry
+  // as the planner wrote it (never persisted — it is planner text, and only the
+  // neutralised form belongs in a state file); `drops` is the persisted form of
+  // the same removals, which is what `outOfScope` no longer holds.
+  // ONE scan decides the removals; the two shapes are two renderings of it, so
+  // the account the gate reads and the account the state file holds cannot
+  // disagree about WHICH entry went.
+  const decided = proseSelfFenceDecisions(boundedPaths.paths, fence.entries);
+  const dropped = new Set(decided.map((d) => d.entry));
+  const rawDrops = decided.map((d) => boundaryRecord(args.id, d.entry, d.path, false));
+  const drops = traceBoundaryDrops(
+    decided.map((d) => boundaryRecord(args.id, d.entry, d.path, true)),
+    args.id,
+  );
   if (boundedPaths.duplicate > 0) {
     // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same
     // reason (#1744) — an operator greps one channel for every bound the driver
@@ -139,7 +142,7 @@ export function workstreamFromArgs(
       }),
     );
   }
-  return {
+  const workstream: Workstream = {
     id: args.id.slice(0, WORKSTREAM_ID_MAX),
     scope: args.scope,
     paths: boundedPaths.paths,
@@ -150,6 +153,21 @@ export function workstreamFromArgs(
     ...(introduces.length > 0 ? { introduces } : {}),
     ...(consumes.length > 0 ? { consumes } : {}),
   };
+  return { workstream, drops, rawDrops };
+}
+
+/**
+ * One `report_workstream` call as the boundary built it: the stored workstream,
+ * plus the self-fence entries this call removed. `drops` is the persisted shape
+ * (neutralised) and `rawDrops` the same removals with the entry as the planner
+ * wrote it — see `workstreamFromArgs`.
+ */
+export interface WorkstreamBuild {
+  workstream: Workstream;
+  /** Neutralised, persisted form of the removals this boundary made. */
+  drops: UnfenceRecord[];
+  /** The same removals with the RAW entry, for the gate's view. Never persisted. */
+  rawDrops: UnfenceRecord[];
 }
 
 /**

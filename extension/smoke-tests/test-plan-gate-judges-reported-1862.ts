@@ -23,8 +23,13 @@
  */
 
 import type { CycleContext } from "../src/work-driver-context.ts";
-import { emptyWorkstreamReport } from "../src/work-driver-plan-calls.ts";import type { PlanQualityHost, PlanQualityInput } from "../src/work-driver-plan-quality-pass.ts";
+import { emptyWorkstreamReport } from "../src/work-driver-plan-calls.ts";
+import type {
+  PlanQualityHost,
+  PlanQualityInput,
+} from "../src/work-driver-plan-quality-pass.ts";
 import { runPlanQualityTail } from "../src/work-driver-plan-quality-pass.ts";
+import type { UnfenceRecord } from "../src/work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 
@@ -64,13 +69,14 @@ function ctx(): CycleContext {
 }
 
 /**
- * Run the tail over a plan whose STORED map is `stored` and whose REPORTED map
- * (the same accepted calls with the boundary's path-shaped self-fence drop off)
- * is `reported`.
+ * Run the tail over a plan whose STORED map is `stored` and whose boundary
+ * reports the self-fence entries it removed from those very calls as
+ * `boundaryRawDrops` (the gate's view is the two of them joined — the boundary
+ * says what it dropped, nothing re-derives it).
  */
 async function tail(
   stored: Record<string, Workstream>,
-  reported: Record<string, Workstream>,
+  boundaryRawDrops: UnfenceRecord[] = [],
   host: PlanQualityHost = HOST,
 ) {
   const input: PlanQualityInput = {
@@ -79,10 +85,20 @@ async function tail(
       ...emptyWorkstreamReport(),
       accepted: Object.keys(stored).length,
       workstreams: stored,
-      reported,
+      ...(boundaryRawDrops.length > 0 ? { boundaryRawDrops } : {}),
     },
     workstreams: stored,
-    reported,
+    ...(boundaryRawDrops.length > 0
+      ? {
+          boundaryRawDrops,
+          boundaryDrops: boundaryRawDrops.map((d) => ({
+            workstream: d.workstream,
+            path: d.path,
+            entry: d.entry,
+            note: d.note,
+          })),
+        }
+      : {}),
     firstPlanRaw: stored,
     findingsCount: 1,
     // No spec: the #819 coverage gate stands down so the only reason in play is
@@ -101,7 +117,16 @@ async function tail(
 // that parks is the visible half, the steer is the half that must name the entry.
 {
   const stored = { "task-a": WS("task-a", ["src/a.ts"], ["docs/"]) };
-  const reported = { "task-a": WS("task-a", ["src/a.ts"], ["src/a.ts", "docs/"]) };
+  // What the boundary says it removed from THIS call — the entry as the planner
+  // wrote it, which is the text the steer must name.
+  const drops: UnfenceRecord[] = [
+    {
+      workstream: "task-a",
+      path: "src/a.ts",
+      entry: "src/a.ts",
+      note: 'self-fence dropped: "src/a.ts" covers its own declared "src/a.ts"',
+    },
+  ];
   const prompts: string[] = [];
   const host: PlanQualityHost = {
     ...HOST,
@@ -113,7 +138,7 @@ async function tail(
   let halted = false;
   let out: Awaited<ReturnType<typeof tail>> | undefined;
   try {
-    out = await tail(stored, reported, host);
+    out = await tail(stored, drops, host);
   } catch {
     halted = true;
   }
@@ -135,16 +160,13 @@ async function tail(
 {
   // The two halves declare the same file set, so the coupling merge folds `b`
   // into `a` for real; `b` fenced `src/a.ts`, which `a` declares — the fold's
-  // union rule opens it. Nothing here is a self-fence the boundary removed.
+  // union rule opens it. Nothing here is reported as a boundary drop, so there is
+  // nothing for the gate's view to add.
   const stored = { a: WS("a", ["src/a.ts"], ["docs/"]) };
-  const reported = {
-    a: WS("a", ["src/a.ts"], ["docs/"]),
-    b: WS("b", ["src/a.ts"], ["src/a.ts", "docs/"]),
-  };
   let dispatched = false;
   let out: Awaited<ReturnType<typeof tail>> | undefined;
   try {
-    out = await tail(stored, reported);
+    out = await tail(stored);
   } catch {
     dispatched = true;
   }
@@ -169,7 +191,7 @@ async function tail(
   };
   let dispatched = false;
   try {
-    await tail(stored, structuredClone(stored));
+    await tail(stored);
   } catch {
     dispatched = true;
   }

@@ -41,12 +41,13 @@
  */
 
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
-import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
-import type { PlanUnfenceSummary } from "./workflow-state-schema.ts";
-export type { UnfenceRecord };
 import { normaliseDeclaredPath, pathTokenIn } from "./work-driver-declared-path.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { findFenceContradictions } from "./work-driver-plan-paths.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
+import { UNFENCE_NOTES_CAP } from "./work-driver-plan-unfence-notes.ts";
+import type { PlanUnfenceSummary } from "./workflow-state-schema.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
 
 /** What `selfFenceEntryDrop` decided about one entry. */
 export type SelfFenceEntryDrop =
@@ -101,51 +102,69 @@ export function contradictionPathsByEntry(
 
 /**
  * The path a fence entry covers among `paths`, by the containment rule the plan
- * gate uses (`findFenceContradictions`): exact, or containment either way on a
- * `/` boundary, with a `dir/**` / `dir/*` entry read as `dir`. Exported for the
- * quality tail, which compares the boundary's stored map against the planner's
- * reporting and needs the same answer the gate would give.
+ * gate itself uses (`findFenceContradictions`, which reads a `dir/**` / `dir/*`
+ * entry as `dir`). Stated in the GATE's terms rather than in the tool boundary's:
+ * `contradictory-fence` fires on exactly the entries this answers for, so the
+ * view the gate reasons over can hold no entry the gate could not have judged.
  */
-export function ownPathCoveredBy(entry: string, paths: readonly string[]): string | undefined {
-  return contradictionPathsByEntry(paths, [entry]).get(entry);
+function coveredByOwnPath(entry: string, paths: readonly string[]): string | undefined {
+  const own = declaredPaths(paths);
+  if (own.length === 0) return undefined;
+  const found = findFenceContradictions({ self: { paths: own, outOfScope: [entry] } });
+  const hit = found.find((c) => c.entry === entry);
+  if (hit === undefined) return undefined;
+  // The same refusals the boundary's arm makes: a protected path is never a
+  // reason to open (or to re-add) a fence.
+  if (isProtectedPath(hit.path) || isProtectedPath(hit.entry)) return undefined;
+  return hit.path;
 }
 
 /**
- * The map the plan-quality gate reasons over: `merged` — the coupling merge's
- * output, which owns the workstream ids, `paths` and `dependsOn` — plus the
- * boundary's OWN drops, `drops`, re-added per id.
+ * The self-fence entries a FOLD removed, re-added per workstream id.
  *
- * `drops` is what `selfFenceDropsBetween` derived by comparing the boundary's
- * stored map against the planner's reporting: path-shaped self-fences the tool
- * boundary removed. Nothing else is ever added, and that restriction is the
- * whole design:
+ * A fold — the ceiling fold or the coupling merge — unions both halves' fences
+ * and then drops the entries that fence the merged workstream's own files
+ * (`foldSelfFenceDrops`). The plan-quality gate has to see those entries: a fence
+ * over a file the plan declares IS the `contradictory-fence` defect the one-shot
+ * corrective exists to point out, and a fold has just erased it from the map the
+ * gate would otherwise read. `drops` are the fold's own records, so nothing else
+ * is ever added, and that restriction is the whole design:
  *
- *   - A sibling's fence or a protected path is in both maps, so it is not a drop
- *     and stays out of `drops`.
- *   - A fence a FOLD removed is in neither map. Re-adding it from the planner's
- *     reporting would widen the fence the cycle develops — the union rule
- *     deliberately opened that fence when the two halves merged — and could
- *     manufacture `contradictory-fence` on a plan that has none. So the entries
- *     come from the recorded drops, never from `reported` alone.
+ *   - A sibling's fence or a protected path is not a drop, so it is not re-added.
+ *   - The TOOL BOUNDARY's drops are not passed here either — the reader hands
+ *     them to `planGateView` with the raw entry (`rawDrops`), because a fence
+ *     entry is one instruction and the neutralised form a record holds is a
+ *     different string than the one the planner wrote. An entry only ONE of the
+ *     two removed is therefore absent from this argument and never put back, so
+ *     the gate sees a wider FENCE, never a different plan.
  *
  * Because ids, `paths` and `dependsOn` all come from `merged`, a pair the merge
  * folded away cannot reappear here and cannot manufacture `overlapping-paths` or
- * a dangling `depends-on` — the reason checks see a wider FENCE, not a different
- * plan. A drop whose id the merge absorbed contributes nothing: it is not in the
- * merged map at all.
+ * a dangling `depends-on`. A drop whose id the merge absorbed contributes
+ * nothing: it is not in the merged map at all.
  */
-export function mergeBoundaryInto<T extends { paths: string[]; outOfScope?: string[] }>(
+export function mergeFoldDropsInto<T extends { paths: string[]; outOfScope?: string[] }>(
   merged: Record<string, T>,
   drops: readonly UnfenceRecord[],
 ): Record<string, T> {
+  return addEntriesByWorkstream(
+    merged,
+    drops.map((d) => ({ id: d.workstream, entry: d.entry })),
+  );
+}
+
+/** Re-add `entries` to each named workstream's fence list, keeping the stored
+ * entries first and never adding a duplicate. One rule for both re-adding sites
+ * (the fold's records and the boundary's raw drops). */
+function addEntriesByWorkstream<T extends { paths: string[]; outOfScope?: string[] }>(
+  merged: Record<string, T>,
+  entries: readonly { id: string; entry: string }[],
+): Record<string, T> {
   const byId = new Map<string, string[]>();
-  for (const d of drops) {
-    // The record's `entry` is neutralised for the state file; the map holds what
-    // the planner wrote, and the two match when the entry is clean (which every
-    // entry the boundary can drop is — the token scan refuses a broken one).
-    const list = byId.get(d.workstream);
+  for (const d of entries) {
+    const list = byId.get(d.id);
     if (list) list.push(d.entry);
-    else byId.set(d.workstream, [d.entry]);
+    else byId.set(d.id, [d.entry]);
   }
   const out: Record<string, T> = {};
   for (const [id, ws] of Object.entries(merged)) {
@@ -162,78 +181,78 @@ export function mergeBoundaryInto<T extends { paths: string[]; outOfScope?: stri
 }
 
 /**
- * The self-fence entries the tool boundary removed on its way from the planner's
- * reporting (`reported`) to the map the cycle develops (`stored`) — reported as
- * records so the removal reaches the persisted `planQuality.unfence`.
+ * The single view the plan-quality gate reasons over (#1862).
  *
- * Only PATH-shaped entries count. A prose entry is recorded by the unfence pass
- * beside its own `removed` count, and an entry the two maps both keep is not a
- * removal at all. The comparison is entry-identity on the same workstream id,
- * because the boundary never rewrites an entry it keeps.
+ * `stored` is the map the cycle develops — the truth for every reason except the
+ * one this exists for. `boundaryRaw` are the raw self-fence entries the tool
+ * boundary removed from these very calls (it reports them; nothing re-derives
+ * them), and `foldDrops` the entries the FOLD removed from the halves it merged.
+ * Each is re-added through its own rule, because they arrive in different
+ * forms on purpose: the boundary hands over the planner's own text so the gate
+ * and the corrective steer read the entry the planner wrote, while a fold's
+ * records hold the neutralised text the state file is allowed to carry, and
+ * re-adding that is what lets a fold-opened contradiction be seen at all.
+ *
+ * Built ONCE by the tail and judged ONCE: `planQualityReason` runs a single time
+ * over the result, so a plan cannot be steered on a reading no other site has.
+ * A whitespace-free entry that covers none of the workstream's own declarations
+ * is not a self-fence under this gate's own containment rule and is left out —
+ * a fence the driver never removed is not a contradiction it may invent.
  */
-export function selfFenceDropsBetween(
-  stored: Record<string, { paths: string[]; outOfScope?: string[] }>,
-  reported: Record<string, { id: string; paths: string[]; outOfScope?: string[] }>,
-): UnfenceRecord[] {
-  const out: UnfenceRecord[] = [];
-  for (const [id, ws] of Object.entries(reported)) {
-    const kept = new Set(stored[id]?.outOfScope ?? []);
-    for (const entry of ws.outOfScope ?? []) {
-      if (kept.has(entry) || /\s/.test(entry)) continue;
-      const path = ownPathCoveredBy(entry, ws.paths);
-      if (path === undefined) continue;
-      out.push({
-        workstream: id,
-        path,
-        entry: neutraliseFenceEntry(entry),
-        note: selfFenceDroppedNote(entry, path),
-      });
+export function planGateView(
+  stored: Record<string, Workstream>,
+  boundaryRaw: readonly { workstream: string; entry: string }[],
+  foldDrops: readonly UnfenceRecord[] = [],
+): Record<string, Workstream> {
+  const raw = addEntriesByWorkstream(
+    mergeFoldDropsInto(stored, foldDrops),
+    boundaryRaw.map((d) => ({ id: d.workstream, entry: d.entry })),
+  );
+  const out: Record<string, Workstream> = {};
+  for (const [id, ws] of Object.entries(raw)) {
+    const entries = ws.outOfScope;
+    if (!entries || entries.length === 0) {
+      out[id] = ws;
+      continue;
     }
+    const kept = entries.filter((e) => /\s/.test(e) || coveredByOwnPath(e, ws.paths) !== undefined);
+    out[id] = kept.length === entries.length ? ws : { ...ws, outOfScope: kept };
   }
   return out;
 }
 
-/** The note a fold or the boundary writes for one removed self-fence entry. */
-function selfFenceDroppedNote(entry: string, path: string): string {
-  // The boundary's own wording: it answers to the FENCE BOUND (the entry was
-  // never a usable fence), where the fold's note answers to the merge, and it
-  // does NOT say `(merged workstream)` — a drop this site made was made by one
-  // call's boundary, not by a fold. Both fields are neutralised and quoted, so
-  // no control byte the planner wrote reaches the state file, the handoff or a
-  // trace line raw (#1862 M4).
-  return `self-fence dropped: ${JSON.stringify(neutraliseFenceEntry(entry))} covers ${JSON.stringify(neutraliseFenceEntry(path))}`;
-}
-
 /**
- * Fold the boundary's drops into the pass's record: the count goes up, the notes
- * name them (each kind held to its own cap so neither list hides the other), and
- * a record that did not exist becomes one that says the pass ran. `selfFences`
- * stays the FOLD's count — the fold's drops have a different authority (the
- * merge) and their own field, exactly as the record's doc says.
+ * Fold the drops the TOOL BOUNDARY made into the pass's record. Its own counter
+ * (`boundarySelfFences`), not `removed` and not `selfFences`: the issue-named
+ * pass, the folds and the boundary are three authorities, and an operator
+ * reading a plan where fences went needs to know which of the three opened them
+ * — the same reason `docsTests` and `selfFences` are counted apart. The notes
+ * join `notes`, each kind held to its own cap so neither list hides the other.
  */
 export function withBoundaryDrops(
   summary: PlanUnfenceSummary | undefined,
   drops: readonly UnfenceRecord[],
 ): PlanUnfenceSummary | undefined {
   if (drops.length === 0) return summary;
-  const notes = [...(summary?.notes ?? []), ...drops.map((r) => r.note)];
+  const notes = [
+    ...(summary?.notes ?? []),
+    ...drops.map((r) => r.note).slice(0, UNFENCE_NOTES_CAP),
+  ].slice(0, UNFENCE_NOTES_CAP * 2);
   return {
     ran: true,
-    removed: (summary?.removed ?? 0) + drops.length,
+    removed: summary?.removed ?? 0,
     kept: summary?.kept ?? 0,
     rolledBack: summary?.rolledBack ?? 0,
     unresolved: summary?.unresolved ?? 0,
     ...(summary?.selfFences === undefined ? {} : { selfFences: summary.selfFences }),
+    boundarySelfFences: (summary?.boundarySelfFences ?? 0) + drops.length,
     ...(summary?.issueBodyUnreadable === undefined
       ? {}
       : { issueBodyUnreadable: summary.issueBodyUnreadable }),
     ...(summary?.docsTests === undefined ? {} : { docsTests: summary.docsTests }),
-    notes: notes.slice(0, UNFENCE_NOTES_CAP * 2),
+    notes,
   };
 }
-
-/** How many notes the merged record keeps. Mirrors the pass's own cap. */
-const UNFENCE_NOTES_CAP = 10;
 
 /** Every path-shaped token a prose entry makes a claim about: a whitespace-
  * delimited word carrying a `/`, or one ending in a file extension, after the

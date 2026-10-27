@@ -48,6 +48,10 @@ import { withDeferredProtectedFence } from "../src/work-driver-plan-fence.ts";
 import { findPathCollisions } from "../src/work-driver-plan-paths.ts";
 import { foldPortPlan } from "../src/work-driver-plan-contract.ts";
 import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
+
+/** The stored workstream one call builds (these cases read the fence list, not the drops). */
+const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
+  workstreamFromArgs(args).workstream;
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
@@ -226,8 +230,8 @@ function boundLineOf(traces: string[]): string | undefined {
   // file to `fenceMatches`/`normaliseScopePath`, so they must be one entry here
   // or the same file is authorised twice and the fanout denominator lies.
   const { value: dup } = captureTracesSync(() =>
-    workstreamFromArgs(
-      // The three `src/b.ts` spellings are ONE file to the declared-path
+    buildWs(
+// The three `src/b.ts` spellings are ONE file to the declared-path
       // normaliser (annotation and paired markup both stripped) while the raw
       // text is what is stored. No backticks anywhere: `plannedPathProblem`
       // refuses one outright, so a backtick is not a shape a stored plan holds.
@@ -377,8 +381,8 @@ function boundLineOf(traces: string[]): string | undefined {
   // observed on a plan that DOES have duplicates across its folds: ten
   // workstreams, each re-declaring the eight `task-0` already holds.
   const ten = Array.from({ length: 10 }, (_, i) =>
-    workstreamFromArgs(
-      crowdedArgs(`task-${i}`, [...pathList(8, `src/t${i}`), ...pathList(8, "src/shared")]),
+    buildWs(
+crowdedArgs(`task-${i}`, [...pathList(8, `src/t${i}`), ...pathList(8, "src/shared")]),
     ),
   );
   const { value: folded, traces } = captureTracesSync(() =>
@@ -403,8 +407,8 @@ function boundLineOf(traces: string[]): string | undefined {
   // halves share 20 entries keep 20 and collapse 20, and the line says 20 kept.
   const dupPair = [
     workstreamFromArgs(crowdedArgs("task-a", pathList(20, "src/shared"))),
-    workstreamFromArgs(
-      crowdedArgs("task-b", [...pathList(20, "src/shared"), ...pathList(20, "src/b")]),
+    buildWs(
+crowdedArgs("task-b", [...pathList(20, "src/shared"), ...pathList(20, "src/b")]),
     ),
   ];
   const port = captureTracesSync(() =>

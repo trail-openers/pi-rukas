@@ -34,6 +34,10 @@ import {
 import { correctiveDevelopPrompt } from "../src/work-driver-corrective-prompt.ts";
 import { withDeferredProtectedFence } from "../src/work-driver-plan-fence.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
+
+/** The stored workstream one call builds (these cases read the fence list, not the drops). */
+const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
+  workstreamFromArgs(args).workstream;
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import type { OutOfScopeClip } from "../src/workflow-state-schema-workstreams.ts";
@@ -58,13 +62,13 @@ function assert(cond: boolean, msg: string) {
 
 // ── 6 — the fold carries the records by text, re-caps, and warns ─────────────
 {
-  const a = workstreamFromArgs({
+  const a = buildWs({
     ...VALID,
     id: "a",
     paths: ["src/a.ts"],
     outOfScope: [LONG_PROSE, "docs/a.md"],
   });
-  const b = workstreamFromArgs({
+  const b = buildWs({
     ...VALID,
     id: "b",
     paths: ["src/b.ts"],
@@ -88,8 +92,8 @@ function assert(cond: boolean, msg: string) {
   // A record whose entry the fold removed (a self-fence of a merged path) goes
   // with the entry rather than becoming a claim about an entry that is gone.
   const selfFenced = foldTwo(
-    workstreamFromArgs({ ...VALID, id: "x", paths: ["src/x.ts"], outOfScope: [LONG_PATH_FENCE] }),
-    workstreamFromArgs({ ...VALID, id: "y", paths: [clippedLongPath()], outOfScope: [] }),
+    buildWs({ ...VALID, id: "x", paths: ["src/x.ts"], outOfScope: [LONG_PATH_FENCE] }),
+    buildWs({ ...VALID, id: "y", paths: [clippedLongPath()], outOfScope: [] }),
   );
   assert(
     !(selfFenced.outOfScopeClipped ?? []).some(
@@ -101,7 +105,7 @@ function assert(cond: boolean, msg: string) {
   // Twice the cap unions to the cap, the excess is recorded as ONE record, and
   // the re-cap says so on the SAME trace line the tool boundary uses.
   const wide = (id: string, offset: number): Workstream =>
-    workstreamFromArgs({
+    buildWs({
       ...VALID,
       id,
       paths: [`src/${id}.ts`],
@@ -324,7 +328,7 @@ function assert(cond: boolean, msg: string) {
     `a fence entry cannot smuggle a newline or the driver's own clip marker into the rendering (got ${JSON.stringify(neutralised)})`,
   );
   const injected = captureTracesSync(() =>
-    workstreamFromArgs({
+    buildWs({
       ...VALID,
       id: "in\nject",
       outOfScope: [`x`.repeat(WORKSTREAM_FENCE_MAX + 1) + "\nFORGED LINE", "y".repeat(700)],

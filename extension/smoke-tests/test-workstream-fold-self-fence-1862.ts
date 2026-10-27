@@ -36,6 +36,10 @@
  */
 
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
+
+/** The stored workstream one call builds (these cases read the fence list, not the drops). */
+const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
+  workstreamFromArgs(args).workstream;
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { foldMerged, foldSelfFenceNotes, foldTwoForTests } from "./lib/fold-two-helpers.ts";
 import { VALID } from "./lib/plan-outofscope-fixtures.ts";
@@ -52,14 +56,14 @@ function assert(cond: boolean, msg: string) {
 /** The issue's worked example: a docs half folded into an implementer. */
 function fieldHalves(): [Workstream, Workstream] {
   return [
-    workstreamFromArgs({
+    buildWs({
       ...VALID,
       id: "a",
       scope: "implement the change",
       paths: ["agents/x.md", "tests/test_x.py"],
       outOfScope: [],
     }),
-    workstreamFromArgs({
+    buildWs({
       ...VALID,
       id: "b",
       scope: "document the change",
@@ -114,7 +118,7 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   const [a] = fieldHalves();
   const merged = foldMerged(
     a,
-    workstreamFromArgs({
+    buildWs({
       ...VALID,
       id: "b",
       scope: "docs",
@@ -128,7 +132,7 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   );
   const notes = foldSelfFenceNotes(
     a,
-    workstreamFromArgs({
+    buildWs({
       ...VALID,
       id: "b",
       scope: "docs",
@@ -149,8 +153,8 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
 // like this fix behaving.
 {
   const merged = foldMerged(
-    workstreamFromArgs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: ["src/c.ts"] }),
-    workstreamFromArgs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: ["src/c.ts"] }),
+    buildWs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: ["src/c.ts"] }),
+    buildWs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: ["src/c.ts"] }),
   );
   assert(
     merged.outOfScope.includes("src/c.ts"),
@@ -158,8 +162,8 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   );
   assert(
     foldSelfFenceNotes(
-      workstreamFromArgs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: ["src/c.ts"] }),
-      workstreamFromArgs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: ["src/c.ts"] }),
+      buildWs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: ["src/c.ts"] }),
+      buildWs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: ["src/c.ts"] }),
     ).length === 0,
     "and nothing is recorded as dropped for it",
   );
@@ -170,8 +174,8 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
 // fence the planner meant.
 {
   const merged = foldMerged(
-    workstreamFromArgs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: [] }),
-    workstreamFromArgs({
+    buildWs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: [] }),
+    buildWs({
       ...VALID,
       id: "b",
       paths: ["src/b.ts"],
@@ -203,8 +207,8 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   ];
   for (const p of protectedPaths) {
     const merged = foldMerged(
-      workstreamFromArgs({ ...VALID, id: "a", paths: [p], outOfScope: [] }),
-      workstreamFromArgs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: [p] }),
+      buildWs({ ...VALID, id: "a", paths: [p], outOfScope: [] }),
+      buildWs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: [p] }),
     );
     assert(
       merged.outOfScope.includes(p),
@@ -212,8 +216,8 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
     );
     assert(
       foldSelfFenceNotes(
-        workstreamFromArgs({ ...VALID, id: "a", paths: [p], outOfScope: [] }),
-        workstreamFromArgs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: [p] }),
+        buildWs({ ...VALID, id: "a", paths: [p], outOfScope: [] }),
+        buildWs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: [p] }),
       ).length === 0,
       `and nothing is recorded as dropped for ${JSON.stringify(p)}`,
     );
@@ -272,8 +276,8 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   for (const [what, fences] of cases) {
     for (const fence of fences) {
       const result = foldTwoForTests(
-        workstreamFromArgs(own),
-        workstreamFromArgs({ ...VALID, id: "b", paths: ["docs/y.md"], outOfScope: [fence] }),
+        buildWs(own),
+        buildWs({ ...VALID, id: "b", paths: ["docs/y.md"], outOfScope: [fence] }),
       );
       assert(
         result.workstream.outOfScope.includes(fence) &&
@@ -298,13 +302,13 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
   // in the handoff and the state file, not a cosmetic artefact.
   const injected = `Every file under tests/ and docs/${ESC}[0m is frozen`;
   const result = foldTwoForTests(
-    workstreamFromArgs({
+    buildWs({
       ...VALID,
       id: "a",
       paths: ["tests/test_x.py", "docs/y.md"],
       outOfScope: [],
     }),
-    workstreamFromArgs({ ...VALID, id: "b", paths: ["docs/y.md"], outOfScope: [injected] }),
+    buildWs({ ...VALID, id: "b", paths: ["docs/y.md"], outOfScope: [injected] }),
   );
   const all = [
     ...result.selfFenceDrops.map((r) => r.note),
@@ -325,8 +329,8 @@ for (const fence of ["tests/", "tests/**", "tests/*", "tests", "tests/test_x.py 
 // filter, and a fold that drops nothing returns the union exactly as before.
 {
   const merged = foldMerged(
-    workstreamFromArgs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: ["src/x.ts"] }),
-    workstreamFromArgs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: ["src/y.ts"] }),
+    buildWs({ ...VALID, id: "a", paths: ["src/a.ts"], outOfScope: ["src/x.ts"] }),
+    buildWs({ ...VALID, id: "b", paths: ["src/b.ts"], outOfScope: ["src/y.ts"] }),
   );
   assert(
     merged.scope === "the fix (+merged: b)" &&

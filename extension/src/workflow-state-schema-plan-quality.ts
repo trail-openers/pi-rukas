@@ -114,6 +114,18 @@ export interface PlanUnfenceSummary {
    */
   selfFences?: number;
   /**
+   * #1862 — fence entries the TOOL BOUNDARY (`workstreamFromArgs`) removed while
+   * building these very calls, because each one fenced the workstream's own
+   * declared paths. Counted apart from both `removed` and `selfFences` for the
+   * same reason they are apart from each other: three different authorities
+   * opened them — the issue, the merge, and the boundary's own rule that a
+   * sentence the develop gate cannot honour is not a fence. An operator reading a
+   * plan where fences went needs to know which of the three did it. Their notes
+   * join `notes` under their own cap, and their wording begins with none of the
+   * prefixes `unfenceSummary` keys on.
+   */
+  boundarySelfFences?: number;
+  /**
    * The issue body was named by the explore cache but could not be read —
    * distinguishable from an EMPTY body, which is a real "nothing named".
    */

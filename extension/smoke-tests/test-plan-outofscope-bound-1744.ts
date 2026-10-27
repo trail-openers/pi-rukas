@@ -49,6 +49,10 @@ import {
 import { fenceMatches } from "../src/work-driver-declared-path.ts";
 import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
+
+/** The stored workstream one call builds (these cases read the fence list, not the drops). */
+const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
+  workstreamFromArgs(args).workstream;
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 import {
@@ -341,7 +345,7 @@ const REPO_DIRS: string[] = [];
   // The fold carries the widened set on the records, so the fold's own re-cap
   // can say the same thing the tool boundary said (#1744 review — the fold
   // used to report an empty widened list).
-  const widenedWs = workstreamFromArgs({
+  const widenedWs = buildWs({
     ...VALID,
     id: "w",
     paths: ["src/w.ts"],
@@ -350,7 +354,7 @@ const REPO_DIRS: string[] = [];
       ...Array.from({ length: WORKSTREAM_LIST_MAX - 1 }, (_, i) => `src/w-${i}.ts`),
     ],
   });
-  const otherWs = workstreamFromArgs({
+  const otherWs = buildWs({
     ...VALID,
     id: "p",
     paths: ["src/p.ts"],
@@ -422,7 +426,7 @@ const REPO_DIRS: string[] = [];
   );
 
   const { traces } = captureTracesSync(() =>
-    workstreamFromArgs({ ...VALID, id: "widening", outOfScope: [LONG_PATH_FENCE] }),
+    buildWs({ ...VALID, id: "widening", outOfScope: [LONG_PATH_FENCE] }),
   );
   const warned = traces.filter((t) => t.includes("outOfScope bounded"));
   assert(
@@ -431,7 +435,7 @@ const REPO_DIRS: string[] = [];
     `a clip that landed on a '/' says which SUBTREE the fence now covers (got: ${(warned[0] ?? "").replace("[pi-rukas] WARN work-driver: ", "")})`,
   );
   const noWiden = captureTracesSync(() =>
-    workstreamFromArgs({ ...VALID, id: "prose", outOfScope: [LONG_PROSE] }),
+    buildWs({ ...VALID, id: "prose", outOfScope: [LONG_PROSE] }),
   );
   assert(
     !noWiden.traces.some((t) => t.includes("clipped fence now covers")),

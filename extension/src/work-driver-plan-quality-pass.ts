@@ -28,11 +28,7 @@
  * canned reply and no child process.
  */
 
-import {
-  mergeBoundaryInto,
-  selfFenceDropsBetween,
-  withBoundaryDrops,
-} from "./plan-fence-self-entry.ts";
+import { planGateView, withBoundaryDrops } from "./plan-fence-self-entry.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -77,18 +73,27 @@ export type PlanQualityInput = {
   /** Workstreams AFTER the fold, the coupling merge and the #1167 unfence. */
   workstreams: Record<string, Workstream>;
   /**
-   * #1862 — the accepted calls as the planner reported them, with the boundary's
-   * PATH-shaped self-fence drop off (see `WorkstreamReport.reported`). The two
-   * reason checks run on THIS map: if they judged the stored map the defect would
-   * already be erased, the corrective would never fire, and the cycle would
-   * develop a plan whose fence silently widened. Falls back to `workstreams`
-   * when nothing was accepted (the zero-call path owns its own corrective).
+   * #1862 — the self-fence entries the TOOL BOUNDARY removed while building the
+   * calls behind `workstreams`, with the entry as the planner wrote it (see
+   * `WorkstreamReport.boundaryRawDrops`). The gate's view is `workstreams` plus
+   * these: the boundary deletes a fence over the workstream's own file, so without
+   * them the defect #1167's one-shot corrective exists to point out has already
+   * been erased from the map the gate reads. Absent when the boundary removed none
+   * (the zero-call path owns its own corrective).
    */
-  reported?: Record<string, Workstream>;
+  boundaryRawDrops?: readonly UnfenceRecord[];
+  /**
+   * #1862 — the FOLD's records (the ceiling fold and the coupling merge) for the
+   * fences it removed while unioning the halves it merged. Also re-added to the
+   * gate's view: a fold opened a self-fence on purpose, and the gate still has to
+   * see the contradiction. Never persisted from here — the coupling pass already
+   * records them under `selfFences`.
+   */
+  foldDrops?: readonly UnfenceRecord[];
   /**
    * #1862 — set by the tail when it dispatches the corrective: the boundary drops
-   * IT derived, so the steer re-adds exactly the entries the boundary removed and
-   * nothing a fold opened deliberately. Derived once, by the caller that also
+   * IT is recording, so the steer re-adds exactly the entries the boundary removed
+   * and nothing a fold opened deliberately. Derived once, by the caller that also
    * records the same list.
    */
   boundaryDrops?: readonly UnfenceRecord[];
@@ -161,12 +166,11 @@ export async function runPlanQualityTail(
   // The corrective's RAW map, set when this tail runs a corrective (the #1005
   // dropped-edge check reads it against the first plan's raw map).
   let correctiveRaw: Record<string, Workstream> | undefined;
-  // #1862 — the corrective's reported view, set when this tail runs one: the
-  // plan the cycle develops, so the boundary-drops record describes it.
-  // #1862 — the boundary drops of whichever map the cycle develops: the
-  // primary's until a corrective replaces it, the corrective's after. Derived from
-  // the stored map against the planner's reporting, so only the boundary's own
-  // removals are recorded (a fold's are the coupling pass's to record).
+  // #1862 — the boundary drops of whichever map the cycle DEVELOPS: the primary's
+  // until a corrective replaces it, and then ONLY the corrective's — a corrective
+  // is a new set of calls with its own boundary, and the primary's belong to a map
+  // nobody develops. `?? undefined` rather than a fallback to the primary's list:
+  // a corrective whose report carried no drops records no drops.
   let correctiveDrops: readonly UnfenceRecord[] | undefined;
   let droppedEdges: { from: string; to: string }[] | undefined;
   // #1756 — the two notions `redispatched` used to carry in one flag, now two
@@ -219,26 +223,16 @@ export async function runPlanQualityTail(
       `work-driver: plan-to-spec gate added spec deliverable path(s) the single-workstream plan omitted: ${repair.added.join(", ")}`,
     );
   }
-  // #1862 — the map a `contradictory-fence` finding can be read from. The tool
-  // boundary removes a path-shaped self-fence from the STORED map, so the defect
-  // #1167's one-shot corrective exists to point out is invisible there. The
-  // boundary's own drops are added back for that ONE reason: the stored map is
-  // the truth for every other rule (`overlapping-paths` and `invalid-path` would
-  // mis-fire on entries a fold folded away) and for the coverage gate. So the
-  // plain map is asked first and the wider one only when it found nothing: a plan
-  // whose fence really is self-contradictory gets steered, and a plan defective
-  // for any other reason — or one that merely holds a legitimate
-  // cross-declaration fence (#572) — is judged on the map the cycle develops.
-  const gateView = workstreams;
-  // Only the BOUNDARY's drops, never a fold's: a fold opened that fence on
-  // purpose, and re-adding it would widen the fence the developer is given.
-  const selfFenceDrops = input.reported ? selfFenceDropsBetween(gateView, input.reported) : [];
+  // #1862 — the map the reason checks reason over, built ONCE: the stored plan
+  // plus the self-fence entries the boundary removed from these very calls and
+  // the ones the folds removed from the halves they merged. Every other rule
+  // reads the same map as the corrective steer, so one plan cannot be judged on
+  // two readings, and the stored map is still what the cycle develops.
+  const gateView = planGateView(workstreams, input.boundaryRawDrops ?? [], input.foldDrops ?? []);
+  // ONE pass of the shape gate over that view — the contradiction check is not a
+  // second question with a second answer, it is one of the reasons this function
+  // already returns.
   const reason = noCalls ? undefined : planQualityReason(gateView, input.findingsCount);
-  const selfFenceReason =
-    reason === undefined && !noCalls
-      ? planQualityReason(mergeBoundaryInto(gateView, selfFenceDrops), input.findingsCount)
-      : undefined;
-  const reason2 = reason ?? selfFenceReason;
   // #1642 — the gate does not require a deliverable whose every path is protected
   // and ungranted; the trace is the record that it was not required.
   for (const d of protectedDeferralsOf(input.spec, grant)) {
@@ -288,7 +282,7 @@ export async function runPlanQualityTail(
           // the map the cycle actually develops: the corrective's own pass, plus
           // the drops ITS boundary made. The primary's boundary drops belong to a
           // map nobody develops, so they are not carried here.
-          withBoundaryDrops(unfence, correctiveDrops ?? selfFenceDrops),
+          withBoundaryDrops(unfence, correctiveDrops ?? input.boundaryDrops ?? []),
         )
       : state,
     workstreams,
@@ -312,7 +306,7 @@ export async function runPlanQualityTail(
   // the gate below must not spend it twice. #819 — a spec mismatch fires the
   // same one-shot corrective; when only the spec gate fired the steer is the
   // spec-steer (an existing reason keeps precedence: more specific diagnosis).
-  if (noCalls || (!input.planKill && input.planGateEnabled && (reason2 || specMismatch))) {
+  if (noCalls || (!input.planKill && input.planGateEnabled && (reason || specMismatch))) {
     // #849 — the first plan's RAW workstreams, held aside for the dropped-edge
     // check. Set here (the quality gate firing on the primary's plan) so the
     // kill-triggered path leaves it undefined (pre-#1005 shape).
@@ -329,9 +323,9 @@ export async function runPlanQualityTail(
       // The steer re-adds the drops the caller already derived (from the map it
       // develops), so the corrective can name the fence line the planner wrote
       // and a FOLD's deliberate opening is never undone.
-      { ...input, boundaryDrops: selfFenceDrops },
+      { ...input, boundaryDrops: input.boundaryDrops ?? [] },
       host,
-      { noCalls, reason: reason2 },
+      { noCalls, reason },
       grant,
       specMismatch?.kind,
     );
@@ -339,11 +333,11 @@ export async function runPlanQualityTail(
     workstreams = round.workstreams;
     if (round.unfence) unfence = round.unfence;
     if (round.raw) correctiveRaw = round.raw;
-    // #1862 — the corrective is the plan the cycle develops, so the boundary
-    // drops the persisted record names are ITS map's.
-    if (round.reported) {
-      correctiveDrops = selfFenceDropsBetween(round.workstreams, round.reported);
-    }
+    // #1862 — the corrective is the plan the cycle develops, so the boundary drops
+    // the persisted record names are ITS calls'. When the corrective returned no
+    // report at all its plan carried no boundary drops either, and the primary's
+    // are NOT reused: they belong to a map nobody develops.
+    correctiveDrops = round.reportedBoundaryDrops;
     if (round.redispatched) redispatched = true;
     if (round.repairedCleared) repairedAdded = undefined;
     correctiveAttempted = round.attempted;
@@ -421,7 +415,7 @@ export async function runPlanQualityTail(
     if (claims.parked) return halt(next);
   }
   const finalReason =
-    droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : (reason2 ?? haltReason);
+    droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : (reason ?? haltReason);
   // #1642 review — a deferred protected path is disclosed on the spec (the PR
   // body), not only traced. Only when the gate ran: nothing was deferred otherwise.
   const repaired =
@@ -438,7 +432,7 @@ export async function runPlanQualityTail(
       redispatched,
       finalReason,
       droppedEdges,
-      withBoundaryDrops(unfence, correctiveDrops ?? selfFenceDrops),
+      withBoundaryDrops(unfence, correctiveDrops ?? input.boundaryDrops ?? []),
     ),
   };
 }

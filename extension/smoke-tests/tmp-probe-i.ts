@@ -1,0 +1,11 @@
+import { foldTwo } from "../src/workstream-fold.ts";
+import { foldPortPlan } from "../src/work-driver-plan-contract.ts";
+const WS = (id:string, paths:string[], outOfScope:string[]) => ({id, scope:id, paths, outOfScope});
+const a = WS("a", ["src/a.ts"], ["src/b.ts"]);
+const b = WS("b", ["src/b.ts"], []);
+const r = foldTwo(a,b);
+console.log("fold survivor outOfScope:", JSON.stringify(r.workstream.outOfScope));
+console.log("drops:", JSON.stringify(r.selfFenceDrops));
+console.log("a unchanged:", JSON.stringify(a.outOfScope), "b unchanged:", JSON.stringify(b.outOfScope));
+const port = foldPortPlan({a, b}, "o/r#9");
+console.log("port:", JSON.stringify(port.workstreams["a"]?.outOfScope), "drops", JSON.stringify(port.selfFenceDrops));

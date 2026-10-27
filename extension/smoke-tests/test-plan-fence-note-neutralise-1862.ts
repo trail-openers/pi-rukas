@@ -14,7 +14,6 @@
  */
 
 import { proseSelfFenceDrops } from "../src/plan-fence-prose.ts";
-import { selfFenceDropsBetween } from "../src/plan-fence-self-entry.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import { foldSelfFenceDrops } from "../src/workstream-fold-self-fence.ts";
 import { VALID } from "./lib/plan-outofscope-fixtures.ts";
@@ -71,36 +70,52 @@ const OWN = ["tests/test_x.py", "docs/y.md"];
   );
 }
 
-// ── 3. the boundary-drops comparison (the record the plan step persists)
+// ── 3. the boundary's own drop records — the list the plan step persists
 {
   // A control byte INSIDE the path token: neutralisation turns it into a space,
   // which is exactly what makes the value un-matchable as a declared path, so
   // such an entry is no drop at all — the fence stays, and a record of a removal
   // that did not happen would be the worse bug. What this case pins is that the
-  // comparison neither stores nor notes the raw byte.
+  // boundary neither stores nor notes the raw byte.
   const injected = `src${ESC}/a.ts`;
-  const records = selfFenceDropsBetween(
-    { a: { paths: OWN, outOfScope: [] } },
-    { a: { id: "a", paths: OWN, outOfScope: [injected] } },
+  const { drops, rawDrops } = workstreamFromArgs({
+    ...VALID,
+    id: "a",
+    paths: OWN,
+    outOfScope: [injected],
+  });
+  assert(
+    drops.length === 0 && rawDrops.length === 0,
+    `a control byte inside a path-shaped fence earns no raw record and no false drop (got ${JSON.stringify([drops, rawDrops])})`,
   );
   assert(
-    records.length === 0 && surfaces(records).every(clean),
-    `a control byte inside a path-shaped fence earns no raw record and no false drop (got ${JSON.stringify(records)})`,
+    surfaces(rawDrops).every(clean) || rawDrops.length === 0,
+    "and nothing raw reaches the gate's copy of the entry",
   );
 
   // The positive half — the record the plan step actually persists. The ESC sits
   // after the separator, where it survives `normaliseDeclaredPath` (so the entry
   // really IS a fence over the declared directory) and `neutraliseFenceEntry`
   // collapses it to nothing, so `docs/` is both what the planner sent and what
-  // the state file ends up holding. The drop is real and the record is clean.
+  // the state file ends up holding. The drop is real, the persisted record is
+  // clean, and the gate's copy keeps the planner's own text.
   const sneaky = `docs/${ESC}`;
-  const kept = selfFenceDropsBetween(
-    { a: { paths: ["docs"], outOfScope: [".ci/"] } },
-    { a: { id: "a", paths: ["docs"], outOfScope: [".ci/", sneaky] } },
+  const kept = workstreamFromArgs({
+    ...VALID,
+    id: "a",
+    paths: ["docs"],
+    outOfScope: [".ci/", sneaky],
+  });
+  assert(
+    kept.drops.length === 1 &&
+      surfaces(kept.drops).every(clean) &&
+      kept.drops[0]?.entry === "docs/" &&
+      kept.rawDrops[0]?.entry === sneaky,
+    `a droppable path-shaped self-fence persists the neutralised entry and note while the gate's copy keeps the raw one (got ${JSON.stringify(kept.drops)} / ${JSON.stringify(kept.rawDrops)})`,
   );
   assert(
-    kept.length === 1 && surfaces(kept).every(clean),
-    `a droppable path-shaped self-fence records the neutralised entry and note (got ${JSON.stringify(kept)})`,
+    !kept.workstream.outOfScope.some((e) => e.startsWith("docs/")),
+    `and the stored fence list no longer holds the entry the boundary reports removing (got ${JSON.stringify(kept.workstream.outOfScope)})`,
   );
 }
 

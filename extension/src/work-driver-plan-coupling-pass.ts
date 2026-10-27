@@ -25,6 +25,7 @@ import {
   unfenceDocsTestPaths,
   unfenceDocsTestsEnabled,
 } from "./work-driver-plan-unfence-docs-tests.ts";
+import { UNFENCE_NOTES_CAP } from "./work-driver-plan-unfence-notes.ts";
 import {
   type UnfenceRecord,
   type UnfenceResult,
@@ -43,11 +44,10 @@ type GrepExecFn = (
   opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
-/** How many notes of EACH kind the persisted unfence record keeps. Matches the
- * cap `unfenceSummary` applies to its own notes, so the two lists are held to
- * the same documented bound and neither can push the other out (see
- * `runPlanNormalisationPass`). */
-const UNFENCE_NOTES_CAP = 10;
+/** How many notes of EACH kind the persisted unfence record keeps — the shared
+ * bound, exported from the module that owns the record (work-driver-plan-
+ * unfence-notes.ts), so the cap cannot be spelled differently in two places.
+ * See `runPlanNormalisationPass`. */
 
 /**
  * Fold a port plan into one workstream, then merge workstreams the coupling

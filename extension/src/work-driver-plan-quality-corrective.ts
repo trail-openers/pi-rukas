@@ -29,7 +29,7 @@
  * canned reply and no child process.
  */
 
-import { mergeBoundaryInto } from "./plan-fence-self-entry.ts";
+import { planGateView } from "./plan-fence-self-entry.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -71,17 +71,17 @@ export type CorrectiveRoundResult = {
   /** The corrective's RAW map (#1005's dropped-edge comparison). */
   raw?: Record<string, Workstream>;
   /**
-   * #1862 — the corrective's own reported view (path-shaped self-fences intact),
-   * carried back so the tail's persisted record can name the entries its boundary
-   * removed. See `WorkstreamReport.reported`.
+   * #1862 — the boundary drops of the corrective's OWN calls, carried back so the
+   * tail's persisted record describes the plan the cycle develops. Absent when
+   * the corrective made no accepted call, and deliberately not defaulted to the
+   * primary's list at the caller.
    */
-  reported?: Record<string, Workstream>;
+  reportedBoundaryDrops?: readonly UnfenceRecord[];
   /**
-   * #1862 — the boundary drops the CALLER derived by comparing `workstreams`
-   * against `reported`. The steer re-adds exactly those entries, so the corrective
-   * can name the fence line the planner must fix, and so an entry a FOLD opened on
-   * purpose is never put back. Derived once by the caller and passed down: the
-   * caller records the same list.
+   * #1862 — the boundary drops the CALLER is recording. The steer re-adds exactly
+   * those entries, so the corrective can name the fence line the planner must
+   * fix, and so an entry a FOLD opened on purpose is never put back by this site.
+   * Passed down, never derived here: the caller records the same list.
    */
   boundaryDrops?: readonly UnfenceRecord[];
   /** The corrective's own unfence record, which replaces the primary's. */
@@ -147,11 +147,12 @@ export async function runCorrectiveRound(
     trigger.noCalls,
     input.report,
     // The ORIGINAL plan: a repaired path was never written by the planner.
-    // #1862 — and with the fence entries the tool boundary removed put back, so
-    // a `contradictory-fence` steer can NAME the entry (`… lists `src/a.ts` in
-    // its paths and `src/a.ts` in its out-of-scope`) instead of falling back to
-    // the generic line: the planner is told which of its own lines to fix.
-    mergeBoundaryInto(input.workstreams, input.boundaryDrops ?? []),
+    // #1862 — the same view the reason check judged, so the steer names the entry
+    // the planner actually wrote (`… lists `src/a.ts` in its paths and `src/a.ts`
+    // in its out-of-scope`) instead of falling back to the generic line: the
+    // boundary removed that fence from the stored map, and a planner told only
+    // that its plan was contradictory cannot fix a line it cannot see.
+    planGateView(input.workstreams, input.boundaryDrops ?? []),
     trigger.reason,
     input.findingsCount,
   );
@@ -285,7 +286,7 @@ export async function runCorrectiveRound(
       redispatched,
       repairedCleared,
       raw,
-      reported: retryReport.reported,
+      reportedBoundaryDrops: retryReport.boundaryDrops,
       halt: planSpecMismatchCap(
         next,
         correctiveMismatch,
@@ -301,7 +302,7 @@ export async function runCorrectiveRound(
     redispatched,
     repairedCleared,
     raw,
-    reported: retryReport.reported,
+    reportedBoundaryDrops: retryReport.boundaryDrops,
     replacedPlan: true,
   });
 }

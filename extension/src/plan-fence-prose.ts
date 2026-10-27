@@ -45,50 +45,61 @@ export function proseSelfFenceNote(entry: string, path: string): string {
   return `self-fence dropped: ${JSON.stringify(neutraliseFenceEntry(entry))} covers its own declared ${JSON.stringify(neutraliseFenceEntry(path))}`;
 }
 
+/** One decision the boundary made: the entry AS THE PLANNER WROTE IT, and the
+ * own declared path that makes it a self-fence. The caller renders it — the
+ * neutralised record the state file holds, the raw record the gate re-adds — so
+ * both accounts come from ONE scan and cannot disagree about which entry went. */
+export interface ProseSelfFenceDecision {
+  entry: string;
+  path: string;
+}
+
 /**
  * The entries of `candidates` that fence this workstream's own files, as the
- * `UnfenceRecord`s the caller persists (#1862 round 1: records, not bare
- * `{entry, path}` pairs, so both fence-dropping sites hand the state file the
- * same shape and a drop cannot be recorded in one place and merely traced in
- * the other).
+ * decisions the boundary made.
  *
  * `ownPaths` are the workstream's declared paths as stored (raw); they are
  * normalised here, because the entry is compared against what the DEVELOPER is
  * told to edit, not against how the planner spelled it. The path-shaped arm runs
  * once for the whole list (M3), not once per entry.
  */
+export function proseSelfFenceDecisions(
+  ownPaths: readonly string[],
+  candidates: readonly string[],
+): ProseSelfFenceDecision[] {
+  const own = declaredPaths(ownPaths);
+  if (own.length === 0 || candidates.length === 0) return [];
+  // ONE batch call for the whole list (M3): the path-shaped arm answers every
+  // candidate at once rather than re-normalising the declarations per entry.
+  const contradictions = contradictionPathsByEntry(own, candidates, false);
+  const decisions: ProseSelfFenceDecision[] = [];
+  for (const entry of candidates) {
+    const decision: SelfFenceEntryDrop = selfFenceEntryDrop(entry, own, contradictions.get(entry));
+    if (!decision.drop) continue;
+    decisions.push({ entry, path: decision.path });
+  }
+  return decisions;
+}
+
+/**
+ * The same decisions as the `UnfenceRecord`s a caller persists (#1862 round 1:
+ * records, not bare `{entry, path}` pairs, so both fence-dropping sites hand the
+ * state file the same shape and a drop cannot be recorded in one place and merely
+ * traced in the other). The entry and the note are NEUTRALISED here, because a
+ * record lands in the state file, the handoff and a trace line: planner-derived
+ * text never reaches those raw (#1744, #1862 M4). A caller that needs the gate's
+ * copy of the entry — the text the planner actually wrote — renders
+ * `proseSelfFenceDecisions` itself.
+ */
 export function proseSelfFenceDrops(
   ownPaths: readonly string[],
   candidates: readonly string[],
   workstreamId: string,
-  // #1862 — the plan-quality gate asks with this FALSE so a path-shaped fence
-  // over the workstream's own file SURVIVES the boundary: it is the contradiction
-  // #1167's one-shot corrective exists to point out, and an emptied fence is a
-  // widened scope the developer is never told about. The develop path keeps the
-  // default (drop), because there the alternative is parking on a fence nobody
-  // can obey. `findFenceContradictions`, which the gate itself runs, treats a
-  // whitespace-free entry as a path — the same test, so the two agree.
-  dropPathShaped = true,
 ): UnfenceRecord[] {
-  const own = declaredPaths(ownPaths);
-  if (own.length === 0 || candidates.length === 0) return [];
-  const contradictions = contradictionPathsByEntry(own, candidates, dropPathShaped);
-  const drops: UnfenceRecord[] = [];
-  for (const entry of candidates) {
-    // A path-shaped entry is the develop gate's business (`fenceMatches`), never
-    // this module's — #1725's one-grammar-per-entry rule. With the gate asking
-    // for the path arm to stay there is nothing left here but prose, so an entry
-    // the whole-token scan cannot even read as prose cannot go either: it keeps
-    // its whitespace-free test rather than a second grammar.
-    if (!dropPathShaped && !/\s/.test(entry)) continue;
-    const decision: SelfFenceEntryDrop = selfFenceEntryDrop(entry, own, contradictions.get(entry));
-    if (!decision.drop) continue;
-    drops.push({
-      workstream: workstreamId,
-      path: decision.path,
-      entry: neutraliseFenceEntry(entry),
-      note: proseSelfFenceNote(entry, decision.path),
-    });
-  }
-  return drops;
+  return proseSelfFenceDecisions(ownPaths, candidates).map((d) => ({
+    workstream: workstreamId,
+    path: d.path,
+    entry: neutraliseFenceEntry(d.entry),
+    note: proseSelfFenceNote(d.entry, d.path),
+  }));
 }

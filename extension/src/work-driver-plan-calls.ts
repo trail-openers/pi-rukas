@@ -55,11 +55,7 @@ import { statReporterPath } from "./reporter-preflight.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
-import {
-  foldToCeiling,
-  workstreamAsReported,
-  workstreamFromArgs,
-} from "./work-driver-plan-workstreams.ts";
+import { foldToCeiling, workstreamFromArgs } from "./work-driver-plan-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -99,21 +95,25 @@ export interface WorkstreamReport {
    * Calls whose result the replay did not carry. Non-zero means the report
    * cannot be judged: the step parks as `workstream-results-unreadable`.
    */
-  /**
-   * Calls whose result the replay did not carry. Non-zero means the report
-   * cannot be judged: the step parks as `workstream-results-unreadable`.
-   */
   unreadable: number;
   /**
-   * #1862 — the SAME accepted calls with the boundary's PATH-shaped self-fence
-   * drop turned off, so the fence the planner wrote over its own declared file is
-   * still there for the plan-quality gate to find (#1167's one-shot corrective
-   * steers on exactly that contradiction, and the stored map has already emptied
-   * it). The map the cycle develops and the gates that scope the diff is always
-   * `workstreams`, which has both kinds of self-fence gone. Absent when nothing
-   * was accepted.
+   * #1862 — the fence entries the TOOL BOUNDARY removed while building these very
+   * calls, because each one fenced the workstream's own declared paths. The
+   * boundary REPORTS them: the map the cycle develops is `workstreams`, which has
+   * them gone, and the plan-quality gate adds them back (from
+   * `boundaryRawDrops`) so a self-fence the boundary deleted is still the
+   * contradiction #1167's one-shot corrective steers on. The persisted shape
+   * (neutralised); absent when the boundary removed none.
    */
-  reported?: Record<string, Workstream>;
+  boundaryDrops?: UnfenceRecord[];
+  /**
+   * #1862 — the SAME removals as `boundaryDrops`, with the entry as the planner
+   * wrote it, for the gate's view: a fence entry is one instruction, so the gate
+   * and the corrective steer read the text the planner sent, not the neutralised
+   * form a state file may hold. NEVER persisted — every field that reaches the
+   * state file goes through `neutraliseFenceEntry`, and these entries do not.
+   */
+  boundaryRawDrops?: UnfenceRecord[];
   /**
    * #1862 — fence entries the ceiling fold removed because they fenced the
    * merged workstream's own declared paths. The plan step persists them on
@@ -167,7 +167,12 @@ export function workstreamCallsOf(
   result: Pick<DispatchResult, "toolUses" | "toolResults">,
 ): WorkstreamReport {
   const results = new Map((result.toolResults ?? []).map((r) => [r.toolCallId, r]));
-  const accepted: Array<{ stored: Workstream; reported: Workstream }> = [];
+  const accepted: Workstream[] = [];
+  // #1862 — what each call's own boundary removed, collected per call: `drops`
+  // for the persisted record, `rawDrops` for the gate's view (the entry as the
+  // planner wrote it, never persisted).
+  const boundaryDrops: UnfenceRecord[] = [];
+  const boundaryRawDrops: UnfenceRecord[] = [];
   const refused: RefusedWorkstreamCall[] = [];
   let unreadable = 0;
   // Parent-side uniqueness: the child refuses duplicates in-process, but a set of
@@ -263,20 +268,19 @@ export function workstreamCallsOf(
     if (fenceWasBounded(boundedFence)) {
       traceWarn(fenceBoundNotice(`plan workstream '${judged.id}'`, boundedFence));
     }
-    accepted.push({
-      stored: workstreamFromArgs(judged, true, boundedFence),
-      reported: workstreamAsReported(judged, boundedFence),
-    });
+    const built = workstreamFromArgs(judged, boundedFence);
+    accepted.push(built.workstream);
+    for (const d of built.drops) boundaryDrops.push(d);
+    for (const d of built.rawDrops) boundaryRawDrops.push(d);
   }
-  const ceiling = foldToCeiling(accepted.map((a) => a.stored));
-  const reported: Record<string, Workstream> = {};
-  for (const a of accepted) reported[a.reported.id] = a.reported;
+  const ceiling = foldToCeiling(accepted);
   return {
     workstreams: ceiling.workstreams,
     accepted: accepted.length,
     refused,
     unreadable,
-    ...(accepted.length > 0 ? { reported } : {}),
+    ...(boundaryDrops.length > 0 ? { boundaryDrops } : {}),
+    ...(boundaryRawDrops.length > 0 ? { boundaryRawDrops } : {}),
     ...(ceiling.selfFenceDrops.length > 0 ? { selfFenceDrops: ceiling.selfFenceDrops } : {}),
   };
 }
