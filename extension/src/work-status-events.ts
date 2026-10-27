@@ -22,6 +22,12 @@ export function fmtElapsed(ms: number): string {
   return `${m}m${s.toString().padStart(2, "0")}s`;
 }
 
+/** Three paths, then a count — enough to identify a revert without flooding the
+ *  status line with a whole worktree's worth of filenames. */
+function fmtList(paths: readonly string[]): string {
+  return paths.slice(0, 3).join(", ") + (paths.length > 3 ? ` … (${paths.length} total)` : "");
+}
+
 export function fmtTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
@@ -196,6 +202,10 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
     case "fence-lifted":
       // #1405 — the admitted path and the Test-surface line that named it.
       return `  fence-lifted · [${e.workstreamId}] may change ${e.file} · precheck: ${e.line.slice(0, 80)}`;
+    case "fix-pass-strays-reverted":
+      // #1846 — what the driver removed, and where the removed content still
+      // lives, so the operator can restore it without opening the state file.
+      return `  fix-pass-strays-reverted · [${e.workstreamId}] reverted ${e.paths.length} out-of-fence file(s): ${fmtList(e.paths)} · preserved ${e.preservedRef} · patch ${e.patchPath}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":

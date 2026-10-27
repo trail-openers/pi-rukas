@@ -28,6 +28,8 @@ import { runDevelopTopological } from "./work-develop-topological.ts";
 import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
 import {
   type FixRequest,
+  type PassPlan,
+  type PostPass,
   overlayWorkstreams,
   planFixPass,
   postPassFault,
@@ -47,6 +49,7 @@ import type { AdversarialOutcome, PendingFix } from "./work-driver-adversarial-t
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { correctiveRoundsOf } from "./work-driver-corrective-admission.ts";
 import { cycleDispatch } from "./work-driver-cycle-entry.ts";
+import { fixPassRevertNote, revertStraysOnce } from "./work-driver-fix-pass-revert-step.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
@@ -362,14 +365,33 @@ export async function runAdversarialFixPass(
     // pass-scoped window, and the gate derives the evidence from the records.
     correctiveRoundsOf(restored.eventLog.slice(startLen)),
   );
-  if (post.reason) {
+  // #1846 — one stray set is now the driver's job, not the operator's. Preserve
+  // and revert those paths, re-run the pass's own checks on the post-revert tree,
+  // and continue when the pass is clean. A SECOND stray set, a fenced or
+  // protected stray, or any preservation failure parks exactly as before — the
+  // revert is one attempt per pass, not a loop, and it never touches a file an
+  // admission rule was refused for.
+  const reverted =
+    post.reason !== undefined && post.straysFor !== undefined && post.strays !== undefined
+      ? await revertStraysOnce(ctx, restored, plans, post, now)
+      : undefined;
+  const cleared =
+    reverted?.ok === true
+      ? await postPassFault(
+          execFn,
+          plans,
+          ps.baseSha ?? "",
+          correctiveRoundsOf(restored.eventLog.slice(startLen)),
+        )
+      : post;
+  if (cleared.reason) {
     // #1137 — a no-change fix pass whose workstream carried a plumb report
     // (a structural question, e.g. scope-ambiguity) is a question to answer,
     // not a failed gate. The plumb report is already in pipelineState (the
     // develop step recorded the developer's reply); the handoff's plumb
     // section renders it, and the evidence names the plumb question so the
     // operator answers it instead of re-dispatching the same no-op.
-    if (NO_CHANGE_REASON.test(post.reason)) {
+    if (NO_CHANGE_REASON.test(cleared.reason)) {
       const question = freshPlumbQuestion(restored, priorPlumbBodies);
       if (question) {
         return parkFixPass(
@@ -377,22 +399,41 @@ export async function runAdversarialFixPass(
           pending,
           `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
           now,
-          post.admissions,
+          cleared.admissions,
         );
       }
     }
-    return parkFixPass(restored, pending, post.reason, now, post.admissions);
+    return parkFixPass(
+      restored,
+      pending,
+      // #1846 — when the driver already reverted one stray set and this is the
+      // second, the park text must not repeat "revert them by hand": the driver
+      // did that, and the remaining decision is the fence, not the worktree.
+      reverted?.ok === false && reverted.secondSet
+        ? `${cleared.reason} (the driver reverted this pass's first out-of-fence set; the \`fix-pass-strays-reverted\` record names the preserved ref and patch)`
+        : cleared.reason,
+      now,
+      cleared.admissions,
+    );
   }
   // The operator's kill switch is NOT a failed check: a disabled check reads
   // NOT CHECKED (as every other reader renders it) and the pass proceeds with
   // that disclosed on the handoff, never parked. Only a check that was asked
   // for and could not run parks.
   let kept = restored;
+  // #1846 — the revert is disclosed as its own event, and as a plumb note so the
+  // PR body names the reverted paths with the ref and patch that still hold
+  // them. A revert the operator cannot find is a driver commit that quietly
+  // deleted their fixer's work.
+  if (reverted?.ok === true) {
+    kept = appendEvent(kept, reverted.event);
+    kept = noteFixPass(kept, fixPassRevertNote(reverted.event), now);
+  }
   // #1725 round 3 — one disclosure note per spec-slot admission made during
   // this pass. An authorisation that only reached PI_ENSEMBLE_DEBUG is a
   // fence that widened invisibly; these notes ride the state to the PR body,
   // where the develop gate's own admission notes already surface.
-  for (const admission of post.admissions) kept = noteFixPass(kept, admission, now);
+  for (const admission of cleared.admissions) kept = noteFixPass(kept, admission, now);
   if (!commentRetentionEnabled()) {
     const note =
       "comment retention NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0) — the pass proceeded without the origin/main comment check";
@@ -402,7 +443,11 @@ export async function runAdversarialFixPass(
     for (const p of plans) {
       const read = (diff: string) =>
         roundComments(diff, undefined, p.worktree, verifyTimeoutMs(), ctx.verifyExecFn);
-      const lost = await read(post.diffs[p.id] ?? "");
+      // #1846 PM decision 6 — the retention read is the POST-REVERT diff: a
+      // comment line inside a reverted stray is no longer part of the pass, and
+      // judging the pass on content it no longer contains would park it for a
+      // removal the driver itself just reverted.
+      const lost = await read(cleared.diffs[p.id] ?? "");
       // A lost line whose hunk adds a comment was reworded or replaced. That is
       // the reviewers' call (#1056) and the next review round lists it; only a
       // comment dropped with nothing written in its place can park.

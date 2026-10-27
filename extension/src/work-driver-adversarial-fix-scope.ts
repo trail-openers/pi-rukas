@@ -275,10 +275,22 @@ export interface PostPass {
    * operator never sees is a fence that widened invisibly.
    */
   admissions: string[];
+  /**
+   * #1846 — the workstream whose fence the strays belong to, when
+   * {@link reason} is a stray refusal, and the strays themselves. Present
+   * ONLY for the stray refusal the driver can act on: a fenced or protected
+   * stray, a pass that changed nothing, or a fan-out breach carries no
+   * `straysFor`, because the revert path must never touch those files (they
+   * are the ones an admission rule may not lift, or the whole pass is the
+   * problem). `untracked` is the same read's untracked set, which decides
+   * removal vs checkout for each path.
+   */
+  straysFor?: string;
+  /** See {@link PostPass.straysFor}. */
+  strays?: Stray[];
+  /** See {@link PostPass.straysFor} — the untracked paths of that workstream. */
+  untracked?: string[];
 }
-
-const allows = (entry: string, file: string): boolean =>
-  file === entry || (entry.endsWith("/") && file.startsWith(entry));
 
 /**
  * Does a FENCE entry cover `file`? The ONE fence predicate answers it
@@ -440,7 +452,20 @@ export async function postPassFault(
         plan.declared.length > 0
           ? "its declared paths and the files the findings name"
           : "the files it already changed and the files the findings name";
-      return { reason: strayReason(plan, strays, basis), diffs, admissions };
+      // #1846 — the revert path acts on this refusal, so the record carries what
+      // it needs: WHICH workstream, WHICH files, and WHICH of them are untracked
+      // (a file in no commit is removed by unlink, not by `git rm`). A stray
+      // refused as `fenced` or `protected`, or any protected path in the set, is
+      // deliberately NOT offered: those are the files no admission rule may lift,
+      // and silently reverting one would take the protected-path gate's decision
+      // away from it.
+      const revertible = strays.every((s) => s.refused !== "fenced" && s.refused !== "protected");
+      return {
+        reason: strayReason(plan, strays, basis),
+        diffs,
+        admissions,
+        ...(revertible ? { straysFor: plan.id, strays, untracked: s.value.untracked } : {}),
+      };
     }
     if (plan.declared.length > 0) {
       // #1725 round 3 — the ceiling grows by the number of distinct ADMITTING

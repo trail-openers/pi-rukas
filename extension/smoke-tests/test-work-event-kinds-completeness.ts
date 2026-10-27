@@ -380,6 +380,17 @@ const everyKindEvent: WorkEvent[] = [
     patchId: "3f2a9c1e0b7d4a58f6c1e0d9b8a7c6d5e4f3a2b1",
     target: "pr",
   },
+  {
+    // #1846 — the fix pass reverted its own out-of-fence files instead of parking.
+    // The preserved ref and the patch path are load-bearing: a reader of the state
+    // must be able to find the reverted content.
+    kind: "fix-pass-strays-reverted",
+    at: 1,
+    workstreamId: "default",
+    paths: ["extension/src/helper.ts"],
+    preservedRef: "refs/pi-rukas/fix-pass-strays/1846-default-1",
+    patchPath: "/tmp/pi-rukas/fix-pass-strays-1846-default-1.patch",
+  },
 ];
 
 // The union-derived kind set: the source of truth both directions check

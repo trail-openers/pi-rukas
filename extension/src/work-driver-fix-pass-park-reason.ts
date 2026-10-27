@@ -57,8 +57,20 @@ export const listed = (xs: readonly string[]): string => (xs.length > 0 ? xs.joi
  * #1522 — the scope-fence park names the fence it checked (both sets), what
  * the findings said about each stray, where the change sits and how to clear
  * it. The bare clause left the operator to rebuild all of that from the state.
+ *
+ * #1846 — `driverReverted` changes the closing instruction. The text used to be
+ * one unconditional "revert <files> in that worktree and land the rest by hand",
+ * which after the driver has already reverted one stray set tells the operator to
+ * do something that is already done and hides the fact that the pass produced a
+ * SECOND set — a different diagnosis, and the one that should read as "the fence
+ * is wrong", not "go tidy the worktree".
  */
-export function strayReason(plan: PassPlan, strays: readonly Stray[], basis: string): string {
+export function strayReason(
+  plan: PassPlan,
+  strays: readonly Stray[],
+  basis: string,
+  driverReverted = false,
+): string {
   const fence =
     plan.declared.length > 0
       ? `declared paths: ${listed(plan.declared)}`
@@ -116,5 +128,12 @@ export function strayReason(plan: PassPlan, strays: readonly Stray[], basis: str
     })
     .join("; ");
   const files = strays.map((s) => s.file).join(", ");
-  return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
+  return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; ${clearing(files, driverReverted)}`;
+}
+
+/** The closing clause of {@link strayReason}; see the `driverReverted` note. */
+function clearing(files: string, driverReverted: boolean): string {
+  return driverReverted
+    ? `the driver already reverted this pass's first out-of-fence set — the \`fix-pass-strays-reverted\` record names the preserved ref and the patch that hold those files — and a SECOND set means the pass will not stay inside its fence. Re-run \`/work <issue> --restart\` with ${files} named in the issue's scope, or let the pass work inside the fence`
+    : `otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
 }
