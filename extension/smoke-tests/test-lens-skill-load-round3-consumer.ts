@@ -149,7 +149,15 @@ const FINDING_CALL = {
     });
     const r = await runChild();
     assert(r.blocked === false, `${label}: not blocked (shadow)`);
-    assert(shadowText().includes("SHADOW"), `${label}: the proof sees through it and warns`);
+    // #1847 — the consumer no longer runs the proof for a lens, so no warn is
+    // produced here any more. What these shapes still have to prove is that
+    // they cannot BLOCK: an out-of-tree SKILL.md, a redirect and an in-place
+    // sed must not be credited as the skill arriving. The proof itself keeps
+    // its own coverage in test-lens-skill-load-verified.ts / round2 / round3.
+    assert(
+      !shadowText().includes("SHADOW"),
+      `${label}: emits no shadow warn (#1847 retired the lens-side proof)`,
+    );
   }
   // Canary for 2k: the honest read of the same file, in the same fixture, is
   // silent. Without this a warn that fired on every child would pass all three.
@@ -165,7 +173,7 @@ const FINDING_CALL = {
   assert(honest.blocked === false, "(2k) canary: the real read is not blocked");
   assert(
     !shadowText().includes("SHADOW"),
-    "(2k) canary: the real read emits no warn (2k's warns are conditional)",
+    "(2k) canary: the real read emits no warn either (nothing on the lens path warns now)",
   );
 
   // (2k-dup) The macOS `$TMPDIR` shape, end to end: the driver's skills dir sits

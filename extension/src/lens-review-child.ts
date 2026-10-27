@@ -19,7 +19,7 @@ import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
-import { skillLoadGate, traceSkillLoadAbsence } from "./lens-skill-trace.ts";
+import { readLensSkillBody } from "./lens-skill-inline.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
@@ -94,13 +94,47 @@ export async function runLensChild(opts: {
       parseError: `skill not installed: ${skillPath} (not spawned)`,
     };
   }
+  // #1847 — read the skill BODY here, in the parent, before spending a spawn on
+  // it. An unreadable or missing SKILL.md blocks the lens with a named error
+  // (the same shape as `skill not installed:` above) rather than spawning four
+  // attempts of an unguided reviewer; the body is wrapped in a nonce-tagged
+  // delimiter the payload cannot close, because every bundled lens skill
+  // carries triple-backtick fences.
+  const skill = readLensSkillBody(skillPath);
+  if ("error" in skill) {
+    bumpBatch();
+    return {
+      lens: lens.name,
+      ok: false,
+      ms: 0,
+      startMs,
+      findings: [],
+      attempts: 0,
+      blocked: true,
+      parseError: skill.error,
+    };
+  }
+  // #1847 — `--skill` is GONE for lens children. Pi's `--skill <dir>` only
+  // advertises a skill's name, description and location; the body is inlined
+  // only by the `/skill:name` slash command, which no path here calls. So the
+  // advertised location was the thing that manufactured the reload: every lens
+  // went to open the file it had been told where to find, and the measured
+  // cost was 20–80 M tokens a lens. The body now arrives in the prompt, so
+  // there is nothing left to advertise.
+  //
+  // `--no-skills` STAYS: without it Pi loads the whole installed skills tree
+  // into the child and advertises every skill in it — including the six lens
+  // skills — which would re-create the reload this change deletes, from the
+  // very `<available_skills>` block the role prompt used to key its mandatory
+  // first action on.
+  //
   // #893 — pre-spawn stat of the lens-reporter extension. The extraArgs for
   // every lens child include `--extension LENS_REPORTER_PATH`, so a missing
   // path means the child would run with no report_finding tool and the
   // silence diagnostic in lensProducedEvidence would fire on every lens in
   // lockstep — indistinguishable from a genuinely clean review. Failing here
   // with a named error is cheaper and unambiguous.
-  const lensExtraArgs = ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH];
+  const lensExtraArgs = ["--no-skills", "--extension", LENS_REPORTER_PATH];
   const lensReporterPath = reporterPathFromArgs(lensExtraArgs);
   if (lensReporterPath) {
     try {
@@ -127,6 +161,7 @@ export async function runLensChild(opts: {
     roster,
     runOpts.priorFindings,
     skillPath,
+    skill.wrapped,
   );
   const boundMs = runOpts.childBoundMs ?? lensChildBoundMs();
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
@@ -399,61 +434,21 @@ export async function runLensChild(opts: {
   }
 
   const { findings, skipped } = extractFindings(result.toolUses, lens.name);
-  // #872 — the child self-reports its skill load in the closing reply
-  // (`Skill Load Status: SUCCESS|FAILED`, code-review-specialist.md). An
-  // explicit FAILED blocks this lens — its verdict can never be APPROVED —
-  // with its findings KEPT (the CRITICAL RULE in the role prompt allows a
-  // FAILED-skill child to have reported content; that content is still
-  // evidence). Absent or unknown does NOT block: the pre-spawn stat above
-  // is the executed evidence that the skill existed; absence is traced
-  // (PI_ENSEMBLE_DEBUG=1) so the operator can see the honor system was
-  // simply not exercised.
+  // #1847 — the #872 `Skill Load Status` self-report and the #995/#1530
+  // skill-load PROOF that corroborated it are both RETIRED for lens children.
   //
-  // PR #1530 / #995 added a cross-check of a claimed SUCCESS against the
-  // child's recorded tool calls (`skillLoadProof`). As of round 3 of that
-  // review it runs in SHADOW: the proof is computed and a disagreement is
-  // traced, but it does NOT change the outcome. The child's own marker is the
-  // only thing that blocks, exactly as before the proof existed.
-  //
-  // Why shadow rather than a block. A false `unproven` blocks every lens
-  // review on every PR, and two false-refutation classes were still open:
-  //   - `observedToolCalls` is only consulted when it EXCEEDS `toolUses.length`,
-  //     so an under-recovered-but-non-empty replay (live 5, recovered 2, the
-  //     read among the 3 that were dropped) refutes a lens that read its skill;
-  //   - the directory resolution (`realpathOr`) can mismatch when the skills
-  //     dir is a symlink tree that resolves differently at check time than the
-  //     child saw at read time.
-  // Both are judgement calls about another module's records, and the repo rule
-  // for a new judgement seam is shadow first, enforce once the log earns it.
-  // FOLLOW-UP: promote `unproven` to a block once the shadow log shows no
-  // false refutations — the line below is the log, and the enforcement is one
-  // `blocked: true` branch on `case "unproven"` here.
-  // The gate is the child's own marker; the #995 proof runs in shadow beside it.
-  // See lens-skill-trace.ts for why the proof does not block.
-  const { status: skillLoadStatus, blocked: skillLoadFailed } = skillLoadGate(
-    result.text ?? "",
-    result.toolUses,
-    result.observedToolCalls,
-    lens.skill,
-    skillPath,
-  );
-  if (skillLoadFailed) {
-    return {
-      lens: lens.name,
-      ok: result.ok,
-      ms: result.ms,
-      startMs,
-      findings,
-      attempts,
-      blocked: true,
-      summary: result.text?.trim() || undefined,
-      model: result.model,
-      transcriptPath: result.transcriptPath,
-      parseError: `skill load reported FAILED by the child (${lens.skill})`,
-      usage: result.usage,
-    };
-  }
-  traceSkillLoadAbsence(lens.skill, skillLoadStatus);
+  // They were written for a world where the child had to go and open its own
+  // SKILL.md: the marker meant "the read returned content" and the proof asked
+  // whether that read had actually happened. Neither question exists now — the
+  // parent read the file BEFORE the spawn and put the body in the prompt, so
+  // `readLensSkillBody` above is the executed evidence and a lens that never
+  // called `read` is the expected outcome, not an unproven claim. Keeping the
+  // proof would have fired its shadow `traceWarn` on every lens in every round
+  // (an inline-loaded lens records no read, so `skillLoadProof` returns
+  // `unverifiable` at best), and a marker whose FAILED branch blocked a lens
+  // would now be asking a child to block itself for not doing something we told
+  // it not to do. The driver records the delivery itself, in `skillDelivered`.
+  const skillDelivered = `skill delivered inline (${lens.skill})`;
   return {
     lens: lens.name,
     ok: result.ok,
@@ -470,14 +465,6 @@ export async function runLensChild(opts: {
     parseError: skipped > 0 ? `${skipped} malformed report_finding call(s) skipped` : undefined,
     // #534 — was previously dropped at this return; the cycle total needs it.
     usage: result.usage,
+    skillDelivered,
   };
 }
-
-/** A compact, bounded summary of what the proof actually looked at, for the
- * SHADOW warning: the tool names it saw and the path-shaped arguments those
- * calls carried. Nothing is executed and no argument content beyond paths is
- * echoed; the list is capped so a chatty child cannot make the warning the
- * longest line in the run. Both the `read` and `file_path` spellings are
- * collected — this line reports what the child NAMED, so the operator can see
- * why the proof disagreed with it, including when the model used a spelling
- * the tool would have rejected. */

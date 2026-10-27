@@ -1,0 +1,130 @@
+/**
+ * lens-skill-inline — the parent reads a lens's SKILL.md and hands the BODY to
+ * the child in its prompt (#1847).
+ *
+ * The old contract was: spawn the lens with `--skill <dir>` and tell it, in the
+ * prompt, to open that file itself. Pi's `--skill` only ADVERTISES a skill
+ * (name, description, location — the body is inlined only by the `/skill:name`
+ * slash command, which nothing here calls), so every lens child had to go and
+ * read the file. Measured across four PRs on v0.14.22–v0.14.25, at least one
+ * lens per round announced "I'll load my assigned skill" and then spent 150–500
+ * turns and 20–80 M tokens doing it, frequently through codemode or bash —
+ * reads the #1827 re-read cap could not even see.
+ *
+ * So the parent reads the body once and puts it in the prompt. There is nothing
+ * left for the child to go and fetch, which is the fix; the cap's nested-count
+ * half (#1847 milestone 2) is the backstop for a child that fetches anyway.
+ *
+ * Two rules the body forces on us:
+ *
+ *   1. **The wrapper cannot be closed from inside.** Every bundled lens skill
+ *      carries triple-backtick fences and backticks, so a fence- or
+ *      backtick-based wrapper is escapable by the payload. The delimiter is an
+ *      XML-ish tag whose name carries a per-spawn random nonce: the body would
+ *      have to guess the nonce to close the tag, and a body that contains the
+ *      closing tag anyway is REFUSED rather than inlined.
+ *   2. **A lens with no skill never spawns.** The body is read before the spawn,
+ *      so an unreadable or missing file blocks the lens with a named error —
+ *      same shape as `skill not installed:` — instead of spending four attempts
+ *      on an unguided reviewer.
+ *
+ * The frontmatter goes through `firstFrontmatterBlock` (skill-frontmatter.ts),
+ * the same seam the #871 surface gate and the #873 roster read, so the accepted
+ * frontmatter format has exactly one definition.
+ */
+
+import { randomUUID } from "node:crypto";
+import * as nodeFs from "node:fs";
+import path from "node:path";
+import { SKILL_FILE_NAME } from "./lens-skill-path.ts";
+import { firstFrontmatterBlock } from "./skill-frontmatter.ts";
+
+let skillFileReader: ((file: string) => string) | undefined;
+
+/** Install a reader for the SKILL.md read. Returns the previous value. */
+export function setSkillFileReaderForTests(
+  fn: ((file: string) => string) | undefined,
+): ((file: string) => string) | undefined {
+  const prior = skillFileReader;
+  skillFileReader = fn;
+  return prior;
+}
+
+/** A body carrying this substring cannot be wrapped safely, and the refusal
+ * names the shape rather than the content: the content is the untrusted payload
+ * and a trace line is a transport for it. */
+export const UNWRAPPABLE_SKILL_BODY = "skill body contains the inline delimiter";
+
+/** The opening tag of the wrapper, nonce included. */
+export function skillOpenTag(nonce: string): string {
+  return `<lens-skill-body nonce="${nonce}">`;
+}
+
+/** The closing tag the body must not contain. */
+export function skillCloseTag(nonce: string): string {
+  return "</lens-skill-body>";
+}
+
+/**
+ * Strip the leading frontmatter block, keeping the body verbatim.
+ *
+ * `firstFrontmatterBlock` returns null when the text does not begin with a
+ * `---` block (or the block is never closed), and that null means "no
+ * frontmatter to strip" — NOT "unreadable". A skill without frontmatter can
+ * never have been parsed into the roster, so this branch is the caller's
+ * fixture rather than the real tree; the body is still delivered whole.
+ */
+export function stripFrontmatter(text: string): string {
+  const block = firstFrontmatterBlock(text);
+  if (block === null) return text.trim();
+  return text.slice(block.length + 6).trim();
+}
+
+/**
+ * Wrap a skill body in the nonce-tagged delimiter.
+ *
+ * Returns null when the body contains the closing tag: the payload would be
+ * ending its own wrapper and continuing as prompt text. Nonce collisions are
+ * impossible in practice (UUIDv4), so the null is a wall, not a routine branch.
+ */
+export function wrapSkillBody(body: string, nonce: string): string | null {
+  if (body.includes(skillCloseTag(nonce))) return null;
+  return `${skillOpenTag(nonce)}\n${body}\n${skillCloseTag(nonce)}`;
+}
+
+/**
+ * Read one lens's skill body and wrap it for the prompt.
+ *
+ * Case (e) of smoke-tests/test-lens-skill-inline-1847.ts has to make THIS read
+ * fail while the roster (lens-roster.ts) keeps reading the SAME path
+ * successfully, and no filesystem state separates two reads of one path — so
+ * the read honours an optional reader installed by `setSkillFileReaderForTests`
+ * before falling through to the real `nodeFs.readFileSync`.
+ *
+ * `{ error }` on an unreadable or missing SKILL.md, or on a body that cannot be
+ * wrapped — the caller turns that into a blocked lens BEFORE spawning.
+ */
+export function readLensSkillBody(
+  skillDir: string,
+): { body: string; nonce: string; wrapped: string } | { error: string } {
+  const file = path.join(skillDir, SKILL_FILE_NAME);
+  let raw: string;
+  try {
+    // Test seam (the only one in this module): lets a test make THIS read fail
+    // while leaving the roster read of the same path intact — the one
+    // distinction no filesystem fixture can express, since the roster opens
+    // <dir>/SKILL.md first and anything that breaks the file breaks the roster
+    // before the parent ever reads it.
+    if (skillFileReader) raw = skillFileReader(file);
+    else raw = nodeFs.readFileSync(file, "utf8");
+  } catch {
+    return { error: `skill not readable: ${file} (not spawned)` };
+  }
+  const nonce = randomUUID().replace(/-/g, "");
+  const body = stripFrontmatter(raw);
+  const wrapped = wrapSkillBody(body, nonce);
+  if (wrapped === null) {
+    return { error: `${UNWRAPPABLE_SKILL_BODY}: ${file} (not spawned)` };
+  }
+  return { body, nonce, wrapped };
+}

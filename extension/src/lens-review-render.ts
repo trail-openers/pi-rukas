@@ -66,7 +66,12 @@ function lensLine(r: LensRunResult, maxLensAttempts: number): string {
     // nothing; say so beside the count, or a finding the lens lists in its
     // prose but never re-sent is invisible here.
     const skippedNote = r.parseError ? ` — ${r.parseError}` : "";
-    tag = `${findingCount}${retry}${skippedNote}`;
+    // #1847 — the operator used to read a `Skill Load Status` line the child
+    // wrote about itself and had no way to check it. The row now carries the
+    // driver's OWN record of the delivery: the parent read the file and put the
+    // body in the prompt, so the lens was guided by construction.
+    const skillNote = r.skillDelivered ? ` — ${r.skillDelivered}` : "";
+    tag = `${findingCount}${retry}${skippedNote}${skillNote}`;
   } else {
     tag = r.parseError ?? "fail";
   }
