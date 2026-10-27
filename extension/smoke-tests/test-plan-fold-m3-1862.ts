@@ -80,6 +80,35 @@ const ws = (id: string, paths: string[], outOfScope: string[] = []): Workstream 
   );
 }
 
+// ── 2b. the sibling guard reads EVERY path the entry claims, not just the one
+// the drop was granted for. `selfFenceEntryDrop` reports the FIRST owning
+// declaration, so a guard that re-checks only that path keeps a sentence whose
+// OTHER named file belongs to a sibling — and the merged developer walks into it.
+{
+  const prose = "src/a.ts and src/c.ts are frozen";
+  const { drop, records } = foldSelfFenceDrops("implement", ["src/"], [prose], ["src/c.ts"]);
+  assert(
+    drop.size === 0 && records.length === 0,
+    `a prose entry whose OTHER named path belongs to a sibling is kept (own src/, sibling owns src/c.ts) (got drop=${drop.size} records=${records.length})`,
+  );
+  // The control: with no sibling owning either file the same sentence goes,
+  // so the case above is not "never drop prose".
+  const alone = foldSelfFenceDrops("implement", ["src/", "src/c.ts"], [prose], ["docs/z.md"]);
+  assert(
+    alone.drop.has(prose) && alone.records.length === 1,
+    `and it DOES drop when no sibling owns any path it names (got drop=${alone.drop.size})`,
+  );
+  const kept = foldTwo(
+    ws("implement", ["src/"]),
+    ws("document", ["docs/d.md"], [prose]),
+    ["src/c.ts"],
+  );
+  assert(
+    kept.workstream.outOfScope.includes(prose) && kept.selfFenceDrops.length === 0,
+    `foldTwo keeps the same entry on the sibling view (got ${JSON.stringify([kept.workstream.outOfScope, kept.selfFenceDrops.length])})`,
+  );
+}
+
 // ── 3. foldTwo threads the sibling view it was handed ───────────────────────
 {
   const prose = "Everything in src/b.ts is frozen";

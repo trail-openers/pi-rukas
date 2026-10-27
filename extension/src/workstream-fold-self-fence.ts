@@ -43,6 +43,7 @@ import {
   selfFenceEntryDrop,
 } from "./plan-fence-self-entry.ts";
 import { trace } from "./trace.ts";
+import { normaliseDeclaredPath } from "./work-driver-declared-path.ts";
 import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 
 /** Do two normalised declarations meet on the `/` boundary in either direction?
@@ -51,6 +52,37 @@ import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
  * `srcfoo` meets nothing (`src` is a name, not a prefix). */
 function sharesDeclaredPath(a: string, b: string): boolean {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/** Every path an entry makes a claim about, for the SIBLING test: the path the
+ * drop was granted for, plus every path-shaped token the prose names.
+ *
+ * The one-path version is what #1862 M3 shipped with, and it is not enough: a
+ * sentence is dropped because EVERY token it names belongs to the merged
+ * workstream, so a sibling who owns ANY ONE of those tokens owns a file the
+ * sentence fences, and the entry is not the merge's to open. `selfFenceEntryDrop`
+ * reports only the FIRST owning declaration, so reading that alone keeps a
+ * sentence like `"src/a.ts and src/c.ts"` (own `src/`, sibling owns `src/c.ts`)
+ * — exactly the walk-into-a-sibling's-file failure this guard exists to stop.
+ * The whole set costs one normalisation per token and no extra scan. */
+function entryClaimedPaths(entry: string, granted: string): string[] {
+  const out: string[] = [];
+  for (const word of neutraliseFenceEntry(entry).split(/\s+/)) {
+    const token = word
+      .replace(/^[,;:({["'`]+/, "")
+      .replace(/[,;:)\]}"'`]+$/, "")
+      // A trailing `.` is sentence punctuation only at the end of a sentence; an
+      // internal one is part of the name (`src/legacy.` is that directory).
+      .replace(/(?<=[^\s.])\.(?=\s|$|[)\]}])/, "");
+    if (token.length === 0) continue;
+    if (!(token.includes("/") || /\.[A-Za-z][A-Za-z0-9]*$/.test(token))) continue;
+    const normalised = normaliseDeclaredPath(token);
+    if (normalised.length > 0) out.push(normalised);
+  }
+  // The granted path is always in the set: it is the entry's own text on the
+  // path-shaped arm, and a control byte could have hidden it from the split.
+  if (!out.some((p) => sharesDeclaredPath(p, granted))) out.push(granted);
+  return out;
 }
 
 /**
@@ -100,18 +132,18 @@ export function foldSelfFenceDrops(
   for (const entry of candidates) {
     const decision: SelfFenceEntryDrop = selfFenceEntryDrop(entry, own, contradictions.get(entry));
     if (!decision.drop || drop.has(entry)) continue;
-    // #1862 M3 — the entry may fence ONLY the merged workstream's own files. The
-    // path-shaped arm is already exact (`contradictionPathsByEntry` answers for
-    // the whole entry), but the prose arm judges token-by-token against the
-    // merged half's own declarations alone, so a sentence that names a sibling's
-    // file next to its own would go. Re-checking the path the drop was granted
-    // for against the siblings closes that: if any sibling declares it, the
-    // entry is not the merged workstream's own business and it stays — said on
-    // the trace channel so the reason is findable.
-    if (siblings.some((p) => sharesDeclaredPath(p, decision.path))) {
+    // #1862 M3 — the entry may fence ONLY the merged workstream's own files.
+    // The sibling test reads EVERY path the entry claims (the granted one and
+    // every path-shaped token the prose names), not just the path the drop was
+    // granted for: if a sibling declares any of them, the entry is not the
+    // merged workstream's own business and it stays — said on the trace channel
+    // so the reason a removal did not happen is findable.
+    const claims = entryClaimedPaths(entry, decision.path);
+    const held = siblings.find((p) => claims.some((c) => sharesDeclaredPath(p, c)));
+    if (held !== undefined) {
       trace(
         `work-driver: plan fold — kept self-fence ${JSON.stringify(neutraliseFenceEntry(entry))}: ` +
-          `${JSON.stringify(neutraliseFenceEntry(decision.path))} is also declared by a sibling workstream`,
+          `${JSON.stringify(neutraliseFenceEntry(held))} is also declared by a sibling workstream`,
       );
       continue;
     }
