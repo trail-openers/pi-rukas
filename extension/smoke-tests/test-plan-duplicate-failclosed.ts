@@ -26,7 +26,9 @@ import {
 } from "../src/plan-duplicate-disclosure.ts";
 import {
   citesUnaccountedNumber,
+  citesUnaccountedNumberStripped,
   clauseNaming,
+  everyClauseNaming,
 } from "../src/plan-duplicate-self.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
 
@@ -228,6 +230,21 @@ async function barrier(
     citesUnaccountedNumber("#12 and #123 are different issues", ["12"]) === true,
     "rule 4: a resolved token's removal stops at a digit boundary (/#N(?!\\d)/), so #123 stays",
   );
+  // #1856 review round 3: the citation is removed WHOLE, leading `#` run and all,
+  // so `##1856` leaves no stray `#` behind. The anchoring still holds: `##7` does
+  // not blank `##77`.
+  assert(
+    !/#+/.test(citesUnaccountedNumberStripped("this is ##1856 restated", ["1856"])),
+    "rule 4: a ##-prefixed citation of a resolved token leaves no stray # behind",
+  );
+  assert(
+    citesUnaccountedNumber("this is ##1856 restated verbatim", ["1856"]) === false,
+    "rule 4: the ## form of the resolved token reads as fully accounted for",
+  );
+  assert(
+    citesUnaccountedNumber("##7 and ##77 both matter", ["7"]) === true,
+    "rule 4: a ##-prefixed resolved token cannot blank the digits of a longer ## one",
+  );
 }
 
 // ============ rule 5: the prior-art word must live in the CLOSED issue's clause
@@ -273,6 +290,73 @@ async function barrier(
   assert(
     clauseNaming("high — reverses the landed decision in #103", "103").includes("reverses"),
     "rule 5: the verb preceding the token is inside its clause",
+  );
+}
+
+{
+  // #1856 review round 3 (adversarial): `clauseNaming` read the FIRST mention
+  // only, so the reply below — an affirmation, then a denial of prior art for
+  // the SAME closed issue — satisfied rule 5 and excluded #103. Every mention
+  // is now judged: an affirmation counts only when no clause naming the issue
+  // negates prior art.
+  const risk = await barrier(
+    "DUPLICATE_RISK: high — #1856 restates this. #103 is prior art for this. #103 is not landed, it is unlanded duplicate work",
+    1856,
+  );
+  assert(
+    risk?.level === "high" && risk?.downgradedFrom === undefined,
+    `rule 5: a later denial of prior art for the CLOSED issue overrides an earlier affirmation (got ${risk?.level})`,
+  );
+}
+
+{
+  // The single-clause affirmation still excludes: the round-3 tightening must
+  // not become a blanket refusal to honour prior art.
+  const risk = await barrier(
+    "DUPLICATE_RISK: high — #1856 restates this. #103 is prior art for this",
+    1856,
+  );
+  assert(
+    risk?.level === "medium" &&
+      (risk?.excludedIssues ?? []).some((e) => e.number === 103 && e.reason.includes("prior art")),
+    `rule 5: one affirming clause and no denial still excludes the CLOSED issue (got ${risk?.level})`,
+  );
+}
+
+{
+  // The disclosure quotes the AFFIRMING clause, not merely the first mention of
+  // the token, so what the operator reads is the sentence the rule rested on.
+  const risk = await barrier(
+    "DUPLICATE_RISK: high — #103 is mentioned here. #103 reverses the landed decision it settled",
+    1856,
+  );
+  const section = duplicateExclusionSection(risk, 1856);
+  assert(
+    risk?.level === "medium" && section.includes("reverses the landed decision"),
+    `rule 5: the disclosure quotes the affirming clause rather than the first mention (section ${JSON.stringify(section)})`,
+  );
+}
+
+{
+  // The `#7` vs `#71` anchoring: a mention of one token must never be read as a
+  // mention of a shorter one that is a prefix of it.
+  assert(
+    everyClauseNaming("#7 matters, see #71 for the parent", "7").join("|") === "#7 matters",
+    "rule 5: #71 is not a second mention of #7",
+  );
+  assert(
+    everyClauseNaming("#7-2 is the unlanded half, #7 is the parent", "7").join("|") ===
+      "#7 is the parent",
+    "rule 5: a #7-2 split-child token is not a mention of #7",
+  );
+  assert(
+    everyClauseNaming("#71 covers it", "7").length === 0,
+    "rule 5: a token that never occurs on its own yields no clause at all",
+  );
+  assert(
+    everyClauseNaming("#103 is prior art. #103 is not landed", "103").join("|") ===
+      "#103 is prior art|#103 is not landed",
+    "rule 5: everyClauseNaming returns EVERY mention's clause, in order",
   );
 }
 
