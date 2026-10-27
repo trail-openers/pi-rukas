@@ -27,7 +27,35 @@ export function outcomeEvents(
   multi: boolean,
 ): WorkEvent[] {
   const events: WorkEvent[] = [];
+  const emitted = new Set<string>();
   for (const o of outcomes) {
+    // #1863 — the marker this pass wrote travels WITH the events it precedes.
+    // The fan-out's splice replaces the region the write-ahead grew into (the
+    // markers are persisted DURING the pass, whose span was captured before it
+    // started), so a batch that did not carry them would leave them sitting in
+    // the retained tail — AFTER the events reporting their dispatch's outcome.
+    // For N=1 the tail is the only event `failureEventOf` reads and `nextStep()`
+    // has no `dispatch-failed` branch at all, so a step whose reviewer died fell
+    // through the linear table into commit-pr: an unreviewed diff past the
+    // adversarial gate. Carried here so the audit record survives the
+    // replacement. A pass whose write-ahead itself FAILED never dispatched, so
+    // it has no marker to record (`writeAheadFailed` says so with
+    // `markerWritten: false`) and its id is not one the region absorbs.
+    if (
+      o.clearedJobId &&
+      o.markerWritten !== false &&
+      !emitted.has(o.clearedJobId)
+    ) {
+      emitted.add(o.clearedJobId);
+      events.push({
+        kind: "dispatch-started",
+        step: "adversarial",
+        role: "adversarial-loop",
+        label: o.id,
+        jobId: o.clearedJobId,
+        at: 7,
+      });
+    }
     if (o.completionEvent) events.push(o.completionEvent);
     if (o.failureEvent) events.push(o.failureEvent);
     const recordsAt = Date.now();

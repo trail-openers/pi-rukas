@@ -139,7 +139,9 @@ export async function runAdversarialWorkstream(
   const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
   /** #1863 — the id whose in-flight marker the fan-out's splice drops, once
    *  this pass has produced its events. Absent when nothing was written ahead. */
-  const cleared = writeAhead ? { clearedJobId: writeAhead.jobId } : {};
+  const cleared = writeAhead
+    ? { clearedJobId: writeAhead.jobId, dispatchLabel: writeAhead.label }
+    : {};
   // The reviewer dispatch's `runId`. When the fan-out wrote a head for this
   // pass, the child's id IS the marker's id, so the write-ahead record, the
   // child's transcript and the completion event name one identity (#1789's

@@ -117,6 +117,12 @@ export interface AdversarialOutcome {
    * be told which ids its passes finished: `next` never saw the clears.
    */
   clearedJobId?: string;
+  /**
+   * #1863 — false when the write-ahead itself failed: the pass minted an id but
+   * never dispatched, so it has no `dispatch-started` record to carry, and its
+   * id must not be treated as a marker the splice region absorbs.
+   */
+  markerWritten?: boolean;
 }
 
 /** The `outcome` a per-workstream event records. */

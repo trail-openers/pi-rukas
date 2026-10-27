@@ -24,6 +24,7 @@ import {
 } from "./work-driver-adversarial-fanout-capkill.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
 import { runAdversarialWorkstream } from "./work-driver-adversarial-fanout-run.ts";
+import { settledMarkerIds, splicePassBatch } from "./work-driver-adversarial-fanout-splice.ts";
 import {
   interpretReview,
   reviewRoundFor,
@@ -131,13 +132,10 @@ export async function fanOutAdversarial(
   // through a mutable pipeline-state field (which sibling won the race used to
   // decide what the handoff said).
   //
-  // #1863 — WRITE-AHEAD, one marker per workstream pass (develop's granularity,
-  // per the PM decision: resume granularity is the step, and a half-finished
-  // fan-out re-enters wholesale). Before this the adversarial family wrote ahead
-  // ONLY for the fix dispatch, so a cycle whose round review was killed had
-  // nothing on disk for its whole review window: the state file stayed at
-  // develop's boundary, `inFlightJobIds` stayed empty, and a runner that died
-  // there left no record that a review had been paid for.
+  // #1863 — WRITE-AHEAD, one marker per workstream pass (develop's granularity:
+  // resume granularity is the step, a half-finished fan-out re-enters wholesale).
+  // Before this the family wrote ahead ONLY for the fix dispatch, so a cycle whose
+  // round review was killed had nothing on disk for its whole review window.
   //
   // ONE mutable log for the whole fan-out, and ONE chained writer for it.
   // `next` was a local rebuilt at each step, but N workstreams now write ahead
@@ -161,6 +159,9 @@ export async function fanOutAdversarial(
   // identity (#1789's rule, which `runSingleDispatch` already follows).
   let log: WorkState = next;
   let writeChain: Promise<unknown> = Promise.resolve();
+  // #1863 — the marker ids this fan-out minted, in order. `settledMarkerIds`
+  // turns them into the set the splice keys on.
+  const passMarkers: string[] = [];
   const writeThrough = (fn: (s: WorkState) => Promise<WorkState>): Promise<WorkState> => {
     const step = writeChain.then(async () => {
       log = await fn(log);
@@ -177,7 +178,15 @@ export async function fanOutAdversarial(
   };
   const writeAheadFor = (id: string): { jobId: string; label: string } => {
     const label = multi ? `adversarial[${id}]` : "adversarial_loop";
+    // ONE minting per pass, handed to the leaf (see `RunOneArgs.writeAhead`) and
+    // registered for the splice. A second `Date.now()` read makes a second
+    // minting a different string, and then the marker, the dispatch events and
+    // the outcome's `clearedJobId` no longer name one dispatch (#1863).
     return { jobId: mintJobId("adversarial", `${label}:${id}`, Date.now()), label };
+  };
+  // De-duplicated: a workstream the in-step retry re-ran registers one per attempt.
+  const registerMarker = (jobId: string): void => {
+    if (!passMarkers.includes(jobId)) passMarkers.push(jobId);
   };
   const writeAheadFailed = (id: string, label: string, jobId: string, e: unknown) => {
     const errMsg = (e as Error).message?.slice(-200);
@@ -198,6 +207,10 @@ export async function fanOutAdversarial(
       priorInfra: priorOutcomes.get(id) === "infra-failure",
       rejectionText: `adversarial write-ahead failed: ${errMsg}`,
       errorTail: errMsg,
+      // Never dispatched: excluded from the splice's marker set by
+      // `settledMarkerIds`, so it absorbs no region and claims no dispatch.
+      clearedJobId: jobId,
+      markerWritten: false,
       failureEvent: {
         kind: "dispatch-failed",
         step: "adversarial",
@@ -215,8 +228,8 @@ export async function fanOutAdversarial(
     const startedAt = Date.now();
     let begunLog: WorkState;
     try {
-      begunLog = await writeThrough((s) =>
-        beginDispatch(
+      begunLog = await writeThrough(async (s) => {
+        const b = await beginDispatch(
           ctx,
           s,
           "adversarial",
@@ -224,9 +237,21 @@ export async function fanOutAdversarial(
           wa.label,
           startedAt,
           undefined,
+          // The id this pass's dispatch events carry, and the id its `finally`
+          // clears: ONE string, taken from the marker rather than minted again
+          // (#1863 — see `writeAheadFor`).
           wa.jobId,
-        ).then((b) => b.state),
-      );
+        );
+        // #1863 — the marker's real id, from the helper that wrote it, is the id
+        // the pass uses everywhere: `beginDispatch` mints its own when the
+        // caller passes none, and two mintings a millisecond apart are two
+        // strings. The leaf then stamps its dispatch events with one and the
+        // marker carries the other, and the batch's marker no longer names the
+        // dispatch it precedes.
+        if (b.jobId !== wa.jobId) wa.jobId = b.jobId;
+        registerMarker(b.jobId);
+        return b.state;
+      });
     } catch (e) {
       // The intent is what makes a killed review visible on resume. If it could
       // not be written, dispatching anyway would spend a reviewer whose death
@@ -437,9 +462,9 @@ export async function fanOutAdversarial(
   //    next invocation would resume a step that already finished.
   const events = outcomeEvents(outcomes, multi);
   const passEnd = priorBatchSpan ? priorBatchSpan[1] : passStart;
-  const batch = events.filter(
-    (e) => !(e.kind === "dispatch-started" && !log.pipelineState.inFlightJobIds.includes(e.jobId)),
-  );
+  // #1863 — the splice and its invariant live in the splice module: a step that
+  // failed ends on its failure event, never on a write-ahead marker.
+  const settledMarkers = settledMarkerIds(outcomes, passMarkers);
   next = {
     ...log,
     pipelineState: {
@@ -448,7 +473,7 @@ export async function fanOutAdversarial(
         (id) => !outcomes.some((o) => o.clearedJobId === id),
       ),
     },
-    eventLog: [...log.eventLog.slice(0, passStart), ...batch, ...log.eventLog.slice(passEnd)],
+    eventLog: splicePassBatch(log, events, settledMarkers, passStart, passEnd),
   };
 
   if (multi) {
