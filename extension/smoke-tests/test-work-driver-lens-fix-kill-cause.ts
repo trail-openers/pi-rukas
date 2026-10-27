@@ -25,11 +25,16 @@
  * The canaries are the point of the file: an error-stop, a sourceless kill and a
  * different step must all keep the old verdict, or this fix becomes a way to
  * re-badge a provider outage as a knob.
+ *
+ * The window rule — WHICH dispatch of a multi-dispatch window supplies cause,
+ * source and line — is pinned by its sibling,
+ * `test-work-driver-lens-fix-kill-cause-window.ts`. Both files read state built
+ * by `lib/lens-fix-kill-cause-fixtures.ts`, whose header says why every event
+ * here comes from a production writer.
  */
 import { failureOf, type ResultFailure } from "../src/headless/failure.ts";
 import type { HeadlessCap } from "../src/headless/caps.ts";
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
-import { lensFixBoundKillVerdict } from "../src/work-driver-lens-fix-kill-cause.ts";
 import {
   buildCompletionEvent,
   overrideEnvForKillCause,
@@ -43,14 +48,26 @@ import {
 } from "../src/work-driver-fixer-bound.ts";
 import { reviewFixDispatchBound } from "../src/work-driver-lens-fix-arming.ts";
 import { LENS_FIX_BOUND_ENV, REVIEW_WALL_CLOCK_ENV } from "../src/review-budget.ts";
-import { initialState, type WorkEvent, type WorkState } from "../src/workflow-state.ts";
+import { initialState } from "../src/workflow-state.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
+import {
+  boundKillTail,
+  byKind,
+  failFor,
+  failedDispatches,
+  FIXER_BOUND,
+  killed,
+  lensFixCycle,
+  lensFixWindow,
+  lensFixCtx,
+  MIN,
+  NOW,
+  WALL,
+} from "./lib/lens-fix-kill-cause-fixtures.ts";
 
-const MIN = 60_000;
-const NOW = 1_700_000_000_000;
-const WALL = 90 * MIN;
-const FIXER_BOUND = 45 * MIN;
+const ctx = lensFixCtx(killed({})) as unknown as CycleContext;
+void MIN;
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) {
@@ -133,20 +150,6 @@ function assert(cond: boolean, msg: string): void {
 }
 
 // ───────────────────── 2. the kill's text names the right knob ───────────────
-const ctx = { repoRoot: "/tmp", issue: 1798 } as unknown as CycleContext;
-
-function killed(over: Partial<DispatchResult>): DispatchResult {
-  return {
-    ok: false,
-    ms: 45 * MIN,
-    exitCode: null,
-    finalAssistantText: "",
-    killCause: "timeout",
-    killBudgetMs: 45 * MIN,
-    ...over,
-  } as unknown as DispatchResult;
-}
-
 async function killTail(result: DispatchResult): Promise<string> {
   const event = await buildCompletionEvent(ctx, "lens-fix", "developer", "lens-fix", result);
   if (event === undefined || event.kind !== "dispatch-failed") {
@@ -238,84 +241,45 @@ async function killTail(result: DispatchResult): Promise<string> {
     overrideEnvForKillCause("plan-timeout", "fixer-bound") === "PI_ENSEMBLE_PLAN_TIMEOUT_MS",
     "canary: the plan step's own bound is unmoved by a fixer source",
   );
+
+  // #1798 round 1 — a kill with no `killBudgetMs` prints no "undefinedms".
+  const noBudget = await killTail(killed({ killBudgetMs: undefined, fixerBoundSource: undefined }));
+  assert(
+    !noBudget.includes("undefined"),
+    `a kill with no budget never prints "undefinedms" (got ${JSON.stringify(noBudget)})`,
+  );
+
+  // The one case the builder cannot produce: a state file written BEFORE #1798,
+  // whose kill text carries the fixer clause but whose event has no
+  // `fixerBoundSource` field. Synthesised from the clause the builder itself
+  // spells (section 1 pins that spelling), with the legacy backstop override
+  // appended — which is exactly what the text fallback has to see past.
+  const legacyTail = `[pi-rukas] killed after ${FIXER_BOUND}ms at ${fixerBoundClause(
+    "fixer-bound",
+    FIXER_BOUND,
+  )} (override: ${SPAWN_BACKSTOP_ENV})`;
+  const legacy = await lensFixWindow([killed()], [], [legacyTail]);
+  assert(
+    failedDispatches(legacy).every((e) => (e as { fixerBoundSource?: string }).fixerBoundSource === undefined),
+    "the legacy fixture records no source on its dispatch (a pre-#1798 state file)",
+  );
+  const legacyVerdict = causeVerdictOf(legacy, "step-failed:lens-fix", failFor(legacy));
+  assert(
+    legacyVerdict?.causeClass === "pi-rukas" &&
+      (legacyVerdict.userAction ?? "").includes(LENS_FIX_BOUND_ENV),
+    `a state file written before the field still classifies from the kill's own clause (got ${JSON.stringify(legacyVerdict?.causeClass)})`,
+  );
 }
 
 // ─────────────────────────── 3. the classifier reads it back ─────────────────
-/**
- * A lens-fix cycle that halted on `step-failed:lens-fix`. `event` is the
- * dispatch the cap follows; the optional `earlier` is a dispatch of the SAME
- * kind and step that ran first in the window — the shape a fix loop produces
- * when it re-dispatches before the capped round. Both members are
- * `dispatch-failed`, because that is what a killed round records
- * (`buildCompletionEvent`'s kill branch) and a mixed window answers a different
- * question than the one these canaries ask.
- */
-function lensFixCycle(
-  event: Record<string, unknown>,
-  earlier?: Record<string, unknown>,
-): WorkState {
-  const base = initialState(1798, 1);
-  const dispatch = (at: number, over: Record<string, unknown>): WorkEvent =>
-    ({
-      kind: "dispatch-failed",
-      at,
-      step: "lens-fix",
-      role: "developer",
-      label: "lens-fix",
-      ok: false,
-      exitCode: null,
-      ms: 45 * MIN,
-      ...over,
-    }) as unknown as WorkEvent;
-  return {
-    ...base,
-    pipelineState: {
-      ...base.pipelineState,
-      status: "handoff",
-      currentStep: "handoff",
-      lastCompletedStep: "lens-fix",
-    },
-    eventLog: [
-      { kind: "step-started", at: 1, step: "lens-fix" } as unknown as WorkEvent,
-      ...(earlier === undefined ? [] : [dispatch(2, earlier)]),
-      dispatch(earlier === undefined ? 2 : 3, event),
-      {
-        kind: "cap-hit",
-        at: earlier === undefined ? 3 : 4,
-        step: "lens-fix",
-        // #1696 names the step that capped, and the classifier's window search
-        // keys off it — a fixture whose cap-hit omits `step` silently widens
-        // the window to the whole log.
-        cap: "step-failed:lens-fix",
-        reviewRound: 0,
-        nextStep: "handoff",
-      } as unknown as WorkEvent,
-    ],
-  } as unknown as WorkState;
-}
-
-const boundKillTail = `[pi-rukas] killed after 2700000ms at pi-rukas's own fixer-bound bound of 45m (${LENS_FIX_BOUND_ENV})`;
-
-/**
- * The failure the driver itself would hand the classifier: built by `failureOf`
- * from the same state, not by hand. A hand-rolled `ResultFailure` is a second
- * implementation of the read that the classifier depends on, and the first draft
- * of this file got its `kind` wrong — a `kind` the generic entry then preferred
- * over the bound verdict.
- */
-function failFor(state: WorkState): ResultFailure | undefined {
-  return failureOf(state, "step-failed:lens-fix" as HeadlessCap, "lens-fix");
-}
-
 {
-  const v = causeVerdictOf(
-    lensFixCycle({ killCause: "timeout", errorTail: boundKillTail, fixerBoundSource: "fixer-bound" }),
-    "step-failed:lens-fix",
-    failFor(
-      lensFixCycle({ killCause: "timeout", errorTail: boundKillTail, fixerBoundSource: "fixer-bound" }),
-    ),
-    undefined,
-  );
+  const state = await lensFixCycle({
+    killCause: "timeout",
+    errorTail: boundKillTail,
+    fixerBoundSource: "fixer-bound",
+  });
+  const failure: ResultFailure | undefined = failFor(state);
+  const v = causeVerdictOf(state, "step-failed:lens-fix", failure);
   assert(v?.causeClass === "pi-rukas", `a bound kill is pi-rukas's, not the host's (got ${v?.causeClass})`);
   assert(
     (v?.causeReason ?? "").includes("pi-rukas's own time bound") &&
@@ -337,51 +301,29 @@ function failFor(state: WorkState): ResultFailure | undefined {
 }
 
 {
-  // The persisted source is not required — the kill's own text is enough, which
-  // is what makes an older state file classify correctly after an upgrade.
-  const v = causeVerdictOf(
-    lensFixCycle({ killCause: "timeout", errorTail: boundKillTail }),
-    "step-failed:lens-fix",
-    failFor(lensFixCycle({ killCause: "timeout", errorTail: boundKillTail })),
-    undefined,
-  );
-  assert(
-    v?.causeClass === "pi-rukas" && (v.userAction ?? "").includes(LENS_FIX_BOUND_ENV),
-    "a state file written before the field still classifies from the kill's own clause",
-  );
-}
-
-{
   // CANARIES — every one must keep the generic entry.
+  const genericState = await lensFixCycle({
+    killCause: "timeout",
+    errorTail: "[pi-rukas] killed after 7200000ms timeout",
+  });
   const generic = causeVerdictOf(
-    lensFixCycle({ killCause: "timeout", errorTail: "[pi-rukas] killed after 7200000ms timeout" }),
+    genericState,
     "step-failed:lens-fix",
-    failFor(
-      lensFixCycle({ killCause: "timeout", errorTail: "[pi-rukas] killed after 7200000ms timeout" }),
-    ),
-    undefined,
+    failFor(genericState),
   );
   assert(
     generic?.causeClass === "environment",
     `canary: a sourceless lens-fix timeout stays environment (got ${generic?.causeClass})`,
   );
 
-  const stopped = causeVerdictOf(
-    lensFixCycle({
-      errorTail: "provider error: stream ended",
-      providerMessage: "upstream connect error",
-      fixerBoundSource: "fixer-bound",
-    }),
-    "step-failed:lens-fix",
-    failFor(
-      lensFixCycle({
-        errorTail: "provider error: stream ended",
-        providerMessage: "upstream connect error",
-        fixerBoundSource: "fixer-bound",
-      }),
-    ),
-    undefined,
-  );
+  const stoppedState = await lensFixCycle({
+    killCause: undefined,
+    exitCode: 1,
+    errorTail: "provider error: stream ended",
+    providerMessage: "upstream connect error",
+    fixerBoundSource: "fixer-bound",
+  });
+  const stopped = causeVerdictOf(stoppedState, "step-failed:lens-fix", failFor(stoppedState));
   assert(
     stopped?.causeClass === "environment",
     `canary: an error-stop is the provider's even with a source present (got ${stopped?.causeClass})`,
@@ -390,7 +332,7 @@ function failFor(state: WorkState): ResultFailure | undefined {
   // #1798 round 1 — the shape the field-on-`failure` guard could never see.
   // Built through the REAL mapper with both facts on the result: pi-rukas's own
   // clock killed the child AND the provider had severed the stream. The kill
-  // branch wins the event (so there is no `providerMessage` on it), and the
+  // branch wins the event (so the event's KIND is `dispatch-failed`), and the
   // verdict must still abstain — an outage is never a knob to raise.
   const outage = killed({
     killCause: "timeout",
@@ -398,49 +340,76 @@ function failFor(state: WorkState): ResultFailure | undefined {
     fixerBoundSource: "fixer-bound",
     errorStop: { reason: "error", message: "terminated" },
   });
-  const outageEvent = await buildCompletionEvent(
-    ctx,
-    "lens-fix",
-    "developer",
-    "lens-fix",
-    outage,
-  );
+  // No `errorTail` override here on purpose: the builder's own bound clause is
+  // what this canary tests, and the provider note it appends is the fact.
+  const outageEvent = await buildCompletionEvent(ctx, "lens-fix", "developer", "lens-fix", outage);
   assert(
     outageEvent?.kind === "dispatch-failed" && outageEvent.providerMessage !== undefined,
     `a kill that is also an error-stop keeps the provider fact on the dispatch-failed (got ${JSON.stringify(outageEvent)?.slice(0, 160)})`,
   );
-  const outageState = (() => {
-    const st = lensFixCycle({});
-    const idx = st.eventLog.findIndex((e) => e.kind === "dispatch-failed");
-    const log = [...st.eventLog];
-    log[idx] = outageEvent as WorkEvent;
-    return { ...st, eventLog: log } as WorkState;
-  })();
+  const outageState = await lensFixCycle({}, "fixer-bound");
+  const outageLog = [...outageState.eventLog];
+  const outageIdx = outageLog.findIndex((e) => e.kind === "dispatch-failed");
+  outageLog[outageIdx] = outageEvent as never;
   const outageVerdict = causeVerdictOf(
-    outageState,
+    { ...outageState, eventLog: outageLog },
     "step-failed:lens-fix",
-    failFor(outageState),
-    undefined,
+    failFor({ ...outageState, eventLog: outageLog }),
   );
   assert(
     outageVerdict?.causeClass === "environment",
     `canary: a bound kill that is ALSO a provider error-stop is not re-badged as a knob (got ${outageVerdict?.causeClass})`,
   );
 
-  const otherStep = (() => {
-    const st = lensFixCycle({ killCause: "timeout", errorTail: boundKillTail, fixerBoundSource: "fixer-bound" });
-    return {
-      ...st,
-      eventLog: st.eventLog.map((e) =>
-        e.kind === "dispatch-failed" ? { ...e, step: "develop" } : e,
-      ),
-    } as WorkState;
-  })();
+  // The verdict is lens-fix-only. Built the way a real develop failure is
+  // built — the `develop` step's own events — rather than by patching `step`
+  // onto lens-fix events: rewriting the step of a lens-fix log leaves a
+  // `step-started: lens-fix` in the window, and the classifier then reads a
+  // lens-fix window and answers for a step that never ran one. The canary has
+  // to ask what a DEVELOP log says.
+  //
+  // The FAILURE is the one `failureOf` projects for this log (kind `timeout`),
+  // which is what the generic entry makes `environment`. Passing `undefined`
+  // instead would answer a question no cycle asks — a kind-driven cap with no
+  // dispatch behind it is `pi-rukas` by the table's own rule, and asserting
+  // `environment` against that would pin the table's fallback, not this
+  // module's step guard.
+  const developState = initialState(1798, 1);
+  const developLog = [
+    { kind: "step-started", step: "develop", at: 1 },
+    {
+      kind: "dispatch-failed",
+      step: "develop",
+      role: "developer",
+      jobId: "develop:d:1",
+      label: "develop",
+      ms: FIXER_BOUND,
+      at: 2,
+      killCause: "timeout",
+      errorTail: boundKillTail,
+      fixerBoundSource: "fixer-bound",
+    },
+    {
+      kind: "cap-hit",
+      step: "develop",
+      cap: "step-failed:develop",
+      at: 3,
+      reviewRound: 0,
+      nextStep: "handoff",
+    },
+  ] as never;
+  const developFailure = {
+    kind: "timeout",
+    message: "killed by pi-rukas (wall-clock timeout)",
+    step: "develop",
+    role: "developer",
+    cause: "self-killed:timeout",
+    killCause: "timeout",
+  } as unknown as ResultFailure;
   const other = causeVerdictOf(
-    otherStep,
+    { ...developState, eventLog: developLog },
     "step-failed:develop",
-    failFor(otherStep),
-    undefined,
+    developFailure,
   );
   assert(
     other?.causeClass === "environment",
@@ -450,21 +419,15 @@ function failFor(state: WorkState): ResultFailure | undefined {
   // An inactivity kill carries the bound clause from a sibling round: it must
   // NOT be re-badged as a bound kill, because raising the bound does not stop a
   // silent child. It keeps the generic verdict.
+  const mismatchedState = await lensFixCycle({
+    killCause: "inactivity",
+    errorTail: `[pi-rukas] killed after 2700000ms inactivity · ${boundKillTail}`,
+    fixerBoundSource: "fixer-bound",
+  });
   const mismatched = causeVerdictOf(
-    lensFixCycle({
-      killCause: "inactivity",
-      errorTail: `[pi-rukas] killed after 2700000ms inactivity · ${boundKillTail}`,
-      fixerBoundSource: "fixer-bound",
-    }),
+    mismatchedState,
     "step-failed:lens-fix",
-    failFor(
-      lensFixCycle({
-        killCause: "inactivity",
-        errorTail: `[pi-rukas] killed after 2700000ms inactivity · ${boundKillTail}`,
-        fixerBoundSource: "fixer-bound",
-      }),
-    ),
-    undefined,
+    failFor(mismatchedState),
   );
   assert(
     mismatched?.causeClass === "environment",
@@ -480,89 +443,23 @@ function failFor(state: WorkState): ResultFailure | undefined {
     "the action says what the default is, so the operator knows which way to move it",
   );
 
-    // #1798 round 1 — the source of a bound kill may only come from the dispatch
-  // that actually died at a bound. A fix loop re-dispatches the same step, so a
-  // window can hold several dispatches; `failedLensFixDispatch` reads ONE of
-  // them for cause, source and line, and the scan stops there. A completed round
-  // in front of the killed one therefore contributes nothing: the source and the
-  // clause come from the killed dispatch alone.
-  const armedEvent = await buildCompletionEvent(
-    ctx,
-    "lens-fix",
-    "developer",
-    "lens-fix",
-    killed({ fixerBoundSource: "fixer-bound" }),
-  );
-  const completedRound = (() => {
-    const st = lensFixCycle({});
-    const idx = st.eventLog.findIndex((e) => e.kind === "dispatch-failed");
-    const log = [...st.eventLog];
-    log.splice(
-      idx,
-      0,
-      {
-        kind: "dispatch-completed",
-        at: 2,
-        step: "lens-fix",
-        role: "developer",
-        label: "lens-fix",
-        ok: true,
-        ms: 10 * MIN,
-        summary: "fixed three findings",
-      } as unknown as WorkEvent,
-    );
-    return { ...st, eventLog: log } as WorkState;
-  })();
-  assert(
-    completedRound.eventLog.filter((e) => e.kind === "dispatch-completed").length === 1 &&
-      completedRound.eventLog.filter((e) => e.kind === "dispatch-failed").length === 1 &&
-      completedRound.eventLog.some((e) => e.kind === "step-started" && e.step === "lens-fix") &&
-      completedRound.eventLog.some((e) => e.kind === "cap-hit" && e.step === "lens-fix"),
-    "the window holds one completed round and one killed dispatch, inside a bounded step",
-  );
-  const withCompleted = (() => {
-    const log = [...(completedRound.eventLog as unknown as Record<string, unknown>[])];
-    const idx = log.findIndex((e) => e.kind === "dispatch-failed");
-    log[idx] = armedEvent as unknown as Record<string, unknown>;
-    return { ...completedRound, eventLog: log } as unknown as WorkState;
-  })();
-  const boundFromKilled = lensFixBoundKillVerdict(
-    withCompleted,
-    "step-failed:lens-fix",
-    undefined,
-    1798,
-  );
-  assert(
-    boundFromKilled?.causeClass === "pi-rukas" &&
-      (boundFromKilled.causeReason ?? "").includes("lens-fix developer was killed at 45m") &&
-      (boundFromKilled.causeEvidence[0] ?? "").includes(LENS_FIX_BOUND_ENV),
-    `the killed dispatch alone supplies cause, source and line (got ${JSON.stringify(boundFromKilled?.causeReason)})`,
-  );
-
   // #1798 round 1 — with no minutes in the kill's clause the reason says
   // "a bound", never "0m": an unknown number reads as a bound of zero.
-  const noMinutes = causeVerdictOf(
-    lensFixCycle({
-      killCause: "timeout",
-      errorTail: `[pi-rukas] killed at pi-rukas's own fixer-bound bound (${LENS_FIX_BOUND_ENV})`,
-      fixerBoundSource: "fixer-bound",
-    }),
-    "step-failed:lens-fix",
-    undefined,
-    undefined,
+  // The legacy writer's shape: an older builder printed the clause with no
+  // minutes. Appended to the driver's own line the way a pre-#1798 state file
+  // carries text the current builder never writes, so the read — not the
+  // fixture — is what has to cope.
+  const noMinutesState = await lensFixWindow(
+    [killed({ killCause: "timeout", fixerBoundSource: "fixer-bound" })],
+    [],
+    [`[pi-rukas] killed at pi-rukas's own fixer-bound bound (${LENS_FIX_BOUND_ENV})`],
   );
+  const noMinutes = causeVerdictOf(noMinutesState, "step-failed:lens-fix", undefined);
   assert(
     noMinutes?.causeClass === "pi-rukas" &&
       (noMinutes.causeReason ?? "").includes("killed at a bound") &&
       !(noMinutes.causeReason ?? "").includes("0m"),
     `unknown minutes are phrased without a number (got ${JSON.stringify(noMinutes?.causeReason)})`,
-  );
-
-  // #1798 round 1 — a kill with no `killBudgetMs` prints no "undefinedms".
-  const noBudget = await killTail(killed({ killBudgetMs: undefined, fixerBoundSource: undefined }));
-  assert(
-    !noBudget.includes("undefined"),
-    `a kill with no budget never prints "undefinedms" (got ${JSON.stringify(noBudget)})`,
   );
 }
 
