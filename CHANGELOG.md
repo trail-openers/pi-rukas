@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.29](https://github.com/trail-openers/pi-rukas/compare/v0.14.28...v0.14.29) (2026-10-27)
+
+
+### Bug Fixes
+
+* **work:** lens fixers commit per finding, and a bound kill names its limit ([#1867](https://github.com/trail-openers/pi-rukas/issues/1867)) ([d804b6b](https://github.com/trail-openers/pi-rukas/commit/d804b6b6d7473f0f4367c5d4fc697215c9a7478b))
+* **work:** plan paths no longer fence a workstream off its own files ([#1869](https://github.com/trail-openers/pi-rukas/issues/1869)) ([c4b2834](https://github.com/trail-openers/pi-rukas/commit/c4b283413c05287637ef34b1bff3ec6f50b54d98))
+
 ## [0.14.28](https://github.com/trail-openers/pi-rukas/compare/v0.14.27...v0.14.28) (2026-10-27)
 
 
