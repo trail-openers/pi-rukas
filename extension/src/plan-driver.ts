@@ -136,7 +136,7 @@ async function runPipelineOn(
   // #1132: "HEAD" here is origin/<default> (the run's base SHA), not the local HEAD.
   const gitState = await resolvePlanGitState(repoRoot, base);
   const cacheInputs = gitState
-    ? { descriptor, context, type, keySha: gitState.keySha, depth }
+    ? { descriptor, context, type, keySha: gitState.keySha, depth, sourceIssue: input.sourceIssue }
     : undefined;
   const settled: PlanGap[] =
     gitState && cacheInputs ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];

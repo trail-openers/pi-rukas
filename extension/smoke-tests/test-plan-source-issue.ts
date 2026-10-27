@@ -206,6 +206,28 @@ setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
     badStr.details.started === false && String(badStr.details.error).includes("sourceIssue"),
     'sourceIssue: "1856" is refused — a number-shaped string never silently means "no exclusion"',
   );
+  // NaN is the value `JSON.stringify` renders as null, so it would share the
+  // absent case's cache lineage if it ever reached the pipeline. It must be
+  // refused at the door — this is the assertion the lineage test's NaN case
+  // leans on.
+  const badNaN = await invokePlanToolFull(tools, {
+    descriptor: DESC,
+    dryRun: true,
+    sourceIssue: Number.NaN,
+  });
+  assert(
+    badNaN.details.started === false && String(badNaN.details.error).includes("sourceIssue"),
+    `sourceIssue: NaN is refused pre-dispatch (${JSON.stringify(badNaN.details.error)})`,
+  );
+  const badInf = await invokePlanToolFull(tools, {
+    descriptor: DESC,
+    dryRun: true,
+    sourceIssue: Number.POSITIVE_INFINITY,
+  });
+  assert(
+    badInf.details.started === false && String(badInf.details.error).includes("sourceIssue"),
+    "sourceIssue: Infinity is refused too — no unbounded value reaches the lineage",
+  );
 
   const good = await invokePlanToolFull(tools, {
     descriptor: DESC,

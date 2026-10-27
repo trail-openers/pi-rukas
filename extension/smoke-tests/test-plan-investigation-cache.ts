@@ -91,6 +91,20 @@ installForgeStub();
   assert(ctx(undefined) !== ctx(""), "absent context is distinct from the empty string");
   assert(ctx("") !== ctx(" "), "empty context is distinct from whitespace-only");
   assert(ctx(undefined) !== ctx("note"), "key changes with the context");
+  // #1856: the source issue changes the duplicate-risk verdict and the body's
+  // disclosure, so it is a lineage dimension — in BOTH directions. A confirm
+  // that adds or drops the number is a different plan, never a cache hit.
+  const src = (n: number | undefined) => investigationCacheKey({ ...base, sourceIssue: n });
+  assert(src(undefined) !== src(1856), "key changes with the source issue");
+  assert(src(1856) !== src(1857), "one source issue is not another's lineage");
+  // A malformed number must never share the absent case's lineage. `JSON.stringify`
+  // renders NaN as null, so the `?? null` alone would not separate them — what does
+  // is the validation in front of the pipeline (`parseSourceIssueParam` in
+  // plan-tool.ts, `parseIssueFlag` in headless/plan.ts), and test-plan-source-issue
+  // pins both refuse NaN. Asserted here too because the lineage is where a leak
+  // would actually do damage: inheriting another plan's cached duplicate verdict.
+  assert(src(Number.NaN) !== src(undefined), "NaN does not read as an absent source issue");
+  assert(src(Number.NaN) !== src(1856), "NaN does not read as a real issue number");
 }
 
 // ------------------------------------------------------------- hit
