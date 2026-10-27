@@ -90,7 +90,10 @@ export function draftInvalidHalt(args: {
     priorContext: args.priorContext,
     failure: {
       reason: "draft-invalid",
-      detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${args.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the missing content via the context param (e.g. an ACCEPTANCE CRITERIA block).`,
+      // #1855: the halt names every source the driver tried, not only the
+      // directive grammar — an operator who wrote `Done when:` bullets must not
+      // be sent adding an ACCEPTANCE CRITERIA block to get the same content.
+      detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${args.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the outcome via the context param — an ACCEPTANCE CRITERIA block, or a Done when: / Acceptance: / Acceptance criteria: heading with bullets.`,
     },
     failedAngles: args.failedAngles,
     timings: args.timings,

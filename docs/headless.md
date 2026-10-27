@@ -25,12 +25,12 @@ A headless caller calls `--capabilities` once per image build and once before ea
 
 | Subcommand | 0 | 10 | 11 | 20 | 30 | 40 |
 |---|---|---|---|---|---|---|
-| `plan` | dry run (`spec`), or filed (`url`) | `duplicate-risk`, or a `--file` run that filed nothing (the reviewed spec changed) | `needs-clarification`, with `questions` | | | any other filing failure, with `failure.reason` / `failure.detail` |
+| `plan` | dry run (`spec`), or filed (`url`) | `duplicate-risk`, or a `--file` run that filed nothing (the reviewed spec changed) | `needs-clarification`, with `questions` | | | any other filing failure, with `failure.reason` / `failure.detail` — for `failure.reason: "draft-invalid"` the drafted body failed deterministic validation, and `failure.detail` names every Acceptance-criteria source the driver tried: an operator `ACCEPTANCE CRITERIA` directive block, an operator **outcome heading with bullets** (`Done when:` / `Acceptance:` / `Acceptance criteria:`, #1855), and `acceptance-criterion` items from the feature `test-surface` angle (a heading with no bullet under it counts as no outcome) |
 | `research` | artifact written (`artifactPath`), including `"abstained": true` | | | | halted without an artifact (`halt`) | unknown tier (`error.code: "unknown-tier"`) |
 | `agents-md` | clean | findings or drift; gated on a human (`"gated": true`) | | | | refused or corrupt (`error`) |
 | `lens-review` | `APPROVED`, or no review (`"noReview": true` — an empty delta, not an approval) | `ISSUES_FOUND` | | `CRITICAL_ISSUES_FOUND` | `REVIEW_INCOMPLETE` | the round budget refused the run (`ROUND_CAP_REACHED`) |
 
-- **`plan`** files only with `--file`; a dry run reports a `reviewedDigest`, and `--file --reviewed-digest <d>` with the same inputs files that reviewed spec verbatim. The document carries the pipeline's whole result (`spec`, `gaps`, `status`, `mode`). With `--start` or `--resume` it is a planning session instead: see [Planning sessions](#planning-sessions).
+- **`plan`** files only with `--file`; a dry run reports a `reviewedDigest`, and `--file --reviewed-digest <d>` with the same inputs files that reviewed spec verbatim. The document carries the pipeline's whole result (`spec`, `gaps`, `status`, `mode`). With `--start` or `--resume` it is a planning session instead: see [Planning sessions](#planning-sessions). A bug/feature plan needs a non-fallback Acceptance criteria section to file: supply it in `--context` as an `ACCEPTANCE CRITERIA` directive block or as an outcome heading with bullets (`Done when:`, #1855 — its bullets become the section verbatim, with the same authority as the directive form), otherwise the run exits 40 with `failure.reason: "draft-invalid"`.
 - **`research`**: a deep run whose entailment pass could not run carries `"entailment": "unavailable"`.
 - **`agents-md`** documents carry `verb` (`create` / `update` / `check`), `status` (`clean`, `findings`, `gated`, `refused`), `findings[]` and, for `create` / `update`, `wouldWrite`. `root` defaults to the repository root.
 - **`lens-review`** is admitted through the same round budget as `dispatch_lens_review` and writes the review ledger like it. Without `--base` / `--head` it reviews the working tree.
@@ -90,7 +90,7 @@ The headless runner's contract with its caller is four independent surfaces, eac
 | 20 | `aborted` | Aborted |
 | 21 | `interrupted` | Interrupted by a signal (SIGINT/SIGTERM) |
 | 30 | `crash` | The driver threw, or interrupted by the runner's own `--timeout`, or a cycle left running after the driver returned, or the runner process died without writing its result |
-| 40 | `refused` | Refused to start (claimed by a live cycle, `needs-human-attention` without `--restart`, a third identical park (`cap: repeat-park`, #1743), bad arguments, unknown flag) |
+| 40 | `refused` | Refused to start (claimed by a live cycle, `needs-human-attention` without `--restart`, a third identical park (`cap: repeat-park`, #1743), bad arguments, unknown flag); for `plan`, any filing failure including `draft-invalid`, whose `failure.detail` names the Acceptance-criteria sources it tried — the `ACCEPTANCE CRITERIA` directive block, the `Done when:` / `Acceptance:` outcome heading with bullets (#1855), and the chartered `test-surface` angle |
 | 41 | `lost` | `plan` turns only: the session to resume does not exist |
 
 A grouped run exits 21 if any issue was interrupted, otherwise the highest per-issue code. The `--json` result carries every issue regardless.

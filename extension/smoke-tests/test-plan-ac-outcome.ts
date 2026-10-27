@@ -28,9 +28,14 @@ import {
   anglePromptsFor,
 } from "../src/plan-angles.ts";
 import { parseOperatorDirectives } from "../src/plan-directives.ts";
+import { draftInvalidHalt } from "../src/plan-driver-phases.ts";
 import { runGate } from "../src/plan-driver-gate.ts";
 import { correctiveRedraft } from "../src/plan-driver-redraft.ts";
-import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
+import {
+  type AngleFindings,
+  type PlanItemKindName,
+  draftSpec,
+} from "../src/plan-draft.ts";
 import { AC_FALLBACK, validateDraft } from "../src/plan-validate.ts";
 
 let exit = 0;
@@ -51,7 +56,7 @@ function dirs(context: string) {
   return parseOperatorDirectives(context);
 }
 
-function angle(name: string, kind: string, texts: string[]): AngleFindings {
+function angle(name: string, kind: PlanItemKindName, texts: string[]): AngleFindings {
   return {
     name,
     ok: true,
@@ -378,8 +383,11 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
   assert(
     FEATURE_AC_CHARTER.includes("ONLY feature angle chartered") &&
       AC_CRITERIA_FORBIDDEN.includes("Do NOT report acceptance-criterion items") &&
-      FEATURE_AC_CHARTER !== AC_CRITERIA_FORBIDDEN &&
-      !FEATURE_AC_CHARTER.includes(AC_CRITERIA_FORBIDDEN),
+      !FEATURE_AC_CHARTER.includes(AC_CRITERIA_FORBIDDEN) &&
+      !AC_CRITERIA_FORBIDDEN.includes(FEATURE_AC_CHARTER),
+    // The two constants are distinct literals; the guard is that neither text
+    // contains the other, so neither assertion can be satisfied by the shared
+    // reporter kind menu (which mentions the kind for every angle of every type).
     "charter: the invite and the prohibition are distinct charter-unique strings, not the shared kind menu",
   );
 
@@ -395,6 +403,65 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
   assert(
     bugTestSurface.length > 0 && !bugTestSurface.includes(FEATURE_AC_CHARTER),
     "charter: the bug test-surface prompt is unchanged (no feature AC charter)",
+  );
+}
+
+
+// ------------------------------------------- the halt names every source tried
+
+{
+  // AC-3: with neither an operator outcome nor an angle criterion the draft
+  // still fails — and the failure text has to say so completely. Before #1855
+  // it named only "an operator directive", which sent an operator who had
+  // written `Done when:` bullets off to add an ACCEPTANCE CRITERIA block
+  // carrying the very lines already sitting in their context.
+  const r = draftSpec(
+    "feature",
+    "d",
+    [angle("test-surface", "edge-case", ["a pitfall"])],
+    [],
+    [],
+    [],
+    0,
+    dirs("Some prose with no outcome heading at all"),
+    [],
+  );
+  const v = validateDraft("feature", r.body, 0, { operatorOmitted: [] });
+  assert(!v.ok, "AC-3: no outcome and no angle criterion still fails validation");
+  const text = v.problems.join(" ");
+  assert(
+    text.includes("ACCEPTANCE CRITERIA") &&
+      text.includes("Done when") &&
+      text.includes("Acceptance:") &&
+      text.includes("test-surface"),
+    `AC-3: the failure text names BOTH operator sources and the chartered angle (got ${text.slice(0, 160)})`,
+  );
+  assert(
+    text.includes("heading with no bullet under it counts as no outcome"),
+    "AC-3: the failure text states the empty-heading rule so the operator knows why their heading did not count",
+  );
+
+  // The halt detail (what the operator and an external headless caller read)
+  // carries the same three-way remedy, not just the directive grammar.
+  const halt = draftInvalidHalt({
+    type: "feature",
+    title: "t",
+    spec: r.body,
+    priorContext: [],
+    problems: v.problems,
+    failedAngles: [],
+    timings: [],
+  });
+  const detail = halt.filingFailure?.detail ?? "";
+  assert(
+    detail.includes("ACCEPTANCE CRITERIA") &&
+      detail.includes("Done when:") &&
+      detail.includes("Acceptance criteria:"),
+    `AC-3: the halt detail names the outcome headings as well as the directive block (got ${detail.slice(0, 200)})`,
+  );
+  assert(
+    halt.filingFailure?.reason === "draft-invalid",
+    "AC-3: the halt reason is unchanged (draft-invalid, exit 40)",
   );
 }
 
