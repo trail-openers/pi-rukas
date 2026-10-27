@@ -229,8 +229,15 @@ export function workstreamCallsOf(
     seen.add(judged.id);
     accepted.push(workstreamFromArgs(judged));
   }
+  const ceiling = foldToCeiling(accepted);
+  // #1862 — the reader deliberately does NOT carry the ceiling fold's drop
+  // records out: nothing downstream reads them from here. The plan step's
+  // persisted `planQuality.unfence` is built by `runPlanNormalisationPass`, which
+  // counts the folds IT performs; the records that reach it are that pass's own
+  // (work-driver-plan-coupling-pass.ts). A second, unread copy of a fold's drops
+  // on the report is a field that can only drift from the one that is read.
   return {
-    workstreams: foldToCeiling(accepted),
+    workstreams: ceiling.workstreams,
     accepted: accepted.length,
     refused,
     unreadable,

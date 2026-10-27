@@ -248,10 +248,19 @@ export async function runCorrectiveRound(
     execFn: host.couplingExecFn,
   });
   workstreams = correctiveNormalised.workstreams;
+  // #1862 — ONE owner for the fold drops. The normalisation pass has already
+  // counted its folds into `summary.selfFences` and put their notes in
+  // `summary.notes`, and this round's `unfence` — which the tail persists in
+  // place of the primary's — IS that summary. Carrying the records out again and
+  // adding them a second time would bill every removal twice.
   if (correctiveNormalised.summary) unfence = correctiveNormalised.summary;
   // #819 — the gate runs AGAIN on the corrective: #818's wrong work came from
   // the corrective, not the first plan. A corrective is already the cycle's
   // one-shot budget, so a failure here HALTS.
+  // #1862 — the corrective's spec coverage is judged on the map it develops.
+  // The SELF-FENCE reason is the primary's view's job above; a corrective has
+  // already been steered on it, and re-judging coverage on a wider fence list
+  // would cap on a path the planner never declared.
   const correctiveMismatch = input.planGateEnabled
     ? planSpecMismatchReason(workstreams, input.spec, grant)
     : undefined;
@@ -271,5 +280,11 @@ export async function runCorrectiveRound(
   // #1756 — the corrective is now the plan the cycle develops: it returned,
   // was not killed, made accepted calls and passed its OWN gate. Only this
   // clears the primary's refusal at the tail's halt site.
-  return done({ attempted, redispatched, repairedCleared, raw, replacedPlan: true });
+  return done({
+    attempted,
+    redispatched,
+    repairedCleared,
+    raw,
+    replacedPlan: true,
+  });
 }

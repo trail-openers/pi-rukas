@@ -21,10 +21,7 @@
  */
 
 import { boundOutOfScope, quotedOutOfScope } from "../src/plan-fence-bound.ts";
-import {
-  fenceDropCount,
-  keepClippedRecords,
-} from "../src/plan-fence-record.ts";
+import { fenceDropCount, keepClippedRecords } from "../src/plan-fence-record.ts";
 import { neutraliseFenceEntry } from "../src/plan-fence-render.ts";
 import {
   FENCE_CLIP_MARKER,
@@ -35,9 +32,9 @@ import { correctiveDevelopPrompt } from "../src/work-driver-corrective-prompt.ts
 import { withDeferredProtectedFence } from "../src/work-driver-plan-fence.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
-import type { Workstream } from "../src/workflow-state-schema.ts";
 import type { OutOfScopeClip } from "../src/workflow-state-schema-workstreams.ts";
-import { foldTwo } from "../src/workstream-fold.ts";
+import type { Workstream } from "../src/workflow-state-schema.ts";
+import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 import {
   LONG_PATH_FENCE,
   LONG_PROSE,
@@ -272,10 +269,7 @@ function assert(cond: boolean, msg: string) {
   // A clipped part that collapses onto an entry the list already holds is still
   // a loss the developer never sees (#1744 review): the clip record survives,
   // and a SPLIT part that collapses is counted — never billed to the cap.
-  const collapsed = boundOutOfScope([
-    `src/a.ts ${"x".repeat(600)}`,
-    `src/a.ts ${"y".repeat(700)}`,
-  ]);
+  const collapsed = boundOutOfScope([`src/a.ts ${"x".repeat(600)}`, `src/a.ts ${"y".repeat(700)}`]);
   assert(
     collapsed.entries.length === 1 && collapsed.entries[0] === "src/a.ts",
     `two over-long entries that cut to the same text store as ONE entry (got ${JSON.stringify(collapsed.entries)})`,

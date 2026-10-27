@@ -1,4 +1,3 @@
-import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-crash.ts";
 /**
  * work-develop-fence-merge — #1005: the merge-and-retry's MERGE half (the
  * workstream map, the rebase, and the re-dispatch).
@@ -43,6 +42,8 @@ import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-cras
  * and the prompt as a `MergePrepPlan` instead of the merge reading the fence
  * records (work-develop-symbol-merge.ts).
  */
+import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-crash.ts";
+import { fenceCapHit, selfFenceNoteBudget } from "./work-develop-fence-merge-notes.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
@@ -174,13 +175,28 @@ export async function runMergePrep(
   const merges: Array<{ into: string; from: string }> = [];
   const mergeHeads: Record<string, string> = {};
   const carried: Record<string, boolean> = {};
+  // #1862 — the run's own budget of persisted self-fence notes. Each fold
+  // persists its removals AS IT FOLDS (a mid-loop park must not lose them) and
+  // spends the budget down; whatever did not fit is disclosed as one count, and
+  // EVERY exit says it — the clean return and every park alike. The accounting is
+  // in work-develop-fence-merge-notes.ts.
+  const noteBudget = selfFenceNoteBudget();
   let next = stateIn;
+  // #1862 — the overflow count appended to whatever state is about to be
+  // returned. A park that dropped the count would disclose the removals the
+  // budget could name and be silent about the ones it could not, which is the
+  // half-disclosure this run's notes exist to prevent. `overflowLine()` is
+  // idempotent, so calling it on every exit says it at most once.
+  const withOverflow = (st: WorkState): WorkState => {
+    const overflow = noteBudget.overflowLine();
+    return overflow === undefined ? st : withPersistNotes(st, [overflow]);
+  };
   // #1005 — park builds from `next`, which is kept in sync with
   // `stateRef.current` after every successful iteration. The pre-#1005
   // code persisted to `next`/`stateRef.current` only after the loop, so a
   // mid-loop park lost every merge recorded up to that point.
   const park = (evidence: string): { state: WorkState; outcome: MergePrepOutcome } => {
-    const st = appendEvent(next, fenceCapHit(next, evidence, plan?.cap));
+    const st = appendEvent(withOverflow(next), fenceCapHit(next, evidence, plan?.cap));
     stateRef.current = st;
     return { state: st, outcome: { parked: true } };
   };
@@ -220,7 +236,25 @@ export async function runMergePrep(
         `merge-and-retry refused — violator ${violator} has no workstream entry (no workstream to merge into ${owner})`,
       );
     }
-    workstreams = foldWorkstream(workstreams, owner, violator, violatorWs);
+    const folded = foldWorkstream(workstreams, owner, violator, violatorWs);
+    workstreams = folded.workstreams;
+    // #1862 — the fold's self-fence removals PERSIST AT THE FOLD, on the very
+    // next write, BEFORE any step that can park (the worktree checks, the two SHA
+    // reads, the reset, the planned afterReset). Every other fact this loop
+    // records (the merge, the maps, the events) is written per iteration precisely
+    // because a mid-loop park must not lose what the earlier iterations had done —
+    // and a drop whose notes were held until after the rebase was lost exactly
+    // that way: not in the state file, not in the handoff. The run's own budget of
+    // notes is sliced down fold by fold, and whatever it could not hold is
+    // disclosed as a count by every exit, parks included.
+    const persist = noteBudget.take(folded.selfFenceDrops);
+    if (persist.length > 0) {
+      next = withPersistNotes(
+        next,
+        persist.map((r) => r.note),
+      );
+      stateRef.current = next;
+    }
     merges.push({ into: owner, from: violator });
     // #1345 — several violators of one owner fold into ONE merged workstream,
     // so its id is recorded once and it is re-dispatched once.
@@ -307,10 +341,9 @@ export async function runMergePrep(
     // Drop the absorbed workstream from the worktrees map (its id is gone).
     delete worktrees[violator];
     delete workstreamBaseShas[violator];
-    // Persist the merged workstreams + updated maps after EACH successful
-    // iteration (the pre-#1005 code persisted only after the loop, so a
-    // mid-loop park lost earlier merges). `next` and `stateRef.current`
-    // are kept in sync so a park in the next iteration sees this merge.
+    // Persist the merged maps (`next` is the base every later append and every
+    // park builds from, and `stateRef.current` is kept in sync with it). The
+    // fold's notes were already written above, at the fold itself.
     next = {
       ...next,
       pipelineState: {
@@ -408,9 +441,19 @@ export async function runMergePrep(
       );
     }
   }
+  // The notes were persisted per fold above; what is left here is the OVERFLOW
+  // line, said once for the whole run (each park says its own, in `park`). The
+  // excess is disclosed as a count, never dropped in silence.
+  stateRef.current = withOverflow(next);
   return {
     state: stateRef.current,
-    outcome: { parked: false, mergedIds, merges, discardedShas, mergeHeads },
+    outcome: {
+      parked: false,
+      mergedIds,
+      merges,
+      discardedShas,
+      mergeHeads,
+    },
   };
 }
 
@@ -442,48 +485,4 @@ export async function applyMergedSafetyNet(
     (id) => !mergedIds.includes(id),
   );
   return applySafetyNet(ctx, next, new Set(others));
-}
-
-/** #1005 — the cap-hit for a merge-and-retry park/handoff (same cap as #849;
- * the evidence names the merge, per the #1005 acceptance criterion). */
-export function fenceCapHit(
-  state: WorkState,
-  evidence: string,
-  cap: WorkCapLiteral = FENCE_VIOLATION_CAP,
-  /**
-   * #1427 — the gate-hang reports the re-run's gate persisted, recorded on the
-   * event STRUCTURALLY (the same channel #841 uses for the raw verify logs) so
-   * the handoff names the files without regexing a path out of the evidence.
-   */
-  logPaths?: string[],
-): Extract<WorkEvent, { kind: "cap-hit" }> {
-  return {
-    kind: "cap-hit",
-    at: Date.now(),
-    cap,
-    reviewRound: state.pipelineState.reviewRound,
-    nextStep: "handoff",
-    evidence,
-    ...(logPaths !== undefined && logPaths.length > 0 ? { logPaths } : {}),
-  };
-}
-
-/** #1005 — the merge evidence string, shared by the re-run's cap hits. */
-export function mergeEvidence(
-  merges: Array<{ into: string; from: string }>,
-  discardedShas: string[],
-): string {
-  return `the merge was ${merges.map((m) => `${m.into}+${m.from}`).join(", ")}; first attempt discarded: ${discardedShas.join(", ") || "no commit ahead of base"}`;
-}
-
-/** #1005 — the violated (sibling-declared) records that name a merged
- * workstream, for the re-run's second-failure evidence. */
-export function secondViolationProse(fenceViolations: FenceViolationRecord[]): string {
-  return fenceViolations
-    .filter(
-      (v): v is FenceViolationRecord & { kind: "sibling-declared" } =>
-        v.kind === "sibling-declared",
-    )
-    .map((v) => `workstream ${v.workstreamId} touched ${v.file} (declared by ${v.declaredById})`)
-    .join("; ");
 }

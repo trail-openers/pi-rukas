@@ -25,6 +25,11 @@
 import { quotedPaths } from "../src/plan-path-shape.ts";
 import { correctiveDevelopPrompt } from "../src/work-driver-corrective-prompt.ts";
 import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
+
+/** One `report_workstream` call, built the way the plan step builds it. These
+ * cases judge the bound and the display, not the fence drops, so the alias is
+ * just the reader's own entry point under a shorter name. */
+const buildWs = workstreamFromArgs;
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { inlineCommitPrPrompt } from "../src/work-driver-prompts-late.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
@@ -60,7 +65,7 @@ function printsAll(text: string, paths: string[]): boolean {
 // ── 1. the develop prompt prints every declared path ────────────────────────
 {
   const eighty = pathList(80);
-  const crowded = workstreamFromArgs(crowdedArgs("task-a", eighty));
+  const crowded = buildWs(crowdedArgs("task-a", eighty));
   const prompt = inlineDevelopPrompt([1756], "/tmp/scratch", crowded, "task-a");
   const inScopeLine = prompt.split("\n").find((l) => l.startsWith("In-scope files:")) ?? "";
   assert(
@@ -74,7 +79,7 @@ function printsAll(text: string, paths: string[]): boolean {
     `no truncation notice and no pointer to a list the developer cannot read (got: ${inScopeLine.slice(-120)})`,
   );
 
-  const small = workstreamFromArgs(crowdedArgs("task-b", pathList(5)));
+  const small = buildWs(crowdedArgs("task-b", pathList(5)));
   const smallLine =
     inlineDevelopPrompt([1756], "/tmp/scratch", small, "task-b")
       .split("\n")
@@ -158,7 +163,7 @@ function printsAll(text: string, paths: string[]): boolean {
   const entries: Workstream[] = [];
   for (let i = 0; i < 10; i++) {
     entries.push(
-      workstreamFromArgs(
+      buildWs(
         crowdedArgs(`task-${i}`, [...pathList(5, `src/t${i}`), ...pathList(3, "src/shared")]),
       ),
     );
@@ -170,13 +175,16 @@ function printsAll(text: string, paths: string[]): boolean {
     const prev = process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
     process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "1";
     try {
-      return foldToCeiling(entries);
+      return foldToCeiling(entries).workstreams;
     } finally {
       if (prev === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_MAX_WORKSTREAMS");
       else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
     }
   });
-  const notices = traces.join("").split("\n").filter((l) => l.includes("paths bounded"));
+  const notices = traces
+    .join("")
+    .split("\n")
+    .filter((l) => l.includes("paths bounded"));
   assert(
     notices.length <= 1,
     `a crowded fold of 10 workstreams produces at most ONE bound line (got ${notices.length})`,

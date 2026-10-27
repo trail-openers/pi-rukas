@@ -15,6 +15,7 @@ import { clippedField } from "./plan-fence-record.ts";
 import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
 import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
 import { trace, traceWarn } from "./trace.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
 
@@ -43,11 +44,11 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   const introduces = args.introduces ?? [];
   const consumes = args.consumes ?? [];
   const integrationTest = args.integrationTest ?? "";
+  const boundedPaths = boundPaths(args.paths);
   const fence = boundOutOfScope(args.outOfScope);
   if (fenceWasBounded(fence)) {
     traceWarn(fenceBoundNotice(`plan workstream '${args.id}'`, fence));
   }
-  const boundedPaths = boundPaths(args.paths);
   if (boundedPaths.duplicate > 0) {
     // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same
     // reason (#1744) — an operator greps one channel for every bound the driver
@@ -76,11 +77,20 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
  * #290 — ceiling on workstreams per cycle. Each workstream becomes a worktree
  * AND a developer child, so M is a direct multiplier on process count. Excess
  * FOLDS into the last kept workstream — the shared fold (workstream-fold.ts):
- * paths union, out-of-scope union minus the merged paths, scope annotated — so
- * the work is never silently dropped, which a hard truncation would do.
+ * paths union, out-of-scope union minus the merged workstream's own files,
+ * scope annotated — so the work is never silently dropped, which a hard
+ * truncation would do.
+ *
+ * #1862 — returns `{ workstreams, selfFenceDrops }`: the fences the folds
+ * removed because they fenced the merged workstream's declared paths, so the
+ * caller that persists plan quality can record them.
  */
-export function foldToCeiling(entries: Workstream[]): Record<string, Workstream> {
+export function foldToCeiling(entries: Workstream[]): {
+  workstreams: Record<string, Workstream>;
+  selfFenceDrops: UnfenceRecord[];
+} {
   const out: Record<string, Workstream> = {};
+  const selfFenceDrops: UnfenceRecord[] = [];
   // The paths union as the pass accumulates it: every fold appends the absorbed
   // half's entries here and the pass bounds the whole list ONCE at the end
   // (#1756 round 2). Re-dedupeing the growing union for each absorbed
@@ -94,11 +104,20 @@ export function foldToCeiling(entries: Workstream[]): Record<string, Workstream>
       const last = out[lastId];
       if (last) {
         union.push(...entry.paths);
-        const folded = foldTwo(last, entry);
+        // #1862 M3 — the siblings still in `out` (the absorbed half included)
+        // declare their own files, so a fence over one of them is not the
+        // ceiling fold's to open.
+        const siblingDeclared = Object.values(out)
+          .filter((ws) => ws.id !== last.id && ws.id !== entry.id)
+          .flatMap((ws) => ws.paths);
+        const folded = foldTwo(last, entry, siblingDeclared);
+        selfFenceDrops.push(...folded.selfFenceDrops);
         // The ceiling fold's annotation is `+folded:` (the coupling merge's
-        // `+merged:` is the other site's wording).
-        folded.scope = `${last.scope} (+folded: ${entry.id})`;
-        out[lastId] = folded;
+        // `+merged:` is the other site's wording). Built with a SPREAD rather
+        // than assigned onto `folded.workstream.scope`: the fold hands back one
+        // of its own objects, and writing through it mutates a value the caller
+        // does not own.
+        out[lastId] = { ...folded.workstream, scope: `${last.scope} (+folded: ${entry.id})` };
         trace(`work-driver: plan exceeded MAX_WORKSTREAMS — folded '${entry.id}' into '${lastId}'`);
       }
       continue;
@@ -118,7 +137,7 @@ export function foldToCeiling(entries: Workstream[]): Record<string, Workstream>
       }),
     );
   }
-  return out;
+  return { workstreams: out, selfFenceDrops };
 }
 
 /** #290 — ceiling on workstreams per cycle. Override: PI_ENSEMBLE_MAX_WORKSTREAMS. */

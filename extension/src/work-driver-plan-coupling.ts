@@ -51,6 +51,7 @@
 
 import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldWorkstream } from "./workstream-fold.ts";
 
@@ -78,6 +79,13 @@ export interface CouplingResult {
   }>;
   /** True when at least one merge was performed. */
   changed: boolean;
+  /**
+   * #1862 — every fence entry the folds removed because it fenced the merged
+   * workstream's OWN declared paths. Empty unless `changed`. The plan step
+   * persists these on `pipelineState.planQuality.unfence` so the removal is
+   * visible in the state file, not only in the trace.
+   */
+  selfFenceDrops?: UnfenceRecord[];
 }
 
 /**
@@ -268,19 +276,23 @@ export async function mergeCoupledWorkstreams(
     return { workstreams: ws, merges: [], changed: false };
   }
 
-  // Apply the folds (the shared helper: union, fence minus merged paths,
-  // scope annotation, dependsOn re-point of the surviving half AND of every
-  // sibling that depended on the absorbed half). Each fold returns a NEW
+  // Apply the folds (the shared helper: union, fence minus the merged workstream's
+  // own files, scope annotation, dependsOn re-point of the surviving half AND of
+  // every sibling that depended on the absorbed half). Each fold returns a NEW
   // map; the fold reads the surviving half from the CURRENT map, so chained
   // folds (a absorbs b, then c folds into the union) compose correctly.
+  const selfFenceDrops: UnfenceRecord[] = [];
   for (const m of toMerge) {
-    wsMap = foldWorkstream(wsMap, m.into, m.from, m.absorbed);
+    const folded = foldWorkstream(wsMap, m.into, m.from, m.absorbed);
+    wsMap = folded.workstreams;
+    selfFenceDrops.push(...folded.selfFenceDrops);
   }
 
   return {
     workstreams: wsMap,
     merges: toMerge.map(({ into, from, reason }) => ({ into, from, reason })),
     changed: true,
+    ...(selfFenceDrops.length > 0 ? { selfFenceDrops } : {}),
   };
 }
 

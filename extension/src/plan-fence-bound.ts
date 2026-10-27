@@ -23,6 +23,7 @@
  * — plan-fence-render imports no value from here, so there is no cycle.
  */
 
+import { expandFenceArrays } from "./plan-fence-array.ts";
 import {
   type ClippedRecord,
   type DroppedRecord,
@@ -261,8 +262,30 @@ function clipRecord(entry: string, clip: FenceClip): ClippedRecord {
  *
  * Pure. The CALLER owns the trace and the record's placement on the workstream,
  * so a fold can carry the records forward and one call emits one warning.
+ *
+ * #1862 (b) — a value the planner wrote as a stringified JSON array
+ * (`'["docs/","tests/"]'`) is expanded into its members FIRST, by
+ * `plan-fence-array.ts`, before any clip or comma-split sees it. Left alone it
+ * was one entry that fences nothing and then got clipped: the split makes the
+ * fence mean what it says. Any other entry reaches the rules below unchanged.
  */
-export function boundOutOfScope(entries: readonly string[]): BoundedOutOfScope {
+export function boundOutOfScope(rawEntries: readonly string[]): BoundedOutOfScope {
+  // #1862 (b) — what the array arm did, computed per raw value BEFORE the
+  // expansion. `expandedFrom` marks the member texts of any array that said more
+  // than one member, so the loop below (which iterates the EXPANDED list) can
+  // tell a split member from an entry the planner wrote on its own. `arrayDuplicates`
+  // counts members that collapsed onto an earlier member of the same array: the
+  // expansion drops them, so the loop below can only ever see the survivors, and
+  // an uncounted one is a fence that silently disappeared (#1744).
+  const expandedFrom = new Set<string>();
+  let arrayDuplicates = 0;
+  for (const raw of rawEntries) {
+    const members = expandFenceArrays([raw]);
+    if (members.length <= 1) continue;
+    for (const member of members) expandedFrom.add(member);
+    arrayDuplicates += members.length - new Set(members).size;
+  }
+  const entries = expandFenceArrays(rawEntries);
   const kept: string[] = [];
   const seen = new Set<string>();
   const clips = new Map<string, ClippedRecord>();
@@ -294,6 +317,17 @@ export function boundOutOfScope(entries: readonly string[]): BoundedOutOfScope {
     if (clip) noteClip(text, clip);
   };
 
+  // An array's own duplicate is billed once, when its members actually reach the
+  // keeping loop (a blank or cap-dropped entry never gets there). The loop may
+  // visit SEVERAL members of the one array, hence the once-only flag.
+  let arrayDuplicatesCounted = false;
+  const noteSplitBilling = (raw: string): void => {
+    if (arrayDuplicates === 0 || arrayDuplicatesCounted) return;
+    if (!expandedFrom.has(raw)) return;
+    arrayDuplicatesCounted = true;
+    thisPass.duplicate += arrayDuplicates;
+  };
+
   for (const entry of entries) {
     if (entry.trim().length === 0) {
       thisPass.empty++;
@@ -307,14 +341,20 @@ export function boundOutOfScope(entries: readonly string[]): BoundedOutOfScope {
       continue;
     }
     const parts = splitFenceList(entry);
-    const fromSplit = parts.length > 1;
+    const fromSplit = parts.length > 1 || expandedFrom.has(entry);
+    noteSplitBilling(entry);
+    // The array arm already collapsed any duplicate of its own members — it ran
+    // before this loop — so `keep` must not bill those a second time. A part that
+    // duplicates an entry OUTSIDE this array (another array's member, or a plain
+    // entry) is still a duplicate the loop itself witnessed, and still bills.
+    const arrayMember = expandedFrom.has(entry);
     expanded += parts.length;
     for (const [i, part] of parts.entries()) {
       if (kept.length >= WORKSTREAM_LIST_MAX) {
         thisPass.cap += parts.length - i;
         break;
       }
-      keep(part, fromSplit);
+      keep(part, fromSplit && !(arrayMember && seen.has(part)));
     }
   }
 

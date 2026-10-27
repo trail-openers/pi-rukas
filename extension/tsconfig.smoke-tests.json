@@ -83,6 +83,16 @@
     "smoke-tests/test-work-driver-lens-fix-kill-provider-queue.ts",
     "smoke-tests/test-work-driver-lens-fix-kill-redaction.ts",
     "smoke-tests/test-work-driver-lens-fix-kill-provider-budget.ts",
-    "smoke-tests/test-work-driver-terminal-provider-scope.ts"
+    "smoke-tests/test-work-driver-terminal-provider-scope.ts",
+    "smoke-tests/lib/fold-two-helpers.ts",
+    "smoke-tests/test-workstream-fold-self-fence-1862.ts",
+    "smoke-tests/test-plan-normalisation-self-fence-1862.ts",
+    "smoke-tests/test-plan-gate-judges-reported-1862.ts",
+    "smoke-tests/test-plan-fence-array-1862.ts",
+    "smoke-tests/test-plan-fence-prose-1862.ts",
+    "smoke-tests/test-converge-declared-paths-1862.ts",
+    "smoke-tests/test-plan-self-fence-note-cap-1862.ts",
+    "smoke-tests/test-work-develop-fence-self-fence-1862.ts",
+    "smoke-tests/test-plan-fence-note-neutralise-1862.ts"
   ]
 }

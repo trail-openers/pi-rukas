@@ -102,6 +102,18 @@ export interface PlanUnfenceSummary {
    */
   docsTests?: number;
   /**
+   * #1862 — fence entries the plan's own FOLDS removed, because each one fenced
+   * the merged workstream's declared paths (the sibling half's `tests/` fence
+   * over a merged workstream that owns `tests/test_x.py`, or the field's prose
+   * sentence naming `agents/` and `tests/`). Counted apart from `removed` for
+   * the same reason `docsTests` is: a fold drop answers to the merge, not to
+   * the issue, and an operator reading a plan where fences went needs to know
+   * which rule opened them. Their notes join `notes` but are counted by none of
+   * the fields above, because their wording begins with none of the prefixes
+   * `unfenceSummary` keys on.
+   */
+  selfFences?: number;
+  /**
    * The issue body was named by the explore cache but could not be read —
    * distinguishable from an EMPTY body, which is a real "nothing named".
    */

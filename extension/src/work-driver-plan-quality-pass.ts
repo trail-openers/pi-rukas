@@ -188,6 +188,9 @@ export async function runPlanQualityTail(
       `work-driver: plan-to-spec gate added spec deliverable path(s) the single-workstream plan omitted: ${repair.added.join(", ")}`,
     );
   }
+  // ONE pass of the shape gate over the stored plan — the contradiction check is
+  // not a second question with a second answer, it is one of the reasons this
+  // function already returns.
   const reason = noCalls ? undefined : planQualityReason(workstreams, input.findingsCount);
   // #1642 — the gate does not require a deliverable whose every path is protected
   // and ungranted; the trace is the record that it was not required.
@@ -230,7 +233,19 @@ export async function runPlanQualityTail(
     // own site from `correctiveReplacedPlan` — a corrective that threw, was
     // killed, or failed its own gate never replaced the plan, so it clears nothing.
     state: correctiveAttempted
-      ? withCorrectiveDispatch(state, input, droppedEdges, unfence)
+      ? withCorrectiveDispatch(
+          state,
+          input,
+          droppedEdges,
+          // #1862 — a corrective REPLACES the plan, so the record must describe
+          // the map the cycle actually develops: the corrective's own pass, plus
+          // the drops ITS boundary made. The primary's boundary drops belong to a
+          // map nobody develops, so they are not carried here.
+          // #1862 — a corrective REPLACES the plan AND its record, so once one was
+          // dispatched the record describes the corrective's own pass, whose
+          // `selfFences` already counts the folds IT ran. Nothing is added here.
+          unfence,
+        )
       : state,
     workstreams,
     halted: true,
@@ -366,6 +381,15 @@ export async function runPlanQualityTail(
     state: withDeferredProtectedDeclared(disclosed, deferredProtected),
     workstreams,
     halted: false,
-    planQuality: planQualityRecord(input, redispatched, finalReason, droppedEdges, unfence),
+    planQuality: planQualityRecord(
+      input,
+      redispatched,
+      finalReason,
+      droppedEdges,
+      // #1862 — whichever round owns the record owns its counters: a corrective
+      // replaced `unfence` with its own pass, whose `selfFences` already counts
+      // the folds it ran. Nothing is added a second time here.
+      unfence,
+    ),
   };
 }

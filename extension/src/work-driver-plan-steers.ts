@@ -58,7 +58,10 @@ export function correctivePlanSteer(
       "## Corrective re-dispatch",
       "",
       "Two workstreams in your previous plan declared the same file:",
-      ...collisions.map((c) => `- \`${c.a}\` and \`${c.b}\` both claim ${c.path}`),
+      ...collisions.map(
+        (c) =>
+          `- \`${neutraliseFenceEntry(c.a)}\` and \`${neutraliseFenceEntry(c.b)}\` both claim ${neutraliseFenceEntry(c.path)}`,
+      ),
       "",
       "Each workstream gets its own worktree and its own developer, running in parallel, so two",
       "workstreams sharing a file means two developers editing it at once — which surfaces later as a",
@@ -85,7 +88,7 @@ export function correctivePlanSteer(
       ...(fenceContradictions.length > 0
         ? fenceContradictions.map(
             (f) =>
-              `- \`${f.workstream}\` lists \`${f.path}\` in its paths and \`${f.entry}\` in its out-of-scope`,
+              `- \`${neutraliseFenceEntry(f.workstream)}\` lists \`${neutraliseFenceEntry(f.path)}\` in its paths and \`${neutraliseFenceEntry(f.entry)}\` in its out-of-scope`,
           )
         : [
             "- at least one workstream's `out-of-scope:` line names a file its own `paths:` line declares.",
@@ -193,7 +196,7 @@ export function correctiveTestSubjectSplitSteer(
     splits.length > 0
       ? splits.map(
           (s) =>
-            `- \`${s.test}\` declared test \`${s.testPath}\`, which exercises \`${s.subjectPath}\` owned by \`${s.subject}\``,
+            `- \`${neutraliseFenceEntry(s.test)}\` declared test \`${neutraliseFenceEntry(s.testPath)}\`, which exercises \`${neutraliseFenceEntry(s.subjectPath)}\` owned by \`${neutraliseFenceEntry(s.subject)}\``,
         )
       : [];
   return [

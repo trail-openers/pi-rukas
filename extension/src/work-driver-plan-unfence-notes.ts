@@ -29,6 +29,15 @@ import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
 
 /**
+ * How many notes of EACH kind the persisted unfence record keeps. Every site
+ * that appends a note to `planQuality.unfence.notes` — the issue-named pass, the
+ * folds and the tool boundary — holds its own list to this bound and joins at
+ * most two of them, so a full list of one kind can never push every note of
+ * another out of the record (see `runPlanNormalisationPass`).
+ */
+export const UNFENCE_NOTES_CAP = 10;
+
+/**
  * The workstream a fence was removed from, with the reason the operator sees.
  *
  * #1250 — declared here, beside the note builders that produce its `note`, and
@@ -227,7 +236,9 @@ export function unfenceSummary(
     unresolved,
     ...(docsTests > 0 ? { docsTests } : {}),
     ...(issueBodyUnreadable ? { issueBodyUnreadable: true } : {}),
-    ...(result.notes.length > 0 ? { notes: result.notes.slice(0, 10) } : {}),
-    ...(result.warnings.length > 0 ? { warnings: result.warnings.slice(0, 10) } : {}),
+    ...(result.notes.length > 0 ? { notes: result.notes.slice(0, UNFENCE_NOTES_CAP) } : {}),
+    ...(result.warnings.length > 0
+      ? { warnings: result.warnings.slice(0, UNFENCE_NOTES_CAP) }
+      : {}),
   };
 }
