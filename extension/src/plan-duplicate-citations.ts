@@ -164,17 +164,38 @@ export function citesUnaccountedNumberStripped(text: string, resolvedTokens: str
   // one the extractor resolved, and leaving the stray `#` behind used to be
   // harmless only because `#` carries no digit — removing the whole citation is
   // what makes the strip match the mention the extractor read. `0*` strips any
-  // number of leading zeros: tokens are canonical (#1856 round 4), so a padded
-  // spelling `#001856` of a token this filter resolved names the SAME issue and
-  // must not survive as a digit run of its own. It is fail-open only in the one
-  // direction a zero prefix can be read — a leading zero is not a digit of the
-  // id — and the `(?![\d-])` anchor keeps the strip from ever reaching into a
-  // longer digit run: `#012` is not a spelling of a resolved `#1`.
+  // number of leading zeros, and it is applied to EVERY numeric segment rather
+  // than just the first: tokens are canonical (#1856 round 4), so a split-child
+  // token resolved as `1856-2` was read out of some spelling of `#1856-2`, and
+  // `#01856-02` is the SAME issue with both segments padded. A padding rule that
+  // covered only the parent left the padded child segment in place as a digit run
+  // of its own, which kept a HIGH this filter had already resolved (the fail-open
+  // direction of a strip that under-matches is the safe one for the driver, but it
+  // is still wrong: the filter positively identified the reference). `segmentRe`
+  // splits the canonical token on `-` and puts `0*` before each part, so a
+  // resolved `1856-2` becomes `#+0*1856-0*2`.
+  // It is fail-open only in the one direction a zero prefix can be read — a
+  // leading zero is not a digit of the id — and the `(?![\d-])` anchor keeps the
+  // strip from ever reaching into a longer digit run: `#012` is not a spelling of
+  // a resolved `#1`, and `#1856-027` is not a spelling of `#1856-2`.
   for (const token of [...resolvedTokens].sort((a, b) => b.length - a.length)) {
-    rest = rest.split(new RegExp(`#+0*${escapeForRegExp(token)}(?![\\d-])`, "g")).join(" ");
+    rest = rest.split(new RegExp(`#+${segmentRe(token)}(?![\\d-])`, "g")).join(" ");
   }
   for (const re of SAFE_NUMBER_RES) rest = rest.replace(re, " ");
   return rest;
+}
+
+/**
+ * A canonical token (`1856`, `1856-2`) as a pattern that admits leading zeros on
+ * EACH numeric segment. `escapeForRegExp` already restricts a token to
+ * `[0-9-]`, so splitting on `-` can only yield digit runs, and the empty string a
+ * malformed token would produce at the edges simply contributes no `0*`.
+ */
+function segmentRe(token: string): string {
+  return escapeForRegExp(token)
+    .split("-")
+    .map((part) => `0*${part}`)
+    .join("-");
 }
 
 /** Tokens are `[0-9-]+` by construction; this keeps the RegExp constructor honest. */

@@ -302,10 +302,51 @@ async function barrier(
     // And padding is only ever a prefix: the digits of a longer id are never
     // blanked by a shorter resolved token, padded spelling or not.
     ["cf. #01238", ["12"], true],
+    // #1856 round 5: padding on a SPLIT-CHILD token. The strip used to put its
+    // `0*` before the parent segment only, so the padded child segment of
+    // `#01856-02` survived as a digit run of its own and kept a HIGH this filter
+    // had already resolved as its own subject. Each numeric segment is canonical
+    // now, so every padding of a resolved `N-k` strips whole — and the controls
+    // below pin that a padded child segment that is a DIFFERENT child, or a
+    // padded parent that is a different issue, is still an unaccounted number.
+    ["#1856-2 restates #01856-02", ["1856-2"], false],
+    ["#01856-02 and #1856-2 are one child", ["1856-2"], false],
+    ["#1856-02 alone", ["1856-2"], false],
+    ["#01856-2 alone", ["1856-2"], false],
+    ["#01856-027 is another child", ["1856-2"], true],
+    ["#1856-03 is another child", ["1856-2"], true],
+    ["#01855-02 is another issue's child", ["1856-2"], true],
   ] as [string, string[], boolean][]) {
     assert(
       citesUnaccountedNumber(text, resolved) === want,
       `rule 4: ${text} with resolved [${resolved}] is${want ? "" : " not"} an unaccounted number`,
+    );
+  }
+  {
+    // End to end through the barrier: a self-citation written with BOTH segments
+    // padded behaves exactly as the plain spelling, and the same padding on a
+    // child of ANOTHER issue keeps the HIGH.
+    const paddedChild = await barrier(
+      "DUPLICATE_RISK: high — duplicates the plan's own split child #01856-02 verbatim",
+      1856,
+    );
+    const plainChild = await barrier(
+      "DUPLICATE_RISK: high — duplicates the plan's own split child #1856-2 verbatim",
+      1856,
+    );
+    assert(
+      paddedChild?.level === "medium" &&
+        plainChild?.level === "medium" &&
+        JSON.stringify(paddedChild?.excludedIssues) === JSON.stringify(plainChild?.excludedIssues),
+      `a fully padded split-child self-citation is handled the same as the plain spelling (${paddedChild?.level} / ${plainChild?.level})`,
+    );
+    const otherChild = await barrier(
+      "DUPLICATE_RISK: high — #1856 restates this, and #0404-02 is another plan's half",
+      1856,
+    );
+    assert(
+      otherChild?.level === "high" && otherChild?.downgradedFrom === undefined,
+      `a padded citation of ANOTHER issue's split child keeps the HIGH (got ${otherChild?.level})`,
     );
   }
   {
