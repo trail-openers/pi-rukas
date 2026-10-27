@@ -56,6 +56,7 @@ import {
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import {
   type FixPassFence,
+  coupledTestAdmitted,
   fixPassAdmissionNote,
   fixPassFence,
   fixPassFenceLines,
@@ -494,7 +495,14 @@ export async function postPassFault(
       const slots = admit.admittedSlotCount(plan.id);
       const admittedList = admit.admittedFiles(plan.id);
       const limit = fanoutLimitFor(plan.declared.length + slots);
-      const counted = s.value.names;
+      // The NUMERATOR excludes a test the coupled-test route admitted. The
+      // ceiling bounds how far a pass may WANDER from its declared scope, and a
+      // test that proves the pass's own fix is the opposite of wandering — the
+      // route exists precisely so a fix lands with its test. Charging the
+      // ceiling for it parked passes in which every single file had been asked
+      // for, and it punished exactly the behaviour the route was built to
+      // encourage. Files admitted by any OTHER route still count.
+      const counted = s.value.names.filter((f) => !coupledTestAdmitted(f, judging));
       if (counted.length > limit) {
         return {
           reason: `${plan.id} changed ${counted.length} files (${admittedList.length} of them admitted by ${slots} spec pattern slot(s): ${listed(admittedList)}) — over the fan-out limit ${limit} for its ${plan.declared.length} declared path(s) plus ${slots} admitting slot(s)`,

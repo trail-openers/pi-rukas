@@ -349,6 +349,21 @@ export function admitFixPassFile(
 }
 
 /**
+ * Is `file` a test the COUPLED-TEST route would admit for this pass?
+ *
+ * The fan-out ceiling asks this to keep a pass's own tests out of its wander
+ * budget: the ceiling bounds how far a pass may drift from its declared scope,
+ * and a test that proves the fix it was asked to make is the opposite of
+ * drifting. Same predicate the route itself uses, so the two cannot disagree
+ * about which files are coupled — a ceiling that excluded a different set from
+ * the one the route admits would be a second rule with its own edge cases.
+ */
+export function coupledTestAdmitted(file: string, fence: FixPassFence): boolean {
+  if (fence.passChanged.length === 0) return false;
+  return couplesToSubject(file, fence.passChanged);
+}
+
+/**
  * The helper route's ANCHOR FILES — the specific files the pass was ASKED to
  * change, not every file in its declared scope. Three shapes:
  *
