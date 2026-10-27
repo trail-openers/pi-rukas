@@ -93,19 +93,9 @@ export function contradictionPathsByEntry(
  * delimited word carrying a `/`, or one ending in a file extension, after the
  * surrounding punctuation is stripped. Free words ("the public API surface") are
  * not tokens, so an entry made of nothing but them names nothing at all. */
-function pathTokens(entry: string): string[] {
+function pathTokens(source: string): string[] {
   const out: string[] = [];
-  // The scan runs on the CONTROL-FREE form of the entry. A planner (or a model
-  // echoing terminal colour) can break a directory token with a control byte,
-  // and an entry whose own path token the scan cannot read must never be DROPPED
-  // on the strength of the tokens it did read — that is a fence removed because
-  // of a character nobody can see. Reading the neutralised form instead makes a
-  // control-character-bearing entry fail CLOSED (it stays), while a fence whose
-  // paths are legible is judged on what it really says. The `entry` the record
-  // and the note carry is neutralised again at that point, so nothing raw
-  // reaches the state file either way.
-  const scanned = neutraliseFenceEntry(entry);
-  for (const word of scanned.split(/\s+/)) {
+  for (const word of source.split(/\s+/)) {
     // A trailing `.` or `/` is sentence punctuation, an internal one is part of
     // the name: `src/legacy.` , `src/legacy/` and `src/legacy` are the three
     // spellings of the same fence. A leading `.` is KEPT, because that is how a
@@ -148,9 +138,19 @@ function tokenCoveredBy(token: string, p: string): boolean {
  * fully read is never dropped.
  */
 function proseSelfFence(entry: string, own: readonly string[]): SelfFenceEntryDrop {
-  const tokens = pathTokens(entry);
-  if (tokens.length === 0) return { drop: false };
+  // The scan runs on the CONTROL-FREE form of the entry, and the WHOLE-TOKEN
+  // check below reads the SAME string the tokens were cut from. If the two
+  // differed, neutralisation would manufacture a mismatch: collapsing `docs/\u0007
+  // and src/` to one token changes how the sentence splits, and the rule would
+  // then reject a token for not appearing in a sentence it was taken out of.
+  // A control-character-bearing entry still fails CLOSED, because whatever the
+  // control bytes did to the text, the tokens and their haystack agree about it
+  // — and a fence whose paths are legible is judged on what it really says. The
+  // `entry` the record and the note carry is neutralised again at that point, so
+  // nothing raw reaches the state file either way.
   const scanned = neutraliseFenceEntry(entry);
+  const tokens = pathTokens(scanned);
+  if (tokens.length === 0) return { drop: false };
   let first: string | undefined;
   let named = false;
   for (const token of tokens) {

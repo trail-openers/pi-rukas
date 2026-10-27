@@ -30,7 +30,10 @@
  *   - Every drop is an `UnfenceRecord` carrying the note the operator reads, so
  *     the removal is visible in the state file rather than only in `trace()`.
  *
- * Pure: the input arrays are never mutated and nothing is traced.
+ * Pure: the input arrays are never mutated. The only output beside the return
+ * value is a trace line for a fence the sibling guard SAVED (#1862 M3) — silence
+ * would be the ordinary case, and the reason a removal did not happen is the
+ * thing an operator has to be able to find.
  */
 
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
@@ -40,7 +43,16 @@ import {
   declaredPaths,
   selfFenceEntryDrop,
 } from "./plan-fence-self-entry.ts";
+import { trace } from "./trace.ts";
 import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
+
+/** Do two normalised declarations meet on the `/` boundary in either direction?
+ * The same containment the fold's own predicate uses, applied to the SIBLING
+ * side: `src/a.ts` meets `src/` and `src/a/`, and `src/` meets `src/a.ts`, but
+ * `srcfoo` meets nothing (`src` is a name, not a prefix). */
+function sharesDeclaredPath(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
 
 /**
  * The note the operator sees when the fold removes a fence that fenced the
@@ -74,8 +86,14 @@ export function foldSelfFenceDrops(
   workstreamId: string,
   ownPaths: readonly string[],
   candidates: readonly string[],
+  /** Every OTHER workstream's declared paths. A token one of them owns is a
+   * SIBLING's file, and a fence over a sibling's file is the fence the fold
+   * exists to keep — the developer must not walk into it. Omit it only where the
+   * caller genuinely has no sibling view (see `foldTwo`'s `otherDeclared`). */
+  siblingPaths?: readonly string[],
 ): { drop: Set<string>; records: UnfenceRecord[] } {
   const own = declaredPaths(ownPaths);
+  const siblings = siblingPaths === undefined ? [] : declaredPaths(siblingPaths);
   const drop = new Set<string>();
   const records: UnfenceRecord[] = [];
   if (own.length === 0 || candidates.length === 0) return { drop, records };
@@ -83,6 +101,21 @@ export function foldSelfFenceDrops(
   for (const entry of candidates) {
     const decision: SelfFenceEntryDrop = selfFenceEntryDrop(entry, own, contradictions.get(entry));
     if (!decision.drop || drop.has(entry)) continue;
+    // #1862 M3 — the entry may fence ONLY the merged workstream's own files. The
+    // path-shaped arm is already exact (`contradictionPathsByEntry` answers for
+    // the whole entry), but the prose arm judges token-by-token against the
+    // merged half's own declarations alone, so a sentence that names a sibling's
+    // file next to its own would go. Re-checking the path the drop was granted
+    // for against the siblings closes that: if any sibling declares it, the
+    // entry is not the merged workstream's own business and it stays — said on
+    // the trace channel so the reason is findable.
+    if (siblings.some((p) => sharesDeclaredPath(p, decision.path))) {
+      trace(
+        `work-driver: plan fold — kept self-fence ${JSON.stringify(neutraliseFenceEntry(entry))}: ` +
+          `${JSON.stringify(neutraliseFenceEntry(decision.path))} is also declared by a sibling workstream`,
+      );
+      continue;
+    }
     drop.add(entry);
     records.push({
       workstream: workstreamId,

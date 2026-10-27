@@ -349,7 +349,13 @@ export function foldPortPlan(
   // so the list is short by construction.
   const selfFenceDrops: UnfenceRecord[] = [];
   for (const ws of all.slice(1)) {
-    const folded = foldTwo(merged, ws);
+    // #1862 M3 — the port pass folds every workstream into one, so the
+    // "siblings" at any step are the ones still to be absorbed: their paths
+    // reach the merged union a fold later, and until then a fence over one of
+    // them belongs to a workstream that still exists.
+    const stillToMerge = all.slice(all.indexOf(ws) + 1);
+    const siblingDeclared = merged.id === ws.id ? [] : stillToMerge.flatMap((other) => other.paths);
+    const folded = foldTwo(merged, ws, siblingDeclared);
     merged = folded.workstream;
     selfFenceDrops.push(...folded.selfFenceDrops);
     union.push(...ws.paths);

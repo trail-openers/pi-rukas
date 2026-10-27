@@ -83,7 +83,14 @@ export function foldWorkstream(
 ): { workstreams: Record<string, Workstream>; selfFenceDrops: UnfenceRecord[] } {
   const intoWs = map[into];
   if (!intoWs) return { workstreams: map, selfFenceDrops: [] };
-  const folded = foldTwo(intoWs, absorbed);
+  // #1862 M3 — every workstream in the map that is neither half still declares
+  // its own files, and a fence over one of them is not the merged pair's to
+  // open. The map is the caller's current working copy, so this is the live
+  // sibling view at the moment of the fold.
+  const siblingDeclared = Object.entries(map)
+    .filter(([id]) => id !== into && id !== from)
+    .flatMap(([, ws]) => ws.paths);
+  const folded = foldTwo(intoWs, absorbed, siblingDeclared);
   const next: Record<string, Workstream> = { ...map, [into]: folded.workstream };
   delete next[from];
   // Re-point dependsOn edges that pointed at the absorbed id.
@@ -124,6 +131,15 @@ export function foldWorkstream(
 export function foldTwo(
   a: Workstream,
   b: Workstream,
+  /** #1862 M3 — every OTHER workstream's declared paths, as the caller sees them
+   * at the fold. A fence entry is dropped only when it names nothing outside the
+   * merged workstream's own scope, and the caller is the only party that knows
+   * what the siblings declared: judging against `a` and `b` alone would call a
+   * sibling's file "nobody's" and open the fence over it. Omit it when there is
+   * no sibling view to hand (a two-workstream test), and the fold falls back to
+   * the two halves — the conservative reading, since those two ARE the scope the
+   * merged list is measured against. */
+  otherDeclared?: readonly string[],
 ): { workstream: Workstream; selfFenceDrops: UnfenceRecord[] } {
   // #1756 part b — the union dedupes on the normalised identity. It NEVER
   // truncates and never counts for display: the merged workstream authorises
@@ -137,7 +153,7 @@ export function foldTwo(
   // of the same file) left no record at all. `foldSelfFenceDrops` now sees the
   // whole union — raw equality is the cheapest arm of its containment rule —
   // so every removal it makes is one the operator can read in the state file.
-  const selfFence = foldSelfFenceDrops(a.id, mergedPaths, unioned);
+  const selfFence = foldSelfFenceDrops(a.id, mergedPaths, unioned, otherDeclared);
   const mergedList = unioned.filter((entry) => !selfFence.drop.has(entry));
   // #1744 — each half's clip records are keyed by their ENTRY TEXT, so carrying
   // them across the fold is a keep-if-still-present filter (capFenceList), not a

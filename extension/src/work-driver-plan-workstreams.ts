@@ -104,7 +104,13 @@ export function foldToCeiling(entries: Workstream[]): {
       const last = out[lastId];
       if (last) {
         union.push(...entry.paths);
-        const folded = foldTwo(last, entry);
+        // #1862 M3 — the siblings still in `out` (the absorbed half included)
+        // declare their own files, so a fence over one of them is not the
+        // ceiling fold's to open.
+        const siblingDeclared = Object.values(out)
+          .filter((ws) => ws.id !== last.id && ws.id !== entry.id)
+          .flatMap((ws) => ws.paths);
+        const folded = foldTwo(last, entry, siblingDeclared);
         selfFenceDrops.push(...folded.selfFenceDrops);
         // The ceiling fold's annotation is `+folded:` (the coupling merge's
         // `+merged:` is the other site's wording).
