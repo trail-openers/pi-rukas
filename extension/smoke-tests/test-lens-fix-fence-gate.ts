@@ -13,7 +13,7 @@
  * because the park reason is the only thing the operator reads.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
@@ -25,11 +25,12 @@ import {
   lensFixPlanFromSnapshot,
   lensFixRevertAlreadyUsed,
 } from "../src/work-driver-lens-fix-fence-gate.ts";
+import { revertLensFixStrays } from "../src/work-driver-lens-fix-fence-revert.ts";
 import { lensFixPassPlan } from "../src/work-driver-lens-fix-fence.ts";
 import type { LensFixFenceSnapshot } from "../src/workflow-state-schema.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import { initialState } from "../src/workflow-state.ts";
-import { git, repoWithFile } from "./lib/adversarial-fix-fixtures.ts";
+import { git, repoWithFile, silentSink } from "./lib/adversarial-fix-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -41,6 +42,9 @@ function assert(cond: boolean, msg: string): void {
 }
 
 const FINDINGS = '[{"path":"a.txt","severity":"MEDIUM","title":"t","suggestion":"s"}]';
+
+/** The record a real revert produces, spelled from the event type rather than `any`. */
+type LensFixEventShape = Extract<WorkEvent, { kind: "fix-pass-strays-reverted" }>;
 
 /** A repo with a develop commit, plus a `.worktrees/` tree sitting on it. */
 function cycle(label: string): { repoRoot: string; tree: string; roundTip: string } {
@@ -108,6 +112,7 @@ function ctxFor(repoRoot: string): CycleContext {
     host: { sendUserMessage: () => {}, emit: () => {} } as never,
     repoRoot,
     issue: 1852,
+    emitSink: silentSink,
     verifyExecFn: defaultExec,
   } as unknown as CycleContext;
 }
@@ -178,6 +183,75 @@ console.log("# a stray in a worktree: reverted once, then allowed");
     "the revert record carries the lens-fix source and the round (the counter reads them)",
   );
   rmSync(c.repoRoot, { recursive: true, force: true });
+}
+
+console.log("# the revert the DRIVER performed leaves an event the round can count");
+{
+  // #1852 review round 2. The stub above proves the gate REPORTS an event; this
+  // one proves the event the real destructive path produces is COUNTABLE. A
+  // hand-typed event can carry fields the real revert never writes, and the real
+  // revert can omit the two fields the counter reads — which is precisely how
+  // `lensFixRevertAlreadyUsed` came to be blind to a revert the driver had done,
+  // letting a retried adversarial step revert a SECOND set in the same round.
+  // The assertion is made through the counter itself, not by reading fields off
+  // the returned object, so it fails if either of the two fields is missing.
+  const c = cycle("gate-real-revert");
+  const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
+  const snap = await snapshotFor(c.repoRoot, c.tree, c.roundTip, st);
+  // Untracked: the hardest case for the record, because no ref can ever hold it
+  // — only the patch and the copies do, so their paths have to be on the event.
+  writeFileSync(`${c.tree}/scratch-notes.md`, "the fixer should not have written this\n");
+  const realCtx = {
+    ...ctxFor(c.repoRoot),
+  } as unknown as CycleContext;
+  let event: LensFixEventShape | undefined;
+  const v = await lensFixFenceCheck({
+    execFn: defaultExec,
+    ctx: realCtx,
+    state: st,
+    snapshot: snap,
+    inWorktree: true,
+    tree: c.tree,
+    round: 1,
+    revertAlreadyUsed: false,
+    fenceRecorded: true,
+    onRevertible: async (post, plan) => {
+      const out = await revertLensFixStrays(realCtx, st, defaultExec, plan, post, 1);
+      if (out?.ok === true) event = out.event;
+      return out;
+    },
+  });
+  assert(v.ok, `the driver's own revert clears the round (${v.ok ? "" : v.reason.slice(0, 120)})`);
+  assert(
+    existsSync(`${c.tree}/scratch-notes.md`) === false,
+    "the stray really is gone from the worktree, so the record describes a real deletion",
+  );
+  assert(event !== undefined, "the real revert produced an event");
+  assert(
+    event?.source === "lens-fix" && event.round === 1,
+    `it carries the lens-fix source and the round (${JSON.stringify([event?.source, event?.round])})`,
+  );
+  assert(
+    (event?.paths ?? []).includes("scratch-notes.md"),
+    `it names the reverted path (${JSON.stringify(event?.paths)})`,
+  );
+  assert(
+    (event?.preservedRef ?? "").includes("1852") && (event?.patchPath ?? "").length > 0,
+    `it names where the content survives (${event?.preservedRef} / ${event?.patchPath})`,
+  );
+  // THE counter is the consumer that was blind. Feed it the log a recorded round
+  // would have: with the event appended, the round has spent its allowance.
+  const withEvent = [...st.eventLog, event as never];
+  assert(
+    lensFixRevertAlreadyUsed(withEvent, 1, "default"),
+    "lensFixRevertAlreadyUsed COUNTS the driver's revert — this is what a retried step reads",
+  );
+  assert(
+    !lensFixRevertAlreadyUsed(st.eventLog, 1, "default"),
+    "and it counted nothing before the revert happened (the allowance really is spent by this event alone)",
+  );
+  rmSync(c.repoRoot, { recursive: true, force: true });
+  rmSync(`${c.repoRoot}/tmp`, { recursive: true, force: true });
 }
 
 console.log("# a SECOND stray set in the same round parks");

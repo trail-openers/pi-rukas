@@ -2,8 +2,9 @@
  * work-driver-adversarial — Step 5 (adversarial gate) handler.
  *
  * Fans out one `runAdversarialLoop` per workstream, aggregates the verdict,
- * and — on approval following a lens-fix round — commits the fix via
- * work-driver-lens.ts's `commitLensFixChanges`.
+ * and — on approval following a lens-fix round — hands the round to
+ * `landLensFix` (work-driver-adversarial-lens-land.ts), which fences the delta
+ * and lands it.
  *
  * #492/#749/#797 — when a lens-fix never reaches the branch, the cap-hit
  * carries the CAUSE (committed-work detection via rev-list, not porcelain),
@@ -21,7 +22,7 @@ import {
 } from "./work-driver-adversarial-diff-cap.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
 import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
-import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
+import { landLensFix } from "./work-driver-adversarial-lens-land.ts";
 import {
   classifyAdversarialOutcome,
   reentryPassBatchSpan,
@@ -33,26 +34,10 @@ import {
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { failureCauseReasonForClass } from "./work-driver-failure-taxonomy.ts";
 import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
-import {
-  detectCommittedFix,
-  landCommittedFix,
-  noDiffEvidence,
-  repoRootOriginalRef,
-} from "./work-driver-lens-fix-commit.ts";
-import {
-  type LensFixRevertOutcome,
-  lensFixFenceCheck,
-  lensFixFenceRecorded,
-  lensFixRevertAlreadyUsed,
-} from "./work-driver-lens-fix-fence-gate.ts";
-import { revertLensFixStrays } from "./work-driver-lens-fix-fence-revert.ts";
+import { noDiffEvidence } from "./work-driver-lens-fix-commit.ts";
 import { lensWorktree } from "./work-driver-lens-fix.ts";
-import { commitLensFixChanges } from "./work-driver-lens.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
-import { runNetGit } from "./work-driver-net-git.ts";
-import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -227,145 +212,12 @@ export async function runAdversarial(
     });
 
     if (state.pipelineState.lastCompletedStep === "lens-fix") {
-      // The fix is pushed below; a PR merged or closed during the fix pass
-      // must not receive it (work-driver-pr-gone.ts).
-      const gate = await endIfPrGone(ctx, next, "adversarial");
-      if (gate.ended) return gate.ended;
-      next = gate.state;
-      const execFn = ctx.verifyExecFn ?? execp;
-      const psFix = state.pipelineState;
-      // #1852 — THE LENS-FIX SCOPE FENCE, run once here, before ANY of the
-      // landing arms below. Every lens-fix push in the driver is reached from
-      // this branch (the worktree arm, the repoRoot arm, the no-committed-fix
-      // re-land, and the bound-kill conversion, which routes back through this
-      // step), so one check here fences the step and no arm has to know it
-      // exists. It reads the fence the fixer's PROMPT printed
-      // (`lensFixFence`, recorded at dispatch time) and measures the round's
-      // delta from the round tip recorded beside it — never a fresh HEAD.
-      const lensTree = lensWorktree(ctx, state);
-      const lensSnap = psFix.lensFixFence;
-      const lensRound = state.pipelineState.reviewRound;
-      const lensId =
-        lensSnap?.workstreamId ??
-        Object.keys(psFix.workstreams ?? {}).find((id) => {
-          const recorded = psFix.worktrees?.[id];
-          return recorded !== undefined && path.resolve(recorded) === path.resolve(lensTree);
-        });
-      const fenceCheck = await lensFixFenceCheck({
-        execFn,
-        ctx,
-        state,
-        snapshot: lensSnap,
-        inWorktree: path.resolve(lensTree) !== path.resolve(ctx.repoRoot),
-        tree: lensTree,
-        round: lensRound,
-        // Did this round's lens-fix step actually dispatch a fixer? A round that
-        // never did has no fence to be judged against (and a state file from
-        // before #1852 never wrote the field), so the gate stands down; a round
-        // that did had a fence, and losing it parks. Read from the step's own
-        // dispatch markers rather than from `lastCompletedStep`, which a resume
-        // can leave pointing here from a previous round.
-        // Fail closed only on what the round RECORDS: a fence failure on the log
-        // means this round had a fence and lost it. No record at all means an
-        // older driver (or a pre-#1852 fixture) wrote the state and the gate does
-        // not run — see `lensFixFenceRecorded`.
-        fenceRecorded: lensFixFenceRecorded(state.eventLog, lensRound),
-        revertAlreadyUsed:
-          lensId !== undefined && lensFixRevertAlreadyUsed(state.eventLog, lensRound, lensId),
-        onRevertible:
-          lensId === undefined || lensSnap === undefined
-            ? undefined
-            : (post, plan) => revertLensFixStrays(ctx, state, execFn, plan, post, lensRound),
-      });
-      if (!fenceCheck.ok) {
-        trace(
-          `work-driver: lens-fix fence parked the round before landing — ${fenceCheck.reason.slice(0, 200)}`,
-        );
-        // Same shape as the #981 reposition park (`parkLensFixReposition`):
-        // one cap-hit the router routes to the handoff, `lensWorktreePath`
-        // naming the tree the operator must open, and the revert's preserved
-        // ref / patch riding on `restoredToRef`/`restoredToPath` when the
-        // driver reverted a first set before refusing this second one.
-        next = appendEvent(next, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: "lens-fix-scope",
-          reviewRound: lensRound,
-          nextStep: "handoff",
-          evidence: fenceCheck.reason,
-          lensWorktreePath: lensTree,
-          ...(fenceCheck.revert
-            ? {
-                restoredToRef: fenceCheck.revert.preservedRef,
-                restoredToPath: fenceCheck.revert.patchPath,
-              }
-            : {}),
-        });
-        next = {
-          ...next,
-          pipelineState: { ...next.pipelineState, currentStep: "handoff" },
-        };
-        return next;
-      }
-      for (const note of fenceCheck.notes) trace(`work-driver: lens-fix fence · ${note}`);
-      const fixWorktrees = psFix.worktrees ?? {};
-      const inWorktree = Object.values(fixWorktrees).some(
-        (p) => path.resolve(p) !== path.resolve(ctx.repoRoot),
-      );
-      const result = inWorktree
-        ? await integrateLensFix(execFn, ctx, psFix, fixWorktrees)
-        : await commitLensFixChanges(ctx.repoRoot, psFix.reviewRound, execFn);
-      if (!result.committed) {
-        const fixTree = inWorktree ? lensWorktree(ctx, state) : ctx.repoRoot;
-        if (result.error) {
-          // #797 — state the repoRoot condition either way.
-          const preIntegrationRef = await repoRootOriginalRef(execFn, ctx.repoRoot);
-          const rootCondition = result.error.includes("repoRoot was restored")
-            ? "repoRoot was restored to the pre-integration ref (verified)"
-            : result.error.includes("repoRoot was NOT restored")
-              ? "repoRoot was NOT restored — manual repair required"
-              : inWorktree
-                ? `repoRoot restored to ${preIntegrationRef ?? "the pre-integration ref"} (integrate() claims the restore in its error text)`
-                : `repoRoot unchanged (N=1 commit path never moves the checkout)${preIntegrationRef ? ` — on ${preIntegrationRef}` : ""}`;
-          next.pipelineState.plumbReports.push({
-            step: "adversarial",
-            role: "driver",
-            body: `lens-fix: a diff existed but staging or integration failed (${result.error}) — worktree inspected: ${fixTree}. ${rootCondition}`,
-            at: Date.now(),
-          });
-          next = appendEvent(next, {
-            kind: "cap-hit",
-            at: Date.now(),
-            cap: "lens-fix-not-integrated",
-            reviewRound: psFix.reviewRound,
-            nextStep: "handoff",
-            lensWorktreePath: fixTree,
-            restoredToRef: preIntegrationRef,
-            evidence: `${result.error} ${rootCondition}`,
-          });
-          trace(`work-driver: lens-fix integration failed — ${result.error}`);
-          return next;
-        }
-        const handled = await handleNoCommittedFix(execFn, ctx, psFix, fixTree, result, next);
-        if (handled !== null) return handled;
-      }
-      if (result.committed && !result.pushed) {
-        try {
-          await runNetGit(execFn, "git push origin HEAD -q", { cwd: ctx.repoRoot });
-        } catch (err) {
-          // #1095: a timeout is non-blocking too, and its message names the
-          // cause ("network git timed out"). The fix is then not on the PR, and
-          // the plumbReport below is where the operator sees it.
-          const errMsg = `lens-fix push failed (non-blocking): ${(err as Error).message?.slice(0, 200)}`;
-          trace(`work-driver: ${errMsg}`);
-          next.pipelineState.plumbReports.push({
-            step: "adversarial",
-            role: "driver",
-            body: errMsg,
-            at: Date.now(),
-          });
-        }
-      }
+      // #1852 — the lens-fix scope fence and every landing arm live in
+      // work-driver-adversarial-lens-land.ts: one check gates the whole branch,
+      // and the revert's record is written before the first destructive call.
+      const landed = await landLensFix(ctx, state, next);
+      if (landed.kind === "parked") return landed.state;
+      next = landed.state;
     }
   } else if (
     // #1634 — a diff nobody could read is not a reviewer that failed to run, so
