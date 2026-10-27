@@ -60,14 +60,50 @@ export function isClosedState(state: string): boolean {
   return state.trim().toUpperCase() === "CLOSED";
 }
 
-/** Every `#N` (or `#N-M`) token a rationale names, in order of appearance, deduped. */
-export function namedIssueTokens(text: string): number[] {
-  const out: number[] = [];
+/**
+ * One issue a rationale names: the numeric id when the forge has one, and the
+ * `N-k` split-child token as `parent`/`child` (a plain `Number()` of "1856-2"
+ * is NaN, so the token cannot travel as a number).
+ */
+export interface NamedIssueRef {
+  /** The numeric id, or NaN for a split-child token. */
+  id: number;
+  /** The token as written in the rationale, without the `#`. */
+  token: string;
+  /** Set when the token is a split-child id (`N-k`). */
+  parent?: number;
+  child?: number;
+}
+
+/** Every `#N` (or `#N-k`) token a rationale names, in order, deduped by token. */
+export function namedIssueRefs(text: string): NamedIssueRef[] {
+  const out: NamedIssueRef[] = [];
   for (const m of text.matchAll(/#(\d+(?:-\d+)?)/g)) {
-    const n = Number(m[1]);
-    if (Number.isSafeInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+    const token = m[1] ?? "";
+    if (out.some((r) => r.token === token)) continue;
+    if (token.includes("-")) {
+      const [parent, child] = token.split("-").map((x) => Number(x));
+      if (
+        Number.isSafeInteger(parent) &&
+        child !== undefined &&
+        Number.isSafeInteger(child) &&
+        child >= 1
+      ) {
+        out.push({ id: Number.NaN, token, parent, child });
+      }
+      continue;
+    }
+    const id = Number(token);
+    if (Number.isSafeInteger(id) && id > 0) out.push({ id, token });
   }
   return out;
+}
+
+/** The numeric ids a rationale names (split-child tokens excluded). */
+export function namedIssueTokens(text: string): number[] {
+  return namedIssueRefs(text)
+    .map((r) => r.id)
+    .filter((n) => Number.isSafeInteger(n));
 }
 
 /**
@@ -77,9 +113,8 @@ export function namedIssueTokens(text: string): number[] {
  * the sentence's own commas included, so "closes #103, which was prior art"
  * still reaches the rule.
  */
-function clauseNaming(text: string, n: number): string {
-  const token = new RegExp(`#${n}(?!\\d)`);
-  const at = text.search(token);
+function clauseNaming(text: string, token: string): string {
+  const at = text.indexOf(`#${token}`);
   if (at < 0) return "";
   const next = text.slice(at + 1).search(/#\d/);
   return next < 0 ? text.slice(at) : text.slice(at, at + 1 + next);
@@ -93,12 +128,8 @@ function clauseNaming(text: string, n: number): string {
  * `number === source` at the call site, so an unrelated `N` from some other
  * numbering can never be mistaken for the subject.
  */
-export function isSplitChildOf(n: number, source: number): boolean {
-  if (!String(n).includes("-")) return false;
-  const [parent, child] = String(n)
-    .split("-")
-    .map((x) => Number(x));
-  return parent === source && child !== undefined && Number.isSafeInteger(child) && child >= 1;
+export function isSplitChildOf(parent: number, source: number): boolean {
+  return Number.isSafeInteger(parent) && parent === source;
 }
 
 /** The inventory rows for a plan of issue `source`, with the subject removed. */
@@ -150,26 +181,35 @@ export function downgradeSelfDuplicate(
   if (verdict.level.toLowerCase() !== "high") return verdict;
   const source = args.sourceIssue;
   if (source === undefined) return verdict;
-  const named = namedIssueTokens(verdict.rationale);
+  const named = namedIssueRefs(verdict.rationale);
   // A HIGH that names NO issue cannot be attributed to the subject, so it is
   // not the defect this filter exists for and it halts as any other HIGH does.
   if (named.length === 0) return verdict;
   const known = args.known ?? new Map<number, KnownIssue>();
   const excluded: ExcludedDuplicate[] = [];
-  for (const n of named) {
+  for (const ref of named) {
+    // A split-child token: #<parent>-<k> of the planned issue is its own
+    // decomposition, never a duplicate of it.
+    if (ref.parent !== undefined) {
+      if (!isSplitChildOf(ref.parent, source)) return verdict;
+      excluded.push({
+        number: ref.parent,
+        state: known.get(ref.parent)?.state ?? "unknown",
+        title: known.get(ref.parent)?.title ?? "",
+        reason: EXCLUSION_REASONS["split-child"],
+      });
+      continue;
+    }
+    const n = ref.id;
     const row = known.get(n);
     if (n === source) {
       excluded.push(excludedRow(n, row, EXCLUSION_REASONS.source));
       continue;
     }
-    if (isSplitChildOf(n, source)) {
-      excluded.push(excludedRow(n, row, EXCLUSION_REASONS["split-child"]));
-      continue;
-    }
     if (
       row !== undefined &&
       isClosedState(row.state) &&
-      PRIOR_ART_RE.test(clauseNaming(verdict.rationale, n))
+      PRIOR_ART_RE.test(clauseNaming(verdict.rationale, ref.token))
     ) {
       excluded.push(excludedRow(n, row, EXCLUSION_REASONS["prior-art"]));
       continue;
