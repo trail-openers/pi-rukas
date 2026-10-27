@@ -76,6 +76,9 @@
     "smoke-tests/test-lens-fix-budget-owed-route.ts",
     "smoke-tests/test-review-state-guard.ts",
     "smoke-tests/test-review-state-mechanism.ts",
-    "smoke-tests/test-review-state-path.ts"
+    "smoke-tests/test-review-state-path.ts",
+    "smoke-tests/lib/lens-fix-kill-cause-fixtures.ts",
+    "smoke-tests/test-work-driver-lens-fix-kill-cause.ts",
+    "smoke-tests/test-work-driver-lens-fix-kill-cause-window.ts"
   ]
 }

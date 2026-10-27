@@ -273,11 +273,9 @@ async function killTail(result: DispatchResult): Promise<string> {
 
 // ─────────────────────────── 3. the classifier reads it back ─────────────────
 {
-  const state = await lensFixCycle({
-    killCause: "timeout",
-    errorTail: boundKillTail,
-    fixerBoundSource: "fixer-bound",
-  });
+  const state = await lensFixWindow([killed({ fixerBoundSource: "fixer-bound" })], [], [
+    boundKillTail,
+  ]);
   const failure: ResultFailure | undefined = failFor(state);
   const v = causeVerdictOf(state, "step-failed:lens-fix", failure);
   assert(v?.causeClass === "pi-rukas", `a bound kill is pi-rukas's, not the host's (got ${v?.causeClass})`);
@@ -302,10 +300,12 @@ async function killTail(result: DispatchResult): Promise<string> {
 
 {
   // CANARIES — every one must keep the generic entry.
-  const genericState = await lensFixCycle({
-    killCause: "timeout",
-    errorTail: "[pi-rukas] killed after 7200000ms timeout",
-  });
+  // The pre-#1798 text: a kill clause naming no clock and no fixer knob.
+  const genericState = await lensFixWindow(
+    [killed({ killCause: "timeout" })],
+    [],
+    ["[pi-rukas] killed after 7200000ms timeout"],
+  );
   const generic = causeVerdictOf(
     genericState,
     "step-failed:lens-fix",
@@ -316,13 +316,18 @@ async function killTail(result: DispatchResult): Promise<string> {
     `canary: a sourceless lens-fix timeout stays environment (got ${generic?.causeClass})`,
   );
 
-  const stoppedState = await lensFixCycle({
-    killCause: undefined,
-    exitCode: 1,
-    errorTail: "provider error: stream ended",
-    providerMessage: "upstream connect error",
-    fixerBoundSource: "fixer-bound",
-  });
+  const stoppedState = await lensFixWindow(
+    [
+      killed({
+        killCause: undefined,
+        exitCode: 1,
+        errorStop: { reason: "error", message: "upstream connect error" },
+        fixerBoundSource: "fixer-bound",
+      }),
+    ],
+    [],
+    ["provider error: stream ended"],
+  );
   const stopped = causeVerdictOf(stoppedState, "step-failed:lens-fix", failFor(stoppedState));
   assert(
     stopped?.causeClass === "environment",
@@ -419,11 +424,11 @@ async function killTail(result: DispatchResult): Promise<string> {
   // An inactivity kill carries the bound clause from a sibling round: it must
   // NOT be re-badged as a bound kill, because raising the bound does not stop a
   // silent child. It keeps the generic verdict.
-  const mismatchedState = await lensFixCycle({
-    killCause: "inactivity",
-    errorTail: `[pi-rukas] killed after 2700000ms inactivity · ${boundKillTail}`,
-    fixerBoundSource: "fixer-bound",
-  });
+  const mismatchedState = await lensFixWindow(
+    [killed({ killCause: "inactivity", fixerBoundSource: "fixer-bound" })],
+    [],
+    [`[pi-rukas] killed after 2700000ms inactivity · ${boundKillTail}`],
+  );
   const mismatched = causeVerdictOf(
     mismatchedState,
     "step-failed:lens-fix",
