@@ -169,22 +169,18 @@ export interface SkillReadGuard {
 /**
  * Per-spawn counter of the child's reads of its own skill file.
  *
- * `reported` is the spawn's `promptCompleted` flag. #1847 narrowed what it
- * suppresses: it NO LONGER disarms the kill. The handler used to set it on any
- * non-retrying `agent_end`, and Pi emits one per in-process retry boundary —
- * and a lens under a provider timeout was being re-spawned from scratch by
- * `runLensChild` (`!result.ok` and no findings → `attempt < MAX_LENS_ATTEMPTS`),
- * so "it already reported" described a segment, not a finished review, while
- * the process that was still burning reads was very much alive. What the
- * suppression must mean is "there is nothing left to stop", and that is the
- * child having EXITED — which `observeReviewBounds` checks through
- * `targets.exited()` rather than through this flag. `reported()` still gates the
- * ADVISORY steer at the caller, where honouring a child that is on its way out
- * is right; a kill is not a courtesy.
+ * #1847 removed the `reported` parameter this took. It read the spawn's
+ * `promptCompleted` flag, which the line handler sets on ANY non-retrying
+ * `agent_end` — and Pi emits one per in-process retry boundary — so a lens under
+ * a provider timeout (re-spawned from scratch by `runLensChild` whenever its
+ * segment had no findings) had the cap switched off while the process that was
+ * still burning reads was very much alive. What the suppression must mean is
+ * "there is nothing left to stop", and that is the child having EXITED: the gate
+ * now lives in `observeReviewBounds` on `targets.exited()`, because liveness is a
+ * fact about the process and belongs with the spawn, not with this counter.
  */
 export function createSkillReadGuard(o: {
   skillPath: string;
-  reported: () => boolean;
   boundArmed?: () => boolean;
 }): SkillReadGuard {
   const active = capsOn() && !!o.skillPath;
@@ -232,10 +228,9 @@ export function createSkillReadGuard(o: {
     },
     shouldKill: () => {
       if (!active || killed) return false;
-      // #1847 — `reported()` is deliberately NOT consulted here. It flips on an
-      // intermediate `agent_end` while the child is still running, and that is
-      // exactly when the cap has work left to do. Liveness is the caller's
-      // gate (`targets.exited()`), because only the spawn knows the process.
+      // #1847 — liveness is the caller's gate (`targets.exited()`), because only
+      // the spawn knows the process; this counter never consulted the spawn's
+      // `reported` flag for the kill.
       if (reads < cap + 2) return false;
       killed = true;
       return true;
@@ -257,7 +252,6 @@ export function createSkillReadGuard(o: {
 export function createReviewBounds(
   role: string,
   opts: Pick<SpawnOptions, "reviewSkillPath" | "verdictStop">,
-  reported: () => boolean,
   /** #1827 round 2 — threaded to the re-read guard so its kill stands down
    *  when a killing bound (the caps) has already armed. Optional: the bounds
    *  are also built directly by tests that have no caps session. */
@@ -268,7 +262,6 @@ export function createReviewBounds(
       ? {
           skillRead: createSkillReadGuard({
             skillPath: opts.reviewSkillPath,
-            reported,
             ...(bound?.boundArmed ? { boundArmed: bound.boundArmed } : {}),
           }),
         }
@@ -397,25 +390,19 @@ export function observeReviewBounds(
   // `observe`, so an errored/aborted turn — which records no verdict — never
   // reaches here either.
   //
-  // #1847 — and the same LIVENESS gate the re-read kill has. A child whose
-  // process has exited has no stdin to close and no process group to signal,
-  // and `markEnded()` on that branch would tell the fold to stamp `ok: true`
-  // plus a clean `reviewStopReason` onto a result the spawn is already
-  // assembling from a stream that ended on its own. One liveness seam
-  // (`childHasExited`, spawn-support.ts) decides it for all three supervisors.
+  // #1847 — and the same LIVENESS gate the re-read kill has, placed HERE rather
+  // than around `observe` below: `observe` is what accumulates the reply AND
+  // latches the sticky "a verdict has been seen" flag, so gating it would (a)
+  // drop text out of the result a live child's stop later freezes and (b) let an
+  // exited child's message permanently disable the stop. A child whose process
+  // has exited has no stdin to close and no process group to signal, and
+  // `markEnded()` on that branch would tell the fold to stamp `ok: true` plus a
+  // clean `reviewStopReason` onto a result the spawn is already assembling from a
+  // stream that ended on its own. One liveness seam (`childHasExited`,
+  // spawn-support.ts) decides it for all three supervisors.
   if (
     o.verdictStop &&
     o.assistantMessageEnd &&
-    // #1847 — the same LIVENESS gate the re-read kill has, and it belongs HERE
-    // rather than around `observe` below. `observe` is what accumulates the
-    // reply AND latches the sticky "a verdict has been seen" flag, so gating it
-    // would (a) drop text out of the result a live child's stop later freezes
-    // and (b) let an exited child's message permanently disable the stop.
-    // A child whose process has exited has no stdin to close and no group to
-    // signal, and `markEnded()` on that branch would tell the fold to stamp
-    // `ok: true` plus a clean `reviewStopReason` onto a result the spawn is
-    // already assembling from a stream that ended on its own. One liveness seam
-    // (`childHasExited`, spawn-support.ts) decides it for all three supervisors.
     !targets.exited() &&
     !o.verdictStop.status() &&
     // #1827 round 5 — same seam the re-read kill checks: once a KILLING bound

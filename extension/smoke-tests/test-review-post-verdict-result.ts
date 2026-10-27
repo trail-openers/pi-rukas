@@ -273,7 +273,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     willRetry: () => false,
     exited: () => false,
   });
-  const guard = createSkillReadGuard({ skillPath: SKILL_DIR, reported: () => false });
+  const guard = createSkillReadGuard({ skillPath: SKILL_DIR });
   for (let i = 0; i < 4; i++) {
     const ev = turn(tool("read", { path: SKILL_FILE }));
     guard.observe(ev);
@@ -368,7 +368,6 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   });
   const guard = createSkillReadGuard({
     skillPath: SKILL_DIR,
-    reported: () => false,
     boundArmed: () => true,
   });
   for (let i = 0; i < 6; i++) {
@@ -395,7 +394,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     kill: () => armedFree.push("kill"),
     armBound: () => armedFree.push("armBound"),
   });
-  const notArmed = createSkillReadGuard({ skillPath: SKILL_DIR, reported: () => false });
+  const notArmed = createSkillReadGuard({ skillPath: SKILL_DIR });
   for (let i = 0; i < 6; i++) {
     const ev = turn(tool("read", { path: SKILL_FILE }));
     notArmed.observe(ev);
@@ -419,9 +418,9 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   // `adversarial-developer` with a READY / NEEDS_ITERATION protocol, and a stop
   // keyed on the role alone would have read its `VERDICT:` line with this
   // reviewer's enum and ended a gate round that never agreed to that protocol.
-  const opted = createReviewBounds("adversarial-developer", { ...OPT_IN }, () => false);
+  const opted = createReviewBounds("adversarial-developer", { ...OPT_IN });
   assert(opted.verdictStop !== undefined, "adversarial-developer + verdictStop gets the stop");
-  const notOpted = createReviewBounds("adversarial-developer", {}, () => false);
+  const notOpted = createReviewBounds("adversarial-developer", {});
   assert(
     notOpted.verdictStop === undefined,
     "adversarial-developer WITHOUT the flag gets no stop (the plan gap gate's shape)",
@@ -434,10 +433,10 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
   assert(gate.stopped() === false, "…and never reports having ended a child");
   // A lens child never gets the stop whichever way the flag is set, and the
   // re-read cap stays role-keyed (the flag is not its opt-in).
-  const lens = createReviewBounds("code-review-specialist", { ...SKILL, ...OPT_IN }, () => false);
+  const lens = createReviewBounds("code-review-specialist", { ...SKILL, ...OPT_IN });
   assert(lens.verdictStop === undefined, "a lens child gets no stop even with the flag set");
   assert(lens.skillRead !== undefined, "…and still gets the re-read cap from its skill path");
-  const dev = createReviewBounds("developer", { ...SKILL, ...OPT_IN }, () => false);
+  const dev = createReviewBounds("developer", { ...SKILL, ...OPT_IN });
   assert(dev.skillRead === undefined, "a developer child gets neither bound");
   // The stop's verdict must be a member of the enum, not a bare string: the
   // `VerdictStatus` type is what makes a typo at the fold a compile error.

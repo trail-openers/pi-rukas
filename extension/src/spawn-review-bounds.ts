@@ -88,7 +88,7 @@ export function wireReviewBounds(deps: {
    *  supervisors ask. */
   exited: () => boolean;
 }): ReviewBoundWiring {
-  const { skillRead, verdictStop } = createReviewBounds(deps.role, deps.opts, deps.reported, {
+  const { skillRead, verdictStop } = createReviewBounds(deps.role, deps.opts, {
     // #1827 round 2 — the re-read kill reads this before ending the child, so
     // a caps kill already in flight is not overwritten.
     boundArmed: deps.boundArmed,

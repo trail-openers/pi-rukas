@@ -82,8 +82,8 @@ function topLevelStart(toolName: string, args: unknown): PiJsonEvent {
   delete e.parentToolCallId;
   return e;
 }
-function guard(reported = () => false) {
-  return createSkillReadGuard({ skillPath: SKILL_DIR, reported });
+function guard() {
+  return createSkillReadGuard({ skillPath: SKILL_DIR });
 }
 function targets(calls: string[], over: Partial<ReviewBoundTargets> = {}): ReviewBoundTargets {
   return {
@@ -230,13 +230,15 @@ function targets(calls: string[], over: Partial<ReviewBoundTargets> = {}): Revie
   assert(g.count() === 5, "(A5) each nested read counts once — no per-parent dedup, no double feed");
 }
 
-/* ── (B1) an intermediate agent_end (reported() true) with the child ALIVE still
- * kills. This is the case the old `reported()` suppression made unreachable. */
+/* ── (B1) an intermediate agent_end with the child ALIVE still kills. This is
+ * the case the old `reported()` suppression made unreachable; #1847 deleted the
+ * guard's reported-flag parameter outright, so the shape cannot be expressed
+ * any more — the sequence below is what a real retry boundary looks like to the
+ * cap. */
 {
   const calls: string[] = [];
   const cap = reviewSkillReadCap();
-  let reported = false;
-  const g = guard(() => reported);
+  const g = guard();
   let reads = 0;
   // The steer is asked and latched BEFORE the provider answers, which is the
   // ordering the real loop has: the steer text is consumed on the read that
@@ -248,7 +250,6 @@ function targets(calls: string[], over: Partial<ReviewBoundTargets> = {}): Revie
     g.observe(ev);
     observeReviewBounds({ skillRead: g, assistantMessageEnd: ev }, targets(calls));
     reads += 1;
-    if (reads === cap + 1) reported = true;
   }
   assert(calls.includes("steer"), "(B1) the (N+1)-th read steered before the segment ended");
   for (let i = 0; i < 3; i++) {
