@@ -293,13 +293,35 @@ export async function runAdversarialWorkstream(
   // Narrow by construction: only a `!ok` result whose cause is a child-bound
   // kill is re-read, so a PARSED verdict — including a genuine rejection —
   // still reaches `interpretReview` untouched.
+  // #1114 — the verdict decides routing (fix / pass / reject / infra).
+  // #1863 M4 — the killed-reviewer correction, applied HERE, at the one place a
+  // loop result becomes a verdict, and keyed ONLY on fields the loop and the
+  // child themselves report: the synthesised `loopOutcome` and the structured
+  // kill cause the child carried. Either is structural; neither is the
+  // reviewer's prose — a dead child's last words quote any verdict at all, and
+  // `interpretReview` sets `infra: true` only for a result that was `ok` and
+  // produced no parsable verdict, so a no-verdict result that comes back
+  // `ok: false` (what `infraFailureResult` synthesises for a killed review phase)
+  // otherwise reads as `{ok: false, infra: false}`, the shape of a REJECTION.
+  // Every no-verdict route keyed on `infra || threw` then fell through to the
+  // reject arm: `adversarial-rejected` plus the `adversarial-loop` cap, about a
+  // reviewer the driver itself ended at its run bound.
+  //
+  // Passing this argument changes only the VERDICT reading. The outcome's own
+  // `infra` field below is main's expression untouched, and it is that field —
+  // not this argument — that `classifyAdversarialOutcome`, the retry ladder and
+  // the infra-cap routes consume. Re-reading the outcome field here instead was
+  // the regression: it rerouted provider outages and watchdog kills (whose route
+  // is the `dispatch-failed` tail and the step router's RETRY_ONCE path, pinned
+  // by `test-adversarial-provider-cause.ts` and `test-work-driver-adv-retry-357
+  // .ts`) down the rejection arm.
   const reading = interpretReview(
     result,
     reviewRoundFor(state, id),
-    // Both accounts the loop keeps of "I stopped because a child died": the
-    // synthesised `loopOutcome` and the structured kill cause the child itself
-    // carried. Either is structural; neither is the reviewer's prose.
-    result.loopOutcome === "infra-failure" || result.killCause === "child-bound"
+    // The discriminant, from the loop's own outcome field,
+    result.loopOutcome === "infra-failure" ||
+      // and from the structured kill cause the child itself carried.
+      result.killCause === "child-bound"
       ? "infra-failure"
       : undefined,
   );
@@ -313,6 +335,12 @@ export async function runAdversarialWorkstream(
     ok,
     rounds,
     records,
+    // Main's expression, restored verbatim. Narrowing THIS field was the actual
+    // regression: it is what `classifyAdversarialOutcome`, the retry ladder and
+    // the infra-cap routes read, so rerouting every no-verdict shape that is not
+    // a bound kill sent provider outages and watchdog kills down the rejection
+    // arm (`adversarial-loop`) instead of the `dispatch-failed` tail and the
+    // router's RETRY_ONCE path.
     infra: reading.infra || (!ok && result.loopOutcome === "infra-failure"),
     threw: false,
     skipped: false,
