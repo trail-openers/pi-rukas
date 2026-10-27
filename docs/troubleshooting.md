@@ -1480,6 +1480,16 @@ The park has its own cap, `fix-pass-park` (it reused `verify-failed:develop` bef
 
 **Fix:** if a finding's fix genuinely needs the file, the declared scope is wrong: name the file in the issue's scope and re-run `/work <issue> --restart`. Otherwise the pass overreached: revert the file in the named worktree and land the rest by hand, or re-run `/work <issue> --restart`. The findings the pass answered are in the handoff's plumb report.
 
+### A fix pass reverted files in its own worktree (#1849)
+
+**Symptom:** after an adversarial fix pass, the workstream's worktree has a driver commit titled *"revert out-of-fence fix-pass files"*, some files the fixer wrote are gone, and the handoff or PR carries a *fix pass stray revert* note naming paths, a `refs/pi-rukas/fix-pass-strays/...` ref and a patch file.
+
+**Why:** the pass changed files outside its fence that no admission route could justify — a scratch note, a helper nobody asked for. The driver preserves them (`git stash create` into the ref, plus `git diff` into a patch for uncommitted content, plus a byte-verified copy for anything untracked) and reverts ONLY those paths to the pass's own recorded pre-pass HEAD, then re-runs the pass's checks. One stray set per pass per workstream gets this treatment; a second set parks, because a pass that will not stay inside its fence is not a revert problem. A file the plan fenced in `outOfScope` or that the protected-path gate owns is **never** reverted — those refusals are the gates' decisions, not the driver's.
+
+The revert target is `plan.headBefore`, never a corrective round's `headAtRound`: a round's HEAD is recorded after the pass's own commits landed, so restoring a stray to it restores the stray (#1849 review).
+
+**Fix:** none needed for the first set — read the note, which names every reverted path and where its bytes still live. Recover a path with `git show <preservedRef> -- <path>` or `git apply <patchPath>`; the ref also survives the worktree's own history. If the pass then parked on a SECOND set, the fixer is writing files nobody asked for: read its findings, and re-run `/work <issue> --restart` with the scope corrected. `PI_ENSEMBLE_FIX_PASS_STRAY_REVERT=0` turns the driver revert off and returns to parking on the first set.
+
 ### "repoRoot was NOT restored: the discarded state could not be saved"
 
 **Symptom:** a failed consolidation, integration, lens-fix integration or handoff consolidation ends with *"repoRoot was NOT restored: the discarded state could not be saved (`git diff` failed: …), so nothing was reset or checked out — the tree at <path> is left exactly as it was"*. The next `/work` then stops at the branch step with `repo-root-residue`.

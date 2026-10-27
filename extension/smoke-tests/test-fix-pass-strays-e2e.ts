@@ -24,7 +24,11 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PassPlan, PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
-import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
+import {
+  fixPassStrayRevertEnabled,
+  pendingFixes,
+  runAdversarialFixPass,
+} from "../src/work-driver-adversarial-fix.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import { correctiveRoundFor, correctiveRoundsOf } from "../src/work-driver-corrective-admission.ts";
 import { passWindow, revertStraysOnce } from "../src/work-driver-fix-pass-revert-step.ts";
@@ -327,6 +331,49 @@ console.log("# the revert target is the pass's OWN headBefore, never a round's")
       "the pass's own committed fix survived the revert to headBefore",
     );
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("# the escape hatch returns the pass to parking on the FIRST stray set");
+{
+  // The kill switch must not merely skip the revert: it must skip it BEFORE the
+  // revert is attempted, so the tree is left exactly as the pass left it (the
+  // pre-#1849 behaviour an operator reaching for this knob expects).
+  const dir = repoWithFile("1846-hatch");
+  const prev = process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT;
+  process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT = "0";
+  try {
+    const wt = wtOf(dir);
+    const headBefore = git(wt, "rev-parse HEAD").trim();
+    const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
+    const outcome = await revertStraysOnce(
+      ctxOf(dir),
+      st,
+      [planOf(wt, headBefore, headBefore)],
+      {
+        diffs: {},
+        admissions: [],
+        reason: "stray",
+        straysFor: "default",
+        strays: [{ file: "lib/helper.ts", refused: "undeclared" }],
+        untracked: [],
+      },
+      Date.now(),
+    );
+    // `revertStraysOnce` is the mechanism; the CALLER is what the switch gates,
+    // so the observable here is the exported predicate rather than the call.
+    assert(
+      !fixPassStrayRevertEnabled(),
+      "the switch reads as off, so the caller declines to revert and parks on the first set",
+    );
+    assert(
+      existsSync(`${wt}/lib/helper.ts`) === false,
+      "and the mechanism was never invoked — the tree is untouched",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT;
+    else process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT = prev;
     rmSync(dir, { recursive: true, force: true });
   }
 }
