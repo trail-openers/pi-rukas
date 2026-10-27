@@ -18,6 +18,12 @@
  *     build the stripped object is the explicit overwrite below and tsc refuses
  *     a caller that forgets the field.
  *
+ * The three seams this pin does not exercise (the reviewer dispatch, the driver
+ * host, and the gate's `timed`) are stubs typed against their REAL types — see
+ * the block below the imports. `as never` silenced exactly the mismatch a
+ * refactor of `GateRunArgs` would otherwise produce here, and this file is in
+ * `tsconfig.smoke-tests.json`'s `include` so that mismatch is a compile error.
+ *
  * The helpers it shares with the parent file (assert/section/renders/angle) are
  * passed in, so a failure reports through the parent's counter and exit code.
  */
@@ -28,6 +34,50 @@ import type { OperatorDirectives } from "../src/plan-directives.ts";
 import type { AngleFindings } from "../src/plan-draft.ts";
 import { draftSpec } from "../src/plan-draft.ts";
 import { AC_FALLBACK, validateDraft } from "../src/plan-validate.ts";
+import type { PlanDispatchFn } from "../src/plan-driver-seams.ts";
+import type { DriverHost } from "../src/work-driver-host.ts";
+import type { WorkEvent } from "../src/workflow-state-events.ts";
+
+// ---------------------------------------------------------------------------
+// Typed stand-ins for the two seams this pin does not exercise. They are typed
+// against the REAL types (`PlanDispatchFn`, `DriverHost`, the gate's `timed`
+// signature) so the file typechecks under tsconfig.smoke-tests.json instead of
+// silencing the seam with `as never`.
+// ---------------------------------------------------------------------------
+
+/**
+ * The dispatch seam, typed as `PlanDispatchFn` (= `typeof dispatchCore`). This
+ * pin never reaches it as a real spawn: `runGate` adapts `args.dispatch` into
+ * the loop's own `GapGateDispatch` seam, so only the arity and the resolved
+ * shape have to line up. The reply is chosen by the prompt the gate actually
+ * built, which is what makes the two rounds distinct (round 2 is the gate's
+ * SCOPED VERIFICATION prompt, not a second full review).
+ */
+const dispatchStub: PlanDispatchFn = (_pi, spec) => {
+  const prompt = spec.prompt;
+  const text = prompt.includes("SCOPED VERIFICATION")
+    ? "VERDICT: READY"
+    : "GAP: CRITICAL the criteria do not name the outcome — proposed resolution: the tool registers\nVERDICT: NEEDS_ITERATION";
+  // Every field DispatchResult requires except the ones the gate never reads;
+  // `ms`/`exitCode`/`role` are on the type and a real child always fills them.
+  return Promise.resolve({
+    role: spec.role,
+    ok: true,
+    text,
+    toolUses: [],
+    ms: 0,
+    exitCode: 0,
+  });
+};
+
+/** A host that records nothing: `runGate` threads `pi` to the dispatch seam only. */
+const hostStub: DriverHost = {
+  sendUserMessage: () => undefined,
+  emit: (_event: WorkEvent, _index: number) => undefined,
+};
+
+/** The gate's `timed` seam, run through (no instrumentation in this pin). */
+const timedStub = <T>(_phase: string, fn: () => Promise<T>): Promise<T> => fn();
 
 /** The parent file's assertion sink. */
 export type Assert = (cond: boolean, msg: string) => void;
@@ -66,16 +116,8 @@ export async function runRound2Pin(
     let title = "";
     let body = draftFrom(directives);
     const run = await runGate({
-      dispatch: (async (_pi: unknown, spec: { prompt: string }) => ({
-        ok: true,
-        // Round 1 is the full GAP DETECTION review and its CRITICAL fires the
-        // corrective re-draft; round 2 verifies the carried resolutions.
-        text: spec.prompt.includes("SCOPED VERIFICATION")
-          ? "VERDICT: READY"
-          : "GAP: CRITICAL the criteria do not name the outcome — proposed resolution: the tool registers\nVERDICT: NEEDS_ITERATION",
-        toolUses: [],
-      })) as never,
-      pi: {} as never,
+      dispatch: dispatchStub,
+      pi: hostStub,
       repoRoot: process.cwd(),
       type: "feature",
       descriptor: "d",
@@ -93,8 +135,8 @@ export async function runRound2Pin(
       chosenBudget: { maxItemsPerSection: 20, itemClipChars: 400 },
       priorContext: [],
       settled: [],
-      timed: ((_phase: string, fn: () => Promise<unknown>) => fn()) as never,
-      correctiveRedraft: correctiveRedraft,
+      timed: timedStub,
+      correctiveRedraft,
     });
     return { run, title, body };
   };
