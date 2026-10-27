@@ -37,9 +37,22 @@ export const WRAPPER_CHARS = "[#=*`-]";
  * `*** END ***` are fences while `END OF THE LINE` and `ENDURANCE` stay prose.
  * Whether the line CLOSES the block is decided on the bare token by
  * `isEndFence`, never by which side carries the wrapper chars.
+ *
+ * `#`/`*`/backtick/`-` alone is not enough: main's fence class was `[-=\s]*`, so
+ * `- ==END==`, `- =END=` and `- == BEGIN ==` were fences there, and a class that
+ * stopped at `WRAPPER_CHARS` re-filed them as operator ITEMS — the same bug, one
+ * character class over. So the padding is one UNBROKEN run over the union of the
+ * two sets (`WRAPPER_CHARS` plus main's `=` and `_`) with `{1,12}`
+ * bounding the run. Each side's run sits in ONE group so no alternative can
+ * escape its own side of the token, and every run stays on the whitespace-and-
+ * punctuation alphabet: a run may not contain a letter, so `END OF THE LINE`,
+ * `ENDURANCE` and `- the END` stay items, while every line either grammar ever
+ * fenced stays a fence.
  */
+const FENCE_PADDING_SOURCE = `(?:[=_${WRAPPER_CHARS.slice(1, -1)}\\s]{1,12})?`;
+
 export const FENCE_RE = new RegExp(
-  `^\\s*${WRAPPER_CHARS}*\\s*(?:BEGIN|END)\\s*${WRAPPER_CHARS}*\\s*$`,
+  `^\\s*${FENCE_PADDING_SOURCE}\\s*(?:BEGIN|END)\\s*${FENCE_PADDING_SOURCE}\\s*$`,
   "i",
 );
 
