@@ -19,6 +19,7 @@ import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
+import type { FixerBoundSource } from "./work-driver-fixer-bound.ts";
 import { beginDispatch, clearDispatch, mintJobId } from "./work-driver-resume.ts";
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 
@@ -40,6 +41,11 @@ export async function runSingleDispatch(
   opts?: WriteFenceOpt & {
     timeoutMs?: number;
     cwd?: string;
+    /** #1798 — which clock armed `timeoutMs`, recorded by the step that resolved
+     *  it. Stamped onto the `DispatchResult` (and so onto the `dispatch-failed`
+     *  event) so a kill at this dispatch's bound names the knob that set the
+     *  bound rather than the per-role backstop it never ran under. */
+    fixerBoundSource?: FixerBoundSource;
     /** #1789 — told the id this dispatch carries, as soon as it exists (before
      *  the await), so a caller that must join the completion event back to this
      *  dispatch compares against the id WRITTEN rather than one it recomputed. */
@@ -139,6 +145,14 @@ export async function runSingleDispatch(
   // nothing else to compare against: the transcript basename alone is spawn's
   // runId, and for a PM dispatch it stays exactly that.
   result.dispatchJobId = jobId;
+  // #1798 — the arming source travels with the result. The spawn layer may
+  // already have stamped `cycle-deadline` (its clamp won the bound, and it owns
+  // the deadline fact), and that attribution is the more specific one: it says
+  // the CALLER's clock ended the child, not the loop's. So the seam fills the
+  // field only where nothing has named a source.
+  if (result.fixerBoundSource === undefined && opts?.fixerBoundSource !== undefined) {
+    result.fixerBoundSource = opts.fixerBoundSource;
+  }
 
   const event = await buildCompletionEvent(ctx, step, role, label, result);
   // Clear the in-flight marker whichever way the dispatch settled — a

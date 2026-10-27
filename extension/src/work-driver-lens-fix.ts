@@ -12,7 +12,12 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { landLensFixAfterBoundKill, readTreeHead } from "./work-driver-lens-fix-bound-land.ts";
-import { parkLensFixOverrun, reviewFixDispatchBoundMs } from "./work-driver-lens-fix-budget.ts";
+import {
+  parkLensFixOverrun,
+  reviewFixDispatchBound,
+  reviewRemainingMs,
+  unboundReason,
+} from "./work-driver-lens-fix-budget.ts";
 import {
   countCommittedAhead,
   countLensFixEmptyResends,
@@ -27,6 +32,7 @@ import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records
 // `work-retry-tree-clean.ts`); the definition lives with the other #1852
 // record helpers.
 export { lensWorktree };
+import type { FixerBound } from "./work-driver-fixer-bound.ts";
 import { repositionLensFixWorktree } from "./work-driver-lens-fix-reposition-gate.ts";
 import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -143,7 +149,18 @@ export async function runLensFix(
   // arming itself is traced once, by `reviewFixDispatchBoundMs`, including the
   // case where nothing is armed (#1779 item (e)) — no second copy of the number
   // is carried here for a later trace to re-derive or contradict.
-  const dispatchBoundMs = reviewFixDispatchBoundMs(state, "lens-fix", now, lensFixBoundMs());
+  // #1798 — the resolver now returns the duration AND the clock that set it, so
+  // the kill can name the knob instead of the per-role backstop; `runSingleDispatch`
+  // stamps the source onto the result and so onto the `dispatch-failed` event.
+  const fixerBound: FixerBound | undefined = reviewFixDispatchBound(
+    state,
+    "lens-fix",
+    now,
+    lensFixBoundMs(),
+    "lens-fix",
+    { remaining: reviewRemainingMs(state, now), unboundReason: unboundReason() },
+  );
+  const dispatchBoundMs = fixerBound?.boundMs;
   // #654 — empty-diff shape: re-dispatch the fix ONCE with no-diff evidence
   // before re-flagging identical findings at escalating severity.
   const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
@@ -430,6 +447,12 @@ export async function runLensFix(
         scratch: scratchDir(ctx.repoRoot, ctx.issue),
       },
       ...(dispatchBoundMs !== undefined ? { timeoutMs: dispatchBoundMs } : {}),
+      // #1798 — the clock this bound came from, so the completion event names
+      // the knob that produced the kill. `cycle-deadline` is never returned by
+      // the resolver (the spawn layer clamps afterwards and stamps
+      // `killedAtCycleDeadline`), and the kill's own source wins over the
+      // arming source when both are present — see `buildCompletionEvent`.
+      ...(fixerBound !== undefined ? { fixerBoundSource: fixerBound.source } : {}),
       // #1789 (1) — the id this round's dispatch is named by, taken from the
       // seam that minted it, so the conversion can require the tail to be THIS
       // dispatch's kill.

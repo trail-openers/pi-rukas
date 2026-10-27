@@ -49,6 +49,11 @@ export const SPAWN_BACKSTOP_ENV = "PI_ENSEMBLE_SPAWN_TIMEOUT_MS";
  */
 export type FixerBoundSource = "fixer-bound" | "review-clock" | "cycle-deadline";
 
+/** A fixer's resolved bound: the duration AND which clock set it. The pair
+ *  travels together from `reviewFixDispatchBound` to the completion event,
+ *  which is where a kill learns the knob to name. */
+export type FixerBound = { boundMs: number; source: FixerBoundSource };
+
 /** The knob an operator raises for one source. Never the backstop: that is the
  *  fallback for a kill NO source claims, and naming it for a fixer's own bound
  *  is the misattribution this union exists to end. */

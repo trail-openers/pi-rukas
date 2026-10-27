@@ -62,6 +62,7 @@ import {
 import { isBuildResidueFailure } from "./work-driver-dirty-root-classify.ts";
 import { UNGRANTED_PROTECTED_MARK } from "./work-driver-doctrine.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
+import { lensFixBoundKillVerdict } from "./work-driver-lens-fix-kill-cause.ts";
 import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
 import { failureLines, isHarnessEchoLine } from "./work-driver-verify-failures.ts";
 import { INTEGRATE_CREATE_FAILED_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
@@ -424,6 +425,12 @@ export function causeVerdictOf(
   }
   if (cap === "awaiting-human-merge") return awaitingVerdict(issue);
   if (cap.startsWith("verify-failed:")) return verifyVerdict(state, cap, issue);
+  // #1798 — a lens-fix killed at a bound pi-rukas itself armed. Read before the
+  // kind-driven fall-through, because the kind (`timeout`) is exactly the fact
+  // that got misread: three field cycles blamed a provider, a host and a
+  // deadline that were all fine. Returns `undefined` for every other shape.
+  const fixerKill = lensFixBoundKillVerdict(state, cap, failure, issue);
+  if (fixerKill !== undefined) return fixerKill;
   // #1642 — a branch step that refused a stale worktree recorded WHY; a generic
   // template entry was calling the operator's own leftover a host suspend.
   const refusal = branchRefusalVerdictFor(state, cap, issue, evidenceLines);

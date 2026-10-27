@@ -18,6 +18,13 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
+import {
+  CYCLE_DEADLINE_ENV,
+  type FixerBoundSource,
+  SPAWN_BACKSTOP_ENV,
+  fixerBoundClause,
+  fixerBoundEnv,
+} from "./work-driver-fixer-bound.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkStep, type appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
 
@@ -32,10 +39,28 @@ const ARTIFACT_THRESHOLD_BYTES = 4_000;
 /** #543 — env knob named in a self-kill's errorTail (loop/token name the cap knobs). */
 export function overrideEnvForKillCause(
   killCause: NonNullable<DispatchResult["killCause"]>,
+  /**
+   * #1798 — which clock armed a FIXER's bound, when the step that armed it
+   * recorded one. For `timeout` / `child-bound` it replaces the generic
+   * per-role answer: a lens-fix killed at its own 45-minute ceiling must name
+   * `PI_ENSEMBLE_LENS_FIX_BOUND_MS`, not the two-hour backstop nobody set.
+   * Ignored by every other cause, whose bound is a different mechanism.
+   */
+  fixerBoundSource?: FixerBoundSource,
 ): string {
   switch (killCause) {
     case "timeout":
-      return "PI_ENSEMBLE_SPAWN_TIMEOUT_MS";
+      // #1798 — a fixer's own bound first; the backstop is the fallback for a
+      // kill no fix-loop bound claims.
+      return fixerBoundSource === undefined
+        ? SPAWN_BACKSTOP_ENV
+        : fixerBoundSource === "cycle-deadline"
+          ? // The deadline branch of the caller is handled by the detail text
+            // (`killedAtCycleDeadline`), but a `child-bound` cause that the
+            // deadline clamped still needs the knob here rather than the
+            // per-role list the fallback below would print.
+            CYCLE_DEADLINE_ENV
+          : fixerBoundEnv(fixerBoundSource);
     // #754 — the plan step's own bound; its env knob is a DISTINCT name from
     // the global backstop (PI_ENSEMBLE_SPAWN_TIMEOUT_MS stays role-agnostic
     // and step-agnostic — test-spawn-bounds.ts asserts that).
@@ -59,8 +84,14 @@ export function overrideEnvForKillCause(
     // #1567 — the child-supervision kills are driver caps, so the knob that
     // turns them off is the caps master switch. The piece that emits each
     // cause adds its own bound knob here when it introduces one.
+    // #1798 — a fixer's own bound is the one child-bound kill whose knob the
+    // driver knows, so it names that knob instead of the three-role list.
     case "child-bound":
-      return "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS / PI_ENSEMBLE_LENS_BOUND_MS";
+      return fixerBoundSource === undefined
+        ? "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS / PI_ENSEMBLE_LENS_BOUND_MS"
+        : fixerBoundSource === "cycle-deadline"
+          ? CYCLE_DEADLINE_ENV
+          : fixerBoundEnv(fixerBoundSource);
     case "no-progress":
     case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
@@ -205,11 +236,25 @@ export async function buildCompletionEvent(
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
     } else if (result.killedAtCycleDeadline) {
       // #1593 — the caller's deadline, not the backstop, set this bound.
-      detail = `[pi-rukas] killed after ${result.killBudgetMs}ms at the caller's cycle deadline (PI_ENSEMBLE_CYCLE_DEADLINE)`;
+      // #1798 — the fixer's bound source says the same thing from the other
+      // side; the deadline form wins because it also carries the ms.
+      detail = `[pi-rukas] killed after ${result.killBudgetMs}ms at the caller's cycle deadline (${CYCLE_DEADLINE_ENV})`;
+    } else if (
+      result.fixerBoundSource !== undefined &&
+      (result.killCause === "timeout" || result.killCause === "child-bound") &&
+      result.killBudgetMs !== undefined
+    ) {
+      // #1798 — the kill pi-rukas's OWN clock produced, named as such: which
+      // source, how many minutes, and the one knob that moves it. The generic
+      // form below would print the per-role backstop this child never ran
+      // under, which is what sent operators to a provider that was fine.
+      detail =
+        `[pi-rukas] killed after ${result.killBudgetMs}ms at ${fixerBoundClause(result.fixerBoundSource, result.killBudgetMs)}` +
+        ` (override: ${overrideEnvForKillCause(result.killCause, result.fixerBoundSource)})`;
     } else {
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms ${result.killCause}` +
-        ` (override: ${overrideEnvForKillCause(result.killCause)})`;
+        ` (override: ${overrideEnvForKillCause(result.killCause, result.fixerBoundSource)})`;
     }
     // Attribute the silence, not just the budget. `linesSeen: 0` means the
     // child never spoke — a provider stall or auth failure, not a hang.
@@ -243,6 +288,11 @@ export async function buildCompletionEvent(
         // the event so the lens-fix partial-fix conversion can refuse it (a cycle
         // that is out of time parks) without reaching back into the child.
         ...(result.killedAtCycleDeadline === true ? { killedAtCycleDeadline: true } : {}),
+        // #1798 — which clock armed the bound, persisted so a resumed cycle
+        // classifies its own kill identically to a live one.
+        ...(result.fixerBoundSource === undefined || result.killCause === undefined
+          ? {}
+          : { fixerBoundSource: result.fixerBoundSource }),
       },
       result.usage,
     );
