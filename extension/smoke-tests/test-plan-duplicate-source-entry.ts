@@ -6,10 +6,9 @@
  * `downgradeSelfDuplicate` used to test only `sourceIssue === undefined`, and
  * `sourceIssue` reaches it through the investigation cache and session replay,
  * where a JSON `null` is not `undefined`. A `null` source compares unequal to
- * every named issue, so rule 1 attributed nothing to a subject while the
- * prior-art rule still excluded CLOSED issues: a HIGH that halts on main became
- * a filed medium on a plan with no ticket. The entry now requires a positive
- * safe integer, so every other shape downgrades NOTHING.
+ * every named issue, so rule 1 attributed nothing to a subject and a HIGH that
+ * halts on main became a filed medium on a plan with no ticket. The entry now
+ * requires a positive safe integer, so every other shape downgrades NOTHING.
  *
  * Driven directly against `downgradeSelfDuplicate` rather than through the
  * barrier, which types `sourceIssue` as `number | undefined` and cannot carry a
@@ -37,9 +36,17 @@ const known = new Map<number, KnownIssue>([
 ]);
 
 /** A HIGH that rules 1 and 5 would downgrade if a source issue were believed. */
+/**
+ * A HIGH that rule 1 WOULD downgrade once a subject is believed: every issue it
+ * names is the subject's own split child. Round 5 deleted the CLOSED-prior-art
+ * rule, so a reply naming #103 — however the child described it — is no longer a
+ * downgradeable verdict, and the control has to be a shape the surviving subject
+ * rule still suppresses. Otherwise the control is indistinguishable from the
+ * rows above it and the entry guard would pass having tested nothing.
+ */
 const high: DuplicateRisk = {
   level: "high",
-  rationale: "DUPLICATE_RISK: high — reverses the landed decision in #103",
+  rationale: "DUPLICATE_RISK: high — duplicates the plan's own split child #1856-2 verbatim",
 };
 
 for (const bad of [null, 0, -3, 1.5, Number.NaN, 2 ** 53]) {
@@ -61,7 +68,7 @@ for (const bad of [null, 0, -3, 1.5, Number.NaN, 2 ** 53]) {
   const ok = downgradeSelfDuplicate(high, { sourceIssue: 1856, known, fullText: high.rationale });
   assert(
     ok.level === "medium" &&
-      (ok.excludedIssues ?? []).map((e) => e.number).join(",") === "103",
+      (ok.excludedIssues ?? []).map((e) => e.number).join(",") === "1856",
     `control: the same verdict with a positive safe-integer sourceIssue downgrades (${ok.level})`,
   );
 }
