@@ -15,12 +15,20 @@
  *
  * Offline: the ceiling is lowered through the project's own knob for the run of
  * one pure call, no dispatch, no git, no fs.
+ *
+ * The fold's records are read from `foldToCeiling` — the channel the step's own
+ * fold pass returns — because the reader's report does NOT carry them: nothing
+ * downstream ever read `WorkstreamReport.selfFenceDrops`, so #1862 round 3
+ * deleted the field. What this file asserts is the path that IS read: the
+ * records a fold reports reach the persisted summary through the normalisation
+ * pass, and a record that reaches nothing fails here.
  */
 
 import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { runPlanNormalisationPass } from "../src/work-driver-plan-coupling-pass.ts";
 import { UNFENCE_NOTES_CAP } from "../src/work-driver-plan-unfence-notes.ts";
 import type { UnfenceRecord } from "../src/work-driver-plan-unfence-notes.ts";
+import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import type { PlanUnfenceSummary } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { VALID } from "./lib/plan-outofscope-fixtures.ts";
@@ -61,6 +69,12 @@ function callsBeyondCeiling() {
   ];
 }
 
+/** The same seven calls as WORKSTREAMS, so `foldToCeiling` — the fold whose
+ * records the step persists — sees exactly what the reader's fold sees. */
+function buildWorkstreams() {
+  return callsBeyondCeiling().map((c) => workstreamFromArgs(c));
+}
+
 /** Lower the ceiling for one synchronous run, then restore it exactly. A key set
  * to `undefined` would leave it PRESENT, so `Number(undefined)` is NaN and the
  * ceiling silently stays at its default — the pass must actually fold. */
@@ -77,6 +91,7 @@ function withMaxWorkstreams<T>(max: number, run: () => T): T {
 
 /** Four kept calls plus one that folds into the last one — and the fold is what
  * removes the fence, so its drops must reach the state file. */
+const ceiling = withMaxWorkstreams(6, () => foldToCeiling(buildWorkstreams()));
 const report = withMaxWorkstreams(6, () =>
   workstreamCallsOf(planResultFromCalls(callsBeyondCeiling())),
 );
@@ -91,7 +106,7 @@ const report = withMaxWorkstreams(6, () =>
   // drops what it trims, and the earlier draft of this test asserted on a `+folded:`
   // suffix and an untrimmed paths union that the reader's per-call bound had
   // already removed.
-  const foldRecords = report.selfFenceDrops ?? [];
+  const foldRecords = ceiling.selfFenceDrops;
   assert(
     foldRecords.length === 2 &&
       foldRecords.every(
@@ -130,7 +145,7 @@ const report = withMaxWorkstreams(6, () =>
   // exactly as `runPlan` threads them into the quality tail. What this block
   // asserts is that the pass carries a fold's drops into the persisted summary
   // rather than losing them between the fold and `planQuality.unfence`.
-  const foldDrops = report.selfFenceDrops ?? [];
+  const foldDrops = ceiling.selfFenceDrops;
   // Persisted the way the plan step persists it, in the order the step runs
   // things: `runPlan` folds to the ceiling inside the reader, then hands the
   // resulting map to `runPlanNormalisationPass` and passes THAT summary to the
@@ -165,7 +180,7 @@ const report = withMaxWorkstreams(6, () =>
  * map the reader stored, then the fold records the step adds to that summary
  * (`runPlanNormalisationPass` counts only the folds IT performs; the ceiling
  * fold's records reach `planQuality.unfence` through the quality tail, which is
- * given `judged.selfFenceDrops`). Returns the summary the step would persist.
+ * given `ceiling.selfFenceDrops`). Returns the summary the step would persist.
  */
 async function persistThroughNormalisation(
   r: typeof report,

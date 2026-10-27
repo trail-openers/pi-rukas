@@ -1,15 +1,14 @@
 /**
- * plan-fence-self-entry — #1862 round 1: the ONE predicate that answers "may
- * this fence entry be dropped because it fences this workstream's own files?".
+ * plan-fence-self-entry — #1862: the ONE predicate that answers "may this fence
+ * entry be dropped because it fences this workstream's own files?".
  *
- * Two sites asked that question, and they must give one answer: the fold
- * (`foldTwo`, which unions both halves' fences) was one of them, and the tool
- * boundary (`workstreamFromArgs`) was the other until #1862's scope was cut — a
- * planner-authored self-contradiction on a SINGLE workstream is left in place so
- * the existing `contradictory-fence` corrective (#1167) can steer on it, rather
- * than being deleted where that gate could no longer see it. Before this module
- * each had its
- * own prose reader, and neither asked the whole question. A fence entry is ONE
+ * ONE site asks it: the fold (`foldTwo`, via `workstream-fold-self-fence.ts`),
+ * which unions both halves' `outOfScope` when two workstreams merge. A
+ * planner-authored self-contradiction on a SINGLE workstream is not touched
+ * anywhere — it stays exactly as written so the `contradictory-fence` corrective
+ * (#1167) can see it and steer the planner on it, which a boundary that deleted
+ * the entry would have made impossible. This module is the whole answer to the
+ * question, not one of two competing prose readers. A fence entry is ONE
  * instruction: dropping it removes every path it names. So the drop is refused
  * unless EVERY path token the entry names belongs to this workstream, and one
  * token that does not — a sibling's file, a protected path, a subtree nobody

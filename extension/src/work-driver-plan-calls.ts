@@ -53,7 +53,6 @@ import {
 import { statReporterPath } from "./reporter-preflight.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import { foldToCeiling, workstreamFromArgs } from "./work-driver-plan-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -95,13 +94,6 @@ export interface WorkstreamReport {
    * cannot be judged: the step parks as `workstream-results-unreadable`.
    */
   unreadable: number;
-  /**
-   * #1862 — fence entries the ceiling fold removed because they fenced the
-   * merged workstream's own declared paths. The plan step persists them on
-   * `pipelineState.planQuality.unfence.selfFences`; absent when the fold
-   * removed none.
-   */
-  selfFenceDrops?: UnfenceRecord[];
 }
 
 /** A report for a dispatch that made no workstream calls (or was killed). */
@@ -238,12 +230,17 @@ export function workstreamCallsOf(
     accepted.push(workstreamFromArgs(judged));
   }
   const ceiling = foldToCeiling(accepted);
+  // #1862 — the reader deliberately does NOT carry the ceiling fold's drop
+  // records out: nothing downstream reads them from here. The plan step's
+  // persisted `planQuality.unfence` is built by `runPlanNormalisationPass`, which
+  // counts the folds IT performs; the records that reach it are that pass's own
+  // (work-driver-plan-coupling-pass.ts). A second, unread copy of a fold's drops
+  // on the report is a field that can only drift from the one that is read.
   return {
     workstreams: ceiling.workstreams,
     accepted: accepted.length,
     refused,
     unreadable,
-    ...(ceiling.selfFenceDrops.length > 0 ? { selfFenceDrops: ceiling.selfFenceDrops } : {}),
   };
 }
 

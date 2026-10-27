@@ -113,9 +113,11 @@ export function foldToCeiling(entries: Workstream[]): {
         const folded = foldTwo(last, entry, siblingDeclared);
         selfFenceDrops.push(...folded.selfFenceDrops);
         // The ceiling fold's annotation is `+folded:` (the coupling merge's
-        // `+merged:` is the other site's wording).
-        folded.workstream.scope = `${last.scope} (+folded: ${entry.id})`;
-        out[lastId] = folded.workstream;
+        // `+merged:` is the other site's wording). Built with a SPREAD rather
+        // than assigned onto `folded.workstream.scope`: the fold hands back one
+        // of its own objects, and writing through it mutates a value the caller
+        // does not own.
+        out[lastId] = { ...folded.workstream, scope: `${last.scope} (+folded: ${entry.id})` };
         trace(`work-driver: plan exceeded MAX_WORKSTREAMS — folded '${entry.id}' into '${lastId}'`);
       }
       continue;

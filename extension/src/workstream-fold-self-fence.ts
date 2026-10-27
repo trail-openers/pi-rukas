@@ -19,10 +19,9 @@
  * What this module decides, and what it deliberately does not:
  *
  *   - The decision itself is NOT here. It lives in `selfFenceEntryDrop`
- *     (plan-fence-self-entry.ts), the ONE predicate the tool boundary asks too,
- *     so the two sites cannot drift into two answers for one entry. What this
- *     module adds is the fold's own bookkeeping: which entries go, and the
- *     record of each removal.
+ *     (plan-fence-self-entry.ts), the ONE predicate the fold asks, so the fold
+ *     cannot hold a second answer for one entry. What this module adds is the
+ *     fold's own bookkeeping: which entries go, and the record of each removal.
  *   - A fence that protects ANYONE but this workstream stays — a sibling's path,
  *     a protected path, or a path no half declared. A drop is a scope widening,
  *     and a widening that silences a fence someone else relies on is the failure
