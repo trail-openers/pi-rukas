@@ -62,6 +62,7 @@ export function makeBranchCompletedPersister(
     const snapshot = stateRef.current;
     chain = chain
       .then(() => persistCycle({ repoRoot, emitSink: sink, signal }, snapshot))
+      .then(() => undefined)
       .catch((err) => {
         const note = `state persist failed (crash-resume record may be incomplete) — ${errText(err)}`;
         trace(`work-driver: ${note}`);

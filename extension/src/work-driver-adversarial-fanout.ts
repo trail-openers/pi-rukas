@@ -52,6 +52,7 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { beginDispatch, clearDispatch, mintJobId } from "./work-driver-resume.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { providerSleep } from "./work-driver-step-router.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
@@ -129,8 +130,77 @@ export async function fanOutAdversarial(
   // own reason on the outcome and on the cap's evidence, so nothing is threaded
   // through a mutable pipeline-state field (which sibling won the race used to
   // decide what the handoff said).
-  const runOne = (id: string): Promise<AdversarialOutcome> =>
-    runAdversarialWorkstream(id, { ctx, state, multi, wsMap, priorOutcomes });
+  //
+  // #1863 — WRITE-AHEAD, one marker per workstream pass (develop's granularity,
+  // per the PM decision: resume granularity is the step, and a half-finished
+  // fan-out re-enters wholesale). Before this the adversarial family wrote ahead
+  // ONLY for the fix dispatch, so a cycle whose round review was killed had
+  // nothing on disk for its whole review window: the state file stayed at
+  // develop's boundary, `inFlightJobIds` stayed empty, and a runner that died
+  // there left no record that a review had been paid for.
+  //
+  // ONE mutable log for the whole fan-out. `next` was a local rebuilt at each
+  // step, but N workstreams now write ahead CONCURRENTLY (`Promise.all`), and
+  // each one's write must see its siblings' — a snapshot taken at pass start
+  // would drop a sibling's `dispatch-started` and its in-flight id. Every write
+  // therefore goes through `writeAheadUpdate`, which reads and replaces the
+  // current log; the `finally` clears are queued through it too, so a clear can
+  // never be lost under another workstream's write.
+  //
+  // The id is minted HERE and handed to the child as its `runId`, so the
+  // write-ahead marker, the child's transcript and the completion event are one
+  // identity (#1789's rule, which `runSingleDispatch` already follows).
+  let log: WorkState = next;
+  let writeChain: Promise<unknown> = Promise.resolve();
+  /** Serialize every write-ahead mutation of the log (see above). */
+  const writeAheadUpdate = (fn: (s: WorkState) => WorkState): Promise<void> => {
+    const step = writeChain.then(() => {
+      log = fn(log);
+    });
+    writeChain = step.catch(() => undefined);
+    return step;
+  };
+  const writeAheadFor = (id: string): { jobId: string; label: string } => {
+    const label = multi ? `adversarial[${id}]` : "adversarial_loop";
+    return { jobId: mintJobId("adversarial", `${label}:${id}`, Date.now()), label };
+  };
+  const runOne = async (id: string): Promise<AdversarialOutcome> => {
+    const wa = writeAheadFor(id);
+    let begunState = state;
+    // #1827 — a marker the child's own dispatch is identified by. The label is
+    // the step handler's; the id is what the child's transcript encodes.
+    await writeAheadUpdate(async () => undefined);
+    const begun = await beginDispatch(
+      ctx,
+      log,
+      "adversarial",
+      "adversarial-loop",
+      wa.label,
+      Date.now(),
+      undefined,
+      wa.jobId,
+    );
+    await writeAheadUpdate(() => {
+      begunState = begun.state;
+      log = begun.state;
+      return begun.state;
+    });
+    try {
+      return await runAdversarialWorkstream(id, {
+        ctx,
+        // The state the write-ahead PERSISTED is the one the pass builds on.
+        state: begunState,
+        multi,
+        wsMap,
+        priorOutcomes,
+        writeAhead: wa,
+      });
+    } finally {
+      // Cleared on EVERY exit, including a throw out of the loop: the step's
+      // tail must be the dispatch event, never the `dispatch-started`.
+      await writeAheadUpdate((s) => clearDispatch(s, wa.jobId));
+    }
+  };
 
   const isTransient = (o: AdversarialOutcome): boolean =>
     // #1634 — the driver's own diff read is DETERMINISTIC: a re-run of a
