@@ -17,10 +17,38 @@
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { runGit } from "./work-develop-git.ts";
-import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
+// #1849 — the revert's git transport is pinned to the executor whose argv form is
+// its ONLY form, the same one `work-driver-adversarial-fix.ts:269` hands the
+// pass's develop git calls. `runGit` always calls with `opts.argv`, so the
+// fallback decides what production runs (`verifyExecFn` is a test-only injection
+// that production callers leave unset). `defaultExec` is `execp`, which does
+// honour argv today — measured, see the note in
+// /tmp/pi-ensemble-developer/item1-FINDING.md — but its SHELL branch is live for
+// every other call site and kills a process tree / scrubs driver knobs on that
+// path. A destructive transport should not be one `opts` field away from a shell:
+// #1279 is the record of exactly this shape (`runGit(<bare promisify(exec>)`)
+// running a bare `git` and printing usage, and the only thing that kept the
+// revert out of it was the fallback never being passed `killGroup`. The argv-only
+// executor makes that structural rather than accidental, and
+// test-fix-pass-strays-transport.ts pins the production shape (no `verifyExecFn`,
+// a real repo under `.worktrees/`) so a future fallback swap that drops argv fails
+// the gate instead of killing the feature in the field.
 import type { PassPlan, PostPass } from "./work-driver-adversarial-fix-scope.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { nextStrayAttempt, revertFixPassStrays } from "./work-driver-fix-pass-strays.ts";
+// #1849 — the ARGV executor. `runGit` always calls with `opts.argv`, so the
+// fallback decides what PRODUCTION runs (`verifyExecFn` is a test-only injection
+// callers leave unset): the same one `work-driver-adversarial-fix.ts:269` hands
+// the pass's develop git calls. `defaultExec` is `execp`, which honours argv
+// today (measured — the brief's "ignores argv" claim did not reproduce; see
+// /tmp/pi-ensemble-developer/item1-FINDING.md), but it is the SAME function whose
+// shell branch kills a process tree and scrubs driver knobs, so a destructive
+// transport sat one `opts` field away from a shell. #1279 is the record of this
+// exact shape running a bare `git` and printing usage; the argv-only executor
+// makes the guarantee structural instead of accidental, and
+// test-fix-pass-strays-transport.ts pins the production shape (no `verifyExecFn`,
+// a real repo under `.worktrees/`).
+import { execp as argvExecp } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -80,7 +108,7 @@ export async function revertStraysOnce(
   const scratch = scratchDir(ctx.repoRoot, ctx.issue);
   const attempt = await nextStrayAttempt(scratch, ctx.issue, id);
   const result = await revertFixPassStrays({
-    git: runGit(ctx.verifyExecFn ?? defaultExec),
+    git: runGit(ctx.verifyExecFn ?? argvExecp),
     worktree: plan.worktree,
     repoRoot: ctx.repoRoot,
     issue: ctx.issue,
