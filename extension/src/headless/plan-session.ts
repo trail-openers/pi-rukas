@@ -46,6 +46,14 @@ export interface PlanSession {
   descriptor: string;
   type?: PlanType;
   context?: string;
+  /**
+   * #1856: the existing issue this session plans, when it was started for one
+   * (`--issue <N>`). The duplicate-risk child reads a near-copy of that issue's
+   * own title and can name it as the plan's duplicate, which used to hard-stop
+   * the session; the driver excludes this number from the candidate set. Absent
+   * → nothing is excluded and the risk prompt is byte-identical to before.
+   */
+  sourceIssue?: number;
   /** The number of turns run so far. */
   turn: number;
   /** Every answer the operator gave, in order, with what it answered. */
@@ -83,7 +91,12 @@ export async function planSessionDir(repoRoot: string): Promise<string | undefin
   }
 }
 
-export function newSession(descriptor: string, type?: PlanType, context?: string): PlanSession {
+export function newSession(
+  descriptor: string,
+  type?: PlanType,
+  context?: string,
+  sourceIssue?: number,
+): PlanSession {
   const now = new Date().toISOString();
   return {
     v: PLAN_SESSION_VERSION,
@@ -93,6 +106,7 @@ export function newSession(descriptor: string, type?: PlanType, context?: string
     descriptor,
     type,
     context,
+    sourceIssue,
     turn: 0,
     answers: [],
   };

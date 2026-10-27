@@ -54,6 +54,7 @@ import {
   finalizeDroppedDisclosure,
   tracePlanRun,
 } from "./plan-dropped-artifact.ts";
+import { duplicateExclusionSection } from "./plan-duplicate-self.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import { filedBodyOf } from "./plan-gap-disclosure.ts";
 import { loadPlanImages, planImageLinksSection, withPlanImages } from "./plan-images.ts";
@@ -187,6 +188,10 @@ async function runPipelineOn(
   // FILED-body inventory gets the untyped prose lines only (the typed-block
   // lines consumed by the directive parser render in their section, #858).
   const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
+  // #1856: the issue this plan is FOR, when the caller named one. Only the
+  // duplicate-risk child's view is filtered with it (plan-investigate.ts); the
+  // angles, the gate and the drafted body still see every related issue.
+  const sourceIssue = input.sourceIssue;
   if (signal?.aborted)
     return cancelledResult(signal, input, "inventory", priorContext, finishTimings());
 
@@ -212,6 +217,7 @@ async function runPipelineOn(
           codeIdentifiers: codeIds,
           pinnedSubIssues,
           forbiddenPhrases: directives.neverClaim,
+          ...(sourceIssue === undefined ? {} : { sourceIssue }),
           statFn: getPlanStatFnOverride() ?? undefined,
           // #1541 review (MEDIUM) — the job's signal reaches the barrier's children.
           ...(signal ? { signal } : {}),
@@ -398,8 +404,15 @@ async function runPipelineOn(
   // marker comment last — appended by code, after every LLM stage and after the
   // budget fitter, so what the operator reviewed is what the forge receives.
   const finalBody = withProvenance(
-    filedBodyOf(body, residualForDisclosure, openPoints, base.baseFallback) +
-      planImageLinksSection(images),
+    filedBodyOf(
+      body,
+      residualForDisclosure,
+      openPoints,
+      base.baseFallback,
+      // #1856: the one fixed site the excluded/downgraded duplicate candidates
+      // render at, so a reader of the filed issue sees what the driver suppressed.
+      duplicateExclusionSection(duplicateRisk, sourceIssue),
+    ) + planImageLinksSection(images),
     input.provenance,
   );
 

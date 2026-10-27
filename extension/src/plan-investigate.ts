@@ -24,6 +24,12 @@ import type { dispatchCore } from "./dispatch.ts";
 import { DESCRIPTOR_DATA_FRAMING, anglePromptsFor } from "./plan-angles.ts";
 import type { AngleFindings, MechanicalInventory, PlanItemKind } from "./plan-draft.ts";
 import { extractPlanItems, renderPriorContext } from "./plan-draft.ts";
+import {
+  type KnownIssue,
+  downgradeSelfDuplicate,
+  priorContextExcludingSource,
+  relatedExcludingSource,
+} from "./plan-duplicate-self.ts";
 import { forbiddenPhrasesBlock } from "./plan-prior-context.ts";
 import type { PlanType } from "./plan-types.ts";
 import { normalisePhrase } from "./plan-validate.ts";
@@ -75,6 +81,32 @@ export const PLAN_MARKER_CHILD_ARGS: string[] = ["--no-skills"];
 export interface DuplicateRisk {
   level: string;
   rationale: string;
+  /**
+   * #1856 — set only when a HIGH verdict was downgraded to medium because EVERY
+   * issue it named was one the driver may suppress: the source issue this plan
+   * is for, one of that issue's own split children, or a CLOSED issue the child
+   * itself called prior art or a reversal target (plan-duplicate-self.ts). An
+   * absent marker (`parseDuplicateRisk`'s medium default) is NEVER a downgrade.
+   */
+  downgradedFrom?: string;
+  /** Why the downgrade was allowed, in the driver's words. Present with `downgradedFrom`. */
+  downgradeReason?: string;
+  /**
+   * #1856 — every issue the filter suppressed, with the rule that removed it.
+   * Absent when there was no source issue, so a run with no subject keeps the
+   * exact verdict shape it had before.
+   */
+  excludedIssues?: ExcludedDuplicate[];
+}
+
+/** One issue the duplicate-risk candidate set lost, and the rule that removed it. */
+export interface ExcludedDuplicate {
+  number: number;
+  /** Whatever state the inventory carried, or `"unknown"` when nothing did. */
+  state: string;
+  title: string;
+  /** One of `EXCLUSION_REASONS` in plan-duplicate-self.ts. */
+  reason: string;
 }
 
 export interface InvestigationResult {
@@ -163,6 +195,11 @@ export function applyNeverClaimFilter(
  * path to filing. And the operator's context is threaded in so an explicit
  * acknowledgment ("this deliberately reverses #103") deterministically
  * reaches the risk child — the no-knob override path.
+ *
+ * #1856: `sourceIssue` names the existing issue this plan is FOR. Its descriptor
+ * is a near-copy of that issue's own title, so without this line the child's
+ * most confident duplicate is the ticket under plan. Absent → the prompt is
+ * byte-identical to what it was before.
  */
 export function duplicateRiskPrompt(
   type: PlanType,
@@ -170,18 +207,23 @@ export function duplicateRiskPrompt(
   inv: MechanicalInventory,
   priorContext: { source: string; fact: string }[] = [],
   forbiddenPhrases?: string[],
+  sourceIssue?: number,
 ): string {
   const forbidden = forbiddenPhrasesBlock(forbiddenPhrases ?? []);
   const prior =
     priorContext.length > 0
       ? ` PM has already established: ${renderPriorContext(priorContext)} — if this context explicitly acknowledges an issue as prior art or a deliberate reversal, that issue is RECONCILED and must not raise the risk above medium.`
       : "";
+  const subject =
+    sourceIssue === undefined
+      ? ""
+      : ` This check covers the plan of EXISTING issue #${sourceIssue} (or one of its own split children, written #${sourceIssue}-1, #${sourceIssue}-2 …): that issue and its split children are the SUBJECT of this plan, never its duplicate — do not report them as duplicates, and a verdict that names nothing else is low or none.`;
   return [
     `${DESCRIPTOR_DATA_FRAMING}DUPLICATE RISK CHECK for a proposed ${type} ticket: "${descriptor}".`,
     `Mechanical scan found: ${
       inv.related.map((r) => `#${r.number} (${r.state}) ${r.title}`).join("; ") ||
       "no related issues"
-    }.${prior}${forbidden}`,
+    }.${prior}${forbidden}${subject}`,
     "Assess whether filing this ticket would duplicate existing work — check open + recently closed issues (gh issue list --state all --search '<keyword>' --limit 10) and vipune.",
     "high means DUPLICATE: an OPEN issue (or closed-but-unlanded work) already covers this scope. A CLOSED issue whose work landed is prior art or a REVERSAL target, not a duplicate — report medium at most and NAME the issue so the spec can reference it.",
     "Return a short verdict: DUPLICATE_RISK: high|medium|low|none plus 2-3 sentences of rationale with issue numbers.",
@@ -230,6 +272,13 @@ export async function runInvestigation(
     pinnedSubIssues?: number;
     /** #677: the operator's verbatim forbidden phrases (NEVER CLAIM block). */
     forbiddenPhrases?: string[];
+    /**
+     * #1856: the existing issue this plan is FOR. Its rows leave the candidate
+     * set the risk child sees, and a HIGH that names only it (or its split
+     * children, or closed prior art) is downgraded. Absent → the pre-#1856
+     * prompt and verdict, byte for byte.
+     */
+    sourceIssue?: number;
     /**
      * #893 — injectable stat of the plan-reporter extension path. A rejecting
      * stat makes the phase fail before ANY dispatch (duplicate-risk included)
@@ -292,11 +341,34 @@ export async function runInvestigation(
     args.forbiddenPhrases,
   );
 
+  // #1856: the risk child's candidate set. The SUBJECT of the plan is never its
+  // duplicate, so the source issue (and its split children) leave both the
+  // scanned rows and the "PM has already established" rows. Only this child's
+  // view changes — the gap gate and the drafted body still see the full
+  // inventory, which is where naming the planned issue is useful rather than
+  // misleading.
+  const sourceIssue = args.sourceIssue;
+  const riskInv =
+    sourceIssue === undefined ? inv : { ...inv, related: relatedExcludingSource(inv, sourceIssue) };
+  const riskPrior = priorContextExcludingSource(priorContext, sourceIssue);
+  // What the inventory can tell the post-filter about each named issue (its
+  // state decides the CLOSED-prior-art rule). Built from the FULL inventory: a
+  // closed prior-art issue is not the subject and stays knowable.
+  const known = new Map<number, KnownIssue>();
+  for (const r of inv.related) known.set(r.number, { state: r.state, title: r.title });
+
   const duplicatePromise = dispatch(
     pi,
     {
       role: "explore",
-      prompt: duplicateRiskPrompt(type, descriptor, inv, priorContext, args.forbiddenPhrases),
+      prompt: duplicateRiskPrompt(
+        type,
+        descriptor,
+        riskInv,
+        riskPrior,
+        args.forbiddenPhrases,
+        sourceIssue,
+      ),
       cwd: repoRoot,
     },
     {
@@ -376,8 +448,14 @@ export async function runInvestigation(
 
   let duplicateRisk: DuplicateRisk | undefined;
   if (dup.ok) {
-    duplicateRisk = parseDuplicateRisk(dup.text);
+    duplicateRisk = downgradeSelfDuplicate(parseDuplicateRisk(dup.text), {
+      ...(sourceIssue === undefined ? {} : { sourceIssue }),
+      known,
+    });
     trace(`plan-driver: duplicateRisk=${duplicateRisk.level}`);
+    if (duplicateRisk.downgradedFrom !== undefined) {
+      trace(`plan-driver: duplicate-risk HIGH downgraded — ${duplicateRisk.downgradeReason ?? ""}`);
+    }
   } else {
     trace("plan-driver: duplicate-risk dispatch failed — proceeding without a risk verdict");
   }

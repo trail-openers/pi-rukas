@@ -80,18 +80,26 @@ export function baseFallbackSection(reason: string | undefined): string {
 /**
  * The body that gets filed or shown on a dry run: the spec, then each
  * disclosure section that applies (#1132: open points and the base fallback).
+ *
+ * #1856: `duplicateExclusion` is the pre-rendered duplicate-candidate disclosure
+ * the driver builds in plan-duplicate-self.ts. It is passed in already rendered
+ * (rather than derived here) because the verdict it describes lives on the
+ * investigation barrier, not on the gap data this module owns — and it is
+ * appended at THIS fixed site so no prior-context budget can clip it.
  */
 export function filedBodyOf(
   body: string,
   residual: PlanGap[],
   openPoints: PlanGap[],
   baseFallback: string | undefined,
+  duplicateExclusion = "",
 ): string {
   return [
     body,
     residual.length > 0 ? residualGapsSection(residual) : "",
     openPointsSection(openPoints),
     baseFallbackSection(baseFallback),
+    duplicateExclusion,
   ]
     .filter(Boolean)
     .join("\n\n");

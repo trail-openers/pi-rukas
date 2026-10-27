@@ -28,7 +28,25 @@ import type { InvestigationCacheEntry } from "./plan-investigation-cache.ts";
 import { isPlainObject, validateProvenance } from "./plan-provenance.ts";
 
 const isStr = (x: unknown): x is string => typeof x === "string";
+const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+
+/**
+ * #1856: the optional fields a duplicate-risk verdict gained. Optional, so an
+ * entry written before the source-issue exclusion existed stays well-formed —
+ * but when present they must be the shapes the disclosure renderer reads.
+ */
+const isExcludedDuplicate = (x: unknown): boolean =>
+  isShape(x) && isNum(x.number) && isStr(x.state) && isStr(x.title) && isStr(x.reason);
+
+const isDuplicateRisk = (x: unknown): boolean =>
+  isShape(x) &&
+  isStr(x.level) &&
+  isStr(x.rationale) &&
+  (x.downgradedFrom === undefined || isStr(x.downgradedFrom)) &&
+  (x.downgradeReason === undefined || isStr(x.downgradeReason)) &&
+  (x.excludedIssues === undefined ||
+    (Array.isArray(x.excludedIssues) && x.excludedIssues.every(isExcludedDuplicate)));
 
 /**
  * A plain object — an `Object` prototype (or a bare `Object.create(null)`) and
@@ -95,8 +113,7 @@ const isBarrier = (x: unknown): boolean =>
   x.findings.every(isFinding) &&
   Array.isArray(x.neverClaimDisclosure) &&
   x.neverClaimDisclosure.every(isStr) &&
-  (x.duplicateRisk === undefined ||
-    (isShape(x.duplicateRisk) && isStr(x.duplicateRisk.level) && isStr(x.duplicateRisk.rationale)));
+  (x.duplicateRisk === undefined || isDuplicateRisk(x.duplicateRisk));
 
 /**
  * The provenance half defers to the ONE validator the feature has, rather than

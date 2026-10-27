@@ -1,7 +1,7 @@
 /**
  * headless/plan-turn — `pi-rukas-headless plan` as a session of turns (#1471).
  *
- *   plan <descriptor> --start [--type <t>] [--context <text>]
+ *   plan <descriptor> --start [--type <t>] [--context <text>] [--issue <N>]
  *   plan --resume <session> --answer <file>
  *   plan --resume <session> --retry
  *   plan --resume <session> --confirm
@@ -47,7 +47,14 @@ import type { VerbContext, VerbOutcome } from "./verb.ts";
 export const MAX_ANSWER_CHARS = 20_000;
 
 export type TurnArgs =
-  | { kind: "start"; descriptor: string; type?: PlanResult["type"]; context?: string }
+  | {
+      kind: "start";
+      descriptor: string;
+      type?: PlanResult["type"];
+      context?: string;
+      /** #1856: the existing issue the session plans (see PlanSession.sourceIssue). */
+      sourceIssue?: number;
+    }
   | { kind: "answer"; id: string; answer: string }
   | { kind: "retry"; id: string }
   | { kind: "confirm"; id: string };
@@ -109,7 +116,9 @@ export async function runPlanTurn(args: TurnArgs, ctx: VerbContext): Promise<Ver
     );
   }
   const fresh =
-    args.kind === "start" ? newSession(args.descriptor, args.type, args.context) : undefined;
+    args.kind === "start"
+      ? newSession(args.descriptor, args.type, args.context, args.sourceIssue)
+      : undefined;
   const sessionId = fresh ? fresh.id : (args as { id: string }).id;
   ctx.host.sendUserMessage(
     fresh
@@ -172,6 +181,8 @@ async function turn(dir: string, s: PlanSession, ctx: VerbContext): Promise<Verb
       context,
       dryRun: true,
       provenance: sessionProvenance(s.id),
+      // #1856: the issue this session plans is not its own duplicate.
+      ...(s.sourceIssue !== undefined ? { sourceIssue: s.sourceIssue } : {}),
     },
     ctx.repoRoot,
   );
