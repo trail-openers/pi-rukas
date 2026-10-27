@@ -374,6 +374,13 @@ export async function postPassFault(
   for (const plan of plans) {
     const s = await treeChanges(execFn, plan.worktree, plan.headBefore);
     if (!s.ok) return { reason: fenced(s.reason).reason, diffs, admissions };
+    // A file the pass created and never staged is in `untracked`, not in
+    // `names` — git's porcelain has no entry for a path it has never seen, so
+    // both reads are this pass's changes. Both go into the denominator AND
+    // through the ladder: passing only `names` meant an untracked stray never
+    // reached `admitFixPassEntry`, so the driver never saw it as a revertible
+    // stray and parked on a file it could have reverted itself.
+    const passFiles = [...new Set([...s.value.names, ...s.value.untracked])];
     // #1846 — the ONE fence view. The pre-#1846 shape rebuilt `allowed` here
     // while the prompt rendered `workstream.paths`, so the fixer was told one
     // set and refused by another. Both sides now read `plan.fence`.
@@ -430,7 +437,13 @@ export async function postPassFault(
       plan.dirs,
       round !== undefined,
     );
-    const judging: FixPassFence = { ...fence, passChanged: s.value.names, helperDirs };
+    // A file the pass created and never staged is in `untracked`, not in
+    // `names` — git's porcelain has no rename entry for a path it has never
+    // seen. Both reads are this pass's changes, so both go into the denominator
+    // and both go through the ladder; the pre-#1846 shape passed only `names`,
+    // which meant an untracked stray never reached `admitFixPassEntry` and so
+    // was never recorded as a revertible stray for the driver to act on.
+    const judging: FixPassFence = { ...fence, passChanged: passFiles, helperDirs };
     const gate: FixPassFileGate = {
       id: plan.id,
       declared: plan.declared,
@@ -438,8 +451,10 @@ export async function postPassFault(
       fence: judging,
       ...(admission === undefined ? {} : { corrective: admission }),
     };
-    const passDelta = new Set(judging.passChanged);
-    for (const file of s.value.names) {
+    // The pre-pass delta, so "already changed by this cycle" is the pass's own
+    // work and not a sibling pass's.
+    const passDelta = new Set(s.value.names);
+    for (const file of passFiles) {
       const verdict = await admitFixPassEntry(file, gate, passDelta.has(file));
       if (verdict.admitted) {
         if (verdict.note !== undefined) admissions.push(`${plan.id}: ${verdict.note}`);

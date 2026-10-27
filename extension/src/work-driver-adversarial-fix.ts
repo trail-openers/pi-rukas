@@ -384,6 +384,14 @@ export async function runAdversarialFixPass(
           correctiveRoundsOf(restored.eventLog.slice(startLen)),
         )
       : post;
+  // #1846 — a revert the driver PERFORMED is recorded whatever happens next. The
+  // event used to be appended only on the green path, so a pass that reverted a
+  // stray set and then parked on the comment-retention check (or on a second
+  // gate) handed off with a driver commit in its history that no event
+  // explained: the operator saw files deleted from their worktree and a state
+  // file that said nothing about it. Appending here covers every park below,
+  // because they all read this state.
+  const afterRevert = reverted?.ok === true ? appendEvent(restored, reverted.event) : restored;
   if (cleared.reason) {
     // #1137 — a no-change fix pass whose workstream carried a plumb report
     // (a structural question, e.g. scope-ambiguity) is a question to answer,
@@ -395,7 +403,7 @@ export async function runAdversarialFixPass(
       const question = freshPlumbQuestion(restored, priorPlumbBodies);
       if (question) {
         return parkFixPass(
-          restored,
+          afterRevert,
           pending,
           `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
           now,
@@ -404,7 +412,7 @@ export async function runAdversarialFixPass(
       }
     }
     return parkFixPass(
-      restored,
+      afterRevert,
       pending,
       // #1846 — when the driver already reverted one stray set and this is the
       // second, the park text must not repeat "revert them by hand": the driver
@@ -420,15 +428,13 @@ export async function runAdversarialFixPass(
   // NOT CHECKED (as every other reader renders it) and the pass proceeds with
   // that disclosed on the handoff, never parked. Only a check that was asked
   // for and could not run parks.
-  let kept = restored;
-  // #1846 — the revert is disclosed as its own event, and as a plumb note so the
-  // PR body names the reverted paths with the ref and patch that still hold
-  // them. A revert the operator cannot find is a driver commit that quietly
-  // deleted their fixer's work.
-  if (reverted?.ok === true) {
-    kept = appendEvent(kept, reverted.event);
-    kept = noteFixPass(kept, fixPassRevertNote(reverted.event), now);
-  }
+  let kept = afterRevert;
+  // #1846 — the revert's EVENT is already on `afterRevert` (see above, so a park
+  // carries it too); what is added here is the prose NOTE that puts the reverted
+  // paths, the preserved ref and the patch path in front of the operator on the
+  // PR body and the handoff. A revert the operator cannot find is a driver
+  // commit that quietly deleted their fixer's work.
+  if (reverted?.ok === true) kept = noteFixPass(kept, fixPassRevertNote(reverted.event), now);
   // #1725 round 3 — one disclosure note per spec-slot admission made during
   // this pass. An authorisation that only reached PI_ENSEMBLE_DEBUG is a
   // fence that widened invisibly; these notes ride the state to the PR body,
@@ -461,7 +467,7 @@ export async function runAdversarialFixPass(
         // not only on the green path: a park that shows the refusals and hides
         // the authorisations reads as a fence that never widened.
         return parkFixPass(
-          restored,
+          afterRevert,
           pending,
           `comment retention could not be checked for ${p.id} (NOT CHECKED) — the fix pass is not cleared`,
           now,
@@ -473,7 +479,7 @@ export async function runAdversarialFixPass(
       if (fresh.length > 0) {
         const named = fresh.slice(0, 3).map((l) => neutraliseEvidence(`${l.file}: ${l.text}`));
         return parkFixPass(
-          restored,
+          afterRevert,
           pending,
           `the fix pass removed ${fresh.length} origin/main comment line(s) in ${p.id} and wrote no comment in their place (${named.join(" | ")})`,
           now,

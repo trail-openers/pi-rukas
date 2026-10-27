@@ -39,6 +39,8 @@
  */
 
 import { type CorrectiveVerdict, outranksCorrective } from "./work-driver-corrective-admission.ts";
+import { fenceMatches } from "./work-driver-declared-path.ts";
+import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import {
   type FixPassAdmission,
   type FixPassFence,
@@ -75,6 +77,25 @@ export type FixPassFileVerdict =
   | { admitted: false; stray: Stray };
 
 /**
+ * The refusal no route may speak over, for one file: the workstream's own
+ * `outOfScope` fence (`fenceMatches`, the ONE fence predicate the develop gate
+ * and the spec-slot admitter also run) and the protected-path gate. `undefined`
+ * means neither applies.
+ *
+ * ONE predicate for the whole ladder, so step 1 and step 4 cannot disagree: the
+ * pre-#1846 shape asked the fence only inside step 4, which meant a file in the
+ * declared set was admitted on a path the fence would have refused it on.
+ */
+export function absoluteRefusal(
+  file: string,
+  fence: FixPassFence,
+): "fenced" | "protected" | undefined {
+  if (fence.outOfScope.some((entry) => fenceMatches(entry, file))) return "fenced";
+  if (protectedPathsIn([file]).length > 0) return "protected";
+  return undefined;
+}
+
+/**
  * The admission decision for one file the pass changed.
  *
  * `changedByPass` is `true` for a file in the pass's own delta
@@ -88,6 +109,24 @@ export async function admitFixPassEntry(
   changedByPass: boolean,
 ): Promise<FixPassFileVerdict> {
   const { fence } = gate;
+  // The two ABSOLUTE refusals are asked before EVERY route, the direct set
+  // included (#1846 review, B5). Step 1 used to answer "this is the pass's own
+  // scope" and return before the fence was consulted, so a declared path that
+  // the plan ALSO put in `outOfScope` was admitted by this gate — and the
+  // develop gate's own outOfScope check, which runs the same `fenceMatches`
+  // predicate, then refused the very file this fence had blessed. A protected
+  // path named in the plan had the same shape: the protected-path gate owns
+  // that decision, and a workstream's own path list is not a grant.
+  const absolute = absoluteRefusal(file, fence);
+  if (absolute !== undefined)
+    return {
+      admitted: false,
+      // `refused` carries the SPEC-SLOT route's answer, which for a file the
+      // slot never matched is `no-slot`; the `admissionRefusal` field is what
+      // tells the park reason that the ABSOLUTE gate — not the absence of a
+      // slot — is what stopped this file.
+      stray: { file, refused: "no-slot", admissionRefusal: absolute },
+    };
   // 1 — the pass's own scope, asked first so no route below spends its budget.
   if (fence.admits.some((a) => admitsEntry(a, file))) return { admitted: true };
   // 2 — the spec slot; its `fenced` / `protected` refusals are final.

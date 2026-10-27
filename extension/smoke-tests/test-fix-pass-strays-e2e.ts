@@ -256,18 +256,20 @@ console.log("# a SECOND stray set parks: the driver reverts once, it does not lo
   }
 }
 
-console.log("# the revert target is the LATEST head the pass recorded");
+console.log("# the revert target is the pass's OWN headBefore, never a round's");
 {
-  // A corrective round dispatched inside the pass records the HEAD it found. The
-  // revert must go back to THAT, or it would undo commits the driver itself
-  // ordered. Varying one thing: the round's baseline points at a tree where
-  // `lib/helper.ts` is already tracked with other content.
+  // A corrective round dispatched inside the pass records the HEAD it FOUND —
+  // which by then already contains the pass's own commits, strays included. The
+  // revert must target the pass's `headBefore`, the one referent the fence's own
+  // judgement uses. Varying one thing: the round's baseline points at a tree
+  // where `lib/helper.ts` is already tracked with the out-of-fence content.
   const dir = repoWithFile("1846-target");
   try {
     const wt = wtOf(dir);
     const baseHead = git(wt, "rev-parse HEAD").trim();
     // A commit made by the driver's corrective round: helper.ts exists there.
     devCommitIn(wt, "lib/helper.ts", "export const helper = 1;\n");
+    devCommitIn(wt, "a.txt", "fixed\n");
     const roundHead = git(wt, "rev-parse HEAD").trim();
     // The pass then EDITED it out of fence.
     devWriteIn(wt, "lib/helper.ts", "export const helper = 999;\n");
@@ -308,9 +310,21 @@ console.log("# the revert target is the LATEST head the pass recorded");
       Date.now(),
     );
     assert(outcome?.ok === true, `the stray is reverted (${JSON.stringify(outcome)})`);
+    // #1846 — the revert targets the PASS's own `headBefore`, never a corrective
+    // round's `headAtRound`. `headAtRound` is the HEAD the round FOUND, which by
+    // then already contains the pass's own commits — so restoring a stray to it
+    // restores the stray. This assertion is the difference between the two
+    // targets made visible: the round's content is the OUT-OF-FENCE content, and
+    // it must not survive.
     assert(
-      readFileSync(`${wt}/lib/helper.ts`, "utf8") === "export const helper = 1;\n",
-      "restored to the CORRECTIVE ROUND's content, not deleted and not rolled back to base",
+      !existsSync(`${wt}/lib/helper.ts`),
+      "the pass-created stray is GONE: a headAtRound target would have kept the round's out-of-fence content",
+    );
+    // And the pass's own fix, which is NOT in the stray list, is untouched by a
+    // path-scoped revert to `headBefore`.
+    assert(
+      readFileSync(`${wt}/a.txt`, "utf8") === "fixed\n",
+      "the pass's own committed fix survived the revert to headBefore",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

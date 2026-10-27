@@ -279,5 +279,88 @@ async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
   );
 }
 
+// M — #1846 B5: a path the plan DECLARED and also put in `outOfScope` is still
+// refused. Step 1 of the ladder used to answer "the pass's own scope" and return
+// before the fence was consulted, so this fence admitted a file the develop
+// gate's own outOfScope check would refuse — two gates, two answers, one tree.
+{
+  const dir = repoWithFile("fs-declared-and-fenced");
+  try {
+    const wt = `${dir}-wt`;
+    git(dir, `worktree add -q --detach ${wt} HEAD`);
+    const s0 = fixState(dir, ["a.txt", "b.txt"], "a.txt: fix; b.txt: and this");
+    const st = {
+      ...s0,
+      pipelineState: {
+        ...s0.pipelineState,
+        worktrees: { default: wt },
+        workstreams: {
+          ...s0.pipelineState.workstreams,
+          default: {
+            id: "default",
+            scope: "fix",
+            paths: ["a.txt", "b.txt"],
+            // b.txt is declared AND fenced: the fence wins.
+            outOfScope: ["b.txt"],
+          },
+        },
+      },
+    };
+    const r = await runPass(dir, st, () => {
+      devCommit(wt, "a.txt", "two\n");
+      devCommit(wt, "b.txt", "two\n");
+    });
+    assert(
+      !r.applied && /b\.txt/.test(r.parked ?? ""),
+      `M: a declared path that the plan also fences is still refused (got "${r.parked}")`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// N — #1846 B4: a revert the driver performed is on the state even when the
+// pass then parks. The event used to be appended only on the green path, so a
+// pass that reverted a stray and then failed another gate left a driver commit
+// in the history that no record explained.
+{
+  const dir = repoWithFile("fs-revert-then-park");
+  try {
+    // Under `.worktrees/` as a real cycle's worktree is: the revert refuses a
+    // worktree outside that namespace, and it should.
+    git(dir, "worktree add -q --detach .worktrees/issue-1846 HEAD");
+    const wt = `${dir}/.worktrees/issue-1846`;
+    const s0 = fixState(dir, ["a.txt"], "a.txt: change one to two");
+    const st = { ...s0, pipelineState: { ...s0.pipelineState, worktrees: { default: wt } } };
+    const out = await runAdversarialFixPass(
+      fixCtx(dir, () => {
+        devCommit(wt, "a.txt", "two\n");
+        // An untracked stray outside every route: the driver reverts it.
+        devWrite(wt, "zz-stray.md", "not mine to add\n");
+      }),
+      st,
+      pendingFixes(st.eventLog),
+      Date.now(),
+    );
+    const revertedEvents = out.eventLog.filter(
+      (e) => e.kind === "fix-pass-strays-reverted",
+    );
+    assert(
+      revertedEvents.length === 1,
+      `N: the revert is recorded as an event whatever the pass then does (${revertedEvents.length})`,
+    );
+    const tail = out.eventLog[out.eventLog.length - 1];
+    if (tail?.kind === "cap-hit") {
+      const idxRevert = out.eventLog.findIndex((e) => e.kind === "fix-pass-strays-reverted");
+      assert(
+        idxRevert >= 0 && out.eventLog.indexOf(tail) > idxRevert,
+        "N: and it precedes the park, so a handed-off pass explains its own driver commit",
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
