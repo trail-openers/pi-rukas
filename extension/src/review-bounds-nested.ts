@@ -35,10 +35,16 @@
  * assistant `message_end`, so one nested event is never counted twice.
  */
 
-import { isSkillReadWith } from "./lens-skill-load-proof.ts";
+import { SKILL_READ_TOOL_NAMES, isSkillReadWith } from "./lens-skill-load-proof.ts";
+import { SKILL_FILE_NAME } from "./lens-skill-path.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 
-/** The tool names and bash verb set the nested reader will consider (#1847).
+/** The tool names the nested reader will consider (#1847).
+ *
+ * Derived from the read-tool set the predicate itself owns
+ * (`SKILL_READ_TOOL_NAMES`, lens-skill-load-proof.ts), so this gate cannot get
+ * ahead of or behind what `isSkillReadWith` accepts — the one drift a hand-
+ * copied list manufactures silently.
  *
  * Deliberately a PRE-FILTER, not a second source of truth: the verdict still
  * comes from `isSkillReadWith`, and this list only has to be a sound necessary
@@ -50,11 +56,12 @@ import type { PiJsonEvent } from "./pi-event-shapes.ts";
  * `codemode` paid that tokenisation on every nested call of every turn, on the
  * per-stdout-line hot path, for a file those tools cannot open.
  *
- * Kept as a set of tool NAMES plus the one bash verb prefix rather than
- * duplicating the verb list: `bash` is admitted here and the verb judgement
- * (`cat`/`sed`/`head`/… vs `grep`/`rg`/`ls`) stays solely in
- * `lens-skill-load-proof.ts`, so the two cannot drift about what a read is. */
-const NESTED_READER_TOOLS = new Set(["read", "bash"]);
+ * The VERDICT that admits a `bash` call is narrower than its name: the command
+ * must name the skill FILE (`SKILL_FILE_NAME`) somewhere, which is the same
+ * sound necessary condition the predicate applies further down. Testing it here
+ * is what keeps the parser off the hot path for the thousands of nested `bash`
+ * calls of a review that never mention the skill. */
+const NESTED_READER_TOOLS = SKILL_READ_TOOL_NAMES;
 
 /** Is this parsed stdout line a tool call a tool itself made? */
 function isNestedToolStart(event: PiJsonEvent): boolean {
@@ -89,7 +96,18 @@ export function nestedEventReadsSkill(
   if (!NESTED_READER_TOOLS.has(name)) return false;
   const args = event.args;
   if (typeof args !== "object" || args === null || Array.isArray(args)) return false;
-  return isSkillReadWith(name, args as Record<string, unknown>, dirs, wants);
+  if (name !== "bash") return isSkillReadWith(name, args as Record<string, unknown>, dirs, wants);
+  // Cheap gate BEFORE `isSkillReadWith` tokenises: a command that never
+  // mentions the skill file name cannot have opened it, and a review's nested
+  // `bash` traffic is almost entirely commands that do not. Same condition the
+  // predicate tests internally, applied one step earlier so the parser is never
+  // reached for those calls.
+  const asRecord = args as Record<string, unknown>;
+  // `command` is Pi's bash argument key, spelled the same way here as the
+  // predicate's own `COMMAND_KEY` below reads it off an open record.
+  const command = asRecord.command;
+  if (typeof command !== "string" || !command.includes(SKILL_FILE_NAME)) return false;
+  return isSkillReadWith(name, asRecord, dirs, wants);
 }
 
 /**
