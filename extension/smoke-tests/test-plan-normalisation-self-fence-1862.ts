@@ -89,11 +89,15 @@ const WS = (id: string, paths: string[], outOfScope: string[]): Workstream => ({
 function fieldPlan(): Record<string, Workstream> {
   return {
     implement: WS("implement", ["tests/test_x.py", "agents/x.md"], [".ci/"]),
-    document: WS("document", ["tests/test_x.py", "tests/test_y.py", "agents/x.md"], [
-      "Every file under agents/ and tests/ — this workstream documents, it does not implement",
-      "tests/",
-      ".ci/",
-    ]),
+    document: WS(
+      "document",
+      ["tests/test_x.py", "tests/test_y.py", "agents/x.md"],
+      [
+        "Every file under agents/ and tests/ — this workstream documents, it does not implement",
+        "tests/",
+        ".ci/",
+      ],
+    ),
   };
 }
 
@@ -133,12 +137,16 @@ async function normalise(plan: Record<string, Workstream>) {
 {
   const out = await normalise(fieldPlan());
   const ids = Object.keys(out.workstreams);
-  assert(ids.length === 1, `the coupling rules merged the two halves into one workstream (got ${JSON.stringify(ids)})`);
+  assert(
+    ids.length === 1,
+    `the coupling rules merged the two halves into one workstream (got ${JSON.stringify(ids)})`,
+  );
   const ws = out.workstreams[ids[0] ?? ""];
   assert(
     (ws?.paths ?? []).includes("tests/test_x.py") && (ws?.paths ?? []).includes("tests/test_y.py"),
     `the merged workstream owns both halves' files (got ${JSON.stringify(ws?.paths)})`,
-  );  const still = findFenceContradictions(out.workstreams);
+  );
+  const still = findFenceContradictions(out.workstreams);
   assert(
     still.length === 0,
     `the plan step's own predicate finds no fence covering a workstream's own paths (got ${JSON.stringify(still)})`,

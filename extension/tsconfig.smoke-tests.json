@@ -90,5 +90,7 @@
     "smoke-tests/test-plan-fence-array-1862.ts",
     "smoke-tests/test-plan-fence-prose-1862.ts",
     "smoke-tests/test-converge-declared-paths-1862.ts",
+    "smoke-tests/test-plan-self-fence-note-cap-1862.ts",
+    "smoke-tests/test-work-develop-fence-self-fence-1862.ts"
   ]
 }

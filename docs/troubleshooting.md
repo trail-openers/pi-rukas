@@ -3224,13 +3224,15 @@ The second line means a findings file **exists** at the store's location and can
 
 **The rule now:** the fold and the tool boundary both drop a fence entry that covers the workstream's OWN declared paths, judged by the one containment predicate the plan-quality gate already uses (`findFenceContradictions`) plus the whole-token rule for prose (`pathTokenIn`). A **sibling's** fence is the #572 cross-declaration contract and is never dropped; prose that names no path is kept; a path-shaped entry is judged only by `fenceMatches`, never twice; and a fence naming only a **protected** path (`.github/`, `.pi/`, `CODEOWNERS`, `agents.json`) survives whatever else it names, because those are guarded by their own gate. A dropped entry's clip record goes with it — a record describing a vanished entry would hang a ` …[clipped]` marker on nothing.
 
-**What to grep, and what the drop is recorded as:** the fold's drops land on `pipelineState.planQuality.unfence.selfFences` with a note per removal, and the tool boundary says its own line — both are visible in the state file, not only in `trace()`, because a fence that was in the plan and is now gone has to be auditable:
+**What to grep, and what the drop is recorded as:** the fold's drops land on `pipelineState.planQuality.unfence.selfFences` with a note per removal (each kind of note is capped at 10 on its own, so a full issue-named list cannot push the fold's drops out of the record), and the develop merge's drops are persisted through the develop step's note channel. The tool boundary says its own WARN line. All three are visible in the state file, not only in `trace()`, because a fence that was in the plan and is now gone has to be auditable:
 
 ```
-self-fence dropped: "tests/" covers tests/test_x.py (merged workstream)
-work-driver: plan workstream 'implement' self-fence dropped — "…" covers its own declared tests/test_x.py
+self-fence dropped: "tests/" covers "tests/test_x.py" (merged workstream)
+work-driver: plan workstream 'implement' self-fence dropped: "…" covers its own declared "tests/test_x.py"
 work-driver: <subject> outOfScope bounded — … (kept: N/M)
 ```
+
+Both the entry and the path inside a note are neutralised (`plan-fence-render.ts`) and JSON-quoted: the entry is planner-derived text and the note lands in the state file, the handoff and a trace line, so a control character in a fence cannot write its own `WARN work-driver:` line or colour an operator's terminal. A mixed sentence — one naming a path this workstream does not own, a sibling's file, a protected path, or an undeclared subtree — is **kept whole**: one such token holds the entire entry, because a fence is one instruction and the driver cannot remove half a sentence.
 
 **Deferred, and what it still parks on:** `verifyConsolidation`'s `declaredPathInDiff` compares declared paths to `git diff --name-only` literally, the same defect class, at a HALT step — a cycle whose deliverables are declared as globs or `new `-annotated paths can still park as `commit-pr-incomplete-consolidation`. That is a follow-up; the converge-side matcher is fixed here.
 
