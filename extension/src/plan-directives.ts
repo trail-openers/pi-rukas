@@ -23,6 +23,7 @@
 import {
   BULLET_RE,
   FENCE_RE,
+  KEYWORD_PREFIX_SOURCE,
   KEYWORD_SOURCE,
   KEYWORD_TAIL_SOURCE,
   LABEL_RE,
@@ -140,7 +141,10 @@ export interface OperatorDirectiveParse {
  * the walk's wraps it non-capturing. The walk reads no group at all; it only
  * asks whether the line is a heading.
  */
-const HEADING_RE = new RegExp(`^${KEYWORD_SOURCE}${KEYWORD_TAIL_SOURCE}`, "i");
+const HEADING_RE = new RegExp(
+  `^${KEYWORD_PREFIX_SOURCE}${KEYWORD_SOURCE}${KEYWORD_TAIL_SOURCE}`,
+  "i",
+);
 
 function channelFor(name: string): keyof OperatorDirectives {
   const up = name.toUpperCase();
