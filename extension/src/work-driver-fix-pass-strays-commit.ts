@@ -51,7 +51,7 @@
  * "copy it and subtract" is a list of everything the author forgot.
  */
 
-import { copyFileSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { WORKSTREAM_ID_RE, errText } from "./work-develop-git.ts";
 import type { GitCallOpts } from "./work-develop-git.ts";
@@ -121,6 +121,24 @@ export function fixPassStraysIndexPath(
 export function assertFixPassStraysIndexPath(req: FixPassStraysRequest): void {
   const path = fixPassStraysIndexPath(req.scratchDir, req.issue, req.workstreamId, req.attempt);
   assertInsideDir(dirname(path), path);
+  // And the path must be something git can use as an index. A stale temp index is
+  // cleared before `read-tree` and at the end, but `rmSync(..., { force: true })`
+  // is NOT force against a DIRECTORY: it throws EISDIR. The preflight is the only
+  // place that can still say no — once `revertPaths` has run the tree is already
+  // changed, and a refusal that escapes as an exception there skips the rollback.
+  // Absent is fine (nothing to clear); a regular file is fine (it will be cleared);
+  // anything else — a directory, a socket, a device — is a refusal naming the path.
+  let st: ReturnType<typeof lstatSync> | undefined;
+  try {
+    st = lstatSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+  }
+  if (st !== undefined && !st.isFile()) {
+    throw new Error(
+      `refusing temp index ${path}: ${st.isDirectory() ? "a directory" : "not a regular file"} sits at that path and cannot be cleared`,
+    );
+  }
 }
 
 /**
@@ -138,6 +156,11 @@ export async function commitRevert(
   headBefore: string,
 ): Promise<string | undefined> {
   const { git, worktree, issue, workstreamId, attempt } = req;
+  // The temp index path is gated by `preflight` (`assertFixPassStraysIndexPath`),
+  // which now also refuses a non-file sitting at it; the `rmSync` below is inside
+  // the try so anything it still cannot clear is a refusal that rolls back, not an
+  // exception that escapes with the tree half-reverted.
+  const tmpIndex = fixPassStraysIndexPath(req.scratchDir, issue, workstreamId, attempt);
   // Which paths the commit may name, decided from git's OWN pre-revert reads
   // (`state`) and never from what happens to be staged. Three roles:
   const restored = state.strays.filter(
@@ -149,10 +172,6 @@ export async function commitRevert(
   // An untracked stray was in no index at all: it is simply absent from a
   // HEAD-seeded index, which IS its revert. `rm` on it would fail the pathspec and
   // take the whole commit with it, so it is deliberately not passed to any command.
-  const tmpIndex = fixPassStraysIndexPath(req.scratchDir, issue, workstreamId, attempt);
-  // A stale temp index from an earlier attempt would seed this commit with that
-  // attempt's staging, so it is cleared before `read-tree` and again at the end.
-  rmSync(tmpIndex, { force: true });
   // One env for the whole commit: the driver's scrubbed child env (`HOME`, the
   // global config, no inherited `GIT_DIR`/`GIT_INDEX_FILE`) plus the temp index.
   // An object literal naming only `GIT_INDEX_FILE` would be the child's WHOLE
@@ -166,6 +185,12 @@ export async function commitRevert(
   // `hardenedGitArgv`, never remembered per call.
   const call = (args: string[]) => git(hardenedGitArgv(args), opts);
   try {
+    // A stale temp index from an earlier attempt would seed this commit with that
+    // attempt's staging, so it is cleared before `read-tree` and again at the end.
+    // INSIDE the guarded try: this runs after `revertPaths` has already deleted and
+    // restored, so a throw here that escaped would skip the rollback below and take
+    // the step down with the tree half-reverted.
+    rmSync(tmpIndex, { force: true });
     // Seed from the commit being reverted from — nothing else (see the header).
     await call(["read-tree", "HEAD"]);
     // Restored paths: the working tree holds their `headBefore` content (the

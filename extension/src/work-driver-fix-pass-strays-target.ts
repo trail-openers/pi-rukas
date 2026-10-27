@@ -28,7 +28,8 @@
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { scrubGitLocation } from "./git-env.ts";
-import { type GitExec, nextRetryAttempt, retryPatchPath } from "./work-develop-git.ts";
+import { trace } from "./trace.ts";
+import { type GitExec, errText, nextRetryAttempt, retryPatchPath } from "./work-develop-git.ts";
 import { gitReadTimeoutMs } from "./work-driver-adversarial-fix-git.ts";
 import type { FixPassStraysRequest } from "./work-driver-fix-pass-strays.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
@@ -262,10 +263,14 @@ export async function nextStrayAttempt(
       const n = Number(name.slice(refPrefix.length));
       if (Number.isInteger(n) && n >= 1) fromRef = Math.max(fromRef, n + 1);
     }
-  } catch {
+  } catch (err) {
     // The ref namespace could not be read. The patch directory still bounds the
     // number, and a collision with an unreadable namespace then fails on `wx`
     // (a refusal) rather than on a silent overwrite — the safe direction.
+    // Swallowed, but not silently: the counter's decision is only as good as the
+    // reads behind it, and a reader of the trace must be able to tell a quiet
+    // namespace from a broken one.
+    trace(`fix-pass-strays: could not read ${refPrefix}* refs: ${errText(err)}`);
   }
   return fromRef;
 }

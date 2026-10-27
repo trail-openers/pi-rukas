@@ -30,7 +30,7 @@
  *      the revert is about to delete.
  */
 
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { runGit, type GitExec } from "../src/work-develop-git.ts";
 import { execp } from "../src/exec.ts";
@@ -169,6 +169,48 @@ console.log("# an empty patch with nothing to copy refuses; with an untracked st
       `${t2.repoRoot}/tmp/issue-1846/fix-pass-strays-untracked/scratch-notes.md`,
     ),
     "with its bytes copied beside the patch",
+  );
+}
+
+console.log("# a DIRECTORY at the temp-index name refuses before the tree is touched");
+{
+  // The bug this case pins: `rmSync(tmpIndex, { force: true })` sat OUTSIDE the try
+  // that turns a commit failure into a returned refusal, and `force` is not force
+  // against a directory — it throws EISDIR. It ran AFTER `revertPaths` had already
+  // deleted and restored, so the rollback was skipped and the exception escaped to
+  // the step-crash handler: a worktree left half-reverted with no refusal, no
+  // rollback and no disclosure of what was deleted. The preflight now refuses a
+  // non-file at that path, and the clear itself lives inside the guarded try.
+  const t = passTreeAt("1846-index-eisdir");
+  const scratch = `${t.repoRoot}/tmp/issue-1846`;
+  mkdirSync(`${scratch}/fix-pass-strays-index-1846-default-11`, { recursive: true });
+  // Byte-identity of the whole tree is read as `status --porcelain` over the
+  // worktree plus its HEAD: the three strays are all still there and the pass's
+  // own commit is still the tip, which is the same thing "nothing was reverted"
+  // has to mean for the rollback case.
+  const before = `${git(t.worktree, "status --porcelain").trim()}|${git(t.worktree, "rev-parse HEAD").trim()}`;
+  const res = await revertFixPassStrays(req(t, ["helper.ts", "b.txt"], [], 11));
+  assert(
+    "reason" in res,
+    `the revert RETURNS a refusal rather than throwing (${JSON.stringify(res).slice(0, 160)})`,
+  );
+  assert(
+    lstatSync(`${scratch}/fix-pass-strays-index-1846-default-11`).isDirectory(),
+    "and the refusal is the preflight's: the directory is still there — the clear was never attempted",
+  );
+  assert(
+    `${git(t.worktree, "status --porcelain").trim()}|${git(t.worktree, "rev-parse HEAD").trim()}` ===
+      before,
+    "the tree is byte-identical to what it was: no revert happened",
+  );
+  assert(
+    existsSync(`${t.worktree}/helper.ts`) &&
+      readFileSync(`${t.worktree}/b.txt`, "utf8") === "hijacked\n",
+    "both strays are exactly where the pass left them",
+  );
+  assert(
+    !git(t.worktree, "show-ref").includes(fixPassStraysRef(1846, "default", 11)),
+    "and no preserved ref is left behind for a revert that never ran",
   );
 }
 
