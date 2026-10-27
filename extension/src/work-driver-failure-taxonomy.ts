@@ -138,6 +138,19 @@ function seamLabelFor(
   tail: FailureTail,
   cause: DispatchFailureCause,
 ): FailureCauseLabel | undefined {
+  // #1798 round 3 — a TERMINAL provider class that the classifier read from
+  // the provider's OWN message (a quota-terminal / quota-window that a killed
+  // dispatch also carries) is an exact rule match: asking a model to overrule
+  // the endpoint's own words about its own spend cap is not a question with an
+  // answer in it. Without this row the `cause` switch below would return
+  // "rate-limited" for it and the seam would be consulted.
+  if (
+    (cause === "rate-limited:quota-terminal" || cause === "rate-limited:quota-window") &&
+    tail.killCause !== undefined &&
+    tail.providerMessage !== undefined
+  ) {
+    return undefined;
+  }
   switch (cause) {
     case "self-killed:timeout":
     case "self-killed:inactivity":
@@ -263,12 +276,64 @@ export function repeatsNote(tail: { providerRepeats?: number }): string {
 }
 
 /**
+ * #1798 round 3 — a TERMINAL provider fact outranks a structured kill.
+ *
+ * The #296 rule ("a self-kill is never a provider failure") is about the
+ * KIND of the event and about not re-dispatching a child we killed on purpose,
+ * and both hold here: this function only returns a classification for a
+ * TERMINAL outage class, whose `shouldRetry` is false, so no kill is ever
+ * retried because of it. What the rule was never meant to do is DELETE the
+ * provider's own words. `buildCompletionEvent`'s kill branch owns the event
+ * and stamps `providerMessage` when the stream was severed at the same moment
+ * (#1798 round 1), and the kill branches all returned before that field was
+ * read — so a fixer killed at its bound by a spend-cap 429 classified
+ * `self-killed:timeout`, `isSystemicFailure` (work-queue.ts) saw a non-provider
+ * cause and let the remaining groups start, and each of them met the same cap.
+ *
+ * Read ONLY from `providerMessage` — the endpoint's own text, never the
+ * child's prose, which is the same evidence bar as `isProviderOutage`.
+ */
+export function terminalProviderClassOnKill(tail: FailureTail): FailureClass | undefined {
+  const msg = tail.providerMessage;
+  if (msg === undefined || msg.length === 0) return undefined;
+  if (!isRateLimit429Msg(msg)) return undefined;
+  // A spend cap: waiting cannot clear it, and every later group meets it.
+  if (isSpendCapMsg(msg)) {
+    return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
+  }
+  // A quota window — the delay the provider asked for, hours away. A burst
+  // (a delay short enough to wait out) is NOT terminal and is deliberately
+  // not returned: a killed child is still not re-dispatched, so claiming the
+  // transient class would be a retry the kill forbids.
+  if (isQuotaWindowMsg(msg)) {
+    return { cause: "rate-limited:quota-window", shouldRetry: false, maxRetries: 0 };
+  }
+  return undefined;
+}
+
+/** #1798 round 3 — a 429 whose stated delay is too long to wait out inside
+ *  the cycle. Same reading as the classifier's own ladder, so the two cannot
+ *  disagree about what "terminal" means. */
+function isQuotaWindowMsg(msg: string): boolean {
+  if (isSpendCapMsg(msg)) return false;
+  const delayS = parseRetryDelaySeconds(msg);
+  return delayS !== undefined && delayS > burstThresholdSeconds();
+}
+
+/**
  * #308/#314 — classify a dispatch-failure event by its ROOT CAUSE so the retry
  * router can branch on structure (killCause / 429 / errorStop) instead of
  * regex-matching errorTail strings. Uses shared DispatchFailureCause type
  * and RATE_LIMIT_429_PATTERN from types.ts for consistency with adversarial.ts.
  */
 export function classifyFailureCause(tail: FailureTail): FailureClass {
+  // #1798 round 3 — a TERMINAL provider fact the kill carries is read BEFORE
+  // the kill branches, which return early and would otherwise swallow it. See
+  // `terminalProviderClassOnKill` for why this does not undo #296.
+  if (tail.killCause !== undefined) {
+    const terminal = terminalProviderClassOnKill(tail);
+    if (terminal !== undefined) return terminal;
+  }
   // Structured killCause (#296) — pi-rukas itself ended the child.
   // MUST be checked first; a self-kill is never a provider failure.
   if (tail.killCause === "timeout") {

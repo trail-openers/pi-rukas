@@ -30,22 +30,22 @@
  * `lib/developer-test-scope.ts`).
  */
 
-import type { DispatchResult } from "../../src/types.ts";
+import type { HeadlessCap } from "../../src/headless/caps.ts";
+import { type ResultFailure, failureOf } from "../../src/headless/failure.ts";
 import { LENS_FIX_BOUND_ENV } from "../../src/review-budget.ts";
+import type { DispatchResult } from "../../src/types.ts";
 import { buildCompletionEvent } from "../../src/work-driver-completion-event.ts";
+import type { CycleContext } from "../../src/work-driver-context.ts";
 import { runSingleDispatch } from "../../src/work-driver-merged.ts";
 import { dispatchFailCapHit } from "../../src/work-driver-provider-park.ts";
 import { clearDispatch, markDispatchStarted, mintJobId } from "../../src/work-driver-resume.ts";
 import { createEmitSink } from "../../src/work-state-emit.ts";
 import {
-  initialState,
   type WorkEvent,
   type WorkState,
   appendEvent,
+  initialState,
 } from "../../src/workflow-state.ts";
-import type { CycleContext } from "../../src/work-driver-context.ts";
-import { failureOf, type ResultFailure } from "../../src/headless/failure.ts";
-import type { HeadlessCap } from "../../src/headless/caps.ts";
 
 export const MIN = 60_000;
 export const NOW = 1_700_000_000_000;
@@ -90,6 +90,24 @@ export function killed(over: Partial<DispatchResult> = {}): DispatchResult {
  *  sourceless neighbour the bound verdict must abstain on. */
 export function plainKill(): DispatchResult {
   return killed({ killCause: "no-progress", killBudgetMs: undefined, ms: 3 * MIN });
+}
+
+/**
+ * A kill at pi-rukas's own bound whose stream the ENDPOINT cut — the shape
+ * `buildCompletionEvent`'s kill branch owns the event for, and the reason
+ * #1798 round 3 exists: the provider fact used to be discarded with the
+ * `dispatch-failed-provider` branch, so a spend-cap 429 classified as a
+ * self-kill and the queue kept starting groups into the same cap.
+ *
+ * Built as `killed()` plus an `errorStop`, i.e. exactly what a scripted child
+ * returns when both happened, so the completion event is the real mapper's
+ * output and no fixture hand-writes a `providerMessage`.
+ */
+export function killedByProvider(
+  providerMessage: string,
+  over: Partial<DispatchResult> = {},
+): DispatchResult {
+  return killed({ errorStop: { reason: "error", message: providerMessage }, ...over });
 }
 
 /** The cycle context the writers need: a scratch repo root, a no-op emit sink,
