@@ -72,8 +72,9 @@ export interface FixPassFence {
    */
   admits: string[];
   /**
-   * The subjects the HELPER rule is anchored in: the planner's declared paths
-   * plus the finding-named widening, never an already-changed path.
+   * The directories rule 2 admits a helper in (`helperDirs`) are derived from the
+   * subjects the HELPER route is anchored in: the planner's declared paths plus
+   * the finding-named widening, NEVER an already-changed path.
    *
    * LOAD-BEARING. `alreadyChanged` is the tree judged against the cycle's BASE,
    * so an earlier develop round's edits appear in it — and PM decision #1846-2
@@ -85,17 +86,15 @@ export interface FixPassFence {
    * which is also what keeps every refusal the fence made before #1846 a refusal
    * after it.
    *
-   * #1849 item 9 — this used to be TWO fields (`helperSubjects` and
-   * `declaredDirs`) plus a third wider anchor set (`dirs`) and a running counter
-   * (`used`), all built by `fixPassFence` and read by nobody: the gate chooses
-   * `helperDirs` per pass, the ceiling reads `ceiling`, and the ladder computes
-   * its own numerator from `passChanged`. A field nothing reads is not inert — it
-   * is a second answer to a question the fence already answered, and the next
-   * reader has to work out which one is live. The subject set itself survives
-   * here, because `helperDirs` is derived from it and the distinction above is
-   * the load-bearing part.
+   * #1849 item 9 — the set is not a field of its own. It used to be THREE
+   * (`helperSubjects`, `declaredDirs`, and a wider `dirs`), all built by
+   * `fixPassFence` and read by nobody: the gate chooses `helperDirs` per pass, the
+   * ceiling reads `ceiling`, and the ladder computes its own numerator from
+   * `passChanged`. A field nothing reads is not inert — it is a second answer to a
+   * question the fence already answered, and the next reader has to work out which
+   * one is live. What is load-bearing is the DERIVATION, stated here and spelled
+   * once in `fixPassFence` below.
    */
-  helperSubjects: string[];
   /** The planner's declared paths, kept so the prompt can name the basis. */
   declared: string[];
   /**
@@ -173,14 +172,14 @@ export function fixPassFence(
   // A finding naming a file is the reviewer asking for work in that file's
   // neighbourhood, and `named` is already provenance-checked (tracked at base
   // or committed by the cycle, unprotected, anchored) by `namedPaths`.
-  // Already-changed paths are NOT here — see `helperSubjects`.
-  const helperSubjects = [...new Set([...declared, ...input.named.map(entryPath)])];
+  // The helper route's anchors: declared + finding-named. Already-changed paths
+  // are NOT here, for the reason stated on `helperDirs` (PM decision #1846-2).
+  const helperAnchors = [...new Set([...declared, ...input.named.map(entryPath)])];
   return {
     id: input.id,
     admits: subjects,
-    helperSubjects,
     declared,
-    helperDirs: anchorDirs(helperSubjects),
+    helperDirs: anchorDirs(helperAnchors),
     passChanged: [],
     outOfScope: input.outOfScope.map(entryPath),
     ceiling: fanoutLimit(denominator),
@@ -376,11 +375,11 @@ export function fixPassHelperDirs(
 ): ReadonlySet<string> {
   if (declared.length > 0)
     return anchorDirs([...declared.filter((f) => pathTokenIn(findings, f)), ...named]);
-  return ranRound ? roundDirs : EMPTY_DIRS;
+  // No anchors at all: a NEW empty set, not a shared constant — this set is
+  // `ReadonlySet` and handed straight to the gate, so a mutable singleton that
+  // one caller leaked into another would widen a route that must admit nothing.
+  return ranRound ? roundDirs : new Set<string>();
 }
-
-/** No anchors: the anchored-helper route admits nothing. */
-const EMPTY_DIRS: ReadonlySet<string> = new Set<string>();
 
 /** How many paths the printed fence names for one rule before it says "more". */
 const PRINTED_PATHS = 12;
