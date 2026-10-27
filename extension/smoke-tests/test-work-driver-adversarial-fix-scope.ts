@@ -18,7 +18,9 @@ import {
   git,
 } from "./lib/adversarial-fix-fixtures.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
-import { namedPaths } from "../src/work-driver-adversarial-fix-scope.ts";
+// #1849 — `namedPaths` lives in its own module now: the finding-name reader is a
+// pure text function with its own tests, split from the fence that consumes it.
+import { namedPaths } from "../src/work-driver-fix-pass-named.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
