@@ -109,35 +109,59 @@ const SAFE_NUMBER_RES = [
 export interface NamedIssueRef {
   /** The numeric id, or NaN for a split-child token. */
   id: number;
-  /** The token as written in the rationale, without the `#`. */
+  /**
+   * The issue this mention names, in CANONICAL form: `String(id)`, or
+   * `String(parent) + "-" + String(child)` for a split-child token.
+   *
+   * Canonical, and not the bytes as written, because this string is used two
+   * ways: as the dedupe key, and as the citation rule 4 strips out of the text.
+   * Both must be spelling-independent (#1856 review round 4, MEDIUM/security) —
+   * a zero-padded `#01856` is the same issue as `#1856`, and a ref whose token
+   * carried the leading zeros would dedupe as two issues AND leave the padded
+   * spelling in the text for rule 4 to find as an unaccounted number.
+   */
   token: string;
   /** Set when the token is a split-child id (`N-k`). */
   parent?: number;
   child?: number;
 }
 
-/** Every `#N` (or `#N-k`) token a rationale names, in order, deduped by token. */
+/**
+ * Every `#N` (or `#N-k`) token a rationale names, in order, deduped by the issue
+ * it names. A leading-zero spelling (`#01856`) names the issue `1856` and is the
+ * same ref as `#1856`, so it neither dedupes as a second issue nor reaches rule 4
+ * as a number of its own.
+ */
 export function namedIssueRefs(text: string): NamedIssueRef[] {
   const out: NamedIssueRef[] = [];
   const seen = new Set<string>();
   for (const m of text.matchAll(/#(\d+(?:-\d+)?)/g)) {
-    const token = m[1] ?? "";
-    if (seen.has(token)) continue;
-    seen.add(token);
-    if (token.includes("-")) {
-      const [parent, child] = token.split("-").map((x) => Number(x));
+    const written = m[1] ?? "";
+    if (written.includes("-")) {
+      const [parent, child] = written.split("-").map((x) => Number(x));
       if (
         Number.isSafeInteger(parent) &&
         child !== undefined &&
         Number.isSafeInteger(child) &&
         child >= 1
       ) {
-        out.push({ id: Number.NaN, token, parent, child });
+        // Canonical, so `#0103-2` and `#103-2` are one ref: the same parent and
+        // the same child, whatever zeros either side was written with.
+        const token = `${String(parent)}-${String(child)}`;
+        if (!seen.has(token)) {
+          seen.add(token);
+          out.push({ id: Number.NaN, token, parent, child });
+        }
       }
       continue;
     }
-    const id = Number(token);
-    if (Number.isSafeInteger(id) && id > 0) out.push({ id, token });
+    const id = Number(written);
+    if (Number.isSafeInteger(id) && id > 0) {
+      const token = String(id);
+      if (seen.has(token)) continue;
+      seen.add(token);
+      out.push({ id, token });
+    }
   }
   return out;
 }
@@ -241,9 +265,15 @@ export function citesUnaccountedNumberStripped(text: string, resolvedTokens: str
   // goes with it: a reply that writes `##1856` (a heading-flavoured citation) is
   // one the extractor resolved, and leaving the stray `#` behind used to be
   // harmless only because `#` carries no digit — removing the whole citation is
-  // what makes the strip match the mention the extractor read.
+  // what makes the strip match the mention the extractor read. `0*` strips any
+  // number of leading zeros: tokens are canonical (#1856 round 4), so a padded
+  // spelling `#001856` of a token this filter resolved names the SAME issue and
+  // must not survive as a digit run of its own. It is fail-open only in the one
+  // direction a zero prefix can be read — a leading zero is not a digit of the
+  // id — and the `(?![\d-])` anchor keeps the strip from ever reaching into a
+  // longer digit run: `#012` is not a spelling of a resolved `#1`.
   for (const token of [...resolvedTokens].sort((a, b) => b.length - a.length)) {
-    rest = rest.split(new RegExp(`#+${escapeForRegExp(token)}(?![\\d-])`, "g")).join(" ");
+    rest = rest.split(new RegExp(`#+0*${escapeForRegExp(token)}(?![\\d-])`, "g")).join(" ");
   }
   for (const re of SAFE_NUMBER_RES) rest = rest.replace(re, " ");
   return rest;

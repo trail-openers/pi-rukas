@@ -29,6 +29,7 @@ import {
   citesUnaccountedNumberStripped,
   clauseNaming,
   everyClauseNaming,
+  namedIssueRefs,
   replyNegates,
 } from "../src/plan-duplicate-self.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
@@ -271,6 +272,65 @@ async function barrier(
     citesUnaccountedNumber("##7 and ##77 both matter", ["7"]) === true,
     "rule 4: a ##-prefixed resolved token cannot blank the digits of a longer ## one",
   );
+}
+
+{
+  // #1856 review round 4 (MEDIUM, security): tokens are CANONICAL, so one issue
+  // written two ways is one ref — and the padded spelling is the same citation
+  // rule 4 strips, not a stray number that either keeps the HIGH or (on a
+  // non-canonical token) a hole in the fail-closed rule.
+  assert(
+    namedIssueRefs("#1856 (OPEN) restates #01856").map((r) => r.token).join(",") === "1856",
+    "canonical tokens: #1856 and #01856 are ONE ref, not two issues",
+  );
+  assert(
+    namedIssueRefs("#7 and #007 and #0007").map((r) => r.token).join(",") === "7",
+    "canonical tokens: any number of leading zeros names the same issue",
+  );
+  assert(
+    namedIssueRefs("#0103-2 and #103-02").map((r) => r.token).join(",") === "103-2",
+    "canonical tokens: a padded split-child token is the same parent-child pair",
+  );
+  for (const [text, resolved, want] of [
+    ["#1856 (OPEN) restates #01856", ["1856"], false],
+    ["#01856 (OPEN) restates #1856", ["1856"], false],
+    // The control that makes the two above a test and not an accident: a padded
+    // spelling of a DIFFERENT issue is still an unaccounted number.
+    ["#1856 (OPEN) restates #01855", ["1856"], true],
+    // And padding is only ever a prefix: the digits of a longer id are never
+    // blanked by a shorter resolved token, padded spelling or not.
+    ["cf. #01238", ["12"], true],
+  ] as [string, string[], boolean][]) {
+    assert(
+      citesUnaccountedNumber(text, resolved) === want,
+      `rule 4: ${text} with resolved [${resolved}] is${want ? "" : " not"} an unaccounted number`,
+    );
+  }
+  {
+    // End to end: the padded self-citation behaves exactly as the plain one.
+    const padded = await barrier(
+      "DUPLICATE_RISK: high — #1856 (OPEN) restates #01856 verbatim",
+      1856,
+    );
+    const plain = await barrier(
+      "DUPLICATE_RISK: high — #1856 (OPEN) restates #1856 verbatim",
+      1856,
+    );
+    assert(
+      padded?.level === "medium" &&
+        plain?.level === "medium" &&
+        JSON.stringify(padded?.excludedIssues) === JSON.stringify(plain?.excludedIssues),
+      `a padded self-citation is handled the same as the plain spelling (${padded?.level} / ${plain?.level})`,
+    );
+    const other = await barrier(
+      "DUPLICATE_RISK: high — #1856 (OPEN) restates #01855 verbatim",
+      1856,
+    );
+    assert(
+      other?.level === "high" && other?.downgradedFrom === undefined,
+      `a padded citation of ANOTHER issue keeps the HIGH (got ${other?.level})`,
+    );
+  }
 }
 
 // ============ rule 5: the prior-art word must live in the CLOSED issue's clause
