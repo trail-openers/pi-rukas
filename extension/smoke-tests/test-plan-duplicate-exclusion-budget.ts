@@ -11,12 +11,12 @@
  * sentence plus that clause plus an evidence tail. Ten fully-loaded rows rendered
  * 4,753 chars — more than the entire append budget, on their own.
  *
- * BASE-BEHAVIOUR EVIDENCE (observed, not argued): the pre-fix renderer — HEAD
- * `plan-duplicate-self.ts` (e66eb940), extracted by `git show` at test time — is
- * driven with the SAME worst-case fixture this file builds, in
- * smoke-tests/lib/plan-duplicate-base-probe.ts, and the assertion on it lives in
- * this file. It measures 5,865 chars against the 3,072 budget; the module in
- * this tree measures 1,470. A tree that has no row clips fails the assertion.
+ * BASE-BEHAVIOUR EVIDENCE was established OUTSIDE the repo, against the pre-fix
+ * renderer checked out at the commit this branch was cut from: the same
+ * worst-case fixture measured 5,865 chars against the 3,072-char append budget.
+ * No committed test reads a git revision — CI's checkout does not carry a branch
+ * commit — so what this file asserts is the render itself: the worst-case section
+ * stays inside its own cap, and stays a minority shareholder in the shared one.
  */
 
 import { POST_FIT_APPENDS_MAX_CHARS } from "../src/plan-dropped-budget.ts";
@@ -24,10 +24,6 @@ import {
   EXCLUSION_REASONS,
   PRIOR_ART_EVIDENCE,
 } from "../src/plan-duplicate-self.ts";
-import {
-  baseExcludeSection,
-  worstRows as baseWorstRows,
-} from "./lib/plan-duplicate-base-probe.ts";
 import {
   EXCLUSION_CLAUSE_MAX_CHARS,
   EXCLUSION_DISCLOSURE_MAX_ROWS,
@@ -144,25 +140,16 @@ function worstSection(count?: number): string {
     EXCLUSION_SECTION_MAX_CHARS + otherPostFitAppendsMax() <= POST_FIT_APPENDS_MAX_CHARS,
     `the section at its cap PLUS every other post-fit append fits the budget (${EXCLUSION_SECTION_MAX_CHARS} + ${otherPostFitAppendsMax()} <= ${POST_FIT_APPENDS_MAX_CHARS})`,
   );
-  // And the base tree did not: the same fixture on e66eb940's renderer overflows
-  // the shared budget. That is measured HERE, against the pre-fix module, so the
-  // finding cannot be argued away as hypothetical — and so this file fails on a
-  // tree whose renderer has no clips (see lib/plan-duplicate-base-probe.ts).
-  const base = await baseExcludeSection();
-  assert(
-    base > POST_FIT_APPENDS_MAX_CHARS,
-    `the pre-fix renderer overflows the shared budget on this very fixture (${base} > ${POST_FIT_APPENDS_MAX_CHARS})`,
-  );
+  // The assertion the finding is about, rendered: the same fixture that measured
+  // 5,865 chars on the pre-fix renderer now comes out under half the shared
+  // append budget when the renderer actually applies its row clips. A tree whose
+  // renderer has no clips blows this number and fails here. The pre-fix
+  // measurement itself was taken outside the repo against the base commit — no
+  // committed test reads a git revision, because CI's checkout does not carry one.
   const fixed = worstSection().length;
   assert(
-    base > fixed,
-    `the pre-fix render (${base}) is larger than the bounded one (${fixed}) — the clips are what shrank it`,
-  );
-  // The two renderers must be fed the SAME fixture, or the comparison above is
-  // two different questions.
-  assert(
-    JSON.stringify(baseWorstRows()) === JSON.stringify(worstRows()),
-    "the base probe and this test build byte-identical worst-case fixtures",
+    fixed <= Math.floor(POST_FIT_APPENDS_MAX_CHARS / 2),
+    `the worst-case section fits the shared post-fit append budget on its own (${fixed} <= ${Math.floor(POST_FIT_APPENDS_MAX_CHARS / 2)})`,
   );
 }
 

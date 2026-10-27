@@ -11,12 +11,13 @@
  * `runInvestigation`, before it returns.
  *
  * Base-behaviour evidence (the defect this fixes): the pre-#1856 modules copied
- * from 98f02444 to /tmp/pi-ensemble-developer/base-1856/ and driven by
- * /tmp/pi-ensemble-developer/probe-base-halt.ts produced
+ * `plan-duplicate-self.ts` (the commit this branch was cut from) to a scratch
+ * directory outside the repo and driven by a scratch probe there, which printed
  * `filingFailure.reason: "duplicate-risk"` with ZERO gap-gate dispatches for the
  * self-only reply below — the plan stopped before drafting and demanded a human
  * answer. Against this tree the same reply reaches drafting, which the block
- * marked "end to end" asserts outright.
+ * marked "end to end" asserts outright. No committed test reads a git revision:
+ * CI's checkout does not carry a branch commit.
  */
 
 import type { MechanicalInventory } from "../src/plan-draft.ts";
@@ -159,17 +160,19 @@ async function barrier(
 {
   // #1856 review round 1 — references the `#N` extractor cannot read must FAIL
   // CLOSED. Each reply below names the subject and rests its other evidence on
-  // an issue-shaped token that `namedIssueRefs` never emits, so on 9d1fe0f7 all
-  // four read as a self-only HIGH and were DOWNGRADED while main halted. The
-  // base modules are copied to /tmp/pi-ensemble-developer/base1856/ and driven
-  // by /tmp/pi-ensemble-developer/compare.ts, which prints base=medium for every
+  // an issue-shaped token that `namedIssueRefs` never emits, so on the pre-fix
+  // base all four read as a self-only HIGH and were DOWNGRADED while main
+  // halted. The base modules were copied to a scratch directory outside the repo
+  // and driven by a scratch probe there, which printed base=medium for every
   // row marked CHANGED there — the regression, observed rather than argued.
   //
   // Round 2: these five are the shapes round 1's WORD LIST happened to enumerate.
   // They stay pinned here, and the eight it leaked on (`GH-12`, `ticket 12`,
   // `bug 12`, …) plus the two clause cases are pinned in
   // test-plan-duplicate-failclosed.ts — the structural rule that replaced the
-  // list has to hold for every spelling, not just the listed ones.
+  // list has to hold for every spelling, not just the listed ones. (The base
+  // comparison for these was made outside the repo, on a copy of the pre-fix
+  // modules in a scratch dir; no committed test reads a git revision.)
   for (const [shape, rationale] of [
     ["`issue 12`", "DUPLICATE_RISK: high — #1856 restates this; issue 12 covers this"],
     [
@@ -448,8 +451,9 @@ async function pipelineRun(reply: string, sourceIssue?: number): Promise<RunOut>
 }
 
 {
-  // On base (98f02444) this exact case reported reason "duplicate-risk" with
-  // gate 0; here the run drafts and the body names what was excluded.
+  // On the pre-fix base (a copy taken outside the repo) this exact case reported
+  // reason "duplicate-risk" with gate 0; here the run drafts and the body names
+  // what was excluded.
   const r = await pipelineRun(SELF_ONLY_HIGH, 1856);
   assert(
     r.reason === undefined && r.gate >= 1,

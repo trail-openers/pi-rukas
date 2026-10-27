@@ -11,12 +11,12 @@
  * this file pins both, plus the evidence-supply fixes the round-1 lenses asked
  * for (the filter reads the child's FULL reply, not the 400-char display slice).
  *
- * BEFORE-BEHAVIOUR EVIDENCE (observed, not argued): the HEAD copies of
- * plan-duplicate-self.ts / plan-investigate.ts are saved to
- * /tmp/pi-ensemble-developer/r2/ and driven by
- * /tmp/pi-ensemble-developer/r2/probe-head.ts. On 51f2a5f2 every `keeps HIGH`
- * row below printed level=medium — the leak, reproduced on the commit under
- * review. Against this tree the same script prints high for each of them.
+ * BEFORE-BEHAVIOUR EVIDENCE (observed, not argued): the pre-fix copies of
+ * plan-duplicate-self.ts / plan-investigate.ts were saved to a scratch directory
+ * OUTSIDE the repo and driven by a probe script there. On the commit under review
+ * every `keeps HIGH` row below printed level=medium — the leak, reproduced on the
+ * base. Against this tree the same rows are high. No committed test reads a git
+ * revision: CI's checkout does not carry a branch commit.
  */
 
 import type { MechanicalInventory } from "../src/plan-draft.ts";
