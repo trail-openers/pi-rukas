@@ -314,6 +314,13 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
     reason: "a lens fix could not be placed on the branch's current head",
     action: CHANGE_FIX,
   },
+  // #1852 — the lens fixer wrote outside its fence. The fence is the plan's,
+  // so the cause is the change (or the scope the issue declared), not the driver.
+  "lens-fix-scope": {
+    cls: "change",
+    reason: "a lens fix changed files outside its declared scope, and nothing was pushed",
+    action: CHANGE_FIX,
+  },
   "lens-review-timeout": {
     cls: "environment",
     reason: "the review's fix loop ran past its own wall-clock budget",

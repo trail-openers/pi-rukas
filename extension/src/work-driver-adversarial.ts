@@ -2,8 +2,9 @@
  * work-driver-adversarial — Step 5 (adversarial gate) handler.
  *
  * Fans out one `runAdversarialLoop` per workstream, aggregates the verdict,
- * and — on approval following a lens-fix round — commits the fix via
- * work-driver-lens.ts's `commitLensFixChanges`.
+ * and — on approval following a lens-fix round — hands the round to
+ * `landLensFix` (work-driver-adversarial-lens-land.ts), which fences the delta
+ * and lands it.
  *
  * #492/#749/#797 — when a lens-fix never reaches the branch, the cap-hit
  * carries the CAUSE (committed-work detection via rev-list, not porcelain),
@@ -21,7 +22,7 @@ import {
 } from "./work-driver-adversarial-diff-cap.ts";
 import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
 import { fixRequestEvents, withParsedSiblings } from "./work-driver-adversarial-fix.ts";
-import { handleNoCommittedFix, integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
+import { landLensFix } from "./work-driver-adversarial-lens-land.ts";
 import {
   classifyAdversarialOutcome,
   reentryPassBatchSpan,
@@ -33,19 +34,10 @@ import {
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { failureCauseReasonForClass } from "./work-driver-failure-taxonomy.ts";
 import { integrate, restoreRepoRoot } from "./work-driver-integrate.ts";
-import {
-  detectCommittedFix,
-  landCommittedFix,
-  noDiffEvidence,
-  repoRootOriginalRef,
-} from "./work-driver-lens-fix-commit.ts";
+import { noDiffEvidence } from "./work-driver-lens-fix-commit.ts";
 import { lensWorktree } from "./work-driver-lens-fix.ts";
-import { commitLensFixChanges } from "./work-driver-lens.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
-import { runNetGit } from "./work-driver-net-git.ts";
-import { endIfPrGone } from "./work-driver-pr-gone.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -220,71 +212,12 @@ export async function runAdversarial(
     });
 
     if (state.pipelineState.lastCompletedStep === "lens-fix") {
-      // The fix is pushed below; a PR merged or closed during the fix pass
-      // must not receive it (work-driver-pr-gone.ts).
-      const gate = await endIfPrGone(ctx, next, "adversarial");
-      if (gate.ended) return gate.ended;
-      next = gate.state;
-      const execFn = ctx.verifyExecFn ?? execp;
-      const psFix = state.pipelineState;
-      const fixWorktrees = psFix.worktrees ?? {};
-      const inWorktree = Object.values(fixWorktrees).some(
-        (p) => path.resolve(p) !== path.resolve(ctx.repoRoot),
-      );
-      const result = inWorktree
-        ? await integrateLensFix(execFn, ctx, psFix, fixWorktrees)
-        : await commitLensFixChanges(ctx.repoRoot, psFix.reviewRound, execFn);
-      if (!result.committed) {
-        const fixTree = inWorktree ? lensWorktree(ctx, state) : ctx.repoRoot;
-        if (result.error) {
-          // #797 — state the repoRoot condition either way.
-          const preIntegrationRef = await repoRootOriginalRef(execFn, ctx.repoRoot);
-          const rootCondition = result.error.includes("repoRoot was restored")
-            ? "repoRoot was restored to the pre-integration ref (verified)"
-            : result.error.includes("repoRoot was NOT restored")
-              ? "repoRoot was NOT restored — manual repair required"
-              : inWorktree
-                ? `repoRoot restored to ${preIntegrationRef ?? "the pre-integration ref"} (integrate() claims the restore in its error text)`
-                : `repoRoot unchanged (N=1 commit path never moves the checkout)${preIntegrationRef ? ` — on ${preIntegrationRef}` : ""}`;
-          next.pipelineState.plumbReports.push({
-            step: "adversarial",
-            role: "driver",
-            body: `lens-fix: a diff existed but staging or integration failed (${result.error}) — worktree inspected: ${fixTree}. ${rootCondition}`,
-            at: Date.now(),
-          });
-          next = appendEvent(next, {
-            kind: "cap-hit",
-            at: Date.now(),
-            cap: "lens-fix-not-integrated",
-            reviewRound: psFix.reviewRound,
-            nextStep: "handoff",
-            lensWorktreePath: fixTree,
-            restoredToRef: preIntegrationRef,
-            evidence: `${result.error} ${rootCondition}`,
-          });
-          trace(`work-driver: lens-fix integration failed — ${result.error}`);
-          return next;
-        }
-        const handled = await handleNoCommittedFix(execFn, ctx, psFix, fixTree, result, next);
-        if (handled !== null) return handled;
-      }
-      if (result.committed && !result.pushed) {
-        try {
-          await runNetGit(execFn, "git push origin HEAD -q", { cwd: ctx.repoRoot });
-        } catch (err) {
-          // #1095: a timeout is non-blocking too, and its message names the
-          // cause ("network git timed out"). The fix is then not on the PR, and
-          // the plumbReport below is where the operator sees it.
-          const errMsg = `lens-fix push failed (non-blocking): ${(err as Error).message?.slice(0, 200)}`;
-          trace(`work-driver: ${errMsg}`);
-          next.pipelineState.plumbReports.push({
-            step: "adversarial",
-            role: "driver",
-            body: errMsg,
-            at: Date.now(),
-          });
-        }
-      }
+      // #1852 — the lens-fix scope fence and every landing arm live in
+      // work-driver-adversarial-lens-land.ts: one check gates the whole branch,
+      // and the revert's record is written before the first destructive call.
+      const landed = await landLensFix(ctx, state, next);
+      if (landed.kind === "parked") return landed.state;
+      next = landed.state;
     }
   } else if (
     // #1634 — a diff nobody could read is not a reviewer that failed to run, so

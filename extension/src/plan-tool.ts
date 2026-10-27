@@ -165,6 +165,15 @@ export function registerPlanTool(pi: ExtensionAPI) {
             "The reviewedDigest a dry run reported. Echo it on the confirming call to file that exact reviewed spec verbatim; without it, or on a mismatch, the full pipeline runs. The digest also covers labels and provenance: a confirm that changes either is a digest mismatch and files nothing.",
         }),
       ),
+      // #1856: placed after reviewedDigest so the pre-#1856 parameter order stays a
+      // prefix of the schema — the exact-schema pin in test-plan-tool.ts is what keeps
+      // it a prefix, which is how a new parameter cannot silently reorder the tool.
+      sourceIssue: Type.Optional(
+        Type.Number({
+          description:
+            "#1856: the number of the EXISTING issue this plan is for — planning a ticket that already exists (a refine or answer trigger, or a spec written against a known issue). The duplicate-risk check otherwise reads a near-copy of that issue's own title and can name it as the plan's own duplicate, which stops the plan; naming the issue here excludes it (and its own split children) from the duplicate candidates. A positive integer; anything else is refused before any dispatch. Omit when this plan is not for an existing issue — behaviour and the risk prompt are then exactly as before.",
+        }),
+      ),
       labels: Type.Optional(
         Type.Array(Type.String(), {
           description: `Labels to create the filed issue with, in the same single forge call — so they are on the issue from its first moment (a follow-up edit leaves a window where an auto-filed ticket reads as manual work to everything watching the tracker). At most ${MAX_LABELS}; each 1-50 chars matching ^[A-Za-z0-9][A-Za-z0-9:._ /-]*$ (spaces and ':' allowed, no comma). Invalid input is refused BEFORE any dispatch with an invalid-input error naming what is wrong. Every label must already exist on the target repo: a missing one halts filing with filingFailure.reason "label-missing" and NOTHING is filed — the driver never creates a label as a side effect of filing. When the repo's label list cannot be read in full (a CLI failure, or more labels than either CLI reads in one page) the halt reason is "label-list-unreadable" instead, and nothing is filed either — the driver never guesses that a label exists. The result gains issueNumber alongside issueUrl. Omit for today's behaviour exactly.`,
@@ -221,6 +230,16 @@ export function registerPlanTool(pi: ExtensionAPI) {
         };
       }
       const dryRun = params.dryRun === true;
+      // #1856: the source issue is the one input whose ABSENCE changes behaviour,
+      // so a malformed value is refused rather than quietly dropped — a caller
+      // that passes "eighteen fifty six" would otherwise get back the very
+      // self-duplicate halt the field exists to prevent, with no signal that its
+      // number never arrived.
+      const sourceIssueCheck = parseSourceIssueParam(params.sourceIssue);
+      if (!sourceIssueCheck.ok) {
+        return invalidInput("sourceIssue", [sourceIssueCheck.problem]);
+      }
+      const sourceIssue = sourceIssueCheck.value;
       // #1377: labels and provenance are validated here, BEFORE any dispatch.
       // A caller that mistypes a label name gets a named error for the cost of
       // one tool call, not a five-minute pipeline that then halts at the forge;
@@ -265,10 +284,14 @@ export function registerPlanTool(pi: ExtensionAPI) {
       // as the caller wrote it, and the driver re-classifies an unrecognised
       // value.
       const driverInput: PlanDriverInput = {
-        ...(params as Omit<PlanDriverInput, "labels" | "provenance" | "descriptor">),
+        ...(params as Omit<
+          PlanDriverInput,
+          "labels" | "provenance" | "descriptor" | "sourceIssue"
+        >),
         descriptor,
         labels,
         provenance,
+        ...(sourceIssue !== undefined ? { sourceIssue } : {}),
       };
       // #1541 review (MEDIUM) — the job's OWN AbortSignal, not the tool's exec
       // signal. `killJob(jobId)` / `killAllJobs()` (dispatch_kill and
@@ -337,6 +360,25 @@ export function registerPlanTool(pi: ExtensionAPI) {
       };
     },
   });
+}
+
+/**
+ * #1856: the `sourceIssue` parameter, narrowed. A positive safe integer or a
+ * named problem; `undefined` is the legitimate absent case. Kept beside the
+ * other pre-dispatch validators so no caller reaches the pipeline with a number
+ * this module never examined.
+ */
+function parseSourceIssueParam(
+  v: unknown,
+): { ok: true; value?: number } | { ok: false; problem: string } {
+  if (v === undefined || v === null) return { ok: true };
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1) {
+    return {
+      ok: false,
+      problem: `sourceIssue must be a positive integer issue number (got ${JSON.stringify(v)})`,
+    };
+  }
+  return { ok: true, value: v };
 }
 
 /**

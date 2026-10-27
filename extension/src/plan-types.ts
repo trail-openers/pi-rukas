@@ -204,6 +204,15 @@ export interface PlanDriverInput {
   context?: string;
   dryRun?: boolean;
   /**
+   * #1856: the number of the EXISTING issue this plan is for — the issue a
+   * headless session plans, or the one an explicit caller names. The
+   * duplicate-risk child otherwise reads a near-copy of that issue's own title
+   * and reports HIGH against it ("#869 already covers this exact scope
+   * verbatim"), which hard-stopped the plan at exit 10. Absent → no exclusion
+   * and a byte-identical duplicate-risk prompt.
+   */
+  sourceIssue?: number;
+  /**
    * #1043: the digest a dry run reported. A confirm that echoes it files the
    * reviewed spec verbatim, but only when the cached title + body still hash to it.
    */

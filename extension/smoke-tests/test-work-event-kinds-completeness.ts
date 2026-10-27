@@ -184,6 +184,17 @@ const everyKindEvent: WorkEvent[] = [
     worktree: "/wt",
     evidence: "clean",
   },
+  // #1852 — the lens-fix step's own record that this round's fence could not be
+  // built. In the fixture because an event kind absent here is a kind no
+  // validator has ever seen, and the gate that catches that (the tsc assertion
+  // on MissingEventKinds) only fires for kinds the union carries.
+  {
+    kind: "lens-fix-fence-unavailable",
+    at: 1,
+    round: 1,
+    worktree: "/wt",
+    reason: "git rev-parse failed",
+  },
   {
     kind: "adversarial-skipped-empty-diff",
     at: 1,

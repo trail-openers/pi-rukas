@@ -307,6 +307,10 @@ export function explainCap(
       // generic `step failed: lens-fix-reposition` fallback — a specific
       // guard with a specific sentence, rendered as an unnamed step.
       return explainLens(cap, state);
+    case "lens-fix-scope":
+      // #1852 — the lens fix's own scope fence, the same family; its body
+      // lives with the other lens caps so the switch stays a dispatch.
+      return explainLens(cap, state);
     case "fence-violation:develop": {
       // #849 — the develop fence's terminal park. A recovery round was
       // attempted (the violator's commit discarded, the violator re-dispatched

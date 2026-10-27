@@ -88,6 +88,31 @@ function reset(dup = DUP_NONE) {
 }
 
 {
+  // #1856: exit 10 stays correct only for genuine duplicates of OTHER issues.
+  // The same reply, with the issue being planned named by --issue, is not a
+  // duplicate of anything and must reach drafting (exit 0 for a dry run).
+  reset("DUPLICATE_RISK: high — this is #1856 (OPEN) restated verbatim");
+  const r = await runVerb("plan", [DESC, "--dry-run", "--issue", "1856"], REPO);
+  assert(r.violations.length === 0, `self-duplicate: output contract (${r.violations.join("; ")})`);
+  assert(r.code === 0, `a self-only HIGH reaches drafting, not exit 10 (got ${r.code})`);
+  assert(r.doc.status === "dry-run", "self-duplicate: status is a dry run");
+  assert(log.gate >= 1, "self-duplicate: the gap gate ran — the run was not stopped");
+  const spec = String(r.doc.spec);
+  assert(
+    spec.includes("## Duplicate check — excluded candidates") && spec.includes("#1856"),
+    "self-duplicate: the JSON's drafted body names the excluded issue",
+  );
+
+  // The paired halt: --issue present, but the HIGH names a different OPEN issue.
+  reset("DUPLICATE_RISK: high — #5 is an open issue that already covers this scope");
+  const halt = await runVerb("plan", [DESC, "--file", "--issue", "1856"], REPO);
+  assert(halt.code === 10, `a duplicate of another issue still exits 10 (got ${halt.code})`);
+  assert(halt.doc.status === "duplicate-risk", "self-duplicate pair: status stays duplicate-risk");
+  assert(log.gate === 0, "self-duplicate pair: the gate never ran on the genuine halt");
+  assert(forgeStub.created.length === 0, "self-duplicate pair: nothing filed");
+}
+
+{
   reset();
   forgeStub.mode = "throw";
   const r = await runVerb("plan", [DESC, "--file"], REPO);

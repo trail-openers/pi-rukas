@@ -18,6 +18,15 @@ import {
   countLensFixEmptyResends,
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
+import { lensFixWorkstreamId } from "./work-driver-lens-fix-fence-gate.ts";
+import { buildLensFixFence } from "./work-driver-lens-fix-fence.ts";
+import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records.ts";
+
+// Re-exported for the importers that have always taken the tree resolver from
+// this module (`work-driver-lens.ts`, `work-driver-adversarial.ts`,
+// `work-retry-tree-clean.ts`); the definition lives with the other #1852
+// record helpers.
+export { lensWorktree };
 import { repositionLensFixWorktree } from "./work-driver-lens-fix-reposition-gate.ts";
 import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -25,6 +34,7 @@ import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { interruptedLensFixNote, lostAttemptOnStep } from "./work-driver-retry-context.ts";
 import { developTestScopeLine } from "./work-driver-verify-fast.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import type { LensFixFenceSnapshot } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -35,7 +45,15 @@ import type { ExecFn } from "./worktree.ts";
  * only module that dispatches it, and that file sits at the AGENTS.md §12
  * 500-line cap. Same reason the rest of the lens-fix step already lives here.
  */
-export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): string {
+export function inlineLensFixPrompt(
+  findings: string,
+  scratchDirAbs: string,
+  /** #1852 — the rendered fence the fixer will be judged against, from the ONE
+   *  plan-time `FixPassFence` the gate reads (see `lensFixFenceLines`). Absent
+   *  only when the fence could not be built, in which case there was no fence
+   *  to print — the gate still refuses anything it cannot verify. */
+  fenceLines?: readonly string[],
+): string {
   return [
     "Address the six-pass review findings below against the diff currently on this worktree.",
     "",
@@ -63,9 +81,19 @@ export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): st
     "```json",
     findings,
     "```",
+    // #1852 — the fence printed in the same dispatch as the findings it bounds,
+    // rendered from the object the gate reads rather than re-derived here.
+    ...(fenceLines ?? []),
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");
 }
+
+/**
+ * The two arms of the step below both take their fence from
+ * `buildLensFixFence`: the snapshot the gate reads, the block the prompt prints,
+ * and the `record` the caller writes when the build failed in a way the gate must
+ * treat as a fence failure rather than as silence (#1852 review 1a).
+ */
 
 export async function runLensFix(
   ctx: CycleContext,
@@ -109,6 +137,9 @@ export async function runLensFix(
   // step (there were two inner declarations before the gate landed).
   const branchName = state.pipelineState.branchName;
   let next = state;
+  // #1852 — set once the plan-time fence exists; carried on the state so the
+  // adversarial step's gate reads this value and not a re-reading of the tree.
+  let lensFixFenceState: LensFixFenceSnapshot | undefined;
   if (resends > 0) {
     // The worktree was already established clean by the #492 inspection in
     // runAdversarial (that is what parked the cycle). Re-inspect for the
@@ -165,6 +196,44 @@ export async function runLensFix(
     }
   }
   const isResend = next !== state;
+  // #1852 — THE FENCE IS BUILT BEFORE THE PROMPT IS RENDERED, and the gate at
+  // the adversarial step reads the SAME object. `roundTip` here is a read of the
+  // tree's HEAD, and the reposition gate below (when it runs) can move the tree
+  // — so the tip read here and the tip the gate measures the delta from must be
+  // the same value, which is what `lensFixFenceState` carries forward through
+  // the state file for the gate to read back. A fence the prompt rendered from
+  // one tip and the gate checked against another is two fences.
+  const roundTipBefore = await readTreeHead(execFn, fixTree);
+  // A tree HEAD that could not be read is NOT "no fence this round": it is the
+  // tree failing to answer, which is exactly what the gate must park on. It gets
+  // the same recorded refusal the planner's own read failures get (#1852 1a).
+  if (roundTipBefore === undefined) {
+    next = await persistFenceRecord(ctx, next, fixTree, "the lens tree's HEAD could not be read");
+  }
+  // The workstream whose `pipelineState.worktrees` entry IS the lens tree, or
+  // `undefined` when none names it — which `buildLensFixFence` treats as a
+  // recorded fence failure rather than silence (#1852 round 3 item 1).
+  const fenceId = lensFixWorkstreamId(undefined, state.pipelineState, fixTree);
+  let fenceLines: string[] | undefined;
+  if (roundTipBefore !== undefined) {
+    const built = await buildLensFixFence(
+      execFn,
+      ctx.repoRoot,
+      state,
+      fenceId,
+      fixTree,
+      roundTipBefore,
+      findings,
+    );
+    fenceLines = built.lines;
+    lensFixFenceState = built.snapshot;
+    if (built.record !== undefined) {
+      next = await persistFenceRecord(ctx, next, fixTree, built.record);
+      trace(
+        `work-driver: lens-fix fence could not be built — the prompt prints no fence and the gate will park rather than skip the check: ${built.record}`,
+      );
+    }
+  }
   // #1391 — a retried fixer is told where its lost predecessor's work went.
   const lostNote = interruptedLensFixNote(state) ?? "";
   const body = isResend
@@ -183,9 +252,14 @@ export async function runLensFix(
         "```json",
         findings,
         "```",
+        // #1852 — the resend is a SECOND prompt literal built alongside the
+        // function above, and it is the same developer in the same tree under
+        // the same fence: printing the fence in one and not the other is how
+        // the test-scope rule got dropped once (#1156).
+        ...(fenceLines ?? []),
         scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
       ].join("\n")
-    : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue));
+    : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue), fenceLines);
   const prompt = `${lostNote}${body}`;
 
   // #981 (task-b) — reposition the lens-fix worktree to the branch's
@@ -234,6 +308,40 @@ export async function runLensFix(
   // conversion compares the tree's HEAD against this to tell "the fixer
   // committed" from "the tree already held this".
   const roundTipSha = await readTreeHead(execFn, fixTree);
+  // #1852 — when the reposition gate MOVED the tree, the tip the fence was
+  // built from is no longer the tip the fixer wrote on, and a gate that measured
+  // the delta from the old tip would judge the move itself as a change the fixer
+  // made. Rebuild from the verified tip — the prompt and the gate still read ONE
+  // value, because the prompt rendered below is built from this same rebuild.
+  if (roundTipSha !== undefined && roundTipSha !== roundTipBefore) {
+    // #1852 review 1a — THE SAME DISCIPLINE AS THE PRE-DISPATCH ARM, through the
+    // SAME builder. This arm has just MOVED the tree (the reposition gate
+    // fast-forwarded it) and a failed build clears `lensFixFenceState`, so the
+    // gate has nothing to judge. If such a failure were only traced, a transient
+    // `git diff --name-only` failure — the exact read the fixer's own work makes
+    // flakiest — would take the round through the gate's "no fence record, skip"
+    // branch and push whatever the fixer wrote, which is the hole #1852 exists to
+    // close. So the builder's `record` is written with the same event the
+    // pre-dispatch arm writes, and its absence means the state could never have
+    // had a fence (`no-base`), where standing down is right.
+    const rebuilt = await buildLensFixFence(
+      execFn,
+      ctx.repoRoot,
+      state,
+      fenceId,
+      fixTree,
+      roundTipSha,
+      findings,
+    );
+    fenceLines = rebuilt.lines;
+    lensFixFenceState = rebuilt.snapshot;
+    if (rebuilt.record !== undefined) {
+      next = await persistFenceRecord(ctx, next, fixTree, rebuilt.record);
+      trace(
+        `work-driver: lens-fix fence could not be rebuilt at the verified tip — the prompt prints no fence and the gate will park rather than skip the check: ${rebuilt.record}`,
+      );
+    }
+  }
 
   // #1789 (1) — THE CONVERSION MUST KNOW WHICH DISPATCH IT IS CLASSIFYING. It
   // reads the LAST event of the log, so it needs the identity of the dispatch
@@ -250,7 +358,24 @@ export async function runLensFix(
 
   const dispatched = await runSingleDispatch(
     ctx,
-    next,
+    // #1852 — the plan-time fence rides on the state the dispatch is made from,
+    // so the adversarial step's gate reads the value THIS prompt printed. When
+    // no fence could be built the field is cleared rather than left holding a
+    // previous round's fence: a stale fence would let this round land unchecked.
+    lensFixFenceState === undefined && state.pipelineState.lensFixFence
+      ? {
+          ...next,
+          pipelineState: {
+            ...next.pipelineState,
+            lensFixFence: undefined,
+          },
+        }
+      : lensFixFenceState === undefined
+        ? next
+        : {
+            ...next,
+            pipelineState: { ...next.pipelineState, lensFixFence: lensFixFenceState },
+          },
     "lens-fix",
     "developer",
     fixerLabel,
@@ -298,13 +423,4 @@ export async function runLensFix(
     { tree: fixTree, tipSha: roundTipSha, jobId: fixerJobId },
     execFn,
   );
-}
-
-/**
- * The tree the lens gate works in. #492 — exported so the adversarial gate's
- * lens-fix integration path names the SAME tree. Falls back to repoRoot.
- */
-export function lensWorktree(ctx: CycleContext, state: WorkState): string {
-  const wt = state.pipelineState.worktrees ?? {};
-  return wt.default ?? wt[Object.keys(wt)[0] ?? ""] ?? ctx.repoRoot;
 }

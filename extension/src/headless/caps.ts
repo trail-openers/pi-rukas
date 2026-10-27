@@ -94,6 +94,8 @@ export const FIXED_CAPS = [
   "lens-diff-unreadable",
   "lens-fix-not-integrated",
   "lens-fix-reposition",
+  // #1852 — the lens-fix scope fence refused the round before it could push.
+  "lens-fix-scope",
   // #1384 — the lens-review fix loop outlived its own budget
   // (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). Was `wall-clock` before result schema
   // v4, a name a host read as its own cycle clock.
