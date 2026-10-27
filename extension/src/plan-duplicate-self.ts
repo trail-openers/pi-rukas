@@ -10,8 +10,8 @@
  * inventory plus the prior-context rows both feed the child a verbatim listing
  * of it — so the child's most confident duplicate is the ticket under plan.
  *
- * Five rules, all deterministic, none of them a judgment about the model's
- * reasoning:
+ * Six rules, all deterministic, none of them a judgment about the model's
+ * reasoning (numbered as in docs/troubleshooting.md):
  *
  *   1. The source issue N and its own split children are never duplicates. They
  *      are the SUBJECT of the plan. Excluded wherever they appear: the
@@ -22,9 +22,9 @@
  *      HIGH that rests only on those is downgraded, not believed. Prior art can
  *      be satisfied ONLY by an inventory row known to be CLOSED: a named issue
  *      the inventory never carried has no known state, and rule 3 keeps it.
- *   3. Anything else stands: a HIGH that names one other OPEN issue halts
- *      exactly as it did before, and so does a `#X-k` token whose parent is not
- *      the source — that is someone else's decomposition, not this plan's.
+ *   3. Anything else keeps the halt: a HIGH that names one other OPEN issue
+ *      halts exactly as it did before, and so does a `#X-k` token whose parent is
+ *      not the source — that is someone else's decomposition, not this plan's.
  *   4. A number this filter cannot account for keeps the HIGH (#1856 review
  *      rounds 1–2). The extraction above reads `#N` tokens only, so a rationale
  *      that cites the rest of its evidence some other way — `GH-12`, `ticket 12`,
@@ -46,16 +46,22 @@
  *      newline. Words from an adjacent issue's clause count for nothing, so
  *      "#1856 is prior art; #103 is unlanded duplicate work" halts, and so does
  *      the comma form, while "reverses the landed decision in #103" downgrades.
- *      A clause that NEGATES the prior-art word ("#103 is not prior art, it is
- *      unlanded duplicate work") is the child saying the closed issue is a real
- *      duplicate, and suppresses nothing. Round 3: EVERY mention is judged, not
- *      just the first — "#103 is prior art for this. #103 is not landed, it is
- *      unlanded duplicate work" is one affirmation followed by a denial, and a
- *      reply that reads only the first clause suppressed a HIGH main halts on. A
- *      CLOSED issue is excluded only when SOME clause affirms prior art and NO
- *      clause naming it negates it.
+ *      Round 3: EVERY mention is judged, not just the first — a reply that reads
+ *      only the first clause suppressed a HIGH main halts on. Round 4: negation
+ *      is judged REPLY-WIDE, not per clause and not within a word window. A
+ *      CLOSED issue is excluded as prior art only when BOTH hold: every mention
+ *      of it has a clause carrying an affirming prior-art word, AND the WHOLE
+ *      reply contains no negator token — `not`, `never`, `no`, `nothing`, `none`,
+ *      `without`, `unlanded`, `isn't`, `wasn't`, `doesn't`, `didn't`, `hasn't`,
+ *      `aren't` or any `n't` contraction, case-insensitive whole words. One
+ *      negator anywhere in the reply excludes NOTHING: an unlanded duplicate
+ *      described in prose is a real duplicate whatever clause the word sits in,
+ *      and the HIGH stands. The subject rule (rule 1) is unaffected.
+ *   6. Anything else the rules above do not place stands: an absent marker is
+ *      never a downgrade, and a verdict this filter cannot attribute keeps the
+ *      halt exactly as it did before the filter existed.
  *
- * Rules 1–5 read the child's FULL reply, not the 400-char slice the parser keeps
+ * Rules 1–6 read the child's FULL reply, not the 400-char slice the parser keeps
  * for display (round-1 lens H1): an OPEN duplicate named past that cut is
  * invisible to the slice, and a HIGH that halts on main must not be downgraded
  * here because the evidence fell off the end of a window.
@@ -76,6 +82,7 @@ import {
   namedIssueRefs,
   priorArtClause,
   priorArtForAllMentions,
+  replyNegates,
 } from "./plan-duplicate-citations.ts";
 import {
   EXCLUSION_CLAUSE_MAX_CHARS,
@@ -97,6 +104,7 @@ export {
   namedIssueRefs,
   namedIssueTokens,
   priorArtForAllMentions,
+  replyNegates,
   type NamedIssueRef,
 } from "./plan-duplicate-citations.ts";
 
@@ -238,6 +246,11 @@ export function downgradeSelfDuplicate(
   // not the defect this filter exists for and it halts as any other HIGH does.
   if (named.length === 0) return verdict;
   const known = args.known ?? new Map<number, KnownIssue>();
+  // Rule 5's reply-wide half, computed once: ONE negator token anywhere in the
+  // child's reply means no CLOSED issue is prior art, so the HIGH stands. The
+  // subject rule below is untouched — a plan is never the duplicate of its own
+  // subject whatever the prose says about it.
+  const negated = replyNegates(text);
   // Rules 3 and 5, judged first, on the untouched text: a CLOSED issue whose own
   // clause carries no unnegated prior-art word, and an `X-k` token that is not
   // this plan's decomposition, are evidence the child meant as a real duplicate —
@@ -250,6 +263,7 @@ export function downgradeSelfDuplicate(
     if (ref.id === source) continue;
     const row = known.get(ref.id);
     if (row === undefined || !isClosedState(row.state)) continue;
+    if (negated) return verdict;
     if (!priorArtForAllMentions(everyClauseNaming(text, ref.token))) return verdict;
   }
   const excluded: ExcludedDuplicate[] = [];
@@ -280,9 +294,10 @@ export function downgradeSelfDuplicate(
       continue;
     }
     if (row !== undefined && isClosedState(row.state)) {
-      // Judged by rule 5 above, so SOME clause naming it carries the prior-art
-      // word and none negates it. The disclosure quotes the FIRST affirming
-      // clause — the one that satisfied the rule — not merely the first mention.
+      // Judged by rule 5 above: the reply carries no negator token at all and
+      // EVERY clause naming this issue affirms prior art. The disclosure quotes
+      // the FIRST affirming clause — the one that satisfied the rule — not merely
+      // the first mention.
       const affirming =
         everyClauseNaming(text, ref.token).find((c) => priorArtClause(c)) ??
         clauseNaming(text, ref.token);

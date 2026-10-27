@@ -26,19 +26,39 @@
  * discharges rule 1 for the planned issue and then halts on a genuinely open
  * duplicate must not have that open finding's own wording read back as a
  * prior-art claim about the closed issue.
+ *
+ * Negation is NOT matched here. Round 4 removed the word-window negation that
+ * used to sit beside this: "is not prior art", "no … prior art" and "it is not
+ * landed" are the same claim in three spacings, and a window can only ever
+ * enumerate spellings. Negation is decided reply-wide by {@link replyNegates}
+ * and it takes precedence over every affirmation.
  */
 const PRIOR_ART_RE =
   /\b(prior art|reversal|revers(?:e|es|ed|ing)|supersed\w*|overturn\w*|landed|deliberate(?:ly)?\s+chang\w*)\b/i;
 
 /**
- * The same vocabulary with an optional negation in front of it — "is not prior
- * art", "isn't superseded", "was never landed". A clause whose only prior-art
- * word is negated is the child REJECTING prior art for that issue, so it
- * satisfies nothing. The window is three words because the negation that
- * matters is the one attached to the verb, not any `not` in the sentence.
+ * Rule 5's negator tokens (#1856 review round 4), matched case-insensitively as
+ * WHOLE WORDS anywhere in the child's reply: `not`, `never`, `no`, `nothing`,
+ * `none`, `without`, `unlanded`, the listed contractions, and any `n't`
+ * contraction. `unlanded` is spelled out because the `\b`-anchored list would
+ * not catch it as a `no`-style word and it is the exact word the field case's
+ * rationales use for "this closed issue is a duplicate that never shipped".
  */
-const PRIOR_ART_NEGATED_RE =
-  /\b(?:not|never|isn'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|cannot|can'?t|no)\s+(?:\w+\s+){0,2}(?:prior\s+art|reversal|revers(?:e|es|ed|ing)|supersed\w*|overturn\w*|landed|deliberate(?:ly)?\s+chang\w*)\b/i;
+const NEGATOR_RE =
+  /\b(?:not|never|no|nothing|none|without|unlanded|isn'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|hasn'?t|haven'?t|aren'?t|can'?t|cannot|couldn'?t|shouldn'?t|wouldn'?t|won'?t)\b/i;
+
+/**
+ * Does the reply negate anything, anywhere? Rule 5's reply-wide half: one
+ * negator token anywhere means NO CLOSED issue is excluded as prior art, so the
+ * HIGH stands. Judged over the whole reply rather than the clause naming an
+ * issue because the child's denial of prior art and its affirmation of it are
+ * routinely two different sentences about the same issue ("#103 is prior art.
+ * It is not landed."), and a clause-scoped negation reads the second sentence as
+ * somebody else's business.
+ */
+export function replyNegates(text: string): boolean {
+  return NEGATOR_RE.test(text);
+}
 
 /**
  * Clause boundaries for rule 5: sentence terminators, a semicolon, a comma and a
@@ -168,30 +188,26 @@ export function clauseNaming(text: string, token: string): string {
 
 /**
  * Did the child honour this CLOSED issue as landed work in the clause naming it?
- * A clause with an unnegated prior-art word is the child deferring to a landed
- * decision (rule 2 satisfied); anything else — no word at all, or only a negated
- * one — is the child calling the closed issue a real duplicate, and the HIGH
- * stands.
+ * An affirming clause is the child deferring to a landed decision; anything else
+ * — no prior-art word at all — is the child calling the closed issue a real
+ * duplicate. Negation is NOT judged here: {@link replyNegates} decides that over
+ * the whole reply, and it outranks every affirmation.
  */
 export function priorArtClause(clause: string): boolean {
-  return PRIOR_ART_RE.test(clause) && !PRIOR_ART_NEGATED_RE.test(clause);
+  return PRIOR_ART_RE.test(clause);
 }
 
 /**
- * Rule 5 over EVERY mention of one issue (round 3): an issue is honoured as
- * landed work only when SOME clause naming it affirms prior art AND no clause
- * naming it negates it. Judging the first mention alone let the field shape
- * "#103 is prior art for this. #103 is not landed, it is unlanded duplicate
- * work" exclude a CLOSED issue the child had just called a real duplicate.
+ * Rule 5 over EVERY mention of one issue: an issue is honoured as landed work
+ * only when EVERY clause naming it carries an affirming prior-art word. Judging
+ * the first mention alone let the field shape "#103 is prior art for this. #103
+ * is not landed, it is unlanded duplicate work" exclude a CLOSED issue the child
+ * had just called a real duplicate. Round 4 adds the reply-wide half of the rule
+ * at the call site: no mention counts when {@link replyNegates} fires.
  */
 export function priorArtForAllMentions(clauses: string[]): boolean {
   if (clauses.length === 0) return false;
-  let affirmed = false;
-  for (const clause of clauses) {
-    if (PRIOR_ART_NEGATED_RE.test(clause)) return false;
-    if (PRIOR_ART_RE.test(clause)) affirmed = true;
-  }
-  return affirmed;
+  return clauses.every((clause) => PRIOR_ART_RE.test(clause));
 }
 
 /**

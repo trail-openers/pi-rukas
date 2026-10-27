@@ -29,6 +29,7 @@ import {
   citesUnaccountedNumberStripped,
   clauseNaming,
   everyClauseNaming,
+  replyNegates,
 } from "../src/plan-duplicate-self.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
 
@@ -349,16 +350,105 @@ async function barrier(
 }
 
 {
-  // The disclosure quotes the AFFIRMING clause, not merely the first mention of
-  // the token, so what the operator reads is the sentence the rule rested on.
+  // #1856 review round 4 (adversarial + lens, HIGH): rule 5's negation is
+  // REPLY-WIDE, not per clause and not inside a word window. A denial of prior
+  // art and its affirmation are routinely two sentences about the same issue, and
+  // `unlanded` in a clause that never repeats the prior-art word said "not
+  // landed" just as loudly as `not landed` did. One negator token anywhere and
+  // NO CLOSED issue is excluded: every row below keeps the HIGH.
+  const NEGS: [string, string][] = [
+    ["a negator beside the prior-art word", "DUPLICATE_RISK: high — #103 is prior art, it is not landed"],
+    [
+      "a negator in its own sentence plus `unlanded`",
+      "DUPLICATE_RISK: high — #103 is prior art. It is not landed. It is unlanded duplicate work",
+    ],
+    [
+      "the subject named alongside the denial",
+      "DUPLICATE_RISK: high — #1856 restates this. #103 is prior art, it is not landed, it is unlanded duplicate work",
+    ],
+    // `nothing` is a negator token even where it is the object of the verb: the
+    // rule does not try to tell a denial apart from an incidental use.
+    ["a negator with no prior-art word in its clause", "DUPLICATE_RISK: high — #103 reverses nothing"],
+  ];
+  for (const [shape, rationale] of NEGS) {
+    const risk = await barrier(rationale, 1856);
+    assert(
+      risk?.level === "high" &&
+        risk?.downgradedFrom === undefined &&
+        risk?.excludedIssues === undefined,
+      `rule 5 reply-wide negation (${shape}) excludes no CLOSED issue and keeps the HIGH (got ${risk?.level})`,
+    );
+  }
+}
+
+{
+  // The negator is judged over the WHOLE reply, so it also stops an exclusion
+  // whose CLOSED issue is #103 while the subject #1856 still excludes normally
+  // when no closed issue is at stake: the rule 1 subject path is unchanged by
+  // the reply-wide rule.
   const risk = await barrier(
-    "DUPLICATE_RISK: high — #103 is mentioned here. #103 reverses the landed decision it settled",
+    "DUPLICATE_RISK: high — #1856 restates this verbatim; there is no other open issue",
+    1856,
+  );
+  assert(
+    risk?.level === "medium" &&
+      (risk?.excludedIssues ?? []).map((e) => e.number).join(",") === "1856",
+      `rule 1 is unaffected by the reply-wide negator: a subject-only HIGH still downgrades (got ${risk?.level})`,
+  );
+}
+
+{
+  // The negator set, pinned at the token level: every spelling the rule names,
+  // case-insensitively as a whole word — and NOT a substring (`no` inside `notable`,
+  // `none` inside `nonempty`) — so the rule cannot be widened into a blanket
+  // refusal to ever honour prior art.
+  for (const neg of [
+    "not",
+    "NOT",
+    "never",
+    "no",
+    "nothing",
+    "none",
+    "without",
+    "unlanded",
+    "isn't",
+    "wasn't",
+    "doesn't",
+    "didn't",
+    "hasn't",
+    "aren't",
+    "couldn't",
+  ]) {
+    assert(
+      replyNegates(`the closed issue #103 is prior art, ${neg} otherwise`) === true,
+      `rule 5: the negator token \/${neg}\/ fires reply-wide`,
+    );
+  }
+  assert(
+    replyNegates("#103 is prior art for this notable nonempty work") === false,
+    "rule 5: a negator substring inside a longer word does not fire",
+  );
+}
+
+{
+  // The disclosure quotes a clause carrying a prior-art WORD rather than
+  // asserting a fixed claim about the child's words, and it keeps the clause
+  // whole inside the row's clip. Round 4 requires EVERY mention of a CLOSED
+  // issue to affirm, so both clauses below carry a word; which one the row prints
+  // is not load-bearing (round-3's "first vs. later mention" distinction died
+  // with the per-clause negation window), so this pins the copy the operator
+  // actually reads.
+  const risk = await barrier(
+    "DUPLICATE_RISK: high — #103 is prior art for the older scope. #103 reverses the landed decision it settled",
     1856,
   );
   const section = duplicateExclusionSection(risk, 1856);
   assert(
-    risk?.level === "medium" && section.includes("reverses the landed decision"),
-    `rule 5: the disclosure quotes the affirming clause rather than the first mention (section ${JSON.stringify(section)})`,
+    risk?.level === "medium" &&
+      /prior art or a reversal target — "[^"]*"/.test(section) &&
+      (/prior art for the older scope/.test(section) ||
+        /reverses the landed decision/.test(section)),
+    `rule 5: the disclosure quotes one of the clauses that affirmed prior art (section ${JSON.stringify(section)})`,
   );
 }
 
