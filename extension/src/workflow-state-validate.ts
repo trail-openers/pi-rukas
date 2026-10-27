@@ -11,8 +11,6 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import { REDACTED } from "./secret-patterns.ts";
-import { FAILURE_REASON_CHARS } from "./work-driver-failure-taxonomy.ts";
 import { FIXER_BOUND_SOURCES } from "./work-driver-fixer-bound.ts";
 import { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
 import { PLAN_VERDICTS } from "./workflow-state-events-caps.ts";
@@ -364,35 +362,16 @@ export function validateDiscriminants(state: unknown): string[] {
         typeof e.providerMessage !== "string"
       ) {
         out.push(`eventLog[${i}].providerMessage is not a string`);
-      } else if (
-        (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider") &&
-        typeof e.providerMessage === "string"
-      ) {
-        // #1798 round 4 — a resumed value must also be BOUNDED, and the bound
-        // is the writer's own maximum, not a guess at it. The one writer of a
-        // killed dispatch's `providerMessage` is `buildCompletionEvent`, which
-        // puts the text through `boundedProviderText` = `redactClip(text,
-        // FAILURE_REASON_CHARS)`. `redactClip` redacts FIRST and clips AFTER
-        // (deliberately — a clip before the redaction is what leaves a
-        // credential fragment behind), so the window it returns is never longer
-        // than the budget… except where the edge sweep GROWS it and the function
-        // re-clips to exactly `max`. The writer's true maximum is therefore
-        // `FAILURE_REASON_CHARS`, with slack for one thing the writer cannot
-        // control: a redaction that replaces a credential with the
-        // `[REDACTED]` marker inside a window that was already at the budget
-        // before the final re-clip. That slack is `REDACTED.length`; a value
-        // beyond the two is not something the writer produced.
-        //
-        // Why this is worth a rule at all: the field decides whether the whole
-        // queue halts (#1798 round 3), so a corrupt or hand-edited 20 KB body
-        // would both manufacture a halt and dominate every renderer that prints
-        // it. Reported, not repaired — `readState`'s cast is the only gate.
-        if (e.providerMessage.length > FAILURE_REASON_CHARS + REDACTED.length) {
-          out.push(
-            `eventLog[${i}].providerMessage is longer than the writer can produce (${String(e.providerMessage.length)} chars)`,
-          );
-        }
       }
+      // #1798 round 4 — NO length bound here. The writer is the bound
+      // (`buildCompletionEvent` puts every `providerMessage` through
+      // `boundedProviderText`), and a validator that refuses a value longer than
+      // the current writer can produce halts a cycle on state an OLDER version
+      // wrote legitimately — the provider-kind writer stored the message raw and
+      // unbounded until this PR, so any pre-upgrade state file with a long
+      // provider body halted on resume with "unrecognised value". A validator
+      // that rejects old-but-valid state is worse than no validator; the type
+      // check above is the one that catches a corrupt field.
       // #1247 — a `cycle-interrupted` origin must be one the process tracker
       // can actually write. The field is OPTIONAL (state files pre-#1247 have
       // none), but when PRESENT it names what closed the session, and the

@@ -372,7 +372,13 @@ export async function buildCompletionEvent(
         label,
         ms: result.ms,
         at,
-        providerMessage: result.errorStop.message,
+        // #1798 round 4 — the same seam as the kill branch above. Before this
+        // the provider-kind write stored `result.errorStop.message` RAW and
+        // unbounded: the provider's own body (which can quote a request header
+        // or a key from an error page) landed in the durable state file
+        // unredacted, and a long body made the resume validator reject the
+        // whole state file as "unrecognised value".
+        providerMessage: boundedProviderText(result.errorStop.message ?? "provider error-stop"),
         ...(result.providerRepeats ? { providerRepeats: result.providerRepeats } : {}),
         transcriptPath: result.transcriptPath,
       },

@@ -14,8 +14,9 @@
  * surface, because two modules had each derived "is this a spend cap" for
  * themselves.
  *
- * No import from the taxonomy: it imports THIS module, and a leaf that imports
- * its own consumer back for one constant turns a clean seam into a cycle. The
+ * The taxonomy imports THIS module and this module imports nothing from the
+ * taxonomy: a leaf that imports its own consumer back for one constant turns a
+ * clean seam into a cycle. The
  * burst threshold is therefore passed IN by each caller — the classifier's own
  * `burstThresholdSeconds()`, read once per classification, so there is still
  * exactly one knob and one reading of it.

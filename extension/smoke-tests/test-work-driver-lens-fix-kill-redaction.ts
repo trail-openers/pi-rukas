@@ -16,13 +16,15 @@
  *     structured `providerMessage` and the composite `errorTail` — and never as
  *     itself.
  *
- *  2. **The bound on a resumed value.** `readState`'s untyped cast is the only
- *     runtime gate on what a state file holds (#533), and this field decides
- *     whether the WHOLE queue halts (#1798 round 3). So `validateDiscriminants`
- *     refuses a `providerMessage` longer than the maximum the writer can
- *     actually produce — the classifier's own `FAILURE_REASON_CHARS`, plus the
- *     slack one redaction marker needs when it lands in a window already at the
- *     budget.
+ *  2. **The bound is the WRITER's job, not the validator's.** `readState`'s
+ *     untyped cast is the only runtime gate on what a state file holds (#533),
+ *     so `validateDiscriminants` keeps the TYPE rule on `providerMessage`. It
+ *     deliberately has NO length rule: a bound in the validator refuses state an
+ *     OLDER version wrote legitimately — the `dispatch-failed-provider` writer
+ *     stored the provider body raw and unbounded until round 4 — and a cycle
+ *     that merely survived an upgrade halts on resume with "unrecognised
+ *     value". Both kinds are now written through `boundedProviderText`, so the
+ *     bound holds by construction at the write site and legacy longs validate.
  *
  * The token is ASSEMBLED AT RUNTIME (`credential()`), exactly as
  * `test-work-driver-lens-fix-kill-provider-queue.ts` does, so this file's own
@@ -110,20 +112,22 @@ function longBodyWithCredentialAfterTheBudget(): string {
   );
 }
 
-// ───────────────── 2. a resumed providerMessage is bounded, not just typed ──
+// ──────────── 2. the writer bounds BOTH kinds; the validator only types ────
 {
-  const withProviderMessage = (providerMessage: unknown) => {
+  const withProviderMessage = (providerMessage: unknown, kind: string) => {
     const s = initialState(1798, NOW) as unknown as Record<string, unknown>;
     s.eventLog = [
       {
-        kind: "dispatch-failed",
+        kind,
         step: "lens-fix",
         role: "developer",
         jobId: "lens-fix:x:1:1",
         label: "lens-fix",
         ms: MIN,
         at: NOW,
-        killCause: "timeout",
+        ...(kind === "dispatch-failed"
+          ? { killCause: "timeout", exitCode: null }
+          : { transcriptPath: "/tmp/pi-rukas-1798/x.json" }),
         providerMessage,
       },
     ];
@@ -141,33 +145,72 @@ function longBodyWithCredentialAfterTheBudget(): string {
     killedByProvider(longBodyWithCredentialAfterTheBudget()),
   )) as Extract<WorkEvent, { kind: "dispatch-failed" }>;
   assert(
-    validateDiscriminants(withProviderMessage(real.providerMessage)).length === 0,
+    validateDiscriminants(withProviderMessage(real.providerMessage, "dispatch-failed")).length ===
+      0,
     `the writer's own providerMessage validates at ${String(real.providerMessage?.length)} chars`,
   );
+  // #1798 round 4 — the PROVIDER kind used to store `result.errorStop.message`
+  // RAW: no redaction, no bound. Through the real builder it now gets the same
+  // `boundedProviderText` treatment as the kill branch.
+  const providerBody = longBodyWithCredentialAfterTheBudget();
+  const provEv = (await buildCompletionEvent(
+    lensFixCtx({
+      ok: false,
+      ms: MIN,
+      exitCode: 0,
+      finalAssistantText: "",
+      errorStop: { reason: "error", message: providerBody },
+    }) as never,
+    "lens-fix",
+    "developer",
+    "lens-fix",
+    {
+      ok: false,
+      ms: MIN,
+      exitCode: 0,
+      finalAssistantText: "",
+      errorStop: { reason: "error", message: providerBody },
+    } as never,
+  )) as Extract<WorkEvent, { kind: "dispatch-failed-provider" }>;
   assert(
-    validateDiscriminants(
-      withProviderMessage("y".repeat(FAILURE_REASON_CHARS + "[REDACTED]".length)),
-    ).length === 0,
-    "…and at the top of the range the writer can reach (budget + one marker of slack)",
-  );
-  const tooLong = validateDiscriminants(
-    withProviderMessage("y".repeat(FAILURE_REASON_CHARS + "[REDACTED]".length + 1)),
+    provEv.kind === "dispatch-failed-provider",
+    "a dispatch whose only failure is an error-stop is a dispatch-failed-provider event",
   );
   assert(
-    tooLong.length === 1 && (tooLong[0] ?? "").includes("providerMessage"),
-    `one past that is refused and names the field (got ${JSON.stringify(tooLong)})`,
+    provEv.providerMessage !== undefined &&
+      provEv.providerMessage.length <= FAILURE_REASON_CHARS + "[REDACTED]".length &&
+      !provEv.providerMessage.includes(SECRET) &&
+      provEv.providerMessage.includes("[REDACTED]"),
+    `the provider-kind providerMessage is CLIPPED and REDACTED too (len=${provEv.providerMessage?.length}, budget=${FAILURE_REASON_CHARS})`,
+  );
+  // The validator's tolerance, which is the resume-halt fix: a long value from a
+  // pre-#1798 state file must NOT refuse the file.
+  const legacyLong = "y".repeat(FAILURE_REASON_CHARS * 4);
+  assert(
+    validateDiscriminants(withProviderMessage(legacyLong, "dispatch-failed-provider")).length === 0,
+    `a legacy long provider-kind providerMessage (${legacyLong.length} chars) validates — the writer is the bound, not the validator`,
   );
   assert(
-    (validateDiscriminants(withProviderMessage({ message: "429" }))[0] ?? "").includes(
+    validateDiscriminants(withProviderMessage("y".repeat(FAILURE_REASON_CHARS + 1), "dispatch-failed")).length === 0,
+    "…and the same tolerance on the killed kind (no length rule at all now)",
+  );
+  assert(
+    (validateDiscriminants(withProviderMessage({ message: "429" }, "dispatch-failed"))[0] ?? "").includes(
       "providerMessage",
     ),
     "a non-string is still refused (the type rule is untouched)",
+  );
+  assert(
+    (validateDiscriminants(withProviderMessage(42, "dispatch-failed-provider"))[0] ?? "").includes(
+      "providerMessage",
+    ),
+    "…on the provider kind as well",
   );
 }
 
 console.log(
   exitCode === 0
-    ? "\n#1798 round 4 provider redaction + resume bound: all assertions passed"
-    : "\n#1798 round 4 provider redaction + resume bound: FAILURES above",
+    ? "\n#1798 round 4 provider redaction (both kinds) + tolerant resume validation: all assertions passed"
+    : "\n#1798 round 4 provider redaction + resume validation: FAILURES above",
 );
 process.exit(exitCode);
