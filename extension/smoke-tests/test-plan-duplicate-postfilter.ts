@@ -165,6 +165,12 @@ async function barrier(
   // base modules are copied to /tmp/pi-ensemble-developer/base1856/ and driven
   // by /tmp/pi-ensemble-developer/compare.ts, which prints base=medium for every
   // row marked CHANGED there — the regression, observed rather than argued.
+  //
+  // Round 2: these five are the shapes round 1's WORD LIST happened to enumerate.
+  // They stay pinned here, and the eight it leaked on (`GH-12`, `ticket 12`,
+  // `bug 12`, …) plus the two clause cases are pinned in
+  // test-plan-duplicate-failclosed.ts — the structural rule that replaced the
+  // list has to hold for every spelling, not just the listed ones.
   for (const [shape, rationale] of [
     ["`issue 12`", "DUPLICATE_RISK: high — #1856 restates this; issue 12 covers this"],
     [
@@ -184,19 +190,32 @@ async function barrier(
     const risk = await barrier(rationale, 1856);
     assert(
       risk?.level === "high" && risk?.downgradedFrom === undefined,
-      `an unreadable issue reference (${shape}) keeps the HIGH instead of downgrading (got ${risk?.level})`,
+      `an unaccounted issue reference (${shape}) keeps the HIGH instead of downgrading (got ${risk?.level})`,
     );
   }
 }
 
 {
-  // The same shape, negated-proof: with no OTHER issue-shaped reference in the
-  // rationale, the closed prior-art reply still downgrades — so the fail-closed
-  // gate above fires on the un-read reference, not on its own caution.
+  // A `#X-k` token whose parent is NOT the planned issue is somebody else's
+  // decomposition, never this plan's own split child — the HIGH stands.
+  const risk = await barrier(
+    "DUPLICATE_RISK: high — #1856 restates this, and #404-2 is the unlanded half",
+    1856,
+  );
+  assert(
+    risk?.level === "high" && risk?.downgradedFrom === undefined,
+    `a hyphenated token whose parent is not the source keeps the HIGH (got ${risk?.level})`,
+  );
+}
+
+{
+  // The same shape, negated-proof: with no other number in the rationale, the
+  // closed prior-art reply still downgrades — so the fail-closed gate above
+  // fires on the un-accounted number, not on its own caution.
   const risk = await barrier("DUPLICATE_RISK: high — reverses the landed decision in #103", 1856);
   assert(
     risk?.level === "medium",
-    `a rationale with no unreadable reference still downgrades on closed prior art (got ${risk?.level})`,
+    `a rationale with no unaccounted number still downgrades on closed prior art (got ${risk?.level})`,
   );
 }
 

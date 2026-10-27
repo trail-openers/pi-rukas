@@ -213,6 +213,25 @@ console.log("the rest of the entry still guards:");
         rationale: "self",
         excludedIssues: [{ number: 1856, state: "OPEN", title: "t" }],
       };
+    } else if (what === "a downgrade that suppressed nothing") {
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "medium",
+        rationale: "self",
+        downgradedFrom: "high",
+        excludedIssues: [],
+      };
+    } else if (what === "a downgrade of a level that was never high") {
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "low",
+        rationale: "self",
+        downgradedFrom: "high",
+        excludedIssues: [{ number: 1856, state: "OPEN", title: "t", reason: "the subject" }],
+      };
+    } else if (what === "an unknown duplicate-risk level") {
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "HIGH",
+        rationale: "self",
+      };
     }
   };
   const cases: [string, string][] = [
@@ -228,6 +247,12 @@ console.log("the rest of the entry still guards:");
     ["a downgraded duplicateRisk carries a non-string level", "downgradedFrom is not a string"],
     ["a duplicateRisk's excludedIssues is not an array", "excludedIssues is not an array"],
     ["an excluded duplicate is missing its reason", "an excluded issue is missing its reason"],
+    // #1856 round 2: a downgrade is a claim the operator reads, so an internally
+    // inconsistent one is a miss — a `high`→X downgrade must be medium and must
+    // name what it suppressed, and level must be one of the four marker values.
+    ["a downgrade that suppressed no issue", "a downgrade that suppressed nothing"],
+    ["a downgrade whose level is not medium", "a downgrade of a level that was never high"],
+    ["a duplicate-risk level outside the marker's four values", "an unknown duplicate-risk level"],
   ];
   for (const [name, what] of cases) {
     const e = entry();
