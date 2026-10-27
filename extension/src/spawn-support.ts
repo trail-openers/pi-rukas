@@ -194,11 +194,13 @@ export function willRetryAfter(event: PiJsonEvent | null | undefined): boolean {
 }
 
 /**
- * The ONE liveness signal for a spawned child (#1847). Every seam that decides
- * whether a child may still be killed — the caps stack (`spawn-caps.ts`), the
- * per-child bound (`spawn-child-bound.ts`'s `gone()`) and the skill re-read cap
- * (`review-bounds.ts`) — reads this, so no two supervisors can disagree about
- * the same child.
+ * The ONE liveness signal for a spawned child (#1847), and the ONLY exported
+ * form of it: a predicate with both polarities exported lets two supervisors
+ * each pick one and mean opposite things about the same child. Every seam that
+ * decides whether a child may still be killed — the caps stack (`spawn-caps.ts`),
+ * the per-child bound (`spawn-child-bound.ts`'s `gone()`) and the skill re-read
+ * cap (`review-bounds.ts`) — reads this, so no two supervisors can disagree.
+ * Directly pinned by smoke-tests/test-child-has-exited-1847.ts.
  *
  * Two halves, and neither is trustworthy alone:
  *
@@ -226,20 +228,12 @@ export function willRetryAfter(event: PiJsonEvent | null | undefined): boolean {
  * handle half decides. Every production caller — `spawn.ts` — passes
  * `declareKillFlags()`'s accessor.
  */
-export function childIsAlive(
-  flags: { childExited: () => boolean } | undefined,
-  child: ChildProcess,
-): boolean {
-  if (flags?.childExited()) return false;
-  return child.exitCode == null && child.signalCode == null;
-}
-
-/** The inverse, spelled for the callers that ask "is it gone?" (#1847). */
 export function childHasExited(
   flags: { childExited: () => boolean } | undefined,
   child: ChildProcess,
 ): boolean {
-  return !childIsAlive(flags, child);
+  if (flags?.childExited()) return true;
+  return child.exitCode != null || child.signalCode != null;
 }
 
 /**
