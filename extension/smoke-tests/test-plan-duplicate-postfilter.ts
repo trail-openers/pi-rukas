@@ -144,6 +144,63 @@ async function barrier(
 }
 
 {
+  // A NEGATED prior-art statement is the child saying the CLOSED issue is a
+  // real duplicate, not a landed decision: the `#103` clause names only words
+  // that are negated, so nothing is suppressed and the HIGH stands.
+  const risk = await barrier(
+    "DUPLICATE_RISK: high — #1856 restates this; #103 is not prior art, it is unlanded duplicate work",
+    1856,
+  );
+  assert(
+    risk?.level === "high" && risk?.downgradedFrom === undefined,
+    `a CLOSED issue the child explicitly denied being prior art still halts (got ${risk?.level})`,
+  );
+}
+
+{
+  // #1856 review round 1 — references the `#N` extractor cannot read must FAIL
+  // CLOSED. Each reply below names the subject and rests its other evidence on
+  // an issue-shaped token that `namedIssueRefs` never emits, so on 9d1fe0f7 all
+  // four read as a self-only HIGH and were DOWNGRADED while main halted. The
+  // base modules are copied to /tmp/pi-ensemble-developer/base1856/ and driven
+  // by /tmp/pi-ensemble-developer/compare.ts, which prints base=medium for every
+  // row marked CHANGED there — the regression, observed rather than argued.
+  for (const [shape, rationale] of [
+    ["`issue 12`", "DUPLICATE_RISK: high — #1856 restates this; issue 12 covers this"],
+    [
+      "`…/issues/12`",
+      "DUPLICATE_RISK: high — #1856 restates this, see https://github.com/trail-openers/pi-rukas/issues/12",
+    ],
+    [
+      "`…/pull/12`",
+      "DUPLICATE_RISK: high — #1856 restates this, see https://gitlab.example/o/r/-/pull/12",
+    ],
+    ["`PR 12`", "DUPLICATE_RISK: high — #1856 restates this and PR 12 covers the same scope"],
+    [
+      "a 21-digit `#…`",
+      "DUPLICATE_RISK: high — #1856 restates this, cf. #999999999999999999999",
+    ],
+  ] as [string, string][]) {
+    const risk = await barrier(rationale, 1856);
+    assert(
+      risk?.level === "high" && risk?.downgradedFrom === undefined,
+      `an unreadable issue reference (${shape}) keeps the HIGH instead of downgrading (got ${risk?.level})`,
+    );
+  }
+}
+
+{
+  // The same shape, negated-proof: with no OTHER issue-shaped reference in the
+  // rationale, the closed prior-art reply still downgrades — so the fail-closed
+  // gate above fires on the un-read reference, not on its own caution.
+  const risk = await barrier("DUPLICATE_RISK: high — reverses the landed decision in #103", 1856);
+  assert(
+    risk?.level === "medium",
+    `a rationale with no unreadable reference still downgrades on closed prior art (got ${risk?.level})`,
+  );
+}
+
+{
   const risk = await barrier(
     "DUPLICATE_RISK: high — #1856 covers this, and #7 is an open duplicate too",
     1856,

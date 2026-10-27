@@ -10,7 +10,7 @@
  * inventory plus the prior-context rows both feed the child a verbatim listing
  * of it — so the child's most confident duplicate is the ticket under plan.
  *
- * Three rules, all deterministic, none of them a judgment about the model's
+ * Four rules, all deterministic, none of them a judgment about the model's
  * reasoning:
  *
  *   1. The source issue N and its own split children are never duplicates. They
@@ -22,6 +22,18 @@
  *      HIGH that rests only on those is downgraded, not believed.
  *   3. Anything else stands: a HIGH that names one other OPEN issue halts
  *      exactly as it did before.
+ *   4. A reference this filter cannot read keeps the HIGH (#1856 review round).
+ *      The extraction above reads `#N` tokens only, so a rationale that cites
+ *      the rest of its evidence as `issue 12`, `PR 12`, `…/issues/12` or a `#` id
+ *      past `Number.MAX_SAFE_INTEGER` looks like a self-only HIGH to rules 1–2.
+ *      On main that reply halted; a downgrade that never saw the other issue
+ *      would file instead. So every issue-shaped reference the `#N` extractor
+ *      did not emit is read too, and any one of them that is not the subject (or
+ *      its own split child) stands. Failing to parse is never a downgrade.
+ *
+ * The prior-art rule is also negation-aware: a clause that NEGATES the prior-art
+ * word ("#103 is not prior art, it is unlanded duplicate work") is the child
+ * saying the closed issue is a real duplicate, and suppresses nothing.
  *
  * An ABSENT marker is never a downgrade — `parseDuplicateRisk` defaults an
  * unparsed reply to medium, and recording that as an intentional suppression
@@ -47,6 +59,33 @@ const ISSUE_SOURCE_RE = /^issue #(\d+) \(/;
  */
 const PRIOR_ART_RE =
   /\b(prior art|reversal|revers(?:e|es|ed|ing)|supersed\w*|overturn\w*|landed|deliberate(?:ly)?\s+chang\w*)\b/i;
+
+/**
+ * The same vocabulary with an optional negation in front of it — "is not prior
+ * art", "isn't superseded", "was never landed". A clause whose only prior-art
+ * word is negated is the child REJECTING prior art for that issue, so it
+ * satisfies nothing. The window is three words because the negation that
+ * matters is the one attached to the verb, not any `not` in the sentence.
+ */
+const PRIOR_ART_NEGATED_RE =
+  /\b(?:not|never|isn'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|cannot|can'?t|no)\s+(?:\w+\s+){0,2}(?:prior\s+art|reversal|revers(?:e|es|ed|ing)|supersed\w*|overturn\w*|landed|deliberate(?:ly)?\s+chang\w*)\b/i;
+
+/**
+ * Issue-shaped references the `#N` extractor does not emit: `issue N` /
+ * `issues N` / `issue #N`, `PR N` / `pull N` / `pull request N`, and a URL on
+ * any host containing `/issues/N` or `/pull/N`. A bare `#<digits>` is NOT
+ * matched here — `namedIssueRefs` already reads those, and its own output says
+ * whether one was seen (an oversized `#` id that overflowed to an unsafe
+ * integer is caught separately, by `UNSAFE_HASH_DIGITS_RE`). Bare `\d+` is
+ * likewise absent — a rationale is full of line counts and version numbers, and
+ * a reference this filter cannot read has to LOOK like a reference to keep the
+ * HIGH.
+ */
+const UNPARSED_ISSUE_REF_RE =
+  /\b(?:issues?|pull\s+requests?|prs?)\s+((?:#\s*)?\d+)\b|\/(?:issues|pull)\/(\d+)\b/gi;
+
+/** A `#<digits>` run long enough to have overflowed `Number.isSafeInteger`. */
+const UNSAFE_HASH_DIGITS_RE = /#\d{17,}/g;
 
 /** The rule that removed a candidate, rendered into the disclosure. */
 export const EXCLUSION_REASONS = {
@@ -132,6 +171,33 @@ function clauseNaming(text: string, token: string): string {
 }
 
 /**
+ * Does the rationale cite an issue the `#N` extractor cannot read, other than
+ * the subject? `namedIssueRefs` emits only `#N` / `#N-k` tokens that parse as
+ * safe integers, so `issue 12`, `PR 12`, `…/issues/12` and a 21-digit `#…` are
+ * INVISIBLE to rules 1–2: a rationale whose whole case rests on one of them
+ * reads as a self-only HIGH and would be downgraded while main halted on it.
+ * This is the fail-closed read of exactly those shapes — true means "the filter
+ * may not suppress this HIGH, because it has not seen every issue the child
+ * named". A `#N` / `#N-k` token the extractor DID emit is not re-read here —
+ * the loop below judges it with the state it knows — so a normal
+ * "#1856 … #103 …" rationale still reaches the prior-art rule.
+ */
+function citesUnreadableOtherIssue(rationale: string, source: number): boolean {
+  for (const m of rationale.matchAll(UNPARSED_ISSUE_REF_RE)) {
+    const digits = (m[1] ?? m[2] ?? "").replace(/[^\d]/g, "");
+    const token = digits.match(/^\d+(?:-\d+)?$/)?.[0];
+    if (token === undefined) continue;
+    if (token.includes("-")) continue;
+    const n = Number(digits);
+    if (!Number.isSafeInteger(n) || n <= 0) return true;
+    if (n !== source) return true;
+  }
+  // A `#` id that overflowed to a non-integer produced NO token at all, so
+  // nothing downstream can judge it: that is the unreadable shape by definition.
+  return UNSAFE_HASH_DIGITS_RE.test(rationale);
+}
+
+/**
  * Is `n` the source issue itself, or one of its split children? A split child
  * of issue N is anything the child or the inventory writes as `N-k` (the
  * decomposition id form a planner uses for an issue's own sub-issues), so
@@ -196,6 +262,10 @@ export function downgradeSelfDuplicate(
   // A HIGH that names NO issue cannot be attributed to the subject, so it is
   // not the defect this filter exists for and it halts as any other HIGH does.
   if (named.length === 0) return verdict;
+  // Fail closed before any downgrade: a reference the extractor cannot read is
+  // an issue this filter has not judged, so it stands exactly as an OPEN one
+  // would rather than ride along unexamined in a downgrade it never saw.
+  if (citesUnreadableOtherIssue(verdict.rationale, source)) return verdict;
   const known = args.known ?? new Map<number, KnownIssue>();
   const excluded: ExcludedDuplicate[] = [];
   for (const ref of named) {
@@ -213,6 +283,7 @@ export function downgradeSelfDuplicate(
     }
     const n = ref.id;
     const row = known.get(n);
+    const clause = clauseNaming(verdict.rationale, ref.token);
     if (n === source) {
       excluded.push(excludedRow(n, row, EXCLUSION_REASONS.source));
       continue;
@@ -220,7 +291,8 @@ export function downgradeSelfDuplicate(
     if (
       row !== undefined &&
       isClosedState(row.state) &&
-      PRIOR_ART_RE.test(clauseNaming(verdict.rationale, ref.token))
+      PRIOR_ART_RE.test(clause) &&
+      !PRIOR_ART_NEGATED_RE.test(clause)
     ) {
       excluded.push(excludedRow(n, row, EXCLUSION_REASONS["prior-art"]));
       continue;
