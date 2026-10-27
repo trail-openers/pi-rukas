@@ -231,6 +231,17 @@ export type WorkEvent =
        */
       fixerBoundSource?: FixerBoundSource;
       /**
+       * #1798 round 1 — the child came back on a provider error-stop AND was
+       * killed at a bound, so the kill branch owns this event and the
+       * `dispatch-failed-provider` branch is never reached. Without the fact
+       * here a severed stream got the "raise the bound" advice. Same shape as
+       * the sibling field on `dispatch-failed-provider`, and written the same
+       * way by the adversarial fan-out (`work-driver-adversarial-fanout-run.ts`),
+       * so every existing provider read (`failureOf`, the taxonomy, the reason
+       * renderer) sees it rather than a marker only this module understands.
+       */
+      providerMessage?: string;
+      /**
        * #1634 — the driver's SYNTHESIS for a diff it could not read, not a
        * record of a child that died. Stamped at the one synthesising site
        * (`work-driver-adversarial-fanout-diff.ts`) and routed on structurally:

@@ -251,6 +251,13 @@ export async function buildCompletionEvent(
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms at ${fixerBoundClause(result.fixerBoundSource, result.killBudgetMs)}` +
         ` (override: ${overrideEnvForKillCause(result.killCause, result.fixerBoundSource)})`;
+    } else if (result.killBudgetMs === undefined) {
+      // #1798 round 1 — no budget to report means no "undefinedms": a kill with
+      // no `killBudgetMs` (a role backstop that recorded no bound, a synthetic
+      // result) states the cause and the knob alone.
+      detail =
+        `[pi-rukas] killed ${result.killCause}` +
+        ` (override: ${overrideEnvForKillCause(result.killCause, result.fixerBoundSource)})`;
     } else {
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms ${result.killCause}` +
@@ -262,6 +269,17 @@ export async function buildCompletionEvent(
     const attribution = la
       ? ` · last output: ${la.kind} ${Math.round(la.agoMs / 1000)}s before the kill, after ${la.linesSeen} line(s)`
       : "";
+    // #1798 round 1 — a kill that is ALSO a provider error-stop. The kill
+    // branch owns the event, so the `dispatch-failed-provider` branch below is
+    // never reached and the provider fact used to be discarded with it — which
+    // let a severed stream get the "raise the bound" advice. The kill still
+    // wins the KIND of the event (a self-kill is never reported as a provider
+    // failure, see `DispatchResult.killCause`), but it no longer erases the
+    // fact, and the classifier abstains on it.
+    const providerAtKill = result.errorStop !== undefined;
+    const providerNote = providerAtKill
+      ? ` · provider error-stop: ${result.errorStop?.message ?? result.errorStop?.reason ?? "stream ended"}`
+      : "";
     return withUsage(
       {
         kind: "dispatch-failed",
@@ -272,8 +290,18 @@ export async function buildCompletionEvent(
         ms: result.ms,
         at,
         exitCode: result.exitCode ?? null,
-        errorTail: `${detail}${attribution}`,
+        errorTail: `${detail}${attribution}${providerNote}`,
         killCause: result.killCause,
+        // #1798 round 1 — the provider's own words, on the field every provider
+        // read already consults (`failureOf` copies `providerMessage` for a
+        // `dispatch-failed` too, which makes the classifier's provider guard
+        // reachable), while the kill keeps the event's KIND and its text.
+        ...(providerAtKill
+          ? {
+              providerMessage:
+                result.errorStop?.message ?? result.errorStop?.reason ?? "provider error-stop",
+            }
+          : {}),
         // #543 — carry the structured trigger evidence on the event so the
         // step router can persist it on `pipelineState.capEvidence` when it
         // emits the cap-hit. Absent for the four non-cap causes (timeout /
