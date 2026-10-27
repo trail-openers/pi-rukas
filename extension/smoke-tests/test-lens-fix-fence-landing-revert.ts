@@ -31,7 +31,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import { workStateFile } from "../src/workflow-state.ts";
+import { initialState, type WorkState, workStateFile } from "../src/workflow-state.ts";
 import { git } from "./lib/adversarial-fix-fixtures.ts";
 import { fixtureStrayAllowed, stateWith, stubCtx } from "./lib/lens-fix-landing-fixtures.ts";
 
@@ -44,6 +44,7 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
+
 function cleanup(repoRoot: string): void {
   rmSync(repoRoot, { recursive: true, force: true });
   rmSync(`${repoRoot}-origin`, { recursive: true, force: true });
@@ -51,6 +52,66 @@ function cleanup(repoRoot: string): void {
 
 function capsOf(state: { eventLog: readonly { kind: string; cap?: string }[] }): string[] {
   return state.eventLog.filter((e) => e.kind === "cap-hit").map((e) => (e as { cap: string }).cap);
+}
+
+/**
+ * The refusal arm's persist, with a revert already performed in the SAME dispatch.
+ *
+ * `landLensFix` used to build and persist its cap-hit on the refusal path WITHOUT
+ * awaiting the revert's boundary write — only the `ok: true` arm awaited it. A
+ * round that reverted one set and then parked could therefore persist a state whose
+ * log lacked the revert event: the handoff named a preserved ref and patch the
+ * state file said nothing about, and a resume read "this round reverted nothing"
+ * and spent the round's one allowance again.
+ *
+ * The tree: a fixer whose ONLY change was the stray. `fixtureStrayAllowed` with its
+ * fix commit dropped leaves one untracked out-of-fence file, so the gate reverts it
+ * and the round has nothing left to land — the arm that parks AFTER a revert has
+ * already deleted files. The state file is re-read from disk because durability,
+ * not the returned value, is the claim: without the await the persist is a floating
+ * promise whose bytes may not be there when this reads (and whose error would vanish
+ * into an unhandled rejection).
+ */
+console.log("# a refusal AFTER a successful revert still leaves the revert in the state FILE");
+{
+  const f = fixtureStrayAllowed("land-refusal-revert-durable");
+  git(f.tree, "reset -q --soft HEAD~1");
+  git(f.tree, "restore --source=HEAD --staged --worktree a.txt");
+  const withFence = await stateWith(f.repoRoot, f.tree, f.branch);
+  const st: WorkState = {
+    ...initialState(1852, 1_000_000),
+    pipelineState: withFence.pipelineState,
+  };
+  const out = await runAdversarial(stubCtx(f.repoRoot, []), st, 2_000_000);
+  const reverts = out.eventLog.filter((e) => e.kind === "fix-pass-strays-reverted");
+  assert(
+    reverts.length === 1,
+    `the driver reverted the stray set in THIS dispatch (${reverts.length}) — the boundary write the park must not lose`,
+  );
+  const body = (() => {
+    try {
+      return readFileSync(workStateFile(f.repoRoot, 1852), "utf8");
+    } catch {
+      return "";
+    }
+  })();
+  assert(
+    body.includes("fix-pass-strays-reverted"),
+    "the refusal path awaited the revert's persist: the revert event is in the state FILE, not only in the returned state",
+  );
+  const ev = reverts[0];
+  assert(
+    ev !== undefined &&
+      ev.kind === "fix-pass-strays-reverted" &&
+      body.includes(ev.preservedRef) &&
+      body.includes(ev.patchPath),
+    "and the durable copy names BOTH recovery locations the operator needs after a park",
+  );
+  assert(
+    existsSync(`${f.tree}/scratch-notes.md`) === false,
+    "the reverted set really was deleted — the durable record describes a deletion that happened",
+  );
+  cleanup(f.repoRoot);
 }
 
 console.log("# a reverted-and-allowed round RECORDS its revert before it lands");

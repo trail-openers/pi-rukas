@@ -142,6 +142,16 @@ export async function landLensFix(
             ),
   });
   if (!fenceCheck.ok) {
+    // #1852 round 3 — the revert's record is durable on the REFUSAL path too.
+    // The boundary hook ISSUED the write inside `onRevertible`; only this arm
+    // used to skip the await, so a round that reverted one set and was then
+    // refused for a SECOND one built its cap-hit and persisted a state that
+    // could still lack the revert event — and an error in that write vanished
+    // into an unhandled rejection. Awaiting here makes the record durable BEFORE
+    // the cap-hit is built, so the state file always carries the revert the tree
+    // already lost (`test-lens-fix-fence-landing-revert.ts`), and any failure in
+    // it surfaces instead of disappearing.
+    await revertEventPersisted;
     trace(
       `work-driver: lens-fix fence parked the round before landing — ${fenceCheck.reason.slice(0, 200)}`,
     );
@@ -178,6 +188,7 @@ export async function landLensFix(
     // dies on the way back, and the resume then finds a `lens-fix` round with no
     // cap on its log — which is the state the router reads as "nothing stopped
     // here, run the landing arms again".
+    void revertEventPersisted;
     await persistCycle(ctx, out);
     return park(out);
   }
