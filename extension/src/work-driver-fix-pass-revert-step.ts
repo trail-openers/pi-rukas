@@ -15,6 +15,7 @@
  * already performed, which a counter field would have lost.
  */
 
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { runGit } from "./work-develop-git.ts";
 import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
 import type { PassPlan, PostPass } from "./work-driver-adversarial-fix-scope.ts";
@@ -160,7 +161,14 @@ const usable = (sha: string | undefined): string | undefined =>
 
 /** The disclosure line the pass's notes and the PR body carry for a revert. A
  *  revert whose ref and patch the operator cannot find is a driver commit that
- *  quietly deleted their fixer's work. */
+ *  quietly deleted their fixer's work.
+ *
+ *  Every path is run through `neutraliseMarkdownField`: the file names in this line
+ *  were chosen by the fixer, and the line is rendered into the PR body and the
+ *  handoff. A path containing a fence, a marker token, or a line break is the
+ *  developer speaking into a report the operator reads as the driver's — the
+ *  same reason the diff-cap module neutralises a path before printing it. */
 export function fixPassRevertNote(event: FixPassStraysRevertedEvent): string {
-  return `reverted ${event.paths.length} out-of-fence file(s) (${event.paths.join(", ")}) — preserved at ${event.preservedRef}, patch ${event.patchPath}`;
+  const paths = event.paths.map((p) => neutraliseMarkdownField(p)).join(", ");
+  return `reverted ${event.paths.length} out-of-fence file(s) (${paths}) — preserved at ${event.preservedRef}, patch ${neutraliseMarkdownField(event.patchPath)}`;
 }

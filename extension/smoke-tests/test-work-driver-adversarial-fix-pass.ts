@@ -10,12 +10,12 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
+import { survivorsOf } from "../src/work-driver-adversarial-survivors.ts";
 import {
   namedPaths,
   pendingFixes,
   plumbQuestion,
   runAdversarialFixPass,
-  survivorsOf,
 } from "../src/work-driver-adversarial-fix.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { nextStep } from "../src/work-driver-context.ts";

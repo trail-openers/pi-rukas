@@ -42,6 +42,7 @@ import {
   trackedPaths,
   treeChanges,
 } from "./work-driver-adversarial-fix-git.ts";
+import { unchangedPlans } from "./work-driver-adversarial-fix-noop.ts";
 import {
   correctiveRoundFor,
   createCorrectiveAdmission,
@@ -63,6 +64,7 @@ import {
   fixPassHelperDirs,
 } from "./work-driver-fix-pass-admission.ts";
 import { type FixPassFileGate, admitFixPassEntry } from "./work-driver-fix-pass-admit-file.ts";
+import { fixPassFanoutRefusal } from "./work-driver-fix-pass-fanout.ts";
 import { type Stray, listed, strayReason } from "./work-driver-fix-pass-park-reason.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import {
@@ -358,13 +360,7 @@ export async function postPassFault(
     after.push(r.value);
     diffs[plan.id] = r.value.diff;
   }
-  const unchanged = plans
-    .filter(
-      (p, i) =>
-        after[i]?.diff === p.before.diff &&
-        after[i]?.untracked.join("\n") === p.before.untracked.join("\n"),
-    )
-    .map((p) => p.id);
+  const unchanged = unchangedPlans(plans, after);
   if (unchanged.length > 0) {
     return {
       reason: `the diff of ${unchanged.join(", ")} is byte-identical to its pre-pass state — nothing was fixed`,
@@ -484,32 +480,14 @@ export async function postPassFault(
       };
     }
     if (plan.declared.length > 0) {
-      // #1725 round 3 — the ceiling grows by the number of distinct ADMITTING
-      // SLOTS, never by the number of admitted files: one slot is one
-      // authorisation (each capped at SPEC_SLOT_MAX_FILES inside the
-      // admitter), so a workstream cannot multiply a single slot into an
-      // unbounded ceiling. The numerator keeps every file the pass changed;
-      // the park reason reports the denominator ACTUALLY used — declared
-      // paths and admitting slots separately, because "9 files, 2 slots
-      // authorised" is a different disclosure from "9 files".
-      const slots = admit.admittedSlotCount(plan.id);
-      const admittedList = admit.admittedFiles(plan.id);
-      const limit = fanoutLimitFor(plan.declared.length + slots);
-      // The NUMERATOR excludes a test the coupled-test route admitted. The
-      // ceiling bounds how far a pass may WANDER from its declared scope, and a
-      // test that proves the pass's own fix is the opposite of wandering — the
-      // route exists precisely so a fix lands with its test. Charging the
-      // ceiling for it parked passes in which every single file had been asked
-      // for, and it punished exactly the behaviour the route was built to
-      // encourage. Files admitted by any OTHER route still count.
-      const counted = s.value.names.filter((f) => !coupledTestAdmitted(f, judging));
-      if (counted.length > limit) {
-        return {
-          reason: `${plan.id} changed ${counted.length} files (${admittedList.length} of them admitted by ${slots} spec pattern slot(s): ${listed(admittedList)}) — over the fan-out limit ${limit} for its ${plan.declared.length} declared path(s) plus ${slots} admitting slot(s)`,
-          diffs,
-          admissions,
-        };
-      }
+      // One ceiling over every route; its two easy-to-get-wrong rules (per-slot
+      // denominator, coupled tests out of the numerator) are stated in
+      // `work-driver-fix-pass-fanout.ts`.
+      const refusal = fixPassFanoutRefusal(plan.id, plan.declared.length, s.value.names, judging, {
+        slotCount: admit.admittedSlotCount(plan.id),
+        admittedFiles: admit.admittedFiles(plan.id),
+      });
+      if (refusal !== undefined) return { reason: refusal, diffs, admissions };
     }
   }
   return { diffs, admissions };

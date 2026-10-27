@@ -28,7 +28,6 @@ import {
   interpretReview,
   reviewRoundFor,
   reviewTrack,
-  survivorsOf,
   workstreamsToReview,
 } from "./work-driver-adversarial-fix.ts";
 import {
@@ -39,6 +38,7 @@ import {
   roundsRecords,
 } from "./work-driver-adversarial-reentry.ts";
 import { scopeFor } from "./work-driver-adversarial-scope.ts";
+import { survivorsOf } from "./work-driver-adversarial-survivors.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,

@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import type { DispatchResult } from "../../src/types.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import { defaultExec } from "../../src/work-driver-adversarial-fix-git.ts";
+import type { GitRead } from "../../src/work-driver-adversarial-fix-git.ts";
 import type { PassPlan } from "../../src/work-driver-adversarial-fix-scope.ts";
 import { planFixPass } from "../../src/work-driver-adversarial-fix-scope.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
@@ -133,6 +134,97 @@ export function fixCtx(
       return devOk(spec.role);
     },
   };
+}
+
+/**
+ * #1849 — the tree a fix-pass stray revert test needs: a real repo, a real
+ * detached worktree, the pass's own in-scope commit, and three strays covering
+ * each case the revert handles differently (created / edited / untracked).
+ *
+ * Shared between `test-fix-pass-strays-revert.ts` (the revert's happy path,
+ * refusals and target) and `test-fix-pass-strays-counter.ts` (its per-pass,
+ * per-workstream attempt budget) — both drive the same shape and each varies a
+ * different rule, so the fixture lives here rather than being copied.
+ */
+/** An early assert for a fence read that must succeed: a failed pre-pass read means the FIXTURE is broken, not the rule under test. */
+export function mustRead<T>(read: GitRead<T>, label: string): T {
+  if (!read.ok) {
+    throw new Error(`${label}: ${read.reason}`);
+  }
+  return read.value;
+}
+
+export async function correctiveScaffold(
+  label: string,
+  atBase: Record<string, string> = {},
+): Promise<{ dir: string; st: WorkState; planned: PassPlan[] }> {
+  const dir = repoWithFile(label);
+  trackAtBase(dir, { "lib/main.ts": "export const m = 1;\n", ...atBase });
+  const st = fixState(dir, ["a.txt", "lib/main.ts"], "a.txt: change one to two");
+  const planned = mustRead(
+    await planFixPass(defaultExec, dir, st.pipelineState, [
+      { workstreamId: "default", findings: "a.txt: change one to two" },
+    ]),
+    label,
+  );
+  return { dir, st, planned };
+}
+
+/** The pass's own declared edit, committed before the round is recorded. */
+export const passEdit = (dir: string): void => devCommit(dir, "a.txt", "two\n");
+
+export function trackAtBase(dir: string, files: Record<string, string>): void {
+  for (const [file, body] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    writeFileSync(path.join(dir, file), body);
+  }
+  git(dir, "add -A");
+  git(dir, 'commit -q -m "tracked at base"');
+}
+
+export function strayPassTree(): {
+  repoRoot: string;
+  worktree: string;
+  /** What `planFixPass` records positively before dispatching the pass. */
+  headBefore: string;
+  /** The HEAD after the pass's own in-scope commit — what a corrective round
+   *  dispatched inside the pass would have recorded as its baseline. */
+  headAtRound: string;
+} {
+  const repoRoot = repoWithFile("1846-revert");
+  const worktree = `${repoRoot}/.worktrees/issue-1846`;
+  git(repoRoot, "worktree add -q --detach .worktrees/issue-1846 HEAD");
+  const headBefore = git(worktree, "rev-parse HEAD").trim();
+  // The pass's own legitimate work, committed as a real fix pass commits. This is
+  // the commit the revert MUST survive — it is the whole reason the revert is
+  // path-scoped rather than a whole-tree reset.
+  devCommit(worktree, "a.txt", "two\n");
+  const headAtRound = git(worktree, "rev-parse HEAD").trim();
+  // Stray 1 — a tracked file the pass created after its fix commit.
+  devCommit(worktree, "helper.ts", "export const helper = () => 1;\n");
+  // Stray 2 — a tracked file that existed before the pass and was edited.
+  writeFileSync(`${worktree}/b.txt`, "hijacked\n");
+  // Stray 3 — an untracked file, in no commit, so no ref can ever hold it.
+  devWrite(worktree, "scratch-notes.md", "notes the pass should not have added\n");
+  return { repoRoot, worktree, headBefore, headAtRound };
+}
+
+/**
+ * #1849 C — the fan-out ceiling's coupled-test exclusion drives the pass through
+ * the real `postPassFault`, so it needs a planned pass, not a hand-built one:
+ * `planFixPass` computes the fence the ceiling reads, and a fence the test
+ * invented would test the test.
+ */
+export async function plannedPassesFor(
+  dir: string,
+  st: WorkState,
+  findings: string,
+): Promise<PassPlan[]> {
+  const read = await planFixPass(defaultExec, dir, st.pipelineState, [
+    { workstreamId: "default", findings },
+  ]);
+  if (!read.ok) throw new Error(`planFixPass failed: ${read.reason}`);
+  return read.value;
 }
 
 /**
