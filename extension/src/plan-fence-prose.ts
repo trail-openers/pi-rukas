@@ -61,12 +61,26 @@ export function proseSelfFenceDrops(
   ownPaths: readonly string[],
   candidates: readonly string[],
   workstreamId: string,
+  // #1862 — the plan-quality gate asks with this FALSE so a path-shaped fence
+  // over the workstream's own file SURVIVES the boundary: it is the contradiction
+  // #1167's one-shot corrective exists to point out, and an emptied fence is a
+  // widened scope the developer is never told about. The develop path keeps the
+  // default (drop), because there the alternative is parking on a fence nobody
+  // can obey. `findFenceContradictions`, which the gate itself runs, treats a
+  // whitespace-free entry as a path — the same test, so the two agree.
+  dropPathShaped = true,
 ): UnfenceRecord[] {
   const own = declaredPaths(ownPaths);
   if (own.length === 0 || candidates.length === 0) return [];
-  const contradictions = contradictionPathsByEntry(own, candidates);
+  const contradictions = contradictionPathsByEntry(own, candidates, dropPathShaped);
   const drops: UnfenceRecord[] = [];
   for (const entry of candidates) {
+    // A path-shaped entry is the develop gate's business (`fenceMatches`), never
+    // this module's — #1725's one-grammar-per-entry rule. With the gate asking
+    // for the path arm to stay there is nothing left here but prose, so an entry
+    // the whole-token scan cannot even read as prose cannot go either: it keeps
+    // its whitespace-free test rather than a second grammar.
+    if (!dropPathShaped && !/\s/.test(entry)) continue;
     const decision: SelfFenceEntryDrop = selfFenceEntryDrop(entry, own, contradictions.get(entry));
     if (!decision.drop) continue;
     drops.push({

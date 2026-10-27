@@ -29,6 +29,7 @@
  * canned reply and no child process.
  */
 
+import { mergeBoundaryInto } from "./plan-fence-self-entry.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -49,6 +50,7 @@ import type { PlanQualityHost, PlanQualityInput } from "./work-driver-plan-quali
 import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { correctiveSteerFor } from "./work-driver-plan-steers.ts";
 import { planCorrectiveFailureEvent, planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import type { PlanQualityReason, PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -68,6 +70,20 @@ export type CorrectiveRoundResult = {
   workstreams: Record<string, Workstream>;
   /** The corrective's RAW map (#1005's dropped-edge comparison). */
   raw?: Record<string, Workstream>;
+  /**
+   * #1862 — the corrective's own reported view (path-shaped self-fences intact),
+   * carried back so the tail's persisted record can name the entries its boundary
+   * removed. See `WorkstreamReport.reported`.
+   */
+  reported?: Record<string, Workstream>;
+  /**
+   * #1862 — the boundary drops the CALLER derived by comparing `workstreams`
+   * against `reported`. The steer re-adds exactly those entries, so the corrective
+   * can name the fence line the planner must fix, and so an entry a FOLD opened on
+   * purpose is never put back. Derived once by the caller and passed down: the
+   * caller records the same list.
+   */
+  boundaryDrops?: readonly UnfenceRecord[];
   /** The corrective's own unfence record, which replaces the primary's. */
   unfence?: PlanUnfenceSummary;
   /** True once the dispatch was ISSUED — feeds the halt's RECORD. */
@@ -131,7 +147,11 @@ export async function runCorrectiveRound(
     trigger.noCalls,
     input.report,
     // The ORIGINAL plan: a repaired path was never written by the planner.
-    input.workstreams,
+    // #1862 — and with the fence entries the tool boundary removed put back, so
+    // a `contradictory-fence` steer can NAME the entry (`… lists `src/a.ts` in
+    // its paths and `src/a.ts` in its out-of-scope`) instead of falling back to
+    // the generic line: the planner is told which of its own lines to fix.
+    mergeBoundaryInto(input.workstreams, input.boundaryDrops ?? []),
     trigger.reason,
     input.findingsCount,
   );
@@ -252,6 +272,10 @@ export async function runCorrectiveRound(
   // #819 — the gate runs AGAIN on the corrective: #818's wrong work came from
   // the corrective, not the first plan. A corrective is already the cycle's
   // one-shot budget, so a failure here HALTS.
+  // #1862 — the corrective's spec coverage is judged on the map it develops.
+  // The SELF-FENCE reason is the primary's view's job above; a corrective has
+  // already been steered on it, and re-judging coverage on a wider fence list
+  // would cap on a path the planner never declared.
   const correctiveMismatch = input.planGateEnabled
     ? planSpecMismatchReason(workstreams, input.spec, grant)
     : undefined;
@@ -261,6 +285,7 @@ export async function runCorrectiveRound(
       redispatched,
       repairedCleared,
       raw,
+      reported: retryReport.reported,
       halt: planSpecMismatchCap(
         next,
         correctiveMismatch,
@@ -271,5 +296,12 @@ export async function runCorrectiveRound(
   // #1756 — the corrective is now the plan the cycle develops: it returned,
   // was not killed, made accepted calls and passed its OWN gate. Only this
   // clears the primary's refusal at the tail's halt site.
-  return done({ attempted, redispatched, repairedCleared, raw, replacedPlan: true });
+  return done({
+    attempted,
+    redispatched,
+    repairedCleared,
+    raw,
+    reported: retryReport.reported,
+    replacedPlan: true,
+  });
 }

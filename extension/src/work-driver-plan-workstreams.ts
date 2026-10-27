@@ -10,6 +10,7 @@
  */
 
 import { hostBudget } from "./host-resources.ts";
+import type { BoundedOutOfScope } from "./plan-fence-bound.ts";
 import { boundOutOfScope, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
 import { proseSelfFenceDrops } from "./plan-fence-prose.ts";
 import { clippedField } from "./plan-fence-record.ts";
@@ -19,6 +20,33 @@ import { trace, traceWarn } from "./trace.ts";
 import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import { foldTwo } from "./workstream-fold.ts";
+
+/**
+ * Say each boundary drop on the trace, once. `traceWarn`, not `trace`: an
+ * operator greps one channel for every bound the driver applied, and a fence
+ * that quietly disappeared is the failure #1862 closes. Returns the drops so the
+ * caller keeps one expression.
+ */
+function traceBoundaryDrops(drops: UnfenceRecord[], workstreamId: string): UnfenceRecord[] {
+  for (const d of drops) {
+    // The note is the persisted wording; the prefix names the site so an operator
+    // grepping one channel sees which rule removed the fence (#1862 M4).
+    traceWarn(`work-driver: plan workstream '${workstreamId}' ${d.note}`);
+  }
+  return drops;
+}
+
+/**
+ * The workstream exactly as the planner reported it: the same build with the
+ * PATH-shaped self-fence drop turned off. The plan-quality gate reasons over
+ * this (#1167) — see `WorkstreamReport.reported`.
+ */
+export function workstreamAsReported(
+  args: WorkstreamArgs,
+  boundedFence?: BoundedOutOfScope,
+): Workstream {
+  return workstreamFromArgs(args, false, boundedFence);
+}
 
 /**
  * A `report_workstream` call's arguments, already checked against the schema by
@@ -40,14 +68,29 @@ import { foldTwo } from "./workstream-fold.ts";
  * whole list is the authorised set the scope gates read, and the prompts print
  * all of it. Only the schema ceiling still refuses a call.
  */
-export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
+export function workstreamFromArgs(
+  args: WorkstreamArgs,
+  // #1862 — the plan-quality gate builds its view of the SAME accepted calls
+  // with `dropSelfFences` FALSE, so a path-shaped fence over the workstream's own
+  // file is still present when the gate reasons: that contradiction is what
+  // #1167's one-shot corrective steers the planner on. Prose self-fences drop
+  // either way (a sentence is not a fence the develop gate could honour); a
+  // stored, developed workstream always takes the defaults and has both gone.
+  //
+  // `boundedFence` is the same reason as the second flag: a private second build
+  // of one call must not READ AS a second bound the driver applied, so the caller
+  // hands it the bound it already computed and traced. Every bound's line stays
+  // one line per call (`test-plan-outofscope-bound-1744` counts them).
+  dropSelfFences = true,
+  boundedFence?: BoundedOutOfScope,
+): Workstream {
   const dependsOn = args.dependsOn ?? [];
   const introduces = args.introduces ?? [];
   const consumes = args.consumes ?? [];
   const integrationTest = args.integrationTest ?? "";
   const boundedPaths = boundPaths(args.paths);
-  const fence = boundOutOfScope(args.outOfScope);
-  if (fenceWasBounded(fence)) {
+  const fence = boundedFence ?? boundOutOfScope(args.outOfScope);
+  if (boundedFence === undefined && fenceWasBounded(fence)) {
     traceWarn(fenceBoundNotice(`plan workstream '${args.id}'`, fence));
   }
   // #1862 (a) — a prose fence over this workstream's OWN files is dropped here,
@@ -60,13 +103,23 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   // records of a dropped entry go with it, the way `capFenceList` drops a record
   // whose entry is gone — a record describing a vanished entry is a disclosure of
   // a loss that did not happen.
-  const proseDrops = proseSelfFenceDrops(boundedPaths.paths, fence.entries, args.id);
+  const proseDrops = dropSelfFences
+    ? traceBoundaryDrops(proseSelfFenceDrops(boundedPaths.paths, fence.entries, args.id), args.id)
+    : // #1167 — the gate's view KEEPS its path-shaped self-fences (that is the
+      // contradiction the corrective steers on), and a removal this site does not
+      // make is a removal whose records must stay too: `capFenceList` drops a
+      // clip record whose entry is gone, and an entry that is still in the list
+      // keeps its record. Dropping the records as well would describe a loss that
+      // did not happen to this map. Prose entries drop either way, with theirs.
+      //
+      // No trace line from this build: `workstreamFromArgs` already emitted the
+      // identical line for the same entry, and an operator greps one line per
+      // bound the driver applied. `dropSelfFences` is the parameter's name rather
+      // than a second spelling of the same idea.
+      proseSelfFenceDrops(boundedPaths.paths, fence.entries, args.id, false).filter((d) =>
+        /\s/.test(d.entry),
+      );
   const dropped = new Set(proseDrops.map((d) => d.entry));
-  for (const d of proseDrops) {
-    // The note is the persisted wording; the prefix names the site so an operator
-    // grepping one channel sees which rule removed the fence (#1862 M4).
-    traceWarn(`work-driver: plan workstream '${args.id}' ${d.note}`);
-  }
   if (boundedPaths.duplicate > 0) {
     // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same
     // reason (#1744) — an operator greps one channel for every bound the driver

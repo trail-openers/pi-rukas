@@ -421,6 +421,7 @@ export async function runPlan(
       next,
       report: judged,
       workstreams,
+      reported: judged.reported,
       firstPlanRaw,
       findingsCount,
       spec,
