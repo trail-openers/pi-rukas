@@ -19,11 +19,37 @@
  * parser's #858 exclusion contract, not a property of a block.
  */
 
-/** A bare fence line inside an open block: END terminates, BEGIN is skipped. */
-const FENCE_RE = /^[-=\s]*(BEGIN|END)[-\s]*$/i;
+/** The wrapper/padding chars a heading or fence line may wear on either side. */
+export const WRAPPER_CHARS = "[#=*`-]";
+
+/**
+ * A bare fence line inside an open block: END terminates, BEGIN is skipped.
+ *
+ * The padding class is `WRAPPER_CHARS` — the same set `HEADING_RE` allows on
+ * either side of its keyword — so a line cannot be a fence to one grammar and
+ * an item to the other. #1855 round 3: a narrower class (`[-=\s]*`) dropped the
+ * `#`, `*` and backtick wrappers and required the run to touch the token, so
+ * `END=`, `END =`, `=END=`, `END==`, `==END==`, `BEGIN=` and `== BEGIN ==` fell
+ * through as operator ITEMS: an `END=` fence landed in the AC / NEVER CLAIM
+ * channels and a spec could file with `- END=` as its only criterion.
+ *
+ * The token sits UNANCHORED inside that padding, so `-- END --` and
+ * `*** END ***` are fences while `END OF THE LINE` and `ENDURANCE` stay prose.
+ * Whether the line CLOSES the block is decided on the bare token by
+ * `isEndFence`, never by which side carries the wrapper chars.
+ */
+export const FENCE_RE = new RegExp(
+  `^\\s*${WRAPPER_CHARS}*\\s*(?:BEGIN|END)\\s*${WRAPPER_CHARS}*\\s*$`,
+  "i",
+);
+
+/** True when a fence line CLOSES its block: the bare token is END. */
+export function isEndFence(line: string): boolean {
+  return /END/i.test(line);
+}
 
 /** Bullet-list continuation marker (also keeps spaced lists open across blanks). */
-const BULLET_RE = /^(?:[-*]+|\d+[.)])\s+/;
+export const BULLET_RE = /^(?:[-*]+|\d+[.)])\s+/;
 
 /**
  * A bare `Label:` line (1-3 capitalised words, nothing after the colon) that
@@ -32,17 +58,44 @@ const BULLET_RE = /^(?:[-*]+|\d+[.)])\s+/;
  * of the adjacent typed section. Longer prose lines ending in a colon ("The
  * following must hold:") still read as items.
  */
-const LABEL_RE = /^[A-Z][A-Za-z/-]*(?: [A-Za-z/-]+){0,2}:$/;
+export const LABEL_RE = /^[A-Z][A-Za-z/-]*(?: [A-Za-z/-]+){0,2}:$/;
 
 /**
  * The keyword test the walk uses for ONE purpose: a keyword line ENDS the block
  * it sits in, because the parser opens a new block for it rather than reading it
  * as an item. Exported so the parser and the walk can never hold two copies of
  * "what is a heading" — the parser matches it for the channel, the walk matches
- * it for the terminator.
+ * it for the terminator. Built from the same three sources `HEADING_RE` is
+ * built from, so "what is a heading" has exactly one definition.
  */
-export const KEYWORD_LINE_RE =
-  /^(?:[#=*`]+\s*)?(?:ACCEPTANCE[\s-]*CRITERIA|PITFALLS|EDGE[\s-]*CASES|OUT[\s-]*OF[\s-]*SCOPE|TEST[\s-]*SURFACE|DECOMPOSITION\s*\/\s*SUB[\s-]*ISSUES?|DECOMPOSITION|SUB[\s-]*ISSUES?|NEVER[\s-]*CLAIM|FORBIDDEN|DONE[\s-]*WHEN|ACCEPTANCE)(?:\s*\([^)]*\))?\s*(?:(?:[#=*`]+)?\s*[:：]\s*(.*)$|(BEGIN|END)\s*(?:[#=*`]+\s*)?$|[#=*`]*\s*$)/i;
+export const KEYWORD_PREFIX_SOURCE = `(?:${WRAPPER_CHARS}+\\s*)?`;
+
+/**
+ * The keyword alternation, in the order both grammars must try it
+ * (`ACCEPTANCE[\s-]*CRITERIA` ahead of bare `ACCEPTANCE`, so the directive form
+ * keeps matching its own heading). Written as a CAPTURING group: the parser's
+ * `HEADING_RE` uses it verbatim and needs group 1 for `channelFor`; the walk's
+ * `KEYWORD_LINE_RE` wraps it in a non-capturing group and reads no group at all.
+ */
+export const KEYWORD_SOURCE =
+  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION\\s*\\/\\s*SUB[\\s-]*ISSUES?|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN|DONE[\\s-]*WHEN|ACCEPTANCE)";
+
+/**
+ * What a keyword must be followed by to be a heading at all: a colon (with an
+ * optional residual first item), a bare BEGIN/END fence token, closing wrapper
+ * chars, or end of line. Without it a keyword that runs into ordinary prose
+ * ("Out of scope for this round was…") is not a heading. Both grammars add a
+ * capturing keyword group in front of this one, so the residual is group 2 and
+ * the fence token group 3 (`KEYWORD_LINE_RE` matches for the terminator only and
+ * never reads a group).
+ */
+export const KEYWORD_TAIL_SOURCE =
+  "(?:\\s*\\([^)]*\\))?\\s*(?:(?:[#=*`]+)?\\s*[:：]\\s*(.*)$|(BEGIN|END)\\s*(?:[#=*`]+\\s*)?$|[#=*`]*\\s*$)";
+
+export const KEYWORD_LINE_RE = new RegExp(
+  `^${KEYWORD_PREFIX_SOURCE}(?:${KEYWORD_SOURCE})${KEYWORD_TAIL_SOURCE}`,
+  "i",
+);
 
 /** What one block's walk decided: the lines it took and the items it read. */
 export interface BlockWalk {
@@ -66,6 +119,15 @@ interface StepVerdict {
 }
 
 /**
+ * True for a line that reads as an item once its bullet marker is gone: empty
+ * text is not, and neither are pure wrapper chars (`**`) or a bare fence token,
+ * which are delimiters rather than content.
+ */
+function itemCandidate(text: string): boolean {
+  return !!text && !/^[#=*`]+$/.test(text) && !/^BEGIN$/i.test(text) && !/^END$/i.test(text);
+}
+
+/**
  * THE per-block rule for one line (#1855). Everything the parser does with a
  * line that sits under an open heading lives here: the main loop's body for a
  * non-blank line is this function's verdict applied verbatim, and the outcome
@@ -75,48 +137,35 @@ interface StepVerdict {
  * A `LABEL_RE` line (`Decisions:`) is an unrecognised heading: it closes the
  * block and is NOT consumed. A line matching `FENCE_RE` is consumed as a
  * delimiter and an `END` one closes the block (matching the loop's in-block
- * fence branch exactly — `FENCE_RE` unanchored, then an END test on the same
- * line). Any other line is an item when `itemCandidate` accepts it after
- * bullet-stripping; unbulleted contiguous lines are items for every typed block,
- * so they are items here too.
+ * fence branch exactly — `FENCE_RE` then `isEndFence` on the same line). Any
+ * other line is an item when `itemCandidate` accepts it after bullet-stripping;
+ * unbulleted contiguous lines are items for every typed block, so they are
+ * items here too.
  *
- * `afterBlankRun` carries the one fact only the loop's blank branch knows: this
- * line is what the blank-run lookahead found. The loop closes the block when
- * that line is not a bullet, so the step does too — which is what makes a blank
- * run followed by prose yield no item while a blank run followed by bullets
- * still yields them. The blanks the lookahead stepped over are consumed, matching
- * the loop (its blank branch consumes the lookahead line); the heading of a block
- * that never opened is not — the caller decides that, so an unopened outcome
- * heading still appears in the filed inventory.
+ * The blanks a blank-run lookahead stepped over are consumed by `walkBlock`,
+ * matching the loop (its blank branch consumes the lookahead line); the heading
+ * of a block that never opened is not — the caller decides that, so an unopened
+ * outcome heading still appears in the filed inventory.
  */
-function itemCandidate(text: string): boolean {
-  return !!text && !/^[#=*`]+$/.test(text) && !/^BEGIN$/i.test(text) && !/^END$/i.test(text);
-}
-
-function stepLine(lines: string[], index: number, afterBlankRun: boolean): StepVerdict {
+function stepLine(lines: string[], index: number): StepVerdict {
   const line = (lines[index] ?? "").trim();
   if (LABEL_RE.test(line)) {
     return { consumed: [], nextIndex: index, item: undefined, closed: true };
   }
   const consumed = [index];
   if (FENCE_RE.test(line)) {
-    const isEnd = /END/i.test(line);
-    return { consumed, nextIndex: index + 1, item: undefined, closed: isEnd };
+    return { consumed, nextIndex: index + 1, item: undefined, closed: isEndFence(line) };
   }
   // A prose line under an open block is an item — every typed block takes
-  // contiguous unbulleted lines — UNLESS it arrived through the blank-run
-  // lookahead, where the loop has already closed the block.
-  if (afterBlankRun) return { consumed: [], nextIndex: index, item: undefined, closed: true };
-  const item = stripBullet(line) || undefined;
-  // A line that arrived through the blank-run lookahead does NOT open an item:
-  // the loop's own next iteration re-reads it under its heading test, and only
-  // a HEADING_RE keyword can re-open a block (see walkBlock). A BULLET cannot,
-  // so the bulleted lookahead is the one continuation that really adds an item —
-  // which is why walkBlock takes that case itself rather than through here.
+  // contiguous unbulleted lines, so it is an item here too. A line that follows
+  // a blank run is read here as well: `walkBlock` steps over the run and lands
+  // on the bulleted line, which is the one continuation that really adds an item
+  // (only a `HEADING_RE` keyword re-opens a block, so a prose line after a blank
+  // run is never reached at all — see walkBlock's blank-run branch).
   return {
     consumed,
     nextIndex: index + 1,
-    item: afterBlankRun ? undefined : item,
+    item: stripBullet(line) || undefined,
     closed: false,
   };
 }
@@ -180,9 +229,9 @@ export function walkBlock(
     // blank of the run plus the one lookahead line it inspects, and does not set
     // an item from the branch itself — the loop's next iteration reads that
     // bulleted line through its own in-block rules, which is where the item (or
-    // the fence that closes the block) comes from. Nothing past the run is a
-    // block line once the block is demoted, so a gate that consumes none of this
-    // block (`lookaheadConsumed: false`) takes none of those lines either.
+    // the fence that closes the block) comes from. Nothing past the run belongs
+    // to the block once the block is demoted, so a caller that consumes none of
+    // this block takes none of those lines either.
     if (!(lines[i] ?? "").trim()) {
       let j = i + 1;
       while (j < lines.length && !(lines[j] ?? "").trim()) j++;
@@ -203,7 +252,7 @@ export function walkBlock(
       i = j;
       continue;
     }
-    const step = stepLine(lines, i, false);
+    const step = stepLine(lines, i);
     for (const n of step.consumed) consumed.push(n);
     if (step.item !== undefined) items.push(step.item);
     if (step.closed) return { consumed, items, nextIndex: step.nextIndex };
@@ -218,7 +267,7 @@ export function walkBlock(
  * "-----BEGIN X-----" lines survive intact; "- 1) x" still double-strips
  * to "x" (the old single-pass class regex ate any run of `-*digits.)`).
  */
-function stripBullet(line: string): string {
+export function stripBullet(line: string): string {
   let out = line;
   for (let prev = ""; prev !== out; ) {
     prev = out;

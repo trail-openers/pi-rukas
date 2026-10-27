@@ -16,6 +16,7 @@
  */
 
 import { parseOperatorDirectivesWithLines } from "../src/plan-directives.ts";
+import type { OperatorDirectives } from "../src/plan-directives.ts";
 import { assemblePriorContext } from "../src/plan-prior-context-assembly.ts";
 import type { MechanicalInventory } from "../src/plan-inventory.ts";
 
@@ -183,7 +184,18 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     // A blank run followed by prose is the loop's own demotion: no item, and the
     // prose after the blank is not an outcome either.
     ["Done when:\n\nthe following must hold", "the following must hold", 0],
-
+    // #1855 review round 3 — the seven wrapper-fence forms, pinned the way base
+    // 27d950e0 read them. The shared walk's `FENCE_RE` had narrowed its padding
+    // class to `[-=\s]*`, so these landed as operator items instead and the AC
+    // channel filed `- END=` as a criterion. An `END` fence closes the block, so
+    // the bullets under it are not an outcome; a `BEGIN` fence does NOT, so the
+    // block stays open and the bullet IS the outcome (pinned separately below,
+    // in both channels — the close/open decision is on the bare token alone).
+    ["Done when:\nEND=\n- x", "Done when:", 0],
+    ["Done when:\nEND =\n- x", "Done when:", 0],
+    ["Done when:\n=END=\n- x", "Done when:", 0],
+    ["Done when:\nEND==\n- x", "Done when:", 0],
+    ["Done when:\n==END==\n- x", "Done when:", 0],
   ];
   for (const [ctx, inventoryLine, consumed] of emptyCases) {
     const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
@@ -200,11 +212,11 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
 }
 
 {
-  // #1855 review round 1 — the shapes the first-meaningful-line lookahead got
-  // WRONG. Each has an item somewhere in its block, so each IS an outcome, and
-  // the parser's own item loop would have produced the bullet anyway: the
-  // lookahead must agree with what the parser does, not with what the line right
-  // below the heading looks like.
+    // #1855 review round 1 — the shapes the first-meaningful-line lookahead got
+    // WRONG. Each has an item somewhere in its block, so each IS an outcome, and
+    // the parser's own item loop would have produced the bullet anyway: the
+    // lookahead must agree with what the parser does, not with what the line right
+    // below the heading looks like.
   const cases: [string, string][] = [
     // A prose lead-in before the bullets.
     ["Done when: the following must hold\n- the tool registers", "lead-in line"],
@@ -226,10 +238,6 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     // an END fence is matched UNANCHORED the way the loop's FENCE_RE matches it
     // (the fence rule is the loop's own, so the two agree by construction).
     ["Done when:\n- the tool registers\nPITFALLS:\n- a pitfall", "following PITFALLS heading"],
-    // The loop's FENCE_RE is unanchored, but a `=` run is also a heading WRAPPER
-    // char, so `=END=` reads as a wrapper-wrapped keyword — the same verdict the
-    // parser's own loop reaches, which is the point of one shared walk.
-    ["Done when:\n=END=\n- the tool registers", "equals-wrapped END keyword"],
   ];
   for (const [ctx, label] of cases) {
     const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
@@ -246,6 +254,69 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     assert(
       !inventoryContext.some((e) => e.fact === "- the tool registers"),
       `outcome block with a ${label}: the bullet is not double-listed in the inventory`,
+    );
+  }
+}
+
+{
+  // #1855 review round 3 — the same seven wrapper fences, pinned on a TYPED
+  // channel. A fence that is not a fence is worse than an invented outcome: it
+  // becomes an ITEM of the operator's block, so `NEVER CLAIM` filed `- END=` as
+  // a forbidden phrase and `ACCEPTANCE CRITERIA` filed it as the spec's only
+  // acceptance criterion. Every form must be consumed as a delimiter and
+  // contribute no item, and `END`-bearing forms must close the block so the
+  // bullet below it is not typed either.
+  const typedCases: [string, keyof OperatorDirectives, string][] = [
+    ["ACCEPTANCE CRITERIA:\nEND=\n- a criterion", "acceptanceCriteria", "END="],
+    ["ACCEPTANCE CRITERIA:\nEND =\n- a criterion", "acceptanceCriteria", "END ="],
+    ["ACCEPTANCE CRITERIA:\n=END=\n- a criterion", "acceptanceCriteria", "=END="],
+    ["ACCEPTANCE CRITERIA:\nEND==\n- a criterion", "acceptanceCriteria", "END=="],
+    ["ACCEPTANCE CRITERIA:\n==END==\n- a criterion", "acceptanceCriteria", "==END=="],
+    // A BEGIN-form fence does NOT close the block, so the bullet stays an item —
+    // the item asserted below is the operator's, never the fence's text.
+    ["ACCEPTANCE CRITERIA:\nBEGIN=\n- a criterion", "acceptanceCriteria", "BEGIN="],
+    ["ACCEPTANCE CRITERIA:\n== BEGIN ==\n- a criterion", "acceptanceCriteria", "== BEGIN =="],
+    ["NEVER CLAIM:\nEND=\n- a phrase", "neverClaim", "END="],
+    ["NEVER CLAIM:\nEND =\n- a phrase", "neverClaim", "END ="],
+    ["NEVER CLAIM:\n=END=\n- a phrase", "neverClaim", "=END="],
+    ["NEVER CLAIM:\nEND==\n- a phrase", "neverClaim", "END=="],
+    ["NEVER CLAIM:\n==END==\n- a phrase", "neverClaim", "==END=="],
+    ["NEVER CLAIM:\nBEGIN=\n- a phrase", "neverClaim", "BEGIN="],
+    ["NEVER CLAIM:\n== BEGIN ==\n- a phrase", "neverClaim", "== BEGIN =="],
+  ];
+  for (const [ctx, channel, fence] of typedCases) {
+    const { directives } = parseOperatorDirectivesWithLines(ctx);
+    const items = directives[channel] as string[];
+    const wanted = channel === "neverClaim" ? "a phrase" : "a criterion";
+    // An END form closes the block before the bullet, so the channel is empty;
+    // a BEGIN form leaves it open, so the channel holds exactly the operator's
+    // line. Either way the fence text is never an item.
+    const expected = /END/i.test(fence) ? [] : [wanted];
+    assert(
+      items.join("\u0000") === expected.join("\u0000"),
+      `wrapper fence ${JSON.stringify(fence)} on a typed block yields ${JSON.stringify(expected)} (got ${JSON.stringify(items)})`,
+    );
+    assert(
+      !items.some((i) => /^\s*[#=*`-]*\s*(BEGIN|END)\s*[#=*`-]*\s*$/i.test(i)),
+      `wrapper fence ${JSON.stringify(fence)} never reaches the ${channel} channel as an item`,
+    );
+  }
+}
+
+{
+  // #1855 review round 3 — `BEGIN=` OPENS nothing on its own line: the block
+  // stays open under a BEGIN-form fence (it is only an `END` that closes), so
+  // the bullets under it are still the block's items. The `END` forms above
+  // close; these two do not, which is the close/open decision the shared walk
+  // makes on the BARE token rather than on the wrapper chars around it.
+  for (const fence of ["BEGIN=", "== BEGIN =="]) {
+    const { directives } = parseOperatorDirectivesWithLines(
+      `ACCEPTANCE CRITERIA:\n${fence}\n- a criterion`,
+    );
+    assert(
+      directives.acceptanceCriteria.length === 1 &&
+        directives.acceptanceCriteria[0] === "a criterion",
+      `BEGIN-form wrapper fence ${JSON.stringify(fence)} leaves the block open, so the bullet is an item`,
     );
   }
 }

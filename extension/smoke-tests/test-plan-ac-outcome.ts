@@ -281,12 +281,54 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
     ["Done when: END\n- the tool registers", "END colon residual"],
     ["Done when END\n- the tool registers", "KEYWORD END form"],
     ["Done when:\n-- END --\n- the tool registers", "unanchored END fence"],
+    // #1855 review round 3 — the wrapper-fence forms the shared walk's FENCE_RE
+    // stopped matching (its padding class had narrowed to `[-=\s]*`), so each
+    // landed as an operator item and this AC section filed `- END=` as its only
+    // criterion. Base 27d950e0 closed the block on all five; one source for the
+    // block grammar (plan-block-walk.ts) is what keeps them equal again.
+    ["Done when:\nEND=\n- the tool registers", "END= fence"],
+    ["Done when:\nEND =\n- the tool registers", "END = fence"],
+    ["Done when:\n=END=\n- the tool registers", "=END= fence"],
+    ["Done when:\nEND==\n- the tool registers", "END== fence"],
+    ["Done when:\n==END==\n- the tool registers", "==END== fence"],
   ] as [string, string][]) {
     const r = draftSpec("feature", "d", [], [], [], [], 0, dirs(ctx), []);
     assert(
       !renders(section(r.body, "Acceptance criteria", "References"), "the tool registers") &&
         r.body.includes(AC_FALLBACK),
       `#1855 ${label}: the heading closes its own block, so the AC section falls back`,
+    );
+    // The regression this pins: the fence must never reach the section as a
+    // criterion, not even when the section is otherwise empty.
+    assert(
+      !renders(section(r.body, "Acceptance criteria", "References"), "END=") &&
+        !renders(section(r.body, "Acceptance criteria", "References"), "=END=") &&
+        !renders(section(r.body, "Acceptance criteria", "References"), "==END=="),
+      `#1855 ${label}: the fence text is not filed as an acceptance criterion`,
+    );
+  }
+}
+
+{
+  // #1855 review round 3 — the two BEGIN-form wrapper fences. They are fences
+  // (delimiters, never items) but they do NOT close the block, so the bullet
+  // under them is the outcome and the AC section is filled from it. Together
+  // with the END forms above this pins that close/open is decided on the bare
+  // token, not on the wrapper chars around it.
+  for (const [ctx, label] of [
+    ["Done when:\nBEGIN=\n- the tool registers", "BEGIN= fence"],
+    ["Done when:\n== BEGIN ==\n- the tool registers", "== BEGIN == fence"],
+  ] as [string, string][]) {
+    const r = draftSpec("feature", "d", [], [], [], [], 0, dirs(ctx), []);
+    const ac = section(r.body, "Acceptance criteria", "References");
+    assert(
+      renders(ac, "the tool registers") &&
+        validateDraft("feature", r.body, 0, { operatorOmitted: [] }).ok,
+      `#1855 ${label}: a BEGIN fence is a delimiter and the outcome still renders`,
+    );
+    assert(
+      !renders(ac, "BEGIN=") && !renders(ac, "== BEGIN =="),
+      `#1855 ${label}: the BEGIN fence is not filed as an acceptance criterion`,
     );
   }
 }

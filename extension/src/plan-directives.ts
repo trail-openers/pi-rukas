@@ -20,7 +20,16 @@
  * plan-draft re-exports for existing consumers.
  */
 
-import { walkBlock } from "./plan-block-walk.ts";
+import {
+  BULLET_RE,
+  FENCE_RE,
+  KEYWORD_SOURCE,
+  KEYWORD_TAIL_SOURCE,
+  LABEL_RE,
+  isEndFence,
+  stripBullet,
+  walkBlock,
+} from "./plan-block-walk.ts";
 import { traceWarn } from "./trace.ts";
 
 export interface OperatorDirectives {
@@ -99,23 +108,22 @@ export interface OperatorDirectiveParse {
   consumedLines: number[];
 }
 
-// #1855: the OUTCOME aliases (DONE WHEN / ACCEPTANCE) open their own channel,
-// NOT `acceptanceCriteria`: an outcome block is a weaker claim than the typed
-// directive, and a channel that merged the two would make `ACCEPTANCE` alone
-// the directive. JS regex alternation is ORDERED, not longest-match: at the one
-// position the engine reaches, the first alternative that matches wins, so
-// `ACCEPTANCE[\s-]*CRITERIA` is listed before bare `ACCEPTANCE` to keep the
-// directive form matching its own heading, and bare `ACCEPTANCE` is reached only
-// when the longer forms do not match. (Anchored at this position the order is
-// not load-bearing — a keyword running into a word char matches nothing and
-// backtracks either way — but the claim the old comment made about the engine
-// was wrong.)
-// The keyword alternation lives in plan-block-walk.ts's KEYWORD_LINE_RE — the
-// parser matches a heading for its CHANNEL and the walk matches the same
-// pattern for its TERMINATOR, and one source means the two can never disagree
-// about what a heading is.
-const KEYWORD =
-  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION\\s*\\/\\s*SUB[\\s-]*ISSUES?|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN|DONE[\\s-]*WHEN|ACCEPTANCE)";
+// #1855: the OUTCOME aliases (DONE WHEN / a bare ACCEPTANCE) open their own
+// channel, NOT `acceptanceCriteria`: an outcome block is a weaker claim than the
+// typed directive, and a channel that merged the two would make `ACCEPTANCE`
+// alone the directive. `ACCEPTANCE[\s-]*CRITERIA` is therefore the DIRECTIVE
+// heading and the only acceptance-criteria keyword that is NOT an outcome alias;
+// the outcome headings are `DONE WHEN` (any of `Done when:`, `DONE WHEN`,
+// `DONE-WHEN`, colon optional) and a bare `ACCEPTANCE`.
+//
+// The heading grammar itself — prefix, keyword alternation, tail — has ONE
+// source: the three exported pieces `plan-block-walk.ts` builds its own
+// `KEYWORD_LINE_RE` from. The parser matches a heading for its CHANNEL and the
+// walk matches the same pattern for its TERMINATOR, so the two grammars cannot
+// disagree about what a heading is. (#1855 round 3 deleted the hand-copied
+// `KEYWORD` twin that sat here, along with the local `FENCE_RE`, `BULLET_RE`,
+// `LABEL_RE` and `stripBullet` copies — the two `FENCE_RE` copies had already
+// drifted apart and disagreed on `END=`, `=END=` and `== BEGIN ==`.)
 
 /**
  * A keyword line is a heading ONLY when the keyword (with optional
@@ -124,26 +132,15 @@ const KEYWORD =
  * token, closing wrapper chars, or end-of-line. A keyword flowing into
  * ordinary prose ("Out of scope for this round was…") no longer hijacks
  * the open block (round-9 bonus defect).
+ *
+ * Group 1 is the keyword (for `channelFor`), group 2 the colon residual, group 3
+ * a keyword-attached BEGIN/END token. This regex and the walk's `KEYWORD_LINE_RE`
+ * are the same pattern with ONE difference: this one captures the keyword — the
+ * exported `KEYWORD_SOURCE` is written as a capturing group precisely so — while
+ * the walk's wraps it non-capturing. The walk reads no group at all; it only
+ * asks whether the line is a heading.
  */
-const HEADING_RE = new RegExp(
-  `^(?:[#=*\`]+\\s*)?${KEYWORD}(?:\\s*\\([^)]*\\))?\\s*(?:(?:[#=*\`]+)?\\s*[:：]\\s*(.*)$|(BEGIN|END)\\s*(?:[#=*\`]+\\s*)?$|[#=*\`]*\\s*$)`,
-  "i",
-);
-
-/** A bare fence line inside an open block: END terminates, BEGIN is skipped. */
-const FENCE_RE = /^[-=\s]*(BEGIN|END)[-=\s]*$/i;
-
-/** Bullet-list continuation marker (also keeps spaced lists open across blanks). */
-const BULLET_RE = /^(?:[-*]+|\d+[.)])\s+/;
-
-/**
- * A bare `Label:` line (1-3 capitalised words, nothing after the colon) that
- * is NOT a recognised keyword. Inside an open block it closes the block: an
- * unrecognised heading such as `Decisions:` must not be absorbed as an item
- * of the adjacent typed section. Longer prose lines ending in a colon ("The
- * following must hold:") still read as items.
- */
-const LABEL_RE = /^[A-Z][A-Za-z/-]*(?: [A-Za-z/-]+){0,2}:$/;
+const HEADING_RE = new RegExp(`^${KEYWORD_SOURCE}${KEYWORD_TAIL_SOURCE}`, "i");
 
 function channelFor(name: string): keyof OperatorDirectives {
   const up = name.toUpperCase();
@@ -164,21 +161,6 @@ function channelFor(name: string): keyof OperatorDirectives {
             : up.startsWith("DONE")
               ? "operatorOutcomes"
               : "pitfalls";
-}
-
-/**
- * Iterated bullet strip. Whitespace after the marker is REQUIRED, so
- * digit-leading prose ("42 is the answer", "3.14 pi") and PEM-style
- * "-----BEGIN X-----" lines survive intact; "- 1) x" still double-strips
- * to "x" (the old single-pass class regex ate any run of `-*digits.)`).
- */
-function stripBullet(line: string): string {
-  let out = line;
-  for (let prev = ""; prev !== out; ) {
-    prev = out;
-    out = out.replace(BULLET_RE, "");
-  }
-  return out.trim();
 }
 
 /**
@@ -326,7 +308,7 @@ export function parseOperatorDirectivesWithLines(
     }
     consumed.add(i);
     if (FENCE_RE.test(line)) {
-      if (/END/i.test(line)) target = null;
+      if (isEndFence(line)) target = null;
       continue;
     }
     const bullet = stripBullet(line);
