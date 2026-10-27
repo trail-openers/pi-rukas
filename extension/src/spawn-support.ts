@@ -8,6 +8,7 @@
  * guideline (AGENTS.md §12, #171).
  */
 
+import type { ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
@@ -190,6 +191,22 @@ export function makeRunId(): string {
  */
 export function willRetryAfter(event: PiJsonEvent | null | undefined): boolean {
   return event?.willRetry === true;
+}
+
+/**
+ * Has the spawned child's process exited? (#1847)
+ *
+ * `exitCode` and `signalCode` stay null until Node fires `exit`, so this is the
+ * same liveness signal `spawn-caps.ts` consults before its own `kill()`. It is
+ * the predicate the skill re-read cap gates its kill on, replacing the spawn's
+ * `promptCompleted` flag: that one is set on ANY non-retrying `agent_end`, and
+ * Pi emits one per in-process retry boundary, so it read "this child is done"
+ * for a segment of a review whose process was still running and still opening
+ * its skill file. A child that has exited is never killed by the cap; a child
+ * that merely passed an intermediate `agent_end` still is.
+ */
+export function spawnedChildExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 /**

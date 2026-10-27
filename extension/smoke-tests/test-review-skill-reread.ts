@@ -141,8 +141,19 @@ function guard(reported = () => false) {
   const g = guard(() => reported);
   const forms = readForms();
   for (let i = 0; i < reviewSkillReadCap() + 2; i++) g.observe(turn(forms[i % forms.length]));
+  // #1847 — the inverse of what this case used to pin. `promptCompleted` flips
+  // on ANY non-retrying `agent_end`, and Pi emits one per in-process retry
+  // boundary, so "it reported" described a segment while the process kept
+  // reading. The kill is no longer disarmed by it; liveness (`exited`) is what
+  // stands the cap down, and that is the CALLER's gate. `reported()` still
+  // suppresses the advisory steer, which test-review-skill-reread-1847.ts pins
+  // through observeReviewBounds.
   reported = true;
-  assert(!g.shouldKill(), "the re-read kill is suppressed once the child has reported");
+  assert(
+    g.shouldKill(),
+    "#1847: an intermediate agent_end (reported=true) does NOT disarm the kill",
+  );
+  assert(g.count() === reviewSkillReadCap() + 2, "…the count is still the operator's evidence");
 }
 
 // (5) inert under the caps master switch, and with no skill path to count.

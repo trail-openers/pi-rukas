@@ -22,7 +22,7 @@ import {
   developChildBoundMs,
   exploreChildBoundMs,
 } from "../src/spawn-child-bound.ts";
-import { createWallClockBackstop } from "../src/spawn-inflight.ts";
+import { createWallClockBackstop } from "../src/spawn-supervision.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { classifyFailureCause } from "../src/work-driver-failure-taxonomy.ts";
 import { terminalReasonAtHandoff } from "../src/work-driver-terminal-reason.ts";

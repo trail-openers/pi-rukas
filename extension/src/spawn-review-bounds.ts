@@ -82,6 +82,9 @@ export function wireReviewBounds(deps: {
   boundArmed: () => boolean;
   reported: () => boolean;
   willRetry: () => boolean;
+  /** #1847 — true once the child process has exited. The re-read kill stands
+   *  down on a dead child; an intermediate `agent_end` is not this. */
+  exited: () => boolean;
 }): ReviewBoundWiring {
   const { skillRead, verdictStop } = createReviewBounds(deps.role, deps.opts, deps.reported, {
     // #1827 round 2 — the re-read kill reads this before ending the child, so
@@ -113,6 +116,7 @@ export function wireReviewBounds(deps: {
     // killing bound armed first owns the child's end.
     boundArmed: deps.boundArmed,
     willRetry: deps.willRetry,
+    exited: deps.exited,
   };
   const observe = (assistantMessageEnd: PiJsonEvent | null): void => {
     observeReviewBounds(
@@ -288,4 +292,32 @@ export function endedAtVerdictStop(result: DispatchResult): boolean {
  */
 export function failedByKill(result: DispatchResult): boolean {
   return !!result.killCause;
+}
+
+/**
+ * Record the wall-clock budget behind a silence kill (#951), on the cause the
+ * caps / watchdog already resolved. Folded here rather than in `spawn.ts`
+ * because this module already owns how a kill is written into a result, and
+ * `spawn.ts` sits at the AGENTS.md §12 size cap.
+ *
+ * Each silence kill records the ACTIVE bound — the one the poll actually armed
+ * — because exactly one budget is checked per poll, so reading a second budget
+ * field would report a bound this child was never under. `killedAtCycleDeadline`
+ * distinguishes a bound the cycle deadline shortened (#1593) from one the
+ * operator configured.
+ */
+export function recordKillBudgets(
+  result: DispatchResult,
+  budgets: { timeoutMs: number; clamped: boolean; killedBudgetMs: () => number },
+): void {
+  switch (result.killCause) {
+    case "timeout":
+      result.killBudgetMs = budgets.timeoutMs;
+      if (budgets.clamped) result.killedAtCycleDeadline = true;
+      return;
+    case "inactivity":
+    case "tool-inactivity":
+      result.killBudgetMs = budgets.killedBudgetMs();
+      return;
+  }
 }

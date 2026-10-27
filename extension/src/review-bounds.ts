@@ -18,9 +18,14 @@
  *      single predicate `lens-skill-load-proof.ts` already owns (never a
  *      second copy of it). With N = `PI_ENSEMBLE_REVIEW_SKILL_READS` (3):
  *      ≤ N reads do nothing, the (N+1)-th steers once, the (N+2)-th ends the
- *      child with kill cause `review-skill-reread`. Once the child has
- *      reported (its prompt's `agent_end` arrived) the re-read cap has nothing
- *      left to stop, so the kill is suppressed.
+ *      child with kill cause `review-skill-reread`. Both a top-level `toolCall`
+ *      block and a NESTED codemode `tool_execution_start` are counted (#1847 —
+ *      nested reads were the hole, and codemode is on for every child by
+ *      default; see `review-bounds-nested.ts`). Both the steer and the kill are
+ *      suppressed once the child process has EXITED — nothing left to stop.
+ *      An intermediate `agent_end` alone does NOT suppress them (#1847): the
+ *      prompt's own end can arrive while the child is still running and still
+ *      burning reads.
  *   2. `createVerdictStop` — on each live assistant `message_end`, reads the
  *      verdict with the SAME `readEnumMarker(text, "VERDICT", VERDICT_STATUSES)`
  *      the consumer (`parseVerdict`) runs, but only out of the FINAL text
@@ -50,6 +55,7 @@ import type { SteerSource } from "./dispatch-steer.ts";
 import { isSkillReadWith } from "./lens-skill-load-proof.ts";
 import { candidateDirs, resolveSkillDir, skillFileCandidates } from "./lens-skill-path.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
+import { nestedSkillRead } from "./review-bounds-nested.ts";
 import { type VerdictStop, createVerdictStop } from "./review-bounds-verdict-stop.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -151,7 +157,10 @@ export interface SkillReadGuard {
   observe(event: PiJsonEvent): void;
   /** The steer to send, once, on the (N+1)-th read. Undefined when not due. */
   steerText(): string | undefined;
-  /** True on the (N+2)-th read — the caller ends the child with `review-skill-reread`. */
+  /** True on the (N+2)-th read — the caller ends the child with `review-skill-reread`.
+   *  The caller additionally refuses to act on it for a child that has already
+   *  exited (#1847), which is a fact about the process and so lives with the
+   *  spawn rather than with this counter. */
   shouldKill(): boolean;
   /** Reads counted so far (for the report / tests). */
   count(): number;
@@ -160,9 +169,18 @@ export interface SkillReadGuard {
 /**
  * Per-spawn counter of the child's reads of its own skill file.
  *
- * `reported` is the spawn's `promptCompleted` flag: a child that has sent its
- * `agent_end` is being reported, and killing it then would throw away the
- * answer it already gave.
+ * `reported` is the spawn's `promptCompleted` flag. #1847 narrowed what it
+ * suppresses: it NO LONGER disarms the kill. The handler used to set it on any
+ * non-retrying `agent_end`, and Pi emits one per in-process retry boundary —
+ * and a lens under a provider timeout was being re-spawned from scratch by
+ * `runLensChild` (`!result.ok` and no findings → `attempt < MAX_LENS_ATTEMPTS`),
+ * so "it already reported" described a segment, not a finished review, while
+ * the process that was still burning reads was very much alive. What the
+ * suppression must mean is "there is nothing left to stop", and that is the
+ * child having EXITED — which `observeReviewBounds` checks through
+ * `targets.exited()` rather than through this flag. `reported()` still gates the
+ * ADVISORY steer at the caller, where honouring a child that is on its way out
+ * is right; a kill is not a courtesy.
  */
 export function createSkillReadGuard(o: {
   skillPath: string;
@@ -184,6 +202,15 @@ export function createSkillReadGuard(o: {
   return {
     observe: (event) => {
       if (!active || wants.length === 0) return;
+      // #1847 — a nested call a tool made (a codemode script's ctx.executeTool)
+      // arrives as a flat tool_execution_start with no `message`, which the
+      // message-shape branch below cannot see. That was the hole: a lens that
+      // re-read its SKILL.md a hundred times from inside one codemode script
+      // registered zero reads. Each such read counts once.
+      if (nestedSkillRead(event, dirs, wants)) {
+        reads += 1;
+        return;
+      }
       const msg = event.message;
       if (event.type !== "message_end" || msg?.role !== "assistant") return;
       if (msg.stopReason === "error" || msg.stopReason === "aborted") return;
@@ -205,8 +232,10 @@ export function createSkillReadGuard(o: {
     },
     shouldKill: () => {
       if (!active || killed) return false;
-      // Suppressed once the child has reported: nothing left to stop.
-      if (o.reported()) return false;
+      // #1847 — `reported()` is deliberately NOT consulted here. It flips on an
+      // intermediate `agent_end` while the child is still running, and that is
+      // exactly when the cap has work left to do. Liveness is the caller's
+      // gate (`targets.exited()`), because only the spawn knows the process.
       if (reads < cap + 2) return false;
       killed = true;
       return true;
@@ -285,6 +314,11 @@ export interface ReviewBoundTargets {
   /** The CURRENT segment is inside Pi's in-process retry, so ending the child
    *  now discards the replay it is about to resend. Mirrors `willRetryAfter`. */
   willRetry: () => boolean;
+  /** #1847 — the child process has EXITED. The re-read cap's kill stands down on
+   *  a dead child (there is nothing left to end, and a kill that lands after
+   *  the exit races the result the spawn is already assembling). An
+   *  intermediate `agent_end` alone is NOT this: see `SkillReadGuard`. */
+  exited: () => boolean;
 }
 
 /**
@@ -312,13 +346,22 @@ export function observeReviewBounds(
     // (so the lifecycle record names the source) and to raw stdin otherwise —
     // the same fallback `armChildBound` uses.
     //
+    // #1847 — the ADVISORY steer is gated on the child being ALIVE to receive
+    // it: `shouldKill()` does not latch when the kill stands down (below), so
+    // without this gate every remaining read would write another steer at a
+    // stdin that is gone. `reported()` keeps its old meaning here (a child on
+    // its way out needs no lecture); it no longer disarms the KILL, which is
+    // gated on liveness alone — an intermediate `agent_end` used to switch the
+    // cap off in a child that was still burning reads.
+    const alive = !targets.exited();
+    const steer = !alive || o.skillRead.boundArmed() ? undefined : o.skillRead.steerText();
+    //
     // #1827 round 1 — the ADVISORY steer does NOT arm the bound. `armBound`
     // stands down every other supervision seam (slow notice, turn nudge,
     // child-bound wrap-up, the caps steer); arming it on a message whose whole
     // purpose is to get the child to change course would silence the
     // supervision that the steer exists to supplement, and the steer often
     // works — the child carries on and reviews. Only the KILL arms.
-    const steer = o.skillRead.steerText();
     if (steer !== undefined) {
       try {
         if (targets.onSteer) targets.onSteer(steer, SKILL_REREAD_STEER_SOURCE);
@@ -334,7 +377,7 @@ export function observeReviewBounds(
     // so the kill stands down — exactly as `armChildBound`'s wrap-up steer does
     // on the same seam. `shouldKill()` has already latched `killed`, so this
     // branch is reached once and the count stays the operator's evidence.
-    if (o.skillRead.shouldKill() && !o.skillRead.boundArmed()) {
+    if (alive && o.skillRead.shouldKill() && !o.skillRead.boundArmed()) {
       targets.armBound();
       targets.setKillCause(REVIEW_SKILL_REREAD_KILL);
       targets.kill();

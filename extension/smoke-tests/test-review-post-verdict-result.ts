@@ -271,6 +271,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     reported: () => false,
     boundArmed: () => false,
     willRetry: () => false,
+    exited: () => false,
   });
   const guard = createSkillReadGuard({ skillPath: SKILL_DIR, reported: () => false });
   for (let i = 0; i < 4; i++) {
@@ -310,6 +311,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
       reported: () => false,
       boundArmed: () => false,
       willRetry: () => false,
+    exited: () => false,
       ...over,
     };
     const stop = createVerdictStop();
@@ -362,6 +364,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     reported: () => false,
     boundArmed: () => false,
     willRetry: () => false,
+    exited: () => false,
   });
   const guard = createSkillReadGuard({
     skillPath: SKILL_DIR,
@@ -374,9 +377,13 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
     observeReviewBounds({ skillRead: guard, assistantMessageEnd: ev }, targets());
   }
   assert(guard.count() === 6, "the count still counts while a bound is armed");
+  // #1847 — the steer is gated on the same seam the kill is, so a guard whose
+  // kill stands down never latches `steered` and leaves an unlimited steer
+  // stream behind it: with a killing bound already armed, a stdin that is about
+  // to be killed is not written to again.
   assert(
-    armed.join(",") === "steer",
-    `an armed killing bound means no arm and no kill, only the steer (${armed.join(",")})`,
+    armed.join(",") === "",
+    `an armed killing bound means no arm, no kill and no steer (${armed.join(",")})`,
   );
   // And with no bound armed, the same guard still reaches its kill (section (5)
   // pins the sequence; this pins that the new seam did not disable it). Fresh

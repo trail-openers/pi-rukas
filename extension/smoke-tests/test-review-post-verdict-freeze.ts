@@ -77,6 +77,7 @@ function quietTargets(calls: string[]): ReviewBoundTargets {
     reported: () => false,
     boundArmed: () => false,
     willRetry: () => false,
+    exited: () => false,
   };
 }
 /** The four-line verdict menu, lifted out of the prompt the reviewer is actually
