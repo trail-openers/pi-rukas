@@ -88,10 +88,10 @@ export function inlineLensFixPrompt(
 }
 
 /**
- * The two arms below both take their fence from `buildLensFixFence`: the
- * snapshot the gate reads, the block the prompt prints, and the `record` the
- * caller writes when the build failed in a way the gate must treat as a fence
- * failure rather than as silence (#1852 review 1a).
+ * The two arms of the step below both take their fence from
+ * `buildLensFixFence`: the snapshot the gate reads, the block the prompt prints,
+ * and the `record` the caller writes when the build failed in a way the gate must
+ * treat as a fence failure rather than as silence (#1852 review 1a).
  */
 
 export async function runLensFix(
@@ -312,15 +312,14 @@ export async function runLensFix(
   if (roundTipSha !== undefined && roundTipSha !== roundTipBefore) {
     // #1852 review 1a — THE SAME DISCIPLINE AS THE PRE-DISPATCH ARM, through the
     // SAME builder. This arm has just MOVED the tree (the reposition gate
-    // fast-forwarded it), the prompt printed no fence block, and
-    // `lensFixFenceState` is cleared below so the gate has nothing to judge. If a
-    // failure here were only traced, a transient `git diff --name-only` failure —
-    // the exact read the fixer's own work makes flakiest — would take the round
-    // through the gate's "no fence record, skip" branch and push whatever the
-    // fixer wrote, which is the hole #1852 exists to close. So the builder's
-    // `record` is written with the same event the pre-dispatch arm writes, and its
-    // absence means the state could never have had a fence (`no-base`), where
-    // standing down is right.
+    // fast-forwarded it) and a failed build clears `lensFixFenceState`, so the
+    // gate has nothing to judge. If such a failure were only traced, a transient
+    // `git diff --name-only` failure — the exact read the fixer's own work makes
+    // flakiest — would take the round through the gate's "no fence record, skip"
+    // branch and push whatever the fixer wrote, which is the hole #1852 exists to
+    // close. So the builder's `record` is written with the same event the
+    // pre-dispatch arm writes, and its absence means the state could never have
+    // had a fence (`no-base`), where standing down is right.
     const rebuilt = await buildLensFixFence(
       execFn,
       ctx.repoRoot,

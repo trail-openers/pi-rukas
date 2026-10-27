@@ -49,6 +49,8 @@
     "smoke-tests/review-accept-guard-misfire-cases.ts",
     "smoke-tests/test-backlog-reminder.ts",
     "smoke-tests/lib/lens-fix-budget-share-fixture.ts",
+    "smoke-tests/lib/lens-fix-fence-shape.ts",
+    "smoke-tests/test-lens-fix-fence-shape.ts",
     "smoke-tests/lib/adversarial-fix-fixtures.ts",
     "smoke-tests/test-fix-pass-strays-counter.ts",
     "smoke-tests/test-fix-pass-strays-e2e.ts",

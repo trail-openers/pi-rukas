@@ -19,9 +19,16 @@
  * import that type: `work-driver-fix-pass-admission.ts` imports the plan-fence
  * grammar, and a schema module that imported it would put a value import back
  * into the workflow-state cycle the #1362 split exists to keep out. The shape is
- * therefore spelled here, field for field, and `test-lens-fix-prompt-fence.ts`
- * asserts the two stay structurally identical, so a field added to one and not
- * the other fails the gate rather than silently widening a fence.
+ * therefore spelled here, field for field.
+ *
+ * What keeps the two spellings identical is a COMPILE-TIME check, not prose: the
+ * two total conversions in `smoke-tests/lib/lens-fix-fence-shape.ts` assign a
+ * `FixPassFence` to this `fence` type and this `fence` type to a `FixPassFence`,
+ * and `tsconfig.smoke-tests.json` typechecks that file, so `tsc` fails on a field
+ * added to one side and not the other (the `Set`↔array difference on `helperDirs`
+ * is carried explicitly by the conversions). `test-lens-fix-fence-shape.ts` runs
+ * the same conversions on a real `fixPassFence()` result so a failure is legible
+ * in the test report as well as in the type-check gate.
  */
 
 /** The fence view the lens-fix prompt printed and the gate reads. */
