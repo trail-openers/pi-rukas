@@ -148,8 +148,8 @@ async function barrier(
 }
 
 {
-  // A version string beside the self token is a legitimate number, not a
-  // reference: stripped, and the HIGH still downgrades.
+  // A version of THREE OR MORE parts beside the self token is a legitimate
+  // number, not a reference: stripped, and the HIGH still downgrades.
   const risk = await barrier(
     "DUPLICATE_RISK: high — reverses the landed decision in #103 (as of v0.14.27)",
     1856,
@@ -162,12 +162,15 @@ async function barrier(
 }
 
 {
-  // #1856 review round 2 (HIGH): the version shape must not swallow an issue
-  // written in dotted form. `1855.1` is not a version — no `v`, only two parts —
-  // and stripping it read a reply that cited another issue as self-only and
-  // filed a plan main halts on. Same for `1855.0`, which looks exactly like the
-  // `0.0` of a version string and is not one.
-  for (const dotted of ["1855.1", "1855.0"]) {
+  // #1856 review round 2 (HIGH) and round 3 (lens HIGH): the version shape must
+  // not swallow an issue written in dotted form. `1855.1` is not a version — no
+  // `v`, only two parts — and stripping it read a reply that cited another issue
+  // as self-only and filed a plan main halts on. Same for `1855.0`, which looks
+  // exactly like the `0.0` of a version string and is not one. Round 3 extends
+  // that to the arity that used to read as safe: a PREFIXLESS number is an issue
+  // reference just as easily at three parts (`0.14.27`, `1855.1.0`) as at two,
+  // and a `v` on its own does not make two parts a version (`v1855.1`).
+  for (const dotted of ["1855.1", "1855.0", "1855.1.0", "0.14.27", "v1855.1"]) {
     const risk = await barrier(
       `DUPLICATE_RISK: high — #1856 restates this; ${dotted} covers the same scope`,
       1856,
@@ -177,8 +180,9 @@ async function barrier(
       `rule 4: a dotted issue-shaped number (${dotted}) keeps the HIGH rather than reading as a version (got ${risk?.level})`,
     );
   }
-  // The safe shapes still are safe: a `v`-prefixed version, an ISO date and a
-  // clock time each accompany a self-only HIGH and must not keep it.
+  // The safe shapes still are safe: a `v`-prefixed version of three parts, an
+  // ISO date and a clock time each accompany a self-only HIGH and must not keep
+  // it.
   for (const [shape, safe] of [
     ["a v-version", "v0.14.27"],
     ["an ISO date", "2026-10-27"],
@@ -199,7 +203,7 @@ async function barrier(
   // The predicate itself, without the barrier: what it strips and what it keeps.
   assert(
     citesUnaccountedNumber("created 2026-10-27 at 14:05 (v0.14.27)", ["1856"]) === false,
-    "rule 4: dates, clock times and version strings are all accounted for",
+    "rule 4: dates, clock times and three-part v-versions are all accounted for",
   );
   assert(
     citesUnaccountedNumber("this is #1856 restated verbatim", ["1856"]) === false,
@@ -217,10 +221,31 @@ async function barrier(
     citesUnaccountedNumber("cf. 1855.1 and 1855.0", ["1856"]) === true,
     "rule 4: a two-part dotted number is NOT a version — its digits stay unaccounted for",
   );
+  // #1856 round 3 (lens HIGH): the prefixless dotted shape, at every arity, and
+  // a two-part `v` number. Each can be an issue reference, so none is stripped.
+  for (const dotted of ["0.14.27", "1855.1.0", "v1855.1", "1.2"]) {
+    assert(
+      citesUnaccountedNumber(`cf. ${dotted} covers the scope`, ["1856"]) === true,
+      `rule 4: ${dotted} keeps the HIGH rather than reading as a version`,
+    );
+  }
+  // And the three-part `v` shape really is stripped at every arity from three up
+  // — the tightening above must not have disabled version stripping entirely.
+  assert(
+    citesUnaccountedNumber("as of v0.14.27", ["1856"]) === false &&
+      citesUnaccountedNumber("as of v1.2.3.4", ["1856"]) === false,
+    "rule 4: a v-prefixed version of three or more parts is still accounted for",
+  );
+  assert(
+    citesUnaccountedNumber("as of v0.14.27 and 2026-10-27T09:12", ["1856"]) === false,
+    "rule 4: a v-prefixed version and a dated timestamp together are accounted for",
+  );
+  // Round 3: the prefixless three-part version in the same fixture is NO LONGER
+  // stripped — the shape cannot be told from `1855.1.0`, so it keeps the stop.
   assert(
     citesUnaccountedNumber("as of v0.14.27, 0.12.38-beta and 2026-10-27T09:12", ["1856"]) ===
-      false,
-    "rule 4: v-prefixed, three-part and dated shapes are all accounted for",
+      true,
+    "rule 4: a prefixless three-part version keeps the HIGH (fail closed, not a version)",
   );
   assert(
     citesUnaccountedNumber("#7 and #77 both matter", ["7"]) === true,
