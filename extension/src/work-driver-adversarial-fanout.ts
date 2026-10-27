@@ -52,12 +52,12 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { clearDispatch, markDispatchStarted, mintJobId } from "./work-driver-resume.ts";
+import { beginDispatch, clearDispatch, mintJobId } from "./work-driver-resume.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { providerSleep } from "./work-driver-step-router.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { driverGateCmd } from "./work-driver-verify-pr17.ts";
-import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 export { capKillOutcomeFields };
 
 /**
@@ -139,27 +139,39 @@ export async function fanOutAdversarial(
   // develop's boundary, `inFlightJobIds` stayed empty, and a runner that died
   // there left no record that a review had been paid for.
   //
-  // ONE mutable log for the whole fan-out. `next` was a local rebuilt at each
-  // step, but N workstreams now write ahead CONCURRENTLY (`Promise.all`), and
-  // each one's write must see its siblings' — a snapshot taken at pass start
-  // would drop a sibling's `dispatch-started` and its in-flight id. Every write
-  // therefore goes through `writeAheadUpdate`, which reads and replaces the
-  // current log; the `finally` clears are queued through it too, so a clear can
-  // never be lost under another workstream's write.
+  // ONE mutable log for the whole fan-out, and ONE chained writer for it.
+  // `next` was a local rebuilt at each step, but N workstreams now write ahead
+  // CONCURRENTLY (`Promise.all`), and each one's write must see its siblings' —
+  // a snapshot taken at pass start would drop a sibling's `dispatch-started`
+  // and its in-flight id. So every write goes through `writeThrough`, which
+  // reads the current log, runs `beginDispatch` / `clearDispatch` against it
+  // and installs the result; the chain makes that read-modify-write atomic, so
+  // two siblings starting in the same tick cannot each clobber the other's
+  // marker, and a clear can never be lost under another workstream's write.
+  //
+  // The MARKER ITSELF is the shared helper: `beginDispatch` / `clearDispatch`
+  // (work-driver-resume.ts), the same pair every other write-ahead in the
+  // driver routes through. The hand-rolled `markDispatchStarted` + bare
+  // `persistCycle` this file used to carry duplicated the helper's body and
+  // dropped one thing it does: a persist failure REJECTS, and the caller does
+  // not dispatch (see `runSingleDispatch` / `beginDispatch` callers).
   //
   // The id is minted HERE and handed to the child as its `runId`, so the
   // write-ahead marker, the child's transcript and the completion event are one
   // identity (#1789's rule, which `runSingleDispatch` already follows).
-  // Each pass persists its own write-ahead from the log as it stood when the
-  // pass began, and installs the result. The chain makes that read-modify-write
-  // atomic, so two siblings starting in the same tick cannot each clobber the
-  // other's `dispatch-started`.
   let log: WorkState = next;
   let writeChain: Promise<unknown> = Promise.resolve();
-  const persistWriteAhead = (fn: (s: WorkState) => WorkState): Promise<void> => {
-    const step = writeChain.then(() => {
-      log = fn(log);
+  const writeThrough = (fn: (s: WorkState) => Promise<WorkState>): Promise<WorkState> => {
+    const step = writeChain.then(async () => {
+      log = await fn(log);
+      // The step resolves with the log AS INSTALLED, which is what makes the
+      // read-modify-write atomic for the caller: it sees the log its own write
+      // produced, siblings' writes and all.
+      return log;
     });
+    // A FAILED step must not poison the chain — a sibling's clear still has to
+    // run — but the failure is not swallowed either: `step` is what the caller
+    // awaits, and `runOne` turns it into a no-dispatch outcome.
     writeChain = step.catch(() => undefined);
     return step;
   };
@@ -167,33 +179,66 @@ export async function fanOutAdversarial(
     const label = multi ? `adversarial[${id}]` : "adversarial_loop";
     return { jobId: mintJobId("adversarial", `${label}:${id}`, Date.now()), label };
   };
+  const writeAheadFailed = (id: string, label: string, jobId: string, e: unknown) => {
+    const errMsg = (e as Error).message?.slice(-200);
+    trace(
+      `work-driver: adversarial[${id}] write-ahead persist FAILED — not dispatching a reviewer nobody recorded`,
+    );
+    return {
+      id,
+      ok: false,
+      rounds: 0,
+      records: [],
+      // The driver's own write failed: a NO-VERDICT infrastructure failure,
+      // never a rejection and never something the retry ladder re-spawns into
+      // the same unreadable state file.
+      infra: true,
+      threw: true,
+      skipped: false,
+      priorInfra: priorOutcomes.get(id) === "infra-failure",
+      rejectionText: `adversarial write-ahead failed: ${errMsg}`,
+      errorTail: errMsg,
+      failureEvent: {
+        kind: "dispatch-failed",
+        step: "adversarial",
+        role: "adversarial-loop",
+        jobId,
+        label,
+        ms: 0,
+        at: Date.now(),
+        errorTail: errMsg,
+      } as const,
+    } satisfies AdversarialOutcome;
+  };
   const runOne = async (id: string): Promise<AdversarialOutcome> => {
     const wa = writeAheadFor(id);
-    let begun!: { state: WorkState; jobId: string };
-    await persistWriteAhead((s) => {
-      // The read and the write happen together, inside the chain — see the
-      // comment on `persistWriteAhead`.
-      const b = markDispatchStarted(
-        s,
-        "adversarial",
-        "adversarial-loop",
-        wa.label,
-        wa.jobId,
-        Date.now(),
+    const startedAt = Date.now();
+    let begunLog: WorkState;
+    try {
+      begunLog = await writeThrough((s) =>
+        beginDispatch(
+          ctx,
+          s,
+          "adversarial",
+          "adversarial-loop",
+          wa.label,
+          startedAt,
+          undefined,
+          wa.jobId,
+        ).then((b) => b.state),
       );
-      begun = { state: b, jobId: wa.jobId };
-      return b;
-    });
-    // The intent must be on disk BEFORE the reviewer await, which is the whole
-    // point of the write-ahead; `beginDispatch` is the shared write+persist.
-    await persistCycle(ctx, begun.state);
+    } catch (e) {
+      // The intent is what makes a killed review visible on resume. If it could
+      // not be written, dispatching anyway would spend a reviewer whose death
+      // nothing records — the exact cause B this step is about. So: no dispatch.
+      return writeAheadFailed(id, wa.label, wa.jobId, e);
+    }
     // #1863 — the marker's OWN log, not the shared one: every outcome below
     // carries the dispatch events the pass produced, so they must sit AFTER this
     // pass's `dispatch-started`, and the `finally` clears the id out of this
     // copy. The fan-out re-emits the outcome's events at the splice, and merges
     // the in-flight clears from every outcome's copy — reading the shared log
     // here would strand a sibling's dispatch events behind this workstream's.
-    const begunLog = begun.state;
     try {
       return await runAdversarialWorkstream(id, {
         ctx,
@@ -206,8 +251,11 @@ export async function fanOutAdversarial(
       });
     } finally {
       // Cleared on EVERY exit, including a throw out of the loop: the step's
-      // tail must be the dispatch event, never the `dispatch-started`.
-      await persistWriteAhead((s) => clearDispatch(s, wa.jobId));
+      // tail must be the dispatch event, never the `dispatch-started`. The
+      // splice builds the batch from `log`, which this queued write installs,
+      // so the clear is awaited before this pass resolves — no separate
+      // boundary persist.
+      await writeThrough(async (s) => clearDispatch(s, wa.jobId)).catch(() => undefined);
     }
   };
 

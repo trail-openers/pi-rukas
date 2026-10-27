@@ -333,9 +333,10 @@ export async function runAdversarialWorkstream(
     // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
     ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
     // #1863 M4 — the cause of a no-verdict pass whose outcome is neither
-    // `infra` nor `threw` (see `boundKill` above), and the id of the event that
-    // proves it, so the handler can read the kill back from the log by identity
-    // and cannot pick up a sibling's kill. `killCause` above is the LADDER's
+    // `infra` nor `threw` (see the `interpretReview` call above, which is where
+    // a child-bound kill is read as infrastructure), and the id of the event
+    // that proves it, so the handler can read the kill back from the log by
+    // identity and cannot pick up a sibling's kill. `killCause` above is the LADDER's
     // field and is deliberately untouched: promoting a bound kill into it would
     // also promote it into the cap-kill projection's consumers.
     completionEvent,
