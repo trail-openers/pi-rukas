@@ -26,13 +26,6 @@ export interface CorrectiveRedraftCtx {
   outOfScope: string[];
   depth: number;
   directives: OperatorDirectives;
-  /**
-   * #1855: the operator OUTCOME block parsed out of the `context` param — the
-   * Acceptance-criteria source that is NOT a directive block. Carried here (and
-   * on the `GateRunArgs` mirror in plan-driver-gate.ts) so the round-2
-   * corrective re-draft cannot silently drop the operator's own outcome.
-   */
-  operatorOutcomes?: string[];
   /** Same budget as the fitted round-1 draft: deterministic across rounds, and
    *  the round-2 body stays under the forge limit. */
   chosenBudget: RenderBudget;
@@ -64,7 +57,6 @@ export function correctiveRedraft(blocking: PlanGap[], ctx: CorrectiveRedraftCtx
       decisions,
       writebackMap,
       ctx.chosenBudget,
-      ctx.operatorOutcomes,
     );
     if (redraft.operatorOmitted.length) throw new Error("redraft truncated operator items");
     // Marked decisions (writtenBack from the splice, never predicted).

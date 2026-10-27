@@ -29,14 +29,13 @@ import {
 } from "../src/plan-angles.ts";
 import { parseOperatorDirectives } from "../src/plan-directives.ts";
 import { draftInvalidHalt } from "../src/plan-driver-phases.ts";
-import { runGate } from "../src/plan-driver-gate.ts";
-import { correctiveRedraft } from "../src/plan-driver-redraft.ts";
 import {
   type AngleFindings,
   type PlanItemKindName,
   draftSpec,
 } from "../src/plan-draft.ts";
 import { AC_FALLBACK, validateDraft } from "../src/plan-validate.ts";
+import { runRound2Pin } from "./plan-ac-outcome-round2.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -216,8 +215,10 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
 }
 
 {
-  // AC-3 / PM decision 2: an outcome heading with no item behaves as if the
-  // heading were absent — the existing fallback, the existing failure.
+  // AC-3 / PM decision 2: an outcome heading whose block holds NO ITEM AT ALL
+  // behaves as if the heading were absent — the existing fallback, the existing
+  // failure. (Review round 1: a prose LEAD-IN before bullets is no longer one of
+  // these — the lookahead scans the whole block, so those bullets count.)
   const empty = draftSpec(
     "feature",
     "d",
@@ -226,7 +227,7 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
     [],
     [],
     0,
-    dirs("Done when:\nthe following must hold"),
+    dirs("Done when:"),
     [],
   );
   assert(
@@ -237,6 +238,30 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
     empty.body.includes(AC_FALLBACK),
     "#1855 empty heading: the AC section falls back exactly as before",
   );
+}
+
+{
+  // #1855 review round 1: the shapes the first-meaningful-line lookahead voided
+  // by mistake. Each must now fill the AC section, because the parser's own loop
+  // produces the bullet — a lookahead answering "no outcome" while the parser
+  // produces an item is the #1855 bug wearing the lookahead's clothes.
+  const shapes: [string, string][] = [
+    ["Done when: the following must hold\n- the tool registers", "lead-in"],
+    ["Done when:\n\n- the tool registers", "blank line"],
+    ["Done when:\nBEGIN\n- the tool registers\nEND", "BEGIN fence"],
+  ];
+  for (const [ctx, label] of shapes) {
+    const r = draftSpec("feature", "d", [], [], [], [], 0, dirs(ctx), []);
+    const ac = section(r.body, "Acceptance criteria", "References");
+    assert(
+      renders(ac, "the tool registers"),
+      `#1855 ${label} before the bullets: the outcome renders`,
+    );
+    assert(
+      validateDraft("feature", r.body, 0, { operatorOmitted: [] }).ok,
+      `#1855 ${label} before the bullets: validateDraft passes`,
+    );
+  }
 }
 
 {
@@ -259,87 +284,7 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
 
 // --------------------------------------------- round 2 keeps the outcome ACs
 
-{
-  // PM decision 6: the outcome source rides on CorrectiveRedraftCtx AND its
-  // GateRunArgs mirror. A channel that reached only round 1 would render the
-  // operator's `Done when` bullets in the round-1 body and DROP them from the
-  // body the gap gate then reviews and the pipeline files — the worst failure
-  // shape, because the reviewed spec is not the filed spec.
-  //
-  // The fixture hands the gate a `directives` object with the outcome channel
-  // EMPTY (exactly what a context param carrying only prose produces for a
-  // caller that threaded nothing): the ONLY way the re-drafted body can carry
-  // the bullets is the threaded `operatorOutcomes` field. Removing that one
-  // field from plan-driver-gate.ts's CorrectiveRedraftCtx literal turns the
-  // third assertion red — the pin is falsifiable, not decorative.
-  const ctx = "Done when:\n- the tool registers\n- dryRun never files";
-  const outcomes = parseOperatorDirectives(ctx).operatorOutcomes ?? [];
-  assert(outcomes.length === 2, "round 2 fixture: the parser produced the outcome channel")
-  const findings = [angle("test-surface", "edge-case", ["a pitfall the operator named"])];
-  const bareDirectives = { ...parseOperatorDirectives(ctx), operatorOutcomes: [] };
-  let title = "";
-  let body = draftSpec(
-    "feature",
-    "d",
-    findings,
-    [],
-    [],
-    [],
-    0,
-    bareDirectives,
-    [],
-    undefined,
-    undefined,
-    outcomes,
-  ).body;
-  title = "t";
-
-  const run = await runGate({
-    dispatch: (async (_pi: unknown, spec: { prompt: string }) => ({
-      ok: true,
-      // Round 1 is the full GAP DETECTION review and its CRITICAL fires the
-      // corrective re-draft; round 2 verifies the carried resolutions.
-      text: spec.prompt.includes("SCOPED VERIFICATION")
-        ? "VERDICT: READY"
-        : "GAP: CRITICAL the criteria do not name the outcome — proposed resolution: the tool registers\nVERDICT: NEEDS_ITERATION",
-      toolUses: [],
-    })) as never,
-    pi: {} as never,
-    repoRoot: process.cwd(),
-    type: "feature",
-    descriptor: "d",
-    getBody: () => body,
-    setTitleBody: (t, b) => {
-      title = t;
-      body = b;
-    },
-    findings,
-    inventoryContext: [],
-    directives: bareDirectives,
-    operatorOutcomes: outcomes,
-    openQuestions: [],
-    outOfScope: [],
-    depth: 0,
-    chosenBudget: { maxItemsPerSection: 20, itemClipChars: 400 },
-    priorContext: [],
-    settled: [],
-    timed: ((_phase: string, fn: () => Promise<unknown>) => fn()) as never,
-    correctiveRedraft: correctiveRedraft,
-  });
-
-  assert(run.halted === false, "round 2: the gate completed (no re-draft throw)");
-  assert(title.length > 0, "round 2: the re-draft set the title (it really ran)");
-  const ac = section(body, "Acceptance criteria", "References");
-  assert(
-    renders(ac, "the tool registers") && renders(ac, "dryRun never files"),
-    "#1855 threading: the round-2 body renders the same operator outcome bullets as round 1",
-  );
-  assert(
-    validateDraft("feature", body, 0, { operatorOmitted: [] }).ok,
-    "#1855 threading: the re-drafted body still passes validateDraft",
-  );
-}
-
+await runRound2Pin(assert, section, renders, parseOperatorDirectives);
 
 // --------------------------------------- the feature test-surface AC charter
 

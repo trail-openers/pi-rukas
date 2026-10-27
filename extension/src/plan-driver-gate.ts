@@ -40,14 +40,6 @@ export interface GateRunArgs {
   findings: CorrectiveRedraftCtx["findings"];
   inventoryContext: CorrectiveRedraftCtx["inventoryContext"];
   directives: CorrectiveRedraftCtx["directives"];
-  /**
-   * #1855: the mirror of `CorrectiveRedraftCtx.operatorOutcomes`. The round-2
-   * re-draft is handed this object's fields, so a channel that lived only on
-   * the redraft context would be silently absent in the re-drafted body — the
-   * operator's `Done when` section would vanish after a CRITICAL corrective
-   * round while round 1 rendered it.
-   */
-  operatorOutcomes?: CorrectiveRedraftCtx["operatorOutcomes"];
   openQuestions: string[];
   outOfScope: string[];
   depth: number;
@@ -173,7 +165,6 @@ export async function runGate(args: GateRunArgs): Promise<GateRunResult> {
             outOfScope: args.outOfScope,
             depth: args.depth,
             directives: args.directives,
-            operatorOutcomes: args.operatorOutcomes,
             chosenBudget: args.chosenBudget,
             setCarried: (c) => {
               lastCarried = c;

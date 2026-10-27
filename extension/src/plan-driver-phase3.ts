@@ -28,13 +28,6 @@ export interface Phase3Args {
   findings: AngleFindings[];
   inventoryContext: { source: string; fact: string }[];
   directives: OperatorDirectives;
-  /**
-   * #1855: the operator OUTCOME block (`Done when:` / `Acceptance:` with bullets)
-   * parsed from the `context` param. It is the Acceptance-criteria source with
-   * the same authority as a directive block, so it must reach the one site that
-   * fills that section — here and on the round-2 mirror in plan-driver-gate.ts.
-   */
-  operatorOutcomes?: string[];
   depth: number;
   /** The caller's provenance (#1377) — its rendered size is reserved out of the budget. */
   provenance?: PlanProvenance;
@@ -90,7 +83,6 @@ export function phase3Draft(args: Phase3Args): Phase3Outcome {
         [],
         undefined,
         b,
-        args.operatorOutcomes,
       ),
     // #1377: read at the single call site the fitter reserves it for, so
     // nothing can forget it.

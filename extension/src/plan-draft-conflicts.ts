@@ -294,7 +294,7 @@ export function operatorLinesOf(
     // dedupe stages judge investigation items against them exactly as against a
     // directive AC block, and a drop is disclosed through the same `dropped`
     // channel (PM decision 5: one rule for both operator AC sources).
-    ...(directives.operatorOutcomes ?? []),
+    ...directives.operatorOutcomes,
     ...directives.outOfScope,
     ...directives.pitfalls,
     ...(directives.testSurface ?? []),

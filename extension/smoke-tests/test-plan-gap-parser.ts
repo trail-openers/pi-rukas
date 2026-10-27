@@ -146,7 +146,7 @@ function assert(cond: boolean, msg: string) {
   // owner. The `resolved:` string prefix is DEAD: the prefix test is gone
   // from the renderer, so a plain open question that literally begins
   // "resolved: " renders pending, not resolved (the canary below).
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
   // Six-lens re-review (PR #640): the writtenBack flag is now PRODUCED BY
   // the write (markWrittenDecisions reads the SpliceOutcome list), not
   // predicted before it. The test must pass a writebackMap for the

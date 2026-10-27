@@ -235,11 +235,13 @@ export function draftSpec(
   // (operator authority, D2) — they count toward the budget and the
   // tooLarge halt covers the extreme.
   budget?: RenderBudget,
-  // #1855: the operator-outcome AC source, THREADED AS A TRAILING optional
-  // parameter so no existing positional argument moves (PM decision 6). Both
-  // production call sites pass it: plan-driver-phase3.ts (round 1) and
-  // plan-driver-redraft.ts (round 2, via CorrectiveRedraftCtx).
-  operatorOutcomes?: string[],
+  // #1855 (review round 1): the operator-outcome AC source travels ONLY inside
+  // `directives`. There is deliberately no trailing parameter for it: a second
+  // channel meant a caller could hand round 1 the parsed directives and round 2
+  // something else, and the round-2 body would quietly lose the operator's own
+  // criteria. `directives` reaches both draftSpec call sites (phase3Draft and
+  // CorrectiveRedraftCtx both carry it from the ONE parse in
+  // assemblePriorContext), so one channel is enough.
 ): {
   title: string;
   body: string;
@@ -247,15 +249,12 @@ export function draftSpec(
   operatorOmitted: OperatorOmission[];
 } {
   const title = planTitle(descriptor, type);
-  // #1855: the operator-line view this draft judges and renders with — the
-  // directive channels plus the operator outcome block (from the parsed
-  // `directives` or the trailing parameter). Built BEFORE the two operator-line
-  // stages below so a drop is never judged against a different line set than
-  // the one that renders. Precedence lives in operatorAcSource.
-  const acSource: OperatorDirectives = {
-    ...directives,
-    operatorOutcomes: [...(directives.operatorOutcomes ?? []), ...(operatorOutcomes ?? [])],
-  };
+  // #1151: stage 1 drops items that contradict an operator line; stage 2 drops
+  // items that restate one. Both disclose through `dropped`. The operator-line
+  // view IS `directives` — the same object both the judging stages and the AC
+  // section below read, so a drop is never judged against a different line set
+  // than the one that renders. Precedence lives in operatorAcSource.
+  const acSource = directives;
   // #1151: stage 1 drops items that contradict an operator line; stage 2 drops
   // items that restate one. Both disclose through `dropped`.
   const conflicts = applyOperatorConflicts(rawFindings, acSource, priorContext);

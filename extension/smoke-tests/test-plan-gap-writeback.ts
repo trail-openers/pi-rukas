@@ -245,7 +245,7 @@ const RETRY_STATEMENT =
     [],
     [],
     0,
-    { acceptanceCriteria: [], pitfalls: [], outOfScope: [] },
+    { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] },
     decisions,
     writebackMap,
   );

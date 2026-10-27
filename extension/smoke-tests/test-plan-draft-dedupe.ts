@@ -67,6 +67,7 @@ const OP = "Do not change the retry backoff default in provider config";
     acceptanceCriteria: [OP_AC],
     pitfalls: [],
     outOfScope: [],
+    operatorOutcomes: [],
   };
   const findings: AngleFindings[] = [
     {

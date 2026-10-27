@@ -33,7 +33,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
 
 function findingsWith(items: { kind: string; text: string }[]) {
   return [
@@ -95,6 +95,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
       acceptanceCriteria: ["the retry path is covered"],
       pitfalls: [],
       outOfScope: [],
+      operatorOutcomes: [],
     },
     [],
   );

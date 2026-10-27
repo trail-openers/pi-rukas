@@ -189,8 +189,9 @@ async function runPipelineOn(
   const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
   // #1855: the operator OUTCOME block (`Done when:` / `Acceptance:` with bullets)
   // is a second operator-authority Acceptance-criteria source; the assembly
-  // parsed it with the same line-index accounting, so it travels to BOTH
-  // draftSpec call sites and is never re-derived here.
+  // parsed it with the same line-index accounting, and it rides INSIDE
+  // `directives` to BOTH draft sites (phase3Draft here, the round-2 gate below),
+  // so there is no second channel that a round could drop.
   if (signal?.aborted)
     return cancelledResult(signal, input, "inventory", priorContext, finishTimings());
 
@@ -260,15 +261,15 @@ async function runPipelineOn(
   // Phase 3 — draft WITHIN the forge body budget (plan-validate.ts owns the
   // stage-0/compaction/tooLarge policy); #1377 reserves the provenance lines
   // that are appended after the fitter so the FINAL body still fits the forge
-  // cap. #1855: the operator OUTCOME block travels here AND to the round-2 gate
-  // below, so a corrective re-draft cannot lose the operator's own criteria.
+  // cap. #1855: the operator OUTCOME block is part of `directives`, so the same
+  // parsed object reaches the round-2 gate below and a corrective re-draft cannot
+  // lose the operator's own criteria.
   const phase3 = phase3Draft({
     type,
     descriptor,
     findings,
     inventoryContext,
     directives,
-    operatorOutcomes: directives.operatorOutcomes,
     depth,
     provenance: input.provenance,
     priorContext,
@@ -345,7 +346,6 @@ async function runPipelineOn(
       priorContext,
       inventoryContext,
       directives,
-      operatorOutcomes: directives.operatorOutcomes,
       settled,
       openQuestions,
       outOfScope,

@@ -126,10 +126,7 @@ export const AC_FALLBACK =
  * before rather than rendering empty.
  */
 export function operatorAcSource(directives: OperatorDirectives): string[] {
-  return dedupeByNormalised([
-    ...directives.acceptanceCriteria,
-    ...(directives.operatorOutcomes ?? []),
-  ]);
+  return dedupeByNormalised([...directives.acceptanceCriteria, ...directives.operatorOutcomes]);
 }
 
 /** The Sub-issues fallback draftSpec renders when no decomposition exists. */
