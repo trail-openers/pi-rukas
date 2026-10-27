@@ -144,6 +144,35 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
   );
 }
 
+console.log("# a backtick in a path cannot close the code span the driver wrapped it in");
+{
+  // #1849 item 4. `neutraliseMarkdownField` collapses runs of THREE backticks and
+  // leaves a single one, which is right for a bare bullet and wrong here: the
+  // paths are printed inside `\`…\``, so one developer-authored backtick closed
+  // the driver's span and every character after it left the code span and read as
+  // the driver's own prose. An ODD number is the case that breaks — an even count
+  // happens to re-open and re-close and looks fine.
+  const note = fixPassRevertNote({
+    kind: "fix-pass-strays-reverted",
+    at: 1,
+    workstreamId: "default",
+    paths: ["src/a`b.ts", "ok.ts"],
+    preservedRef: "refs/pi-rukas/fix-pass-strays/1846-default-1",
+    patchPath: "/tmp/scratch/fix-pass-strays-default-1.patch",
+  });
+  // Inside the wrapped path only: the driver's own wrapping backticks are the
+  // point of the line, so what must not survive is a backtick BETWEEN them.
+  const spans = [...note.matchAll(/`([^`]*)`/g)].map((m) => m[1] ?? "");
+  assert(
+    spans.length === 2 && spans.every((s) => !s.includes("`")),
+    `no backtick survives inside a wrapped path, so no span is unclosed (${JSON.stringify(note)})`,
+  );
+  assert(
+    note.includes("src/a'b.ts") && note.includes("ok.ts"),
+    `the paths are still readable with the backtick substituted (${JSON.stringify(note)})`,
+  );
+}
+
 if (exit !== 0) console.log(`\n${exit} assertion(s) FAILED`);
 else console.log("\nall assertions passed");
 process.exit(exit);

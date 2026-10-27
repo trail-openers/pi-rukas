@@ -24,6 +24,7 @@
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
+import { tickSafe } from "./plan-fence-render.ts";
 import { trace } from "./trace.ts";
 import { runGit } from "./work-develop-git.ts";
 // #1849 — the revert's git transport is pinned to the executor whose argv form is
@@ -288,9 +289,17 @@ const usable = (sha: string | undefined): string | undefined =>
  *  were chosen by the fixer, and the line is rendered into the PR body and the
  *  handoff. A path containing a fence, a marker token, or a line break is the
  *  developer speaking into a report the operator reads as the driver's — the
- *  same reason the diff-cap module neutralises a path before printing it. */
+ *  same reason the diff-cap module neutralises a path before printing it.
+ *
+ *  `tickSafe` runs after the neutraliser at each wrapped site. A single backtick
+ *  survives `neutraliseMarkdownField` (it collapses only runs of three or more,
+ *  which are code FENCES), and in a line that wraps a path in backticks one such
+ *  backtick closes the driver's span — so everything after the developer's
+ *  backtick in a file name leaves the code span and reads as the driver's prose.
+ *  The ref and the patch path are printed bare, not wrapped, so they take the
+ *  neutraliser alone. */
 export function fixPassRevertNote(event: FixPassStraysRevertedEvent): string {
-  const paths = event.paths.map((p) => neutraliseMarkdownField(p)).join(", ");
+  const paths = event.paths.map((p) => `\`${tickSafe(neutraliseMarkdownField(p))}\``).join(", ");
   // The ref and the patch path are built by the driver from the issue number, the
   // workstream id and the attempt — but the WORKSTREAM ID is not driver-chosen
   // (it comes from the plan, and a grouped cycle's ids come from the issue body),

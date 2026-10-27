@@ -81,3 +81,23 @@ export function neutraliseFenceEntry(entry: string): string {
   // noise the developer reads as part of the fence.
   return Array.from(cleaned).slice(0, WORKSTREAM_FENCE_MAX).join("");
 }
+
+/**
+ * Text that a caller is about to wrap in a backtick code span, made safe to wrap.
+ *
+ * `neutraliseMarkdownField` collapses runs of THREE or more backticks (a code
+ * fence) and leaves a single one alone — which is right for a bullet, where a lone
+ * backtick is inert, and wrong for a span, where it closes the span the driver
+ * opened. A path named `` a`b.ts `` printed inside `\`…\`` therefore let the
+ * developer's own backtick end the code span and turned the remainder of the
+ * driver's line into prose the model reads as instruction.
+ *
+ * Replacing every backtick with `'` is what `neutraliseFenceEntry` already does
+ * for a declared path (#1744), for exactly this reason; the two sites share the
+ * rule rather than each re-deriving it. A path is the only content that reaches
+ * these spans, and no real path contains a backtick, so the substitution costs no
+ * information the operator needed.
+ */
+export function tickSafe(s: string): string {
+  return s.replace(/`/g, "'");
+}

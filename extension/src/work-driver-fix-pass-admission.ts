@@ -46,7 +46,7 @@
  * set rather than merely that a list appears.
  */
 
-import { neutraliseMarkdownField } from "./comment-evidence.ts";
+export { fixPassFenceLines } from "./work-driver-fix-pass-fence-render.ts";
 import { anchorDirs, entryPath, fenceMatches, pathTokenIn } from "./work-driver-declared-path.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
@@ -438,60 +438,4 @@ export function fixPassHelperDirs(
   // `ReadonlySet` and handed straight to the gate, so a mutable singleton that
   // one caller leaked into another would widen a route that must admit nothing.
   return ranRound ? roundDirs : new Set<string>();
-}
-
-/** How many paths the printed fence names for one rule before it says "more". */
-const PRINTED_PATHS = 12;
-
-/**
- * One path as the prompt prints it (#1849 item 9).
- *
- * Every path in the rendered fence came through the planner, and the planner read
- * the issue body — so a path is developer-influenced text that this module prints
- * into a prompt the fixer acts on. `neutraliseMarkdownField` is what the revert's
- * disclosure line already does for the very same names (`fixPassRevertNote`), and
- * the fence block is the other half of that disclosure: an unclosed backtick or an
- * injected heading in a declared path changes what the fixer is told it may touch.
- * The backticks stay — they mark the token as a path — and the content between
- * them is neutralised.
- */
-
-const shown = (paths: readonly string[]): string => {
-  const head = paths
-    .slice(0, PRINTED_PATHS)
-    .map((p) => `\`${neutraliseMarkdownField(p)}\``)
-    .join(", ");
-  return paths.length > PRINTED_PATHS ? `${head}, … (${paths.length} total)` : head;
-};
-
-/**
- * The fence block the fix prompt prints (#1846-3), rendered from the SAME
- * `FixPassFence` the fence reads. It states the four things the acceptance
- * criterion names: the admitted set, the finding-named widening inside it, the
- * two admission rules with their ceiling, and the outOfScope list.
- */
-export function fixPassFenceLines(fence: FixPassFence): string[] {
-  const basis =
-    fence.declared.length > 0
-      ? "the declared paths and the files the findings name"
-      : "the files this worktree already changed and the files the findings name";
-  const lines = [
-    "",
-    "## The fence this fix pass is judged against",
-    "",
-    "The post-pass scope fence refuses the pass (cap `fix-pass-park`) unless every file you change sits in one of these:",
-    `- **admitted directly** (${basis}): ${shown(fence.admits)}`,
-    "- **admitted as a coupled test**: any test file whose name couples to one of those files — its stem contains the file's whole basename (so `tests/foo.test.ts` is coupled to `pkg/foo.ts`). Always allowed; never refused for the file count.",
-    `- **admitted as an anchored helper**: an undeclared file in the same directory as one of the files you are allowed to change, while the pass's total stays within ${fence.ceiling} file(s) for its ${fence.ceilingBasis}`,
-  ];
-  lines.push(
-    fence.outOfScope.length > 0
-      ? `- **never admitted**: this workstream's out-of-scope fence — ${shown(fence.outOfScope)} — and any protected path (\`.github/\`, \`.pi/\`, \`CODEOWNERS\`, \`agents.json\`). Either parks the cycle.`
-      : "- **never admitted**: this workstream's out-of-scope fence (none declared) and any protected path (`.github/`, `.pi/`, `CODEOWNERS`, `agents.json`) — either parks the cycle.",
-  );
-  lines.push(
-    "",
-    "Anything outside those routes is a stray: the driver preserves it under a ref and a patch, reverts it and continues — one stray set does not park the pass, a second one does.",
-  );
-  return lines;
 }

@@ -221,5 +221,48 @@ const printedPaths = (block: string): string[] =>
   );
 }
 
+// ── 7 — a backtick in a declared path cannot close the span it is printed in ──
+{
+  // #1849 item 4. The fence block wraps every path in `\`…\``. A single backtick
+  // survives `neutraliseMarkdownField` (it collapses only runs of three or more,
+  // which are code FENCES), so a path named `` src/a`b.ts `` used to print as
+  // `` `src/a`b.ts` ``: the developer's backtick closed the driver's opening span
+  // and `b.ts` — plus the rest of the line, including the driver's own rule text —
+  // left the code span and read as prose the fixer acts on. An ODD count is the
+  // breaking case; an even one re-closes and looks harmless, which is why the
+  // fixture uses one backtick.
+  const ticked = fixPassFence(
+    {
+      id: "default",
+      declared: ["src/a`b.ts", "lib/c``d.ts"],
+      named: [],
+      alreadyChanged: [],
+      outOfScope: ["docs/e`f.md"],
+    },
+    fanoutLimitFor,
+  );
+  const lines = fixPassFenceLines(ticked);
+  const admitted = lines.find((l) => l.includes("**admitted directly**")) ?? "";
+  const never = lines.find((l) => l.includes("**never admitted**")) ?? "";
+  for (const [label, line] of [
+    ["admitted directly", admitted],
+    ["never admitted", never],
+  ] as const) {
+    // Every span the regex can pair off must be a whole path: if a backtick
+    // survived inside one, the pairing itself breaks (an odd number of backticks
+    // on the line leaves a dangling span the fixer reads as prose).
+    const spans = [...line.matchAll(/`([^`\n]+)`/g)].map((m) => m[1] ?? "");
+    assert(
+      spans.every((s) => !s.includes("`")) &&
+        (line.match(/`/g)?.length ?? 0) % 2 === 0,
+      `7: a backtick in a ${label} path cannot close its code span — every span is balanced (${JSON.stringify(line)})`,
+    );
+  }
+  assert(
+    admitted.includes("src/a'b.ts") && never.includes("docs/e'f.md"),
+    `7: the paths are still printed and readable with the backtick substituted (${JSON.stringify(admitted)}, ${JSON.stringify(never)})`,
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
