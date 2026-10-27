@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.26](https://github.com/trail-openers/pi-rukas/compare/v0.14.25...v0.14.26) (2026-10-27)
+
+
+### Bug Fixes
+
+* **review:** inline the lens skill and count codemode skill reads ([#1848](https://github.com/trail-openers/pi-rukas/issues/1848)) ([e9c3dcc](https://github.com/trail-openers/pi-rukas/commit/e9c3dcc1c7c57deb8d0a4c84c5d7af53000d53b0))
+
 ## [0.14.25](https://github.com/trail-openers/pi-rukas/compare/v0.14.24...v0.14.25) (2026-10-27)
 
 
