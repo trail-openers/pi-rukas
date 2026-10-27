@@ -414,7 +414,13 @@ export async function runInvestigation(
   // "no duplicate risk" and the plan filed. A kill is not a verdict, and here it
   // also disqualifies the post-filter: a HIGH the child was killed while writing
   // keeps its halt rather than being talked out of one by an incomplete rationale.
-  if (dup.ok && !dup.errorStop && dup.killCause === undefined) {
+  //
+  // #1856 review round 3 adds `endedAsDone === undefined`: a child that reached
+  // its bound and emitted the done signal is the sibling shape of a kill — it
+  // exits `ok` with no `killCause`, and a reply cut off at the bound is still
+  // only a partial rationale whatever signalled at the end. The same reasoning
+  // applies, so the same gate covers it.
+  if (dup.ok && !dup.errorStop && dup.killCause === undefined && dup.endedAsDone === undefined) {
     // #1856 lens round 1 (H1) — the post-filter reads the child's FULL reply via
     // `fullText`, not the 400-char display slice `parseDuplicateRisk` keeps: an
     // OPEN duplicate named past that cut would otherwise be invisible to the
@@ -437,7 +443,7 @@ export async function runInvestigation(
     // proceeds with NO duplicate check, which is the one condition under which a
     // duplicate reaches an issue, so it is not an ordinary informational line.
     traceWarn(
-      `plan-driver: duplicate-risk dispatch produced no verdict (ok=${dup.ok}, errorStop=${dup.errorStop ? dup.errorStop.reason : "none"}, killCause=${dup.killCause ?? "none"}) — proceeding without a risk verdict`,
+      `plan-driver: duplicate-risk dispatch produced no verdict (ok=${dup.ok}, errorStop=${dup.errorStop ? dup.errorStop.reason : "none"}, killCause=${dup.killCause ?? "none"}, endedAsDone=${dup.endedAsDone ?? "none"}) — proceeding without a risk verdict`,
     );
   }
   return {
