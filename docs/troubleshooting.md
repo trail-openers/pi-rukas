@@ -3026,11 +3026,12 @@ exited normally — no signal, no spawn error — so a child that printed `merge
 
 `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS` is the review child's run bound;
 `PI_ENSEMBLE_CHILD_BOUND_GRACE_MS` is the grace between the wrap-up steer and the kill
-(default 10 min). The runner's own wait on its driver (6 h) has **no env knob**: it is a
-reporting backstop, never a way to end work early, and setting it low only makes the
-runner print `driver-wedged` for a cycle that was simply slow. Tests trip it with the
-CLI's `--wedge-ms <ms>` argument — a caller-passed flag, not a knob the environment
-happens to carry.
+(default 10 min). The runner's own wait on its driver (6 h) has **no operator-facing
+surface at all**: no env knob and no CLI flag. It is a reporting backstop, never a way to
+end work early, and a caller that could lower it could make a merely slow cycle report
+`driver-wedged` — a flag an agent could pass is a flag an agent could pass. Tests reach
+the bound through `smoke-tests/lib/headless-wedge-entry.ts`, which composes
+`withResultGuarantee`'s `wedgeMs` option itself; no production file learns the knob exists.
 
 ## /research — the compiled research spine
 

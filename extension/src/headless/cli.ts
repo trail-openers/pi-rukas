@@ -41,7 +41,7 @@ import { resolveRepoRoot } from "../work-entry.ts";
 import { runAgentsMdHeadless } from "./agents-md.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { buildCapabilities } from "./capabilities.ts";
-import { DEFAULT_WEDGE_MS, withResultGuarantee } from "./ensure-result.ts";
+import { withResultGuarantee } from "./ensure-result.ts";
 import { EXIT } from "./exit-code.ts";
 import { createVerbHost } from "./host.ts";
 import { runLensReviewVerb } from "./lens-review.ts";
@@ -134,7 +134,7 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function main(argv: readonly string[], wedgeMs?: number): Promise<number> {
+export async function main(argv: readonly string[]): Promise<number> {
   const [verb, ...rest] = argv;
   // #1571 — this process runs the driver without the extension activating:
   // drop an inherited GIT_DIR & co. here too (git-env.ts).
@@ -224,9 +224,13 @@ export async function main(argv: readonly string[], wedgeMs?: number): Promise<n
     repoRoot: () => repoRootPromise,
     issues: args.issues,
     write: writeResult,
-    // A library caller / test-injected runner keeps the documented default; the
-    // seam is `ResultGuaranteeOpts.wedgeMs`, not a production CLI flag.
-    wedgeMs,
+    // #1863 round 2 — no wedge bound here, and none on `main`'s signature
+    // either. A second positional on the production entry point is a test hook
+    // wearing a library API: the only caller that ever passed it is the wedge
+    // harness, which now composes the guarantee itself (see
+    // smoke-tests/lib/headless-wedge-entry.ts). So `main` keeps the one thing
+    // only it knows — which stdout sink is the host's — and nothing that a
+    // caller could use to make a merely slow cycle report `driver-wedged`.
     work: async () => {
       const repoRoot = await repoRootPromise;
       return runHeadless({
