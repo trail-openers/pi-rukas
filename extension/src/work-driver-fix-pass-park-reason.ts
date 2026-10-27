@@ -18,6 +18,7 @@
 
 import type { PassPlan } from "./work-driver-adversarial-fix-scope.ts";
 import { pathTokenIn } from "./work-driver-declared-path.ts";
+import type { FixPassAdmissionRefusal } from "./work-driver-fix-pass-admission.ts";
 import type { AdmissionRefusal } from "./work-driver-spec-slot-admission.ts";
 import { SPEC_SLOT_MAX_FILES } from "./work-driver-spec-slot-admission.ts";
 
@@ -30,8 +31,23 @@ export interface Stray {
    * (#1698(b)) — its own reason is more specific than the slot's, so it reads
    * first. Absent means the corrective route was never in play for this file, and
    * the shared `WHY` clause carries the whole explanation.
+   *
+   * PRESENCE IS ALSO A PRECEDENCE: while it is set the fix pass's own #1846
+   * admission rules are NOT asked about the file (see the fence). The round's
+   * refusal is a bounded, evidence-backed answer, and a rule derived from the
+   * file's name may not overrule it — the same shape as `CORRECTIVE_PRECEDES`
+   * for `fenced` / `protected`.
    */
   correctiveNote?: string;
+  /**
+   * #1846 — set when the pass's own admission rules (coupled test / anchored
+   * helper) were asked about this file and did NOT admit it: which of them
+   * stopped it (`fenced` / `protected` — the absolute ones — or `other`, which
+   * means neither rule fitted, or the single ceiling was spent). Absent means
+   * the file was refused before the rules were reached, and the shared `WHY`
+   * clause carries the whole explanation.
+   */
+  admissionRefusal?: FixPassAdmissionRefusal;
 }
 
 /** A short list for a park reason; "none" beats an empty backtick run. */
@@ -61,6 +77,19 @@ export function strayReason(plan: PassPlan, strays: readonly Stray[], basis: str
     "no-slot": "no spec pattern slot matches it",
     "slot-full": `the matching slot has already admitted its ${SPEC_SLOT_MAX_FILES} files — one slot is a bounded authorisation, not a skeleton key`,
   };
+  // #1846 — the two admission routes the pass owns refuse for their own
+  // reasons, and the operator reading the handoff has to be able to tell
+  // "nothing claimed this file" from "the ceiling was spent" and from "this
+  // file sits behind a fence, so no rule may reach it".
+  const ADMISSION_WHY: Partial<Record<FixPassAdmissionRefusal, string>> = {
+    fenced:
+      "it sits behind this workstream's outOfScope fence, which the admission rules may not lift",
+    protected:
+      "it is a protected path — the protected-path gate owns that decision, and no admission rule reaches it",
+    other:
+      "it is neither a test coupled by name to a file this pass owns nor a file in the directory of a declared path",
+    "over-ceiling": `it would take the pass over its fan-out ceiling of ${plan.fence.ceiling} file(s) for its ${plan.fence.ceilingBasis} — the coupled-test and anchored-helper routes share that one ceiling with the spec-slot route`,
+  };
   const naming = strays
     .map((s) => {
       // #1698(b) — a corrective round named the file but the admission did not
@@ -71,9 +100,19 @@ export function strayReason(plan: PassPlan, strays: readonly Stray[], basis: str
       const why = s.correctiveNote
         ? `${WHY[s.refused]}; and the corrective route refused it: ${s.correctiveNote}`
         : WHY[s.refused];
+      // #1846 — when the pass's own rules were asked about this file and said
+      // no, their reason reads too. A stray that was never offered to them
+      // (refused before them by a fence or the protected gate) says nothing
+      // about a rule that never ran.
+      const asked =
+        s.admissionRefusal === undefined
+          ? ""
+          : ADMISSION_WHY[s.admissionRefusal] === undefined
+            ? ""
+            : `; and the fix pass's own admission rules refused it: ${ADMISSION_WHY[s.admissionRefusal]}`;
       return pathTokenIn(plan.findings, s.file)
-        ? `A finding names ${s.file}, but it does not widen the fence (a named file widens only when it is tracked at base or already changed by this cycle, unprotected, and in the directory of a declared or already-changed non-root path); ${why}`
-        : `No finding names ${s.file} — ${why}`;
+        ? `A finding names ${s.file}, but it does not widen the fence (a named file widens only when it is tracked at base or already changed by this cycle, unprotected, and in the directory of a declared or already-changed non-root path); ${why}${asked}`
+        : `No finding names ${s.file} — ${why}${asked}`;
     })
     .join("; ");
   const files = strays.map((s) => s.file).join(", ");

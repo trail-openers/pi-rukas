@@ -40,6 +40,7 @@ import { interruptedDevelopNote } from "./work-driver-retry-context.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { fastVerifyCmdFor } from "./work-driver-verify-fast.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** Per-run mutable state shared by both dispatch phases. */
@@ -49,21 +50,9 @@ export interface DevelopRunState {
   activeIssues: number[];
   /** The scratch dir absolute path. */
   scratchAbs: string;
-  /** The workstreams map (superset shape so the closure reads paths/scope without a cast). */
-  workstreams: Record<
-    string,
-    | {
-        id: string;
-        scope: string;
-        paths: string[];
-        outOfScope: string[];
-        dependsOn?: string[];
-        integrationTest?: string;
-        /** #1114 — the adversarial findings a fix pass resolves (absent on a first pass). */
-        fixFindings?: string;
-      }
-    | undefined
-  >;
+  /** The workstreams map — the persisted `Workstream` shape, read here for
+   *  paths/scope without a cast and for the fix pass's rendered fence. */
+  workstreams: Record<string, Workstream | undefined>;
   /** All workstream ids (independent + dependent). */
   ids: string[];
   /** #1742/#1644 — the shared budget-park marker. A review-loop fix pass
@@ -355,8 +344,11 @@ export function makeRunOneWorkstream(
               developNote(s.stateRef.current),
               fastVerifyCmd,
               // #1676 — the protected paths the plan persisted, annotated beside the fence.
+              // #1846 — and the fix pass's own enforced fence, rendered by the
+              // fix pass from the object the post-pass gate reads.
               {
                 deferredProtected: s.stateRef.current.pipelineState.deferredProtected ?? [],
+                ...(ws?.fixFenceLines ? { fixFenceLines: ws.fixFenceLines } : {}),
               },
             ),
             cwd,

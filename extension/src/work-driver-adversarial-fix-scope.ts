@@ -54,6 +54,14 @@ import {
   pathTokenIn,
 } from "./work-driver-declared-path.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
+import {
+  type FixPassFence,
+  fixPassAdmissionNote,
+  fixPassFence,
+  fixPassFenceLines,
+  fixPassHelperDirs,
+} from "./work-driver-fix-pass-admission.ts";
+import { type FixPassFileGate, admitFixPassEntry } from "./work-driver-fix-pass-admit-file.ts";
 import { type Stray, listed, strayReason } from "./work-driver-fix-pass-park-reason.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import {
@@ -105,6 +113,15 @@ export interface PassPlan {
   candidates: ReadonlySet<string>;
   /** Route (a)'s anchor directories (`anchorDirs`), kept for the same reason. */
   dirs: ReadonlySet<string>;
+  /**
+   * #1846 — the fence the pass is judged against AND the fix prompt prints,
+   * computed once at plan time from `fixPassSubjects` (declared ∪ already-changed
+   * ∪ finding-named) and the pass's fan-out ceiling. The prompt renders this
+   * object and `postPassFault` reads it, so the set the fixer is told about and
+   * the set it is refused by are the same value (PM decision #1846-5); the
+   * coupled-test and anchored-helper routes are layered on it per file.
+   */
+  fence: FixPassFence;
 }
 
 /**
@@ -135,6 +152,9 @@ const fenced = (reason: string): { ok: false; reason: string } => ({
   ok: false,
   reason: `scope could not be verified: ${reason}`,
 });
+
+/** No anchors: the anchored-helper route admits nothing (see `postPassFault`). */
+const EMPTY_DIRS: ReadonlySet<string> = new Set<string>();
 
 /**
  * The pre-pass reads for every pending workstream. Any unreadable tree, base
@@ -193,6 +213,20 @@ export async function planFixPass(
       specSlots,
       candidates: new Set(candidates),
       dirs: anchorDirs(anchors),
+      // #1846 — the ceiling basis (admitting slots) is only known after the
+      // pass runs, so the plan-time view is built with zero slots and the
+      // ceiling is recomputed against the pass's own slot count below.
+      fence: fixPassFence(
+        {
+          id: p.workstreamId,
+          declared,
+          named,
+          alreadyChanged: before.value.names,
+          outOfScope: ps.workstreams?.[p.workstreamId]?.outOfScope ?? [],
+          admittingSlots: 0,
+        },
+        fanoutLimitFor,
+      ),
     });
   }
   return { ok: true, value: plans };
@@ -200,7 +234,8 @@ export async function planFixPass(
 
 /**
  * The workstreams as the develop step sees them for this pass: declared paths
- * plus the named widening, and the findings the developer must resolve. Only
+ * plus the named widening, the findings the developer must resolve, and —
+ * #1846 — the rendered fence the pass will actually be judged against. Only
  * ever passed as a parameter; the persisted pipeline keeps the originals.
  */
 export function overlayWorkstreams(
@@ -211,9 +246,20 @@ export function overlayWorkstreams(
   for (const plan of plans) {
     const orig = originals?.[plan.id];
     const paths = [...plan.declared, ...plan.widened];
+    // #1846 — the fence block is rendered from `plan.fence`, the same object
+    // `postPassFault` reads per file, so the two sides of the contract are one
+    // value and a test can assert equality rather than mere presence.
+    const fixFenceLines = fixPassFenceLines(plan.fence);
     out[plan.id] = orig
-      ? { ...orig, paths, fixFindings: plan.findings }
-      : { id: plan.id, scope: "", paths, outOfScope: [], fixFindings: plan.findings };
+      ? { ...orig, paths, fixFindings: plan.findings, fixFenceLines }
+      : {
+          id: plan.id,
+          scope: "",
+          paths,
+          outOfScope: [],
+          fixFindings: plan.findings,
+          fixFenceLines,
+        };
   }
   return out;
 }
@@ -242,54 +288,13 @@ const allows = (entry: string, file: string): boolean =>
  * `src/*.test.ts` — cannot refuse this fence and pass that gate. The two
  * fences used to read one entry through two grammars (`fenceDirPrefix` + a
  * `/` boundary here, a normalise-then-compare there); two answers from one
- * entry is the drift this closes. The exact-or-trailing-slash `allows()`
- * above still cannot answer this question: it reads `dir/**` as a literal
- * path, so a fenced directory failed to beat a spec slot and the slot
- * silently unfenced a fence the plan wrote on purpose.
+ * entry is the drift this closes. The exact-or-trailing-slash `allows()` that
+ * used to answer this alongside it read `dir/**` as a literal path, so a
+ * fenced directory failed to beat a spec slot and the slot silently unfenced a
+ * fence the plan wrote on purpose; #1846 removed that second reader and the
+ * whole fence now goes through `plan.fence` / `admitFixPassFile`.
  */
 const fencedBy = (entry: string, file: string): boolean => fenceMatches(entry, file);
-
-/**
- * A declared path may carry a planner annotation (`"src/a.ts (new)"`) or a
- * `./` prefix; the ONE entry-path reading in `work-driver-declared-path` strips
- * it, so a `./` path neither false-parks nor fails to widen a directory anchor.
- */
-const cleaned = entryPath;
-
-/**
- * #1557 / #1725 — does a spec deliverable's pattern slot admit `file`?
- *
- * The fence is judged FIRST, and it beats the slot: a fence the plan wrote
- * wins over a spec pattern, or a spec could unfence itself. The predicate is
- * passed INTO the shared admitter (`isFenced`), which refuses a fenced file
- * itself with kind `fenced` — so the fence question has ONE answer per
- * (entry, file) even if a future caller forgets to pre-check, and both gates
- * read it through `fenceMatches` (#1725 round 3; the old exact-or-trailing-
- * slash reading matched nothing for `extension/src/**`, so a slot silently
- * UNFENCED a directory the plan fenced on purpose — the HIGH finding).
- * The protected-path refusal, the per-workstream scope check and the per-slot
- * file cap are the shared admitter's too, so the develop gate and this fence
- * cannot drift on any of them; the returned `Admission` names the kind that
- * refused, and the park reason carries it.
- */
-function specAdmitsFile(admit: SpecAdmitter, plan: PassPlan, file: string): Admission {
-  return admit.admit(plan.id, file, plan.declared);
-}
-
-/**
- * The refusals that OUTRANK the corrective round, stated positively: each is a
- * guard's decision, not an absence. `fenced` is the fence the PLAN wrote and
- * `protected` is the protected-path gate's call — a round the driver dispatched
- * cannot unfence a path on purpose, and it certainly cannot reach a protected
- * path. `no-slot` and `slot-full` are NOT here: they say the spec never mentioned
- * the file, which is exactly the gap the corrective round exists to close.
- */
-const CORRECTIVE_PRECEDES = ["fenced", "protected"] as const satisfies readonly AdmissionRefusal[];
-
-/** May the corrective round be asked about a file this refusal covered? */
-function outranksCorrective(refused: AdmissionRefusal): boolean {
-  return (CORRECTIVE_PRECEDES as readonly AdmissionRefusal[]).includes(refused);
-}
 
 /**
  * The post-pass checks, in order: the pass changed something, every file it
@@ -357,10 +362,10 @@ export async function postPassFault(
   for (const plan of plans) {
     const s = await treeChanges(execFn, plan.worktree, plan.headBefore);
     if (!s.ok) return { reason: fenced(s.reason).reason, diffs, admissions };
-    const allowed =
-      plan.declared.length > 0
-        ? [...plan.declared.map(cleaned), ...plan.named]
-        : [...plan.before.names, ...plan.named];
+    // #1846 — the ONE fence view. The pre-#1846 shape rebuilt `allowed` here
+    // while the prompt rendered `workstream.paths`, so the fixer was told one
+    // set and refused by another. Both sides now read `plan.fence`.
+    const fence = plan.fence;
     // #1698(b) — this workstream's corrective round: its conditions, its
     // post-round commit window, its cap and its disclosure all live in
     // work-driver-corrective-admission.ts, which is handed this plan's OWN
@@ -393,25 +398,42 @@ export async function postPassFault(
       isFenced: (_id, file) => plan.outOfScope.some((entry) => fencedBy(entry, file)),
       onAdmit: (id, file, slot) => admissions.push(admissionNote(id, file, slot)),
     });
+    // WHY a `continue` in the loop below is correct: it skips only the per-file
+    // loop, never this plan's fan-out check, which runs after it and counts
+    // EVERY file the pass changed — admitted ones included. An earlier shape of
+    // this loop returned from inside it, and the ceiling check became
+    // unreachable for a pass that reached an admission route; that is how a
+    // bounded rule stops bounding anything.
     const strays: Stray[] = [];
+    // #1846 — the helper route's anchor files, and the one ceiling's numerator
+    // (`passChanged.length`): everything this pass changed, from every route,
+    // against one denominator (PM decision #1846-3). The gate view is built once
+    // per pass with the pass's own delta filled in, and every file of the
+    // post-pass tree is put through `admitFixPassEntry` — the whole route ladder
+    // lives there with its precedence stated in one place.
+    const helperDirs = fixPassHelperDirs(
+      plan.declared,
+      plan.findings,
+      plan.named,
+      plan.dirs,
+      round !== undefined,
+    );
+    const judging: FixPassFence = { ...fence, passChanged: s.value.names, helperDirs };
+    const gate: FixPassFileGate = {
+      id: plan.id,
+      declared: plan.declared,
+      admitter: admit,
+      fence: judging,
+      ...(admission === undefined ? {} : { corrective: admission }),
+    };
+    const passDelta = new Set(judging.passChanged);
     for (const file of s.value.names) {
-      if (allowed.some((a) => allows(a, file))) continue;
-      const decision = specAdmitsFile(admit, plan, file);
-      if (decision.admitted) continue;
-      // The corrective route is reached only when the shared admitter's
-      // precedence-bearing refusals did not fire — see {@link CORRECTIVE_PRECEDES}
-      // — and then through ONE entry point, which judges the evidence, the
-      // provenance, the anchor, the window and the cap in its own order.
-      if (admission !== undefined && !outranksCorrective(decision.refused)) {
-        const verdict = await admission.tryAdmit(file);
-        if (verdict.admitted) {
-          admissions.push(`${plan.id}: ${verdict.note}`);
-          continue;
-        }
-        strays.push({ file, refused: decision.refused, correctiveNote: verdict.note });
+      const verdict = await admitFixPassEntry(file, gate, passDelta.has(file));
+      if (verdict.admitted) {
+        if (verdict.note !== undefined) admissions.push(`${plan.id}: ${verdict.note}`);
         continue;
       }
-      strays.push({ file, refused: decision.refused });
+      strays.push(verdict.stray);
     }
     if (strays.length > 0) {
       const basis =

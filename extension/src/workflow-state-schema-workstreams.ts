@@ -86,6 +86,15 @@ export interface Workstream {
   /** #1114 — the adversarial findings a fix pass resolves (absent on a first pass). */
   fixFindings?: string;
   /**
+   * #1846 — the fix pass's enforced fence, already rendered to prompt lines.
+   * Threaded by `runAdversarialFixPass` from the SAME `FixPassFence` object
+   * `postPassFault` reads (PM decision #1846-5: the fence the fixer is told and
+   * the fence it is judged against are one value). Optional and never persisted
+   * by the plan: the fix pass builds the overlay it passes to develop, exactly
+   * as it does for `fixFindings`.
+   */
+  fixFenceLines?: readonly string[];
+  /**
    * #1322 — the symbols this workstream CREATES that do not exist at the base
    * commit (a new field, export, variant), from a `- introduces:` line.
    * Optional: a plan that declares no symbols takes the pre-#1322 path.
