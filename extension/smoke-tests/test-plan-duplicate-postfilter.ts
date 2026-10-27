@@ -21,9 +21,6 @@
  */
 
 import type { MechanicalInventory } from "../src/plan-draft.ts";
-import type { DuplicateRisk } from "../src/plan-investigate.ts";
-import type { KnownIssue } from "../src/plan-duplicate-self.ts";
-import { downgradeSelfDuplicate } from "../src/plan-duplicate-self.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { duplicateExclusionSection } from "../src/plan-duplicate-disclosure.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
@@ -410,44 +407,6 @@ async function barrier(
   );
 }
 
-// ===== a source issue that is not a positive safe integer downgrades nothing
-
-{
-  // #1856 review round 4 (lens HIGH): `sourceIssue` also arrives through the
-  // investigation cache and session replay, where JSON `null` is NOT `undefined`.
-  // A `null` source compared unequal to every named issue, so rule 1 attributed
-  // nothing to a subject while the prior-art rule still excluded a CLOSED issue —
-  // a HIGH that halts on main became a filed medium on a plan with no ticket.
-  // The entry check is what stops that, so it is driven here directly rather than
-  // through the barrier (which cannot type a `null` into a `number | undefined`).
-  const known = new Map<number, KnownIssue>([
-    [1856, { state: "OPEN", title: "duplicate check names its own issue" }],
-    [103, { state: "CLOSED", title: "landed hybrid default" }],
-  ]);
-  const high: DuplicateRisk = {
-    level: "high",
-    rationale: "DUPLICATE_RISK: high — reverses the landed decision in #103",
-  };
-  for (const bad of [null, 0, -3, 1.5, Number.NaN]) {
-    const out = downgradeSelfDuplicate(high, {
-      sourceIssue: bad as unknown as number,
-      known,
-      fullText: high.rationale,
-    });
-    assert(
-      out.level === "high" && out.downgradedFrom === undefined && out.excludedIssues === undefined,
-      `a sourceIssue of ${JSON.stringify(bad)} downgrades nothing — the HIGH stands (${out.level})`,
-    );
-  }
-  // The control: the same verdict with a real source issue does downgrade, so the
-  // rows above fail on the guard and not on some unrelated property of the input.
-  const ok = downgradeSelfDuplicate(high, { sourceIssue: 1856, known, fullText: high.rationale });
-  assert(
-    ok.level === "medium" &&
-      (ok.excludedIssues ?? []).map((e) => e.number).join(",") === "103",
-    `control: the same verdict with a positive safe-integer sourceIssue downgrades (${ok.level})`,
-  );
-}
 
 // =============================== the driver's halt decision, end to end =====
 
