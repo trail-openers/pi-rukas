@@ -68,6 +68,11 @@
  * exact-string semantics they have today.
  */
 
+import {
+  normaliseDeclaredSlot,
+  normaliseDeclaredSlots,
+  stripAnnotationsFromAlternatives,
+} from "./declared-path-annotation.ts";
 import { isPlainRepoRelativePath } from "./work-driver-plan-paths.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -98,11 +103,7 @@ const ALTERNATIVE_SPLIT = /\s+or\s+|\s+OR\s+|\|/;
 const ANGLE_PLACEHOLDER_SOURCE = "<[^<>]*>";
 const ANGLE_PLACEHOLDER = new RegExp(ANGLE_PLACEHOLDER_SOURCE, "g");
 
-/**
- * Does this text carry a `<name>` template placeholder? The ONE predicate for
- * that question — `isPatternAlternative` in the plan-to-spec gate asks it here
- * rather than keeping a third copy of the grammar.
- */
+/** The ONE `<name>-template` predicate — the plan-to-spec gate asks it here. */
 export function containsAnglePlaceholder(text: string): boolean {
   return new RegExp(ANGLE_PLACEHOLDER_SOURCE).test(text);
 }
@@ -143,10 +144,6 @@ function toRawForm(raw: string): string {
   return normaliseDeclaredPath(raw).replace(/^<[^<>]*>$/, "*");
 }
 
-/**
- * The GLOB form: every `<…>` placeholder collapsed to `*` (`<name>` → `*`,
- * `work-driver-<name>.ts` → `work-driver-*.ts`).
- */
 function toGlobForm(raw: string): string {
   return normaliseDeclaredPath(raw).replace(ANGLE_PLACEHOLDER, "*");
 }
@@ -185,26 +182,31 @@ export function isPlaceholderPath(p: string): boolean {
  * longer eats it.
  */
 export function splitDeliverablePaths(raw: string | undefined): string[] {
+  // The strip runs after the split, per ALTERNATIVE: a slot's text is the
+  // planner's and reaches prompts verbatim (#1707), so its template survives
+  // `parseDeliverables`; only the matcher's unit is annotation-free.
+  return stripAnnotationsFromAlternatives(splitDeliverableSlots(raw));
+}
+
+/** The alternatives of a list, annotation INTACT — the unit prose reads. */
+export function splitDeliverableSlots(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
     .split(",")
-    .flatMap((piece) => piece.split(ALTERNATIVE_SPLIT))
-    .map((seg) => normaliseDeclaredPath(seg))
+    .flatMap((p) => p.split(ALTERNATIVE_SPLIT))
+    .map(normaliseDeclaredPath)
     .filter((seg) => seg.length > 0);
 }
 
 /**
- * The declared SLOTS of a `[paths:]` list — annotation-stripped, blanks
- * dropped, deduped, and NOT split into alternatives. Exposed so both gates
- * agree on what one slot is (the unit that must be covered / delivered) while
- * `splitDeliverablePaths` stays the unit that matches.
- *
- * #1707 — normalisation keeps a literal `*`, so the unit both gates compare is
- * ONE representation: a glob slot is a glob here, at the plan gate and at
- * converge. There is no raw/normalised pair to keep straight.
+ * The declared SLOTS of a `[paths:]` list — annotation-stripped, blanks dropped,
+ * deduped, and NOT split into alternatives: the unit that must be covered /
+ * delivered, where `splitDeliverablePaths` is the unit that matches. #1707 —
+ * normalisation keeps a literal `*`, so a glob slot is a glob at the plan gate
+ * and at converge; there is no raw/normalised pair to keep straight.
  */
 export function splitDeclaredSlots(paths: readonly string[] | undefined): string[] {
-  return (paths ?? []).map((p) => normaliseDeclaredPath(p)).filter((p) => p.length > 0);
+  return normaliseDeclaredSlots(paths ?? [], normaliseDeclaredPath);
 }
 
 /** One declared slot and everything it parses into. */
@@ -227,7 +229,7 @@ export function deliverablePathAlternatives(
 ): DeclaredPathSlot[] {
   return (paths ?? [])
     .map((slot) => ({
-      raw: normaliseDeclaredPath(slot),
+      raw: normaliseDeclaredSlot(slot, normaliseDeclaredPath),
       alternatives: splitDeliverablePaths(slot).map(toAlternative),
     }))
     .filter((row) => row.alternatives.length > 0);
