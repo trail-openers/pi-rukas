@@ -63,6 +63,23 @@ export type RevertStraysOutcome =
   | { ok: false; secondSet: boolean; reason: string };
 
 /**
+ * An optional hook, called by `revertStraysOnce` at the instant the revert's
+ * destructive work is finished and its outcome is in hand.
+ *
+ * It exists for one reason: a test that wants to prove the revert's event is
+ * durable BEFORE the post-pass gate next reads the tree has to know when the
+ * revert ended, and no other seam says so. The emit sink is too late —
+ * `writeState` serialises through a per-file promise chain, so the snapshot reaches
+ * the sink well after the rename is ordered, by which time the gate has already
+ * made every read worth observing. The pass's own call site is the only point that
+ * both knows the revert is over and runs before the gate's next git call.
+ *
+ * Optional, and production callers never set it: the driver records what it needs
+ * through the event, not through a callback.
+ */
+export type RevertBoundary = () => void;
+
+/**
  * Preserve and revert one stray set, at most once per pass.
  *
  * Only a refusal the fence itself reached is offered here: `postPassFault` omits
@@ -76,6 +93,9 @@ export async function revertStraysOnce(
   plans: readonly PassPlan[],
   post: PostPass,
   now: number,
+  /** Called the instant the revert's destructive work is done and its outcome is
+   *  known — the boundary a durability test observes from. See `RevertBoundary`. */
+  onReverted?: RevertBoundary,
 ): Promise<RevertStraysOutcome | undefined> {
   const id = post.straysFor;
   const strays = post.strays;
@@ -130,6 +150,11 @@ export async function revertStraysOnce(
     untracked: new Set(post.untracked ?? []),
     scratchDir: scratch,
   });
+  // The boundary is raised for BOTH outcomes, before either is returned: the
+  // caller's next git call is the post-pass gate either way, and a test that only
+  // observed the success path could not tell "nothing was persisted" from "nothing
+  // was reverted".
+  onReverted?.();
   if ("reason" in result) return { ok: false, secondSet: false, reason: result.reason };
   return {
     ok: true,

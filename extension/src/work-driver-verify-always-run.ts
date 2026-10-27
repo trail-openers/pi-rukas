@@ -83,6 +83,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-explore-sweep.ts",
   "smoke-tests/test-fence-retry-cap-1427.ts",
   "smoke-tests/test-file-size-limit.ts",
+  "smoke-tests/test-fix-pass-strays-durable.ts",
   "smoke-tests/test-fix-pass-strays-e2e.ts",
   "smoke-tests/test-fix-pass-strays-preservation.ts",
   "smoke-tests/test-fix-pass-strays-revert.ts",

@@ -49,14 +49,18 @@ import type { AdversarialOutcome, PendingFix } from "./work-driver-adversarial-t
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { correctiveRoundsOf } from "./work-driver-corrective-admission.ts";
 import { cycleDispatch } from "./work-driver-cycle-entry.ts";
-import { fixPassRevertNote, revertStraysOnce } from "./work-driver-fix-pass-revert-step.ts";
+import {
+  type RevertBoundary,
+  fixPassRevertNote,
+  revertStraysOnce,
+} from "./work-driver-fix-pass-revert-step.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 export { namedPaths } from "./work-driver-adversarial-fix-scope.ts";
 export { plumbQuestion, withParsedSiblings } from "./work-driver-adversarial-plumb.ts";
@@ -222,6 +226,10 @@ export async function runAdversarialFixPass(
   state: WorkState,
   pending: PendingFix[],
   now: number,
+  /** Threaded to `revertStraysOnce` unchanged: the instant the stray revert is
+   *  over. Production callers omit it; see `RevertBoundary` for why a caller can
+   *  need it and why the driver itself never does. */
+  onRevertBoundary?: RevertBoundary,
 ): Promise<WorkState> {
   const ps: PipelineState = state.pipelineState;
   const execFn = ctx.verifyExecFn ?? defaultExec;
@@ -330,7 +338,7 @@ export async function runAdversarialFixPass(
     post.reason !== undefined &&
     post.straysFor !== undefined &&
     post.strays !== undefined
-      ? await revertStraysOnce(ctx, restored, plans, post, now)
+      ? await revertStraysOnce(ctx, restored, plans, post, now, onRevertBoundary)
       : undefined;
   const cleared =
     reverted?.ok === true
@@ -349,6 +357,16 @@ export async function runAdversarialFixPass(
   // file that said nothing about it. Appending here covers every park below,
   // because they all read this state.
   const afterRevert = reverted?.ok === true ? appendEvent(restored, reverted.event) : restored;
+  // PERSISTED NOW, not at the next step boundary. The revert is a real commit
+  // that has already deleted files from the worktree, and the window between it
+  // and the next write is exactly where a crash, a kill or a provider timeout
+  // lands. A state file that says `running` at `develop` with a revert commit in
+  // the branch and no event for it is worse than no revert at all: a resume, a
+  // `--restart` or an operator reading the state finds files gone with nothing to
+  // explain them, and the preserved ref is undiscoverable. `appendEvent` is pure,
+  // so this is the one call that makes the record durable; every branch below
+  // re-persists the same bytes, which is idempotent.
+  if (reverted?.ok === true) await persistCycle(ctx, afterRevert);
   if (cleared.reason) {
     // #1137 — a no-change fix pass whose workstream carried a plumb report
     // (a structural question, e.g. scope-ambiguity) is a question to answer,
