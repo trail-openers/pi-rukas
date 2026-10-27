@@ -1,7 +1,8 @@
 /**
- * /work workflow state — event-log types. `WorkStep` (linear step identifiers)
- * and `WorkEvent` (append-only, typed event-log entries). Split from
- * `workflow-state.ts` for module-size hygiene (AGENTS.md §12).
+ * /work workflow state — event-log types: `WorkStep` (linear steps) and
+ * `WorkEvent` (append-only, typed entries). Split from
+ * `workflow-state.ts` for module-size hygiene (AGENTS.md §12). Kept lean: payloads
+ * live in the `workflow-state-events-*.ts` leaves; this file only assembles them.
  */
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
@@ -10,10 +11,10 @@ import type { AdversarialEventFragment } from "./workflow-state-events-adversari
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { PlanVerdict, WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
-// #1667 — the develop step's corrective round record (one per dispatched workstream).
 import type { CorrectiveRoundEvent } from "./workflow-state-events-corrective.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type { FenceEvent } from "./workflow-state-events-fence.ts";
+import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
 import type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
@@ -46,9 +47,8 @@ import type {
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
 } from "./workflow-state-events-verify-flake.ts";
-// #1415 — the verify-gate run pair lives in its own fragment rather than in
-// the file above: that one is chartered for verify-TIER-OUTCOME events (what a
-// run concluded); these record that a run happened and what it cost.
+// #1415 — the verify-gate run pair lives in its own fragment: that one is chartered
+// for verify-TIER-OUTCOME events; these record that a run happened and what it cost.
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 import type { WorkstreamCallsRefusedEvent } from "./workflow-state-events-workstream.ts";
@@ -493,7 +493,8 @@ export type WorkEvent =
   | LensResidualsPostFailedEvent
   | LensResidualsPostedEvent
   | InterruptedEvent
-  | CorrectiveRoundEvent;
+  | CorrectiveRoundEvent
+  | FixPassStraysRevertedEvent;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

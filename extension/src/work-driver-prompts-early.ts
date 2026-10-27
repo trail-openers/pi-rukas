@@ -228,6 +228,15 @@ function intentResolutionBlock(issues: number[]): string {
 export interface InlineDevelopOptions {
   /** #1676 — the protected paths the plan deferred (no --allow-protected grant). */
   deferredProtected?: readonly string[];
+  /**
+   * #1846 — the fix pass's enforced fence, rendered from the SAME
+   * `FixPassFence` object `postPassFault` judges against. Only a fix pass
+   * carries it; a first develop pass renders no fence block because its gate is
+   * the develop scope gate, not this one. Before #1846 the fix prompt said
+   * "change nothing else" and named no set, so the fixer could not know what
+   * the pass would be refused for.
+   */
+  fixFenceLines?: readonly string[];
 }
 
 export function inlineDevelopPrompt(
@@ -427,6 +436,11 @@ export function inlineDevelopPrompt(
       "```text",
       fixFindings.replace(/```/g, "\x27\x27\x27"),
       "```",
+      // #1846 — the fence the pass will actually be judged against, printed in
+      // the same block as the findings it bounds. Rendered from the fence
+      // object the gate reads (see work-driver-fix-pass-admission.ts), never
+      // re-derived here.
+      ...(options.fixFenceLines ?? []),
     );
   }
   lines.push(scratchHygieneSection(scratchDirAbs));

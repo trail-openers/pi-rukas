@@ -70,6 +70,7 @@ import {
   headOf,
 } from "./work-driver-adversarial-fix-git.ts";
 import { dirOfPath, pathTokenIn } from "./work-driver-declared-path.ts";
+import type { AdmissionRefusal } from "./work-driver-spec-slot-admission.ts";
 import type { CorrectiveRoundEvent } from "./workflow-state-events-corrective.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
@@ -137,6 +138,26 @@ export type CorrectiveRefusal =
   | "not-anchored"
   | "not-candidate"
   | "cap";
+
+/**
+ * The refusals that OUTRANK the corrective round, stated positively: each is a
+ * guard's decision, not an absence. `fenced` is the fence the PLAN wrote and
+ * `protected` is the protected-path gate's call — a round the driver dispatched
+ * cannot unfence a path on purpose, and it certainly cannot reach a protected
+ * path. `no-slot` and `slot-full` are NOT here: they say the spec never mentioned
+ * the file, which is exactly the gap the corrective round exists to close.
+ *
+ * Lives here, beside the route it bounds, because the ladder that asks the route
+ * (`admitFixPassEntry`) and the fence that owns its budget must agree on when it
+ * may be asked — two answers to that question is how a round ends up speaking
+ * over a fence.
+ */
+const CORRECTIVE_PRECEDES = ["fenced", "protected"] as const satisfies readonly AdmissionRefusal[];
+
+/** May the corrective round be asked about a file this refusal covered? */
+export function outranksCorrective(refused: AdmissionRefusal): boolean {
+  return (CORRECTIVE_PRECEDES as readonly AdmissionRefusal[]).includes(refused);
+}
 
 /** The answer for one file: admitted, or refused with the condition and a note. */
 export type CorrectiveVerdict =

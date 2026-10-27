@@ -28,6 +28,8 @@ import { runDevelopTopological } from "./work-develop-topological.ts";
 import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
 import {
   type FixRequest,
+  type PassPlan,
+  type PostPass,
   overlayWorkstreams,
   planFixPass,
   postPassFault,
@@ -47,15 +49,20 @@ import type { AdversarialOutcome, PendingFix } from "./work-driver-adversarial-t
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { correctiveRoundsOf } from "./work-driver-corrective-admission.ts";
 import { cycleDispatch } from "./work-driver-cycle-entry.ts";
+import {
+  type RevertBoundary,
+  fixPassRevertNote,
+  revertStraysOnce,
+} from "./work-driver-fix-pass-revert-step.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
-export { namedPaths } from "./work-driver-adversarial-fix-scope.ts";
+export { namedPaths } from "./work-driver-fix-pass-named.ts";
 export { plumbQuestion, withParsedSiblings } from "./work-driver-adversarial-plumb.ts";
 
 export { FIX_FINDINGS_MAX };
@@ -195,63 +202,6 @@ export function fixRequestEvents(
  * cycle keeps no per-workstream outcome event, so its approval is recovered
  * from the rounds it already ran.
  */
-export function survivorsOf(
-  state: WorkState,
-  ids: readonly string[],
-  runSet: readonly string[],
-  priorOutcomes: ReadonlyMap<string, string>,
-): AdversarialOutcome[] {
-  return ids
-    .filter((id) => !runSet.includes(id))
-    .flatMap((id) => {
-      const prev =
-        priorOutcomes.get(id) ??
-        (ids.length === 1 ? lastReviewVerdict(state.eventLog, id) : undefined);
-      if (prev !== "approved" && prev !== "rejected" && prev !== "skipped-empty-diff") return [];
-      const findings = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "adversarial-workstream-outcome" }> =>
-            e.kind === "adversarial-workstream-outcome" && e.workstreamId === id,
-        )?.findings;
-      return [
-        {
-          id,
-          ok: prev === "approved" || prev === "skipped-empty-diff",
-          rounds: 0,
-          records: [],
-          infra: false,
-          threw: false,
-          skipped: prev === "skipped-empty-diff",
-          priorInfra: false,
-          priorVerdict: prev,
-          ...(prev === "approved" && findings ? { passFindings: findings } : {}),
-        },
-      ];
-    });
-}
-
-/**
- * The verdict a single-workstream cycle's last parsed review reached. Such a
- * cycle keeps no per-workstream outcome event, so the log is the only record.
- */
-function lastReviewVerdict(
-  eventLog: readonly WorkEvent[],
-  workstreamId: string,
-): "approved" | "rejected" | undefined {
-  const last = [...eventLog]
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "adversarial-round" }> =>
-        e.kind === "adversarial-round" && e.verdictParsed && keyOf(e.workstreamId) === workstreamId,
-    );
-  if (!last) return undefined;
-  const action = actionFor(last.status, last.round);
-  if (action === "pass") return "approved";
-  if (action === "reject") return "rejected";
-  return undefined;
-}
-
 /**
  * The develop fix pass for the pending workstreams. Reuses their worktrees;
  * named finding paths widen a declared fence for this pass only; all develop
@@ -265,6 +215,10 @@ export async function runAdversarialFixPass(
   state: WorkState,
   pending: PendingFix[],
   now: number,
+  /** Threaded to `revertStraysOnce` unchanged: the instant the stray revert is
+   *  over. Production callers omit it; see `RevertBoundary` for why a caller can
+   *  need it and why the driver itself never does. */
+  onRevertBoundary?: RevertBoundary,
 ): Promise<WorkState> {
   const ps: PipelineState = state.pipelineState;
   const execFn = ctx.verifyExecFn ?? defaultExec;
@@ -362,37 +316,93 @@ export async function runAdversarialFixPass(
     // pass-scoped window, and the gate derives the evidence from the records.
     correctiveRoundsOf(restored.eventLog.slice(startLen)),
   );
-  if (post.reason) {
+  // #1846 — one stray set is now the driver's job, not the operator's. Preserve
+  // and revert those paths, re-run the pass's own checks on the post-revert tree,
+  // and continue when the pass is clean. A SECOND stray set, a fenced or
+  // protected stray, or any preservation failure parks exactly as before — the
+  // revert is one attempt per pass, not a loop, and it never touches a file an
+  // admission rule was refused for. #1849 item 9 — the operator's kill switch is
+  // no longer a conjunct here: `revertStraysOnce` checks it itself, so the switch
+  // cannot be bypassed by a caller and reads beside the rule it governs.
+  const reverted =
+    post.reason !== undefined && post.straysFor !== undefined && post.strays !== undefined
+      ? await revertStraysOnce(ctx, restored, plans, post, now, onRevertBoundary)
+      : undefined;
+  const cleared =
+    reverted?.ok === true
+      ? await postPassFault(
+          execFn,
+          plans,
+          ps.baseSha ?? "",
+          correctiveRoundsOf(restored.eventLog.slice(startLen)),
+        )
+      : post;
+  // #1846 — a revert the driver PERFORMED is recorded whatever happens next. The
+  // event used to be appended only on the green path, so a pass that reverted a
+  // stray set and then parked on the comment-retention check (or on a second
+  // gate) handed off with a driver commit in its history that no event
+  // explained: the operator saw files deleted from their worktree and a state
+  // file that said nothing about it. Appending here covers every park below,
+  // because they all read this state.
+  const afterRevert = reverted?.ok === true ? appendEvent(restored, reverted.event) : restored;
+  // PERSISTED NOW, not at the next step boundary. The revert is a real commit
+  // that has already deleted files from the worktree, and the window between it
+  // and the next write is exactly where a crash, a kill or a provider timeout
+  // lands. A state file that says `running` at `develop` with a revert commit in
+  // the branch and no event for it is worse than no revert at all: a resume, a
+  // `--restart` or an operator reading the state finds files gone with nothing to
+  // explain them, and the preserved ref is undiscoverable. `appendEvent` is pure,
+  // so this is the one call that makes the record durable; every branch below
+  // re-persists the same bytes, which is idempotent.
+  if (reverted?.ok === true) await persistCycle(ctx, afterRevert);
+  if (cleared.reason) {
     // #1137 — a no-change fix pass whose workstream carried a plumb report
     // (a structural question, e.g. scope-ambiguity) is a question to answer,
     // not a failed gate. The plumb report is already in pipelineState (the
     // develop step recorded the developer's reply); the handoff's plumb
     // section renders it, and the evidence names the plumb question so the
     // operator answers it instead of re-dispatching the same no-op.
-    if (NO_CHANGE_REASON.test(post.reason)) {
+    if (NO_CHANGE_REASON.test(cleared.reason)) {
       const question = freshPlumbQuestion(restored, priorPlumbBodies);
       if (question) {
         return parkFixPass(
-          restored,
+          afterRevert,
           pending,
           `the developer returned a plumb report and changed nothing — answer the question: ${question}`,
           now,
-          post.admissions,
+          cleared.admissions,
         );
       }
     }
-    return parkFixPass(restored, pending, post.reason, now, post.admissions);
+    return parkFixPass(
+      afterRevert,
+      pending,
+      // #1846 — when the driver already reverted one stray set and this is the
+      // second, the park text must not repeat "revert them by hand": the driver
+      // did that, and the remaining decision is the fence, not the worktree.
+      reverted?.ok === false && reverted.secondSet
+        ? `${cleared.reason} (the driver reverted this pass's first out-of-fence set; the \`fix-pass-strays-reverted\` record names the preserved ref and patch)`
+        : cleared.reason,
+      now,
+      cleared.admissions,
+    );
   }
   // The operator's kill switch is NOT a failed check: a disabled check reads
   // NOT CHECKED (as every other reader renders it) and the pass proceeds with
   // that disclosed on the handoff, never parked. Only a check that was asked
   // for and could not run parks.
-  let kept = restored;
+  let kept = afterRevert;
+  // #1846 — the revert's EVENT is already on `afterRevert` (see above, so a park
+  // carries it too); what is added here is the prose NOTE that puts the reverted
+  // paths, the preserved ref and the patch path in front of the operator on the
+  // PR body and the handoff. A revert the operator cannot find is a driver
+  // commit that quietly deleted their fixer's work.
+  if (reverted?.ok === true) kept = noteFixPass(kept, fixPassRevertNote(reverted.event), now);
   // #1725 round 3 — one disclosure note per spec-slot admission made during
   // this pass. An authorisation that only reached PI_ENSEMBLE_DEBUG is a
   // fence that widened invisibly; these notes ride the state to the PR body,
   // where the develop gate's own admission notes already surface.
-  for (const admission of post.admissions) kept = noteFixPass(kept, admission, now);
+  for (const admission of cleared.admissions) kept = noteFixPass(kept, admission, now);
   if (!commentRetentionEnabled()) {
     const note =
       "comment retention NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0) — the pass proceeded without the origin/main comment check";
@@ -402,7 +412,11 @@ export async function runAdversarialFixPass(
     for (const p of plans) {
       const read = (diff: string) =>
         roundComments(diff, undefined, p.worktree, verifyTimeoutMs(), ctx.verifyExecFn);
-      const lost = await read(post.diffs[p.id] ?? "");
+      // #1846 PM decision 6 — the retention read is the POST-REVERT diff: a
+      // comment line inside a reverted stray is no longer part of the pass, and
+      // judging the pass on content it no longer contains would park it for a
+      // removal the driver itself just reverted.
+      const lost = await read(cleared.diffs[p.id] ?? "");
       // A lost line whose hunk adds a comment was reworded or replaced. That is
       // the reviewers' call (#1056) and the next review round lists it; only a
       // comment dropped with nothing written in its place can park.
@@ -416,7 +430,7 @@ export async function runAdversarialFixPass(
         // not only on the green path: a park that shows the refusals and hides
         // the authorisations reads as a fence that never widened.
         return parkFixPass(
-          restored,
+          afterRevert,
           pending,
           `comment retention could not be checked for ${p.id} (NOT CHECKED) — the fix pass is not cleared`,
           now,
@@ -428,7 +442,7 @@ export async function runAdversarialFixPass(
       if (fresh.length > 0) {
         const named = fresh.slice(0, 3).map((l) => neutraliseEvidence(`${l.file}: ${l.text}`));
         return parkFixPass(
-          restored,
+          afterRevert,
           pending,
           `the fix pass removed ${fresh.length} origin/main comment line(s) in ${p.id} and wrote no comment in their place (${named.join(" | ")})`,
           now,

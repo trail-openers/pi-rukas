@@ -128,6 +128,10 @@ export const KNOWN_EVENT_KINDS = [
   "worktree-leftover-handled",
   // #849 — the develop fence recovery marker (discarded SHA + owners).
   "fence-recovery-started",
+  // #1846 — the adversarial fix pass's out-of-fence files were preserved and
+  // reverted by the driver so the pass continues instead of parking. Absent
+  // from the tuple, the fix pass halts on its own revert record.
+  "fix-pass-strays-reverted",
   // #1405 — the develop gate admitted an issue-fenced path from the issue's Test surface.
   "fence-lifted",
   // #844 — the branch step's stale-local-branch reset record (old + new tip).

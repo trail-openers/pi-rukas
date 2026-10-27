@@ -42,6 +42,7 @@ import {
   trackedPaths,
   treeChanges,
 } from "./work-driver-adversarial-fix-git.ts";
+import { unchangedPlans } from "./work-driver-adversarial-fix-noop.ts";
 import {
   correctiveRoundFor,
   createCorrectiveAdmission,
@@ -54,6 +55,18 @@ import {
   pathTokenIn,
 } from "./work-driver-declared-path.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
+import {
+  type FixPassFence,
+  coupledTestAdmitted,
+  fixPassAdmissionNote,
+  fixPassFence,
+  fixPassFenceLines,
+  fixPassHelperDirs,
+  gateFenceView,
+} from "./work-driver-fix-pass-admission.ts";
+import { type FixPassFileGate, admitFixPassEntry } from "./work-driver-fix-pass-admit-file.ts";
+import { passFanoutRefusal } from "./work-driver-fix-pass-ceiling.ts";
+import { namedPaths } from "./work-driver-fix-pass-named.ts";
 import { type Stray, listed, strayReason } from "./work-driver-fix-pass-park-reason.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import {
@@ -105,30 +118,15 @@ export interface PassPlan {
   candidates: ReadonlySet<string>;
   /** Route (a)'s anchor directories (`anchorDirs`), kept for the same reason. */
   dirs: ReadonlySet<string>;
-}
-
-/**
- * Named paths a fix pass may widen its fence onto. Generic, not a project list:
- * a finding-named path qualifies only if it is (a) in `candidates` — the union
- * of the tree tracked at base and the files this cycle already committed
- * (#1698: a file the cycle's own round created is never tracked at base, so
- * the tracked-at-base reading alone made it un-nameable by construction),
- * (b) not protected per `protectedPathsIn` (the single source of protected
- * paths), and (c) in the same directory as an anchor — a declared path or a
- * file the workstream already changed. A directory entry (`src/foo/`) is its
- * own directory. The repo root is not an anchor: a root-level anchor would make
- * every root file widenable. Named as a whole path token (`data.txt` does not
- * name `a.txt`).
- */
-export function namedPaths(
-  findings: string,
-  candidates: readonly string[],
-  anchors: readonly string[],
-): string[] {
-  const dirs = anchorDirs(anchors);
-  return [...new Set(candidates)].filter(
-    (p) => protectedPathsIn([p]).length === 0 && dirs.has(dirOfPath(p)) && pathTokenIn(findings, p),
-  );
+  /**
+   * #1846 — the fence the pass is judged against AND the fix prompt prints,
+   * computed once at plan time from `fixPassSubjects` (declared ∪ already-changed
+   * ∪ finding-named) and the pass's fan-out ceiling. The prompt renders this
+   * object and `postPassFault` reads it, so the set the fixer is told about and
+   * the set it is refused by are the same value (PM decision #1846-5); the
+   * coupled-test and anchored-helper routes are layered on it per file.
+   */
+  fence: FixPassFence;
 }
 
 const fenced = (reason: string): { ok: false; reason: string } => ({
@@ -193,6 +191,20 @@ export async function planFixPass(
       specSlots,
       candidates: new Set(candidates),
       dirs: anchorDirs(anchors),
+      // #1846 — the ceiling basis (admitting slots) is only known after the
+      // pass runs, so the plan-time view is built with zero slots and the
+      // ceiling is recomputed against the pass's own slot count below.
+      fence: fixPassFence(
+        {
+          id: p.workstreamId,
+          declared,
+          named,
+          alreadyChanged: before.value.names,
+          outOfScope: ps.workstreams?.[p.workstreamId]?.outOfScope ?? [],
+          admittingSlots: 0,
+        },
+        fanoutLimitFor,
+      ),
     });
   }
   return { ok: true, value: plans };
@@ -200,7 +212,8 @@ export async function planFixPass(
 
 /**
  * The workstreams as the develop step sees them for this pass: declared paths
- * plus the named widening, and the findings the developer must resolve. Only
+ * plus the named widening, the findings the developer must resolve, and —
+ * #1846 — the rendered fence the pass will actually be judged against. Only
  * ever passed as a parameter; the persisted pipeline keeps the originals.
  */
 export function overlayWorkstreams(
@@ -211,9 +224,20 @@ export function overlayWorkstreams(
   for (const plan of plans) {
     const orig = originals?.[plan.id];
     const paths = [...plan.declared, ...plan.widened];
+    // #1846 — the fence block is rendered from `plan.fence`, the same object
+    // `postPassFault` reads per file, so the two sides of the contract are one
+    // value and a test can assert equality rather than mere presence.
+    const fixFenceLines = fixPassFenceLines(plan.fence);
     out[plan.id] = orig
-      ? { ...orig, paths, fixFindings: plan.findings }
-      : { id: plan.id, scope: "", paths, outOfScope: [], fixFindings: plan.findings };
+      ? { ...orig, paths, fixFindings: plan.findings, fixFenceLines }
+      : {
+          id: plan.id,
+          scope: "",
+          paths,
+          outOfScope: [],
+          fixFindings: plan.findings,
+          fixFenceLines,
+        };
   }
   return out;
 }
@@ -229,10 +253,22 @@ export interface PostPass {
    * operator never sees is a fence that widened invisibly.
    */
   admissions: string[];
+  /**
+   * #1846 — the workstream whose fence the strays belong to, when
+   * {@link reason} is a stray refusal, and the strays themselves. Present
+   * ONLY for the stray refusal the driver can act on: a fenced or protected
+   * stray, a pass that changed nothing, or a fan-out breach carries no
+   * `straysFor`, because the revert path must never touch those files (they
+   * are the ones an admission rule may not lift, or the whole pass is the
+   * problem). `untracked` is the same read's untracked set, which decides
+   * removal vs checkout for each path.
+   */
+  straysFor?: string;
+  /** See {@link PostPass.straysFor}. */
+  strays?: Stray[];
+  /** See {@link PostPass.straysFor} — the untracked paths of that workstream. */
+  untracked?: string[];
 }
-
-const allows = (entry: string, file: string): boolean =>
-  file === entry || (entry.endsWith("/") && file.startsWith(entry));
 
 /**
  * Does a FENCE entry cover `file`? The ONE fence predicate answers it
@@ -242,54 +278,13 @@ const allows = (entry: string, file: string): boolean =>
  * `src/*.test.ts` — cannot refuse this fence and pass that gate. The two
  * fences used to read one entry through two grammars (`fenceDirPrefix` + a
  * `/` boundary here, a normalise-then-compare there); two answers from one
- * entry is the drift this closes. The exact-or-trailing-slash `allows()`
- * above still cannot answer this question: it reads `dir/**` as a literal
- * path, so a fenced directory failed to beat a spec slot and the slot
- * silently unfenced a fence the plan wrote on purpose.
+ * entry is the drift this closes. The exact-or-trailing-slash `allows()` that
+ * used to answer this alongside it read `dir/**` as a literal path, so a
+ * fenced directory failed to beat a spec slot and the slot silently unfenced a
+ * fence the plan wrote on purpose; #1846 removed that second reader and the
+ * whole fence now goes through `plan.fence` / `admitFixPassFile`.
  */
 const fencedBy = (entry: string, file: string): boolean => fenceMatches(entry, file);
-
-/**
- * A declared path may carry a planner annotation (`"src/a.ts (new)"`) or a
- * `./` prefix; the ONE entry-path reading in `work-driver-declared-path` strips
- * it, so a `./` path neither false-parks nor fails to widen a directory anchor.
- */
-const cleaned = entryPath;
-
-/**
- * #1557 / #1725 — does a spec deliverable's pattern slot admit `file`?
- *
- * The fence is judged FIRST, and it beats the slot: a fence the plan wrote
- * wins over a spec pattern, or a spec could unfence itself. The predicate is
- * passed INTO the shared admitter (`isFenced`), which refuses a fenced file
- * itself with kind `fenced` — so the fence question has ONE answer per
- * (entry, file) even if a future caller forgets to pre-check, and both gates
- * read it through `fenceMatches` (#1725 round 3; the old exact-or-trailing-
- * slash reading matched nothing for `extension/src/**`, so a slot silently
- * UNFENCED a directory the plan fenced on purpose — the HIGH finding).
- * The protected-path refusal, the per-workstream scope check and the per-slot
- * file cap are the shared admitter's too, so the develop gate and this fence
- * cannot drift on any of them; the returned `Admission` names the kind that
- * refused, and the park reason carries it.
- */
-function specAdmitsFile(admit: SpecAdmitter, plan: PassPlan, file: string): Admission {
-  return admit.admit(plan.id, file, plan.declared);
-}
-
-/**
- * The refusals that OUTRANK the corrective round, stated positively: each is a
- * guard's decision, not an absence. `fenced` is the fence the PLAN wrote and
- * `protected` is the protected-path gate's call — a round the driver dispatched
- * cannot unfence a path on purpose, and it certainly cannot reach a protected
- * path. `no-slot` and `slot-full` are NOT here: they say the spec never mentioned
- * the file, which is exactly the gap the corrective round exists to close.
- */
-const CORRECTIVE_PRECEDES = ["fenced", "protected"] as const satisfies readonly AdmissionRefusal[];
-
-/** May the corrective round be asked about a file this refusal covered? */
-function outranksCorrective(refused: AdmissionRefusal): boolean {
-  return (CORRECTIVE_PRECEDES as readonly AdmissionRefusal[]).includes(refused);
-}
 
 /**
  * The post-pass checks, in order: the pass changed something, every file it
@@ -340,13 +335,7 @@ export async function postPassFault(
     after.push(r.value);
     diffs[plan.id] = r.value.diff;
   }
-  const unchanged = plans
-    .filter(
-      (p, i) =>
-        after[i]?.diff === p.before.diff &&
-        after[i]?.untracked.join("\n") === p.before.untracked.join("\n"),
-    )
-    .map((p) => p.id);
+  const unchanged = unchangedPlans(plans, after);
   if (unchanged.length > 0) {
     return {
       reason: `the diff of ${unchanged.join(", ")} is byte-identical to its pre-pass state — nothing was fixed`,
@@ -357,10 +346,24 @@ export async function postPassFault(
   for (const plan of plans) {
     const s = await treeChanges(execFn, plan.worktree, plan.headBefore);
     if (!s.ok) return { reason: fenced(s.reason).reason, diffs, admissions };
-    const allowed =
-      plan.declared.length > 0
-        ? [...plan.declared.map(cleaned), ...plan.named]
-        : [...plan.before.names, ...plan.named];
+    // A file the pass created and never staged is in `untracked`, not in
+    // `names` — git's porcelain has no entry for a path it has never seen, so
+    // both reads are this pass's changes. Both go into the denominator AND
+    // through the ladder: passing only `names` meant an untracked stray never
+    // reached `admitFixPassEntry`, so the driver never saw it as a revertible
+    // stray and parked on a file it could have reverted itself.
+    //
+    // #1849 item 9 — this is the ONE denominator for BOTH consumers: the ladder
+    // below and the fan-out ceiling at the end of this iteration. The ceiling used
+    // to take a separate `s.value.names` read, i.e. this set minus the untracked
+    // files, so a pass that wandered into untracked files did not count against
+    // the ceiling the fence had just been enforced with — one rule bounding a
+    // smaller set than the one it was paired with is two rules.
+    const passFiles = [...new Set([...s.value.names, ...s.value.untracked])];
+    // #1846 — the ONE fence view. The pre-#1846 shape rebuilt `allowed` here
+    // while the prompt rendered `workstream.paths`, so the fixer was told one
+    // set and refused by another. Both sides now read `plan.fence`.
+    const fence = plan.fence;
     // #1698(b) — this workstream's corrective round: its conditions, its
     // post-round commit window, its cap and its disclosure all live in
     // work-driver-corrective-admission.ts, which is handed this plan's OWN
@@ -393,54 +396,102 @@ export async function postPassFault(
       isFenced: (_id, file) => plan.outOfScope.some((entry) => fencedBy(entry, file)),
       onAdmit: (id, file, slot) => admissions.push(admissionNote(id, file, slot)),
     });
+    // WHY a `continue` in the loop below is correct: it skips only the per-file
+    // loop, never this plan's fan-out check, which runs after it and counts
+    // EVERY file the pass changed — admitted ones included. An earlier shape of
+    // this loop returned from inside it, and the ceiling check became
+    // unreachable for a pass that reached an admission route; that is how a
+    // bounded rule stops bounding anything.
     const strays: Stray[] = [];
-    for (const file of s.value.names) {
-      if (allowed.some((a) => allows(a, file))) continue;
-      const decision = specAdmitsFile(admit, plan, file);
-      if (decision.admitted) continue;
-      // The corrective route is reached only when the shared admitter's
-      // precedence-bearing refusals did not fire — see {@link CORRECTIVE_PRECEDES}
-      // — and then through ONE entry point, which judges the evidence, the
-      // provenance, the anchor, the window and the cap in its own order.
-      if (admission !== undefined && !outranksCorrective(decision.refused)) {
-        const verdict = await admission.tryAdmit(file);
-        if (verdict.admitted) {
-          admissions.push(`${plan.id}: ${verdict.note}`);
-          continue;
-        }
-        strays.push({ file, refused: decision.refused, correctiveNote: verdict.note });
+    // #1846 — the helper route's anchor files, and the one ceiling's numerator
+    // (`passChanged`): everything this pass changed, from every route, against
+    // ONE denominator (PM decision #1846-3). The gate view is built once per pass
+    // by `gateFenceView` below and every file of the post-pass tree is put through
+    // `admitFixPassEntry` — the whole route ladder lives there with its precedence
+    // stated in one place.
+    const helperDirs = fixPassHelperDirs(
+      plan.declared,
+      plan.findings,
+      plan.named,
+      plan.dirs,
+      round !== undefined,
+    );
+    // A file the pass created and never staged is in `untracked`, not in
+    // `names` — git's porcelain has no rename entry for a path it has never
+    // seen. Both reads are this pass's changes, so both go into the denominator
+    // and both go through the ladder; the pre-#1846 shape passed only `names`,
+    // which meant an untracked stray never reached `admitFixPassEntry` and so
+    // was never recorded as a revertible stray for the driver to act on.
+    // #1849 item 9 — the slot term is read ONCE, before the view is built, and
+    // feeds both surfaces that bound this pass: the helper route's ceiling (in
+    // `gateFenceView`) and the pass-level ceiling check at the end of the
+    // iteration. Before this, the ladder was handed the PLAN-TIME `ceiling`, which
+    // `planFixPass` necessarily computed with zero admitting slots (a slot admits a
+    // file only once the pass runs), while the pass-level check derived
+    // `fanoutLimitFor(declared + counted)` — so a pass whose spec authorised a
+    // pattern slot was refused a helper file by a ceiling the pass-level check had
+    // already widened. Two rules bounding one pass, which is what decision #1846-3
+    // removed. `ceiling` is derived inside `fixPassFence`, so it is re-derived
+    // rather than assigned.
+    const judging: FixPassFence = gateFenceView(
+      fence,
+      passFiles,
+      helperDirs,
+      admit.admittedSlotCount(plan.id),
+    );
+    const gate: FixPassFileGate = {
+      id: plan.id,
+      declared: plan.declared,
+      admitter: admit,
+      fence: judging,
+      ...(admission === undefined ? {} : { corrective: admission }),
+    };
+    // The pre-pass delta, so "already changed by this cycle" is the pass's own
+    // work and not a sibling pass's.
+    const passDelta = new Set(s.value.names);
+    for (const file of passFiles) {
+      const verdict = await admitFixPassEntry(file, gate, passDelta.has(file));
+      if (verdict.admitted) {
+        if (verdict.note !== undefined) admissions.push(`${plan.id}: ${verdict.note}`);
         continue;
       }
-      strays.push({ file, refused: decision.refused });
+      strays.push(verdict.stray);
     }
     if (strays.length > 0) {
       const basis =
         plan.declared.length > 0
           ? "its declared paths and the files the findings name"
           : "the files it already changed and the files the findings name";
-      return { reason: strayReason(plan, strays, basis), diffs, admissions };
+      // #1846 — the revert path acts on this refusal, so the record carries what
+      // it needs: WHICH workstream, WHICH files, and WHICH of them are untracked
+      // (a file in no commit is removed by unlink, not by `git rm`). A stray
+      // refused as `fenced` or `protected`, or any protected path in the set, is
+      // deliberately NOT offered: those are the files no admission rule may lift,
+      // and silently reverting one would take the protected-path gate's decision
+      // away from it.
+      const revertible = strays.every((s) => s.revertible);
+      return {
+        reason: strayReason(plan, strays, basis),
+        diffs,
+        admissions,
+        ...(revertible ? { straysFor: plan.id, strays, untracked: s.value.untracked } : {}),
+      };
     }
-    if (plan.declared.length > 0) {
-      // #1725 round 3 — the ceiling grows by the number of distinct ADMITTING
-      // SLOTS, never by the number of admitted files: one slot is one
-      // authorisation (each capped at SPEC_SLOT_MAX_FILES inside the
-      // admitter), so a workstream cannot multiply a single slot into an
-      // unbounded ceiling. The numerator keeps every file the pass changed;
-      // the park reason reports the denominator ACTUALLY used — declared
-      // paths and admitting slots separately, because "9 files, 2 slots
-      // authorised" is a different disclosure from "9 files".
-      const slots = admit.admittedSlotCount(plan.id);
-      const admittedList = admit.admittedFiles(plan.id);
-      const limit = fanoutLimitFor(plan.declared.length + slots);
-      const counted = s.value.names;
-      if (counted.length > limit) {
-        return {
-          reason: `${plan.id} changed ${counted.length} files (${admittedList.length} of them admitted by ${slots} spec pattern slot(s): ${listed(admittedList)}) — over the fan-out limit ${limit} for its ${plan.declared.length} declared path(s) plus ${slots} admitting slot(s)`,
-          diffs,
-          admissions,
-        };
-      }
-    }
+    // One ceiling over every route; its two easy-to-get-wrong rules (per-slot
+    // denominator, coupled tests out of the numerator) are stated in
+    // `work-driver-fix-pass-fanout.ts`, and the reason the slot term comes off
+    // `judging` rather than the admitter is stated in
+    // `work-driver-fix-pass-ceiling.ts`. The numerator is `passFiles` — the ONE
+    // denominator this iteration computed, shared with the ladder above (#1849
+    // item 9).
+    const refusal = passFanoutRefusal(
+      plan.id,
+      plan.declared,
+      passFiles,
+      judging,
+      admit.admittedFiles(plan.id),
+    );
+    if (refusal !== undefined) return { reason: refusal, diffs, admissions };
   }
   return { diffs, admissions };
 }

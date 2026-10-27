@@ -18,6 +18,7 @@
 
 import type { PassPlan } from "./work-driver-adversarial-fix-scope.ts";
 import { pathTokenIn } from "./work-driver-declared-path.ts";
+import type { FixPassAdmissionRefusal } from "./work-driver-fix-pass-admission.ts";
 import type { AdmissionRefusal } from "./work-driver-spec-slot-admission.ts";
 import { SPEC_SLOT_MAX_FILES } from "./work-driver-spec-slot-admission.ts";
 
@@ -30,8 +31,40 @@ export interface Stray {
    * (#1698(b)) — its own reason is more specific than the slot's, so it reads
    * first. Absent means the corrective route was never in play for this file, and
    * the shared `WHY` clause carries the whole explanation.
+   *
+   * PRESENCE IS ALSO A PRECEDENCE: while it is set the fix pass's own #1846
+   * admission rules are NOT asked about the file (see the fence). The round's
+   * refusal is a bounded, evidence-backed answer, and a rule derived from the
+   * file's name may not overrule it — the same shape as `CORRECTIVE_PRECEDES`
+   * for `fenced` / `protected`.
    */
   correctiveNote?: string;
+  /**
+   * #1846 — set when the pass's own admission rules (coupled test / anchored
+   * helper) were asked about this file and did NOT admit it: which of them
+   * stopped it (`fenced` / `protected` — the absolute ones — or `other`, which
+   * means neither rule fitted, or the single ceiling was spent). Absent means
+   * the file was refused before the rules were reached, and the shared `WHY`
+   * clause carries the whole explanation.
+   */
+  admissionRefusal?: FixPassAdmissionRefusal;
+  /**
+   * #1849 item 8 — may the driver REVERT this file? Set where the ABSOLUTE
+   * refusal is produced (`absoluteRefusal` in work-driver-fix-pass-admit-file.ts,
+   * and the fence/protected branches of `admitFixPassFile`), i.e. by the code that
+   * knows WHY the file was refused, rather than inferred downstream from the
+   * `refused` / `admissionRefusal` strings by whoever happens to offer the revert.
+   *
+   * `false` means the file sits behind this workstream's `outOfScope` fence or is
+   * a protected path: the decision belongs to the plan or the protected-path gate,
+   * and a revert that quietly deleted one would take that decision away from the
+   * gate that owns it. `postPassFault` therefore offers the revert only when EVERY
+   * stray in the set carries `revertible: true`, so one non-revertible file
+   * removes the whole set from the revert path — which is also why the field is
+   * per stray and not one flag per set: a park reason that names a protected file
+   * and reverts its neighbours would report the neighbours as the whole refusal.
+   */
+  revertible: boolean;
 }
 
 /** A short list for a park reason; "none" beats an empty backtick run. */
@@ -41,8 +74,20 @@ export const listed = (xs: readonly string[]): string => (xs.length > 0 ? xs.joi
  * #1522 — the scope-fence park names the fence it checked (both sets), what
  * the findings said about each stray, where the change sits and how to clear
  * it. The bare clause left the operator to rebuild all of that from the state.
+ *
+ * #1846 — `driverReverted` changes the closing instruction. The text used to be
+ * one unconditional "revert <files> in that worktree and land the rest by hand",
+ * which after the driver has already reverted one stray set tells the operator to
+ * do something that is already done and hides the fact that the pass produced a
+ * SECOND set — a different diagnosis, and the one that should read as "the fence
+ * is wrong", not "go tidy the worktree".
  */
-export function strayReason(plan: PassPlan, strays: readonly Stray[], basis: string): string {
+export function strayReason(
+  plan: PassPlan,
+  strays: readonly Stray[],
+  basis: string,
+  driverReverted = false,
+): string {
   const fence =
     plan.declared.length > 0
       ? `declared paths: ${listed(plan.declared)}`
@@ -61,6 +106,19 @@ export function strayReason(plan: PassPlan, strays: readonly Stray[], basis: str
     "no-slot": "no spec pattern slot matches it",
     "slot-full": `the matching slot has already admitted its ${SPEC_SLOT_MAX_FILES} files — one slot is a bounded authorisation, not a skeleton key`,
   };
+  // #1846 — the two admission routes the pass owns refuse for their own
+  // reasons, and the operator reading the handoff has to be able to tell
+  // "nothing claimed this file" from "the ceiling was spent" and from "this
+  // file sits behind a fence, so no rule may reach it".
+  const ADMISSION_WHY: Partial<Record<FixPassAdmissionRefusal, string>> = {
+    fenced:
+      "it sits behind this workstream's outOfScope fence, which the admission rules may not lift",
+    protected:
+      "it is a protected path — the protected-path gate owns that decision, and no admission rule reaches it",
+    other:
+      "it is neither a test coupled by name to a file this pass owns nor a file in the directory of a declared path",
+    "over-ceiling": `it would take the pass over its fan-out ceiling of ${plan.fence.ceiling} file(s) for its ${plan.fence.ceilingBasis} — the coupled-test and anchored-helper routes share that one ceiling with the spec-slot route`,
+  };
   const naming = strays
     .map((s) => {
       // #1698(b) — a corrective round named the file but the admission did not
@@ -71,11 +129,28 @@ export function strayReason(plan: PassPlan, strays: readonly Stray[], basis: str
       const why = s.correctiveNote
         ? `${WHY[s.refused]}; and the corrective route refused it: ${s.correctiveNote}`
         : WHY[s.refused];
+      // #1846 — when the pass's own rules were asked about this file and said
+      // no, their reason reads too. A stray that was never offered to them
+      // (refused before them by a fence or the protected gate) says nothing
+      // about a rule that never ran.
+      const asked =
+        s.admissionRefusal === undefined
+          ? ""
+          : ADMISSION_WHY[s.admissionRefusal] === undefined
+            ? ""
+            : `; and the fix pass's own admission rules refused it: ${ADMISSION_WHY[s.admissionRefusal]}`;
       return pathTokenIn(plan.findings, s.file)
-        ? `A finding names ${s.file}, but it does not widen the fence (a named file widens only when it is tracked at base or already changed by this cycle, unprotected, and in the directory of a declared or already-changed non-root path); ${why}`
-        : `No finding names ${s.file} — ${why}`;
+        ? `A finding names ${s.file}, but it does not widen the fence (a named file widens only when it is tracked at base or already changed by this cycle, unprotected, and in the directory of a declared or already-changed non-root path); ${why}${asked}`
+        : `No finding names ${s.file} — ${why}${asked}`;
     })
     .join("; ");
   const files = strays.map((s) => s.file).join(", ");
-  return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
+  return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; ${clearing(files, driverReverted)}`;
+}
+
+/** The closing clause of {@link strayReason}; see the `driverReverted` note. */
+function clearing(files: string, driverReverted: boolean): string {
+  return driverReverted
+    ? `the driver already reverted this pass's first out-of-fence set — the \`fix-pass-strays-reverted\` record names the preserved ref and the patch that hold those files — and a SECOND set means the pass will not stay inside its fence. Re-run \`/work <issue> --restart\` with ${files} named in the issue's scope, or let the pass work inside the fence`
+    : `otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
 }
