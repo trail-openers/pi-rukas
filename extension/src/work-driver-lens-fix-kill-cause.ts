@@ -65,13 +65,24 @@ export function lensFixKillBoundSource(
     const e = state.eventLog[i];
     if (e?.kind !== "dispatch-failed") continue;
     if (e.step !== LENS_FIX_STEP) return undefined;
-    return e.fixerBoundSource;
+    // The FIRST lens-fix dispatch before the cap is the one the cap explains
+    // (same rule `failureOf` uses for kind and tail). A source recorded there
+    // is authoritative and does not fall through to text scanning.
+    if (e.fixerBoundSource !== undefined) return e.fixerBoundSource;
+    break;
   }
-  // A state file written before #1798 records no source, so the cap's own
-  // evidence is all that is left — and it is read for the ONE clause the kill
-  // line writes, not for free prose.
-  const evidence = lastCapHit(state, cap)?.evidence ?? "";
-  return boundSourceFromText(evidence);
+  // A state file written before #1798 records no source on the event, so the
+  // kill's own text is all that is left — read for the ONE clause the builder
+  // writes (`fixerBoundClause`), never for free prose. The fallback reads the
+  // LAST dispatch-failed for this step rather than stopping at the first, so a
+  // completed round earlier in the loop cannot mask the killed one.
+  for (let i = state.eventLog.length - 1; i >= 0; i--) {
+    const e = state.eventLog[i];
+    if (e?.kind !== "dispatch-failed" || e.step !== LENS_FIX_STEP) continue;
+    const fromTail = boundSourceFromText(e.errorTail ?? "");
+    if (fromTail !== undefined) return fromTail;
+  }
+  return boundSourceFromText(lastCapHit(state, cap)?.evidence ?? "");
 }
 
 /** The clause `fixerBoundClause` writes, read back. A keyword appears only in
@@ -88,6 +99,23 @@ export function boundSourceFromText(text: string): FixerBoundSource | undefined 
 function boundMinutesFromText(text: string): number | undefined {
   const minutes = Number.parseInt(/bound of (\d+)m/.exec(text)?.[1] ?? "", 10);
   return Number.isFinite(minutes) ? minutes : undefined;
+}
+
+/**
+ * The kill cause of the dispatch this cap explains, read from the EVENT rather
+ * than from `ResultFailure`: `failureOf` does not carry `killCause`, so a
+ * caller that reads it there always gets `undefined` and this verdict silently
+ * abstains on every real cycle.
+ */
+function killCauseOf(state: WorkState, cap: string): string | undefined {
+  const capIdx = state.eventLog.findIndex((e) => e.kind === "cap-hit" && e.cap === cap);
+  const start = capIdx < 0 ? 0 : capIdx;
+  for (let i = start - 1; i >= 0; i--) {
+    const e = state.eventLog[i];
+    if (e?.kind !== "dispatch-failed") continue;
+    return e.step === LENS_FIX_STEP ? e.killCause : undefined;
+  }
+  return undefined;
 }
 
 /** The kill's own line, which carries the source, the minutes and the knob. */
@@ -111,10 +139,19 @@ function killLine(state: WorkState, cap: string): string {
 export function lensFixBoundKillVerdict(
   state: WorkState,
   cap: string,
-  failure: { kind?: string; providerMessage?: string } | undefined,
+  failure: { kind?: string; providerMessage?: string; killCause?: string } | undefined,
   issue: number,
 ): CauseVerdict | undefined {
   if (!isLensFixStepCap(cap)) return undefined;
+  // Only a kill whose OWN cause is a bound is a bound kill: `timeout` is the
+  // wall-clock bound, `child-bound` the child-supervision bound. An inactivity,
+  // loop or abort kill is a different mechanism with different knobs, so the
+  // kill's cause is checked BEFORE anything is read (and before the provider
+  // short-circuit, because `failureOf` carries no `killCause` at all — its
+  // `kind` is the projection of the event's, and reading a field it does not
+  // set would abstain on every cycle).
+  const cause = killCauseOf(state, cap);
+  if (cause !== "timeout" && cause !== "child-bound") return undefined;
   // A provider error-stop is the fault it was: the endpoint severed the stream
   // and no bound is the reason. That dispatch has no killCause and no source,
   // and the check is kept explicit so a future producer that stamps both cannot
