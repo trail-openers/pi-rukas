@@ -265,7 +265,7 @@ export async function revertFixPassStrays(
     // returned. Whether that restore succeeded is stated in the reason: an
     // operator reading "not reverted" while the files are gone is worse than one
     // reading "restore also failed, here is the ref".
-    const restored = await rollbackRevert(req, state, preservedRef, patchPath);
+    const restored = await rollbackRevert(req, state, headBefore, preservedRef, patchPath);
     return {
       reason: `${commit}${restored === undefined ? ` — the strays were restored from ${preservedRef}, so the worktree is as it arrived` : ` — RESTORING the strays from ${preservedRef} also failed (${restored}); the preserved ref, the patch${state.untracked.size > 0 ? " and the untracked copies" : ""} are the record of what is in the tree`}`,
     };

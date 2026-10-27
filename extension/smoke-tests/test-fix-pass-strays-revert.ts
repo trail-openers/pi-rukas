@@ -233,6 +233,48 @@ console.log("# the cwd gate: a tree that is not a driver worktree is refused");
   );
 }
 
+console.log("# the narrowed target reaches every git call, and a bad one reaches none");
+{
+  // #1849 item 4 — `preflight` used to return only "proceed / refuse", and the
+  // caller then re-read `req.headBefore` and wrote `as string`, followed by a
+  // second `=== undefined` guard for a case the gate had already refused. Both
+  // claimed a narrowing at a line that established nothing. The target now comes
+  // back from the gate as a 40-hex string, so these two properties are what the
+  // type is worth:
+  //   - a MALFORMED target is refused before the transport is asked anything, so
+  //     a truncated or padded rev cannot reach `checkout` / `ls-tree` / `rm`;
+  //   - a VALID target arrives at every git call UNMODIFIED — no empty string, no
+  //     truncation, no `?? ""` fallback anywhere between the gate and the argv.
+  const t = passTree();
+  const seen: string[][] = [];
+  const spy: GitExec = async (args, opts) => {
+    seen.push(args);
+    return gitExec(args, opts);
+  };
+  const bad = await revertFixPassStrays({
+    ...req(t, STRAYS, UNTRACKED, `${t.headBefore.slice(0, 39)}z`),
+    git: spy,
+  });
+  assert(
+    "reason" in bad && /not a full 40-hex SHA/.test(bad.reason),
+    `a target that is not 40-hex is refused by name (${JSON.stringify(bad)})`,
+  );
+  assert(seen.length === 0, `and no git call was made with it (${JSON.stringify(seen)})`);
+
+  const good = await revertFixPassStrays({ ...req(t, STRAYS, UNTRACKED), git: spy });
+  assert(!("reason" in good), `the valid target proceeds (${JSON.stringify(good)})`);
+  const revCarrying = seen.filter((a) => a.some((x) => x.startsWith(t.headBefore.slice(0, 12))));
+  assert(
+    revCarrying.length > 0 &&
+      revCarrying.every((a) => a.some((x) => x === t.headBefore || x.startsWith(t.headBefore))),
+    `every call that names the target names it complete — the narrowed value, not a truncation (${JSON.stringify(revCarrying.map((a) => a.join(" ")))})`,
+  );
+  assert(
+    seen.every((a) => !a.includes("") && !a.includes("undefined")),
+    "no git call received an empty or stringified-undefined rev from a fallback",
+  );
+}
+
 console.log("# the patch name is per attempt, so a later record cannot clobber an earlier one");
 {
   const t = passTree();

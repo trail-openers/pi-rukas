@@ -239,17 +239,21 @@ export async function commitRevert(
  * throws: the revert already refused itself, and a rollback that cannot finish is
  * disclosed in the reason ("tree NOT restored; recover from …") rather than
  * turning one failure into two.
+ *
+ * `headBefore` arrives as a parameter rather than being re-read from `req`: the
+ * caller holds the 40-hex value `preflight` narrowed, and a rollback that read
+ * `req.headBefore` would be reading a field it cannot check — on the one path
+ * where the driver is already failing, a `undefined` rev would turn a recoverable
+ * commit error into a restore that silently checks nothing out.
  */
 export async function rollbackRevert(
   req: FixPassStraysRequest,
   state: StrayState,
+  headBefore: string,
   preservedRef: string,
   patchPath: string,
 ): Promise<string | undefined> {
   const { git, worktree } = req;
-  const headBefore = req.headBefore;
-  if (headBefore === undefined)
-    return "no pre-pass HEAD was recorded, so the paths could not be put back";
   const tracked = state.strays.filter((f) => !state.untracked.has(f));
   // Every rollback call gets the same hardened argv and the same scrubbed env as
   // the commit it undoes: a restore that runs a repo-supplied hook is the same
