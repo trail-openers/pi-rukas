@@ -26,7 +26,11 @@
  * all read it without a cycle.
  */
 
-import { LENS_FIX_BOUND_ENV, REVIEW_WALL_CLOCK_ENV } from "./review-budget.ts";
+import {
+  LENS_FIX_BOUND_DEFAULT_MS,
+  LENS_FIX_BOUND_ENV,
+  REVIEW_WALL_CLOCK_ENV,
+} from "./review-budget.ts";
 
 /** The cycle-deadline knob. Spelled here rather than imported from the caller
  *  contract's module so this stays a leaf with no runtime imports at all. */
@@ -48,6 +52,19 @@ export const SPAWN_BACKSTOP_ENV = "PI_ENSEMBLE_SPAWN_TIMEOUT_MS";
  *    above resolved to (`clampToCycleDeadline` in the spawn layer).
  */
 export type FixerBoundSource = "fixer-bound" | "review-clock" | "cycle-deadline";
+
+/**
+ * The closed set above, as a tuple — the runtime gate for the type. The state
+ * file is read through an untyped cast, so `validateDiscriminants` needs the
+ * VALUES, not the type, to refuse a source no clock produced (#533).
+ * Compile-checked against the union above, so adding a source without adding it
+ * here fails `tsc` rather than turning into a state file the validator rejects.
+ */
+export const FIXER_BOUND_SOURCES = ["fixer-bound", "review-clock", "cycle-deadline"] as const;
+const _fixerBoundSourceExhaustive: [FixerBoundSource] extends [(typeof FIXER_BOUND_SOURCES)[number]]
+  ? true
+  : FixerBoundSource = true;
+void _fixerBoundSourceExhaustive;
 
 /** A fixer's resolved bound: the duration AND which clock set it. The pair
  *  travels together from `reviewFixDispatchBound` to the completion event,
@@ -81,7 +98,16 @@ export function fixerBoundClause(source: FixerBoundSource, boundMs: number): str
  * the child was doing its job and ran out of the time the harness gave it, so
  * the only actions are the bound that fired and re-running the step.
  */
+/** The default minutes of the fixer's own ceiling, spelled from the constant
+ *  the resolver uses (#1798 round 3): the sentence below used to hard-code
+ *  "45 min", and the day the default moves the handoff would keep sending the
+ *  operator to raise a knob to a number the driver never applies. */
+const FIXER_BOUND_DEFAULT_MINUTES = Math.round(LENS_FIX_BOUND_DEFAULT_MS / 60_000);
+
 export function lensFixBoundKillAction(source: FixerBoundSource, issue: number): string {
-  const minutes = source === "fixer-bound" ? " (the fixer's own ceiling, 45 min by default)" : "";
+  const minutes =
+    source === "fixer-bound"
+      ? ` (the fixer's own ceiling, ${FIXER_BOUND_DEFAULT_MINUTES} min by default)`
+      : "";
   return `raise ${fixerBoundEnv(source)}${minutes} and re-run \`/work ${issue}\` — the PR is still open and the review findings are posted to it, and the fixer's commits, if it made any, are already landed by the partial-fix path`;
 }

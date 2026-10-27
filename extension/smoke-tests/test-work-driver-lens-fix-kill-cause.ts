@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import type { HeadlessCap } from "../src/headless/caps.ts";
 /**
  * #1798 — a lens-fix killed by pi-rukas's own clock says so, and names the
  * knob it killed it.
@@ -32,38 +33,41 @@
  * by `lib/lens-fix-kill-cause-fixtures.ts`, whose header says why every event
  * here comes from a production writer.
  */
-import { failureOf, type ResultFailure } from "../src/headless/failure.ts";
-import type { HeadlessCap } from "../src/headless/caps.ts";
+import { type ResultFailure, failureOf } from "../src/headless/failure.ts";
+import {
+  LENS_FIX_BOUND_DEFAULT_MS,
+  LENS_FIX_BOUND_ENV,
+  REVIEW_WALL_CLOCK_ENV,
+} from "../src/review-budget.ts";
+import type { DispatchResult } from "../src/types.ts";
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
 import {
   buildCompletionEvent,
   overrideEnvForKillCause,
 } from "../src/work-driver-completion-event.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import {
   CYCLE_DEADLINE_ENV,
+  SPAWN_BACKSTOP_ENV,
   fixerBoundClause,
   fixerBoundEnv,
   lensFixBoundKillAction,
-  SPAWN_BACKSTOP_ENV,
 } from "../src/work-driver-fixer-bound.ts";
 import { reviewFixDispatchBound } from "../src/work-driver-lens-fix-arming.ts";
-import { LENS_FIX_BOUND_ENV, REVIEW_WALL_CLOCK_ENV } from "../src/review-budget.ts";
 import { initialState } from "../src/workflow-state.ts";
-import type { DispatchResult } from "../src/types.ts";
-import type { CycleContext } from "../src/work-driver-context.ts";
 import {
+  FIXER_BOUND,
+  MIN,
+  NOW,
+  WALL,
   boundKillTail,
   byKind,
   failFor,
   failedDispatches,
-  FIXER_BOUND,
   killed,
+  lensFixCtx,
   lensFixCycle,
   lensFixWindow,
-  lensFixCtx,
-  MIN,
-  NOW,
-  WALL,
 } from "./lib/lens-fix-kill-cause-fixtures.ts";
 
 const ctx = lensFixCtx(killed({})) as unknown as CycleContext;
@@ -123,8 +127,9 @@ function assert(cond: boolean, msg: string): void {
 
   // Canaries: the shapes that must produce NO source at all.
   assert(
-    reviewFixDispatchBound(base, "develop", NOW, FIXER_BOUND, "lens-fix", { remaining: 80 * MIN }) ===
-      undefined,
+    reviewFixDispatchBound(base, "develop", NOW, FIXER_BOUND, "lens-fix", {
+      remaining: 80 * MIN,
+    }) === undefined,
     "canary: a step outside the fix loop gets no bound and no source",
   );
   assert(
@@ -225,8 +230,7 @@ async function killTail(result: DispatchResult): Promise<string> {
     killed({ killCause: "child-bound", fixerBoundSource: undefined }),
   );
   assert(
-    childBound.includes("PI_ENSEMBLE_DEVELOP_BOUND_MS") &&
-      !childBound.includes(LENS_FIX_BOUND_ENV),
+    childBound.includes("PI_ENSEMBLE_DEVELOP_BOUND_MS") && !childBound.includes(LENS_FIX_BOUND_ENV),
     `canary: a sourceless child-bound still names the per-role bounds (got ${JSON.stringify(childBound)})`,
   );
   assert(
@@ -260,7 +264,9 @@ async function killTail(result: DispatchResult): Promise<string> {
   )} (override: ${SPAWN_BACKSTOP_ENV})`;
   const legacy = await lensFixWindow([killed()], [], [legacyTail]);
   assert(
-    failedDispatches(legacy).every((e) => (e as { fixerBoundSource?: string }).fixerBoundSource === undefined),
+    failedDispatches(legacy).every(
+      (e) => (e as { fixerBoundSource?: string }).fixerBoundSource === undefined,
+    ),
     "the legacy fixture records no source on its dispatch (a pre-#1798 state file)",
   );
   const legacyVerdict = causeVerdictOf(legacy, "step-failed:lens-fix", failFor(legacy));
@@ -273,23 +279,30 @@ async function killTail(result: DispatchResult): Promise<string> {
 
 // ─────────────────────────── 3. the classifier reads it back ─────────────────
 {
-  const state = await lensFixWindow([killed({ fixerBoundSource: "fixer-bound" })], [], [
-    boundKillTail,
-  ]);
+  const state = await lensFixWindow(
+    [killed({ fixerBoundSource: "fixer-bound" })],
+    [],
+    [boundKillTail],
+  );
   const failure: ResultFailure | undefined = failFor(state);
   const v = causeVerdictOf(state, "step-failed:lens-fix", failure);
-  assert(v?.causeClass === "pi-rukas", `a bound kill is pi-rukas's, not the host's (got ${v?.causeClass})`);
+  assert(
+    v?.causeClass === "pi-rukas",
+    `a bound kill is pi-rukas's, not the host's (got ${v?.causeClass})`,
+  );
   assert(
     (v?.causeReason ?? "").includes("pi-rukas's own time bound") &&
       (v?.causeReason ?? "").includes("killed at 45m"),
     `the reason names the clock and the minutes (got ${JSON.stringify(v?.causeReason)})`,
   );
   assert(
-    !/(provider|host)/i.test(v?.causeReason ?? "") || (v?.causeReason ?? "").includes("not at fault"),
+    !/(provider|host)/i.test(v?.causeReason ?? "") ||
+      (v?.causeReason ?? "").includes("not at fault"),
     "the reason does not send the operator to a provider or host that is fine",
   );
   assert(
-    (v?.userAction ?? "").includes(LENS_FIX_BOUND_ENV) && (v?.userAction ?? "").includes("/work 1798"),
+    (v?.userAction ?? "").includes(LENS_FIX_BOUND_ENV) &&
+      (v?.userAction ?? "").includes("/work 1798"),
     `the action names the knob to raise and the re-run (got ${JSON.stringify(v?.userAction)})`,
   );
   assert(
@@ -306,11 +319,7 @@ async function killTail(result: DispatchResult): Promise<string> {
     [],
     ["[pi-rukas] killed after 7200000ms timeout"],
   );
-  const generic = causeVerdictOf(
-    genericState,
-    "step-failed:lens-fix",
-    failFor(genericState),
-  );
+  const generic = causeVerdictOf(genericState, "step-failed:lens-fix", failFor(genericState));
   assert(
     generic?.causeClass === "environment",
     `canary: a sourceless lens-fix timeout stays environment (got ${generic?.causeClass})`,
@@ -443,9 +452,14 @@ async function killTail(result: DispatchResult): Promise<string> {
     lensFixBoundKillAction("review-clock", 7).includes(REVIEW_WALL_CLOCK_ENV),
     "the action for a review-clock kill raises the wall clock, not the fixer ceiling",
   );
+  // #1798 round 3 — the number is DERIVED from `LENS_FIX_BOUND_DEFAULT_MS`, so
+  // this asserts the sentence tracks the constant the resolver actually uses
+  // rather than a literal that can rot when the default moves.
   assert(
-    lensFixBoundKillAction("fixer-bound", 7).includes("45 min"),
-    "the action says what the default is, so the operator knows which way to move it",
+    lensFixBoundKillAction("fixer-bound", 7).includes(
+      `${Math.round(LENS_FIX_BOUND_DEFAULT_MS / 60_000)} min`,
+    ),
+    "the action says what the default is, and the default is the constant, not a literal",
   );
 
   // #1798 round 1 — with no minutes in the kill's clause the reason says

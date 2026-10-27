@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { LENS_FIX_BOUND_ENV } from "../src/review-budget.ts";
 /**
  * #1798 — WHICH dispatch of a multi-failure lens-fix window the bound verdict
  * reads. Companion to `test-work-driver-lens-fix-kill-cause.ts`, which pins the
@@ -28,7 +29,6 @@
  */
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
 import { lensFixBoundKillVerdict } from "../src/work-driver-lens-fix-kill-cause.ts";
-import { LENS_FIX_BOUND_ENV } from "../src/review-budget.ts";
 import {
   byKind,
   completedRound,
@@ -116,13 +116,40 @@ function tails(state: Awaited<ReturnType<typeof lensFixWindow>>): (string | unde
 }
 
 {
-  // A completed round in front of the killed one contributes nothing: the
+  // A completed round in FRONT of the killed one contributes nothing: the
   // source and the clause come from the killed dispatch alone.
   const state = await lensFixWindow([completedRound(), armed], [undefined, "fixer-bound"]);
   const v = lensFixBoundKillVerdict(state, "step-failed:lens-fix", undefined, 1798);
   assert(
     v?.causeClass === "pi-rukas" && (v.causeEvidence[0] ?? "").includes(LENS_FIX_BOUND_ENV),
     `a completed round cannot supply facts the killed child did not record (got ${JSON.stringify(v?.causeClass)})`,
+  );
+}
+
+{
+  // #1798 round 3 — the MIRROR: a completed round BEHIND an earlier bound kill
+  // means that kill was retried and the step recovered from it, so its source
+  // is history. The walk stops at a `dispatch-completed` of this step, which is
+  // the same #386 rule `isSystemicFailure` applies to the queue: a failure a
+  // later success answered is not the failure that ended the step. Without the
+  // stop, the sourceless kill that really did end the step would be given the
+  // recovered round's knob to raise.
+  const state = await lensFixWindow(
+    [armed, completedRound(), sourceless],
+    ["fixer-bound", undefined, undefined],
+  );
+  assert(
+    byKind(state, "dispatch-completed", "lens-fix").length === 1,
+    "the window holds a recovered round between the bound kill and the kill that ended the step",
+  );
+  assert(
+    lensFixBoundKillVerdict(state, "step-failed:lens-fix", undefined, 1798) === undefined,
+    "a bound kill that the step recovered from does not license the later kill",
+  );
+  const generic = causeVerdictOf(state, "step-failed:lens-fix", failFor(state));
+  assert(
+    generic?.causeClass === "environment",
+    `…and the operator gets the generic entry (got ${generic?.causeClass})`,
   );
 }
 

@@ -29,13 +29,15 @@
  *    #1769 owns the adversarial fix pass.
  */
 
+import { lastCapIndex } from "./headless/exit-code.ts";
 import type { CauseVerdict } from "./work-driver-cause-class.ts";
 import type { FixerBoundSource } from "./work-driver-fixer-bound.ts";
 import { lensFixBoundKillAction } from "./work-driver-fixer-bound.ts";
+import { isFixerBoundKill } from "./work-driver-lens-fix-bound-land.ts";
 import { lastCapHit } from "./workflow-state-cap.ts";
 // `CauseVerdict` is the shape every classifier returns; the class itself comes
 // from the shared table so this module cannot invent a vocabulary.
-import type { WorkState } from "./workflow-state.ts";
+import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** The one step this verdict claims. Anything else falls through to the table. */
 const LENS_FIX_STEP = "lens-fix";
@@ -47,47 +49,30 @@ function isLensFixStepCap(cap: string): boolean {
   return cap === `step-failed:${LENS_FIX_STEP}`;
 }
 
-/** The bound source of the kill this cap explains, or `undefined` when the
- *  dispatch left no such record. Module-private for the same reason as
- *  `isLensFixStepCap`: the only reader is the verdict below. */
-function lensFixKillBoundSource(state: WorkState, cap: string): FixerBoundSource | undefined {
-  // The dispatch the cap explains — see `failedLensFixDispatch` for which one
-  // that is. ONE rule for cause, source and line (`killCauseOf` /
-  // `providerAtKillOf` / `killLine` below all share it), so the verdict can
-  // never describe a round other than the one the cap fired on.
-  const dispatch = failedLensFixDispatch(state, cap);
-  if (dispatch === undefined) return undefined;
-  // A source recorded by the step that ARMED the bound is authoritative and
-  // does not fall through to text scanning.
-  if (dispatch.fixerBoundSource !== undefined) return dispatch.fixerBoundSource;
-  // A state file written before #1798 records no source on the event, so the
-  // kill's own text is all that is left — read for the ONE clause the builder
-  // writes (`fixerBoundClause`), never for free prose.
-  const fromTail = boundSourceFromText(dispatch.errorTail ?? "");
-  if (fromTail !== undefined) return fromTail;
-  return boundSourceFromText(lastCapHit(state, cap)?.evidence ?? "");
-}
-
-/** The clause `fixerBoundClause` writes, read back. A keyword appears only in
- *  the clause the driver itself produced, so this never invents a source out of
- *  a child's or a provider's words. Module-private for the same reason as
- *  `isLensFixStepCap`. */
-function boundSourceFromText(text: string): FixerBoundSource | undefined {
-  if (text.includes("cycle-deadline bound")) return "cycle-deadline";
-  if (text.includes("review-clock bound")) return "review-clock";
-  if (text.includes("fixer-bound bound")) return "fixer-bound";
-  return undefined;
-}
-
-/** The minutes named by the kill's own clause, for the reason line. */
-function boundMinutesFromText(text: string): number | undefined {
-  const minutes = Number.parseInt(/bound of (\d+)m/.exec(text)?.[1] ?? "", 10);
-  return Number.isFinite(minutes) ? minutes : undefined;
-}
-
 /**
- * The dispatch the cap explains: the LAST `dispatch-failed` of the stopped
- * step's run before the cap, and the scan STOPS there.
+ * A failed dispatch of this step, either kind. `WorkEvent`'s two failure
+ * members are structurally identical apart from a few optional fields, so
+ * naming them by hand in four signatures bought nothing — this is the union
+ * `failedLensFixDispatch` resolves and every reader below projects from.
+ */
+type LensFixFailure = Extract<WorkEvent, { kind: "dispatch-failed" }> & {
+  providerMessage?: string;
+};
+
+/** A failed dispatch of this step — the two kinds, because #1682 moved the
+ *  lens-fix child-supervision kills onto the PROVIDER kind and that is a real
+ *  shape a state file holds. The same set `failedDispatchBefore` scans
+ *  (`headless/failure.ts`): both kinds are a dispatch that did not complete,
+ *  and both carry `providerMessage` (`dispatch-failed` since #1798). */
+function isLensFixFailure(e: WorkEvent | undefined): e is LensFixFailure {
+  return (
+    (e?.kind === "dispatch-failed" || e?.kind === "dispatch-failed-provider") &&
+    e.step === LENS_FIX_STEP
+  );
+}
+
+/** The dispatch the cap explains: the LAST `dispatch-failed` of the stopped
+ *  step's run before the cap, and the scan STOPS there.
  *
  * #1798 round 2 — LAST, not first, and the module now says so in one place.
  * The rule the code carried before read the FIRST failure of the window, and a
@@ -107,21 +92,35 @@ function boundMinutesFromText(text: string): number | undefined {
  * bound verdict (and a knob to raise) for a child pi-rukas never killed at a
  * bound — which is the misattribution this module exists to prevent.
  *
- * Stopping at the first dispatch found walking backward (rather than scanning
- * past a sourceless one) is what keeps a completed round or an earlier attempt
- * from supplying facts the child that ended the step never recorded. `undefined`
- * when the window holds no lens-fix failure (another step's dispatch, or none),
- * and the window is the whole log when no `step-started` for the step is found.
+ * #1798 round 3 — where the walk STOPS. It used to stop at the first dispatch
+ * it found, of either kind, and answered `undefined` for a failure of another
+ * step. Two bugs in one line: an earlier attempt that had been RETRIED and
+ * RECOVERED (a `dispatch-completed` for this step between it and the cap) still
+ * supplied its source to a later kill, which is #386's rule inverted — a
+ * recovered failure is not the failure that ended the step; and a failure of
+ * ANOTHER step (a grouped cycle whose develop failed inside this window) ended
+ * the scan with `undefined`, when the right answer was to keep looking for this
+ * step's own failure. Both are fixed by the same walk: skip events that are
+ * neither kind of this step's failure, HALT at a completed dispatch of this
+ * step, and stop at the first failure of this step walking backward.
+ *
+ * The cap index is read by `lastCapIndex` (#1371), the same reader `failureOf`
+ * uses, so a cap the signal cut off before the driver routed it is skipped here
+ * too rather than explained as this step's cause.
+ *
+ * `undefined` when the window holds no lens-fix failure (another step's
+ * dispatch, or none), and the window is the WHOLE log when no `step-started`
+ * for the step is found — an unreadable step boundary is not evidence that no
+ * dispatch failed.
  */
-function failedLensFixDispatch(state: WorkState, cap: string) {
-  const capIdx = state.eventLog.findIndex((e) => e.kind === "cap-hit" && e.cap === cap);
+function failedLensFixDispatch(state: WorkState, cap: string): LensFixFailure | undefined {
+  const capIdx = lastCapIndex(state);
   // The start of the step's last run. When no `step-started` for this step
   // precedes the cap, the window is the WHOLE log rather than the empty range
-  // `[capIdx, capIdx)` — an unreadable step boundary is not evidence that no
-  // dispatch failed (a state file trimmed at a step boundary would then classify
-  // with no dispatch, and the verdict would fall to the generic entry).
+  // `[capIdx, capIdx)`.
+  const from = capIdx < 0 ? state.eventLog.length : capIdx;
   let start = 0;
-  for (let i = capIdx - 1; i >= 0; i--) {
+  for (let i = from - 1; i >= 0; i--) {
     const e = state.eventLog[i];
     if (e?.kind === "step-started" && e.step === LENS_FIX_STEP) {
       start = i;
@@ -132,41 +131,56 @@ function failedLensFixDispatch(state: WorkState, cap: string) {
   // the window is the dispatch that failed the step, and the read STOPS there
   // (see the header of this function for why that is the same dispatch
   // `failureOf` and the router name).
-  const end = capIdx < 0 ? state.eventLog.length : capIdx;
-  for (let i = end - 1; i > start; i--) {
+  for (let i = from - 1; i > start; i--) {
     const e = state.eventLog[i];
-    if (e?.kind !== "dispatch-failed") continue;
-    return e.step === LENS_FIX_STEP ? e : undefined;
+    if (e?.kind === "dispatch-completed" && e.step === LENS_FIX_STEP) return undefined;
+    if (isLensFixFailure(e)) return e;
   }
   return undefined;
 }
 
-/**
- * The kill cause of the dispatch this cap explains, read from the EVENT rather
- * than from `ResultFailure`: `failureOf` does not carry `killCause`, so a
- * caller that reads it there always gets `undefined` and this verdict silently
- * abstains on every real cycle.
- */
-function killCauseOf(state: WorkState, cap: string): string | undefined {
-  return failedLensFixDispatch(state, cap)?.killCause;
+/** The clause `fixerBoundClause` writes, read back. A keyword appears only in
+ *  the clause the driver itself produced, so this never invents a source out of
+ *  a child's or a provider's words. Module-private for the same reason as
+ *  `isLensFixStepCap`. */
+function boundSourceFromText(text: string): FixerBoundSource | undefined {
+  if (text.includes("cycle-deadline bound")) return "cycle-deadline";
+  if (text.includes("review-clock bound")) return "review-clock";
+  if (text.includes("fixer-bound bound")) return "fixer-bound";
+  return undefined;
 }
 
-/**
- * Whether the dispatch this cap explains came back on a provider error-stop as
- * well as a kill. The mirror of `killCauseOf` for the guard below: it reads the
- * EVENT, the way the cause is read, so it sees the fact `buildCompletionEvent`
- * now carries on a killed dispatch (`providerMessage`) that the failure
- * projection only ever set for a `dispatch-failed-provider`.
- */
-function providerAtKillOf(state: WorkState, cap: string): boolean {
-  return failedLensFixDispatch(state, cap)?.providerMessage !== undefined;
+/** The minutes named by the kill's own clause, for the reason line. */
+function boundMinutesFromText(text: string): number | undefined {
+  const minutes = Number.parseInt(/bound of (\d+)m/.exec(text)?.[1] ?? "", 10);
+  return Number.isFinite(minutes) ? minutes : undefined;
+}
+
+/** The bound source of the kill this cap explains, or `undefined` when the
+ *  dispatch left no such record. Module-private for the same reason as
+ *  `isLensFixStepCap`: the only reader is the verdict below. Takes the
+ *  resolved dispatch (#1798 round 3) rather than re-scanning for it. */
+function lensFixKillBoundSource(
+  dispatch: LensFixFailure | undefined,
+  state: WorkState,
+  cap: string,
+): FixerBoundSource | undefined {
+  if (dispatch === undefined) return undefined;
+  // A source recorded by the step that ARMED the bound is authoritative and
+  // does not fall through to text scanning.
+  if (dispatch.fixerBoundSource !== undefined) return dispatch.fixerBoundSource;
+  // A state file written before #1798 records no source on the event, so the
+  // kill's own text is all that is left — read for the ONE clause the builder
+  // writes (`fixerBoundClause`), never for free prose.
+  const fromTail = boundSourceFromText(dispatch.errorTail ?? "");
+  if (fromTail !== undefined) return fromTail;
+  return boundSourceFromText(lastCapHit(state, cap)?.evidence ?? "");
 }
 
 /** The kill's own line, which carries the source, the minutes and the knob —
  *  from the same dispatch the cause and the source came from. Falls back to the
  *  cap-hit's own evidence when the window holds no dispatch to read. */
-function killLine(state: WorkState, cap: string): string {
-  const dispatch = failedLensFixDispatch(state, cap);
+function killLine(dispatch: LensFixFailure | undefined, state: WorkState, cap: string): string {
   if (dispatch !== undefined) return dispatch.errorTail ?? "";
   return lastCapHit(state, cap)?.evidence ?? "";
 }
@@ -183,15 +197,21 @@ export function lensFixBoundKillVerdict(
   issue: number,
 ): CauseVerdict | undefined {
   if (!isLensFixStepCap(cap)) return undefined;
+  // #1798 round 3 — the dispatch that ended the step is resolved ONCE. Every
+  // reader below (cause, provider fact, source, line) used to call
+  // `failedLensFixDispatch` for itself: four identical backward walks over the
+  // same log for one verdict, and nothing that made them agree beyond the
+  // comment above each. One read, then four field projections.
+  const dispatch = failedLensFixDispatch(state, cap);
   // Only a kill whose OWN cause is a bound is a bound kill: `timeout` is the
   // wall-clock bound, `child-bound` the child-supervision bound. An inactivity,
   // loop or abort kill is a different mechanism with different knobs, so the
   // kill's cause is checked BEFORE anything is read (and before the provider
   // short-circuit, because `failureOf` carries no `killCause` at all — its
   // `kind` is the projection of the event's, and reading a field it does not
-  // set would abstain on every cycle).
-  const cause = killCauseOf(state, cap);
-  if (cause !== "timeout" && cause !== "child-bound") return undefined;
+  // set would abstain on every cycle). The vocabulary is the conversion's own
+  // predicate (#1789), not a re-listing of the two causes here.
+  if (!isFixerBoundKill(dispatch?.killCause)) return undefined;
   // A provider error-stop is the fault it was: the endpoint severed the stream
   // and no bound is the reason. Round 1: this guard used to read ONLY
   // `failure.providerMessage`, which `failureOf` sets solely for a
@@ -203,10 +223,16 @@ export function lensFixBoundKillVerdict(
   // failure-side read is kept so a caller that hands over a failure instead of
   // a log still abstains.
   if (failure?.providerMessage !== undefined) return undefined;
-  if (providerAtKillOf(state, cap)) return undefined;
-  const source = lensFixKillBoundSource(state, cap);
+  // #1798 round 3 — the abstain stays a full abstain: a bound kill that is also
+  // a provider error-stop gets the generic entry, never a knob to raise. The
+  // provider fact now ALSO reaches `classifyFailureCause` (#1798 round 3, the
+  // taxonomy's terminal-provider read) so a spend-cap kill halts the queue; the
+  // two are consistent — a terminal outage is not a bound to raise, whichever
+  // surface is asked.
+  if (dispatch?.providerMessage !== undefined) return undefined;
+  const source = lensFixKillBoundSource(dispatch, state, cap);
   if (source === undefined) return undefined;
-  const line = killLine(state, cap);
+  const line = killLine(dispatch, state, cap);
   const minutes = boundMinutesFromText(line);
   // No minutes in the kill's clause (a state file whose tail was clipped, an
   // older builder) still names the clock and the knob — but never "0m", which
