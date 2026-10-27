@@ -116,7 +116,6 @@ const { runLensReview } = await import("../src/lens-review.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 const { skillsDirUsable } = await import("../src/lens-review-skills.ts");
 const { buildExpectedRoster } = await import("../src/lens-roster.ts");
-const { readLensSkillBody } = await import("../src/lens-skill-inline.ts");
 const { readEnumMarker } = await import("../src/reply-markers.ts");
 // #995 moved the pure-`lensPromptFor` cases (the composed prompt's explicit
 // `read` instruction and the Skill Load Status semantics it defines) to

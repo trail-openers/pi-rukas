@@ -100,6 +100,14 @@ export async function runLensChild(opts: {
   // attempts of an unguided reviewer; the body is wrapped in a nonce-tagged
   // delimiter the payload cannot close, because every bundled lens skill
   // carries triple-backtick fences.
+  //
+  // LOAD-BEARING POSITION: this read, the wrap, and the `lensPromptFor` call
+  // below all sit OUTSIDE the retry loop further down, so MAX_LENS_ATTEMPTS
+  // attempts share ONE read, ONE wrap (one nonce) and ONE prompt string. Moving
+  // any of them inside the loop would re-open and re-decode the same SKILL.md on
+  // every retry and hand each attempt a different wrapper — the retries are
+  // already the expensive path, and a per-attempt read is exactly the file
+  // re-opening this change exists to remove.
   const skill = readLensSkillBody(skillPath);
   if ("error" in skill) {
     bumpBatch();

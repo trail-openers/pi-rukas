@@ -55,6 +55,25 @@ export function setSkillFileReaderForTests(
  * and a trace line is a transport for it. */
 export const UNWRAPPABLE_SKILL_BODY = "skill body contains the inline delimiter";
 
+/** The OPENING tag's literal name, nonce excluded. A body that carries it —
+ * with or without a nonce the parent can predict — is nested inside its own
+ * wrapper, so the reader downstream cannot tell the skill's prose from a
+ * second document that opens its own tag. Refused for the same reason as a
+ * stray closing tag, and by the same rule: the shape is named, never the text. */
+const OPEN_TAG_NAME = "<lens-skill-body";
+
+/** Ceiling on the body the parent will inline (#1847).
+ *
+ * The body goes into the lens child's PROMPT verbatim, so an oversized
+ * SKILL.md is not a slow review but a request the provider refuses, arriving
+ * dozens of turns later as a provider error with nothing pointing at the file
+ * that caused it. Measured, the six bundled lens skills are 3–8 KB; 256 KB is
+ * ~30× the largest real one, far above anything a lens can be and far below
+ * anything that would make a prompt unreadable. Refusing at the read, before
+ * the spawn, is the whole point: the lens blocks with a named error instead of
+ * four attempts against an impossible prompt. */
+export const MAX_SKILL_BODY_BYTES = 256 * 1024;
+
 /** The opening tag of the wrapper, nonce included. */
 export function skillOpenTag(nonce: string): string {
   return `<lens-skill-body nonce="${nonce}">`;
@@ -83,12 +102,17 @@ export function stripFrontmatter(text: string): string {
 /**
  * Wrap a skill body in the nonce-tagged delimiter.
  *
- * Returns null when the body contains the closing tag: the payload would be
- * ending its own wrapper and continuing as prompt text. Nonce collisions are
- * impossible in practice (UUIDv4), so the null is a wall, not a routine branch.
+ * Returns null when the body carries either half of the wrapper — a closing tag
+ * would let the payload end its own wrapper and continue as prompt text; an
+ * OPENING tag nests a second document inside the skill, which is the same
+ * confusable-prompt failure seen from the other side and the one a body could
+ * otherwise grow by accident (a vendored skill that quotes the wrapper in its
+ * own examples). Nonce collisions are impossible in practice (UUIDv4), so the
+ * null is a wall, not a routine branch.
  */
 export function wrapSkillBody(body: string, nonce: string): string | null {
   if (body.includes(skillCloseTag(nonce))) return null;
+  if (body.includes(OPEN_TAG_NAME)) return null;
   return `${skillOpenTag(nonce)}\n${body}\n${skillCloseTag(nonce)}`;
 }
 
@@ -101,12 +125,18 @@ export function wrapSkillBody(body: string, nonce: string): string | null {
  * the read honours an optional reader installed by `setSkillFileReaderForTests`
  * before falling through to the real `nodeFs.readFileSync`.
  *
- * `{ error }` on an unreadable or missing SKILL.md, or on a body that cannot be
- * wrapped — the caller turns that into a blocked lens BEFORE spawning.
+ * Returns `{ wrapped }` — the wrapped body, which is the only thing the caller
+ * puts in the prompt — or `{ error }`, which the caller turns into a blocked
+ * lens BEFORE spawning. Four refusals, each naming the file and saying
+ * `(not spawned)` so an operator can tell a pre-spawn block from a failed run:
+ * unreadable (with the errno — ENOENT and EACCES are different fixes), a body
+ * carrying either half of the wrapper, and a body over `MAX_SKILL_BODY_BYTES`.
+ *
+ * Reads the file ONCE: `runLensChild` calls this ABOVE its retry loop, so four
+ * attempts reuse one read rather than re-opening (and re-decoding) the same
+ * SKILL.md four times.
  */
-export function readLensSkillBody(
-  skillDir: string,
-): { body: string; nonce: string; wrapped: string } | { error: string } {
+export function readLensSkillBody(skillDir: string): { wrapped: string } | { error: string } {
   const file = path.join(skillDir, SKILL_FILE_NAME);
   let raw: string;
   try {
@@ -117,14 +147,39 @@ export function readLensSkillBody(
     // before the parent ever reads it.
     if (skillFileReader) raw = skillFileReader(file);
     else raw = nodeFs.readFileSync(file, "utf8");
-  } catch {
-    return { error: `skill not readable: ${file} (not spawned)` };
+  } catch (err) {
+    // The errno, not just the message: `skill not readable` covers a missing
+    // file (ENOENT — a broken symlink, an unrun install.sh), a permission
+    // problem (EACCES) and an I/O error, and an operator reading only the path
+    // cannot tell "re-run install.sh" from "fix the mode". Node puts the code on
+    // the error, and `unknown` means a reader that threw something else (the
+    // test seam, or a future reader), which is reported as such rather than
+    // invented.
+    const code =
+      typeof err === "object" &&
+      err !== null &&
+      typeof (err as { code?: unknown }).code === "string"
+        ? (err as { code: string }).code
+        : undefined;
+    return {
+      error: `skill not readable: ${file} (${code ?? "unreadable"}, not spawned)`,
+    };
+  }
+  const body = stripFrontmatter(raw);
+  // Bounded BEFORE the wrap and before the spawn: the body lands in the child's
+  // prompt, so an oversized file is a provider-side failure dozens of turns in,
+  // not a slow review. Measured in bytes of the body the prompt would carry,
+  // not the file on disk, so the frontmatter that gets stripped is not charged.
+  const bytes = Buffer.byteLength(body, "utf8");
+  if (bytes > MAX_SKILL_BODY_BYTES) {
+    return {
+      error: `skill too large: ${file} (${bytes} > ${MAX_SKILL_BODY_BYTES} bytes, not spawned)`,
+    };
   }
   const nonce = randomUUID().replace(/-/g, "");
-  const body = stripFrontmatter(raw);
   const wrapped = wrapSkillBody(body, nonce);
   if (wrapped === null) {
     return { error: `${UNWRAPPABLE_SKILL_BODY}: ${file} (not spawned)` };
   }
-  return { body, nonce, wrapped };
+  return { wrapped };
 }
