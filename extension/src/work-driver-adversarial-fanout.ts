@@ -110,7 +110,7 @@ export async function fanOutAdversarial(
     rest: { outcomes: AdversarialOutcome[]; parked: boolean; parkedInfra: boolean },
   ) => {
     cancelStepNotice();
-    return { next: final, ...rest };
+    return { next: withSpentBudget(final), ...rest };
   };
   // #485/#486 — on re-entry, the previous pass's per-workstream records are
   // REPLACED where the re-run workstreams produced a fresh batch (R1): the
@@ -162,6 +162,22 @@ export async function fanOutAdversarial(
   // #1863 — the marker ids this fan-out minted, in order. `settledMarkerIds`
   // turns them into the set the splice keys on.
   const passMarkers: string[] = [];
+  // #1863 — #486's per-workstream ladder budget must survive this pass in the
+  // state the step RETURNS, not only in the one every retry branch
+  // `persistCycle`s. The in-loop write below mutates `next` only, so on the
+  // paths that leave the fan-out without a retry — the N=1 first pass, which
+  // hands a `dispatch-failed` tail to the step-level RETRY_ONCE — the spent
+  // budget died with the function and the re-entry re-seeded `localRetries`
+  // from an empty `adversarialTransientRetries`, running a whole second ladder
+  // (#357 T8 observed 6 `adversarialLoopFn` calls instead of 4). One merge
+  // helper, applied to every `next` this function produces.
+  const withSpentBudget = (s: WorkState): WorkState => ({
+    ...s,
+    pipelineState: {
+      ...s.pipelineState,
+      adversarialTransientRetries: { ...localRetries },
+    },
+  });
   const writeThrough = (fn: (s: WorkState) => Promise<WorkState>): Promise<WorkState> => {
     const step = writeChain.then(async () => {
       log = await fn(log);
@@ -424,9 +440,19 @@ export async function fanOutAdversarial(
       budget[o.id] = incremented;
       localRetries[o.id] = incremented;
     }
+    // The ladder's own spend, merged into whatever `next` already carries
+    // (`log`'s pipeline state survives the in-loop write-aheads). The map is
+    // the budget the next entry seeds from, so it is never a replacement that
+    // can drop a sibling's count.
     next = {
       ...next,
-      pipelineState: { ...next.pipelineState, adversarialTransientRetries: budget },
+      pipelineState: {
+        ...next.pipelineState,
+        adversarialTransientRetries: {
+          ...next.pipelineState.adversarialTransientRetries,
+          ...budget,
+        },
+      },
     };
     trace(
       `work-driver: adversarial per-workstream infra retry: ${candidates.map((o) => o.id).join(", ")}` +
