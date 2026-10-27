@@ -210,7 +210,12 @@ const roundCap: WorkEvent = {
 // ---------------- a failed lens-fix integration halts, and says why
 
 {
-  const adv = code("work-driver-adversarial.ts");
+  // Both landmarks moved to `work-driver-adversarial-lens-land.ts` when the
+  // landing arms split out of `work-driver-adversarial.ts` (d916d373). The
+  // canaries follow the code, as the network-git roster row does — a canary left
+  // pointing at the old file reads a file that no longer contains the branch and
+  // reports the fix as regressed.
+  const adv = code("work-driver-adversarial-lens-land.ts");
   assert(
     /if \(!result\.committed\)/.test(adv),
     "canary: the halt triggers on !committed, not just on an error — the empty case was silent",
@@ -224,7 +229,7 @@ const roundCap: WorkEvent = {
   // preserved by concealing the fault from routing.
   assert(
     !/tail remains "adversarial-approved" and nextStep\(\) routes correctly[\s\S]{0,200}plumbReports\.push[\s\S]{0,400}\}\s*\n\s*\/\/ `integrate\(\)` already pushed/.test(
-      readFileSync(path.join(SRC, "work-driver-adversarial.ts"), "utf8"),
+      readFileSync(path.join(SRC, "work-driver-adversarial-lens-land.ts"), "utf8"),
     ),
     "...and no longer falls through to another review round",
   );

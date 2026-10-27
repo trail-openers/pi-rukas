@@ -215,7 +215,10 @@ const EXPECTED: Record<string, number> = {
   "work-driver-branch-mechanized.ts": 2,
   "work-driver-git.ts": 2,
   "work-driver-integrate.ts": 1,
-  "work-driver-adversarial.ts": 1,
+  // The adversarial push moved to `work-driver-adversarial-lens-land.ts` when the
+  // lens-fix landing arms split out of `work-driver-adversarial.ts` (d916d373) —
+  // the row follows the call, as the sweep row below does.
+  "work-driver-adversarial-lens-land.ts": 1,
   "work-driver-adversarial-lensfix.ts": 1,
   "work-driver-branch-ops.ts": 1,
   "work-driver-handoff-consolidate-branch.ts": 1,
