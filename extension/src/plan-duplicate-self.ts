@@ -106,30 +106,33 @@ const PRIOR_ART_NEGATED_RE =
  * The number shapes a rationale legitimately carries that are NOT evidence about
  * another issue, and so are stripped before rule 4 asks whether any digits are
  * left: an ISO date (`2026-10-27`, with or without a time — the field case's
- * `(OPEN, created 2026-10-27)`), a version string (`v0.14.27`, `0.12.38`), a
- * clock time (`14:05`, `9:30:12.5`), and the digits inside the tokens this
- * filter already resolved, which the caller removes with the tokens themselves.
+ * `(OPEN, created 2026-10-27)`), a clock time (`14:05`, `9:30:12.5`), a
+ * `v`-prefixed version of THREE OR MORE parts, and the digits inside the tokens
+ * this filter already resolved, which the caller removes with the tokens
+ * themselves.
  *
  * A date or a version is a `.`/`:`-joined run of digit groups, so each pattern
  * takes its separators AND the digits at both ends: stripping them one at a time
  * can never leave an orphan digit run for rule 4 to misread as a reference.
- * Deliberately NOT stripped: a bare digit run (`12`, `3 rounds`, `line 41`),
- * because a number the filter cannot place is exactly what rule 4 keeps.
+ * Deliberately NOT stripped (round 3, lens HIGH): a bare digit run (`12`, `3
+ * rounds`, `line 41`), a PREFIXLESS dotted number at any arity (`0.14.27`,
+ * `1855.1.0`) and a TWO-PART `v` number (`v1855.1`). An issue reference can be
+ * written every one of those ways, so a shape that cannot be told apart from one
+ * keeps its digits and rule 4 keeps the HIGH — the fail-closed side of the
+ * trade. Only the `v` prefix plus three parts is a shape no issue id takes.
  */
 const SAFE_NUMBER_RES = [
   // ISO date, optionally with a time and an offset.
   /(?:\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)?)/gi,
   // Clock time: 14:05, 9:30:12.5
   /(?:\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b)/g,
-  // A `v`-prefixed version: v0.14.27, V1.0. The `v` is what makes it a version
-  // and not an issue id written with a stray dot.
-  /(?:\bv\d+\.\d+(?:\.\d+)*)/gi,
-  // A dotted version with no prefix, but only at THREE OR MORE parts, because
-  // that shape is not how an issue number is ever written. A BARE TWO-PART
-  // number is NOT a version: `1855.1` is an issue-shaped token, and stripping
-  // it read a reply whose only other number was an issue as self-only and
-  // downgraded a HIGH that main halts on (#1856 review round 2).
-  /(?:\b\d+\.\d+\.\d+(?:\.\d+)*)/g,
+  // A `v`-prefixed version of THREE OR MORE parts: v0.14.27, V1.2.3.4. The `v`
+  // is what makes it a version and not an issue id written with a stray dot, and
+  // the third part is what rules out `v1855.1` — an issue number wearing a `v`.
+  // The part count is spelled out, not written `{2,}`: `(?:\.\d+){2,}` after a
+  // required `\.\d+` counts THREE optional groups and matches only four-part
+  // versions, which read every three-part one as an unaccounted number.
+  /(?:\bv\d+\.\d+(?:\.\d+)(?:\.\d+)*)/gi,
 ];
 
 /** The rule that removed a candidate, rendered into the disclosure. */
