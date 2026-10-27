@@ -170,7 +170,7 @@ function printsAll(text: string, paths: string[]): boolean {
     const prev = process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
     process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "1";
     try {
-      return foldToCeiling(entries);
+      return foldToCeiling(entries).workstreams;
     } finally {
       if (prev === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_MAX_WORKSTREAMS");
       else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;

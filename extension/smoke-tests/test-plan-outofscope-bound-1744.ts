@@ -50,7 +50,7 @@ import { fenceMatches } from "../src/work-driver-declared-path.ts";
 import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
-import { foldTwo } from "../src/workstream-fold.ts";
+import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 import {
   LONG_PATH_FENCE,
   LONG_PROSE,

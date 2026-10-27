@@ -50,7 +50,7 @@ import { foldPortPlan } from "../src/work-driver-plan-contract.ts";
 import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
-import { foldTwo } from "../src/workstream-fold.ts";
+import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 import { VALID } from "./lib/plan-outofscope-fixtures.ts";
 import { crowdedArgs, pathList } from "./lib/plan-paths-fixtures.ts";
 import { captureTracesSync, withTightFanout } from "./lib/spec-slot-fixtures.ts";
@@ -382,7 +382,7 @@ function boundLineOf(traces: string[]): string | undefined {
     ),
   );
   const { value: folded, traces } = captureTracesSync(() =>
-    withMaxWorkstreams(1, () => foldToCeiling(ten)),
+    withMaxWorkstreams(1, () => foldToCeiling(ten).workstreams),
   );
   // 8 unique to each of the ten + the 8 shared ones = 88 kept, and the 72
   // repeats of the shared octet across the nine later workstreams collapsed.
@@ -408,7 +408,7 @@ function boundLineOf(traces: string[]): string | undefined {
     ),
   ];
   const port = captureTracesSync(() =>
-    foldPortPlan({ "task-a": dupPair[0], "task-b": dupPair[1] }, "o/r#9"),
+    foldPortPlan({ "task-a": dupPair[0], "task-b": dupPair[1] }, "o/r#9").workstreams,
   );
   const portLine = boundLineOf(port.traces) ?? "";
   // One line, and it carries the driver's own prefix: the tally sits between

@@ -37,7 +37,7 @@ import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import type { OutOfScopeClip } from "../src/workflow-state-schema-workstreams.ts";
-import { foldTwo } from "../src/workstream-fold.ts";
+import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 import {
   LONG_PATH_FENCE,
   LONG_PROSE,

@@ -13,7 +13,7 @@ import {
   type CouplingWorkstream,
   mergeCoupledWorkstreams,
 } from "../src/work-driver-plan-coupling.ts";
-import { foldTwo } from "../src/workstream-fold.ts";
+import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

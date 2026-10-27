@@ -32,7 +32,7 @@ import { runPlan } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { type WorkState, initialState } from "../src/workflow-state.ts";
-import { foldTwo } from "../src/workstream-fold.ts";
+import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 import {
   type PlanResultShape,
   type WorkstreamArgs,
@@ -291,7 +291,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
       `port: no reference in "${body.slice(0, 50)}…"`,
     );
   }
-  const folded = foldPortPlan(workstreamsOfCalls(DISJOINT), "o/r#9");
+  const folded = foldPortPlan(workstreamsOfCalls(DISJOINT), "o/r#9").workstreams;
   const ids = Object.keys(folded);
   assert(ids.length === 1 && ids[0] === "task-a", "port fold: one workstream (the first id)");
   assert(
@@ -300,7 +300,7 @@ assert(symbolKey("export function") === undefined, "key: only keywords → no sy
     "port fold: the scope is applying the change; every path kept",
   );
   const same = workstreamsOfCalls(DISJOINT);
-  assert(foldPortPlan(same, undefined) === same, "port fold: no reference → unchanged");
+  assert(foldPortPlan(same, undefined).workstreams === same, "port fold: no reference → unchanged");
 }
 
 // ── the plan prompt ─────────────────────────────────────────────────────
