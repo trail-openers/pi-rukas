@@ -113,15 +113,27 @@ const supervisionKill = (over: Record<string, unknown>) =>
     `…and an ordinary error-stop on such a kill still reads as a severance, so the field is not simply absent (got ${noProgressSevered.cause})`,
   );
 
-  // The other supervision cause, on the kind #1682 records it under: the
-  // override still declines it (not a `dispatch-failed`, not a fixer-bound
-  // cause) and the event keeps the branch it used to reach.
+  // The other supervision cause. Here the test has to state WHICH rule answers,
+  // because two read this text and only one is being scoped: the override is
+  // gated and never fires for `stuck-tool`, but the 429 LADDER reads
+  // `providerMessage` for every event and has always called a spend cap terminal
+  // whatever ended the child. So `stuck-tool` + spend-cap text classifies
+  // terminal THROUGH THE LADDER, keeping its own retry policy (the ladder's,
+  // `shouldRetry: false`) — and what the scoping changed is that the kill cause
+  // is no longer deleted by the override before the ladder ever runs.
   const stuckTool = classifyFailureCause(
     supervisionKill({ kind: "dispatch-failed", killCause: "stuck-tool" }),
   );
   assert(
-    stuckTool.cause === "crashed" && stuckTool.shouldRetry === true,
-    `a stuck-tool kill keeps its own classification whatever providerMessage holds (got ${stuckTool.cause}/retry=${stuckTool.shouldRetry})`,
+    stuckTool.cause === "rate-limited:quota-terminal",
+    `a stuck-tool kill's provider text is answered by the ladder, not the override (got ${stuckTool.cause})`,
+  );
+  const stuckToolNoText = classifyFailureCause(
+    supervisionKill({ kind: "dispatch-failed", killCause: "stuck-tool", providerMessage: undefined }),
+  );
+  assert(
+    stuckToolNoText.cause === "crashed" && stuckToolNoText.shouldRetry === true,
+    `…and with no provider text the same kill keeps the classification its own cause chose (got ${stuckToolNoText.cause}/retry=${stuckToolNoText.shouldRetry})`,
   );
 }
 

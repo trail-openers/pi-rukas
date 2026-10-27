@@ -33,6 +33,7 @@ import type { HeadlessCap } from "../src/headless/caps.ts";
  * file asserts for a killed child has `shouldRetry: false` — a self-kill is
  * never re-dispatched because a provider said something (#296 holds).
  */
+import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
 import { failureOf } from "../src/headless/failure.ts";
 import { buildCompletionEvent } from "../src/work-driver-completion-event.ts";
 import { classifyFailureCause } from "../src/work-driver-failure-taxonomy.ts";
@@ -68,6 +69,9 @@ const SPEND_CAP = ["429 status code", "monthly spend cap reached"].join(" — ")
 const QUOTA_WINDOW = "Server requested 7200s retry delay (max: 10s). 429 status code";
 const TRANSIENT = "Request timed out.";
 const SECRET = ["sk-ant", "api03", "AbCdEf0123456789ghi", "jKlMnOpQrStUvwXy"].join("-");
+
+const failFor = (state: WorkState) =>
+  failureOf(state, "step-failed:lens-fix" as never, "lens-fix");
 
 /** The event the driver would store for a killed lens-fix child. */
 async function eventFor(result: Parameters<typeof buildCompletionEvent>[4]): Promise<WorkEvent> {
@@ -357,21 +361,30 @@ async function killedCycle(providerMessage: string | undefined): Promise<WorkSta
     `another step's failed dispatch in the window does not end the scan (got ${v?.causeClass})`,
   );
 
-  // Both failure KINDS resolve: #1682 puts child-supervision kills on the
-  // provider kind, and a state file holding one is a real shape.
+  // Both failure KINDS are FOUND by the scan (#1682 puts child-supervision
+  // kills on the provider kind, and a state file holding one is a real shape).
+  // What round 4's narrowing changes is what the verdict then READS: a provider-
+  // kind event carries no kill line and no source at all, so a bound verdict for
+  // one would be a knob invented from the cap's prose alone. The scan finds it;
+  // the abstain is correct, and the generic entry is what the operator gets.
   const providerKindState = await lensFixWindow([killed()], ["fixer-bound"]);
   const plog = [...providerKindState.eventLog];
   const pi = plog.findIndex((e) => e.kind === "dispatch-failed");
   plog[pi] = { ...(plog[pi] as object), kind: "dispatch-failed-provider" } as WorkEvent;
-  const pv = lensFixBoundKillVerdict(
-    { ...providerKindState, eventLog: plog } as WorkState,
-    "step-failed:lens-fix",
-    undefined,
-    1798,
+  const providerKindState2 = { ...providerKindState, eventLog: plog } as WorkState;
+  const pv = lensFixBoundKillVerdict(providerKindState2, "step-failed:lens-fix", undefined, 1798);
+  assert(
+    pv === undefined,
+    `a lens-fix failure recorded as dispatch-failed-provider is found by the scan and gets NO invented bound knob (got ${pv?.causeClass})`,
   );
   assert(
-    pv?.causeClass === "pi-rukas",
-    `a lens-fix failure recorded as dispatch-failed-provider is found too (got ${pv?.causeClass})`,
+    plog.some((e) => e.kind === "dispatch-failed-provider"),
+    "…the scan really did see the provider kind (so the abstain is the narrowing, not a miss)",
+  );
+  assert(
+    causeVerdictOf(providerKindState2, "step-failed:lens-fix", failFor(providerKindState2))
+      ?.causeClass === "environment",
+    "…and the operator gets the generic entry for it, not a bound to raise",
   );
 }
 

@@ -19,7 +19,7 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
-import { FAILURE_REASON_CHARS } from "./work-driver-failure-taxonomy.ts";
+import { FAILURE_REASON_CHARS, clip } from "./work-driver-failure-taxonomy.ts";
 import {
   CYCLE_DEADLINE_ENV,
   type FixerBoundSource,
@@ -308,7 +308,20 @@ export async function buildCompletionEvent(
           result.errorStop?.message ?? result.errorStop?.reason ?? "provider error-stop",
         )
       : "";
+    // #1798 round 4 — the KILL clause comes FIRST, then the provider note. The
+    // order is the bound: `errorTail` is capped to the reason budget at this
+    // write site, and a reader that lost the tail would lose the provider's
+    // words, while a reader that lost the FRONT would lose "which bound killed
+    // this child and what knob moves it" — the one sentence the whole #1798
+    // handoff exists to deliver. So the clause is composed before the note and
+    // the composite is clipped from the FRONT, which keeps the clause whole and
+    // lets the provider note lose its own tail (its full text still rides on
+    // `providerMessage`, redacted and bounded by the same seam). Without the
+    // cap, a max-length kill clause plus a 240-char provider note wrote a
+    // `errorTail` over the reason budget into the durable state file.
+    const killClause = `${detail}${attribution}`;
     const providerNote = providerAtKill ? ` · provider error-stop: ${providerText}` : "";
+    const errorTail = clip(`${killClause}${providerNote}`) ?? "";
     return withUsage(
       {
         kind: "dispatch-failed",
@@ -319,7 +332,7 @@ export async function buildCompletionEvent(
         ms: result.ms,
         at,
         exitCode: result.exitCode ?? null,
-        errorTail: `${detail}${attribution}${providerNote}`,
+        errorTail,
         killCause: result.killCause,
         // #1798 round 1 — the provider's own words, on the field every provider
         // read already consults (`failureOf` copies `providerMessage` for a
