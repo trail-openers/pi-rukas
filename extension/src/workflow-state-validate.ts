@@ -11,6 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
+import { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
 import { PLAN_VERDICTS } from "./workflow-state-events-caps.ts";
 import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";
@@ -77,6 +78,13 @@ export const KNOWN_EVENT_KINDS = [
   // #654 — the empty-diff re-dispatch marker; no step field (it names the
   // review round + worktree instead), so the validator's step check skips it.
   "lens-fix-empty-resend",
+  // #1852 — the lens-fix step's own record that this round's fence could NOT be
+  // built (a pre-dispatch git read failed, or no workstream records the lens
+  // tree). The adversarial gate reads its absence-or-presence to tell "this
+  // state never had a fence to enforce" from "the fence was lost on the way
+  // here", so an unreadable fence is never silently skipped. No step field (it
+  // names the round + tree), so the validator's step check skips it.
+  "lens-fix-fence-unavailable",
   "cap-hit",
   "plumb-report",
   "step-back-triggered",
@@ -267,6 +275,12 @@ export function validateDiscriminants(state: unknown): string[] {
     out.push(...consolidationCompletenessFindings(ps.consolidationCompleteness));
     out.push(...consolidationNotesFindings(ps.consolidationNotes));
     out.push(...capedPartialStateFindings(ps.capedPartialState));
+    // #1852 — the lens-fix round's plan-time fence: the gate at the adversarial
+    // step reads it to decide whether this round's delta may be pushed, so a
+    // partial record is the same #533 shape as `prDraft` above (an untyped cast
+    // in `readState` is the only runtime gate). Findings live with the gate,
+    // which is the only other reader of the shape.
+    out.push(...lensFixFenceFindings(ps.lensFixFence));
   }
 
   const log = s.eventLog;

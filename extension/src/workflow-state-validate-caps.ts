@@ -135,6 +135,10 @@ export const CAP_HIT_FIXED_LITERALS = [
   // dirty, round-1 work is unlanded, or the tree diverged from the branch
   // tip. A deliberate park terminalized as a handoff.
   "lens-fix-reposition",
+  // #1852 — the lens-fix scope fence refused the round's delta before any
+  // landing arm pushed (out-of-fence change, unreadable fence read, or a second
+  // stray set in one round). A deliberate park terminalized as a handoff.
+  "lens-fix-scope",
   // #1238 — the caller-set whole-cycle deadline parked the cycle at a step
   // boundary (the deadline was within the handoff grace). A deliberate
   // park terminalized as a handoff; the evidence names the deadline, the

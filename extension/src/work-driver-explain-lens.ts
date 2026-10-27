@@ -102,6 +102,50 @@ export function explainLens(cap: Cap, state: WorkState): string {
         : "";
       return `the lens-fix reposition guard could not establish the correct base for the next round: ${cause}. ${where}${ownership}${backup} The cycle halted rather than dispatching a fix onto a stale or diverged worktree, because a fix built there would not integrate cleanly (the #978 shape: round 2 built on the old base while the branch advanced by round 1). Inspect the worktree and the evidence above — commit or clean uncommitted work, land the missing commit on the branch, or restore from the backup ref — then re-run the cycle`;
     }
+    case "lens-fix-scope": {
+      // #1852 — the lens-fix step used to have NO fence: the fixer was told
+      // "do NOT touch unrelated code" and the driver then committed and pushed
+      // whatever it wrote. The refusal text is the fix pass's own stray
+      // disclosure (one renderer for both passes), and the recovery differs
+      // only in where the tree is.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "lens-fix-scope",
+        );
+      const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
+      const cause = hit?.evidence ?? "(no evidence recorded for this cap)";
+      const safeWorktree = worktree ? inlineCodeSafe(worktree) : undefined;
+      const where = safeWorktree
+        ? `The lens-fix tree inspected was \`${safeWorktree}\` (\`git -C ${safeWorktree} status\`).`
+        : "The lens-fix tree path was not recorded.";
+      const reverted = state.eventLog.some(
+        (e) =>
+          e.kind === "fix-pass-strays-reverted" &&
+          e.source === "lens-fix" &&
+          e.round === state.pipelineState.reviewRound,
+      );
+      // #1852 round 2 — the park names BOTH places the first revert's content
+      // survives. A ref reaches a tracked stray; an untracked one lives only in
+      // the patch, so printing one without the other is a recovery path that
+      // silently does not exist. Both ride the cap-hit when the driver reverted
+      // a first set before refusing this second one.
+      const patch = hit?.restoredToPath;
+      const ref = hit?.restoredToRef;
+      const where2 =
+        ref && patch
+          ? ` The driver's revert preserved the content at \`${inlineCodeSafe(ref)}\` (tracked files: \`git show ${inlineCodeSafe(ref)}:<path>\`) and in the patch \`${inlineCodeSafe(patch)}\` (untracked files are in no commit, so the patch is their only record).`
+          : ref
+            ? ` The driver's revert preserved the content at \`${inlineCodeSafe(ref)}\`, but no patch path was recorded — an untracked stray this round deleted may have no recoverable copy.`
+            : patch
+              ? ` The driver's revert wrote its patch to \`${inlineCodeSafe(patch)}\`, but no preserved ref was recorded — a tracked stray this round deleted may only be recoverable from that patch.`
+              : "";
+      const second = reverted
+        ? " The driver had ALREADY reverted this round's first out-of-fence set (the `fix-pass-strays-reverted` record names the preserved ref and the patch) — a SECOND set in the same round is what parked it, which means the fixer will not stay inside its fence."
+        : "";
+      return `the lens-fix round changed files outside its fence and the driver refused to commit or push them — ${cause}. ${where} ${second}${where2} Nothing was pushed: the branch and the PR still carry only what the previous steps landed. To clear it: name the files the findings actually need in the issue's scope and re-run \`/work <issue> --restart\`, or revert them in the tree above and re-run. The fence the fixer was told about is printed verbatim in its prompt, so compare the two before deciding the fence is wrong`;
+    }
     case "draft-rearm-failed": {
       // #1398 — the review was about to run a second time and the PR was still
       // mergeable. The cap's evidence carries the reason the driver recorded;

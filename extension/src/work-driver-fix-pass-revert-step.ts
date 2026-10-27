@@ -121,6 +121,14 @@ export async function revertStraysOnce(
   /** Called the instant the revert's destructive work is done and its outcome is
    *  known — the boundary a durability test observes from. See `RevertBoundary`. */
   onReverted?: RevertBoundary,
+  /**
+   * #1852 round 2 item 4 — the caller's own answer to "has this budget already
+   * been spent?". Set it when the caller owns a window this module cannot see:
+   * a lens-fix round keys its one revert on source + round + workstream, and the
+   * pass window here cannot express that. `undefined` keeps the fix pass's own
+   * counter, which is the only correct answer for a fix pass.
+   */
+  alreadyReverted?: boolean,
 ): Promise<RevertStraysOutcome | undefined> {
   const id = post.straysFor;
   const strays = post.strays;
@@ -164,10 +172,17 @@ export async function revertStraysOnce(
   // whole eventLog made a pass whose sibling had already reverted (or a second
   // fix pass in the same cycle) park on a first stray set it had never reverted
   // — a "second set" the driver had actually reverted in a different pass.
-  const alreadyReverted = passWindow(state).some(
-    (e) => e.kind === "fix-pass-strays-reverted" && e.workstreamId === id,
-  );
-  if (alreadyReverted) {
+  //
+  // #1852 round 2 item 4 — a lens-fix round has NO `adversarial-fix-requested`
+  // event, so that window degenerates to the whole log and charges some other
+  // workstream's or some other round's revert against this round. The lens caller
+  // therefore passes its own round-keyed answer (`lensFixRevertAlreadyUsed`) and
+  // this counter is not consulted: one decision, made by whoever owns the budget,
+  // rather than two counters that can disagree.
+  const already =
+    alreadyReverted ??
+    passWindow(state).some((e) => e.kind === "fix-pass-strays-reverted" && e.workstreamId === id);
+  if (already) {
     // One stray set per pass is the driver's job; a second is a pass that will
     // not stay inside its fence, and reverting again would be looping on it.
     return {

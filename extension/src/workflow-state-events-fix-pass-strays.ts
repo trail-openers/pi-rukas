@@ -43,4 +43,21 @@ export type FixPassStraysRevertedEvent = {
    * reach an untracked file, so the patch and its copies are the only record).
    */
   patchPath: string;
+  /**
+   * #1852 — which gate performed this revert. The one-shot counter is keyed on
+   * it: the fix pass counts reverts inside its own `adversarial-fix-requested`
+   * window, and the lens-fix counter counts events whose `source` is
+   * `"lens-fix"`, in the current round, for this workstream (PM decision
+   * #1852-5). Absent = the adversarial fix pass, which is every event written
+   * before #1852 — so a pre-#1852 state file still reads as a fix-pass revert
+   * rather than being counted against a lens round that never reverted anything.
+   */
+  source?: "fix-pass" | "lens-fix";
+  /**
+   * #1852 — the lens-fix round (`pipelineState.reviewRound`) this revert
+   * belongs to, so "once per lens-fix round" is answerable from the log and
+   * survives a resume. Absent on the fix pass's reverts (it has no round) and
+   * on every pre-#1852 event.
+   */
+  round?: number;
 };
