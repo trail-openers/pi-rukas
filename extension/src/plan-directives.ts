@@ -46,6 +46,19 @@ export interface OperatorDirectives {
    * prompt. Same block-termination grammar as every other directive block.
    */
   neverClaim?: string[];
+  /**
+   * #1855: the OPERATOR OUTCOME channel — a `Done when` / `Acceptance` /
+   * `Acceptance criteria` heading that is NOT the typed directive form
+   * (`ACCEPTANCE CRITERIA:`). An operator who states the outcome in prose had
+   * those bullets land only in the Prior context inventory, so a feature plan
+   * could never fill its Acceptance criteria section and halted draft-invalid.
+   * Bullets under one of these headings feed the SAME operator-authority AC
+   * source as an ACCEPTANCE CRITERIA block (rendered verbatim, never clipped
+   * or count-capped on the angle cap). A heading with no item after it is NOT
+   * an outcome: the channel stays empty and the heading is left unconsumed,
+   * so it stays in the inventory exactly as an unrecognised heading does.
+   */
+  operatorOutcomes?: string[];
 }
 
 /**
@@ -75,8 +88,14 @@ export interface OperatorDirectiveParse {
   consumedLines: number[];
 }
 
+// #1855: the OUTCOME aliases (DONE WHEN / ACCEPTANCE) open their own channel,
+// NOT `acceptanceCriteria`: an outcome block is a weaker claim than the typed
+// directive, and a channel that merged the two would make `ACCEPTANCE` alone
+// the directive. `ACCEPTANCE CRITERIA` stays FIRST in the alternation so the
+// directive form keeps matching it (the regex alternation is leftmost-first).
+// Bare `ACCEPTANCE` is tried only after the longer forms fail.
 const KEYWORD =
-  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION\\s*\\/\\s*SUB[\\s-]*ISSUES?|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN)";
+  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION\\s*\\/\\s*SUB[\\s-]*ISSUES?|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN|DONE[\\s-]*WHEN|ACCEPTANCE)";
 
 /**
  * A keyword line is a heading ONLY when the keyword (with optional
@@ -109,7 +128,11 @@ const LABEL_RE = /^[A-Z][A-Za-z/-]*(?: [A-Za-z/-]+){0,2}:$/;
 function channelFor(name: string): keyof OperatorDirectives {
   const up = name.toUpperCase();
   return up.startsWith("ACCEPTANCE")
-    ? "acceptanceCriteria"
+    ? up === "ACCEPTANCE"
+      ? // #1855: a bare `ACCEPTANCE` heading is the OUTCOME channel; the typed
+        // directive form is `ACCEPTANCE CRITERIA` (matched first by KEYWORD).
+        "operatorOutcomes"
+      : "acceptanceCriteria"
     : up.startsWith("OUT")
       ? "outOfScope"
       : up.startsWith("TEST")
@@ -118,7 +141,40 @@ function channelFor(name: string): keyof OperatorDirectives {
           ? "decomposition"
           : up.startsWith("NEVER") || up.startsWith("FORBIDDEN")
             ? "neverClaim"
-            : "pitfalls";
+            : up.startsWith("DONE") || up === "ACCEPTANCE"
+              ? "operatorOutcomes"
+              : "pitfalls";
+}
+
+/**
+ * True when the block a heading opens yields at least one item (#1855). Pure
+ * read over `lines`; the caller decides what a false answer means. A non-empty
+ * colon residual on the heading line itself ("Done when: the tool registers")
+ * IS the item, so the answer is immediate. Otherwise the block is scanned past
+ * blanks: fence tokens (`BEGIN`/`END`) are delimiters rather than items, an
+ * unrecognised bare label (`Decisions:`) closes the block, and the first line
+ * that is neither supplies the item only when stripping its bullet marker
+ * leaves text. A block that reaches the end, a blank, or a closer without ever
+ * producing text has NO outcome.
+ */
+function blockHasItem(lines: string[], headingIndex: number, residual: string): boolean {
+  // The same item test the parser applies below: wrapper chars ("**Done
+  // when:**") and fence tokens are not items.
+  if (residual && !/^[#=*`]+$/.test(residual) && !/^END$/i.test(residual)) return true;
+  let j = headingIndex + 1;
+  while (j < lines.length && !(lines[j] ?? "").trim()) j++;
+  while (j < lines.length) {
+    const l = (lines[j] ?? "").trim();
+    if (!l) return false;
+    if (LABEL_RE.test(l)) return false;
+    if (FENCE_RE.test(l)) {
+      if (/END/i.test(l)) return false;
+      j++;
+      continue;
+    }
+    return BULLET_RE.test(l) && stripBullet(l).length > 0;
+  }
+  return false;
 }
 
 /**
@@ -139,7 +195,9 @@ function stripBullet(line: string): string {
 /**
  * Parse operator-supplied typed fields out of the `context` param (D7).
  * Headings: ACCEPTANCE CRITERIA, PITFALLS (or EDGE CASES), OUT OF SCOPE,
- * TEST SURFACE, DECOMPOSITION (or SUB-ISSUES), NEVER CLAIM (or FORBIDDEN).
+ * TEST SURFACE, DECOMPOSITION (or SUB-ISSUES), NEVER CLAIM (or FORBIDDEN),
+ * and the #1855 outcome headings DONE WHEN / ACCEPTANCE / ACCEPTANCE CRITERIA
+ * (the last two without the directive form).
  * Grammar in the module header.
  */
 export function parseOperatorDirectives(context: string | undefined): OperatorDirectives {
@@ -164,6 +222,7 @@ export function parseOperatorDirectivesWithLines(
     testSurface: [],
     decomposition: [],
     neverClaim: [],
+    operatorOutcomes: [],
   };
   const consumed = new Set<number>();
   if (!context || !context.trim()) return { directives: out, consumedLines: [] };
@@ -192,18 +251,30 @@ export function parseOperatorDirectivesWithLines(
     }
     const m = line.match(HEADING_RE);
     if (m) {
+      const channel = channelFor(m[1] ?? "");
+      const rest = (m[2] ?? "").trim();
+      // A heading that opens an OUTCOME block is consumed only if the block
+      // actually yields an item (#1855): a bare `Done when:`, a prose lead-in
+      // instead of bullets, or a block holding only fence/`END` tokens is
+      // treated as no outcome at all, and its lines stay unconsumed so the
+      // inventory keeps them exactly as it keeps any other unrecognised
+      // heading. The lookahead is a pure read over `lines`.
+      if (channel === "operatorOutcomes" && !blockHasItem(lines, i, rest)) {
+        target = null;
+        continue;
+      }
       consumed.add(i);
-      target = channelFor(m[1] ?? "");
+      target = channel;
       if ((m[3] ?? "").toUpperCase() === "END") {
         target = null; // "TEST SURFACE END" closes the block
         continue;
       }
-      const rest = (m[2] ?? "").trim();
+
       // Colon residual becomes the first item ("PITFALLS: the retry path")
       // — unless it is wrapper chars ("**ACCEPTANCE CRITERIA:**") or a
       // fence token ("TEST SURFACE: BEGIN").
       if (/^END$/i.test(rest)) target = null;
-      else if (rest && !/^[#=*`]+$/.test(rest) && !/^BEGIN$/i.test(rest)) out[target].push(rest);
+      else if (rest && !/^[#=*`]+$/.test(rest) && !/^BEGIN$/i.test(rest)) out[channel].push(rest);
       continue;
     }
     if (!target) {
