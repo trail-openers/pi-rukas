@@ -41,6 +41,7 @@ import { resolveRepoRoot } from "../work-entry.ts";
 import { runAgentsMdHeadless } from "./agents-md.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { buildCapabilities } from "./capabilities.ts";
+import { withResultGuarantee } from "./ensure-result.ts";
 import { EXIT } from "./exit-code.ts";
 import { createVerbHost } from "./host.ts";
 import { runLensReviewVerb } from "./lens-review.ts";
