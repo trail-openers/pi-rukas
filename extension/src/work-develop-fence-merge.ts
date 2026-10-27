@@ -177,16 +177,26 @@ export async function runMergePrep(
   const carried: Record<string, boolean> = {};
   // #1862 — the run's own budget of persisted self-fence notes. Each fold
   // persists its removals AS IT FOLDS (a mid-loop park must not lose them) and
-  // spends the budget down; whatever did not fit is disclosed as one count at
-  // the end. The accounting is in work-develop-fence-merge-notes.ts.
+  // spends the budget down; whatever did not fit is disclosed as one count, and
+  // EVERY exit says it — the clean return and every park alike. The accounting is
+  // in work-develop-fence-merge-notes.ts.
   const noteBudget = selfFenceNoteBudget();
   let next = stateIn;
+  // #1862 — the overflow count appended to whatever state is about to be
+  // returned. A park that dropped the count would disclose the removals the
+  // budget could name and be silent about the ones it could not, which is the
+  // half-disclosure this run's notes exist to prevent. `overflowLine()` is
+  // idempotent, so calling it on every exit says it at most once.
+  const withOverflow = (st: WorkState): WorkState => {
+    const overflow = noteBudget.overflowLine();
+    return overflow === undefined ? st : withPersistNotes(st, [overflow]);
+  };
   // #1005 — park builds from `next`, which is kept in sync with
   // `stateRef.current` after every successful iteration. The pre-#1005
   // code persisted to `next`/`stateRef.current` only after the loop, so a
   // mid-loop park lost every merge recorded up to that point.
   const park = (evidence: string): { state: WorkState; outcome: MergePrepOutcome } => {
-    const st = appendEvent(next, fenceCapHit(next, evidence, plan?.cap));
+    const st = appendEvent(withOverflow(next), fenceCapHit(next, evidence, plan?.cap));
     stateRef.current = st;
     return { state: st, outcome: { parked: true } };
   };
@@ -228,15 +238,23 @@ export async function runMergePrep(
     }
     const folded = foldWorkstream(workstreams, owner, violator, violatorWs);
     workstreams = folded.workstreams;
-    // #1862 — the fold's self-fence removals PERSIST AT THE FOLD, not after the
-    // loop. Every other fact this loop records (the merge, the maps, the events)
-    // is written per iteration precisely because a mid-loop park used to lose
-    // what the earlier iterations had done — a drop whose notes were held until
-    // the end was lost exactly that way, so a fence the merge deleted was visible
-    // nowhere: not in the state file, not in the handoff. The run's own budget of
-    // notes is sliced down fold by fold, and whatever the budget could not hold
-    // is disclosed as a count once, below.
+    // #1862 — the fold's self-fence removals PERSIST AT THE FOLD, on the very
+    // next write, BEFORE any step that can park (the worktree checks, the two SHA
+    // reads, the reset, the planned afterReset). Every other fact this loop
+    // records (the merge, the maps, the events) is written per iteration precisely
+    // because a mid-loop park must not lose what the earlier iterations had done —
+    // and a drop whose notes were held until after the rebase was lost exactly
+    // that way: not in the state file, not in the handoff. The run's own budget of
+    // notes is sliced down fold by fold, and whatever it could not hold is
+    // disclosed as a count by every exit, parks included.
     const persist = noteBudget.take(folded.selfFenceDrops);
+    if (persist.length > 0) {
+      next = withPersistNotes(
+        next,
+        persist.map((r) => r.note),
+      );
+      stateRef.current = next;
+    }
     merges.push({ into: owner, from: violator });
     // #1345 — several violators of one owner fold into ONE merged workstream,
     // so its id is recorded once and it is re-dispatched once.
@@ -323,11 +341,9 @@ export async function runMergePrep(
     // Drop the absorbed workstream from the worktrees map (its id is gone).
     delete worktrees[violator];
     delete workstreamBaseShas[violator];
-    // Persist the merged maps FIRST (`next` is the base every later append and
-    // every park builds from, and `stateRef.current` is kept in sync with it),
-    // then the fold's notes on top of that same state: a park in a later
-    // iteration builds from `next`, so writing the notes to `stateRef.current`
-    // alone would lose them exactly the way the pre-#1005 loop lost the merges.
+    // Persist the merged maps (`next` is the base every later append and every
+    // park builds from, and `stateRef.current` is kept in sync with it). The
+    // fold's notes were already written above, at the fold itself.
     next = {
       ...next,
       pipelineState: {
@@ -337,18 +353,6 @@ export async function runMergePrep(
         workstreams: workstreams,
       },
     };
-    // #1862 — the fold's self-fence removals PERSIST AT THE FOLD, on the same
-    // state `park` builds from: everything else this iteration records is already
-    // written per iteration precisely because a mid-loop park used to lose what
-    // earlier iterations had done, and a drop whose notes waited for the end of
-    // the loop was lost that same way — not in the state file, not in the
-    // handoff.
-    if (persist.length > 0) {
-      next = withPersistNotes(
-        next,
-        persist.map((r) => r.note),
-      );
-    }
     stateRef.current = next;
   }
   // Re-dispatch ONLY the merged workstreams, once each, with the merge-retry
@@ -438,12 +442,9 @@ export async function runMergePrep(
     }
   }
   // The notes were persisted per fold above; what is left here is the OVERFLOW
-  // line, said once for the whole run. The excess is disclosed as a count, never
-  // dropped in silence.
-  const overflow = noteBudget.overflowLine();
-  if (overflow !== undefined) {
-    stateRef.current = withPersistNotes(stateRef.current, [overflow]);
-  }
+  // line, said once for the whole run (each park says its own, in `park`). The
+  // excess is disclosed as a count, never dropped in silence.
+  stateRef.current = withOverflow(next);
   return {
     state: stateRef.current,
     outcome: {

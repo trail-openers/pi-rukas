@@ -38,13 +38,15 @@ export interface SelfFenceNoteBudget {
   /** The notes THIS fold should persist, sliced to what the run may still say. */
   take(drops: readonly UnfenceRecord[]): UnfenceRecord[];
   /** The "+N more" line, or nothing when every removal fit inside the cap.
-   * Said at most once for the whole run, at its end. */
+   * PURE and idempotent: every park and the clean return each ask for it, and
+   * the answer must not depend on who asked first. */
   overflowLine(): string | undefined;
 }
 
 /**
  * A run's worth of self-fence notes. Built once per merge-and-retry, before the
- * fold loop, and read only at the folds and once after the loop.
+ * fold loop; `take` is read at each fold and `overflowLine` at EVERY exit — each
+ * park and the clean return — so it must stay pure and repeatable.
  */
 export function selfFenceNoteBudget(): SelfFenceNoteBudget {
   let budget = UNFENCE_NOTES_CAP;
