@@ -20,6 +20,7 @@
  * plan-draft re-exports for existing consumers.
  */
 
+import { walkBlock } from "./plan-block-walk.ts";
 import { traceWarn } from "./trace.ts";
 
 export interface OperatorDirectives {
@@ -62,7 +63,7 @@ export interface OperatorDirectives {
    * the heading is left unconsumed, so it stays in the inventory exactly as an
    * unrecognised heading does. A lead-in line, a blank line or a fence token
    * BEFORE real bullets does not void the block — the scan runs to the block's
-   * terminator (the same one the main loop applies; see `nextItemInBlock`).
+   * terminator (the same one the main loop applies; see `walkBlock`).
    *
    * REQUIRED (review round 1): this is the single channel carrying the
    * operator's outcome to both draftSpec call sites, so nothing downstream may
@@ -109,6 +110,10 @@ export interface OperatorDirectiveParse {
 // not load-bearing — a keyword running into a word char matches nothing and
 // backtracks either way — but the claim the old comment made about the engine
 // was wrong.)
+// The keyword alternation lives in plan-block-walk.ts's KEYWORD_LINE_RE — the
+// parser matches a heading for its CHANNEL and the walk matches the same
+// pattern for its TERMINATOR, and one source means the two can never disagree
+// about what a heading is.
 const KEYWORD =
   "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION\\s*\\/\\s*SUB[\\s-]*ISSUES?|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN|DONE[\\s-]*WHEN|ACCEPTANCE)";
 
@@ -159,86 +164,6 @@ function channelFor(name: string): keyof OperatorDirectives {
             : up.startsWith("DONE")
               ? "operatorOutcomes"
               : "pitfalls";
-}
-
-/**
- * An item candidate — the colon residual on a heading, or a line inside an open
- * block. Wrapper chars ("**Done when:**") and a bare `BEGIN`/`END` token are
- * delimiters, never items. ONE predicate, shared by the outcome lookahead below
- * and the main parser loop, so "does this block have an item?" cannot drift from
- * "is this line an item?" (the parser's own residual rule and its in-block
- * `FENCE_RE` rule are the two halves this unifies).
- */
-function itemCandidate(text: string): boolean {
-  return !!text && !/^[#=*`]+$/.test(text) && !/^BEGIN$/i.test(text) && !/^END$/i.test(text);
-}
-
-/**
- * The FIRST item the block a heading opens yields (#1855), or `undefined` when
- * it yields none. Pure read over `lines`; the caller decides what an absence
- * means. A colon residual that is itself an item ("Done when: the tool
- * registers") answers immediately.
- *
- * Otherwise the scan runs the block to its REAL terminator using the SAME rules
- * the main parser loop applies to that block: a blank line is skipped and the
- * scan continues past it — but a blank run followed by a NON-bullet line ends it
- * with no item, because that is precisely where the loop's own blank-line
- * lookahead demotes the block — a `LABEL_RE` line (`Decisions:`) or an `END`
- * fence line terminates the block, a `BEGIN` token is a delimiter the scan walks
- * past, and any other line supplies the item when `itemCandidate` accepts it and
- * stripping its bullet marker leaves text (contiguous non-bulleted lines are
- * items for every typed block, so they do here too). A heading that closes its
- * own block on the spot — an `END` colon residual (`Done when: END`), the
- * `KEYWORD END` wrapper form (`Done when END`), or an `END` fence line directly
- * under the heading — yields no item, exactly as the parser's own loop leaves it.
- *
- * Stopping at the first meaningful line is what made the old version wrong: it
- * answered on that line alone, so `Done when: the following must hold\n- x` and
- * `Done when:\n\n- x` were both reported as "no outcome" even though the
- * parser's own loop produces those bullets. A heading counts as no outcome only
- * when its block holds NO item at all.
- */
-function nextItemInBlock(
-  lines: string[],
-  headingIndex: number,
-  residual: string,
-  fenceClosed: boolean,
-): string | undefined {
-  // The two ways a heading line closes its own block on the spot, both of them
-  // the parser's own rules below: a colon residual that is an `END` token
-  // (`Done when: END`) and the `KEYWORD END` wrapper form (`Done when END`,
-  // captured as m[3]). Such a heading is treated as no outcome — it is left
-  // unconsumed and its lines stay in the inventory — so the scan never runs.
-  if (fenceClosed || /^END$/i.test(residual)) return undefined;
-  if (itemCandidate(residual)) return residual;
-  let j = headingIndex + 1;
-  while (j < lines.length) {
-    const l = (lines[j] ?? "").trim();
-    // Blank lines do not end the scan, but a run of them followed by anything
-    // that is NOT a bullet does: that is the main loop's own blank-line
-    // lookahead, which demotes the block on a non-bullet lookahead. Keeping the
-    // two answers identical is the point of the shared predicate.
-    const blankRun = !l;
-    if (blankRun) {
-      j++;
-      continue;
-    }
-    if (LABEL_RE.test(l)) return undefined;
-    // The parser's own fence rule: END terminates, BEGIN is a skipped token.
-    if (FENCE_RE.test(l)) {
-      if (/END/i.test(l)) return undefined;
-      j++;
-      continue;
-    }
-    if (!itemCandidate(l)) {
-      // A prose line the loop would have consumed as an item — but only while
-      // the block is still open. After a run of blanks the loop closes it (the
-      // demotion above), so no item exists past that point.
-      return blankRun ? undefined : l;
-    }
-    return stripBullet(l) || undefined;
-  }
-  return undefined;
 }
 
 /**
@@ -305,9 +230,13 @@ export function parseOperatorDirectivesWithLines(
   for (let i = 0; i < lines.length; i++) {
     const line = (lines[i] ?? "").trim();
     if (!line) {
-      // Blank line: the block ends unless the list continues with a bullet
+      // A blank line: the block ends unless the list continues with a bullet
       // (one-token lookahead); a following heading re-opens its own block.
       if (target !== null) {
+        // The loop's OWN blank-line rule: the walk answers "what does this block
+        // contain?", never "what does the loop consume?", and the difference is
+        // the #858 exclusion set, which is the parser's contract rather than a
+        // property of a block.
         let j = i + 1;
         while (j < lines.length && !(lines[j] ?? "").trim()) j++;
         const next = j < lines.length ? (lines[j] ?? "").trim() : "";
@@ -315,7 +244,12 @@ export function parseOperatorDirectivesWithLines(
         // block — consumed as it always was, now visible to the exclusion);
         // a non-bullet lookahead just demotes the block.
         if (BULLET_RE.test(next)) consumed.add(j < lines.length ? j : i);
-        else target = null;
+        else {
+          // Demotion: the loop keeps the blank it inspected (the #858 accounting
+          // the retention pin reproduces) and clears the open block.
+          consumed.add(i);
+          target = null;
+        }
       }
       continue;
     }
@@ -323,18 +257,27 @@ export function parseOperatorDirectivesWithLines(
     if (m) {
       const channel = channelFor(m[1] ?? "");
       const rest = (m[2] ?? "").trim();
-      // A heading that opens an OUTCOME block is consumed only if the block
-      // yields an item ANYWHERE before its terminator (#1855): a bare `Done
-      // when:`, prose with no item at all, or a block holding only fence tokens
-      // is no outcome, and its lines stay unconsumed so the inventory keeps them
-      // exactly as it keeps any other unrecognised heading. A lead-in, a blank
-      // line or a fence token before real bullets does NOT void the block —
-      // `nextItemInBlock` is the scan, and it shares the parser's own item
-      // predicate and blank-line handling.
-      if (
-        channel === "operatorOutcomes" &&
-        nextItemInBlock(lines, i, rest, (m[3] ?? "").toUpperCase() === "END") === undefined
-      ) {
+      // ONE walk answers both questions the loop asks about a block (#1855): what
+      // it contains, and — for an OUTCOME heading — whether it contains ANY item
+      // at all. `walkBlock` applies the loop's own per-block rules (`stepLine`
+      // plus the blank-run lookahead), so the two can never disagree: a bare
+      // `Done when:`, a block of nothing but fence tokens, and a block the loop
+      // would have demoted at a blank run all yield no item here exactly as they
+      // yield no items there.
+      //
+      // The heading line itself is the caller's decision and is added below, only
+      // for a block that opened: an outcome heading the gate demotes is NOT
+      // consumed, so it and every line under it stay in the filed inventory
+      // exactly as an unrecognised heading's do.
+      const fenceClosed = (m[3] ?? "").toUpperCase() === "END" || /^END$/i.test(rest);
+      // The blanks a walk demotes at a blank run: the loop's blank branch keeps
+      // the first of them (#858) and the walk reports it here rather than
+      // deciding it, since the branch that owns that line is in this file.
+      const demotedBlanks: number[] = [];
+      const walk = walkBlock(lines, i, rest, { fenceClosed, demotedBlanks });
+      const hasItem = walk.items.some((item: string) => item.length > 0);
+      const outcomeDemoted = channel === "operatorOutcomes" && !hasItem;
+      if (outcomeDemoted) {
         // A bare `Done when:` whose block yields no item is an OUTCOME the
         // operator believes they stated and the plan will not carry, so the
         // demotion is never silent: the heading is traced when it is demoted to
@@ -342,20 +285,29 @@ export function parseOperatorDirectivesWithLines(
         // fall back).
         traceWarn(`plan: ${JSON.stringify(line)} yields no item — no operator outcome`);
         target = null;
+        // Nothing under a heading that opened nothing is consumed: the heading
+        // and every line below it stay in the filed inventory, exactly as an
+        // unrecognised heading's lines do. There is no blank-line exception here
+        // because there is no open block — the loop's blank branch only accounts
+        // for a blank it stepped over WHILE a block was open.
         continue;
       }
+      // A block that opened: the heading is consumed (a TYPED heading even when
+      // its block is empty — the #858 rule), the walk's lines with it, and its
+      // items go to the channel.
       consumed.add(i);
-      target = channel;
-      if ((m[3] ?? "").toUpperCase() === "END") {
-        target = null; // "TEST SURFACE END" closes the block
-        continue;
-      }
-
-      // Colon residual becomes the first item ("PITFALLS: the retry path")
-      // — unless it is wrapper chars ("**ACCEPTANCE CRITERIA:**") or a
-      // fence token ("TEST SURFACE: BEGIN").
-      if (/^END$/i.test(rest)) target = null;
-      else if (itemCandidate(rest)) out[channel].push(rest);
+      for (const n of walk.consumed) consumed.add(n);
+      for (const item of walk.items) out[channel].push(item);
+      // "TEST SURFACE END" / "PITFALLS: END" close the block on the heading;
+      // otherwise the walk's own terminator (a LABEL_RE line, an `END` fence, a
+      // following keyword, or end of input) is what ends it.
+      target = walk.nextIndex > i + 1 || fenceClosed ? null : channel;
+      // The loop picks up where the walk stopped, and the blank the walk's own
+      // blank-run lookahead demoted the block on is the loop's blank branch's
+      // line to account for (#858), which is why the walk reports it rather than
+      // deciding it.
+      for (const n of demotedBlanks) consumed.add(n);
+      i = walk.nextIndex - 1;
       continue;
     }
     if (!target) {

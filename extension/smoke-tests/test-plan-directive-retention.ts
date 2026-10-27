@@ -158,7 +158,13 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
   // it consumed and then demoted at a blank line — the loop's own behaviour).
   const emptyCases: [string, string, number][] = [
     ["Done when:", "Done when:", 0],
-    ["Done when:\n\nsome prose after", "some prose after", 1],
+    // A demoted outcome heading consumes NOTHING — not even the blank it opens
+    // with — because the loop's blank branch only accounts for a blank it stepped
+    // over while a block was OPEN. A heading that never opened one leaves every
+    // line, blanks included, to the filed inventory, exactly as an unrecognised
+    // heading's lines do. (A TYPED heading that demotes the same way does keep
+    // its blank; `PITFALLS:` below is that shape.)
+    ["Done when:\n\nsome prose after", "some prose after", 0],
     ["Done when:\nDecisions:\n- a decision", "Done when:", 0],
     ["Done when:\nBEGIN\nEND", "Done when:", 0],
     // Fences only: every line is a delimiter, so no item exists.
@@ -168,9 +174,16 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     ["Done when: END\n- x\nEND", "Done when: END", 0],
     ["Done when END\n- x", "Done when END", 0],
     ["Done when:\nEND\n- x", "Done when:", 0],
+    // #1855 review round 2 — an END fence matched the way the loop matches it:
+    // `FENCE_RE` is UNANCHORED, so `-- END --` is a fence line too, closes the
+    // block, and no bullet below it is an outcome. The superseded second copy
+    // anchored its fence and walked straight past this one. (`--` is also a
+    // bullet marker, so this row pins that the fence test runs first.)
+    ["Done when:\n-- END --\n- x", "Done when:", 0],
     // A blank run followed by prose is the loop's own demotion: no item, and the
     // prose after the blank is not an outcome either.
-    ["Done when:\n\nthe following must hold", "the following must hold", 1],
+    ["Done when:\n\nthe following must hold", "the following must hold", 0],
+
   ];
   for (const [ctx, inventoryLine, consumed] of emptyCases) {
     const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
@@ -202,6 +215,21 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     // Prose-only block: unbulleted contiguous lines are items for every typed
     // block, so they are the outcome here too.
     ["Done when:\nthe following must hold\n- the tool registers", "prose items"],
+    // #1855 review round 2 — the three shapes the second copy of the walk
+    // (nextItemInBlock) still got wrong while the loop got them right. Each is
+    // the loop's own rule, restated: a blank run the lookahead must step PAST
+    // (not test the blank itself against), an END fence matched UNANCHORED the
+    // way FENCE_RE matches it, and a following typed heading that ENDS the
+    // block rather than being swallowed as its item.
+    // #1855 review round 2 — two more shapes of the same class: a following
+    // typed heading ENDS the block rather than being swallowed as its item, and
+    // an END fence is matched UNANCHORED the way the loop's FENCE_RE matches it
+    // (the fence rule is the loop's own, so the two agree by construction).
+    ["Done when:\n- the tool registers\nPITFALLS:\n- a pitfall", "following PITFALLS heading"],
+    // The loop's FENCE_RE is unanchored, but a `=` run is also a heading WRAPPER
+    // char, so `=END=` reads as a wrapper-wrapped keyword — the same verdict the
+    // parser's own loop reaches, which is the point of one shared walk.
+    ["Done when:\n=END=\n- the tool registers", "equals-wrapped END keyword"],
   ];
   for (const [ctx, label] of cases) {
     const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);

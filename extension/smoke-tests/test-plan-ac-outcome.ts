@@ -249,6 +249,15 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
     ["Done when: the following must hold\n- the tool registers", "lead-in"],
     ["Done when:\n\n- the tool registers", "blank line"],
     ["Done when:\nBEGIN\n- the tool registers\nEND", "BEGIN fence"],
+    // #1855 review round 2: the shapes the SECOND copy of the walk got wrong
+    // while the parser's own loop got them right. A blank line then a second
+    // bullet (the blank-run rule must skip the run, not test the blank itself);
+    // an `END` colon residual on the heading, which closes the block on its own
+    // line so the bullet below it is NOT an outcome; an unanchored END fence;
+    // and a following typed heading, which ENDS the block rather than being
+    // swallowed into it.
+    ["Done when:\n\n- the tool registers\n- dryRun never files", "blank line then two bullets"],
+    ["Done when:\n- the tool registers\nPITFALLS:\n- a pitfall", "following PITFALLS heading"],
   ];
   for (const [ctx, label] of shapes) {
     const r = draftSpec("feature", "d", [], [], [], [], 0, dirs(ctx), []);
@@ -260,6 +269,24 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
     assert(
       validateDraft("feature", r.body, 0, { operatorOmitted: [] }).ok,
       `#1855 ${label} before the bullets: validateDraft passes`,
+    );
+  }
+}
+
+{
+  // #1855 review round 2: a heading that closes its own block leaves the AC
+  // section empty — the bullets under it are not an outcome, because the parser
+  // never opened a block for them.
+  for (const [ctx, label] of [
+    ["Done when: END\n- the tool registers", "END colon residual"],
+    ["Done when END\n- the tool registers", "KEYWORD END form"],
+    ["Done when:\n-- END --\n- the tool registers", "unanchored END fence"],
+  ] as [string, string][]) {
+    const r = draftSpec("feature", "d", [], [], [], [], 0, dirs(ctx), []);
+    assert(
+      !renders(section(r.body, "Acceptance criteria", "References"), "the tool registers") &&
+        r.body.includes(AC_FALLBACK),
+      `#1855 ${label}: the heading closes its own block, so the AC section falls back`,
     );
   }
 }
