@@ -25,15 +25,17 @@ import { DESCRIPTOR_DATA_FRAMING, anglePromptsFor } from "./plan-angles.ts";
 import type { AngleFindings, MechanicalInventory, PlanItemKind } from "./plan-draft.ts";
 import { extractPlanItems, renderPriorContext } from "./plan-draft.ts";
 import {
+  type IssueState,
   type KnownIssue,
   downgradeSelfDuplicate,
+  normaliseIssueState,
   priorContextExcludingSource,
   relatedExcludingSource,
 } from "./plan-duplicate-self.ts";
 import { traceDuplicateRisk } from "./plan-duplicate-trace.ts";
+import { applyNeverClaimFilter } from "./plan-never-claim.ts";
 import { forbiddenPhrasesBlock } from "./plan-prior-context.ts";
 import type { PlanType } from "./plan-types.ts";
-import { normalisePhrase } from "./plan-validate.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { trace, traceWarn } from "./trace.ts";
 
@@ -107,8 +109,8 @@ export type DuplicateRiskLevel = "high" | "medium" | "low" | "none";
 /** One issue the duplicate-risk candidate set lost, and the rule that removed it. */
 export interface ExcludedDuplicate {
   number: number;
-  /** Whatever state the inventory carried, or `"unknown"` when nothing did. */
-  state: string;
+  /** The normalised state ({@link IssueState}), or `"unknown"` when nothing carried one. */
+  state: IssueState;
   title: string;
   /** One of `EXCLUSION_REASONS` in plan-duplicate-self.ts. */
   reason: string;
@@ -125,66 +127,6 @@ export interface InvestigationResult {
    * result details, never silently.
    */
   neverClaimDisclosure: string[];
-}
-
-/**
- * #677 — the deterministic NEVER CLAIM post-filter.
- *
- * DROPS any structured item whose normalised text contains a forbidden
- * phrase as an EXACT normalised substring (trim + collapse internal
- * whitespace + lowercase — the same normalisation as sub-issue
- * reconciliation). Verbatim-only by design: loose matching was measured to
- * false-positive on the epic's own true invariants and correctly-negated
- * restatements, so it is out of scope. Dropped items are NEVER silent —
- * the returned disclosure names every phrase that matched and the per-
- * angle drop counts, and the driver threads it into the drafted body and
- * the result details.
- *
- * The findings array is replaced (not mutated): the caller's original
- * array is untouched, and the disclosure is the ONLY place the dropped
- * items are accounted for — a filter that quietly shrinks toolUses
- * without a disclosure line would be the exact anti-pattern #677 exists
- * to prevent.
- */
-export interface NeverClaimFilterResult {
-  findings: AngleFindings[];
-  /** Empty when nothing was dropped — the disclosure is a no-op then. */
-  disclosure: string[];
-  droppedCount: number;
-}
-
-export function applyNeverClaimFilter(
-  findings: AngleFindings[],
-  forbiddenPhrases: string[],
-): NeverClaimFilterResult {
-  const phrases = forbiddenPhrases.map(normalisePhrase).filter((p) => p.length > 0);
-  if (phrases.length === 0) return { findings, disclosure: [], droppedCount: 0 };
-  const disclosure: string[] = [];
-  let droppedCount = 0;
-  const out = findings.map((f) => {
-    const dropped: { kind: string; text: string; phrase: string }[] = [];
-    const kept: PlanItemKind[] = [];
-    for (const item of f.toolUses) {
-      const nItem = normalisePhrase(item.text);
-      const hit = phrases.find((p) => nItem.includes(p));
-      if (hit) {
-        dropped.push({ kind: item.kind, text: item.text, phrase: hit });
-        droppedCount++;
-      } else {
-        kept.push(item);
-      }
-    }
-    if (dropped.length > 0) {
-      for (const d of dropped) {
-        const shown = d.text.length > 80 ? `${d.text.slice(0, 79)}…` : d.text;
-        disclosure.push(
-          `NEVER CLAIM filter dropped ${dropped.length} item(s) from angle "${f.name}": matches the operator's forbidden phrase "${d.phrase}" (exact normalised substring). Dropped: [${d.kind}] ${shown}`,
-        );
-      }
-    }
-    return { ...f, toolUses: kept };
-  });
-  return { findings: out, disclosure, droppedCount };
 }
 
 /**
@@ -361,9 +303,15 @@ export async function runInvestigation(
   const riskPrior = priorContextExcludingSource(priorContext, sourceIssue);
   // What the inventory can tell the post-filter about each named issue (its
   // state decides the CLOSED-prior-art rule). Built from the FULL inventory: a
-  // closed prior-art issue is not the subject and stays knowable.
+  // closed prior-art issue is not the subject and stays knowable. The state is
+  // NORMALISED HERE and nowhere else: `mapGhIssue` upper-cases and `mapGlIssue`
+  // maps `opened`/`closed`, and a cached entry carries whatever bytes a
+  // hand-edited file held — so this is the one site that decides what a state
+  // IS, and every rule downstream compares exact values instead of re-casing.
   const known = new Map<number, KnownIssue>();
-  for (const r of inv.related) known.set(r.number, { state: r.state, title: r.title });
+  for (const r of inv.related) {
+    known.set(r.number, { state: normaliseIssueState(r.state), title: r.title });
+  }
 
   const duplicatePromise = dispatch(
     pi,
@@ -458,7 +406,15 @@ export async function runInvestigation(
   // Structured-first, as for the angles (#893): a reply that failed or errored
   // mid-stream is NOT a verdict, so no value is produced for the driver's halt
   // rule to read — the same gate the angles get.
-  if (dup.ok && !dup.errorStop) {
+  //
+  // #1856 review round 2 adds `killCause === undefined` to that gate. A child
+  // killed at a bound (timeout, inactivity, loop detector) can exit reporting
+  // `ok` with a half-written reply, and `parseDuplicateRisk` defaults an absent
+  // marker to `medium` — so a killed child used to read as a clean
+  // "no duplicate risk" and the plan filed. A kill is not a verdict, and here it
+  // also disqualifies the post-filter: a HIGH the child was killed while writing
+  // keeps its halt rather than being talked out of one by an incomplete rationale.
+  if (dup.ok && !dup.errorStop && dup.killCause === undefined) {
     // #1856 lens round 1 (H1) — the post-filter reads the child's FULL reply via
     // `fullText`, not the 400-char display slice `parseDuplicateRisk` keeps: an
     // OPEN duplicate named past that cut would otherwise be invisible to the
@@ -476,7 +432,13 @@ export async function runInvestigation(
       fullText: dup.text,
     });
   } else {
-    trace("plan-driver: duplicate-risk dispatch failed — proceeding without a risk verdict");
+    // A non-fatal kill (the child ended as DONE at its bound) still leaves no
+    // verdict here, and `traceWarn` rather than `trace` is the point: this run
+    // proceeds with NO duplicate check, which is the one condition under which a
+    // duplicate reaches an issue, so it is not an ordinary informational line.
+    traceWarn(
+      `plan-driver: duplicate-risk dispatch produced no verdict (ok=${dup.ok}, errorStop=${dup.errorStop ? dup.errorStop.reason : "none"}, killCause=${dup.killCause ?? "none"}) — proceeding without a risk verdict`,
+    );
   }
   return {
     duplicateRisk,

@@ -59,11 +59,17 @@
  * unparsed reply to medium, and recording that as an intentional suppression
  * would let a crashed child read as a decision the driver made.
  *
- * The state comparison is case-insensitive on purpose: `mapGhIssue` upper-cases
- * (`OPEN`/`CLOSED`) while the inventory stores whatever `NormalizedIssue.state`
- * carried, so a case-sensitive rule never matches a GitLab-sourced row.
+ * Issue state is normalised ONCE, where the post-filter's known-issue map is
+ * built (`normaliseIssueState` in plan-investigate.ts), so every reader of
+ * `KnownIssue.state` / `ExcludedDuplicate.state` sees the same three values and
+ * no comparison has to re-case the string.
  */
-import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
+import {
+  EXCLUSION_CLAUSE_MAX_CHARS,
+  EXCLUSION_DISCLOSURE_MAX_ROWS,
+  EXCLUSION_REASON_MAX_CHARS,
+  EXCLUSION_TITLE_MAX_CHARS,
+} from "./plan-duplicate-disclosure.ts";
 import type { MechanicalInventory } from "./plan-inventory.ts";
 import type { DuplicateRisk, ExcludedDuplicate } from "./plan-investigate.ts";
 
@@ -108,10 +114,17 @@ const PRIOR_ART_NEGATED_RE =
 const SAFE_NUMBER_RES = [
   // ISO date, optionally with a time and an offset.
   /(?:\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)?)/gi,
-  // Version string: v0.14.27, V1.0, 0.12.38-beta.1
-  /(?:\bv?\d+\.\d+(?:\.\d+)*\b)/gi,
   // Clock time: 14:05, 9:30:12.5
   /(?:\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b)/g,
+  // A `v`-prefixed version: v0.14.27, V1.0. The `v` is what makes it a version
+  // and not an issue id written with a stray dot.
+  /(?:\bv\d+\.\d+(?:\.\d+)*)/gi,
+  // A dotted version with no prefix, but only at THREE OR MORE parts, because
+  // that shape is not how an issue number is ever written. A BARE TWO-PART
+  // number is NOT a version: `1855.1` is an issue-shaped token, and stripping
+  // it read a reply whose only other number was an issue as self-only and
+  // downgraded a HIGH that main halts on (#1856 review round 2).
+  /(?:\b\d+\.\d+\.\d+(?:\.\d+)*)/g,
 ];
 
 /** The rule that removed a candidate, rendered into the disclosure. */
@@ -129,12 +142,13 @@ export const EXCLUSION_REASONS = {
 export const PRIOR_ART_EVIDENCE = "the risk check called it that in this clause";
 
 /**
- * How many excluded candidates the disclosure itemises. Past this the section
- * counts a summary line instead, so one runaway verdict cannot grow the section
- * the body fitter has already reserved room for (`POST_FIT_APPENDS_MAX_CHARS`
- * enumerates this section in plan-dropped-budget.ts).
+ * The disclosure itself — the section renderer and every character bound on it —
+ * lives in plan-duplicate-disclosure.ts, which also names why each slot is
+ * bounded the width it is. `EXCLUSION_REASONS` and `PRIOR_ART_EVIDENCE` stay
+ * HERE because the rules below compose them into the row they explain; a row
+ * whose wording the rule that removed it cannot see is a disclosure nobody can
+ * check.
  */
-export const EXCLUSION_DISCLOSURE_MAX_ROWS = 10;
 
 /**
  * Clause boundaries for rule 5: sentence terminators, a semicolon, a comma and a
@@ -144,9 +158,14 @@ export const EXCLUSION_DISCLOSURE_MAX_ROWS = 10;
  */
 const CLAUSE_BOUNDARY = /[.!?,;:\n]/;
 
-/** Is this issue state "closed", however the forge spelled it? */
-export function isClosedState(state: string): boolean {
-  return state.trim().toUpperCase() === "CLOSED";
+/**
+ * Is this already-normalised state "CLOSED"? The comparison is exact by design:
+ * {@link normaliseIssueState} is the only place a forge's spelling is cased, and
+ * a caller that passes raw bytes gets `false` — a state nobody normalised is
+ * never evidence that an issue's work landed.
+ */
+export function isClosedState(state: IssueState): boolean {
+  return state === "CLOSED";
 }
 
 /**
@@ -167,9 +186,11 @@ export interface NamedIssueRef {
 /** Every `#N` (or `#N-k`) token a rationale names, in order, deduped by token. */
 export function namedIssueRefs(text: string): NamedIssueRef[] {
   const out: NamedIssueRef[] = [];
+  const seen = new Set<string>();
   for (const m of text.matchAll(/#(\d+(?:-\d+)?)/g)) {
     const token = m[1] ?? "";
-    if (out.some((r) => r.token === token)) continue;
+    if (seen.has(token)) continue;
+    seen.add(token);
     if (token.includes("-")) {
       const [parent, child] = token.split("-").map((x) => Number(x));
       if (
@@ -226,11 +247,21 @@ export function clauseNaming(text: string, token: string): string {
  */
 export function citesUnaccountedNumber(text: string, resolvedTokens: string[]): boolean {
   let rest = text;
-  for (const token of resolvedTokens) {
-    rest = rest.split(`#${token}`).join(" ");
+  // Longest token first, and never into a longer digit run: removing `7` before
+  // `77` (or before `7-2`) would blank the digits of a token this filter did
+  // NOT resolve and rule 4 would then read a real reference as accounted for.
+  // `(?![\d-])` also refuses a partial match, and matches nothing that a
+  // `namedIssueRefs` token can be — every one ends in a digit.
+  for (const token of [...resolvedTokens].sort((a, b) => b.length - a.length)) {
+    rest = rest.split(new RegExp(`#${escapeForRegExp(token)}(?![\\d-])`, "g")).join(" ");
   }
   for (const re of SAFE_NUMBER_RES) rest = rest.replace(re, " ");
   return /\d/.test(rest);
+}
+
+/** Tokens are `[0-9-]+` by construction; this keeps the RegExp constructor honest. */
+function escapeForRegExp(s: string): string {
+  return s.replace(/[^0-9-]/g, "");
 }
 
 /**
@@ -273,9 +304,38 @@ export function priorContextExcludingSource(
   });
 }
 
+/**
+ * The three issue states this filter reasons about. The forges agree on
+ * `OPEN`/`CLOSED` (`mapGhIssue` upper-cases, `mapGlIssue` maps `opened`/`closed`
+ * onto them); anything else they or a cache file carry is `"unknown"`, which
+ * satisfies no rule rather than being compared case-by-case at each site.
+ */
+export type IssueState = "OPEN" | "CLOSED" | "unknown";
+
+/**
+ * Normalise a forge's state string to {@link IssueState}. ONE site does this —
+ * where the post-filter's known-issue map is built — so no downstream rule has
+ * to re-case or trim a string to decide whether an issue is closed.
+ */
+export function normaliseIssueState(state: string | undefined): IssueState {
+  const upper = (state ?? "").trim().toUpperCase();
+  return upper === "OPEN" || upper === "CLOSED" ? upper : "unknown";
+}
+
+/**
+ * Is this value already one of the three states the union admits? The cache
+ * guard asks, because it reads bytes nobody passed through
+ * {@link normaliseIssueState}: admitting only the normalised forms means a
+ * hand-edited entry with `"closed"` or `"wontfix"` is a MISS rather than a state
+ * some rule later has to second-guess.
+ */
+export function isIssueState(x: unknown): x is IssueState {
+  return x === "OPEN" || x === "CLOSED" || x === "unknown";
+}
+
 /** What the inventory knows about one issue number. */
 export interface KnownIssue {
-  state: string;
+  state: IssueState;
   title: string;
 }
 
@@ -342,7 +402,7 @@ export function downgradeSelfDuplicate(
       excluded.push({
         number: ref.parent,
         state: known.get(ref.parent)?.state ?? "unknown",
-        title: truncateForDisclosure(known.get(ref.parent)?.title ?? ""),
+        title: clip(known.get(ref.parent)?.title ?? "", EXCLUSION_TITLE_MAX_CHARS),
         reason: EXCLUSION_REASONS["split-child"],
       });
       continue;
@@ -356,7 +416,7 @@ export function downgradeSelfDuplicate(
     }
     if (row !== undefined && isClosedState(row.state)) {
       // Judged by rule 5 above, so its own clause carries the prior-art word.
-      const clause = truncateForDisclosure(clauseNaming(text, ref.token));
+      const clause = clip(clauseNaming(text, ref.token), EXCLUSION_CLAUSE_MAX_CHARS);
       resolved.push(ref.token);
       excluded.push(
         excludedRow(
@@ -395,37 +455,16 @@ function excludedRow(
   return {
     number,
     state: row?.state ?? "unknown",
-    title: truncateForDisclosure(row?.title ?? ""),
-    reason,
+    title: clip(row?.title ?? "", EXCLUSION_TITLE_MAX_CHARS),
+    reason: clip(reason, EXCLUSION_REASON_MAX_CHARS),
   };
 }
 
 /**
- * The disclosure the drafted/filed body carries: which duplicate candidates the
- * driver suppressed, and on what grounds. Rendered at ONE fixed site
- * (`filedBodyOf`) so the prior-context budget cannot clip it away the way it
- * clips an inventory row. Bounded: at most `EXCLUSION_DISCLOSURE_MAX_ROWS` rows
- * and a summary line for the rest — titles and clauses are already clipped by
- * `truncateForDisclosure` at the row, so the section has a ceiling the body
- * fitter can account for.
+ * The row's own clip: cut to width, no ellipsis — a row's slots are bounded
+ * rather than decorated, and the prior-art reason ends in a closing bracket
+ * whose mate the quoted clause opened, which an ellipsis would drop.
  */
-export function duplicateExclusionSection(
-  risk: DuplicateRisk | undefined,
-  sourceIssue: number | undefined,
-): string {
-  if (sourceIssue === undefined || !risk) return "";
-  const all = risk.excludedIssues ?? [];
-  if (all.length === 0) return "";
-  const rows = all
-    .slice(0, EXCLUSION_DISCLOSURE_MAX_ROWS)
-    .map((e) => `- #${e.number}${e.state === "unknown" ? "" : ` (${e.state})`}: ${e.reason}`);
-  const hidden = all.length - EXCLUSION_DISCLOSURE_MAX_ROWS;
-  if (hidden > 0) {
-    rows.push(`- and ${hidden} more excluded candidate(s); see the plan session trace`);
-  }
-  const downgraded =
-    risk.downgradedFrom === undefined
-      ? ""
-      : ` The check reported ${risk.downgradedFrom} and was downgraded to ${risk.level}.`;
-  return `## Duplicate check — excluded candidates\n\nThis plan is for existing issue #${sourceIssue}, so that issue and its own split children are not duplicate candidates. The candidates below were excluded from the duplicate-risk verdict (${risk.level}).${downgraded}\n${rows.join("\n")}\n`;
+function clip(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) : s;
 }

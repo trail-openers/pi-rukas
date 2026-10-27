@@ -6,7 +6,7 @@
  * does not re-export them.
  */
 import { OPEN_POINTS_HEADING, OPEN_POINTS_INTRO } from "./open-points-contract.ts";
-import { duplicateExclusionSection } from "./plan-duplicate-self.ts";
+import { duplicateExclusionSection } from "./plan-duplicate-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import { planImageLinksSection } from "./plan-images.ts";
 import type { DuplicateRisk } from "./plan-investigate.ts";

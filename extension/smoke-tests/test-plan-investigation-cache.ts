@@ -38,6 +38,10 @@ import {
   pipeline,
   teardownPlanCache,
 } from "./plan-test-stubs.ts";
+import {
+  EXCLUSION_REASON_MAX_CHARS,
+  EXCLUSION_TITLE_MAX_CHARS,
+} from "../src/plan-duplicate-disclosure.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -260,6 +264,74 @@ assert(
   "a cached duplicate-risk HIGH still halts with duplicate-risk",
 );
 assert(log.gate === 0, "a cached duplicate-risk HIGH never reaches the gap gate");
+
+// -------------------- #1856: a cached exclusion row must be the shape AND width
+// The disclosure renders `#N (STATE): reason` from these bytes, and the section's
+// character budget is arithmetic over the row clips. A hand-edited entry that
+// carries a 60,000-char reason, a lower-case state, or an id the extractor could
+// never have produced would file straight past the bound the fresh path enforces
+// — so the guard refuses them, and the same entry with a well-formed row still
+// hits, so the tightening is not a blanket rejection of the optional field.
+
+const validExcluded = {
+  number: 103,
+  state: "CLOSED",
+  title: "landed hybrid default",
+  reason: "the issue this plan is for (a plan is not the duplicate of its own subject)",
+};
+
+async function cachedWithExcluded(mutate?: (row: Record<string, unknown>) => void): Promise<{
+  filed: boolean;
+  reason?: string;
+  reused: boolean;
+}> {
+  await newPlanCache();
+  installCountingDispatch([GAP_CRITICAL]);
+  await pipeline({ dryRun: true });
+  await mutateEntry((e) => {
+    const row: Record<string, unknown> = { ...validExcluded };
+    mutate?.(row);
+    e.barrier.duplicateRisk = {
+      level: "medium",
+      rationale: "duplicates #103",
+      downgradedFrom: "high",
+      downgradeReason: "closed prior art",
+      excludedIssues: [row],
+    };
+  });
+  installCountingDispatch([GAP_HIGH]);
+  const r = await pipeline();
+  return { filed: r.filed, reason: r.filingFailure?.reason, reused: r.investigationReused !== undefined };
+}
+
+{
+  const ok = await cachedWithExcluded();
+  assert(
+    ok.filed && ok.reused,
+    `#1856 guard: a well-formed excluded-duplicate row keeps the cache entry well-formed (filed ${ok.filed}, reused ${ok.reused})`,
+  );
+  for (const [label, mutate] of [
+    ["a lower-case state", (row: Record<string, unknown>) => (row.state = "closed")],
+    ["an unknown-to-the-union state", (row: Record<string, unknown>) => (row.state = "wontfix")],
+    ["a non-integer number", (row: Record<string, unknown>) => (row.number = 1.5)],
+    ["a zero number", (row: Record<string, unknown>) => (row.number = 0)],
+    ["a number past MAX_SAFE_INTEGER", (row: Record<string, unknown>) => (row.number = 2 ** 53)],
+    [
+      "a reason past the disclosure clip",
+      (row: Record<string, unknown>) => (row.reason = "r".repeat(EXCLUSION_REASON_MAX_CHARS + 1)),
+    ],
+    [
+      "a title past the disclosure clip",
+      (row: Record<string, unknown>) => (row.title = "t".repeat(EXCLUSION_TITLE_MAX_CHARS + 1)),
+    ],
+  ] as [string, (row: Record<string, unknown>) => void][]) {
+    const r = await cachedWithExcluded(mutate);
+    assert(
+      !r.reused,
+      `#1856 guard: ${label} is a MISS, not a disclosure that overruns the section's bound`,
+    );
+  }
+}
 
 // ------------------------------------------------------------- halted dry run writes nothing
 

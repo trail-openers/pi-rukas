@@ -23,6 +23,7 @@ import {
   isSplitChildOf,
   namedIssueRefs,
   namedIssueTokens,
+  normaliseIssueState,
   priorContextExcludingSource,
   relatedExcludingSource,
 } from "../src/plan-duplicate-self.ts";
@@ -109,10 +110,20 @@ const inv: MechanicalInventory = { memory: [], related: RELATED, errors: [] };
     "named issues: the numeric ids are what the state lookup consumes",
   );
   assert(
-    isClosedState("closed") && isClosedState(" CLOSED "),
-    "state comparison is case-insensitive",
+    normaliseIssueState("closed") === "CLOSED" && normaliseIssueState(" OPEN ") === "OPEN",
+    "state normalisation: a forge's casing becomes the union's casing",
   );
+  assert(
+    normaliseIssueState("opened") === "unknown" &&
+      normaliseIssueState("") === "unknown" &&
+      normaliseIssueState(undefined) === "unknown",
+    "state normalisation: anything but OPEN/CLOSED is `unknown`, never a guess",
+  );
+  // The comparison is exact BECAUSE normalisation happens once (item 3). A raw
+  // lower-case string is not evidence an issue's work landed.
+  assert(isClosedState("CLOSED"), "CLOSED is closed");
   assert(!isClosedState("OPEN"), "OPEN is not closed");
+  assert(!isClosedState("unknown"), "an unknown state satisfies no rule");
 }
 
 // ------------------------------------------------------------ the prompt line

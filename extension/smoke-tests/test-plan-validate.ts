@@ -16,7 +16,7 @@
 
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { applyNeverClaimFilter } from "../src/plan-investigate.ts";
+import { applyNeverClaimFilter } from "../src/plan-never-claim.ts";
 import {
   EPIC_SUB_ISSUE_MAX,
   bodyContainsForbiddenPhrase,

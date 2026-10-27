@@ -21,10 +21,12 @@
 
 import type { MechanicalInventory } from "../src/plan-draft.ts";
 import {
-  citesUnaccountedNumber,
-  clauseNaming,
   duplicateExclusionSection,
   EXCLUSION_DISCLOSURE_MAX_ROWS,
+} from "../src/plan-duplicate-disclosure.ts";
+import {
+  citesUnaccountedNumber,
+  clauseNaming,
 } from "../src/plan-duplicate-self.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
 
@@ -158,6 +160,40 @@ async function barrier(
 }
 
 {
+  // #1856 review round 2 (HIGH): the version shape must not swallow an issue
+  // written in dotted form. `1855.1` is not a version — no `v`, only two parts —
+  // and stripping it read a reply that cited another issue as self-only and
+  // filed a plan main halts on. Same for `1855.0`, which looks exactly like the
+  // `0.0` of a version string and is not one.
+  for (const dotted of ["1855.1", "1855.0"]) {
+    const risk = await barrier(
+      `DUPLICATE_RISK: high — #1856 restates this; ${dotted} covers the same scope`,
+      1856,
+    );
+    assert(
+      risk?.level === "high" && risk?.downgradedFrom === undefined,
+      `rule 4: a dotted issue-shaped number (${dotted}) keeps the HIGH rather than reading as a version (got ${risk?.level})`,
+    );
+  }
+  // The safe shapes still are safe: a `v`-prefixed version, an ISO date and a
+  // clock time each accompany a self-only HIGH and must not keep it.
+  for (const [shape, safe] of [
+    ["a v-version", "v0.14.27"],
+    ["an ISO date", "2026-10-27"],
+    ["a clock time", "12:30"],
+  ] as [string, string][]) {
+    const risk = await barrier(
+      `DUPLICATE_RISK: high — #1856 restates this verbatim (compared ${shape} ${safe})`,
+      1856,
+    );
+    assert(
+      risk?.level === "medium" && risk?.downgradedFrom === "high",
+      `rule 4: the safe shape ${shape} (${safe}) does not keep a self-only HIGH (got ${risk?.level})`,
+    );
+  }
+}
+
+{
   // The predicate itself, without the barrier: what it strips and what it keeps.
   assert(
     citesUnaccountedNumber("created 2026-10-27 at 14:05 (v0.14.27)", ["1856"]) === false,
@@ -174,6 +210,23 @@ async function barrier(
   assert(
     citesUnaccountedNumber("2026-10-2 and 12:9 are not dates", ["1856"]) === true,
     "rule 4: a near-date that is not one leaves a digit run and keeps the stop",
+  );
+  assert(
+    citesUnaccountedNumber("cf. 1855.1 and 1855.0", ["1856"]) === true,
+    "rule 4: a two-part dotted number is NOT a version — its digits stay unaccounted for",
+  );
+  assert(
+    citesUnaccountedNumber("as of v0.14.27, 0.12.38-beta and 2026-10-27T09:12", ["1856"]) ===
+      false,
+    "rule 4: v-prefixed, three-part and dated shapes are all accounted for",
+  );
+  assert(
+    citesUnaccountedNumber("#7 and #77 both matter", ["7"]) === true,
+    "rule 4: removing a shorter resolved token cannot blank the digits of a longer one",
+  );
+  assert(
+    citesUnaccountedNumber("#12 and #123 are different issues", ["12"]) === true,
+    "rule 4: a resolved token's removal stops at a digit boundary (/#N(?!\\d)/), so #123 stays",
   );
 }
 
@@ -287,7 +340,7 @@ async function barrier(
 {
   const many = Array.from({ length: EXCLUSION_DISCLOSURE_MAX_ROWS + 4 }, (_, i) => ({
     number: 200 + i,
-    state: "CLOSED",
+    state: "CLOSED" as const,
     title: "t".repeat(500),
     reason: "a CLOSED issue the risk check itself called prior art",
   }));
@@ -306,7 +359,7 @@ async function barrier(
   );
   assert(
     !section.includes(`${"t".repeat(500)}`),
-    "a runaway title is clipped by the shared disclosure truncation",
+    "a runaway title cannot reach the rendered section",
   );
   assert(
     section.length < 8_000,

@@ -1,3 +1,8 @@
+import {
+  EXCLUSION_REASON_MAX_CHARS,
+  EXCLUSION_TITLE_MAX_CHARS,
+} from "./plan-duplicate-disclosure.ts";
+import { isIssueState } from "./plan-duplicate-self.ts";
 /**
  * plan-investigation-guard — the shape guard for a cached /plan dry run (#1377).
  *
@@ -34,10 +39,27 @@ const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 /**
  * #1856: the optional fields a duplicate-risk verdict gained. Optional, so an
  * entry written before the source-issue exclusion existed stays well-formed —
- * but when present they must be the shapes the disclosure renderer reads.
+ * but when present they must be the shapes the disclosure renderer reads, and
+ * the widths the disclosure is BUDGETED at. A hand-edited cache entry whose row
+ * carries a 60,000-char reason would otherwise file through the door the fresh
+ * path's clips closed, straight past the forge's body cap.
+ *
+ * `number` is a positive SAFE integer — `namedIssueRefs` only ever emits those,
+ * so an entry naming an id the extractor could not have produced is not one this
+ * filter wrote. `state` is one of the three values the union admits: the guard
+ * reads bytes nobody normalised, so it admits the normalised form and nothing
+ * else — a lower-case `"closed"` is a MISS, not a closed issue.
  */
 const isExcludedDuplicate = (x: unknown): boolean =>
-  isShape(x) && isNum(x.number) && isStr(x.state) && isStr(x.title) && isStr(x.reason);
+  isShape(x) &&
+  Number.isSafeInteger(x.number) &&
+  typeof x.number === "number" &&
+  (x.number as number) > 0 &&
+  isIssueState(x.state) &&
+  isStr(x.title) &&
+  x.title.length <= EXCLUSION_TITLE_MAX_CHARS &&
+  isStr(x.reason) &&
+  x.reason.length <= EXCLUSION_REASON_MAX_CHARS;
 
 const isRiskLevel = (x: unknown): boolean =>
   x === "high" || x === "medium" || x === "low" || x === "none";

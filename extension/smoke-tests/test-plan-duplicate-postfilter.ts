@@ -21,8 +21,7 @@
 
 import type { MechanicalInventory } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { duplicateExclusionSection } from "../src/plan-duplicate-self.ts";
-import { filedBodyOf, finalDraftBody } from "../src/plan-gap-disclosure.ts";
+import { duplicateExclusionSection } from "../src/plan-duplicate-disclosure.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
 import { assemblePriorContext } from "../src/plan-prior-context-assembly.ts";
 
@@ -274,7 +273,7 @@ async function barrier(
 }
 
 {
-  // A failed duplicate-risk dispatch yields NO verdict at all: nothing to
+  // A duplicate-risk reply that failed yields NO verdict at all: nothing to
   // downgrade, and the pipeline proceeds as it does today.
   const dispatch = ((_pi: unknown, spec: { role: string; prompt: string }) => {
     const base = { ok: true, toolUses: [], ms: 1, exitCode: 0 };
@@ -308,66 +307,53 @@ async function barrier(
   );
 }
 
-// ------------------------------------- the disclosure at its one fixed site
-
 {
-  const risk = await barrier(SELF_ONLY_HIGH, 1856);
-  const section = duplicateExclusionSection(risk, 1856);
+  // #1856 review round 2 (MEDIUM): the killCause half of that gate. A child
+  // KILLED at a bound can report `ok` with a half-written reply, and
+  // `parseDuplicateRisk` defaults an absent marker to `medium` — so a killed
+  // child used to read as a clean "no duplicate risk" verdict. Here the reply
+  // DOES carry a HIGH that rules 1–2 would downgrade, and the kill must stop the
+  // post-filter from acting on it: the HIGH is not downgraded and nothing is
+  // recorded as excluded. Both halves matter — a filter that merely declined to
+  // downgrade would still leave a `medium` verdict the driver files on.
+  const dispatch = ((_pi: unknown, spec: { role: string; prompt: string }) => {
+    const base = { ok: true, toolUses: [], ms: 1, exitCode: 0 };
+    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
+      return Promise.resolve({
+        ...base,
+        role: "explore",
+        text: SELF_ONLY_HIGH,
+        killCause: "inactivity",
+      });
+    }
+    return Promise.resolve({
+      ...base,
+      role: "explore",
+      text: "prose",
+      toolUses: [
+        {
+          name: "report_plan_item",
+          arguments: { kind: "acceptance-criterion", text: "the barrier survives", angle: "x" },
+        },
+      ],
+    });
+  }) as never;
+  const res = await runInvestigation(dispatch, {} as never, {
+    type: "bug",
+    descriptor: DESC,
+    repoRoot: process.cwd(),
+    inv,
+    priorContext: assemblePriorContext(undefined, inv).priorContext,
+    codeIdentifiers: [],
+    sourceIssue: 1856,
+  });
   assert(
-    /## Duplicate check — excluded candidates/.test(section) && section.includes("#1856"),
-    "the disclosure names the excluded issue under its own heading",
+    res.duplicateRisk === undefined,
+    `a duplicate-risk child killed at a bound yields no verdict at all, so the HIGH is neither downgraded nor filed as medium (got ${res.duplicateRisk?.level ?? "no verdict"})`,
   );
   assert(
-    /downgraded to medium/.test(section),
-    "the disclosure says the verdict was downgraded, not merely suppressed",
-  );
-  assert(
-    filedBodyOf("BODY", [], [], undefined, section).includes(
-      "## Duplicate check — excluded candidates",
-    ),
-    "filedBodyOf appends the section",
-  );
-  assert(
-    filedBodyOf("BODY", [], [], undefined) === "BODY",
-    "no disclosure → the filed body is byte-identical to today's",
-  );
-  assert(
-    duplicateExclusionSection(risk, undefined) === "" &&
-      duplicateExclusionSection(undefined, 1856) === "",
-    "no source issue or no verdict → no section at all",
-  );
-
-  // The one site that assembles the filed/shown body: the residual, open-point
-  // and base-fallback disclosures, the exclusion section, the image links and the
-  // provenance wrapper. Order is what the operator reviewed, so it is pinned, and
-  // the all-absent case must be a pass-through — that is what "behaviour is
-  // unchanged without a source issue" means for the whole body, not one section.
-  const assembled = finalDraftBody(
-    "BODY",
-    [],
-    [],
-    undefined,
-    [],
-    { line: "Planned by the driver", marker: { "plan-session": "abc" } },
-    { risk, sourceIssue: 1856 },
-  );
-  assert(
-    assembled.startsWith("_Planned by the driver_") &&
-      assembled.includes("BODY") &&
-      assembled.includes("## Duplicate check — excluded candidates") &&
-      assembled.trimEnd().endsWith("<!-- pi-rukas:provenance v1 plan-session=abc -->"),
-    "finalDraftBody: provenance line first, body, then the exclusion section, marker last",
-  );
-  assert(
-    assembled.indexOf("BODY") < assembled.indexOf("## Duplicate check"),
-    "finalDraftBody: the exclusion section is appended after the drafted body, never before it",
-  );
-  assert(
-    finalDraftBody("BODY", [], [], undefined, [], undefined, {
-      risk: undefined,
-      sourceIssue: undefined,
-    }) === "BODY",
-    "finalDraftBody: with nothing to disclose and no provenance, the body passes through byte-identical",
+    res.duplicateRisk?.excludedIssues === undefined,
+    "a killed child excludes nothing — no candidate is silently dropped on a partial reply",
   );
 }
 
