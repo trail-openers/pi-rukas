@@ -10,40 +10,25 @@
  * rejection.
  */
 
-import { runAdversarialLoop } from "./adversarial.ts";
-import { adversarialFixDelta } from "./fix-delta.ts";
-import { slowRecorder } from "./slow-events.ts";
-import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { cycleChildOpts } from "./work-cycle-trust.ts";
 import { isDiffUnreadableOutcome } from "./work-driver-adversarial-diff-cap.ts";
-import {
-  capKillOutcomeFields,
-  retryLadderKillCause,
-} from "./work-driver-adversarial-fanout-capkill.ts";
+import { withSpentLadderBudget } from "./work-driver-adversarial-fanout-budget.ts";
+import { retryLadderKillCause } from "./work-driver-adversarial-fanout-capkill.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
 import { runAdversarialWorkstream } from "./work-driver-adversarial-fanout-run.ts";
 import { settledMarkerIds, splicePassBatch } from "./work-driver-adversarial-fanout-splice.ts";
-import {
-  interpretReview,
-  reviewRoundFor,
-  reviewTrack,
-  workstreamsToReview,
-} from "./work-driver-adversarial-fix.ts";
+import { reviewTrack, workstreamsToReview } from "./work-driver-adversarial-fix.ts";
 import {
   classifyAdversarialOutcome,
   isTransientAdversarialOutcome,
   mergeFreshOutcomes,
   reentryPassBatchSpan,
-  roundsRecords,
 } from "./work-driver-adversarial-reentry.ts";
-import { scopeFor } from "./work-driver-adversarial-scope.ts";
 import { survivorsOf } from "./work-driver-adversarial-survivors.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
-  outcomeOf,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
@@ -52,14 +37,10 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
-import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { beginDispatch, clearDispatch, mintJobId } from "./work-driver-resume.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { providerSleep } from "./work-driver-step-router.ts";
-import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
-import { driverGateCmd } from "./work-driver-verify-pr17.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-export { capKillOutcomeFields };
 
 /**
  * #543 — the cap-kill fields of an AdversarialOutcome: the killCause
@@ -164,20 +145,10 @@ export async function fanOutAdversarial(
   const passMarkers: string[] = [];
   // #1863 — #486's per-workstream ladder budget must survive this pass in the
   // state the step RETURNS, not only in the one every retry branch
-  // `persistCycle`s. The in-loop write below mutates `next` only, so on the
-  // paths that leave the fan-out without a retry — the N=1 first pass, which
-  // hands a `dispatch-failed` tail to the step-level RETRY_ONCE — the spent
-  // budget died with the function and the re-entry re-seeded `localRetries`
-  // from an empty `adversarialTransientRetries`, running a whole second ladder
-  // (#357 T8 observed 6 `adversarialLoopFn` calls instead of 4). One merge
-  // helper, applied to every `next` this function produces.
-  const withSpentBudget = (s: WorkState): WorkState => ({
-    ...s,
-    pipelineState: {
-      ...s.pipelineState,
-      adversarialTransientRetries: { ...localRetries },
-    },
-  });
+  // `persistCycle`s — see work-driver-adversarial-fanout-budget.ts for why both
+  // publishers merge rather than replace. Applied to every `next` this function
+  // produces, so the RETRY_ONCE re-entry seeds from the spent budget (#357 T8).
+  const withSpentBudget = (s: WorkState): WorkState => withSpentLadderBudget(s, localRetries);
   const writeThrough = (fn: (s: WorkState) => Promise<WorkState>): Promise<WorkState> => {
     const step = writeChain.then(async () => {
       log = await fn(log);
@@ -441,19 +412,8 @@ export async function fanOutAdversarial(
       localRetries[o.id] = incremented;
     }
     // The ladder's own spend, merged into whatever `next` already carries
-    // (`log`'s pipeline state survives the in-loop write-aheads). The map is
-    // the budget the next entry seeds from, so it is never a replacement that
-    // can drop a sibling's count.
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        adversarialTransientRetries: {
-          ...next.pipelineState.adversarialTransientRetries,
-          ...budget,
-        },
-      },
-    };
+    // (`log`'s pipeline state survives the in-loop write-aheads).
+    next = withSpentLadderBudget(next, budget);
     trace(
       `work-driver: adversarial per-workstream infra retry: ${candidates.map((o) => o.id).join(", ")}` +
         ` (waited ${waitMs}ms)`,
