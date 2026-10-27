@@ -195,6 +195,24 @@ console.log("the rest of the entry still guards:");
     } else if (what === "empty spec") {
       reviewed.fileable = true;
       reviewed.spec = "   ";
+    } else if (what === "downgradedFrom is not a string") {
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "medium",
+        rationale: "self",
+        downgradedFrom: 7,
+      };
+    } else if (what === "excludedIssues is not an array") {
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "medium",
+        rationale: "self",
+        excludedIssues: "1856",
+      };
+    } else if (what === "an excluded issue is missing its reason") {
+      (e.barrier as Record<string, unknown>).duplicateRisk = {
+        level: "medium",
+        rationale: "self",
+        excludedIssues: [{ number: 1856, state: "OPEN", title: "t" }],
+      };
     }
   };
   const cases: [string, string][] = [
@@ -204,12 +222,39 @@ console.log("the rest of the entry still guards:");
     ["a gap carries an unknown severity", "gap"],
     ["labels are not strings", "labels"],
     ["a fileable entry carries an empty spec", "empty spec"],
+    // #1856: the duplicate-risk verdict gained optional fields; a cached entry
+    // whose new fields are malformed must be a miss, not a filing whose
+    // disclosure renders bytes the guard never admitted.
+    ["a downgraded duplicateRisk carries a non-string level", "downgradedFrom is not a string"],
+    ["a duplicateRisk's excludedIssues is not an array", "excludedIssues is not an array"],
+    ["an excluded duplicate is missing its reason", "an excluded issue is missing its reason"],
   ];
   for (const [name, what] of cases) {
     const e = entry();
     mutate(e, what);
     assert(isCacheEntry(e) === false, `${name} is a miss, not a filing`);
   }
+}
+
+{
+  // #1856: the extended shape the driver WRITES must round-trip the guard — the
+  // pre-#1856 two-field shape stays valid too, so an entry written before the
+  // source-issue exclusion existed is still a hit.
+  const e = entry();
+  (e.barrier as Record<string, unknown>).duplicateRisk = {
+    level: "medium",
+    rationale: "DUPLICATE_RISK: high — #1856 restates this",
+    downgradedFrom: "high",
+    downgradeReason: "the plan's own subject",
+    excludedIssues: [{ number: 1856, state: "OPEN", title: "self", reason: "the subject" }],
+  };
+  assert(isCacheEntry(e) === true, "the #1856 extended duplicateRisk shape is a cache hit");
+  const legacy = entry();
+  (legacy.barrier as Record<string, unknown>).duplicateRisk = {
+    level: "high",
+    rationale: "duplicates #5",
+  };
+  assert(isCacheEntry(legacy) === true, "the pre-#1856 two-field verdict stays a cache hit");
 }
 
 console.log(`\n${exit === 0 ? "PASS" : "FAIL"} test-plan-investigation-guard`);

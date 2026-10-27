@@ -52,11 +52,11 @@ import {
 import {
   compactedDisclosure,
   finalizeDroppedDisclosure,
+  neverClaimDisclosureSection,
   tracePlanRun,
 } from "./plan-dropped-artifact.ts";
-import { duplicateExclusionSection } from "./plan-duplicate-self.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
-import { filedBodyOf } from "./plan-gap-disclosure.ts";
+import { finalDraftBody } from "./plan-gap-disclosure.ts";
 import { loadPlanImages, planImageLinksSection, withPlanImages } from "./plan-images.ts";
 import {
   type InvestigationResult,
@@ -188,9 +188,8 @@ async function runPipelineOn(
   // FILED-body inventory gets the untyped prose lines only (the typed-block
   // lines consumed by the directive parser render in their section, #858).
   const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
-  // #1856: the issue this plan is FOR, when the caller named one. Only the
-  // duplicate-risk child's view is filtered with it (plan-investigate.ts); the
-  // angles, the gate and the drafted body still see every related issue.
+  // #1856: the issue this plan is FOR. Only the risk child's view is filtered
+  // with it (plan-investigate.ts); the angles, gate and body keep every row.
   const sourceIssue = input.sourceIssue;
   if (signal?.aborted)
     return cancelledResult(signal, input, "inventory", priorContext, finishTimings());
@@ -289,15 +288,10 @@ async function runPipelineOn(
     body += compactedDisclosure(chosenBudget);
   }
   // #677 — the NEVER CLAIM post-filter disclosure, appended to the drafted
-  // body BEFORE validation (so the filed spec names what was dropped and
-  // why) and BEFORE the gate (so the reviewer sees the disclosure, not a
-  // silent absence). Empty when nothing was dropped — the body is
-  // unchanged, and there is nothing to disclose.
-  if (neverClaimDisclosure.length > 0) {
-    body += `\n\n> **NEVER CLAIM filter disclosure** — the operator's NEVER CLAIM block caused the following structured items to be dropped before drafting (exact normalised substring match, verbatim-only; paraphrases are not matched and were left in place):\n${neverClaimDisclosure
-      .map((d) => `> ${d}`)
-      .join("\n")}`;
-  }
+  // body BEFORE validation (so the filed spec names what was dropped and why)
+  // and BEFORE the gate (so the reviewer sees the disclosure, not a silent
+  // absence). Empty when nothing was dropped — the body is unchanged.
+  body += neverClaimDisclosureSection(neverClaimDisclosure);
 
   // Phase 3b — deterministic body validation (plan-validate.ts), BEFORE the
   // gate: a draft whose load-bearing sections fell back to placeholders
@@ -396,24 +390,17 @@ async function runPipelineOn(
   // #1383: plan-dropped-artifact.ts decides where the omitted items live.
   const dl = await finalizeDroppedDisclosure({ repoRoot, descriptor, type, openPoints });
   if (dl.omitted) body = dl.repoint(body);
-  // D2: when the cap routed to filing, the spec that gets filed carries the
-  // residual disclosure. Append it HERE, before fileIssue, so the single
-  // filing pass below sees the final body.
-  // #1132: open points and the base fallback are disclosed in the body too.
-  // #1377: the caller's provenance wraps the whole thing — italic line first,
-  // marker comment last — appended by code, after every LLM stage and after the
-  // budget fitter, so what the operator reviewed is what the forge receives.
-  const finalBody = withProvenance(
-    filedBodyOf(
-      body,
-      residualForDisclosure,
-      openPoints,
-      base.baseFallback,
-      // #1856: the one fixed site the excluded/downgraded duplicate candidates
-      // render at, so a reader of the filed issue sees what the driver suppressed.
-      duplicateExclusionSection(duplicateRisk, sourceIssue),
-    ) + planImageLinksSection(images),
+  // The filed/shown body: residual + open-point + base-fallback disclosures, the
+  // #1856 duplicate exclusion, the image links, then the caller's provenance
+  // wrapped around the whole (one home: plan-gap-disclosure.ts).
+  const finalBody = finalDraftBody(
+    body,
+    residualForDisclosure,
+    openPoints,
+    base.baseFallback,
+    images,
     input.provenance,
+    { risk: duplicateRisk, sourceIssue },
   );
 
   const resolvedGaps = gateRan ? gaps : [];

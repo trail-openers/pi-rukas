@@ -107,17 +107,28 @@ export function namedIssueTokens(text: string): number[] {
 }
 
 /**
- * The rationale split into the clauses the prior-art rule is judged on: a
- * CLOSED issue is prior art only when the sentence naming IT says so. A
- * sentence is the window after the previous `#N` token and up to the next —
- * the sentence's own commas included, so "closes #103, which was prior art"
- * still reaches the rule.
+ * The clause the prior-art rule reads for one named issue: the text around the
+ * `#token`, widened to the sentence it sits in (`.`, `!`, `?` or a newline
+ * boundary), then trimmed of the neighbouring `#N` tokens so a prior-art word
+ * belonging to an ADJACENT finding cannot leak in — and, in the common
+ * "…reverses #103" shape where nothing follows the token, the clause is the
+ * window back to the previous `#N`, which is where the verb lives.
  */
 function clauseNaming(text: string, token: string): string {
-  const at = text.indexOf(`#${token}`);
+  const marker = `#${token}`;
+  const at = text.indexOf(marker);
   if (at < 0) return "";
-  const next = text.slice(at + 1).search(/#\d/);
-  return next < 0 ? text.slice(at) : text.slice(at, at + 1 + next);
+  const boundary = /(?<=[.!?])\s|\n/;
+  const startMatch = [...text.slice(0, at).matchAll(new RegExp(boundary.source, "g"))].pop();
+  const from = startMatch ? (startMatch.index ?? 0) + startMatch[0].length : 0;
+  const after = text.slice(at + marker.length);
+  const endMatch = after.match(boundary);
+  const to = at + marker.length + (endMatch ? (endMatch.index ?? after.length) : after.length);
+  // Strip neighbouring issue tokens so the clause says something about THIS one.
+  return text
+    .slice(from, to)
+    .replace(/#\d+(?:-\d+)?/g, " ")
+    .trim();
 }
 
 /**
