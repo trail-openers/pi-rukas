@@ -25,7 +25,11 @@ import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult, ExtensionAPI } from "../src/types.ts";
+import { ADVERSARIAL_PER_WS_MAX_RETRIES } from "../src/work-driver-adversarial-types.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
+import { failureEventOf } from "../src/work-driver-failure-lookup.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
+import { nextStep } from "../src/work-driver-context.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
@@ -52,6 +56,15 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
     adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
     ...overrides,
   };
+}
+
+/** The last event the adversarial step itself appended, before later steps. */
+function adversarialTailEvent(eventLog: readonly { kind: string; step?: string }[]) {
+  for (let i = eventLog.length - 1; i >= 0; i--) {
+    const e = eventLog[i];
+    if (e?.step === "adversarial" || e?.kind === "adversarial-approved") return e;
+  }
+  return undefined;
 }
 
 function makeFakePi(): ExtensionAPI {
@@ -345,6 +358,132 @@ async function persistFails(): Promise<void> {
 }
 
 await persistFails();
+
+// ── A FAILED adversarial dispatch never leaves the step on its write-ahead
+// marker, and never routes to commit-pr (#1863 cause A).
+//
+// The whole reason the adversarial step now writes ahead is that a killed
+// reviewer leaves something on disk. The write-ahead has one hazard: the marker
+// is a `dispatch-started`, and if a pass died without clearing it the step's
+// tail would be that marker. `failureEventOf` reads only the tail, `nextStep()`
+// has no `dispatch-failed` branch at all, and the linear step table goes
+// `adversarial → commit-pr` — so a stale marker is not an audit wrinkle, it is
+// an unreviewed diff past the gate. The assertion is driven through the REAL
+// fan-out (`runAdversarial`, no stubbed step) and observes the state the step
+// RETURNS, which is what the driver persists and what `nextStep()` routes on.
+async function failedDispatchNeverAdvances(): Promise<void> {
+  const dir = mkdtempSync(path.join(tmpdir(), `work-driver-1863-no-advance-`));
+  try {
+    initCleanRepo(dir);
+    const s = initialState(1863, 1_000_000);
+    s.pipelineState = {
+      ...s.pipelineState,
+      currentStep: "adversarial",
+      lastCompletedStep: "develop",
+      worktrees: { default: dir },
+      workstreams: { default: { id: "default", scope: "test", paths: [], outOfScope: [] } },
+      branchName: "feature/issue-1863",
+    };
+    await writeState(dir, s);
+    const ctx: DriverContext = {
+      host: makeFakePi(),
+      repoRoot: dir,
+      issue: 1863,
+      issueBodyFetcherFn: async () => ({ stdout: "mock" }),
+      // An infrastructure death, not a rejection: `ok: false` with no verdict.
+      // `killCause: "inactivity"` is what makes it TRANSIENT, so the fan-out's
+      // ladder runs (the shape #357 T8 exercises) rather than parking at once.
+      // `errorStop` is what the loop itself synthesises for a killed phase and
+      // is what `interpretReview` reads, so an injected result carries it.
+      adversarialLoopFn: async () =>
+        mkResult({
+          ok: false,
+          exitCode: 1,
+          loopOutcome: "infra-failure",
+          adversarialRounds: [],
+          text: "",
+          killCause: "inactivity",
+          errorStop: { message: "killed at its run bound" },
+        }),
+      dispatchFn: async (_pi, spec, opts) => {
+        if (opts?.label === "ops:handoff") {
+          return mkResult({ role: "ops", text: "Posted." });
+        }
+        throw new Error(`no dispatch expected: ${spec.role}/${opts?.label}`);
+      },
+    };
+    // Drive the step through the REAL driver — the path #357 T8 exercises, and
+    // the only one whose worktree/verify setup reaches the fan-out with a diff
+    // it will actually review (calling `runAdversarial` directly on this fixture
+    // short-circuits before dispatching, which would make every assertion below
+    // vacuously true). One driver run spends the ladder AND applies the step
+    // router's RETRY_ONCE, so this observes the whole two-tier shape: the
+    // fan-out's dispatch events, the budget they carry, and the cap that
+    // finally routes the park.
+    await runWorkDriver(ctx);
+    const fanState = (await readState(dir, 1863))!;
+    // The property the router actually depends on: `failureEventOf` reads the
+    // tail, and a tail that is a `dispatch-started` is invisible to it — which
+    // is how an unreviewed diff fell through the linear step table to
+    // commit-pr. Assert the router's own view plus the tail shape, rather than
+    // "the last dispatch event is a failure" (later steps legitimately write
+    // their own markers after this one, and the whole cycle has run here).
+    const adversarialTail = adversarialTailEvent(fanState.eventLog);
+    assert(
+      adversarialTail?.kind !== "dispatch-started",
+      `the adversarial step's own tail is never a write-ahead marker (tail: ${adversarialTail?.kind})`,
+    );
+    assert(
+      failureEventOf(fanState.eventLog) === undefined ||
+        failureEventOf(fanState.eventLog)?.step === "adversarial",
+      `the failure the router reads is the adversarial dispatch's (got ${failureEventOf(fanState.eventLog)?.kind ?? "none"} / ${failureEventOf(fanState.eventLog)?.step ?? "-"})`,
+    );
+    assert(
+      fanState.eventLog.some(
+        (e) => e.kind === "dispatch-failed" && e.step === "adversarial",
+      ),
+      "the failed adversarial dispatch is recorded as a dispatch-failed",
+    );
+    assert(
+      fanState.pipelineState.inFlightJobIds.length === 0,
+      `a failed dispatch clears its in-flight marker (left: ${JSON.stringify(fanState.pipelineState.inFlightJobIds)})`,
+    );
+    // #1863 — the ladder the fan-out spent must be in the state the step
+    // RETURNS, which is what the driver persists. It is what the step-level
+    // RETRY_ONCE's re-entry seeds its per-workstream budget from; a fan-out
+    // that spent its ladder and reported none ran a whole second ladder on the
+    // retry (#357 T8: 6 calls instead of 4).
+    assert(
+      Object.values(fanState.pipelineState.adversarialTransientRetries ?? {}).some(
+        (used) => used >= ADVERSARIAL_PER_WS_MAX_RETRIES,
+      ),
+      `the fan-out's spent ladder survives in the state the step returns (got ${JSON.stringify(fanState.pipelineState.adversarialTransientRetries)})`,
+    );
+    assert(
+      fanState.eventLog.some(
+        (e) => e.kind === "dispatch-started" && e.step === "adversarial",
+      ),
+      "the pass wrote its marker ahead — the audit record survives",
+    );
+    assert(
+      !fanState.eventLog.some((e) => e.kind === "adversarial-approved"),
+      "a failed dispatch is never an approval",
+    );
+    // The routing consequence: `nextStep()` has no `dispatch-failed` branch,
+    // so a tail that is NOT a failure falls through the linear table into
+    // commit-pr. Assert the routing directly rather than only the tail shape.
+    assert(
+      nextStep(fanState).kind === "done" ||
+        (nextStep(fanState).kind === "step" &&
+          (nextStep(fanState) as { step: string }).step !== "commit-pr"),
+      `a step whose reviewer failed does not route to commit-pr (routes to ${JSON.stringify(nextStep(fanState))})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+await failedDispatchNeverAdvances();
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
