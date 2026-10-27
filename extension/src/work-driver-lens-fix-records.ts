@@ -13,7 +13,6 @@
  */
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import { LENS_FIX_NO_WORKSTREAM } from "./work-driver-lens-fix-fence-gate.ts";
 import type { LensFixPassPlan, LensFixPlanRefusal } from "./work-driver-lens-fix-fence.ts";
 import type { LensFixFenceSnapshot } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
@@ -23,13 +22,10 @@ import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
  * gets RECORDED; this only renders it, so a reworded reason can never change a
  * branch (`lensFixPlanRefusalRecords` answers that question).
  */
-export function refusalReason(refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_WORKSTREAM): string {
-  if (typeof refusal === "string") return refusal;
+export function refusalReason(refusal: LensFixPlanRefusal): string {
   switch (refusal.kind) {
     case "no-base":
       return "the state records no base SHA, so no fence can be measured";
-    case "no-workstream":
-      return LENS_FIX_NO_WORKSTREAM;
     case "unrecorded-tree":
       // The reason the operator reads has to say what is missing and what the
       // consequence is: the fixer wrote in a tree no `pipelineState.worktrees`

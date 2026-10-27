@@ -42,7 +42,6 @@
 
 import {
   type FixExec,
-  type GitRead,
   committedChanges,
   trackedPaths,
   treeChanges,
@@ -194,9 +193,6 @@ export interface LensFixFenceInput {
 export type LensFixPlanRefusal =
   /** The state records no usable base SHA: there is no fence to require. */
   | { kind: "no-base" }
-  /** A workstream names no lens tree at all — the token the step's own
-   *  no-workstream branch records. */
-  | { kind: "no-workstream" }
   /** The lens tree is named by no `pipelineState.worktrees` entry (#1852 round
    *  3): `revertStraysOnce` has no recorded tree to revert into and the gate has
    *  no workstream to judge the delta against, so the round cannot be cleared. */

@@ -197,18 +197,6 @@ export function lensFixPlanFromSnapshot(
 }
 
 /**
- * The lens-fix step's TYPED reason for not having a workstream to build a fence
- * with (#1852 review item 1b). `runLensFix` cannot build a fence when no
- * `pipelineState.worktrees` entry names the lens tree, and that — like a missing
- * base SHA — is a statement about the STATE, not a failed read: an older driver
- * or a pre-#1852 fixture is in the same shape and had no fence to require. The
- * planner spells the same thing as `LensFixPlanRefusal`'s `no-workstream` kind;
- * this is the token `runLensFix`'s own no-workstream branch records, so the
- * state file and this module name it the same way.
- */
-export const LENS_FIX_NO_WORKSTREAM = "no-workstream";
-
-/**
  * Does a planner refusal need recording as a fence failure? Only the refusal
  * that really is a statement about the STATE — `no-base`: an older driver, or a
  * state that never set the field, had no fence to require, and recording it would
@@ -221,12 +209,8 @@ export const LENS_FIX_NO_WORKSTREAM = "no-workstream";
  * land unchecked. That is the hole #1852 exists to close, so it is a fence failure,
  * not a state statement.
  */
-export function lensFixPlanRefusalRecords(
-  refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_WORKSTREAM,
-): boolean {
-  return typeof refusal === "string"
-    ? true // `LENS_FIX_NO_WORKSTREAM`: the token itself is the failure record
-    : refusal.kind === "unavailable";
+export function lensFixPlanRefusalRecords(refusal: LensFixPlanRefusal): boolean {
+  return refusal.kind === "unavailable";
 }
 
 /**

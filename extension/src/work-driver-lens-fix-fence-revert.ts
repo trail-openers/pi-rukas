@@ -31,7 +31,6 @@ import { trace } from "./trace.ts";
 import type { PostPass } from "./work-driver-adversarial-fix-scope.ts";
 import type { PassPlan } from "./work-driver-adversarial-fix-scope.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import type { RevertStraysOutcome } from "./work-driver-fix-pass-revert-step.ts";
 import { revertStraysOnce } from "./work-driver-fix-pass-revert-step.ts";
 import type { LensFixRevertOutcome } from "./work-driver-lens-fix-fence-gate.ts";
 import type { LensFixRevertEvent } from "./work-driver-lens-fix-revert-record.ts";
@@ -52,8 +51,9 @@ import type { ExecFn } from "./worktree.ts";
  * It stays optional only inside `revertStraysOnce`, where the fix pass's own
  * window counter IS the right answer.
  *
- * `onReverted` is the durability hook: called by `revertStraysOnce` at the
- * instant the destructive work is done, which is where this round's
+ * `onReverted` is the durability hook: called by THIS function as soon as
+ * `revertStraysOnce` has returned (the destructive work is finished by then, and
+ * the outcome is in hand), which is where this round's
  * `fix-pass-strays-reverted` event is appended AND persisted — before the
  * landing arm's first git call, so a crash cannot leave files deleted and a
  * state file that says nothing (#1852 round 3 item 3).
@@ -70,33 +70,19 @@ export async function revertLensFixStrays(
   /** Persist this round's revert event at the destructive boundary. */
   onReverted?: (event: LensFixRevertEvent) => Promise<void> | void,
 ): Promise<LensFixRevertOutcome | undefined> {
-  // The revert's outcome, published to the boundary hook below. `revertStraysOnce`
-  // raises that hook before it RETURNS, so at the moment the hook fires this
-  // binding is not assigned yet — the closure therefore reads it lazily through
-  // the box, and the assignment happens before the promise this function awaits
-  // settles.
-  const settled: { current?: RevertStraysOutcome } = {};
+  // The durability boundary is the publish below, after `revertStraysOnce` has
+  // returned — by then every destructive call has run and the outcome is in hand,
+  // and the publish is awaited before this resolves, so the caller's landing arm
+  // starts with the record on disk.
   const out = await revertStraysOnce(
     ctx,
     state,
     [plan],
     post,
     Date.now(),
-    // THE durability boundary (#1852 round 3 item 3). `revertStraysOnce` raises
-    // this for BOTH outcomes immediately after the destructive calls and before
-    // either is returned. It cannot carry the event itself — at that instant the
-    // outcome does not exist yet for any caller — so it exists to let THIS
-    // function see that the destructive work has finished, and the publish
-    // happens as soon as the outcome is in hand, still inside this call and
-    // before the caller's next git run.
-    onReverted === undefined
-      ? undefined
-      : () => {
-          const outcome = settled.current;
-          if (outcome?.ok === true) {
-            onReverted(stampLensFixRevert(outcome.event, plan.id, round));
-          }
-        },
+    // The fix pass's own boundary seam is not what this round needs: see the
+    // publish below.
+    undefined,
     // #1852 round 2 item 4 — ONE counter for this budget. The lens round's
     // allowance is keyed on source + round + workstream, which `revertStraysOnce`'s
     // own `passWindow` counter cannot express (a lens fix has no
@@ -105,14 +91,18 @@ export async function revertLensFixStrays(
     // consulted.
     alreadyReverted,
   );
-  settled.current = out;
-  // #1852 round 3 item 3 — the boundary hook fires HERE. `revertStraysOnce` has
-  // returned, so its own `onReverted` call (which runs before it returns, and so
-  // before any caller could have assigned the outcome) had nothing to publish;
-  // this is the first instant at which the outcome exists AND the destructive
-  // work is known to be finished, which is exactly the boundary the caller needs
-  // to persist at. The ordering test asserts this precedes the `await` settling.
   if (out?.ok === true) {
+    // THE durability boundary (#1852 round 3 item 3). `revertStraysOnce` has
+    // returned, so every destructive call it makes has run and the outcome is in
+    // hand: this is the first instant at which a record can be stamped AND the
+    // last one before the caller's next git run. The publish is awaited, so the
+    // record is durable — not merely promised — when this resolves, and the
+    // ordering test (`test-lens-fix-revert-boundary.ts`) pins that it precedes the
+    // `await` settling. `revertStraysOnce`'s own `onReverted` seam is deliberately
+    // NOT used here: it carries no outcome (`RevertBoundary` is `() => void`,
+    // raised for BOTH outcomes before either is returned), so a wrapper cannot
+    // stamp an event from it — an earlier shape tried, and read a box nobody had
+    // filled, which published nothing.
     await onReverted?.(stampLensFixRevert(out.event, plan.id, round));
   }
   if (out === undefined) {
