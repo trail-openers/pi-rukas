@@ -41,11 +41,7 @@ export function outcomeEvents(
     // replacement. A pass whose write-ahead itself FAILED never dispatched, so
     // it has no marker to record (`writeAheadFailed` says so with
     // `markerWritten: false`) and its id is not one the region absorbs.
-    if (
-      o.clearedJobId &&
-      o.markerWritten !== false &&
-      !emitted.has(o.clearedJobId)
-    ) {
+    if (o.clearedJobId && o.markerWritten !== false && !emitted.has(o.clearedJobId)) {
       emitted.add(o.clearedJobId);
       events.push({
         kind: "dispatch-started",
