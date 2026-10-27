@@ -31,7 +31,8 @@
  * component) before the first `git` runs.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { isPlainRepoRelativePath, plannedPathProblem } from "./plan-path-shape.ts";
 import { trace } from "./trace.ts";
@@ -44,6 +45,10 @@ import {
   retryPatchPath,
 } from "./work-develop-git.ts";
 import { gitReadTimeoutMs } from "./work-driver-adversarial-fix-git.ts";
+import {
+  assertFixPassStraysIndexPath,
+  commitRevert,
+} from "./work-driver-fix-pass-strays-commit.ts";
 import {
   type StrayState,
   type StrayStateResult,
@@ -196,88 +201,12 @@ export async function revertFixPassStrays(
   // never been told about).
   const failed = await revertPaths(req, git, state);
   if (failed !== undefined) return { reason: failed };
-  // Which paths to stage is decided from git's own reads, not from the working
-  // tree afterwards: a path the revert RESTORED is staged with `git add`, a path
-  // the revert REMOVED is staged as a deletion with `git rm --cached`, and an
-  // untracked one was already removed by an unlink and needs nothing. Deriving
-  // this from `existsSync` or `git status` after the fact is what broke here —
-  // `git add -- <gone>` fails the whole commit on a pathspec that matches
-  // nothing, and `--ignore-removal` only ignores removals git already tracks.
 
-  // 3 — one driver commit for the whole revert, so every later reader of the
-  // branch sees a single diff. The pathspec form stages additions, modifications
-  // and deletions alike; `--literal-pathspecs` so a stray named like a glob is
-  // still one file.
-  try {
-    // Only the paths still present after the revert: a deleted path is staged by
-    // the `git rm` that removed it, and `git add -- <gone>` would fail the whole
-    // commit on a pathspec that no longer matches.
-    // Stage by ROLE, decided from git's own pre-revert reads (`state`), never
-    // from the tree afterwards: a path that existed at the pre-pass HEAD was
-    // restored by `git checkout <headBefore> -- <path>` and stages as a
-    // modification; a tracked path the pass created was removed by `git rm`,
-    // which already staged its deletion; an untracked path was unlinked and is
-    // in no index at all. Asking `git add` about a path that no longer exists on
-    // disk fails the whole commit on a pathspec that matches nothing, so each
-    // role is given only the command that can accept it.
-    const restored = state.strays.filter((f) => state.trackedAtBefore.has(f));
-    if (restored.length > 0) {
-      await git(["--literal-pathspecs", "add", "--", ...restored], {
-        cwd: worktree,
-        timeout: gitWriteTimeoutMs(),
-      });
-    }
-    // The deletions need no staging call of their own: `revertPaths`' `git rm`
-    // already put them in the index, and `git add -A -- <gone>` refuses a
-    // pathspec that matches no file on disk and no tracked entry (`fatal:
-    // pathspec … did not match any files`) — the deletion is staged, the path
-    // is simply gone from both sides of that match. What the commit needs is
-    // that nothing ELSE gets committed, which the commit call below settles.
-    // The same commit form the driver's other in-tree commits use
-    // (`work-driver-safety-net.ts`): `--no-verify` because a driver-authored
-    // revert is not a developer submission and must not be judged by a
-    // project's pre-commit hook, and an explicit pathspec list so a `.pi/` or
-    // `tmp/` file already in the index is never swept into the revert commit.
-    // `--allow-empty`: the tree is already correct for an UNTRACKED stray (the
-    // unlink is the whole revert, and there is nothing for git to stage), but the
-    // revert still gets its commit, so the history shows that a revert happened
-    // and `revertPaths`' tracked-vs-untracked read has a record to answer to.
-    // The identity is set on the command rather than inherited: an operator's
-    // global config must not decide who authored a harness commit, and a host
-    // with no git identity at all must not make the revert fail.
-    await git(
-      [
-        "-c",
-        "user.name=pi-rukas",
-        "-c",
-        "user.email=driver@localhost",
-        // A git-level prefix, so it goes BEFORE the subcommand: as an argument
-        // after `commit` it is an unknown option and the whole revert fails.
-        "--literal-pathspecs",
-        "commit",
-        "-q",
-        "--no-verify",
-        "--allow-empty",
-        "-m",
-        "revert out-of-fence fix-pass files",
-        // NO pathspec. A pathspec here would be the natural way to bound the
-        // commit to the revert's own paths, and it does not work: `git commit
-        // -- <path>` performs a PARTIAL commit that commits only the named
-        // paths' staged content and LEAVES the rest of the index staged, so a
-        // stray the revert deleted — whose removal `git rm` staged, and which
-        // `commit -- <deleted-path>` cannot match — would survive the commit
-        // still staged in the worktree. The staging above is the bounding
-        // instead: `revertPaths` touches only the strays, and the two `add`
-        // calls above name only the strays, so what is staged beyond the
-        // pre-existing develop index is exactly this revert's paths.
-      ],
-      { cwd: worktree, maxBuffer: 256 * 1024, timeout: gitWriteTimeoutMs() },
-    );
-  } catch (err) {
-    return {
-      reason: `the fix-pass stray revert could not be committed in ${worktree}: ${errText(err)}`,
-    };
-  }
+  // 3 — ONE driver commit for the whole revert, built from a temporary index so
+  // it can only ever name the revert's own paths. See `work-driver-fix-pass-strays-commit.ts`.
+  const commit = await commitRevert(req, state);
+  if (commit !== undefined) return { reason: commit };
+
   trace(
     `work-driver: fix pass reverted ${state.strays.length} out-of-fence file(s) for ${workstreamId} (preserved ${preservedRef}; patch ${patchPath}${untrackedCopies.length > 0 ? `; untracked copies ${untrackedCopies.length}` : ""})`,
   );
@@ -316,6 +245,13 @@ function preflight(req: FixPassStraysRequest): string | undefined {
     // name is validated before the first `git`.
     assertInsideWorktrees(req.repoRoot, req.worktree);
     fixPassStraysPatchPath(req.scratchDir, req.issue, req.workstreamId, req.attempt);
+    // The temporary index the commit is built from is a path git resolves on its
+    // own (`GIT_INDEX_FILE`), so it is judged here rather than at the call: a
+    // relative one would resolve against each call's cwd, and one that escapes
+    // its own directory is outside every guarantee this module makes. It is
+    // gated to the SCRATCH dir, not to `.worktrees/` — the scratch dir lives
+    // under the repo root, so the worktree gate cannot be the one that covers it.
+    assertFixPassStraysIndexPath(req);
   } catch (err) {
     return `refusing to revert the fix pass's out-of-fence files: ${errText(err)}`;
   }
