@@ -25,7 +25,6 @@
 
 import { mock } from "bun:test";
 import {
-  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
