@@ -389,16 +389,34 @@ export function observeReviewBounds(
   // and it is what keeps the accumulated reply as the result rather than a
   // replay (spawn.ts only opens the stdin gate on a non-retrying `agent_end`).
   //
-  // Two gates, both copied from the re-read cap and from `willRetryAfter` in
+  // Two gates, copied from the re-read cap and from `willRetryAfter` in
   // spawn-support.ts, for the same reason: while the child has reported, or is
   // mid-retry, its stdout belongs to an answer being delivered or about to be
   // REPLAYED, and a stop that ends the child there loses the very reply the
   // stop is claiming to preserve. `status()` is checked by the caller before
   // `observe`, so an errored/aborted turn — which records no verdict — never
   // reaches here either.
+  //
+  // #1847 — and the same LIVENESS gate the re-read kill has. A child whose
+  // process has exited has no stdin to close and no process group to signal,
+  // and `markEnded()` on that branch would tell the fold to stamp `ok: true`
+  // plus a clean `reviewStopReason` onto a result the spawn is already
+  // assembling from a stream that ended on its own. One liveness seam
+  // (`childHasExited`, spawn-support.ts) decides it for all three supervisors.
   if (
     o.verdictStop &&
     o.assistantMessageEnd &&
+    // #1847 — the same LIVENESS gate the re-read kill has, and it belongs HERE
+    // rather than around `observe` below. `observe` is what accumulates the
+    // reply AND latches the sticky "a verdict has been seen" flag, so gating it
+    // would (a) drop text out of the result a live child's stop later freezes
+    // and (b) let an exited child's message permanently disable the stop.
+    // A child whose process has exited has no stdin to close and no group to
+    // signal, and `markEnded()` on that branch would tell the fold to stamp
+    // `ok: true` plus a clean `reviewStopReason` onto a result the spawn is
+    // already assembling from a stream that ended on its own. One liveness seam
+    // (`childHasExited`, spawn-support.ts) decides it for all three supervisors.
+    !targets.exited() &&
     !o.verdictStop.status() &&
     // #1827 round 5 — same seam the re-read kill checks: once a KILLING bound
     // has armed, that bound owns how this child ends and its cause is already

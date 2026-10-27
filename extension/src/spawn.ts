@@ -59,10 +59,10 @@ import {
   assertLiveSpawnAllowed,
   buildChildArgs,
   buildCwdHint,
+  childHasExited,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
-  spawnedChildExited,
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
@@ -266,6 +266,8 @@ async function spawnSpecialistInner(
   // `const caps` initialized after the attach would be in the TDZ for any
   // early line (ReferenceError).
   const flags = declareKillFlags();
+  // #1847 — THE liveness predicate, shared by all three supervisors.
+  const childExited = () => childHasExited(flags, child);
   const caps = armCapSession(child, flags, {
     role: spec.role,
     onSteer: opts.onSteer,
@@ -308,9 +310,8 @@ async function spawnSpecialistInner(
     // closes stdin now throws the reply away rather than preserving it — the
     // same gate `onAgentEnd` applies below.
     willRetry: () => willRetryAfter(lastAgentEnd),
-    // #1847 — the re-read cap's kill is gated on the process, not on the
-    // prompt's `agent_end` (see `spawnedChildExited`).
-    exited: () => spawnedChildExited(child),
+    // #1847 — the ONE liveness seam, shared with the caps stack and child bound.
+    exited: childExited,
   });
   // #1827 — the pump and its bounds live in spawn-inflight.ts: spawn.ts sits at
   // the §12 size cap, and a bound that throws must not cost a live child its
@@ -366,7 +367,7 @@ async function spawnSpecialistInner(
     onSteer: opts.onSteer,
     stdin: child.stdin,
     reported: () => promptCompleted,
-    childExited: flags.childExited,
+    childExited: flags.childExited, // #1847 — same seam as `exited` above.
     preempted: () =>
       flags.aborted() ||
       flags.timedOut() ||

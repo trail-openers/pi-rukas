@@ -39,6 +39,7 @@ import type { Writable } from "node:stream";
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import { killProcessTree } from "./spawn-kill.ts";
+import { childHasExited } from "./spawn-support.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -136,6 +137,11 @@ export function armChildBound(o: {
   stdin: Writable;
   /** The prompt's `agent_end` arrived (spawn.ts `promptCompleted`). */
   reported: () => boolean;
+  /** #1847 — the spawn's kill-flags accessor (`declareKillFlags().childExited`),
+   *  which `armCapSession` sets on `exit` AND `close`. Together with the handle's
+   *  own exit state inside `childHasExited` (spawn-support.ts) this is the ONE
+   *  liveness signal every supervisor of a spawn asks — the caps stack, this bound
+   *  and the skill re-read cap. */
   childExited: () => boolean;
   /** Another kill (abort, the backstop) already ended the child: that cause stands. */
   preempted: () => boolean;
@@ -172,9 +178,11 @@ export function armChildBound(o: {
   if (process.env.PI_ENSEMBLE_DISPATCH_CAPS === "0") return result;
   const head = o.head ?? readHead;
   const headAtStart = o.commits ? head(o.cwd) : Promise.resolve(undefined);
-  // The exit event can lag the exit itself; read the handle too.
-  const gone = () =>
-    o.childExited() || o.child.exitCode != null || o.child.signalCode != null || o.preempted();
+  // #1847 — the ONE liveness signal, so this bound, the caps stack and the
+  // re-read cap cannot disagree about a killable child. `preempted()` stays ORed
+  // on: an abort or the backstop already decided how this child ends, and this
+  // bound must not end it a second time.
+  const gone = () => childHasExited(o, o.child) || o.preempted();
   const settled = async (): Promise<DoneSignal | undefined> => {
     if (o.reported()) return "reported";
     if (!o.commits) return undefined;
