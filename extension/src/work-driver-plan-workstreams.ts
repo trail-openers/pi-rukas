@@ -53,16 +53,19 @@ export function workstreamFromArgs(args: WorkstreamArgs): Workstream {
   // #1862 (a) — a prose fence over this workstream's OWN files is dropped here,
   // at the tool boundary, rather than left for the develop gate to demote every
   // hit from. Only entries naming what THIS call declared go: a sibling's fence
-  // (#572's cross-declaration contract) and prose that names no path stay. The
-  // clip records of a dropped entry go with it, the way `capFenceList` drops a
-  // record whose entry is gone — a record describing a vanished entry is a
-  // disclosure of a loss that did not happen.
-  const proseDrops = proseSelfFenceDrops(boundedPaths.paths, fence.entries);
+  // (#572's cross-declaration contract), a protected path, an undeclared subtree
+  // and prose that names no path all stay, and they stay WHOLE — one token the
+  // workstream does not own holds the entire sentence (the shared rule is
+  // `selfFenceEntryDrop`, which the fold asks the same question with). The clip
+  // records of a dropped entry go with it, the way `capFenceList` drops a record
+  // whose entry is gone — a record describing a vanished entry is a disclosure of
+  // a loss that did not happen.
+  const proseDrops = proseSelfFenceDrops(boundedPaths.paths, fence.entries, args.id);
   const dropped = new Set(proseDrops.map((d) => d.entry));
   for (const d of proseDrops) {
-    traceWarn(
-      `work-driver: plan workstream '${args.id}' self-fence dropped — ${JSON.stringify(d.entry)} covers its own declared ${d.path}`,
-    );
+    // The note is the persisted wording; the prefix names the site so an operator
+    // grepping one channel sees which rule removed the fence (#1862 M4).
+    traceWarn(`work-driver: plan workstream '${args.id}' ${d.note}`);
   }
   if (boundedPaths.duplicate > 0) {
     // `traceWarn`, not `trace`: the fence bound's line is a WARN for the same

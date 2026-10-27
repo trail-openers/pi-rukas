@@ -48,9 +48,7 @@ function ws(over: Partial<WorkstreamArgs>): WorkstreamArgs {
 // ────────────────────────────── 1. the field case: the sentence is gone from a
 // workstream that owns the directories it names, and the OTHER exclusions stay.
 {
-  const w = workstreamFromArgs(
-    ws({ outOfScope: [FIELD, ".ci/", "nothing else"] }),
-  );
+  const w = workstreamFromArgs(ws({ outOfScope: [FIELD, ".ci/", "nothing else"] }));
   assert(
     !w.outOfScope.includes(FIELD),
     `the prose fence over the workstream's own directories is dropped (got ${JSON.stringify(w.outOfScope)})`,
@@ -62,7 +60,10 @@ function ws(over: Partial<WorkstreamArgs>): WorkstreamArgs {
 }
 
 // ────────────────────────────── 2. the controls: a rule this side of the fence
-// has to refuse every one of these.
+// has to refuse every one of these. The SECURITY half of the contract: a drop is
+// a scope widening, so an entry that protects ANYONE but this workstream — a
+// sibling, a protected path, an undeclared subtree — is kept WHOLE. A fence is
+// one instruction; the driver cannot remove half a sentence.
 {
   // A sibling's files — the #572 cross-declaration contract. The sentence names
   // `src/` and the workstream declares nothing under `src/`.
@@ -95,27 +96,68 @@ function ws(over: Partial<WorkstreamArgs>): WorkstreamArgs {
     `prose naming a directory that only LOOKS like a declared one is kept (got ${JSON.stringify(lookalike.outOfScope)})`,
   );
 
-  // A path-shaped entry is `fenceMatches`' business, not this rule's: a real
-  // path fence the planner wrote survives this pass whatever it covers (the
-  // fold's containment arm, workstream-fold-self-fence.ts, is the one that
-  // judges those).
-  const pathShaped = workstreamFromArgs(ws({ outOfScope: ["tests/"] }));
+  // A path-shaped entry is NOT judged by the prose token scan: the one rule for
+  // an entry that IS a path is the plan-quality gate's containment predicate
+  // (`findFenceContradictions`, reached through the shared `selfFenceEntryDrop`).
+  // This pins that a directory fence over the workstream's own subtree goes by
+  // THAT arm and an undeclared one stays — one entry, one grammar (#1725).
+  const pathShaped = workstreamFromArgs(ws({ outOfScope: ["tests/", "src/legacy/"] }));
   assert(
-    pathShaped.outOfScope.includes("tests/"),
-    `a path-shaped entry is not dropped by the prose rule (got ${JSON.stringify(pathShaped.outOfScope)})`,
+    !pathShaped.outOfScope.includes("tests/") && pathShaped.outOfScope.includes("src/legacy/"),
+    `a directory fence over the own subtree goes by the containment arm while an undeclared one stays (got ${JSON.stringify(pathShaped.outOfScope)})`,
   );
 
-  // A PROTECTED declaration is never a reason to open a fence.
+  // A fence the planner wrote as ONE STRINGIFIED ARRAY (`'["docs/","tests/"]'`)
+  // is expanded into its members by the bound before any fence rule reads it,
+  // so a self-fence hidden inside such an entry is dropped like any other — and
+  // the member nobody declared stays. Judged as one opaque string it is prose,
+  // its tokens are unreadable, and the whole list survives as a fence over the
+  // workstream's own files.
+  const asString = workstreamFromArgs(ws({ outOfScope: ['["tests/","src/legacy/"]'] }));
+  assert(
+    !asString.outOfScope.includes("tests/") && asString.outOfScope.includes("src/legacy/"),
+    `a fence written as one stringified array is expanded, then judged member by member (got ${JSON.stringify(asString.outOfScope)})`,
+  );
+
+  // MIXED self + sibling: the sentence names TWO directories this workstream
+  // owns and ONE it does not. Before #1862 round 1 the fold's prose reader
+  // dropped the entry as soon as one token was owned, which silently removed the
+  // sibling's protection with it. One unowned token holds the whole entry.
+  const mixedSibling = workstreamFromArgs(
+    ws({
+      paths: ["tests/test_x.py", "agents/x.md"],
+      outOfScope: ["Every file under agents/, tests/ and src/legacy/ is frozen"],
+    }),
+  );
+  assert(
+    mixedSibling.outOfScope.length === 1,
+    `a mixed self+sibling sentence SURVIVES whole — the sibling's path holds the fence (got ${JSON.stringify(mixedSibling.outOfScope)})`,
+  );
+
+  // MIXED self + protected: the same rule from the other side. `agents.json` is
+  // protected, so naming it is never a reason to open a fence, and the rest of
+  // the sentence goes with it.
+  const mixedProtected = workstreamFromArgs(
+    ws({
+      paths: ["tests/test_x.py"],
+      outOfScope: ["Every file under tests/ and .github/workflows/ is frozen"],
+    }),
+  );
+  assert(
+    mixedProtected.outOfScope.length === 1,
+    `a mixed self+protected sentence SURVIVES whole (got ${JSON.stringify(mixedProtected.outOfScope)})`,
+  );
+
+  // A PROTECTED declaration is never a reason to open a fence, even when every
+  // OTHER token in the sentence is owned. The field's sentence names `agents/`
+  // and `tests/`; here `agents.json` is declared too, and the sentence is held
+  // by the protected spelling rather than opened by it.
   const protectedWs = workstreamFromArgs(
     ws({ paths: ["agents.json", "tests/test_x.py"], outOfScope: [FIELD] }),
   );
   assert(
-    // The em-dash sentence is ONE entry before the bound touches it; the bound's
-    // clip arm cuts it at a space and the second half survives as its own entry.
-    // What this case pins is the first half going while `agents.json` — protected,
-    // so not a reason to open a fence — stays fenced.
-    !protectedWs.outOfScope.some((e) => e.startsWith("Every file under agents/")),
-    `the sentence goes for the unprotected tests/, and nothing drops because of the protected agents.json (got ${JSON.stringify(protectedWs.outOfScope)})`,
+    protectedWs.outOfScope.some((e) => e.startsWith("Every file under agents/")),
+    `the sentence survives because it names a protected path the workstream declares (got ${JSON.stringify(protectedWs.outOfScope)})`,
   );
 
   const protectedOnly = workstreamFromArgs(

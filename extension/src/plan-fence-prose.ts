@@ -1,7 +1,7 @@
 /**
  * plan-fence-prose — #1862 (a), the fence bound's half: an `outOfScope` entry
- * that is PROSE is dropped when the sentence names a path that covers a path
- * THIS workstream declares itself.
+ * that is PROSE is dropped when the WHOLE sentence fences paths THIS workstream
+ * declares itself, and only then.
  *
  * Why the bound needs this and `fenceMatches` does not answer it. A fence entry
  * is free-form text, and planners write sentences: the field case was a docs
@@ -12,83 +12,69 @@
  * entry is both useless as a fence and harmful as an instruction, and the only
  * thing that makes it look like a fence is that it names paths.
  *
- * The rules, and what they refuse to do:
+ * The rules are the ONE predicate in `plan-fence-self-entry.ts`; this module is
+ * the tool boundary's adapter that turns a drop into the record shape the state
+ * file carries. It holds no rule of its own — the duplicate prose reader that
+ * used to live here is what round 1 removed, because two readers drift into two
+ * answers for one entry. In short:
  *
- *   - Only a workstream's OWN declared paths justify a drop. A sibling's fence
- *     naming another workstream's files is the #572 cross-declaration contract
- *     and is never dropped; `outOfScope` entries naming nothing this workstream
- *     declared are kept whatever they say.
- *   - The whole-token rule is `pathTokenIn`: `data.txt` never names `a.txt`, and
- *     a `lib/a` hit never names `lib/ab`. Prose is scanned for each declared
- *     path and for its directory, so "under agents/ and tests/" names a declared
- *     `tests/test_x.py` through its directory, and prose about `docs` cannot name
- *     `docsfoo/`.
- *   - Prose that names no path token is KEPT. There is nothing to compare it
- *     against, and a rule that deletes fences it cannot read is worse than a
- *     useless fence.
- *   - A PROTECTED declaration is never a reason to open a fence
- *     (`isProtectedPath`): `.github/`, `.pi/`, `CODEOWNERS` and `agents.json`
- *     keep whatever fence names them.
- *   - A PATH-SHAPED entry is never judged here — `fenceMatches` is the one
- *     predicate for entries that are paths, and this module returns any entry
- *     that parses as a path untouched. Two grammars for one entry is the drift
- *     #1725 closed.
+ *   - Only a workstream's OWN declared paths justify a drop, and EVERY path token
+ *     the entry names must be one of them. An entry that also names a sibling's
+ *     path (#572's cross-declaration contract), a protected path, or a path this
+ *     workstream does not declare is kept WHOLE: a fence is one instruction, and
+ *     a partial removal of a sentence is not something the driver can do.
+ *   - Prose that names no path token is KEPT, and a PATH-SHAPED entry belongs to
+ *     `fenceMatches` / `findFenceContradictions`, never judged twice (#1725).
  *
  * Pure, and it emits no trace: the caller owns the line and the record.
  */
 
-import { plannedPathProblem } from "./plan-path-shape.ts";
-import { pathTokenIn } from "./work-driver-declared-path.ts";
-import { isProtectedPath } from "./work-driver-doctrine.ts";
-import { normaliseDeclaredPath } from "./work-driver-verify.ts";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
+import {
+  type SelfFenceEntryDrop,
+  contradictionPathsByEntry,
+  declaredPaths,
+  selfFenceEntryDrop,
+} from "./plan-fence-self-entry.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 
-/** Is this entry a PATH rather than prose? A fence entry is free-form text and
- * the planner's own grammar deliberately allows spaces (`app/(group)/page.tsx`,
- * `docs/my file.md`), so the grammar alone cannot tell a path from a sentence —
- * the field's sentence passes `plannedPathProblem` and would be read as one
- * 100-character filename. The distinguishing mark is a word-separating space:
- * a path may contain one inside a name, but a sentence does. Anything with a
- * space is prose and judged by the token scan below; an entry that is a real
- * path belongs to `fenceMatches`, and this module has no opinion about it. */
-function isPathShaped(entry: string): boolean {
-  if (/\s/.test(entry)) return false;
-  const normalised = normaliseDeclaredPath(entry);
-  if (normalised.length === 0) return false;
-  return plannedPathProblem(normalised) === undefined;
-}
-
-/** Does this prose sentence name `p`, or the directory `p` sits in, as a whole
- * path token? The directory is what prose actually says — a sentence explains
- * that a workstream does not implement `tests/`, it does not enumerate files. */
-function proseNames(prose: string, p: string): boolean {
-  if (pathTokenIn(prose, p) || pathTokenIn(prose, `${p}/`)) return true;
-  const dir = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
-  if (dir.length === 0 || dir === ".") return false;
-  return pathTokenIn(prose, dir) || pathTokenIn(prose, `${dir}/`);
+/** The tool boundary's own wording for a removal: it answers to the FENCE BOUND
+ * (the entry was never a usable fence), where the fold's note answers to the
+ * merge. Both go through `selfFenceDroppedNote`'s neutralisation of both fields. */
+export function proseSelfFenceNote(entry: string, path: string): string {
+  return `self-fence dropped: ${JSON.stringify(neutraliseFenceEntry(entry))} covers its own declared ${JSON.stringify(neutraliseFenceEntry(path))}`;
 }
 
 /**
- * The prose entries of `candidates` that fence this workstream's own files, and
- * the declared path each one names (the path the record quotes).
+ * The entries of `candidates` that fence this workstream's own files, as the
+ * `UnfenceRecord`s the caller persists (#1862 round 1: records, not bare
+ * `{entry, path}` pairs, so both fence-dropping sites hand the state file the
+ * same shape and a drop cannot be recorded in one place and merely traced in
+ * the other).
  *
  * `ownPaths` are the workstream's declared paths as stored (raw); they are
  * normalised here, because the entry is compared against what the DEVELOPER is
- * told to edit, not against how the planner spelled it.
+ * told to edit, not against how the planner spelled it. The path-shaped arm runs
+ * once for the whole list (M3), not once per entry.
  */
 export function proseSelfFenceDrops(
   ownPaths: readonly string[],
   candidates: readonly string[],
-): Array<{ entry: string; path: string }> {
-  const own = [
-    ...new Set(ownPaths.map((p) => normaliseDeclaredPath(p)).filter((p) => p.length > 0)),
-  ].filter((p) => !isProtectedPath(p));
-  if (own.length === 0) return [];
-  const drops: Array<{ entry: string; path: string }> = [];
+  workstreamId: string,
+): UnfenceRecord[] {
+  const own = declaredPaths(ownPaths);
+  if (own.length === 0 || candidates.length === 0) return [];
+  const contradictions = contradictionPathsByEntry(own, candidates);
+  const drops: UnfenceRecord[] = [];
   for (const entry of candidates) {
-    if (entry.trim().length === 0) continue;
-    if (isPathShaped(entry)) continue;
-    const path = own.find((p) => proseNames(entry, p));
-    if (path !== undefined) drops.push({ entry, path });
+    const decision: SelfFenceEntryDrop = selfFenceEntryDrop(entry, own, contradictions.get(entry));
+    if (!decision.drop) continue;
+    drops.push({
+      workstream: workstreamId,
+      path: decision.path,
+      entry: neutraliseFenceEntry(entry),
+      note: proseSelfFenceNote(entry, decision.path),
+    });
   }
   return drops;
 }
