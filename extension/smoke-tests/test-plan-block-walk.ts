@@ -276,6 +276,46 @@ const cases: WalkCase[] = [
     consumed: [0, 1, 2],
     nextIndex: 3,
   },
+  {
+    label: "a bullet-prefixed ==END== fence closes the block",
+    // The round-4 regression: main's fence class was `[-=\s]*`, so the bullet's
+    // `-` opened an unbroken `-`/`=`/space run straight into the token and these
+    // three lines WERE fences there. Narrowing the class to the heading wrapper
+    // chars alone made them items again.
+    ctx: "PITFALLS:\n- ==END==\n- one",
+    residual: "",
+    items: [],
+    consumed: [0, 1],
+    nextIndex: 2,
+  },
+  {
+    label: "a bullet-prefixed =END= fence closes the block",
+    ctx: "PITFALLS:\n- =END=\n- one",
+    residual: "",
+    items: [],
+    consumed: [0, 1],
+    nextIndex: 2,
+  },
+  {
+    label: "a bullet-prefixed == BEGIN == fence is a delimiter and does not close",
+    ctx: "PITFALLS:\n- == BEGIN ==\n- one",
+    residual: "",
+    items: ["one"],
+    consumed: [0, 1, 2],
+    nextIndex: 3,
+  },
+  {
+    label: "a bulleted keyword line opens the channel (pinned current behaviour)",
+    // PINNED, not endorsed: `stepLine` tests the whole trimmed line against
+    // `KEYWORD_LINE_RE`, whose wrapper class includes `-`, so `- ACCEPTANCE
+    // CRITERIA` terminates the block above and the main loop then opens the
+    // channel for it on that same line. The criterion below lands in it.
+    ctx: "ACCEPTANCE CRITERIA\n- a criterion",
+    residual: "",
+    items: ["a criterion"],
+    consumed: [0, 1],
+    nextIndex: 2,
+  },
 ];
 
 for (const c of cases) runCase(c);
@@ -363,7 +403,19 @@ for (const c of cases) runCase(c);
   }
   // Fence agreement: the walk's fence test is the parser's fence test, and the
   // `=`-wrapped forms are inside it.
-  for (const fence of ["END=", "END =", "=END=", "END==", "==END==", "BEGIN=", "== BEGIN =="]) {
+  for (const fence of [
+    "END=",
+    "END =",
+    "=END=",
+    "END==",
+    "==END==",
+    "BEGIN=",
+    "== BEGIN ==",
+    // The three bullet-prefixed forms main fenced and round 3 filed as items.
+    "- ==END==",
+    "- =END=",
+    "- == BEGIN ==",
+  ]) {
     assert(FENCE_RE.test(fence), `FENCE_RE matches the wrapper fence ${JSON.stringify(fence)}`);
   }
   for (const prose of ["END OF THE LINE", "ENDURANCE", "- a criterion", "none — no code"]) {

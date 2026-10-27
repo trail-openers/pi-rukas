@@ -274,6 +274,13 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     // the item asserted below is the operator's, never the fence's text.
     ["ACCEPTANCE CRITERIA:\nBEGIN=\n- a criterion", "acceptanceCriteria", "BEGIN="],
     ["ACCEPTANCE CRITERIA:\n== BEGIN ==\n- a criterion", "acceptanceCriteria", "== BEGIN =="],
+    // The round-4 regression: main's fence class was `[-=\s]*`, so the bullet's
+    // `-` ran straight into the `=`/`#`/space wrapper and these three lines WERE
+    // fences there. Narrowing the padding to `WRAPPER_CHARS` alone made them
+    // items again — `- ==END==` filed as an acceptance criterion.
+    ["ACCEPTANCE CRITERIA:\n- a\n- ==END==\n- b", "acceptanceCriteria", "- ==END=="],
+    ["ACCEPTANCE CRITERIA:\n- a\n- =END=\n- b", "acceptanceCriteria", "- =END="],
+    ["ACCEPTANCE CRITERIA:\n- == BEGIN ==\n- a criterion", "acceptanceCriteria", "- == BEGIN =="],
     ["NEVER CLAIM:\nEND=\n- a phrase", "neverClaim", "END="],
     ["NEVER CLAIM:\nEND =\n- a phrase", "neverClaim", "END ="],
     ["NEVER CLAIM:\n=END=\n- a phrase", "neverClaim", "=END="],
@@ -281,15 +288,31 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     ["NEVER CLAIM:\n==END==\n- a phrase", "neverClaim", "==END=="],
     ["NEVER CLAIM:\nBEGIN=\n- a phrase", "neverClaim", "BEGIN="],
     ["NEVER CLAIM:\n== BEGIN ==\n- a phrase", "neverClaim", "== BEGIN =="],
+    ["NEVER CLAIM:\n- a phrase\n- ==END==\n- b", "neverClaim", "- ==END=="],
+    ["NEVER CLAIM:\n- a phrase\n- =END=\n- b", "neverClaim", "- =END="],
+    ["NEVER CLAIM:\n- == BEGIN ==\n- a phrase", "neverClaim", "- == BEGIN =="],
   ];
   for (const [ctx, channel, fence] of typedCases) {
     const { directives } = parseOperatorDirectivesWithLines(ctx);
     const items = directives[channel] as string[];
     const wanted = channel === "neverClaim" ? "a phrase" : "a criterion";
-    // An END form closes the block before the bullet, so the channel is empty;
-    // a BEGIN form leaves it open, so the channel holds exactly the operator's
-    // line. Either way the fence text is never an item.
-    const expected = /END/i.test(fence) ? [] : [wanted];
+    // The AC rows with a bullet-prefixed BEGIN fence hold one operator line, so
+    // the expectation differs per shape rather than per channel: an END form
+    // closes the block before the bullet, so the channel is empty, and a BEGIN
+    // form leaves it open, so the channel holds exactly the operator's line. A
+    // BULLETED fence keeps the bullets above it, which is what main did and what
+    // these rows pin. Either way the fence text is never an item — and the bullet-prefixed rows
+    // below are the round-4 regression: main fenced them, and the class narrowed
+    // to `WRAPPER_CHARS` alone filed `- ==END==` as an acceptance criterion.
+    const expected = fence.startsWith("- ")
+      ? fence.includes("BEGIN")
+        ? [wanted]
+        : wanted === "a phrase"
+          ? ["a phrase"]
+          : ["a"]
+      : fence.includes("END")
+        ? []
+        : [wanted];
     assert(
       items.join("\u0000") === expected.join("\u0000"),
       `wrapper fence ${JSON.stringify(fence)} on a typed block yields ${JSON.stringify(expected)} (got ${JSON.stringify(items)})`,
