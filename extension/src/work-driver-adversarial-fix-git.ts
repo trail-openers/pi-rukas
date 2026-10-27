@@ -12,7 +12,20 @@ export type FixExec = NonNullable<DriverContext["verifyExecFn"]> | typeof execp;
 /** The shell-string executor, used when the driver supplies no `verifyExecFn`. */
 export const defaultExec: FixExec = execp;
 
-export type GitRead<T> = { ok: true; value: T } | { ok: false; reason: string };
+export type GitRead<T> = { ok: true; value: T } | GitReadFailure;
+
+/**
+ * A git read that FAILED, carrying no prose for a caller to branch on.
+ *
+ * Every `GitRead` refusal is safe to switch on for PASS/FAIL and fine to render
+ * for an operator. It is NOT fine to compare against a literal: a refusal whose
+ * text decides a security-relevant branch silently becomes the other branch the
+ * moment somebody rewords the sentence (#1852 review 1b). A caller that must
+ * CLASSIFY a failure carries a typed discriminant beside the reason instead —
+ * see `LensFixPlanned` / `LensFixPlanRefusal` in
+ * `work-driver-lens-fix-fence.ts`.
+ */
+export type GitReadFailure = { ok: false; reason: string };
 
 /** What a worktree holds relative to a commit: changed names, the diff, untracked files. */
 export interface TreeChanges {

@@ -213,7 +213,9 @@ console.log("# the RE-DISPATCH prompt prints the same fence");
       "the RE-DISPATCH prompt contains the same plan-time fence block — the second literal is not left unfenced",
     );
   } finally {
-    if (prevResume === undefined) process.env.PI_ENSEMBLE_RESUME = undefined;
+    // `delete`, never `= undefined`: the env-clear gate reads an assigned
+    // `undefined` as a string-coerced "undefined" left in the environment.
+    if (prevResume === undefined) delete process.env.PI_ENSEMBLE_RESUME;
     else process.env.PI_ENSEMBLE_RESUME = prevResume;
     rmSync(t.repoRoot, { recursive: true, force: true });
   }

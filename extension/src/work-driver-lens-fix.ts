@@ -19,7 +19,13 @@ import {
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
 import {
+  LENS_FIX_NO_WORKSTREAM,
+  lensFixPlanRefusalRecords,
+} from "./work-driver-lens-fix-fence-gate.ts";
+import {
   type LensFixPassPlan,
+  type LensFixPlanRefusal,
+  type LensFixPlanned,
   lensFixFenceLines,
   lensFixPassPlan,
   lensFixWorkstreamId,
@@ -194,15 +200,28 @@ export async function runLensFix(
   // the state file for the gate to read back. A fence the prompt rendered from
   // one tip and the gate checked against another is two fences.
   const roundTipBefore = await readTreeHead(execFn, fixTree);
+  // A tree HEAD that could not be read is NOT "no fence this round": it is the
+  // tree failing to answer, which is exactly what the gate must park on. It gets
+  // the same recorded refusal the planner's own read failures get (#1852 1a).
+  if (roundTipBefore === undefined) {
+    next = recordFenceUnavailable(next, state, fixTree, "the lens tree's HEAD could not be read");
+  }
   const fenceId = lensFixWorkstreamId(state.pipelineState.worktrees, fixTree);
   let fenceLines: string[] | undefined;
-  if (roundTipBefore !== undefined && fenceId !== undefined) {
-    const planned = await lensFixPassPlan(execFn, ctx.repoRoot, state.pipelineState, {
-      id: fenceId,
-      worktree: fixTree,
-      roundTip: roundTipBefore,
-      findings,
-    });
+  if (roundTipBefore !== undefined) {
+    const planned: LensFixPlanned =
+      fenceId === undefined
+        ? {
+            ok: false,
+            reason: LENS_FIX_NO_WORKSTREAM,
+            refusal: { kind: "no-workstream" },
+          }
+        : await lensFixPassPlan(execFn, ctx.repoRoot, state.pipelineState, {
+            id: fenceId,
+            worktree: fixTree,
+            roundTip: roundTipBefore,
+            findings,
+          });
     if (planned.ok) {
       fenceLines = lensFixFenceLines(planned.value);
       lensFixFenceState = fenceSnapshot(state, planned.value, fixTree);
@@ -214,29 +233,41 @@ export async function runLensFix(
       // "the fence was lost", because a trace is not in the state file after a
       // resume.
       //
-      // But the planner's ONE pre-git refusal is not that. "No valid base SHA is
-      // recorded" is a statement about the STATE — a state written by an older
-      // driver, or one that never set the field, is in the same shape and had no
-      // fence to require. Recording it would turn "no fence" into a recorded
-      // fence failure and park every such cycle, which makes #1852 a schema break
-      // rather than a fence. So it is traced, not recorded, and the gate — which
-      // reads records — does not run.
-      const neverHadAFence = planned.reason === "no valid base SHA is recorded";
-      if (!neverHadAFence) {
+      // But the planner's ONE pre-git refusal — "the state records no base SHA"
+      // — is not that. It is a statement about the STATE: a state written by an
+      // older driver, or one that never set the field, is in the same shape and
+      // had no fence to require. Recording it would turn "no fence" into a
+      // recorded fence failure and park every such cycle, which makes #1852 a
+      // schema break rather than a fence. So it is traced, not recorded, and the
+      // gate — which reads records — does not run. The decision is made on the
+      // planner's TYPED discriminant, never on its wording (#1852 review 1b).
+      const records = lensFixPlanRefusalRecords(planned.refusal);
+      if (records) {
         next = appendEvent(next, {
           kind: "lens-fix-fence-unavailable",
           at: Date.now(),
           round: state.pipelineState.reviewRound,
           worktree: fixTree,
-          reason: planned.reason,
+          reason: refusalReason(planned.refusal),
         });
       }
       trace(
-        neverHadAFence
-          ? `work-driver: lens-fix fence not applicable for this round — the state cannot support one (${planned.reason}); the prompt prints no fence and the gate does not run`
-          : `work-driver: lens-fix fence could not be built — the prompt prints no fence and the gate will park rather than skip the check: ${planned.reason}`,
+        records
+          ? `work-driver: lens-fix fence could not be built — the prompt prints no fence and the gate will park rather than skip the check: ${refusalReason(planned.refusal)}`
+          : `work-driver: lens-fix fence not applicable for this round — the state cannot support one (${refusalReason(planned.refusal)}); the prompt prints no fence and the gate does not run`,
       );
     }
+  } else if (roundTipBefore !== undefined) {
+    // The lens tree is not a recorded workstream (#1852-8). Like the missing
+    // base SHA, that is a statement about the STATE — an older driver or a
+    // pre-#1852 fixture has no `worktrees` entry naming the tree either — so it
+    // is traced, not recorded, and the gate stands down. The `else if` is what
+    // keeps it from firing twice: when the planner already spoke (its own
+    // `no-workstream` kind), its branch above has already rendered the record
+    // decision on the typed discriminant.
+    trace(
+      `work-driver: lens-fix fence not applicable for this round — no workstream records the lens tree ${fixTree}; the prompt prints no fence and the gate does not run`,
+    );
   }
   // #1391 — a retried fixer is told where its lost predecessor's work went.
   const lostNote = interruptedLensFixNote(state) ?? "";
@@ -318,21 +349,42 @@ export async function runLensFix(
   // made. Rebuild from the verified tip — the prompt and the gate still read ONE
   // value, because the prompt rendered below is built from this same rebuild.
   if (roundTipSha !== undefined && roundTipSha !== roundTipBefore) {
-    const rebuilt =
+    const rebuilt: LensFixPlanned =
       fenceId === undefined
-        ? undefined
+        ? {
+            ok: false,
+            reason: LENS_FIX_NO_WORKSTREAM,
+            refusal: { kind: "no-workstream" },
+          }
         : await lensFixPassPlan(execFn, ctx.repoRoot, state.pipelineState, {
             id: fenceId,
             worktree: fixTree,
             roundTip: roundTipSha,
             findings,
           });
-    if (rebuilt?.ok) {
+    if (rebuilt.ok) {
       fenceLines = lensFixFenceLines(rebuilt.value);
       lensFixFenceState = fenceSnapshot(state, rebuilt.value, fixTree);
     } else {
+      // #1852 review 1a — THE SAME DISCIPLINE AS THE PRE-DISPATCH ARM. This arm
+      // has just MOVED the tree (the reposition gate fast-forwarded it), the
+      // prompt printed no fence block, and `lensFixFenceState` is cleared below
+      // so the gate has nothing to judge. If it were only traced, a transient
+      // `git diff --name-only` failure here — the exact read the fixer's own
+      // work makes flakiest — would take the round through the gate's "no fence
+      // record, skip" branch and push whatever the fixer wrote, which is the
+      // hole #1852 exists to close. So the failure is RECORDED, with the same
+      // event the pre-dispatch arm writes, and the typed discriminant decides
+      // whether it is a failure at all: `no-base` means the state could never
+      // have had a fence, and standing down there is right.
+      const refusal = rebuilt.refusal;
+      if (lensFixPlanRefusalRecords(refusal)) {
+        next = recordFenceUnavailable(next, state, fixTree, refusalReason(refusal));
+      }
       trace(
-        `work-driver: lens-fix fence could not be rebuilt at the verified tip — the gate will park rather than skip the check: ${rebuilt?.reason ?? "no fence workstream"}`,
+        lensFixPlanRefusalRecords(refusal)
+          ? `work-driver: lens-fix fence could not be rebuilt at the verified tip — the prompt prints no fence and the gate will park rather than skip the check: ${refusalReason(refusal)}`
+          : `work-driver: lens-fix fence not applicable for this round — the state cannot support one (${refusalReason(refusal)}); the prompt prints no fence and the gate does not run`,
       );
       lensFixFenceState = undefined;
     }
@@ -418,6 +470,44 @@ export async function runLensFix(
     { tree: fixTree, tipSha: roundTipSha, jobId: fixerJobId },
     execFn,
   );
+}
+
+/**
+ * The operator-visible text of a refusal. The typed discriminant decides what
+ * gets RECORDED; this only renders it, so a reworded reason can never change a
+ * branch (`lensFixPlanRefusalRecords` answers that question).
+ */
+function refusalReason(refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_WORKSTREAM): string {
+  if (typeof refusal === "string") return refusal;
+  switch (refusal.kind) {
+    case "no-base":
+      return "the state records no base SHA, so no fence can be measured";
+    case "no-workstream":
+      return LENS_FIX_NO_WORKSTREAM;
+    default:
+      return refusal.reason;
+  }
+}
+
+/**
+ * Record that THIS round's fence could not be built, so the adversarial gate
+ * fails closed instead of skipping (#1852). One writer for every arm that
+ * reaches a dispatch without a fence: the gate's "no record" branch must be
+ * reachable only by a state that genuinely never had a fence to require.
+ */
+function recordFenceUnavailable(
+  state: WorkState,
+  round: WorkState,
+  worktree: string,
+  reason: string,
+): WorkState {
+  return appendEvent(state, {
+    kind: "lens-fix-fence-unavailable",
+    at: Date.now(),
+    round: round.pipelineState.reviewRound,
+    worktree,
+    reason,
+  });
 }
 
 /**

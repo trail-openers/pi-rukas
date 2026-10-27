@@ -58,6 +58,7 @@ import {
 import type { CycleContext } from "./work-driver-context.ts";
 import { fenceMatches } from "./work-driver-declared-path.ts";
 import { anchorDirs } from "./work-driver-declared-path.ts";
+import type { LensFixPlanRefusal } from "./work-driver-lens-fix-fence.ts";
 import { specPatternSlots } from "./work-driver-spec-slot-admission.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
 import type { LensFixFenceSnapshot } from "./workflow-state-schema.ts";
@@ -93,9 +94,10 @@ export interface LensFixFenceGateOpts {
   round: number;
   /**
    * Does this round RECORD a fence failure? `runLensFix` writes
-   * `lens-fix-fence-unavailable` when the planner refused to build the fence or
-   * a pre-dispatch git read failed, so the question is answerable from the state
-   * file alone — the same answer on the first pass and after a resume.
+   * `lens-fix-fence-unavailable` when a pre-dispatch git read failed, so the
+   * question is answerable from the state file alone — the same answer on the
+   * first pass and after a resume. A state that CANNOT support a fence records
+   * nothing (see `lensFixPlanRefusal`), and the gate does not run there.
    *
    * The two states the record separates:
    *
@@ -178,10 +180,38 @@ export function lensFixPlanFromSnapshot(
 }
 
 /**
+ * The lens-fix step's TYPED reason for not having a workstream to build a fence
+ * with (#1852 review item 1b). `runLensFix` cannot build a fence when no
+ * `pipelineState.worktrees` entry names the lens tree, and that — like a missing
+ * base SHA — is a statement about the STATE, not a failed read: an older driver
+ * or a pre-#1852 fixture is in the same shape and had no fence to require. The
+ * planner spells the same thing as `LensFixPlanRefusal`'s `no-workstream` kind;
+ * this is the token `runLensFix`'s own no-workstream branch records, so the
+ * state file and this module name it the same way.
+ */
+export const LENS_FIX_NO_WORKSTREAM = "no-workstream";
+
+/**
+ * Does a planner refusal need recording as a fence failure? A refusal whose
+ * `kind` is a property of the STATE (`no-base`, `no-workstream`) does not: there
+ * was no fence to require, so standing down is right and recording it would
+ * park every older-driver state. Every other refusal does, because a fence was
+ * supposed to exist and does not — and a round that lands unchecked in that
+ * shape is the pre-#1852 hole.
+ */
+export function lensFixPlanRefusalRecords(
+  refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_WORKSTREAM,
+): boolean {
+  return typeof refusal === "string"
+    ? true // `LENS_FIX_NO_WORKSTREAM`: the token itself is the failure record
+    : refusal.kind === "unavailable";
+}
+
+/**
  * Does this round RECORD a fence failure? `runLensFix` writes
- * `lens-fix-fence-unavailable` when the planner refused to build the fence or a
- * pre-dispatch git read failed, so the question is answerable from the state file
- * alone — the same answer on the first pass and after a resume.
+ * `lens-fix-fence-unavailable` when a pre-dispatch git read failed (or when no
+ * workstream records the lens tree), so the question is answerable from the
+ * state file alone — the same answer on the first pass and after a resume.
  *
  * Two states must not be confused, and the record is what separates them:
  *
@@ -209,12 +239,12 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
     // No fence is recorded for this round, and that is NOT the same as a fence
     // that was built and then broken. The two cannot be treated alike:
     //
-    //   - A round whose step TRIED to build the fence and could not — the planner
-    //     refused, or a pre-dispatch git read failed — has that refusal on the
-    //     event log (`lens-fix-fence-unavailable`). It is fail-closed: the fence
-    //     was part of this round, the fixer's prompt was built beside it, and the
-    //     record did not survive to the gate. Landing unchecked is the pre-#1852
-    //     hole.
+    //   - A round whose step TRIED to build the fence and could not — a
+    //     pre-dispatch git read failed, or no workstream records the lens tree —
+    //     has that refusal on the event log (`lens-fix-fence-unavailable`). It is
+    //     fail-closed: the fence was part of this round, the fixer's prompt was
+    //     built beside it, and the record did not survive to the gate. Landing
+    //     unchecked is the pre-#1852 hole.
     //   - A round with NO fence record at all — an older driver wrote the state,
     //     a fixture from before this change, a resume whose file predates the
     //     field — has nothing to be judged against and the gate DOES NOT RUN.
@@ -237,7 +267,7 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
       ok: false,
       notes: [],
       reason:
-        "this round recorded that its lens-fix fence could not be built (the planner refused, or a pre-dispatch git read failed), so the round cannot be cleared — nothing was pushed",
+        "this round recorded that its lens-fix fence could not be built (a pre-dispatch git read failed, or no workstream records the lens tree), so the round cannot be cleared — nothing was pushed",
     };
   }
   if (snap.round !== opts.round) {
@@ -247,26 +277,40 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
       reason: `the recorded lens-fix fence belongs to round ${snap.round}, not the round being gated (${opts.round}) — the gate refuses to judge this delta against a fence built for another round`,
     };
   }
+  // A record that is PRESENT but incomplete cannot judge anything (#1852 review
+  // item 1d). Absence is the older-driver case and stands down; presence is the
+  // round's claim that it HAD a fence, so a half-record parks rather than being
+  // filled in with defaults — `lensFixPlanFromSnapshot` on a partial record
+  // would build a fence from `undefined` arrays and refuse nothing, which is a
+  // pass manufactured from corruption.
+  const corrupt = lensFixFenceFindings(snap);
+  if (corrupt.length > 0) {
+    return fail(
+      `the recorded lens-fix fence is not a complete record, so this round cannot be cleared: ${corrupt.join("; ")} — nothing was pushed`,
+    );
+  }
   const plan = lensFixPlanFromSnapshot(snap, opts.tree, opts.state.pipelineState);
   // Both reads, both required (the fix pass's own lesson, recorded in
   // `postPassFault`): a file the fixer created and never staged is in git's
   // untracked list and in NO commit range.
   //
-  // A read that FAILS is not a refusal and not a pass — it is "could not tell",
-  // and the driver does not park a cycle on its own broken measurement. The
-  // distinction that matters lives with the fence's CONTENT (outOfScope,
-  // protected paths, the declared set), and that content was settled at plan
-  // time and printed to the fixer; a gate that cannot enumerate the round's
-  // files has no basis to widen a refusal the planner already made, so it
-  // degrades to a trace and lets the landing arms run as they did before #1852.
-  // A FALSE PASS is the risk, and it is bounded: every file the reads DID
-  // produce is still judged, and the reads fail only when git itself fails.
+  // A read that FAILS PARKS (PM decision #1852, review item 1c). The gate used
+  // to trace-and-skip here, on the reasoning that a cycle must not die because
+  // the driver's own git read broke. That reasoning inverted the failure: a
+  // transient `git diff --name-only` failure is exactly as likely as the one
+  // that stops the STEP from building a fence at all — and the step's version
+  // of that failure parks, while this one pushed whatever the fixer had written
+  // with nothing judged. So "could not measure the round's delta" is not a pass
+  // when the round HAD a fence: the fence is never left unchecked, and the only
+  // way a round lands is with its delta actually judged. `unavailable` on the
+  // step side and `skip` here were the same event producing two outcomes, which
+  // is the half of the hole the reviewer found.
   const head = await headOf(opts.execFn, opts.tree);
-  if (!head.ok) return skip(`the lens tree's HEAD could not be read: ${head.reason}`);
+  if (!head.ok) return fail(`the lens tree's HEAD could not be read: ${head.reason}`);
   const range = await committedChanges(opts.execFn, opts.tree, snap.roundTip, head.value);
-  if (!range.ok) return skip(`the round's commit range could not be read: ${range.reason}`);
+  if (!range.ok) return fail(`the round's commit range could not be read: ${range.reason}`);
   const delta = await treeChanges(opts.execFn, opts.tree, snap.roundTip);
-  if (!delta.ok) return skip(`the lens tree could not be read: ${delta.reason}`);
+  if (!delta.ok) return fail(`the lens tree could not be read: ${delta.reason}`);
   const passFiles = [...new Set([...range.value, ...delta.value.names, ...delta.value.untracked])];
   if (passFiles.length === 0) return { ok: true, notes: [] };
 
@@ -331,16 +375,71 @@ function fail(reason: string, notes: string[] = []): LensFixFenceVerdict {
 }
 
 /**
- * The gate could not measure the tree. Logged loudly, and NOT a park: the
- * driver does not stop a cycle because its own git read failed, and the
- * alternative (refusing on an unreadable delta) parks a cycle whose change may
- * be entirely in fence. The trace is the disclosure.
+ * The shape of a `LensFixFenceSnapshot` that got into the state file whole
+ * enough to be an object but is missing a field, or carries one of the wrong
+ * type (#1852 review item 1d).
+ *
+ * `pipelineState.lensFixFence` is read through an untyped cast in `readState`,
+ * so the type is a compile-time claim only: a hand edit, a truncated write, or
+ * an older build's partial record reaches the gate as `undefined` fields, and
+ * `lensFixPlanFromSnapshot` turns a missing `fence` into a crash and a missing
+ * `declared` into a fence that admits nothing and refuses nothing at once. The
+ * #533 rule applies here as it does to `prDraft` and `commitPrRoot`: the cast
+ * is the only runtime gate, so a partial record is a confident wrong answer and
+ * must be reported, not executed. Absent validates (see `lensFixFenceCheck` —
+ * no record at all is the older-driver case and is not judged).
  */
-function skip(reason: string, notes: string[] = []): LensFixFenceVerdict {
-  trace(
-    `work-driver: lens-fix fence SKIPPED (its own read failed, so nothing was judged) — ${reason.slice(0, 200)}`,
-  );
-  return { ok: true, notes: [...notes, `fence skipped: ${reason}`] };
+export function lensFixFenceFindings(snapshot: unknown): string[] {
+  if (snapshot === undefined || snapshot === null) return [];
+  if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return ["pipelineState.lensFixFence is not an object"];
+  }
+  const out: string[] = [];
+  const s = snapshot as Record<string, unknown>;
+  for (const field of ["roundTip", "workstreamId", "worktree", "findings"] as const) {
+    if (typeof s[field] !== "string" || s[field] === "") {
+      out.push(`pipelineState.lensFixFence.${field} is missing or not a string`);
+    }
+  }
+  for (const field of ["round"] as const) {
+    if (typeof s[field] !== "number" || !Number.isFinite(s[field] as number)) {
+      out.push(`pipelineState.lensFixFence.${field} is missing or not a finite number`);
+    }
+  }
+  for (const field of ["declared", "named", "candidates"] as const) {
+    if (!Array.isArray(s[field]) || !s[field].every((x) => typeof x === "string")) {
+      out.push(`pipelineState.lensFixFence.${field} is missing or not an array of strings`);
+    }
+  }
+  const fence = s.fence;
+  if (typeof fence !== "object" || fence === null || Array.isArray(fence)) {
+    out.push("pipelineState.lensFixFence.fence is missing or not an object");
+  } else {
+    const f = fence as Record<string, unknown>;
+    if (typeof f.id !== "string" || f.id === "") {
+      out.push("pipelineState.lensFixFence.fence.id is missing or not a string");
+    }
+    if (typeof f.ceilingBasis !== "string") {
+      out.push("pipelineState.lensFixFence.fence.ceilingBasis is missing or not a string");
+    }
+    for (const field of [
+      "admits",
+      "declared",
+      "helperDirs",
+      "passChanged",
+      "outOfScope",
+    ] as const) {
+      if (!Array.isArray(f[field]) || !f[field].every((x) => typeof x === "string")) {
+        out.push(`pipelineState.lensFixFence.fence.${field} is missing or not an array of strings`);
+      }
+    }
+    for (const field of ["ceiling", "admittingSlots"] as const) {
+      if (typeof f[field] !== "number" || !Number.isFinite(f[field] as number)) {
+        out.push(`pipelineState.lensFixFence.fence.${field} is missing or not a finite number`);
+      }
+    }
+  }
+  return out;
 }
 
 /** The fix pass's ONE fence predicate, re-exported for the gate's own tests. */

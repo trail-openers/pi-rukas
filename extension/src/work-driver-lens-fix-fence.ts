@@ -83,6 +83,33 @@ export function lensFixWorkstreamId(
   return entries.find(([, p]) => resolve(p) === resolve(tree))?.[0];
 }
 
+/**
+ * Why the planner could not build a fence (#1852 review item 1b).
+ *
+ * The gate has to tell two refusals apart, and it must not do it by comparing
+ * prose: `runLensFix` records one of these as a fence FAILURE (and the gate
+ * parks on it) while the other only says the STATE cannot support a fence — a
+ * state file written before the field existed, or by an older driver. Both
+ * arrived as the same string (`"no valid base SHA is recorded"`), and a worded
+ * match silently becomes a no-match whenever the sentence is reworded: the
+ * recorded-failure branch goes quiet and the round lands unchecked, which is
+ * the hole #1852 exists to close. A discriminant is not rewordable.
+ */
+export type LensFixPlanRefusal =
+  /** The state records no usable base SHA: there is no fence to require. */
+  | { kind: "no-base" }
+  /** No `pipelineState.worktrees` entry names the lens tree: also a statement
+   *  about the STATE, so also not a fence failure. */
+  | { kind: "no-workstream" }
+  /** Every other refusal (an unreadable tree, base or round tip): a fence
+   *  should exist and does not, so the round fails closed. */
+  | { kind: "unavailable"; reason: string };
+
+/** The planner's result: a fence, or a TYPED refusal (never a bare reason). */
+export type LensFixPlanned =
+  | { ok: true; value: LensFixPassPlan }
+  | ({ ok: false; reason: string } & { refusal: LensFixPlanRefusal });
+
 /** What the gate reads and the prompt renders: the fence, plus its basis. */
 export interface LensFixPassPlan {
   id: string;
@@ -106,19 +133,47 @@ export interface LensFixPassPlan {
  * Build the lens-fix fence. Every read fails closed: an unreadable tree, base or
  * round tip is a named reason, never an empty fence — a fence built from a read
  * that failed would refuse nothing and tell the fixer it was bounded.
+ *
+ * The refusal is TYPED (`LensFixPlanRefusal`), not a sentence: the caller
+ * records `unavailable` as a fence failure and stays silent on `no-base`, and
+ * the distinction decides whether a round lands unchecked.
  */
 export async function lensFixPassPlan(
   execFn: FixExec,
   repoRoot: string,
   ps: PipelineState,
   input: LensFixFenceInput,
-): Promise<GitRead<LensFixPassPlan>> {
+): Promise<LensFixPlanned> {
+  // The ONE pre-git refusal, classified BEFORE the reads: `trackedPaths`
+  // reports it in prose, and prose is what the caller must not switch on.
+  if (!ps.baseSha) {
+    return {
+      ok: false,
+      reason: "no valid base SHA is recorded",
+      refusal: { kind: "no-base" },
+    };
+  }
   const tracked = await trackedPaths(execFn, repoRoot, ps.baseSha);
-  if (!tracked.ok) return tracked;
-  const cycle = await committedChanges(execFn, input.worktree, ps.baseSha ?? "", input.roundTip);
-  if (!cycle.ok) return cycle;
-  const before = await treeChanges(execFn, input.worktree, ps.baseSha ?? "");
-  if (!before.ok) return before;
+  if (!tracked.ok)
+    return {
+      ok: false,
+      reason: tracked.reason,
+      refusal: { kind: "unavailable", reason: tracked.reason },
+    };
+  const cycle = await committedChanges(execFn, input.worktree, ps.baseSha, input.roundTip);
+  if (!cycle.ok)
+    return {
+      ok: false,
+      reason: cycle.reason,
+      refusal: { kind: "unavailable", reason: cycle.reason },
+    };
+  const before = await treeChanges(execFn, input.worktree, ps.baseSha);
+  if (!before.ok)
+    return {
+      ok: false,
+      reason: before.reason,
+      refusal: { kind: "unavailable", reason: before.reason },
+    };
   const ws = ps.workstreams?.[input.id];
   const declared = (ws?.paths ?? []).map(entryPath);
   // #1852-2 — one reading of "what this cycle owns", shared by the widening and
