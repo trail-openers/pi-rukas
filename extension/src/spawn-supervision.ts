@@ -1,6 +1,14 @@
 /**
- * spawn-supervision — the three spawn-level timers that KILL, extracted from
- * `spawn.ts` for the AGENTS.md §12 size cap.
+ * spawn-supervision — the two spawn-level timers that KILL and are owned by
+ * neither the caps session nor the per-child bound, extracted from `spawn.ts`
+ * for the AGENTS.md §12 size cap.
+ *
+ * What ends a child from outside is spread over four modules by WHO owns the
+ * budget, and this one holds the two that are neither structural caps
+ * (`spawn-caps.ts`) nor the run bound (`spawn-child-bound.ts`): the caller's
+ * wall-clock backstop and Pi's user-cancel. The inactivity/tool-inactivity poll
+ * is a third reason and lives in `spawn-inflight.ts`, watching stdout rather
+ * than a fixed budget.
  *
  * They are one module because they are one idea: each is a timer armed for the
  * child's lifetime that ends it from outside the normal flow, and each must

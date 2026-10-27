@@ -124,7 +124,7 @@ function baseResult(over: Partial<DispatchResult> = {}): DispatchResult {
       reported: () => false,
       boundArmed: () => false,
       willRetry: () => false,
-    exited: () => false,
+      exited: () => false,
       ...over,
     };
     const stop = createVerdictStop();

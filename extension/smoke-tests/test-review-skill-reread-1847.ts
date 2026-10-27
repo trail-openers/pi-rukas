@@ -33,7 +33,7 @@ import {
   observeReviewBounds,
   reviewSkillReadCap,
 } from "../src/review-bounds.ts";
-import { isNestedToolStart, nestedEventReadsSkill } from "../src/review-bounds-nested.ts";
+import { nestedSkillRead } from "../src/review-bounds-nested.ts";
 import { skillFileCandidates } from "../src/lens-skill-path.ts";
 import { SKILL_RESOLVED } from "./lib/lens-skill-proof-fixtures.ts";
 
@@ -158,28 +158,55 @@ function targets(calls: string[], over: Partial<ReviewBoundTargets> = {}): Revie
   assert(g.count() === 1, "(A3) canary: the real nested read still counts in this guard");
 }
 
-/* ── (A4) the predicate's own guards, called directly so a mutation in the
- * nested leaf is visible even where the guard's candidate lists would mask it. */
+/* ── (A4) the predicate's own guards, driven through the ONE exported
+ * conjunction. The two halves (`isNestedToolStart`, `nestedEventReadsSkill`) are
+ * module-private since #1847 — they are only ever correct as a pair, so a
+ * mutation in either is observed here as the count the cap acts on, which is
+ * stronger than unit-testing a half no caller is allowed to use alone. */
 {
   assert(
-    nestedEventReadsSkill(nestedStart("read", { path: SKILL_FILE }), DIRS, WANTS),
+    nestedSkillRead(nestedStart("read", { path: SKILL_FILE }), DIRS, WANTS),
     "(A4) the nested predicate credits a read of the skill",
   );
   assert(
-    !nestedEventReadsSkill(nestedStart("write", { path: SKILL_FILE, content: "x" }), DIRS, WANTS),
+    !nestedSkillRead(nestedStart("write", { path: SKILL_FILE, content: "x" }), DIRS, WANTS),
     "(A4) …and refuses a write to it (a mutation trap for a matcher that only looked at path)",
   );
   assert(
-    !isNestedToolStart(topLevelStart("read", { path: SKILL_FILE })),
+    !nestedSkillRead(topLevelStart("read", { path: SKILL_FILE }), DIRS, WANTS),
     "(A4) a top-level tool_execution_start is not a nested start, so the feed never double-counts it",
   );
   assert(
-    isNestedToolStart(nestedStart("read", { path: SKILL_FILE })),
-    "(A4) …and a call carrying parentToolCallId is (the gate is real, not always-false)",
+    nestedSkillRead(nestedStart("read", { path: SKILL_FILE }), DIRS, WANTS) &&
+      !nestedSkillRead(topLevelStart("read", { path: SKILL_FILE }), DIRS, WANTS),
+    "(A4) …and the nesting gate is real, not always-true: the same event WITH a parentToolCallId counts",
   );
   assert(
-    !nestedEventReadsSkill(nestedStart("read", { path: SKILL_FILE }), DIRS, []),
+    !nestedSkillRead(nestedStart("read", { path: SKILL_FILE }), DIRS, []),
     "(A4) no candidate list, no count (the guard's inactive shape)",
+  );
+  // #1847 hot path: the nested reader returns BEFORE tokenising unless the tool
+  // is one that can open a file. `edit`/`write`/`codemode` carry args that are
+  // objects and, for a bash-shaped fixture, could otherwise reach the command
+  // parser; each must be refused on the tool name alone. A child that spent its
+  // run on those tools was paying the tokenisation for every nested call.
+  for (const name of ["edit", "write", "multiedit", "codemode", "grep", "ls", ""]) {
+    assert(
+      !nestedSkillRead(nestedStart(name, { command: `cat ${SKILL_FILE}` }), DIRS, WANTS),
+      `(A4) a nested \`${name || "(no toolName)"}\` is refused on its tool name, before any tokenising`,
+    );
+  }
+  // …while the bash reader verb still counts, so the gate above is a pre-filter
+  // and not the verdict: the verb judgement stays in the shared predicate.
+  assert(
+    nestedSkillRead(nestedStart("bash", { command: `cat ${SKILL_FILE}` }), DIRS, WANTS),
+    "(A4) …and a nested bash reader verb still counts (the gate admits, the predicate decides)",
+  );
+  // Case-insensitive on the tool name: the top-level path lowercases before
+  // matching, so the nested gate must not be the one place a `Read` slips past.
+  assert(
+    nestedSkillRead(nestedStart("Read", { path: SKILL_FILE }), DIRS, WANTS),
+    "(A4) a nested `Read` (mixed case) still counts, matching the message path's lowercasing",
   );
 }
 

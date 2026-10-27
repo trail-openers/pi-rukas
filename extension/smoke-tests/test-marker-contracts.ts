@@ -16,10 +16,14 @@
  *      new hand-rolled parser fails here),
  *   4. the intent gate's weaker private `readToken` duplicate stays dead —
  *      the shared reader (last-match, colon-optional, bold-tolerant,
- *      heading-form) is the only prose-marker parser.
+ *      heading-form) is the only prose-marker parser,
+ *   5. a `retired` row is genuinely unread — no module passes its token to
+ *      `readEnumMarker` — and says why (#1847: the retired `Skill Load Status`
+ *      row pointed its consumer at reply-markers.ts, the registry's own module,
+ *      so the existence-and-token check passed on the row's own declaration).
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { MARKER_CONTRACTS } from "../src/reply-markers.ts";
 import { PARK_REASONS } from "../src/work-driver-intent.ts";
@@ -36,8 +40,24 @@ function assert(cond: boolean, msg: string) {
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 const read = (f: string) => readFileSync(path.join(SRC, f), "utf8");
 
+/** Every .ts under src/ (recursive), as paths relative to it. Used by the
+ * retired-row check, which has to look at ALL consumers rather than one. */
+function listSrcFiles(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) out.push(...listSrcFiles(path.join(dir, entry.name), `${prefix}${entry.name}/`));
+    else if (entry.name.endsWith(".ts")) out.push(`${prefix}${entry.name}`);
+  }
+  return out;
+}
+
 // 1 + 2 — each row's consumer exists, names the token, and carries every value.
+// A RETIRED row is checked by the opposite rule below, and is skipped here:
+// naming a consumer for a marker nothing reads would have the canary assert
+// "the file contains the token" about a file whose only occurrence of it is the
+// registry row declaring the retirement — the gate quoting its own entry.
 for (const c of MARKER_CONTRACTS) {
+  if (c.retired) continue;
   let source = "";
   try {
     source = read(c.consumer);
@@ -54,6 +74,35 @@ for (const c of MARKER_CONTRACTS) {
     );
   }
   assert(c.onAbsence.length > 10, `contract ${c.token}: on-absence policy is stated`);
+}
+
+// 1b — a retired row must (a) say why, and (b) be genuinely unread: no module
+// under src/ passes its token to the shared reader. Without (b) the flag is a
+// comment, and a marker someone re-started reading would still be declared dead
+// — the exact silent-divergence this registry exists to prevent, in costume.
+{
+  const retired = MARKER_CONTRACTS.filter((c) => c.retired);
+  assert(retired.length > 0, "the registry has at least one retired row to exercise this path");
+  const srcFiles = listSrcFiles(SRC);
+  const readers = srcFiles.filter((f) => /readEnumMarker\s*\(/.test(read(f)));
+  for (const c of retired) {
+    assert(
+      !!c.retiredReason && c.retiredReason.length > 40,
+      `retired contract ${c.token}: states why nothing reads it and where the fact comes from now`,
+    );
+    // The token must not be an argument to a reader call anywhere. Each reader
+    // call site is inspected rather than the whole file, so a prose comment
+    // mentioning the token does not fail the retirement.
+    const stillRead = readers.filter((f) =>
+      [...read(f).matchAll(/readEnumMarker\s*\(([^;]*?);/gs)]
+        .map((m) => m[1] ?? "")
+        .some((call) => call.includes(`"${c.token}"`) || call.includes(`'${c.token}'`)),
+    );
+    assert(
+      stillRead.length === 0,
+      `retired contract ${c.token}: no module reads it with readEnumMarker${stillRead.length ? ` (still read in ${stillRead.join(", ")})` : ""}`,
+    );
+  }
 }
 
 // 3 — the known marker-consuming modules all appear as consumers. Adding a

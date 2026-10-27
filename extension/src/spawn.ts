@@ -51,8 +51,9 @@ import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.t
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
 import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
-// The two remaining spawn-level KILLING timers, extracted for the §12 size cap
-// (spawn-supervision.ts holds the third reason a child is ended from outside).
+// The two spawn-level KILLING timers owned by neither the caps session nor the run
+// bound (§12 size cap). A child is ended from outside by four owners: these two,
+// the inactivity poll (spawn-inflight.ts), the caps (spawn-caps.ts), the bound.
 import { attachAbortKill, createWallClockBackstop } from "./spawn-supervision.ts";
 import {
   STDERR_TAIL_BYTES,
@@ -458,9 +459,8 @@ async function spawnSpecialistInner(
   reviewBounds.apply(result, appendStderr, traceWarn);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
-  // #1847 — the wall-clock budgets each kill records, folded into the result by
-  // #1847 — the wall-clock budget behind each silence kill
-  // (spawn-review-bounds.ts).
+  // #1847 — the wall-clock budget behind each kill, folded onto the result by the
+  // shared helper (spawn-review-bounds.ts), which owns writing kills into results.
   recordKillBudgets(result, {
     timeoutMs,
     clamped: bound.clamped,
