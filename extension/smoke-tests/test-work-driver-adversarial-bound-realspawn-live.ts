@@ -215,22 +215,17 @@ try {
         error?: { code?: string };
         issues?: Array<{ issue: number }>;
       };
-      // KNOWN GAP, deliberately asserted as-is rather than wished away. Through
-      // the two-process supervisory path the document the host reads is the
-      // OUTER supervisor's: its child (the runner) honoured the wedge and exited
-      // 30, but the supervisor only sees an exit code with no stdout of its own
-      // to forward, and reports `crash — exited 30 without a result`. Verified by
-      // invoking the runner directly: the INNER guarantee does emit
-      // `driver-wedged`. So the guarantee holds one layer down, and this
-      // assertion pins the layer the host actually sees, which is the part still
-      // unfixed: superviseWork must tell a child that died from one the
-      // guarantee already answered. test-headless-runner-result-document.ts
-      // asserts `driver-wedged` at the unit layer and passes; this one is the
-      // integration-side TODO, red on purpose.
+      // #1863 — the supervisory wedge is the OUTER process's view of a run whose
+      // inner guarantee answered. The runner (the supervisor's child) honours the
+      // wedge, prints `driver-wedged` with its own exitCode 30 and exits 30; the
+      // supervisor now forwards those bytes and that code unchanged instead of
+      // overwriting them with its own `crash` projection (which is what the host
+      // reads, since only the supervisor's stdout reaches the host). Verified here
+      // end to end; `test-headless-runner-result-document.ts` asserts the inner
+      // half and `test-headless-supervise.ts` both directions of the passthrough.
       assert(
-        doc.error?.code === "driver-wedged" ||
-          (doc.error?.code === "crash" && out.code === 30),
-        `the supervisory wedge is reported and exits 30 (driver-wedged is the goal; crash+30 is the known gap) (error=${JSON.stringify(doc.error)})`,
+        doc.error?.code === "driver-wedged",
+        `the supervisory wedge reports the runner's own driver-wedged document (error=${JSON.stringify(doc.error)})`,
       );
       assert(
         doc.exitCode === 30 && out.code === 30,
