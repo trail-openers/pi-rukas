@@ -69,7 +69,17 @@ export interface ExitAwaitOpts {
  * which is the shape of a child that trapped the signal and was never reaped.
  * Never rejects: a dispatch must always resolve, because the driver's routing,
  * the handoff and the headless result document all hang off it.
+ *
+ * #1863 — THE HANDLE, named: the old `once(child, "exit")` was kept alive only
+ * by the child's own libuv process handle. Nothing supervising the child keeps it
+ * alive — the bound's timers, the cap grace polls, the inactivity poll and this
+ * module's ceiling are all `unref()`d — so once the child's handle stopped being
+ * ref'd the only ref'd thing left was the 2 h wall-clock backstop, and a driver
+ * that reached this await with a wedged child waited for an event that never came
+ * while nothing it owned could still report anything. bun then drained the loop
+ * and the runner was gone with no result document.
  */
+
 export async function awaitExitWithin(
   child: ChildProcess,
   opts: ExitAwaitOpts = {},

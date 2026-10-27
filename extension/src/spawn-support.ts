@@ -151,6 +151,32 @@ export const STDERR_TAIL_BYTES = 64 * 1024;
  *
  * Exported for unit testing — the live spawn smoke is slow.
  */
+/**
+ * The recent-stderr ring. Spawn keeps a bounded tail rather than the whole
+ * stream: failure reports carry the last ~`STDERR_TAIL_BYTES` and nothing else.
+ * Buffers, concatenated once at end-of-spawn, so no ConsString tree builds up
+ * (and no SlowFlatten when the tail is finally read).
+ */
+export function createStderrTail(maxBytes: number): {
+  append: (chunk: Buffer | string) => void;
+  toString: () => string;
+} {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  return {
+    append: (chunk) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+      chunks.push(buf);
+      size += buf.length;
+      while (size > maxBytes && chunks.length > 1) {
+        const evicted = chunks.shift();
+        if (evicted) size -= evicted.length;
+      }
+    },
+    toString: () => Buffer.concat(chunks).toString("utf8"),
+  };
+}
+
 export function buildCwdHint(cwd: string | undefined): string {
   if (!cwd) return "";
   return `[runtime context: your shell starts in ${cwd}. Do NOT 'cd' to any worktree path — you are already there. If you genuinely need to operate on a different directory, use the tool's flag (\`git -C <path>\`, \`cargo --manifest-path <path>\`, \`npm --prefix <path>\`) — never \`cd && X\`, which prompts the user and caches as an exact-hash entry that never re-matches.]\n\n`;

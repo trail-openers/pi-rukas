@@ -36,6 +36,7 @@ import { capKillAttribution } from "./spawn-caps.ts";
 import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import { EXIT_AWAIT_GRACE_MS, awaitExitWithin } from "./spawn-exit-await.ts";
+
 import {
   applyUserExtension,
   discoverInstalledExtensions,
@@ -61,6 +62,7 @@ import {
   buildChildArgs,
   buildCwdHint,
   childHasExited,
+  createStderrTail,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
@@ -198,20 +200,8 @@ async function spawnSpecialistInner(
   // runningState; see its docstring for what the gap hid.
   let lastAgentEnd: PiJsonEvent | null = null;
   let lastAssistantMessageEnd: PiJsonEvent | null = null;
-  // stderr is surfaced only as a tail in failure reports. Keep the most
-  // recent ~STDERR_TAIL_BYTES of bytes via a ring of Buffers; concat once
-  // at end-of-spawn to a flat string (no ConsString tree → no SlowFlatten).
-  const stderrChunks: Buffer[] = [];
-  let stderrSize = 0;
-  const appendStderr = (chunk: Buffer | string): void => {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
-    stderrChunks.push(buf);
-    stderrSize += buf.length;
-    while (stderrSize > STDERR_TAIL_BYTES && stderrChunks.length > 1) {
-      const evicted = stderrChunks.shift();
-      if (evicted) stderrSize -= evicted.length;
-    }
-  };
+  const stderrTail = createStderrTail(STDERR_TAIL_BYTES);
+  const appendStderr = (chunk: Buffer | string): void => stderrTail.append(chunk);
   // Running state shared with the parent's onProgress callback. Each child
   // gets its own state; lens-review aggregates over 6 of them in parallel.
   const runningState = emptyRunningState(spec.role, opts.tag);
@@ -405,39 +395,16 @@ async function spawnSpecialistInner(
   // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
   // execute promise resolves and Pi un-stuck immediately (guarded in the
   // helper, #1510).
+  // #1863 — nothing supervising this child keeps the event loop alive (bound,
+  // caps and inactivity timers are all `unref()`d), so the exit await needed a
+  // bound of its own. The handle that kept it alive: `awaitExitWithin`.
   const detachAbortKill = attachAbortKill(child, opts.signal, () => {
     flags.setAborted(true);
   });
 
   let exitCode: number | null = null;
   try {
-    // #1863 — the exit await is now BOUNDED.
-    //
-    // THE HANDLE, named: `await once(child, "exit")` is kept alive by the
-    // child's own libuv process handle — the one `node:child_process` spawns
-    // and the one Node `unref()`s only when someone calls `child.unref()`. It
-    // is NOT kept alive by any of the supervision timers: the bound's timers
-    // are `unref()`d at `spawn-child-bound.ts:202`, the cap grace polls at
-    // `spawn-caps.ts:257/338`, and the inactivity poll at
-    // `spawn-inflight.ts:204`. So when the child's handle stops being ref'd
-    // (Node's documented behaviour: stdio pipes being consumed release it, and
-    // `registerChild`'s reaper does not re-ref it) the ONLY ref'd thing left
-    // after a bound kill is the wall-clock backstop at 2 h — and a driver that
-    // reached this await with a wedged child waited for an event that never
-    // came while nothing it owned could still report anything. bun then drains
-    // the loop and the runner is gone with no result document.
-    //
-    // `awaitExitWithin` ends the wait itself: it polls the one liveness signal
-    // every supervisor already agrees on (`childHasExited`), and resolves on a
-    // hard ceiling past the kill's grace window. A dispatch therefore always
-    // resolves — which is the precondition for the driver routing the kill to
-    // a handoff, for the headless run exiting 10 instead of 30, and for the
-    // runner printing its one result document.
     [exitCode] = await awaitExitWithin(child, {
-      // Past the SIGKILL escalation's own grace window plus a wide margin: a
-      // child that has not exited by then is not going to, and the escalation
-      // has already had its turn (spawn-kill.ts arms SIGKILL at KILL_GRACE_MS
-      // for a group child).
       graceMs: EXIT_AWAIT_GRACE_MS,
       kill: () => killProcessTree(child),
     });
@@ -464,9 +431,7 @@ async function spawnSpecialistInner(
   // they report (`traceKillCauses`, spawn-watchdog.ts).
   traceKillCauses(flags, timeoutMs, appendStderr);
 
-  // Final flat string from the ring buffer (bounded; no SlowFlatten on the
-  // 64KB total even if the rest of the spawn ran a regex over it).
-  const stderr = Buffer.concat(stderrChunks).toString("utf8");
+  const stderr = stderrTail.toString();
   const ms = Date.now() - start;
   const result = collapseEvents(
     lastAgentEnd,
