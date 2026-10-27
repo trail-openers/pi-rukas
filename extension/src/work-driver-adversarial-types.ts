@@ -110,6 +110,13 @@ export interface AdversarialOutcome {
   completionEvent?: WorkEvent;
   failureEvent?: WorkEvent;
   branchEvent?: WorkEvent;
+  /**
+   * #1863 — the write-ahead id this pass cleared in its `finally`, so the
+   * fan-out's splice can drop it from `inFlightJobIds`. Each pass holds its own
+   * copy of the log (its marker plus its dispatch events), so the merge has to
+   * be told which ids its passes finished: `next` never saw the clears.
+   */
+  clearedJobId?: string;
 }
 
 /** The `outcome` a per-workstream event records. */

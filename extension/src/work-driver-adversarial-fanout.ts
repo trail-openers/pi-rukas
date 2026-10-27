@@ -52,12 +52,12 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { beginDispatch, clearDispatch, mintJobId } from "./work-driver-resume.ts";
+import { clearDispatch, markDispatchStarted, mintJobId } from "./work-driver-resume.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { providerSleep } from "./work-driver-step-router.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { driverGateCmd } from "./work-driver-verify-pr17.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 export { capKillOutcomeFields };
 
 /**
@@ -111,10 +111,6 @@ export async function fanOutAdversarial(
     cancelStepNotice();
     return { next: final, ...rest };
   };
-  let next: WorkState = {
-    ...state,
-    pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
-  };
   // #485/#486 — on re-entry, the previous pass's per-workstream records are
   // REPLACED where the re-run workstreams produced a fresh batch (R1): the
   // fresh batch is spliced over the previous batch's span (below), so each
@@ -125,6 +121,10 @@ export async function fanOutAdversarial(
   // errorTail. The span is captured by the caller on the ORIGINAL event
   // log — BEFORE this pass's events are appended.
   const passStart = priorBatchSpan ? priorBatchSpan[0] : state.eventLog.length;
+  let next: WorkState = {
+    ...state,
+    pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
+  };
   // #485/#486 — the per-workstream pass (diff read + reviewer loop) lives in
   // work-driver-adversarial-fanout-run.ts (§12 size). A failed read carries its
   // own reason on the outcome and on the cap's evidence, so nothing is threaded
@@ -150,10 +150,13 @@ export async function fanOutAdversarial(
   // The id is minted HERE and handed to the child as its `runId`, so the
   // write-ahead marker, the child's transcript and the completion event are one
   // identity (#1789's rule, which `runSingleDispatch` already follows).
+  // Each pass persists its own write-ahead from the log as it stood when the
+  // pass began, and installs the result. The chain makes that read-modify-write
+  // atomic, so two siblings starting in the same tick cannot each clobber the
+  // other's `dispatch-started`.
   let log: WorkState = next;
   let writeChain: Promise<unknown> = Promise.resolve();
-  /** Serialize every write-ahead mutation of the log (see above). */
-  const writeAheadUpdate = (fn: (s: WorkState) => WorkState): Promise<void> => {
+  const persistWriteAhead = (fn: (s: WorkState) => WorkState): Promise<void> => {
     const step = writeChain.then(() => {
       log = fn(log);
     });
@@ -166,30 +169,36 @@ export async function fanOutAdversarial(
   };
   const runOne = async (id: string): Promise<AdversarialOutcome> => {
     const wa = writeAheadFor(id);
-    let begunState = state;
-    // #1827 — a marker the child's own dispatch is identified by. The label is
-    // the step handler's; the id is what the child's transcript encodes.
-    await writeAheadUpdate(async () => undefined);
-    const begun = await beginDispatch(
-      ctx,
-      log,
-      "adversarial",
-      "adversarial-loop",
-      wa.label,
-      Date.now(),
-      undefined,
-      wa.jobId,
-    );
-    await writeAheadUpdate(() => {
-      begunState = begun.state;
-      log = begun.state;
-      return begun.state;
+    let begun!: { state: WorkState; jobId: string };
+    await persistWriteAhead((s) => {
+      // The read and the write happen together, inside the chain — see the
+      // comment on `persistWriteAhead`.
+      const b = markDispatchStarted(
+        s,
+        "adversarial",
+        "adversarial-loop",
+        wa.label,
+        wa.jobId,
+        Date.now(),
+      );
+      begun = { state: b, jobId: wa.jobId };
+      return b;
     });
+    // The intent must be on disk BEFORE the reviewer await, which is the whole
+    // point of the write-ahead; `beginDispatch` is the shared write+persist.
+    await persistCycle(ctx, begun.state);
+    // #1863 — the marker's OWN log, not the shared one: every outcome below
+    // carries the dispatch events the pass produced, so they must sit AFTER this
+    // pass's `dispatch-started`, and the `finally` clears the id out of this
+    // copy. The fan-out re-emits the outcome's events at the splice, and merges
+    // the in-flight clears from every outcome's copy — reading the shared log
+    // here would strand a sibling's dispatch events behind this workstream's.
+    const begunLog = begun.state;
     try {
       return await runAdversarialWorkstream(id, {
         ctx,
         // The state the write-ahead PERSISTED is the one the pass builds on.
-        state: begunState,
+        state: begunLog,
         multi,
         wsMap,
         priorOutcomes,
@@ -198,7 +207,7 @@ export async function fanOutAdversarial(
     } finally {
       // Cleared on EVERY exit, including a throw out of the loop: the step's
       // tail must be the dispatch event, never the `dispatch-started`.
-      await writeAheadUpdate((s) => clearDispatch(s, wa.jobId));
+      await persistWriteAhead((s) => clearDispatch(s, wa.jobId));
     }
   };
 
@@ -358,11 +367,40 @@ export async function fanOutAdversarial(
   // batch on re-entry (see `priorBatchSpan` above). On a first pass
   // `priorBatchSpan` is null and `passStart` is the end of the log, so this
   // degenerates to an append.
+  //
+  // #1863 — the batch is built on the log the write-aheads PRODUCED (`log`),
+  // not on the `next` snapshot taken before any dispatch happened. Replacing
+  // that snapshot would silently delete every `dispatch-started` this pass
+  // wrote — which is what a crash-resume reads as "this step never started",
+  // the exact cause B this issue is about.
+  //
+  // Two things survive the splice:
+  //
+  //  - a `dispatch-started` whose id is STILL in flight: a sibling still
+  //    reviewing while another workstream's batch is spliced. Removing its
+  //    marker would leave the id in `inFlightJobIds` with no backing event, so
+  //    `classifyRunningState` could not see the crash and
+  //    `detectInconsistencies` would call the file corrupt. An id already
+  //    cleared is a finished pass's orphan (the crash-resume shape, which
+  //    `clearForResume` deliberately keeps) and stays spliced away.
+  //  - every outcome's `inFlightJobIds`, which its own `finally` cleared. The
+  //    aggregate never saw those clears (each pass held its own copy), so
+  //    without this merge a completed review would still look in-flight and the
+  //    next invocation would resume a step that already finished.
   const events = outcomeEvents(outcomes, multi);
   const passEnd = priorBatchSpan ? priorBatchSpan[1] : passStart;
+  const batch = events.filter(
+    (e) => !(e.kind === "dispatch-started" && !log.pipelineState.inFlightJobIds.includes(e.jobId)),
+  );
   next = {
-    ...next,
-    eventLog: [...next.eventLog.slice(0, passStart), ...events, ...next.eventLog.slice(passEnd)],
+    ...log,
+    pipelineState: {
+      ...log.pipelineState,
+      inFlightJobIds: log.pipelineState.inFlightJobIds.filter(
+        (id) => !outcomes.some((o) => o.clearedJobId === id),
+      ),
+    },
+    eventLog: [...log.eventLog.slice(0, passStart), ...batch, ...log.eventLog.slice(passEnd)],
   };
 
   if (multi) {

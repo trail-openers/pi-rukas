@@ -32,25 +32,10 @@ import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { readWorktreeDiff } from "./work-driver-diff-read.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { clearDispatch } from "./work-driver-resume.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { driverGateCmd } from "./work-driver-verify-pr17.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
-
-/**
- * #1863 — the workstream's outcome with its write-ahead marker CLEARED.
- *
- * The fan-out clears in a `finally` on every exit of the pass, so the step's
- * tail is whichever dispatch event this pass produced and never the
- * `dispatch-started` the write-ahead wrote. An id left in `inFlightJobIds`
- * would make the next invocation resume a step that already finished, and
- * `detectInconsistencies` would flag the file.
- */
-export function withClearedWriteAhead(o: AdversarialOutcome, args: RunOneArgs): AdversarialOutcome {
-  if (!args.writeAhead || !o.stateAfter) return o;
-  return { ...o, stateAfter: clearDispatch(o.stateAfter, args.writeAhead.jobId) };
-}
 
 /** What one workstream's pass needs from the fan-out's shared context. */
 export interface RunOneArgs {
@@ -152,13 +137,15 @@ export async function runAdversarialWorkstream(
   }
 
   const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
-  // #1863 — the ONE id for this workstream's reviewer dispatch. When the
-  // fan-out wrote a head for this pass, the child's `runId` IS that id: the
-  // write-ahead marker, the completion event and whatever joins a tail back to
-  // a dispatch then all name one identity (the #1789 rule `runSingleDispatch`
-  // already follows). A test-injected loop receives the orchestrator key
-  // instead — its signature is a contract ~8 offline tests stub, and it reads
-  // the value as an opaque deck key.
+  /** #1863 — the id whose in-flight marker the fan-out's splice drops, once
+   *  this pass has produced its events. Absent when nothing was written ahead. */
+  const cleared = writeAhead ? { clearedJobId: writeAhead.jobId } : {};
+  // The reviewer dispatch's `runId`. When the fan-out wrote a head for this
+  // pass, the child's id IS the marker's id, so the write-ahead record, the
+  // child's transcript and the completion event name one identity (#1789's
+  // rule, which `runSingleDispatch` already follows). A test-injected loop
+  // receives the orchestrator key instead — its signature is a contract ~8
+  // offline tests stub, and it reads the value as an opaque deck key.
   const childRunId = writeAhead?.jobId ?? orchestratorJobId;
   let result: DispatchResult;
   try {
@@ -253,6 +240,7 @@ export async function runAdversarialWorkstream(
       priorInfra: priorOutcomes.get(id) === "infra-failure",
       rejectionText: `adversarial loop threw: ${errMsg}`,
       errorTail: errMsg,
+      ...cleared,
       failureEvent: {
         kind: "dispatch-failed",
         step: "adversarial",
@@ -320,6 +308,7 @@ export async function runAdversarialWorkstream(
     // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
     ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
     completionEvent,
+    ...cleared,
     branchEvent: multi
       ? {
           kind: "branch-completed",
