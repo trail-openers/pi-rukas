@@ -17,7 +17,11 @@ import { withSpentLadderBudget } from "./work-driver-adversarial-fanout-budget.t
 import { retryLadderKillCause } from "./work-driver-adversarial-fanout-capkill.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
 import { runAdversarialWorkstream } from "./work-driver-adversarial-fanout-run.ts";
-import { settledMarkerIds, splicePassBatch } from "./work-driver-adversarial-fanout-splice.ts";
+import {
+  ownPendingMarkerIds,
+  settledMarkerIds,
+  splicePassBatch,
+} from "./work-driver-adversarial-fanout-splice.ts";
 import { reviewTrack, workstreamsToReview } from "./work-driver-adversarial-fix.ts";
 import {
   classifyAdversarialOutcome,
@@ -451,6 +455,13 @@ export async function fanOutAdversarial(
   // #1863 — the splice and its invariant live in the splice module: a step that
   // failed ends on its failure event, never on a write-ahead marker.
   const settledMarkers = settledMarkerIds(outcomes, passMarkers);
+  // #1863 — the prior pass's own markers, still in flight, sit INSIDE the
+  // re-entry's replacement region: they were persisted while that pass ran,
+  // after `priorBatchSpan` was captured. Without them the scan stops on the
+  // first one and the prior pass's stale records survive beside the fresh
+  // batch (a recovered workstream logging both its infra-failure and its
+  // approved outcome).
+  const ownPending = ownPendingMarkerIds(log, settledMarkers);
   next = {
     ...log,
     pipelineState: {
@@ -459,7 +470,7 @@ export async function fanOutAdversarial(
         (id) => !outcomes.some((o) => o.clearedJobId === id),
       ),
     },
-    eventLog: splicePassBatch(log, events, settledMarkers, passStart, passEnd),
+    eventLog: splicePassBatch(log, events, settledMarkers, passStart, passEnd, ownPending),
   };
 
   if (multi) {

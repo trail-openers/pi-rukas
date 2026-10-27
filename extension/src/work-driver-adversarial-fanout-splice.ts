@@ -62,12 +62,13 @@ export function splicePassBatch(
   settledMarkers: ReadonlySet<string>,
   passStart: number,
   passEnd: number,
+  ownPendingMarkers: readonly string[] = [],
 ): WorkEvent[] {
   const batch = batchSource.filter(
     (e) => !(markerId(e) !== undefined && !settledMarkers.has(markerId(e) as string)),
   );
   const tail = orderBatchBeforeTail(batch, settledMarkers);
-  const replaceEnd = tailReplaceEnd(log, passEnd, settledMarkers);
+  const replaceEnd = tailReplaceEnd(log, passEnd, settledMarkers, ownPendingMarkers);
   return [...log.eventLog.slice(0, passStart), ...tail, ...log.eventLog.slice(replaceEnd)];
 }
 
@@ -115,19 +116,26 @@ export function orderBatchBeforeTail(
  * Where the batch's replacement region ENDS: one past the last
  * `dispatch-started` this fan-out settled.
  *
- * The scan STOPS at the first marker this pass did not settle: that one belongs
- * to a sibling still reviewing, whose record in `log` must be left untouched.
+ * The scan STOPS at the first marker this pass did not settle, because that one
+ * belongs to some other pass whose record in `log` must be left untouched —
+ * with ONE exception, `ownPendingMarkers` (#1863, see that function): a marker
+ * this fan-out wrote itself, whose pass has not settled. Those sit INSIDE the
+ * region a re-entry is replacing — they were persisted during the pass, after
+ * the re-entry span was captured — and stopping on them leaves the prior pass's
+ * records in the log beside the fresh ones.
  */
 export function tailReplaceEnd(
   log: WorkState,
   from: number,
   settledMarkers: ReadonlySet<string>,
+  ownPendingMarkers: readonly string[] = [],
 ): number {
+  const ownPending = new Set(ownPendingMarkers);
   let end = from;
   for (let i = from; i < log.eventLog.length; i++) {
     const id = markerId(log.eventLog[i] as WorkEvent);
     if (id === undefined) continue;
-    if (!settledMarkers.has(id)) break;
+    if (!settledMarkers.has(id) && !ownPending.has(id)) break;
     end = i + 1;
   }
   return end;
@@ -146,4 +154,39 @@ export function settledMarkerIds(
     outcomes.filter((o) => o.markerWritten === false).map((o) => o.clearedJobId),
   );
   return new Set(minted.filter((id) => !neverDispatched.has(id)));
+}
+
+/**
+ * The ids of THIS pass's own `dispatch-started` records in the log, in log
+ * order (#1863).
+ *
+ * The fan-out writes one of these ahead per workstream pass, PERSISTED AS THE
+ * PASS RUNS — which is after the re-entry span was captured, so the span
+ * cannot include them. The splice therefore has to extend over them explicitly
+ * rather than rely on the span's end: without this, a prior pass's own marker
+ * (or a sibling's, still in flight) sits INSIDE the region the re-entry is
+ * replacing, `tailReplaceEnd` stops on it, and the prior pass's per-workstream
+ * records before that point survive the splice. The visible symptom was a
+ * recovered workstream logging both its stale `infra-failure` outcome and its
+ * fresh `approved` one, plus the round record that went with the stale pass.
+ *
+ * `settledMarkers` alone is not the filter: the markers a pass carries in its
+ * batch were minted by the pass that produced the batch, and a re-entry
+ * settles only the workstreams it re-ran — a surviving sibling's marker is
+ * still this pass's own record in the log. The `inFlight` test is what tells
+ * the two apart: an id the step still carries is a pass that has not settled,
+ * and `clearDispatch` removes it the moment it has, so this selects exactly the
+ * markers whose passes are still running — a sibling reviewing while another's
+ * batch is spliced, or the crash-resume shape where the process died before
+ * clearing anything (the `interrupted` path keeps those ids on purpose).
+ */
+export function ownPendingMarkerIds(log: WorkState, settledMarkers: ReadonlySet<string>): string[] {
+  const inFlight = new Set(log.pipelineState.inFlightJobIds);
+  const ids: string[] = [];
+  for (const e of log.eventLog) {
+    const id = markerId(e);
+    if (id === undefined || settledMarkers.has(id) || !inFlight.has(id)) continue;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }
