@@ -80,11 +80,21 @@ async function runWorkVerb(cliArgv: string[]): Promise<number> {
     // The supervisor tier, identical to the CLI's: it re-spawns THIS file (the
     // child inherits `process.argv[1]`), so the inner run is this harness again
     // and carries the wedge timer.
+    //
+    // The bound has to be put back on the command: `--wedge-ms` was spliced out
+    // of `argv` above, so `cliArgv` no longer carries it, and an inner child
+    // without it runs on the 6 h default — the wedge never fires and the cycle
+    // parks with exit 10 instead of the documented 30 (#1863).
     return superviseWork({
       repoRoot: await resolveRepoRoot(process.cwd()),
       issues: args.issues,
       json: args.json,
-      command: [process.execPath, process.argv[1] as string, ...cliArgv],
+      command: [
+        process.execPath,
+        process.argv[1] as string,
+        ...(wedgeMs === undefined ? [] : ["--wedge-ms", String(wedgeMs)]),
+        ...cliArgv,
+      ],
     });
   }
   const cap = captureStrayOutput();
