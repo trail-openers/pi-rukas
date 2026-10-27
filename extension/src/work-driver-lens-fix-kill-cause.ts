@@ -115,6 +115,18 @@ function isLensFixFailure(e: WorkEvent | undefined): e is LensFixFailure {
  */
 function failedLensFixDispatch(state: WorkState, cap: string): LensFixFailure | undefined {
   const capIdx = lastCapIndex(state);
+  // #1798 round 4 — the cap this reader is EXPLAINING has to be the cap the
+  // cycle actually stands on. `lastCapIndex` is the same reader `failureOf` and
+  // the handoff use, and it skips a cap a signal cut off (#1371); what it does
+  // not do is check the cap's IDENTITY, and the caller hands `cap` in as a
+  // string. A lens-fix kill followed by a later develop cap used to answer the
+  // DEVELOP cap from the lens-fix window, so the operator got "raise the
+  // fixer's bound" for a step pi-rukas never killed at a bound. Read the event
+  // at that index and refuse when it is not this cap. The step is carried by
+  // the cap's own name (`step-failed:lens-fix`, checked by `isLensFixStepCap`
+  // before this runs) — a `cap-hit` event has no `step` field to compare.
+  const capEvent = capIdx >= 0 ? state.eventLog[capIdx] : undefined;
+  if (capEvent?.kind !== "cap-hit" || capEvent.cap !== cap) return undefined;
   // The start of the step's last run. When no `step-started` for this step
   // precedes the cap, the window is the WHOLE log rather than the empty range
   // `[capIdx, capIdx)`.

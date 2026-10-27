@@ -2,9 +2,10 @@
 import { LENS_FIX_BOUND_ENV } from "../src/review-budget.ts";
 /**
  * #1798 — WHICH dispatch of a multi-failure lens-fix window the bound verdict
- * reads. Companion to `test-work-driver-lens-fix-kill-cause.ts`, which pins the
- * chain that gets the fact from the clock to the handoff; this file pins the
- * one remaining question, and it is the question a fix loop actually poses:
+ * reads, and WHICH cap it is allowed to answer. Companion to
+ * `test-work-driver-lens-fix-kill-cause.ts`, which pins the chain that gets the
+ * fact from the clock to the handoff; this file pins the two remaining
+ * questions, and they are the ones a fix loop actually poses:
  *
  * The step re-dispatches. A window can therefore hold TWO (or more)
  * `dispatch-failed` events between one `step-started` and the
@@ -26,23 +27,33 @@ import { LENS_FIX_BOUND_ENV } from "../src/review-budget.ts";
  * Both orders are pinned, and both are pinned against `failureOf`: a rule that
  * makes the two reads select different dispatches is the defect, whichever way
  * it points.
+ *
+ * And the cap itself is pinned (#1798 round 4): the verdict answers the cap the
+ * cycle STANDS on, not any cap the caller names. A lens-fix kill followed by a
+ * later develop cap must give NO verdict for the develop cap.
  */
+import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
 import { lensFixBoundKillVerdict } from "../src/work-driver-lens-fix-kill-cause.ts";
 import {
+  boundKillTail,
   byKind,
   completedRound,
   failFor,
   failedDispatches,
   killed,
   lensFixWindow,
+  MIN,
+  NOW,
   plainKill,
 } from "./lib/lens-fix-kill-cause-fixtures.ts";
 
+let exit = 0;
 function assert(cond: boolean, msg: string): void {
   if (!cond) {
     console.error(`✗ ${msg}`);
-    process.exit(1);
+    exit = 1;
+    return;
   }
   console.log(`✓ ${msg}`);
 }
@@ -176,3 +187,64 @@ function tails(state: Awaited<ReturnType<typeof lensFixWindow>>): (string | unde
 }
 
 console.log("\n#1798 lens-fix bound kill window rule: all assertions passed");
+
+{
+  // #1798 round 4 — THE CAP MUST MATCH. `lastCapIndex` finds the cap the cycle
+  // stands on; it never checked that cap's IDENTITY against the `cap` the
+  // caller passed (the cap-hit event carries no `step`, so nothing compared
+  // them). A cycle whose lens-fix step died at a bound and whose LAST cap
+  // belongs to a later develop round therefore got the lens-fix verdict for
+  // the DEVELOP cap: "raise the fixer's bound and re-run", for a step pi-rukas
+  // never killed at a bound — advice that cannot move the failure in front of
+  // the operator.
+  const capped = await lensFixWindow([armed], ["fixer-bound"]);
+  const log = [...capped.eventLog];
+  assert(
+    log.at(-1)?.kind === "cap-hit",
+    "the fixture ends on the lens-fix cap, with an armed bound kill below it",
+  );
+  log.push(
+    { kind: "step-started", step: "develop", at: NOW + 2 * MIN } as WorkEvent,
+    {
+      kind: "dispatch-failed",
+      step: "develop",
+      role: "developer",
+      jobId: "develop:x:2:1",
+      label: "developer",
+      ms: MIN,
+      at: NOW + 3 * MIN,
+      exitCode: 1,
+      errorTail: "develop child exited 1",
+    } as WorkEvent,
+    {
+      kind: "cap-hit",
+      cap: "step-failed:develop",
+      at: NOW + 3 * MIN,
+      reviewRound: 0,
+      nextStep: "handoff",
+    } as WorkEvent,
+  );
+  const state = { ...capped, eventLog: log } as WorkState;
+  assert(
+    lensFixBoundKillVerdict(state, "step-failed:develop", undefined, 1798) === undefined,
+    "a lens-fix kill does not answer a LATER develop cap — the cap must be the one the cycle stands on",
+  );
+  assert(
+    lensFixBoundKillVerdict(capped, "step-failed:lens-fix", undefined, 1798)?.causeClass ===
+      "pi-rukas",
+    "asked the RIGHT question, the same window still gets its bound verdict — the guard refuses a mismatch, it does not disable the rule",
+  );
+
+  // …and the cap's EVIDENCE fallback reads the same cap index rather than
+  // `lastCapHit`'s reverse scan: a pre-#1798 state file (no source on the
+  // event, the clause only in the tail) still resolves from the cap the caller
+  // named, never from some other cap-hit that happens to sit later in the log.
+  const legacy = await lensFixWindow([killed()], [undefined], [boundKillTail]);
+  assert(
+    lensFixBoundKillVerdict(legacy, "step-failed:lens-fix", undefined, 1798)?.causeClass ===
+      "pi-rukas",
+    "the text fallback resolves a pre-#1798 state file from that cap's own evidence",
+  );
+}
+
+process.exit(exit);
