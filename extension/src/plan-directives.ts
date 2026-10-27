@@ -262,10 +262,21 @@ export function parseOperatorDirectivesWithLines(
       if (outcomeDemoted) {
         // A bare `Done when:` whose block yields no item is an OUTCOME the
         // operator believes they stated and the plan will not carry, so the
-        // demotion is never silent: the heading is traced when it is demoted to
-        // "no outcome" (its lines stay in the inventory, but the AC section will
-        // fall back).
-        traceWarn(`plan: ${JSON.stringify(line)} yields no item — no operator outcome`);
+        // demotion is never silent (its lines stay in the inventory, but the AC
+        // section will fall back).
+        //
+        // The trace names the heading KEYWORD, the line index and the line's
+        // length — never the line itself (#1855 round 3). `traceWarn` writes to
+        // stderr unconditionally (unlike `trace`, it is not gated on
+        // PI_ENSEMBLE_DEBUG), so anything echoed here escapes into logs and
+        // transcript captures that the `context` param was not scoped to: an
+        // operator heading is free text and can carry a token, a hostname or a
+        // private project name. The keyword is a fixed token from the grammar,
+        // so it identifies which heading was demoted without quoting the
+        // operator's prose.
+        traceWarn(
+          `plan: ${channel} heading at line ${i} (${line.length} chars) yielded no item — no operator outcome`,
+        );
         target = null;
         // Nothing under a heading that opened nothing is consumed: the heading
         // and every line below it stay in the filed inventory, exactly as an

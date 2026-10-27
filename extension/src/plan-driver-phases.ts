@@ -93,7 +93,7 @@ export function draftInvalidHalt(args: {
       // #1855: the halt names every source the driver tried, not only the
       // directive grammar — an operator who wrote `Done when:` bullets must not
       // be sent adding an ACCEPTANCE CRITERIA block to get the same content.
-      detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${args.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the outcome via the context param — an ACCEPTANCE CRITERIA block, or a Done when: / Acceptance: / Acceptance criteria: heading with bullets.`,
+      detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${args.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the outcome via the context param — an ACCEPTANCE CRITERIA directive block, or a Done when: / bare Acceptance: heading with bullets (Acceptance criteria: is the directive heading, not an outcome alias).`,
     },
     failedAngles: args.failedAngles,
     timings: args.timings,

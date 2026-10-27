@@ -241,7 +241,7 @@ export function validateDraft(
       // operator is not sent looking for a directive grammar they never used
       // while their own Done when bullets sit unconsumed in the inventory.
       problems.push(
-        "the Acceptance criteria section is the fallback placeholder — none of the three sources produced a testable outcome: (1) an operator ACCEPTANCE CRITERIA directive block, (2) an operator outcome heading with bullets (Done when:, Acceptance: or Acceptance criteria: — a heading with no bullet under it counts as no outcome), (3) acceptance-criterion items from the feature test-surface angle, the only feature angle chartered to report them. Supply the outcome via the context param, or re-run (the angles are re-dispatched): as drafted the issue would not be /work-consumable",
+        "the Acceptance criteria section is the fallback placeholder — none of the three sources produced a testable outcome: (1) an operator ACCEPTANCE CRITERIA directive block, (2) an operator outcome heading with bullets (Done when: or a bare Acceptance: — Acceptance criteria: is the directive heading, source (1); a heading with no bullet under it counts as no outcome), (3) acceptance-criterion items from the feature test-surface angle, the only feature angle chartered to report them. Supply the outcome via the context param, or re-run (the angles are re-dispatched): as drafted the issue would not be /work-consumable",
       );
     }
   }
