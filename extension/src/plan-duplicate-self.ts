@@ -10,7 +10,7 @@
  * inventory plus the prior-context rows both feed the child a verbatim listing
  * of it — so the child's most confident duplicate is the ticket under plan.
  *
- * Four rules, all deterministic, none of them a judgment about the model's
+ * Five rules, all deterministic, none of them a judgment about the model's
  * reasoning:
  *
  *   1. The source issue N and its own split children are never duplicates. They
@@ -19,21 +19,41 @@
  *      verdict's named issues.
  *   2. A CLOSED issue that the child ITSELF called prior art or a reversal
  *      target is what the child's own charter says is not a duplicate, so a
- *      HIGH that rests only on those is downgraded, not believed.
+ *      HIGH that rests only on those is downgraded, not believed. Prior art can
+ *      be satisfied ONLY by an inventory row known to be CLOSED: a named issue
+ *      the inventory never carried has no known state, and rule 3 keeps it.
  *   3. Anything else stands: a HIGH that names one other OPEN issue halts
- *      exactly as it did before.
- *   4. A reference this filter cannot read keeps the HIGH (#1856 review round).
- *      The extraction above reads `#N` tokens only, so a rationale that cites
- *      the rest of its evidence as `issue 12`, `PR 12`, `…/issues/12` or a `#` id
- *      past `Number.MAX_SAFE_INTEGER` looks like a self-only HIGH to rules 1–2.
- *      On main that reply halted; a downgrade that never saw the other issue
- *      would file instead. So every issue-shaped reference the `#N` extractor
- *      did not emit is read too, and any one of them that is not the subject (or
- *      its own split child) stands. Failing to parse is never a downgrade.
+ *      exactly as it did before, and so does a `#X-k` token whose parent is not
+ *      the source — that is someone else's decomposition, not this plan's.
+ *   4. A number this filter cannot account for keeps the HIGH (#1856 review
+ *      rounds 1–2). The extraction above reads `#N` tokens only, so a rationale
+ *      that cites the rest of its evidence some other way — `GH-12`, `ticket 12`,
+ *      `bug 12`, `issue-12`, `issue:12`, `issue12`, `pull 12`, `PR 12`,
+ *      `…/issues/12`, or a `#` id past `Number.MAX_SAFE_INTEGER` — looked like a
+ *      self-only HIGH to rules 1–2 and was downgraded while main halted. Round 1
+ *      answered that with a WORD LIST of reference shapes and it leaked: every
+ *      spelling the list had not enumerated still downgraded. So rule 4 is
+ *      STRUCTURAL and fail-closed instead. After the `#N` tokens this filter
+ *      positively resolved as excluded, the rest of the text is stripped only of
+ *      the number shapes a rationale legitimately carries (ISO dates, version
+ *      strings, clock times, and the digits inside the excluded tokens) and ANY
+ *      DIGIT RUN THAT SURVIVES KEEPS THE HIGH. A stray number keeps the stop,
+ *      never the reverse, so an unenumerated spelling of a reference cannot
+ *      downgrade anything: the failure mode moves from a silent wrong downgrade
+ *      to a halt the operator can see.
+ *   5. The prior-art word must sit in the SAME CLAUSE as the CLOSED issue's
+ *      token (#1856 review round 2), where a clause ends at `. ! ? ; , :` or a
+ *      newline. Words from an adjacent issue's clause count for nothing, so
+ *      "#1856 is prior art; #103 is unlanded duplicate work" halts, and so does
+ *      the comma form, while "reverses the landed decision in #103" downgrades.
+ *      A clause that NEGATES the prior-art word ("#103 is not prior art, it is
+ *      unlanded duplicate work") is the child saying the closed issue is a real
+ *      duplicate, and suppresses nothing.
  *
- * The prior-art rule is also negation-aware: a clause that NEGATES the prior-art
- * word ("#103 is not prior art, it is unlanded duplicate work") is the child
- * saying the closed issue is a real duplicate, and suppresses nothing.
+ * Rules 1–5 read the child's FULL reply, not the 400-char slice the parser keeps
+ * for display (round-1 lens H1): an OPEN duplicate named past that cut is
+ * invisible to the slice, and a HIGH that halts on main must not be downgraded
+ * here because the evidence fell off the end of a window.
  *
  * An ABSENT marker is never a downgrade — `parseDuplicateRisk` defaults an
  * unparsed reply to medium, and recording that as an intentional suppression
@@ -43,6 +63,7 @@
  * (`OPEN`/`CLOSED`) while the inventory stores whatever `NormalizedIssue.state`
  * carried, so a case-sensitive rule never matches a GitLab-sourced row.
  */
+import { truncateForDisclosure } from "./plan-gap-disclosure.ts";
 import type { MechanicalInventory } from "./plan-inventory.ts";
 import type { DuplicateRisk, ExcludedDuplicate } from "./plan-investigate.ts";
 
@@ -52,7 +73,7 @@ const ISSUE_SOURCE_RE = /^issue #(\d+) \(/;
 /**
  * Words that make a CLOSED issue the child's own prior art / reversal target —
  * the vocabulary its charter hands it ("prior art or a REVERSAL target").
- * Matched per sentence, never across the whole rationale: a reply that
+ * Matched per clause (rule 5), never across the whole reply: a reply that
  * discharges rule 1 for the planned issue and then halts on a genuinely open
  * duplicate must not have that open finding's own wording read back as a
  * prior-art claim about the closed issue.
@@ -71,21 +92,27 @@ const PRIOR_ART_NEGATED_RE =
   /\b(?:not|never|isn'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|cannot|can'?t|no)\s+(?:\w+\s+){0,2}(?:prior\s+art|reversal|revers(?:e|es|ed|ing)|supersed\w*|overturn\w*|landed|deliberate(?:ly)?\s+chang\w*)\b/i;
 
 /**
- * Issue-shaped references the `#N` extractor does not emit: `issue N` /
- * `issues N` / `issue #N`, `PR N` / `pull N` / `pull request N`, and a URL on
- * any host containing `/issues/N` or `/pull/N`. A bare `#<digits>` is NOT
- * matched here — `namedIssueRefs` already reads those, and its own output says
- * whether one was seen (an oversized `#` id that overflowed to an unsafe
- * integer is caught separately, by `UNSAFE_HASH_DIGITS_RE`). Bare `\d+` is
- * likewise absent — a rationale is full of line counts and version numbers, and
- * a reference this filter cannot read has to LOOK like a reference to keep the
- * HIGH.
+ * The number shapes a rationale legitimately carries that are NOT evidence about
+ * another issue, and so are stripped before rule 4 asks whether any digits are
+ * left: an ISO date (`2026-10-27`, with or without a time — the field case's
+ * `(OPEN, created 2026-10-27)`), a version string (`v0.14.27`, `0.12.38`), a
+ * clock time (`14:05`, `9:30:12.5`), and the digits inside the tokens this
+ * filter already resolved, which the caller removes with the tokens themselves.
+ *
+ * A date or a version is a `.`/`:`-joined run of digit groups, so each pattern
+ * takes its separators AND the digits at both ends: stripping them one at a time
+ * can never leave an orphan digit run for rule 4 to misread as a reference.
+ * Deliberately NOT stripped: a bare digit run (`12`, `3 rounds`, `line 41`),
+ * because a number the filter cannot place is exactly what rule 4 keeps.
  */
-const UNPARSED_ISSUE_REF_RE =
-  /\b(?:issues?|pull\s+requests?|prs?)\s+((?:#\s*)?\d+)\b|\/(?:issues|pull)\/(\d+)\b/gi;
-
-/** A `#<digits>` run long enough to have overflowed `Number.isSafeInteger`. */
-const UNSAFE_HASH_DIGITS_RE = /#\d{17,}/g;
+const SAFE_NUMBER_RES = [
+  // ISO date, optionally with a time and an offset.
+  /(?:\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)?)/gi,
+  // Version string: v0.14.27, V1.0, 0.12.38-beta.1
+  /(?:\bv?\d+\.\d+(?:\.\d+)*\b)/gi,
+  // Clock time: 14:05, 9:30:12.5
+  /(?:\b\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\b)/g,
+];
 
 /** The rule that removed a candidate, rendered into the disclosure. */
 export const EXCLUSION_REASONS = {
@@ -93,6 +120,29 @@ export const EXCLUSION_REASONS = {
   "split-child": "the planned issue's own split child",
   "prior-art": "a CLOSED issue the risk check itself called prior art or a reversal target",
 } as const;
+
+/**
+ * Tail of the prior-art disclosure: the clause the rule matched is quoted, so
+ * the operator reads the child's own words instead of a fixed claim the filter
+ * asserts about them.
+ */
+export const PRIOR_ART_EVIDENCE = "the risk check called it that in this clause";
+
+/**
+ * How many excluded candidates the disclosure itemises. Past this the section
+ * counts a summary line instead, so one runaway verdict cannot grow the section
+ * the body fitter has already reserved room for (`POST_FIT_APPENDS_MAX_CHARS`
+ * enumerates this section in plan-dropped-budget.ts).
+ */
+export const EXCLUSION_DISCLOSURE_MAX_ROWS = 10;
+
+/**
+ * Clause boundaries for rule 5: sentence terminators, a semicolon, a comma and a
+ * colon, plus a newline. Narrower than a sentence on purpose — the common
+ * rationale is one long dash-separated line, so at sentence scope a word about
+ * `#1856` leaks into `#103`'s judgement.
+ */
+const CLAUSE_BOUNDARY = /[.!?,;:\n]/;
 
 /** Is this issue state "closed", however the forge spelled it? */
 export function isClosedState(state: string): boolean {
@@ -146,55 +196,41 @@ export function namedIssueTokens(text: string): number[] {
 }
 
 /**
- * The clause the prior-art rule reads for one named issue: the text around the
- * `#token`, widened to the sentence it sits in (`.`, `!`, `?` or a newline
- * boundary), then trimmed of the neighbouring `#N` tokens so a prior-art word
- * belonging to an ADJACENT finding cannot leak in — and, in the common
- * "…reverses #103" shape where nothing follows the token, the clause is the
- * window back to the previous `#N`, which is where the verb lives.
+ * The clause rule 5 reads for one named issue: the text around the `#token` up
+ * to the nearest clause boundary on either side. The token itself is kept and no
+ * other token's words are read, which is what stops an adjacent finding's "is
+ * unlanded duplicate work" being satisfied by a neighbour's "prior art".
  */
-function clauseNaming(text: string, token: string): string {
+export function clauseNaming(text: string, token: string): string {
   const marker = `#${token}`;
   const at = text.indexOf(marker);
   if (at < 0) return "";
-  const boundary = /(?<=[.!?])\s|\n/;
-  const startMatch = [...text.slice(0, at).matchAll(new RegExp(boundary.source, "g"))].pop();
-  const from = startMatch ? (startMatch.index ?? 0) + startMatch[0].length : 0;
-  const after = text.slice(at + marker.length);
-  const endMatch = after.match(boundary);
-  const to = at + marker.length + (endMatch ? (endMatch.index ?? after.length) : after.length);
-  // Strip neighbouring issue tokens so the clause says something about THIS one.
-  return text
-    .slice(from, to)
-    .replace(/#\d+(?:-\d+)?/g, " ")
-    .trim();
+  let from = at;
+  while (from > 0 && !CLAUSE_BOUNDARY.test(text[from - 1] ?? "")) from--;
+  let to = at + marker.length;
+  while (to < text.length && !CLAUSE_BOUNDARY.test(text[to] ?? "")) to++;
+  return text.slice(from, to).trim();
 }
 
 /**
- * Does the rationale cite an issue the `#N` extractor cannot read, other than
- * the subject? `namedIssueRefs` emits only `#N` / `#N-k` tokens that parse as
- * safe integers, so `issue 12`, `PR 12`, `…/issues/12` and a 21-digit `#…` are
- * INVISIBLE to rules 1–2: a rationale whose whole case rests on one of them
- * reads as a self-only HIGH and would be downgraded while main halted on it.
- * This is the fail-closed read of exactly those shapes — true means "the filter
- * may not suppress this HIGH, because it has not seen every issue the child
- * named". A `#N` / `#N-k` token the extractor DID emit is not re-read here —
- * the loop below judges it with the state it knows — so a normal
- * "#1856 … #103 …" rationale still reaches the prior-art rule.
+ * Rule 4, structural: does the text still contain a number this filter has not
+ * accounted for? Call it with the `#N` / `#N-k` tokens the extractor positively
+ * resolved as excluded (the subject, its split children) — those digits come out
+ * with the tokens, so a reply whose only numbers are the subject and an ISO date
+ * reads clean and downgrades, while `GH-12`, `ticket 12`, `bug 12`, `issue-12`,
+ * `issue:12`, `issue12`, `pull 12`, a `/issues/12` URL, a 21-digit `#…` or a
+ * plain `line 41` leaves a digit run and KEEPS THE HIGH. Any spelling of a
+ * reference works, because the rule never asks what a reference LOOKS like — it
+ * asks whether anything numeric is left unexplained. Failing to account for a
+ * number is never a downgrade.
  */
-function citesUnreadableOtherIssue(rationale: string, source: number): boolean {
-  for (const m of rationale.matchAll(UNPARSED_ISSUE_REF_RE)) {
-    const digits = (m[1] ?? m[2] ?? "").replace(/[^\d]/g, "");
-    const token = digits.match(/^\d+(?:-\d+)?$/)?.[0];
-    if (token === undefined) continue;
-    if (token.includes("-")) continue;
-    const n = Number(digits);
-    if (!Number.isSafeInteger(n) || n <= 0) return true;
-    if (n !== source) return true;
+export function citesUnaccountedNumber(text: string, resolvedTokens: string[]): boolean {
+  let rest = text;
+  for (const token of resolvedTokens) {
+    rest = rest.split(`#${token}`).join(" ");
   }
-  // A `#` id that overflowed to a non-integer produced NO token at all, so
-  // nothing downstream can judge it: that is the unreadable shape by definition.
-  return UNSAFE_HASH_DIGITS_RE.test(rationale);
+  for (const re of SAFE_NUMBER_RES) rest = rest.replace(re, " ");
+  return /\d/.test(rest);
 }
 
 /**
@@ -244,62 +280,102 @@ export interface KnownIssue {
 }
 
 /**
+ * Did the child honour this CLOSED issue as landed work in the clause naming it?
+ * A clause with an unnegated prior-art word is the child deferring to a landed
+ * decision (rule 2 satisfied); anything else — no word at all, or only a negated
+ * one — is the child calling the closed issue a real duplicate, and the HIGH
+ * stands.
+ */
+function priorArtClause(clause: string): boolean {
+  return PRIOR_ART_RE.test(clause) && !PRIOR_ART_NEGATED_RE.test(clause);
+}
+
+/**
  * The post-filter. `verdict` is what the child's marker parsed to; a failed
  * dispatch (no verdict at all) and an absent marker both come back untouched —
- * nothing here may invent a downgrade. `known` maps an issue number to what the
- * inventory carried for it; a number with no row has no known state, so it can
- * never satisfy the CLOSED-prior-art rule and its HIGH stands.
+ * nothing here may invent a downgrade. Pass `fullText` (the child's uncut reply)
+ * so the fail-closed rules read evidence the 400-char display slice dropped.
+ * `known` maps an issue number to what the inventory carried for it; a number
+ * with no row has no known state, so it can never satisfy the CLOSED-prior-art
+ * rule and its HIGH stands.
  */
 export function downgradeSelfDuplicate(
   verdict: DuplicateRisk,
-  args: { sourceIssue?: number; known?: Map<number, KnownIssue> },
+  args: { sourceIssue?: number; known?: Map<number, KnownIssue>; fullText?: string },
 ): DuplicateRisk {
   if (verdict.downgradedFrom !== undefined) return verdict;
   if (verdict.level.toLowerCase() !== "high") return verdict;
   const source = args.sourceIssue;
   if (source === undefined) return verdict;
-  const named = namedIssueRefs(verdict.rationale);
+  const text = args.fullText ?? verdict.rationale;
+  const named = namedIssueRefs(text);
   // A HIGH that names NO issue cannot be attributed to the subject, so it is
   // not the defect this filter exists for and it halts as any other HIGH does.
   if (named.length === 0) return verdict;
-  // Fail closed before any downgrade: a reference the extractor cannot read is
-  // an issue this filter has not judged, so it stands exactly as an OPEN one
-  // would rather than ride along unexamined in a downgrade it never saw.
-  if (citesUnreadableOtherIssue(verdict.rationale, source)) return verdict;
   const known = args.known ?? new Map<number, KnownIssue>();
+  // Rules 3 and 5, judged first, on the untouched text: a CLOSED issue whose own
+  // clause carries no unnegated prior-art word, and an `X-k` token that is not
+  // this plan's decomposition, are evidence the child meant as a real duplicate —
+  // no later reasoning about the subject may talk the operator out of that halt.
+  for (const ref of named) {
+    if (ref.parent !== undefined) {
+      if (!isSplitChildOf(ref.parent, source)) return verdict;
+      continue;
+    }
+    if (ref.id === source) continue;
+    const row = known.get(ref.id);
+    if (row === undefined || !isClosedState(row.state)) continue;
+    if (!priorArtClause(clauseNaming(text, ref.token))) return verdict;
+  }
   const excluded: ExcludedDuplicate[] = [];
+  // The tokens this filter positively resolved as excluded; their digits come
+  // out of the text before rule 4 looks for what is left.
+  const resolved: string[] = [];
   for (const ref of named) {
     // A split-child token: #<parent>-<k> of the planned issue is its own
     // decomposition, never a duplicate of it.
     if (ref.parent !== undefined) {
+      // Checked against the source in the pass above; an unrelated parent never
+      // gets here.
       if (!isSplitChildOf(ref.parent, source)) return verdict;
+      resolved.push(ref.token);
       excluded.push({
         number: ref.parent,
         state: known.get(ref.parent)?.state ?? "unknown",
-        title: known.get(ref.parent)?.title ?? "",
+        title: truncateForDisclosure(known.get(ref.parent)?.title ?? ""),
         reason: EXCLUSION_REASONS["split-child"],
       });
       continue;
     }
     const n = ref.id;
     const row = known.get(n);
-    const clause = clauseNaming(verdict.rationale, ref.token);
     if (n === source) {
+      resolved.push(ref.token);
       excluded.push(excludedRow(n, row, EXCLUSION_REASONS.source));
       continue;
     }
-    if (
-      row !== undefined &&
-      isClosedState(row.state) &&
-      PRIOR_ART_RE.test(clause) &&
-      !PRIOR_ART_NEGATED_RE.test(clause)
-    ) {
-      excluded.push(excludedRow(n, row, EXCLUSION_REASONS["prior-art"]));
+    if (row !== undefined && isClosedState(row.state)) {
+      // Judged by rule 5 above, so its own clause carries the prior-art word.
+      const clause = truncateForDisclosure(clauseNaming(text, ref.token));
+      resolved.push(ref.token);
+      excluded.push(
+        excludedRow(
+          n,
+          row,
+          `${EXCLUSION_REASONS["prior-art"]} — "${clause}" (${PRIOR_ART_EVIDENCE})`,
+        ),
+      );
       continue;
     }
-    // A named issue the filter may not suppress: the verdict stands and halts.
+    // A named issue the filter may not suppress: no inventory row means no
+    // known state, so the CLOSED-prior-art rule cannot apply to it (rule 2).
     return verdict;
   }
+  // Rule 4, after every token has been judged: a number this filter has not
+  // accounted for is evidence it never saw, so the HIGH stands exactly as an
+  // OPEN one would rather than ride along unexamined in a downgrade that never
+  // read it.
+  if (citesUnaccountedNumber(text, resolved)) return verdict;
   return {
     ...verdict,
     level: "medium",
@@ -316,27 +392,40 @@ function excludedRow(
   row: KnownIssue | undefined,
   reason: string,
 ): ExcludedDuplicate {
-  return { number, state: row?.state ?? "unknown", title: row?.title ?? "", reason };
+  return {
+    number,
+    state: row?.state ?? "unknown",
+    title: truncateForDisclosure(row?.title ?? ""),
+    reason,
+  };
 }
 
 /**
  * The disclosure the drafted/filed body carries: which duplicate candidates the
  * driver suppressed, and on what grounds. Rendered at ONE fixed site
  * (`filedBodyOf`) so the prior-context budget cannot clip it away the way it
- * clips an inventory row.
+ * clips an inventory row. Bounded: at most `EXCLUSION_DISCLOSURE_MAX_ROWS` rows
+ * and a summary line for the rest — titles and clauses are already clipped by
+ * `truncateForDisclosure` at the row, so the section has a ceiling the body
+ * fitter can account for.
  */
 export function duplicateExclusionSection(
   risk: DuplicateRisk | undefined,
   sourceIssue: number | undefined,
 ): string {
   if (sourceIssue === undefined || !risk) return "";
-  const rows = (risk.excludedIssues ?? [])
-    .map((e) => `- #${e.number}${e.state === "unknown" ? "" : ` (${e.state})`}: ${e.reason}`)
-    .join("\n");
-  if (rows === "") return "";
+  const all = risk.excludedIssues ?? [];
+  if (all.length === 0) return "";
+  const rows = all
+    .slice(0, EXCLUSION_DISCLOSURE_MAX_ROWS)
+    .map((e) => `- #${e.number}${e.state === "unknown" ? "" : ` (${e.state})`}: ${e.reason}`);
+  const hidden = all.length - EXCLUSION_DISCLOSURE_MAX_ROWS;
+  if (hidden > 0) {
+    rows.push(`- and ${hidden} more excluded candidate(s); see the plan session trace`);
+  }
   const downgraded =
     risk.downgradedFrom === undefined
       ? ""
       : ` The check reported ${risk.downgradedFrom} and was downgraded to ${risk.level}.`;
-  return `## Duplicate check — excluded candidates\n\nThis plan is for existing issue #${sourceIssue}, so that issue and its own split children are not duplicate candidates. The candidates below were excluded from the duplicate-risk verdict (${risk.level}).${downgraded}\n${rows}\n`;
+  return `## Duplicate check — excluded candidates\n\nThis plan is for existing issue #${sourceIssue}, so that issue and its own split children are not duplicate candidates. The candidates below were excluded from the duplicate-risk verdict (${risk.level}).${downgraded}\n${rows.join("\n")}\n`;
 }

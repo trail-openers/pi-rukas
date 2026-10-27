@@ -225,6 +225,10 @@ export const DROPPED_SECTION_HEADING = "## Dropped investigation items";
  *   itself is bounded by the gate's iteration cap;
  * - `openPointsSection` — same 300-char clip, plus the contract intro line;
  * - `baseFallbackSection` — one sentence plus the reason string;
+ * - `duplicateExclusionSection` (plan-duplicate-self.ts) — a fixed lead plus at
+ *   most `EXCLUSION_DISCLOSURE_MAX_ROWS` (10) rows, each carrying one issue
+ *   number, a state word and a `truncateForDisclosure`-clipped reason/clause,
+ *   plus the "and N more" summary line that replaces everything past the cap;
  * - the compaction note (`plan-driver.ts`) and the NEVER CLAIM disclosure, each
  *   a fixed lead plus items already clipped upstream;
  * - `planImageLinksSection` and the provenance wrapper (`provenanceReservation`,

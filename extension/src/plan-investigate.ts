@@ -30,11 +30,12 @@ import {
   priorContextExcludingSource,
   relatedExcludingSource,
 } from "./plan-duplicate-self.ts";
+import { traceDuplicateRisk } from "./plan-duplicate-trace.ts";
 import { forbiddenPhrasesBlock } from "./plan-prior-context.ts";
 import type { PlanType } from "./plan-types.ts";
 import { normalisePhrase } from "./plan-validate.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 /** The dispatch seam (same shape as plan-driver's PlanDispatchFn). */
 export type InvestigateDispatch = typeof dispatchCore;
@@ -79,7 +80,8 @@ export const PLAN_EXTRA_ARGS: string[] = ["--no-skills", "--extension", PLAN_REP
 export const PLAN_MARKER_CHILD_ARGS: string[] = ["--no-skills"];
 
 export interface DuplicateRisk {
-  level: string;
+  /** The four levels the risk child's marker admits; the parser's own default is `medium`. */
+  level: DuplicateRiskLevel;
   rationale: string;
   /**
    * #1856 — set only when a HIGH verdict was downgraded to medium because EVERY
@@ -88,7 +90,7 @@ export interface DuplicateRisk {
    * itself called prior art or a reversal target (plan-duplicate-self.ts). An
    * absent marker (`parseDuplicateRisk`'s medium default) is NEVER a downgrade.
    */
-  downgradedFrom?: string;
+  downgradedFrom?: DuplicateRiskLevel;
   /** Why the downgrade was allowed, in the driver's words. Present with `downgradedFrom`. */
   downgradeReason?: string;
   /**
@@ -98,6 +100,9 @@ export interface DuplicateRisk {
    */
   excludedIssues?: ExcludedDuplicate[];
 }
+
+/** The risk levels the `DUPLICATE_RISK:` marker admits. */
+export type DuplicateRiskLevel = "high" | "medium" | "low" | "none";
 
 /** One issue the duplicate-risk candidate set lost, and the rule that removed it. */
 export interface ExcludedDuplicate {
@@ -248,7 +253,10 @@ export function parseDuplicateRisk(text: string): DuplicateRisk {
   for (const m of text.matchAll(re)) last = m;
   if (!last) return { level: "medium", rationale: text.slice(0, 400) };
   return {
-    level: (last[1] ?? "medium").toLowerCase(),
+    // The alternation admits exactly the four levels, so the captured group is
+    // already a `DuplicateRiskLevel` once lower-cased; the cast records that the
+    // regex and the union are one list, not two.
+    level: (last[1] ?? "medium").toLowerCase() as DuplicateRiskLevel,
     rationale: text.slice(last.index, last.index + 400),
   };
 }
@@ -447,15 +455,26 @@ export async function runInvestigation(
   }
 
   let duplicateRisk: DuplicateRisk | undefined;
-  if (dup.ok) {
-    duplicateRisk = downgradeSelfDuplicate(parseDuplicateRisk(dup.text), {
+  // Structured-first, as for the angles (#893): a reply that failed or errored
+  // mid-stream is NOT a verdict, so no value is produced for the driver's halt
+  // rule to read — the same gate the angles get.
+  if (dup.ok && !dup.errorStop) {
+    // #1856 lens round 1 (H1) — the post-filter reads the child's FULL reply via
+    // `fullText`, not the 400-char display slice `parseDuplicateRisk` keeps: an
+    // OPEN duplicate named past that cut would otherwise be invisible to the
+    // fail-closed rules, and a HIGH that halts on main would be downgraded here
+    // only because the evidence fell off the end of a window.
+    const parsed = parseDuplicateRisk(dup.text);
+    duplicateRisk = downgradeSelfDuplicate(parsed, {
+      fullText: dup.text,
       ...(sourceIssue === undefined ? {} : { sourceIssue }),
       known,
     });
-    trace(`plan-driver: duplicateRisk=${duplicateRisk.level}`);
-    if (duplicateRisk.downgradedFrom !== undefined) {
-      trace(`plan-driver: duplicate-risk HIGH downgraded — ${duplicateRisk.downgradeReason ?? ""}`);
-    }
+    traceDuplicateRisk(duplicateRisk, {
+      kept: duplicateRisk === parsed,
+      ...(sourceIssue === undefined ? {} : { sourceIssue }),
+      fullText: dup.text,
+    });
   } else {
     trace("plan-driver: duplicate-risk dispatch failed — proceeding without a risk verdict");
   }

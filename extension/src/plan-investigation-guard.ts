@@ -39,11 +39,23 @@ const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 const isExcludedDuplicate = (x: unknown): boolean =>
   isShape(x) && isNum(x.number) && isStr(x.state) && isStr(x.title) && isStr(x.reason);
 
+const isRiskLevel = (x: unknown): boolean =>
+  x === "high" || x === "medium" || x === "low" || x === "none";
+
 const isDuplicateRisk = (x: unknown): boolean =>
   isShape(x) &&
-  isStr(x.level) &&
+  isRiskLevel(x.level) &&
   isStr(x.rationale) &&
-  (x.downgradedFrom === undefined || isStr(x.downgradedFrom)) &&
+  // A downgrade is a CLAIM the operator reads, so it must be internally
+  // consistent: only a HIGH becomes medium, and only when the filter can name
+  // what it suppressed. An inconsistent cached verdict is a miss, not a filing
+  // whose disclosure asserts a suppression nothing produced.
+  (x.downgradedFrom === undefined ||
+    (x.downgradedFrom === "high" &&
+      x.level === "medium" &&
+      Array.isArray(x.excludedIssues) &&
+      x.excludedIssues.length > 0 &&
+      x.excludedIssues.every(isExcludedDuplicate))) &&
   (x.downgradeReason === undefined || isStr(x.downgradeReason)) &&
   (x.excludedIssues === undefined ||
     (Array.isArray(x.excludedIssues) && x.excludedIssues.every(isExcludedDuplicate)));
