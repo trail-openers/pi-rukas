@@ -29,6 +29,7 @@
 import { failureOf, type ResultFailure } from "../src/headless/failure.ts";
 import type { HeadlessCap } from "../src/headless/caps.ts";
 import { causeVerdictOf } from "../src/work-driver-cause-class.ts";
+import { lensFixBoundKillVerdict } from "../src/work-driver-lens-fix-kill-cause.ts";
 import {
   buildCompletionEvent,
   overrideEnvForKillCause,
@@ -240,11 +241,32 @@ async function killTail(result: DispatchResult): Promise<string> {
 }
 
 // ─────────────────────────── 3. the classifier reads it back ─────────────────
+/**
+ * A lens-fix cycle that halted on `step-failed:lens-fix`. `event` is the
+ * dispatch the cap follows; the optional `earlier` is a dispatch of the SAME
+ * kind and step that ran first in the window — the shape a fix loop produces
+ * when it re-dispatches before the capped round. Both members are
+ * `dispatch-failed`, because that is what a killed round records
+ * (`buildCompletionEvent`'s kill branch) and a mixed window answers a different
+ * question than the one these canaries ask.
+ */
 function lensFixCycle(
   event: Record<string, unknown>,
   earlier?: Record<string, unknown>,
 ): WorkState {
   const base = initialState(1798, 1);
+  const dispatch = (at: number, over: Record<string, unknown>): WorkEvent =>
+    ({
+      kind: "dispatch-failed",
+      at,
+      step: "lens-fix",
+      role: "developer",
+      label: "lens-fix",
+      ok: false,
+      exitCode: null,
+      ms: 45 * MIN,
+      ...over,
+    }) as unknown as WorkEvent;
   return {
     ...base,
     pipelineState: {
@@ -254,53 +276,21 @@ function lensFixCycle(
       lastCompletedStep: "lens-fix",
     },
     eventLog: [
-      { kind: "step-started", at: 1, step: "lens-fix" },
-      // An OPTIONAL earlier dispatch in the same step window: two fixer rounds
-      // ran before the cap, and the rule under test is which one the verdict
-      // reads. `earlier` sits at `at: 2` and the dispatch the cap follows at
-      // `at: 3`, so the scan from the cap reaches the LATER one first.
-      ...(earlier === undefined
-        ? []
-        : [
-            // A round that COMPLETED earlier in the fix loop, so the scan for
-            // "the dispatch the cap explains" (`failedDispatchBefore` in
-            // headless/failure.ts — the LAST dispatch of the window) still
-            // lands on the killed one, and the question under test is whose
-            // source the verdict reads.
-            {
-              kind: "dispatch-completed",
-              at: 2,
-              step: "lens-fix",
-              role: "developer",
-              label: "lens-fix",
-              ok: true,
-              ms: 10 * MIN,
-              // A summary, not an errorTail: only the killed dispatch's own
-              // tail may carry the bound clause, or a completed round would
-              // hand its text to the verdict of the kill behind it.
-              ...earlier,
-              errorTail: undefined,
-            },
-          ]),
-      {
-        kind: "dispatch-failed",
-        at: earlier === undefined ? 2 : 3,
-        step: "lens-fix",
-        role: "developer",
-        label: "lens-fix",
-        ok: false,
-        exitCode: null,
-        ms: 45 * MIN,
-        ...event,
-      },
+      { kind: "step-started", at: 1, step: "lens-fix" } as unknown as WorkEvent,
+      ...(earlier === undefined ? [] : [dispatch(2, earlier)]),
+      dispatch(earlier === undefined ? 2 : 3, event),
       {
         kind: "cap-hit",
         at: earlier === undefined ? 3 : 4,
+        step: "lens-fix",
+        // #1696 names the step that capped, and the classifier's window search
+        // keys off it — a fixture whose cap-hit omits `step` silently widens
+        // the window to the whole log.
         cap: "step-failed:lens-fix",
         reviewRound: 0,
         nextStep: "handoff",
-      },
-    ] as WorkEvent[],
+      } as unknown as WorkEvent,
+    ],
   } as unknown as WorkState;
 }
 
@@ -490,41 +480,63 @@ function failFor(state: WorkState): ResultFailure | undefined {
     "the action says what the default is, so the operator knows which way to move it",
   );
 
-  // #1798 round 1 — TWO dispatches in one step window, the shape a fix loop
-  // that ran a round before the capped one produces. `lensFixCycle` puts
-  // `earlier` first and the dispatch the cap follows last, and
-  // `failedDispatchBefore` (headless/failure.ts) — the read that decides which
-  // dispatch the cap explains — takes the LAST one. So the LAST dispatch is
-  // authoritative here: an earlier round that recorded a bound source must not
-  // license a later, sourceless kill.
-  const lastWins = causeVerdictOf(
-    lensFixCycle(
-      { killCause: "timeout", errorTail: boundKillTail, fixerBoundSource: "fixer-bound" },
-      { killCause: "timeout", errorTail: "[pi-rukas] killed after 7200000ms timeout" },
-    ),
+    // #1798 round 1 — the source of a bound kill may only come from the dispatch
+  // that actually died at a bound. A fix loop re-dispatches the same step, so a
+  // window can hold several dispatches; `failedLensFixDispatch` reads ONE of
+  // them for cause, source and line, and the scan stops there. A completed round
+  // in front of the killed one therefore contributes nothing: the source and the
+  // clause come from the killed dispatch alone.
+  const armedEvent = await buildCompletionEvent(
+    ctx,
+    "lens-fix",
+    "developer",
+    "lens-fix",
+    killed({ fixerBoundSource: "fixer-bound" }),
+  );
+  const completedRound = (() => {
+    const st = lensFixCycle({});
+    const idx = st.eventLog.findIndex((e) => e.kind === "dispatch-failed");
+    const log = [...st.eventLog];
+    log.splice(
+      idx,
+      0,
+      {
+        kind: "dispatch-completed",
+        at: 2,
+        step: "lens-fix",
+        role: "developer",
+        label: "lens-fix",
+        ok: true,
+        ms: 10 * MIN,
+        summary: "fixed three findings",
+      } as unknown as WorkEvent,
+    );
+    return { ...st, eventLog: log } as WorkState;
+  })();
+  assert(
+    completedRound.eventLog.filter((e) => e.kind === "dispatch-completed").length === 1 &&
+      completedRound.eventLog.filter((e) => e.kind === "dispatch-failed").length === 1 &&
+      completedRound.eventLog.some((e) => e.kind === "step-started" && e.step === "lens-fix") &&
+      completedRound.eventLog.some((e) => e.kind === "cap-hit" && e.step === "lens-fix"),
+    "the window holds one completed round and one killed dispatch, inside a bounded step",
+  );
+  const withCompleted = (() => {
+    const log = [...(completedRound.eventLog as unknown as Record<string, unknown>[])];
+    const idx = log.findIndex((e) => e.kind === "dispatch-failed");
+    log[idx] = armedEvent as unknown as Record<string, unknown>;
+    return { ...completedRound, eventLog: log } as unknown as WorkState;
+  })();
+  const boundFromKilled = lensFixBoundKillVerdict(
+    withCompleted,
     "step-failed:lens-fix",
     undefined,
-    undefined,
+    1798,
   );
   assert(
-    lastWins?.causeClass === "environment",
-    `canary: the dispatch the cap follows wins — an earlier round's source does not license a sourceless kill (got ${lastWins?.causeClass})`,
-  );
-  // The mirror: the killed dispatch itself carries the source, and an earlier
-  // round of a different cause sits behind it — the verdict classifies, so the
-  // canary above fails for the rule and not for an unrelated absence.
-  const lastArmed = causeVerdictOf(
-    lensFixCycle(
-      { killCause: "inactivity", errorTail: "[pi-rukas] killed after 1ms inactivity" },
-      { killCause: "timeout", errorTail: boundKillTail, fixerBoundSource: "fixer-bound" },
-    ),
-    "step-failed:lens-fix",
-    undefined,
-    undefined,
-  );
-  assert(
-    lastArmed?.causeClass === "pi-rukas",
-    `the dispatch the cap follows is read, not an earlier round (got ${lastArmed?.causeClass})`,
+    boundFromKilled?.causeClass === "pi-rukas" &&
+      (boundFromKilled.causeReason ?? "").includes("lens-fix developer was killed at 45m") &&
+      (boundFromKilled.causeEvidence[0] ?? "").includes(LENS_FIX_BOUND_ENV),
+    `the killed dispatch alone supplies cause, source and line (got ${JSON.stringify(boundFromKilled?.causeReason)})`,
   );
 
   // #1798 round 1 — with no minutes in the kill's clause the reason says

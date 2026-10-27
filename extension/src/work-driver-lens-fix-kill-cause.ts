@@ -40,27 +40,21 @@ import type { WorkState } from "./workflow-state.ts";
 /** The one step this verdict claims. Anything else falls through to the table. */
 const LENS_FIX_STEP = "lens-fix";
 
-/** Is this cap the lens-fix step's generic failure cap? Module-private: the
- *  verdict below is this module's only export that matters, and tests reach
- *  this rule through it. */
+/** Is this cap the lens-fix step's generic failure cap? Module-private (#1798
+ *  round 1): the verdict below is this module's only export, and tests reach
+ *  this rule through it rather than through a second entry point. */
 function isLensFixStepCap(cap: string): boolean {
   return cap === `step-failed:${LENS_FIX_STEP}`;
 }
 
 /** The bound source of the kill this cap explains, or `undefined` when the
- *  dispatch left no such record. Module-private: the only reader is this
- *  module's verdict, which tests reach through `lensFixBoundKillVerdict`. */
-function lensFixKillBoundSource(
-  state: WorkState,
-  cap: string,
-): FixerBoundSource | undefined {
-  // The dispatch the cap explains, read the way `failureOf`'s
-  // `failedDispatchBefore` reads it: the LAST `dispatch-failed` between the
-  // start of the step's last run and the cap. One rule for cause, source and
-  // line (`killCauseOf` / `providerAtKillOf` / `killLine` below all share it),
-  // so the verdict can never describe a round other than the one the cap fired
-  // on. The earlier scans here looked BACKWARD from the cap and forward from 0
-  // and could therefore stop at a completed round or read a killed one.
+ *  dispatch left no such record. Module-private for the same reason as
+ *  `isLensFixStepCap`: the only reader is the verdict below. */
+function lensFixKillBoundSource(state: WorkState, cap: string): FixerBoundSource | undefined {
+  // The dispatch the cap explains — see `failedLensFixDispatch` for which one
+  // that is. ONE rule for cause, source and line (`killCauseOf` /
+  // `providerAtKillOf` / `killLine` below all share it), so the verdict can
+  // never describe a round other than the one the cap fired on.
   const dispatch = failedLensFixDispatch(state, cap);
   if (dispatch === undefined) return undefined;
   // A source recorded by the step that ARMED the bound is authoritative and
@@ -91,26 +85,47 @@ function boundMinutesFromText(text: string): number | undefined {
   return Number.isFinite(minutes) ? minutes : undefined;
 }
 
-/** The dispatch the cap explains: the LAST `dispatch-failed` between the start
- *  of the stopped step's last run and the cap — the window
- *  `headless/failure.ts`'s `failedDispatchBefore` uses, restated here so this
- *  module stays a leaf of the cause table. `undefined` when the window holds no
- *  lens-fix failure (another step's dispatch, or no dispatch at all). */
+/**
+ * The dispatch the cap explains: the FIRST `dispatch-failed` of the stopped
+ * step's last run before the cap.
+ *
+ * #1798 round 1 — first, and the scan STOPS there. The fix loop re-dispatches
+ * the same step, so a window can hold two (or more) dispatches, and reading the
+ * LAST one let an earlier round's `fixerBoundSource` and kill clause license a
+ * later, sourceless kill: the exact misattribution this module exists to
+ * prevent, in the other direction. A dispatch that recorded no source is
+ * genuinely sourceless rather than filled in from a sibling round. `undefined`
+ * when the window holds no lens-fix failure (another step's dispatch, or none),
+ * and the window is the whole log when no `step-started` for the step is found.
+ */
 function failedLensFixDispatch(state: WorkState, cap: string) {
   const capIdx = state.eventLog.findIndex((e) => e.kind === "cap-hit" && e.cap === cap);
-  let start = capIdx < 0 ? 0 : capIdx;
-  for (let i = start - 1; i >= 0; i--) {
+  // The start of the step's last run. When no `step-started` for this step
+  // precedes the cap, the window is the WHOLE log rather than the empty range
+  // `[capIdx, capIdx)` — an unreadable step boundary is not evidence that no
+  // dispatch failed (a state file trimmed at a step boundary would then classify
+  // with no dispatch, and the verdict would fall to the generic entry).
+  let start = 0;
+  for (let i = capIdx - 1; i >= 0; i--) {
     const e = state.eventLog[i];
     if (e?.kind === "step-started" && e.step === LENS_FIX_STEP) {
       start = i;
       break;
     }
   }
-  for (let i = capIdx - 1; i >= start; i--) {
+  // FORWARD scan from the event AFTER the step boundary: the FIRST
+  // `dispatch-failed` of the window is the dispatch the cap explains and the
+  // read STOPS there. `failureOf`'s `failedDispatchBefore` reads the LAST one
+  // of the same window, and the two must agree — reading the last here would
+  // let the FIRST round's `fixerBoundSource` and kill clause license the SECOND
+  // round's sourceless host kill, which is the very misattribution this module
+  // exists to prevent. Stopping at the first dispatch (rather than scanning
+  // past a sourceless one) is what keeps a completed round or an earlier attempt
+  // from supplying facts the killed child never recorded.
+  const end = capIdx < 0 ? state.eventLog.length : capIdx;
+  for (let i = start + 1; i < end; i++) {
     const e = state.eventLog[i];
     if (e?.kind !== "dispatch-failed") continue;
-    // The LAST dispatch-failed in the window, as `failureOf` reads it: the
-    // dispatch the cap explains.
     return e.step === LENS_FIX_STEP ? e : undefined;
   }
   return undefined;
@@ -129,10 +144,9 @@ function killCauseOf(state: WorkState, cap: string): string | undefined {
 /**
  * Whether the dispatch this cap explains came back on a provider error-stop as
  * well as a kill. The mirror of `killCauseOf` for the guard below: it reads the
- * EVENT, so it sees the fact `buildCompletionEvent` now carries on a killed
- * dispatch (`providerMessage`) rather than only the projection `failureOf`
- * builds — which sets that field for a `dispatch-failed` today but would not
- * have if a future read widened the kill branch's kind handling.
+ * EVENT, the way the cause is read, so it sees the fact `buildCompletionEvent`
+ * now carries on a killed dispatch (`providerMessage`) that the failure
+ * projection only ever set for a `dispatch-failed-provider`.
  */
 function providerAtKillOf(state: WorkState, cap: string): boolean {
   return failedLensFixDispatch(state, cap)?.providerMessage !== undefined;
@@ -169,14 +183,15 @@ export function lensFixBoundKillVerdict(
   const cause = killCauseOf(state, cap);
   if (cause !== "timeout" && cause !== "child-bound") return undefined;
   // A provider error-stop is the fault it was: the endpoint severed the stream
-  // and no bound is the reason. Read from the EVENT SIDE, the same way
-  // `killCauseOf` reads the cause, and NOT from `failure.providerMessage`:
-  // `failureOf` sets that field only on a `dispatch-failed-provider`, and a
-  // dispatch that is both killed at its bound and error-stopped is recorded as
-  // a `dispatch-failed` (`buildCompletionEvent`'s kill branch wins the event),
-  // so the field-on-the-failure read was unreachable and an outage got the
-  // "raise the bound" advice. `failure.providerMessage` is still honoured for
-  // a caller that reads the failure rather than the log.
+  // and no bound is the reason. Round 1: this guard used to read ONLY
+  // `failure.providerMessage`, which `failureOf` sets solely for a
+  // `dispatch-failed-provider` — and a dispatch that is BOTH killed at its
+  // bound and error-stopped is recorded as a `dispatch-failed`, because
+  // `buildCompletionEvent`'s kill branch owns the event. The guard was
+  // therefore unreachable and an outage got the "raise the bound" advice. It is
+  // now read from the EVENT side the way `killCauseOf` reads the cause; the
+  // failure-side read is kept so a caller that hands over a failure instead of
+  // a log still abstains.
   if (failure?.providerMessage !== undefined) return undefined;
   if (providerAtKillOf(state, cap)) return undefined;
   const source = lensFixKillBoundSource(state, cap);
@@ -185,7 +200,8 @@ export function lensFixBoundKillVerdict(
   const minutes = boundMinutesFromText(line);
   // No minutes in the kill's clause (a state file whose tail was clipped, an
   // older builder) still names the clock and the knob — but never "0m", which
-  // reads as a bound of zero rather than as "the number is unknown".
+  // reads as a bound of zero rather than as "the number is unknown"
+  // (#1798 round 1).
   const at = minutes === undefined ? "a bound" : `${Math.round(minutes)}m`;
   return {
     causeClass: "pi-rukas",
