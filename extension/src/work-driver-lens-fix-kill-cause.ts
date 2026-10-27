@@ -86,15 +86,30 @@ function boundMinutesFromText(text: string): number | undefined {
 }
 
 /**
- * The dispatch the cap explains: the FIRST `dispatch-failed` of the stopped
- * step's last run before the cap.
+ * The dispatch the cap explains: the LAST `dispatch-failed` of the stopped
+ * step's run before the cap, and the scan STOPS there.
  *
- * #1798 round 1 — first, and the scan STOPS there. The fix loop re-dispatches
- * the same step, so a window can hold two (or more) dispatches, and reading the
- * LAST one let an earlier round's `fixerBoundSource` and kill clause license a
- * later, sourceless kill: the exact misattribution this module exists to
- * prevent, in the other direction. A dispatch that recorded no source is
- * genuinely sourceless rather than filled in from a sibling round. `undefined`
+ * #1798 round 2 — LAST, not first, and the module now says so in one place.
+ * The rule the code carried before read the FIRST failure of the window, and a
+ * probe through the real writers showed the two readings of one log disagree:
+ * with an armed bound kill and a sourceless kill in the same window, the
+ * forward-first scan called the FIRST one (bound verdict, `PI_ENSEMBLE_
+ * LENS_FIX_BOUND_MS`), while `failureOf`'s `failedDispatchBefore` — which scans
+ * BACKWARD and is what the handoff's `failure` block renders — named the LAST
+ * one. One handoff, two children.
+ *
+ * The cap explains the dispatch that FAILED THE STEP, and the router halts on
+ * the tail: `failureEventOf` reads the step's last event, `dispatchFailCapHit`
+ * is built from that same tail, and `failureOf` scans backward from the cap.
+ * So the tail is the answer whichever reader is asked, and this scan now walks
+ * backward to agree with both. Reading the FIRST would let an earlier round's
+ * `fixerBoundSource` and kill clause license a later, sourceless host kill — a
+ * bound verdict (and a knob to raise) for a child pi-rukas never killed at a
+ * bound — which is the misattribution this module exists to prevent.
+ *
+ * Stopping at the first dispatch found walking backward (rather than scanning
+ * past a sourceless one) is what keeps a completed round or an earlier attempt
+ * from supplying facts the child that ended the step never recorded. `undefined`
  * when the window holds no lens-fix failure (another step's dispatch, or none),
  * and the window is the whole log when no `step-started` for the step is found.
  */
@@ -113,17 +128,12 @@ function failedLensFixDispatch(state: WorkState, cap: string) {
       break;
     }
   }
-  // FORWARD scan from the event AFTER the step boundary: the FIRST
-  // `dispatch-failed` of the window is the dispatch the cap explains and the
-  // read STOPS there. `failureOf`'s `failedDispatchBefore` reads the LAST one
-  // of the same window, and the two must agree — reading the last here would
-  // let the FIRST round's `fixerBoundSource` and kill clause license the SECOND
-  // round's sourceless host kill, which is the very misattribution this module
-  // exists to prevent. Stopping at the first dispatch (rather than scanning
-  // past a sourceless one) is what keeps a completed round or an earlier attempt
-  // from supplying facts the killed child never recorded.
+  // BACKWARD from the event just before the cap: the LAST `dispatch-failed` of
+  // the window is the dispatch that failed the step, and the read STOPS there
+  // (see the header of this function for why that is the same dispatch
+  // `failureOf` and the router name).
   const end = capIdx < 0 ? state.eventLog.length : capIdx;
-  for (let i = start + 1; i < end; i++) {
+  for (let i = end - 1; i > start; i--) {
     const e = state.eventLog[i];
     if (e?.kind !== "dispatch-failed") continue;
     return e.step === LENS_FIX_STEP ? e : undefined;
