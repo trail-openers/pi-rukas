@@ -48,7 +48,7 @@ import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { UNFENCE_NOTES_CAP, type UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
+import { UNFENCE_NOTES_CAP } from "./work-driver-plan-unfence-notes.ts";
 import { applySafetyNet, safetyNetWorktree } from "./work-driver-safety-net.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
@@ -175,7 +175,15 @@ export async function runMergePrep(
   const merges: Array<{ into: string; from: string }> = [];
   const mergeHeads: Record<string, string> = {};
   const carried: Record<string, boolean> = {};
-  const selfFenceDrops: UnfenceRecord[] = [];
+  // #1862 — how many of this merge's own self-fence notes the persisted record
+  // still has room for. Each fold persists its notes AS IT FOLDS (a mid-loop park
+  // must not lose them), so the bound is spent down here rather than applied to
+  // the whole run afterwards.
+  let notesBudget = UNFENCE_NOTES_CAP;
+  let droppedCount = 0;
+  let persistedNotes = 0;
+  // Said at most once, at the end of the run, when the budget ran out mid-merge.
+  let notesOverflow = 0;
   let next = stateIn;
   // #1005 — park builds from `next`, which is kept in sync with
   // `stateRef.current` after every successful iteration. The pre-#1005
@@ -229,8 +237,14 @@ export async function runMergePrep(
     // is written per iteration precisely because a mid-loop park used to lose
     // what the earlier iterations had done — a drop whose notes were held until
     // the end was lost exactly that way, so a fence the merge deleted was visible
-    // nowhere: not in the state file, not in the handoff.
-    selfFenceDrops.push(...folded.selfFenceDrops);
+    // nowhere: not in the state file, not in the handoff. The run's own budget of
+    // `UNFENCE_NOTES_CAP` notes is sliced down fold by fold, and whatever the
+    // budget could not hold is disclosed as a count once, below.
+    const persist = folded.selfFenceDrops.slice(0, Math.max(0, notesBudget));
+    notesBudget -= persist.length;
+    droppedCount += folded.selfFenceDrops.length;
+    persistedNotes += persist.length;
+    if (persist.length < folded.selfFenceDrops.length) notesOverflow = 1;
     merges.push({ into: owner, from: violator });
     // #1345 — several violators of one owner fold into ONE merged workstream,
     // so its id is recorded once and it is re-dispatched once.
@@ -331,16 +345,16 @@ export async function runMergePrep(
         workstreams: workstreams,
       },
     };
-    // #1862 — the fold's self-fence removals PERSIST AT THE FOLD, not after the
-    // loop. Everything else this iteration records is already written per
-    // iteration precisely because a mid-loop park used to lose what earlier
-    // iterations had done; a drop whose notes waited for the end of the loop was
-    // lost that same way, so a fence the merge deleted was visible nowhere — not
-    // in the state file, not in the handoff.
-    if (folded.selfFenceDrops.length > 0) {
+    // #1862 — the fold's self-fence removals PERSIST AT THE FOLD, on the same
+    // state `park` builds from: everything else this iteration records is already
+    // written per iteration precisely because a mid-loop park used to lose what
+    // earlier iterations had done, and a drop whose notes waited for the end of
+    // the loop was lost that same way — not in the state file, not in the
+    // handoff.
+    if (persist.length > 0) {
       next = withPersistNotes(
         next,
-        folded.selfFenceDrops.map((r) => r.note),
+        persist.map((r) => r.note),
       );
     }
     stateRef.current = next;
@@ -431,13 +445,16 @@ export async function runMergePrep(
       );
     }
   }
-  // The notes were persisted per fold above; what is left here is the BOUND.
-  // `withPersistNotes` has no cap of its own, so a merge that absorbed many
-  // workstreams would print one note per removal — the unbounded disclosure
-  // `planQuality.unfence.notes` holds to `UNFENCE_NOTES_CAP`. The excess is
-  // disclosed as a count, never dropped in silence.
-  if (selfFenceDrops.length > UNFENCE_NOTES_CAP) {
-    stateRef.current = capSelfFenceNotes(stateRef.current, selfFenceDrops);
+  // The notes were persisted per fold above; what is left here is the OVERFLOW
+  // line, said once for the whole run. `withPersistNotes` has no cap of its own,
+  // so without the per-fold slice a merge that absorbed many workstreams would
+  // print one note per removal — the unbounded disclosure `planQuality.unfence.notes`
+  // holds to `UNFENCE_NOTES_CAP`. The excess is disclosed as a count, never
+  // dropped in silence.
+  if (notesOverflow > 0) {
+    stateRef.current = withPersistNotes(stateRef.current, [
+      `${SELF_FENCE_NOTE_PREFIX}+${droppedCount - persistedNotes} more (cap ${UNFENCE_NOTES_CAP})`,
+    ]);
   }
   return {
     state: stateRef.current,
@@ -451,44 +468,10 @@ export async function runMergePrep(
   };
 }
 
-/**
- * Hold the develop merge's persisted self-fence notes to `UNFENCE_NOTES_CAP` and
- * say how many the list left out. The notes were already written per fold (a
- * mid-loop park must not lose them), so this replaces the run's own notes rather
- * than appending: the tail of the list this merge appended is the only part it
- * can bound, and `plumbReports` written by an earlier step are left alone.
- */
-function capSelfFenceNotes(state: WorkState, drops: readonly UnfenceRecord[]): WorkState {
-  const total = drops.length;
-  const isMine = (body: string): boolean => body.startsWith(SELF_FENCE_NOTE_PREFIX);
-  const prior = state.pipelineState.plumbReports.filter((r) => !isMine(r.body));
-  const kept = state.pipelineState.plumbReports
-    .filter((r) => isMine(r.body))
-    .slice(0, UNFENCE_NOTES_CAP);
-  const omitted = total - kept.length;
-  const at = Date.now();
-  const more =
-    omitted > 0
-      ? [
-          {
-            step: "develop" as const,
-            role: "driver" as const,
-            body: `self-fence dropped: +${omitted} more (cap ${UNFENCE_NOTES_CAP})`,
-            at,
-          },
-        ]
-      : [];
-  return {
-    ...state,
-    pipelineState: {
-      ...state.pipelineState,
-      plumbReports: [...prior, ...kept, ...more],
-    },
-  };
-}
-
 /** The one prefix the fold's note builder uses (workstream-fold-self-fence.ts):
- * what identifies a persisted note as one of the merge's own disclosures. */
+ * what names the overflow line as this merge's own disclosure, so an operator
+ * reading the persisted notes sees the count beside the notes it replaced.
+ * #1862 — declared here because the per-fold slice is the only writer. */
 const SELF_FENCE_NOTE_PREFIX = "self-fence dropped: ";
 
 /**

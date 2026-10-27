@@ -39,7 +39,6 @@
 
 import path from "node:path";
 import { Value } from "@sinclair/typebox/value";
-import { boundOutOfScope, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import {
   WORKSTREAM_ID_MAX,
@@ -97,24 +96,6 @@ export interface WorkstreamReport {
    */
   unreadable: number;
   /**
-   * #1862 — the fence entries the TOOL BOUNDARY removed while building these very
-   * calls, because each one fenced the workstream's own declared paths. The
-   * boundary REPORTS them: the map the cycle develops is `workstreams`, which has
-   * them gone, and the plan-quality gate adds them back (from
-   * `boundaryRawDrops`) so a self-fence the boundary deleted is still the
-   * contradiction #1167's one-shot corrective steers on. The persisted shape
-   * (neutralised); absent when the boundary removed none.
-   */
-  boundaryDrops?: UnfenceRecord[];
-  /**
-   * #1862 — the SAME removals as `boundaryDrops`, with the entry as the planner
-   * wrote it, for the gate's view: a fence entry is one instruction, so the gate
-   * and the corrective steer read the text the planner sent, not the neutralised
-   * form a state file may hold. NEVER persisted — every field that reaches the
-   * state file goes through `neutraliseFenceEntry`, and these entries do not.
-   */
-  boundaryRawDrops?: UnfenceRecord[];
-  /**
    * #1862 — fence entries the ceiling fold removed because they fenced the
    * merged workstream's own declared paths. The plan step persists them on
    * `pipelineState.planQuality.unfence.selfFences`; absent when the fold
@@ -168,11 +149,6 @@ export function workstreamCallsOf(
 ): WorkstreamReport {
   const results = new Map((result.toolResults ?? []).map((r) => [r.toolCallId, r]));
   const accepted: Workstream[] = [];
-  // #1862 — what each call's own boundary removed, collected per call: `drops`
-  // for the persisted record, `rawDrops` for the gate's view (the entry as the
-  // planner wrote it, never persisted).
-  const boundaryDrops: UnfenceRecord[] = [];
-  const boundaryRawDrops: UnfenceRecord[] = [];
   const refused: RefusedWorkstreamCall[] = [];
   let unreadable = 0;
   // Parent-side uniqueness: the child refuses duplicates in-process, but a set of
@@ -259,19 +235,7 @@ export function workstreamCallsOf(
       continue;
     }
     seen.add(judged.id);
-    // The fence bound is computed and SAID here, once, and handed to both builds:
-    // the reported view is a private view of the same call, and letting it
-    // re-derive the bound would print a second `outOfScope bounded` line for a
-    // bound the driver applied once — and a bound nobody can audit is the failure
-    // #1744 closed, so the line must appear exactly once, not zero times either.
-    const boundedFence = boundOutOfScope(judged.outOfScope);
-    if (fenceWasBounded(boundedFence)) {
-      traceWarn(fenceBoundNotice(`plan workstream '${judged.id}'`, boundedFence));
-    }
-    const built = workstreamFromArgs(judged, boundedFence);
-    accepted.push(built.workstream);
-    for (const d of built.drops) boundaryDrops.push(d);
-    for (const d of built.rawDrops) boundaryRawDrops.push(d);
+    accepted.push(workstreamFromArgs(judged));
   }
   const ceiling = foldToCeiling(accepted);
   return {
@@ -279,8 +243,6 @@ export function workstreamCallsOf(
     accepted: accepted.length,
     refused,
     unreadable,
-    ...(boundaryDrops.length > 0 ? { boundaryDrops } : {}),
-    ...(boundaryRawDrops.length > 0 ? { boundaryRawDrops } : {}),
     ...(ceiling.selfFenceDrops.length > 0 ? { selfFenceDrops: ceiling.selfFenceDrops } : {}),
   };
 }

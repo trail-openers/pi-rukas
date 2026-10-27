@@ -421,12 +421,6 @@ export async function runPlan(
       next,
       report: judged,
       workstreams,
-      // #1862 — the gate's view is the developed map plus what the sites that
-      // removed fences REPORTED removing: the boundary's raw entries and the
-      // folds' records, both from the report this tail judges.
-      boundaryRawDrops: judged.boundaryRawDrops,
-      foldDrops: judged.selfFenceDrops,
-      boundaryDrops: judged.boundaryDrops,
       firstPlanRaw,
       findingsCount,
       spec,

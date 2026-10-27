@@ -29,7 +29,6 @@
  * canned reply and no child process.
  */
 
-import { planGateView, withBoundaryDrops } from "./plan-fence-self-entry.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -50,7 +49,6 @@ import type { PlanQualityHost, PlanQualityInput } from "./work-driver-plan-quali
 import { planSpecMismatchReason } from "./work-driver-plan-spec-coverage.ts";
 import { correctiveSteerFor } from "./work-driver-plan-steers.ts";
 import { planCorrectiveFailureEvent, planCorrectivePrompt } from "./work-driver-plan-timeout.ts";
-import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import type { PlanQualityReason, PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -70,27 +68,6 @@ export type CorrectiveRoundResult = {
   workstreams: Record<string, Workstream>;
   /** The corrective's RAW map (#1005's dropped-edge comparison). */
   raw?: Record<string, Workstream>;
-  /**
-   * #1862 — the boundary drops of the corrective's OWN calls, carried back so the
-   * tail's persisted record describes the plan the cycle develops. Absent when
-   * the corrective made no accepted call, and deliberately not defaulted to the
-   * primary's list at the caller.
-   */
-  reportedBoundaryDrops?: readonly UnfenceRecord[];
-  /**
-   * #1862 — the folds of the corrective's OWN normalisation pass, carried back for
-   * the same reason as `reportedBoundaryDrops`: the fold and the boundary are
-   * different authorities, and a record that counts one and not the other says a
-   * fence went with no note naming which.
-   */
-  reportedFoldDrops?: readonly UnfenceRecord[];
-  /**
-   * #1862 — the boundary drops the CALLER is recording. The steer re-adds exactly
-   * those entries, so the corrective can name the fence line the planner must
-   * fix, and so an entry a FOLD opened on purpose is never put back by this site.
-   * Passed down, never derived here: the caller records the same list.
-   */
-  boundaryDrops?: readonly UnfenceRecord[];
   /** The corrective's own unfence record, which replaces the primary's. */
   unfence?: PlanUnfenceSummary;
   /** True once the dispatch was ISSUED — feeds the halt's RECORD. */
@@ -154,12 +131,7 @@ export async function runCorrectiveRound(
     trigger.noCalls,
     input.report,
     // The ORIGINAL plan: a repaired path was never written by the planner.
-    // #1862 — the same view the reason check judged, so the steer names the entry
-    // the planner actually wrote (`… lists `src/a.ts` in its paths and `src/a.ts`
-    // in its out-of-scope`) instead of falling back to the generic line: the
-    // boundary removed that fence from the stored map, and a planner told only
-    // that its plan was contradictory cannot fix a line it cannot see.
-    planGateView(input.workstreams, input.boundaryDrops ?? []),
+    input.workstreams,
     trigger.reason,
     input.findingsCount,
   );
@@ -263,23 +235,6 @@ export async function runCorrectiveRound(
   }
   workstreams = retryReport.workstreams;
   const raw = retryReport.workstreams; // #1005 — the corrective's RAW map
-  // #1862 — the fences THIS corrective's calls carried before their own boundary
-  // took them off, and the ones ITS folds removed when the plan folded or merged.
-  // The pass below judges an already-stripped map, so these records are the only
-  // account of what the corrective's own plan fenced: the corrective replaces the
-  // primary's record (that is what #1167 round-3 requires), and without the
-  // corrective's own drops the replacement would silently lose the disclosure —
-  // `removed` counts a fence that was never in the map this pass read, and a
-  // planner that wrote one self-fence ends with a record saying nothing went.
-  // The boundary's drops answer to the TOOL BOUNDARY, the fold records to the
-  // merge, and `removed` to the issue: three authorities, three counters, one
-  // note per removal. Neither list is folded into `unfence` HERE: this round's
-  // `unfence` still carries the PRIMARY's record at this point, and the tail
-  // replaces it with this round's and adds both lists once (see the tail's
-  // `withBoundaryDrops`). Folding them at both sites would say a fence went
-  // twice — the counter the #1862 note cap exists to make honest.
-  const correctiveBoundaryDrops = retryReport.boundaryDrops ?? [];
-  const correctiveFenceDrops: UnfenceRecord[] = [];
   // #1167 round-3 / round-4 — the corrective gets the SAME normalisation the
   // primary got, through the one shared helper (`runPlanNormalisationPass`) so
   // no path can skip half of it. It used to re-run the coupling merge but not
@@ -293,7 +248,11 @@ export async function runCorrectiveRound(
     execFn: host.couplingExecFn,
   });
   workstreams = correctiveNormalised.workstreams;
-  correctiveFenceDrops.push(...correctiveNormalised.selfFenceDrops);
+  // #1862 — ONE owner for the fold drops. The normalisation pass has already
+  // counted its folds into `summary.selfFences` and put their notes in
+  // `summary.notes`, and this round's `unfence` — which the tail persists in
+  // place of the primary's — IS that summary. Carrying the records out again and
+  // adding them a second time would bill every removal twice.
   if (correctiveNormalised.summary) unfence = correctiveNormalised.summary;
   // #819 — the gate runs AGAIN on the corrective: #818's wrong work came from
   // the corrective, not the first plan. A corrective is already the cycle's
@@ -311,13 +270,6 @@ export async function runCorrectiveRound(
       redispatched,
       repairedCleared,
       raw,
-      reportedBoundaryDrops: retryReport.boundaryDrops,
-      // #1862 — the corrective's own fold drops, so a halt here still discloses
-      // them: the fold removed these fences from the plan the cycle would develop,
-      // and a record that counted only the boundary's drops would say fences went
-      // with no note saying which (the same disclosure failure as not recording
-      // the drop at all).
-      reportedFoldDrops: correctiveFenceDrops,
       halt: planSpecMismatchCap(
         next,
         correctiveMismatch,
@@ -333,10 +285,6 @@ export async function runCorrectiveRound(
     redispatched,
     repairedCleared,
     raw,
-    reportedBoundaryDrops: retryReport.boundaryDrops,
-    // #1862 — carried back for the same reason on the success path: this pass is
-    // the one whose map the cycle develops, and the folds it ran are its own.
-    reportedFoldDrops: correctiveFenceDrops,
     replacedPlan: true,
   });
 }
