@@ -229,7 +229,13 @@ export function downgradeSelfDuplicate(
   args: { sourceIssue?: number; known?: Map<number, KnownIssue>; fullText?: string },
 ): DuplicateRisk {
   if (verdict.downgradedFrom !== undefined) return verdict;
-  if (verdict.level.toLowerCase() !== "high") return verdict;
+  // Exact, not case-folded: `DuplicateRiskLevel` admits exactly these four
+  // spellings and `parseDuplicateRisk` already lower-cases the marker, so a
+  // level outside the union is a value nobody normalised and it must not
+  // downgrade. A `toLowerCase()` here would widen the gate to whatever the
+  // cache or a replayed session carried ("HIGH", "High") and read a verdict
+  // the type does not admit as the one this filter exists for.
+  if (verdict.level !== "high") return verdict;
   const source = args.sourceIssue;
   // #1856 review round 4 (lens HIGH): the entry, not the call sites, decides what
   // counts as a source issue. `sourceIssue` reaches this filter through the
