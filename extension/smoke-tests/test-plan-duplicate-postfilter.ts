@@ -22,7 +22,6 @@
 
 import type { MechanicalInventory } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { duplicateExclusionSection } from "../src/plan-duplicate-disclosure.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
 import { assemblePriorContext } from "../src/plan-prior-context-assembly.ts";
 
