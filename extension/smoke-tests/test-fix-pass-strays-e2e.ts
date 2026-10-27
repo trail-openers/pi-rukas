@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * #1846 — end to end: a fix pass that changes a file outside its fence is
- * REVERTED AND CONTINUES instead of parking the cycle.
+ * #1846 — the fix pass's stray revert, driven through the step seam and the
+ * seam's caller.
  *
  * The field shape this replaces (issue #1846): a fix pass lands its fix, adds a
  * small helper the fence does not admit, and the whole cycle hands off with
@@ -16,33 +16,35 @@
  *     protected-path gate's decision, never the revert's);
  *   - no positively recorded head to revert to, or a preservation that failed.
  *
- * Each branch below runs the REAL `runAdversarialFixPass` against a real git
- * repo, so what is asserted is the event the cycle ends on — the thing the
- * handoff renderer and the merge gate read — not an internal helper's return.
+ * The first three cases drive the REAL `revertStraysOnce` — the step the fix pass
+ * invokes with its own plans — against a real git repo, so what is asserted is the
+ * tree outcome and the event the cycle records, not an internal helper's return.
+ * The whole pass (`runAdversarialFixPass`) is driven by
+ * `test-work-driver-adversarial-fix-pass.ts`; what only this file covers is the
+ * CALLER half of the escape hatch: with the switch off the caller never invokes
+ * the revert (`fixPassStrayRevertEnabled() && post.reason && post.straysFor &&
+ * post.strays` at its call site), and the revert step itself refuses a repo root
+ * — so the tree is left exactly as the pass left it.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { PassPlan, PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
-import {
-  fixPassStrayRevertEnabled,
-  pendingFixes,
-  runAdversarialFixPass,
-} from "../src/work-driver-adversarial-fix.ts";
-import type { CycleContext } from "../src/work-driver-context.ts";
+import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
+import { fixPassStrayRevertEnabled } from "../src/work-driver-adversarial-fix.ts";
 import { correctiveRoundFor, correctiveRoundsOf } from "../src/work-driver-corrective-admission.ts";
 import { passWindow, revertStraysOnce } from "../src/work-driver-fix-pass-revert-step.ts";
 import { fixPassStraysRef } from "../src/work-driver-fix-pass-strays.ts";
 import type { FixPassStraysRevertedEvent } from "../src/workflow-state-events-fix-pass-strays.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import {
-  type DispatchResult,
   devCommit,
-  devOk,
   devWrite,
   fixState,
   git,
+  passTreeAt,
   repoWithFile,
+  typedCycleCtx,
+  typedPassPlans,
 } from "./lib/adversarial-fix-fixtures.ts";
 
 let exit = 0;
@@ -56,50 +58,6 @@ function assert(cond: boolean, msg: string): void {
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
-
-const emitSink = { emit: () => {}, fingerprints: [] } as never;
-
-/** Run a real fix pass whose developer is `onDev`, with git running for real. */
-async function runPass(dir: string, st: WorkState, onDev: (d: string) => void) {
-  const ctx: CycleContext = {
-    host: { sendUserMessage: () => {}, emit: () => {} },
-    emitSink,
-    repoRoot: dir,
-    issue: 1846,
-    issueBodyFetcherFn: async () => ({ stdout: "mock" }),
-    dispatchFn: async (_pi, spec) => {
-      if (spec.role === "developer") onDev(dir);
-      return devOk(spec.role) as DispatchResult;
-    },
-  };
-  const out = await runAdversarialFixPass(ctx, st, pendingFixes(st.eventLog), Date.now());
-  const tail = out.eventLog[out.eventLog.length - 1];
-  const revert = out.eventLog.find(
-    (e): e is FixPassStraysRevertedEvent => e.kind === "fix-pass-strays-reverted",
-  );
-  return {
-    out,
-    tailKind: tail?.kind ?? "",
-    parked: tail?.kind === "cap-hit" ? (tail.evidence ?? "") : "",
-    applied: tail?.kind === "adversarial-fix-applied",
-    revert,
-  };
-}
-
-/**
- * The worktree path the cwd gate accepts. The fixtures' repos ARE the worktree
- * for the single-workstream shape; `planFixPass` reads the path from state, so
- * the gate's requirement (`<repoRoot>/.worktrees/…`) is what a real cycle
- * satisfies and what this fixture must too.
- */
-function wtOf(dir: string): string {
-  // A real `git worktree add`, which is what the driver's branch step runs. The
-  // revert needs a tree that is actually attached: `git checkout <rev> -- <path>`
-  // refuses a path git has never tracked, and a commit needs a HEAD — a copied
-  // directory fakes both badly, a real worktree answers them exactly.
-  git(dir, "worktree add -q --detach .worktrees/issue-1846 HEAD");
-  return `${dir}/.worktrees/issue-1846`;
-}
 
 /** The developer's work, committed IN ITS WORKTREE. The fixture keeps the repo
  *  root and the worktree as separate trees (that is what the cwd gate needs), so
@@ -120,53 +78,42 @@ function devWriteIn(wt: string, file: string, body: string): void {
   writeFileSync(at, body);
 }
 
-/** A pass plan with the two heads the revert reads, as the fence records them. */
-function planOf(worktree: string, headBefore: string, headAtRound: string): PassPlan {
-  return {
-    id: "default",
-    worktree,
-    findings: ["a.txt: change one to two"],
-    headBefore,
-    before: { names: [], diff: "", untracked: [] },
-    declared: ["a.txt"],
-    named: [],
-    widened: [],
-    outOfScope: [],
-    specSlots: [],
-    candidates: new Set<string>(),
-    dirs: new Set<string>(),
-    fence: ["a.txt"],
-    headAtRound,
-  } as unknown as PassPlan;
-}
-
-/** The minimal context the revert step reads: repo root, issue, and the git exec. */
-function ctxOf(dir: string): CycleContext {
-  return {
-    host: { sendUserMessage: () => {}, emit: () => {} },
-    emitSink,
-    repoRoot: dir,
-    issue: 1846,
-    issueBodyFetcherFn: async () => ({ stdout: "mock" }),
-  } as unknown as CycleContext;
-}
-
 /** `devCommit` writes then commits; a file in a NEW directory needs the dir first. */
 function commitNew(dir: string, file: string, body: string): void {
   mkdirSync(dirname(join(dir, file)), { recursive: true });
   devCommit(dir, file, body);
 }
 
-/** The developer lands its fix in scope and commits a helper the fence refuses.
- *  The stray is written but left UNCOMMITTED, which is the shape that reached the
- *  field: the fence reads the working tree (`treeChanges`), so an uncommitted
- *  helper is a stray, and a committed one would already be part of the pass's
- *  reviewed diff. */
-const fixPlusStray = (d: string) => {
-  devCommit(d, "a.txt", "two\n");
-  mkdirSync(`${d}/lib`, { recursive: true });
-  devWrite(d, "lib/helper.ts", "export const helper = () => 1;\n");
-};
+/**
+ * The tree the "second stray set" case needs: the fixture's own stray set, plus
+ * `lib/helper.ts` left uncommitted in a directory the fence never admitted — the
+ * shape that reached the field.
+ */
+function strayInNewDirTree(label: string): {
+  repoRoot: string;
+  worktree: string;
+  headBefore: string;
+} {
+  const t = passTreeAt(label);
+  devWriteIn(t.worktree, "lib/helper.ts", "export const helper = () => 1;\n");
+  return { repoRoot: t.repoRoot, worktree: t.worktree, headBefore: t.headBefore };
+}
+
+/** A stray refusal as `postPassFault` reports it for an admissible stray. */
+function strayPost(file: string, untracked: string[]): PostPass {
+  return {
+    diffs: {},
+    admissions: [],
+    reason: "stray",
+    straysFor: "default",
+    strays: [{ file, refused: "no-slot" }],
+    untracked,
+  };
+}
+
+/** A refusal `postPassFault` reports for a fenced / protected stray: NO
+ *  `straysFor`, because those files are the protected-path gate's decision. */
+const protectedPost: PostPass = { diffs: {}, admissions: [], reason: "protected" };
 
 console.log("# the seam: a stray set that is revertible is reverted, not parked");
 {
@@ -179,21 +126,27 @@ console.log("# the seam: a stray set that is revertible is reverted, not parked"
   const dir = repoWithFile("1846-seam");
   try {
     const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
-    const wt = wtOf(dir);
+    git(dir, "worktree add -q --detach .worktrees/issue-1846 HEAD");
+    const wt = `${dir}/.worktrees/issue-1846`;
     const headBefore = git(wt, "rev-parse HEAD").trim();
     devCommitIn(wt, "a.txt", "two\n");
-    const headAtRound = git(wt, "rev-parse HEAD").trim();
     devWriteIn(wt, "lib/helper.ts", "export const helper = () => 1;\n");
-    const post: PostPass = {
-      diffs: {},
-      admissions: [],
-      reason: "stray",
-      straysFor: "default",
-      strays: [{ file: "lib/helper.ts", refused: "undeclared" }],
-      untracked: ["lib/helper.ts"],
-    };
-    const plans = [planOf(wt, headBefore, headAtRound)];
-    const outcome = await revertStraysOnce(ctxOf(dir), st, plans, post, Date.now());
+    const plans = await typedPassPlans(dir, wt, ["a.txt"], "a.txt: change one to two");
+    assert(
+      plans[0]?.headBefore === headBefore,
+      "the real plan records the pass's own pre-pass HEAD positively",
+    );
+    assert(
+      plans[0]?.fence.admits.includes("lib/helper.ts") === false,
+      "and the real fence does not admit the helper the pass added",
+    );
+    const outcome = await revertStraysOnce(
+      typedCycleCtx(dir, 1846),
+      st,
+      plans,
+      strayPost("lib/helper.ts", ["lib/helper.ts"]),
+      Date.now(),
+    );
     assert(
       outcome?.ok === true,
       `the stray set is reverted, not parked (${JSON.stringify(outcome)})`,
@@ -219,30 +172,31 @@ console.log("# the seam: a stray set that is revertible is reverted, not parked"
 
 console.log("# a SECOND stray set parks: the driver reverts once, it does not loop");
 {
-  const dir = repoWithFile("1846-twice");
+  const t = strayInNewDirTree("1846-twice");
   try {
-    const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
-    const wt = wtOf(dir);
-    const headBefore = git(wt, "rev-parse HEAD").trim();
-    devCommitIn(wt, "a.txt", "two\n");
-    devWriteIn(wt, "lib/helper.ts", "export const helper = () => 1;\n");
-    const post: PostPass = {
-      diffs: {},
-      admissions: [],
-      reason: "stray",
-      straysFor: "default",
-      strays: [{ file: "lib/helper.ts", refused: "undeclared" }],
-      untracked: ["lib/helper.ts"],
-    };
-    const plans = [planOf(wt, headBefore, headBefore)];
-    const first = await revertStraysOnce(ctxOf(dir), st, plans, post, Date.now());
+    const st = fixState(t.repoRoot, ["a.txt"], "a.txt: change one to two");
+    const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
+    const post = strayPost("lib/helper.ts", ["lib/helper.ts"]);
+    const first = await revertStraysOnce(
+      typedCycleCtx(t.repoRoot, 1846),
+      st,
+      plans,
+      post,
+      Date.now(),
+    );
     assert(first?.ok === true, "the first stray set is reverted");
     // The state now carries the revert event, as it would in the pass.
     const after: WorkState = {
       ...st,
       eventLog: [...st.eventLog, ...(first?.ok === true ? [first.event] : [])],
     };
-    const second = await revertStraysOnce(ctxOf(dir), after, plans, post, Date.now());
+    const second = await revertStraysOnce(
+      typedCycleCtx(t.repoRoot, 1846),
+      after,
+      plans,
+      post,
+      Date.now(),
+    );
     assert(
       second?.ok === false && second.secondSet,
       "a SECOND stray set is a park, not a second revert",
@@ -252,11 +206,11 @@ console.log("# a SECOND stray set parks: the driver reverts once, it does not lo
       `and the reason says the driver already reverted once (${JSON.stringify(second)})`,
     );
     assert(
-      existsSync(`${wt}/lib/helper.ts`) === false,
+      existsSync(`${t.worktree}/lib/helper.ts`) === false,
       "the first revert's tree change stands — nothing was re-reverted",
     );
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(t.repoRoot, { recursive: true, force: true });
   }
 }
 
@@ -269,7 +223,8 @@ console.log("# the revert target is the pass's OWN headBefore, never a round's")
   // where `lib/helper.ts` is already tracked with the out-of-fence content.
   const dir = repoWithFile("1846-target");
   try {
-    const wt = wtOf(dir);
+    git(dir, "worktree add -q --detach .worktrees/issue-1846 HEAD");
+    const wt = `${dir}/.worktrees/issue-1846`;
     const baseHead = git(wt, "rev-parse HEAD").trim();
     // A commit made by the driver's corrective round: helper.ts exists there.
     devCommitIn(wt, "lib/helper.ts", "export const helper = 1;\n");
@@ -278,39 +233,35 @@ console.log("# the revert target is the pass's OWN headBefore, never a round's")
     // The pass then EDITED it out of fence.
     devWriteIn(wt, "lib/helper.ts", "export const helper = 999;\n");
     const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
-    const events: WorkEvent[] = [
-      ...st.eventLog,
-      {
-        kind: "corrective-round",
-        at: 1,
-        step: "develop",
-        workstreamId: "default",
-        attempt: 1,
-        command: "sh check.sh",
-        evidenceLines: ["a.txt: assertion failed"],
-        headAtRound: roundHead,
-      },
-    ];
-    const round = correctiveRoundFor(
+    const round: WorkEvent = {
+      kind: "corrective-round",
+      at: 1,
+      step: "develop",
+      workstreamId: "default",
+      attempt: 1,
+      command: "sh check.sh",
+      evidenceLines: ["a.txt: assertion failed"],
+      headAtRound: roundHead,
+    };
+    const events: WorkEvent[] = [...st.eventLog, round];
+    const found = correctiveRoundFor(
       correctiveRoundsOf(passWindow({ ...st, eventLog: events })),
       "default",
     );
     assert(
-      round?.headAtRound === roundHead,
+      found?.headAtRound === roundHead,
       "the pass window finds the corrective round's own baseline, not an earlier one",
     );
+    const plans = await typedPassPlans(dir, wt, ["a.txt"], "a.txt: change one to two");
+    assert(
+      plans[0]?.headBefore === baseHead,
+      "the real plan's target is the pass's pre-pass HEAD, before the round's commit",
+    );
     const outcome = await revertStraysOnce(
-      ctxOf(dir),
+      typedCycleCtx(dir, 1846),
       { ...st, eventLog: events },
-      [planOf(wt, baseHead, roundHead)],
-      {
-        diffs: {},
-        admissions: [],
-        reason: "stray",
-        straysFor: "default",
-        strays: [{ file: "lib/helper.ts", refused: "undeclared" }],
-        untracked: [],
-      },
+      plans,
+      strayPost("lib/helper.ts", []),
       Date.now(),
     );
     assert(outcome?.ok === true, `the stray is reverted (${JSON.stringify(outcome)})`);
@@ -339,36 +290,42 @@ console.log("# the escape hatch returns the pass to parking on the FIRST stray s
 {
   // The kill switch must not merely skip the revert: it must skip it BEFORE the
   // revert is attempted, so the tree is left exactly as the pass left it (the
-  // pre-#1849 behaviour an operator reaching for this knob expects).
+  // pre-#1849 behaviour an operator reaching for this knob expects). Two halves
+  // are observable here: the caller's guard reads the switch, and the revert step
+  // itself refuses a repo root — so either way the tree stands untouched.
   const dir = repoWithFile("1846-hatch");
   const prev = process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT;
   process.env.PI_ENSEMBLE_FIX_PASS_STRAY_REVERT = "0";
   try {
-    const wt = wtOf(dir);
-    const headBefore = git(wt, "rev-parse HEAD").trim();
+    // A TRACKED stray (committed, then further edited in the tree) is the shape
+    // that survives a pass whose develop gates all clear — an untracked one makes
+    // the dirty-root gate refuse the pass before the fence is ever reached.
+    commitNew(dir, "lib/helper.ts", "export const helper = () => 1;\n");
     const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
-    const outcome = await revertStraysOnce(
-      ctxOf(dir),
-      st,
-      [planOf(wt, headBefore, headBefore)],
-      {
-        diffs: {},
-        admissions: [],
-        reason: "stray",
-        straysFor: "default",
-        strays: [{ file: "lib/helper.ts", refused: "undeclared" }],
-        untracked: [],
-      },
-      Date.now(),
-    );
-    // `revertStraysOnce` is the mechanism; the CALLER is what the switch gates,
-    // so the observable here is the exported predicate rather than the call.
+    devWrite(dir, "lib/helper.ts", "export const helper = () => 2;\n");
+    const before = readFileSync(`${dir}/lib/helper.ts`, "utf8");
+    // The caller's guard, read the way `runAdversarialFixPass` reads it at its
+    // own revert call site: with the switch off it never reaches `revertStraysOnce`.
+    const callerWouldRevert = fixPassStrayRevertEnabled();
     assert(
-      !fixPassStrayRevertEnabled(),
+      callerWouldRevert === false,
       "the switch reads as off, so the caller declines to revert and parks on the first set",
     );
+    const plans = await typedPassPlans(dir, dir, ["a.txt"], "a.txt: change one to two");
+    const refused = await revertStraysOnce(
+      typedCycleCtx(dir, 1846),
+      st,
+      plans,
+      strayPost("lib/helper.ts", []),
+      Date.now(),
+    );
     assert(
-      existsSync(`${wt}/lib/helper.ts`) === false,
+      refused?.ok === false && /not inside/.test(refused.reason),
+      `the revert step itself refuses a repo root, so whatever the switch says the tree is left alone (${JSON.stringify(refused)})`,
+    );
+    assert(
+      existsSync(`${dir}/lib/helper.ts`) &&
+        readFileSync(`${dir}/lib/helper.ts`, "utf8") === before,
       "and the mechanism was never invoked — the tree is untouched",
     );
   } finally {
@@ -380,28 +337,24 @@ console.log("# the escape hatch returns the pass to parking on the FIRST stray s
 
 console.log("# a fenced or protected refusal is never offered a revert");
 {
-  const dir = repoWithFile("1846-fenced");
+  const t = passTreeAt("1846-fenced");
   try {
-    const wt = wtOf(dir);
-    const headBefore = git(wt, "rev-parse HEAD").trim();
-    const before = readFileSync(`${dir}/a.txt`, "utf8");
+    const before = readFileSync(`${t.worktree}/b.txt`, "utf8");
+    const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
     const outcome = await revertStraysOnce(
-      ctxOf(dir),
-      fixState(dir, ["a.txt"], "a.txt: change one to two"),
-      [planOf(wt, headBefore, headBefore)],
-      {
-        // The shape `postPassFault` returns for a fenced / protected stray: no
-        // `straysFor`, because those files are the protected-path gate's decision.
-        diffs: {},
-        admissions: [],
-        reason: "protected",
-      },
+      typedCycleCtx(t.repoRoot, 1846),
+      fixState(t.repoRoot, ["a.txt"], "a.txt: change one to two"),
+      plans,
+      protectedPost,
       Date.now(),
     );
     assert(outcome === undefined, "a refusal with no `straysFor` is not offered a revert at all");
-    assert(readFileSync(`${dir}/a.txt`, "utf8") === before, "the tree was not touched");
+    assert(
+      readFileSync(`${t.worktree}/b.txt`, "utf8") === before,
+      "the tree was not touched",
+    );
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(t.repoRoot, { recursive: true, force: true });
   }
 }
 

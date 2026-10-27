@@ -11,17 +11,19 @@
  * pass in the same cycle — had already spent the "one revert".
  */
 
-import type { DriverContext } from "../src/work-driver-context.ts";
 import {
   fixPassRevertNote,
   revertStraysOnce,
 } from "../src/work-driver-fix-pass-revert-step.ts";
+import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
+import type { FixPassStraysRevertedEvent } from "../src/workflow-state-events-fix-pass-strays.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import {
   devCommit,
-  fixCtx,
+  events,
   singleState,
   strayPassTree,
+  typedCycleCtx,
   typedPassPlans,
 } from "./lib/adversarial-fix-fixtures.ts";
 
@@ -39,7 +41,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
   // A sibling workstream's revert, or a revert from an EARLIER fix pass, must
   // not spend this pass's one attempt: the whole eventLog is not the window.
   const t = strayPassTree();
-  const ctx = fixCtx(t.repoRoot, () => {}) as DriverContext;
+  const ctx = typedCycleCtx(t.repoRoot, 1846);
   const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
   const post: PostPass = {
     diffs: {},
@@ -48,7 +50,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
     strays: [{ file: "helper.ts", refused: "no-slot" }],
     untracked: [],
   };
-  const otherPassRevert: WorkEvent = {
+  const otherPassRevert: FixPassStraysRevertedEvent = {
     kind: "fix-pass-strays-reverted",
     at: 1,
     // A DIFFERENT workstream's revert — this pass has reverted nothing.
@@ -70,7 +72,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
   // a driver that reverted in pass 1 and re-ran the fixer in pass 2 does.
   const t2 = strayPassTree();
   const own = await revertStraysOnce(
-    fixCtx(t2.repoRoot, () => {}) as DriverContext,
+    typedCycleCtx(t2.repoRoot, 1846),
     singleState(t2.worktree, []),
     await typedPassPlans(t2.repoRoot, t2.worktree, ["a.txt"], "a.txt: fix it"),
     post,
@@ -86,13 +88,19 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
     // same stray set is revertible again.
     const reopened: WorkState = {
       ...singleState(t2.worktree, []),
-      eventLog: [
+      eventLog: events(
         own.event,
-        { kind: "adversarial-fix-requested", at: 2, workstreamId: "default", round: 2, findings: "a.txt: fix it" },
-      ] as WorkEvent[],
+        {
+          kind: "adversarial-fix-requested",
+          at: 2,
+          workstreamId: "default",
+          round: 2,
+          findings: "a.txt: fix it",
+        },
+      ),
     };
     const again = await revertStraysOnce(
-      fixCtx(t2.repoRoot, () => {}) as DriverContext,
+      typedCycleCtx(t2.repoRoot, 1846),
       reopened,
       await typedPassPlans(t2.repoRoot, t2.worktree, ["a.txt"], "a.txt: fix it"),
       post,

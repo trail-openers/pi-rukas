@@ -10,12 +10,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../../src/types.ts";
-import type { DriverContext } from "../../src/work-driver-context.ts";
+import type { CycleContext, DriverContext } from "../../src/work-driver-context.ts";
+import type { EmitSink } from "../../src/work-state-emit.ts";
 import { defaultExec } from "../../src/work-driver-adversarial-fix-git.ts";
 import type { GitRead } from "../../src/work-driver-adversarial-fix-git.ts";
 import type { PassPlan } from "../../src/work-driver-adversarial-fix-scope.ts";
 import { planFixPass } from "../../src/work-driver-adversarial-fix-scope.ts";
-import { type WorkState, initialState } from "../../src/workflow-state.ts";
+import type { WorkEvent, WorkState } from "../../src/workflow-state.ts";
+import { initialState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
 const realExec = promisify(exec);
@@ -137,15 +139,78 @@ export function fixCtx(
 }
 
 /**
- * #1849 — the tree a fix-pass stray revert test needs: a real repo, a real
- * detached worktree, the pass's own in-scope commit, and three strays covering
- * each case the revert handles differently (created / edited / untracked).
+ * The tree a fix-pass stray revert test needs: a real repo, a real detached
+ * worktree, the pass's own in-scope commit, and the strays covering each case
+ * the revert handles differently (created / edited / untracked).
  *
- * Shared between `test-fix-pass-strays-revert.ts` (the revert's happy path,
- * refusals and target) and `test-fix-pass-strays-counter.ts` (its per-pass,
- * per-workstream attempt budget) — both drive the same shape and each varies a
- * different rule, so the fixture lives here rather than being copied.
+ * `label` names the temp dir so several cases can tell their repos apart in a
+ * failure message. Shared by the three stray tests — each varies a different
+ * rule of the same shape, so the layout lives here rather than being copied.
  */
+export function passTreeAt(label: string): {
+  repoRoot: string;
+  worktree: string;
+  /** What `planFixPass` records positively before dispatching the pass. */
+  headBefore: string;
+  /** The HEAD after the pass's own in-scope commit — what a corrective round
+   *  dispatched inside the pass would have recorded as its baseline. */
+  headAtRound: string;
+} {
+  const repoRoot = repoWithFile(label);
+  const worktree = `${repoRoot}/.worktrees/issue-1846`;
+  git(repoRoot, "worktree add -q --detach .worktrees/issue-1846 HEAD");
+  const headBefore = git(worktree, "rev-parse HEAD").trim();
+  // The pass's own legitimate work, committed as a real fix pass commits. This is
+  // the commit the revert MUST survive — it is the whole reason the revert is
+  // path-scoped rather than a whole-tree reset.
+  devCommit(worktree, "a.txt", "two\n");
+  const headAtRound = git(worktree, "rev-parse HEAD").trim();
+  // Stray 1 — a tracked file the pass created after its fix commit.
+  devCommit(worktree, "helper.ts", "export const helper = () => 1;\n");
+  // Stray 2 — a tracked file that existed before the pass and was edited.
+  writeFileSync(`${worktree}/b.txt`, "hijacked\n");
+  // Stray 3 — an untracked file, in no commit, so no ref can ever hold it.
+  devWrite(worktree, "scratch-notes.md", "notes the pass should not have added\n");
+  return { repoRoot, worktree, headBefore, headAtRound };
+}
+
+/** The tree `passTreeAt` builds, in a dir named for the issue under test. */
+export function strayPassTree(): ReturnType<typeof passTreeAt> {
+  return passTreeAt("1846-revert");
+}
+
+/** A sink that records nothing. A step under test persists through the sink; a
+ *  test that asserts on the returned state needs the events, not the emission. */
+export const silentSink: EmitSink = { emit: () => undefined, fingerprints: [] };
+
+/**
+ * The `CycleContext` a step seam needs: `fixCtx`'s driver context plus the emit
+ * sink `CycleContext` requires. The typed alternative to hand-rolling a context
+ * object and casting it — a cast there hides a real change to the context seam,
+ * which is exactly what the fix-pass steps read.
+ */
+export function typedCycleCtx(
+  repoRoot: string,
+  issue: number,
+  opts: { onDev?: (dir: string) => void; verifyExecFn?: DriverContext["verifyExecFn"] } = {},
+): CycleContext {
+  return {
+    ...fixCtx(repoRoot, opts.onDev ?? (() => undefined), opts.verifyExecFn),
+    issue,
+    emitSink: silentSink,
+  };
+}
+
+/**
+ * A driver event log, checked against the closed `WorkEvent` union at the point
+ * it is built. The bare `x as WorkEvent[]` escape hatch hides a renamed field or
+ * a stale event kind until runtime; this signature makes the compiler read each
+ * element, which is the whole reason the fixture builds logs at all.
+ */
+export function events(...list: readonly WorkEvent[]): WorkEvent[] {
+  return [...list];
+}
+
 /** An early assert for a fence read that must succeed: a failed pre-pass read means the FIXTURE is broken, not the rule under test. */
 export function mustRead<T>(read: GitRead<T>, label: string): T {
   if (!read.ok) {
@@ -180,33 +245,6 @@ export function trackAtBase(dir: string, files: Record<string, string>): void {
   }
   git(dir, "add -A");
   git(dir, 'commit -q -m "tracked at base"');
-}
-
-export function strayPassTree(): {
-  repoRoot: string;
-  worktree: string;
-  /** What `planFixPass` records positively before dispatching the pass. */
-  headBefore: string;
-  /** The HEAD after the pass's own in-scope commit — what a corrective round
-   *  dispatched inside the pass would have recorded as its baseline. */
-  headAtRound: string;
-} {
-  const repoRoot = repoWithFile("1846-revert");
-  const worktree = `${repoRoot}/.worktrees/issue-1846`;
-  git(repoRoot, "worktree add -q --detach .worktrees/issue-1846 HEAD");
-  const headBefore = git(worktree, "rev-parse HEAD").trim();
-  // The pass's own legitimate work, committed as a real fix pass commits. This is
-  // the commit the revert MUST survive — it is the whole reason the revert is
-  // path-scoped rather than a whole-tree reset.
-  devCommit(worktree, "a.txt", "two\n");
-  const headAtRound = git(worktree, "rev-parse HEAD").trim();
-  // Stray 1 — a tracked file the pass created after its fix commit.
-  devCommit(worktree, "helper.ts", "export const helper = () => 1;\n");
-  // Stray 2 — a tracked file that existed before the pass and was edited.
-  writeFileSync(`${worktree}/b.txt`, "hijacked\n");
-  // Stray 3 — an untracked file, in no commit, so no ref can ever hold it.
-  devWrite(worktree, "scratch-notes.md", "notes the pass should not have added\n");
-  return { repoRoot, worktree, headBefore, headAtRound };
 }
 
 /**

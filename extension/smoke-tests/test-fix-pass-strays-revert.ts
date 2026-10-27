@@ -25,31 +25,34 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
-import { type GitExec, runGit } from "../src/work-develop-git.ts";
-import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
+import { type GitExec, runGit } from "../src/work-develop-git.ts";import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
 import { fixPassRevertNote, revertStraysOnce } from "../src/work-driver-fix-pass-revert-step.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import {
   fixPassStraysPatchPath,
   fixPassStraysRef,
   revertFixPassStrays,
 } from "../src/work-driver-fix-pass-strays.ts";
-import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
+import type { FixPassStraysRevertedEvent } from "../src/workflow-state-events-fix-pass-strays.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 import type { CorrectiveRoundEvent } from "../src/workflow-state-events-corrective.ts";
 import {
   devCommit,
   devWrite,
+  events,
   fixCtx,
   git,
+  passTreeAt,
   repoWithFile,
   singleState,
+  typedCycleCtx,
   typedPassPlans,
 } from "./lib/adversarial-fix-fixtures.ts";
 
 const realExecFile = promisify(execFile);
 
 /** The argv-form executor the driver's own git transport wraps. */
-const execFn: NonNullable<DriverContext["verifyExecFn"]> = (cmd, opts) =>
+const execFn: NonNullable<CycleContext["verifyExecFn"]> = (cmd, opts) =>
   realExecFile(cmd, opts?.argv ?? [], { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer });
 
 const gitExec: GitExec = runGit(execFn);
@@ -67,33 +70,12 @@ function assert(cond: boolean, msg: string): void {
  * A worktree laid out the way the develop step lays one out: a repo at
  * `repoRoot`, the tree under `<repoRoot>/.worktrees/<id>` (the shape
  * `assertInsideWorktrees` demands), containing the base commit, the pass's own
- * in-scope commit, and the strays the fence refused.
+ * in-scope commit, and the strays the fence refused. The shared fixture is
+ * deliberately thin on assertions: this file's first case asserts on the refusals
+ * it raises, so a broken layout has to surface as the rule under test failing.
  */
-function passTree(): {
-  repoRoot: string;
-  worktree: string;
-  /** What `planFixPass` records positively before dispatching the pass. */
-  headBefore: string;
-  /** The HEAD after the pass's own in-scope commit — what a corrective round
-   *  dispatched inside the pass would have recorded as its baseline. */
-  headAtRound: string;
-} {
-  const repoRoot = repoWithFile("1846-revert");
-  const worktree = `${repoRoot}/.worktrees/issue-1846`;
-  git(repoRoot, "worktree add -q --detach .worktrees/issue-1846 HEAD");
-  const headBefore = git(worktree, "rev-parse HEAD").trim();
-  // The pass's own legitimate work, committed as a real fix pass commits. This is
-  // the commit the revert MUST survive — it is the whole reason the revert is
-  // path-scoped rather than a whole-tree reset.
-  devCommit(worktree, "a.txt", "two\n");
-  const headAtRound = git(worktree, "rev-parse HEAD").trim();
-  // Stray 1 — a tracked file the pass created after its fix commit.
-  devCommit(worktree, "helper.ts", "export const helper = () => 1;\n");
-  // Stray 2 — a tracked file that existed before the pass and was edited.
-  writeFileSync(`${worktree}/b.txt`, "hijacked\n");
-  // Stray 3 — an untracked file, in no commit, so no ref can ever hold it.
-  devWrite(worktree, "scratch-notes.md", "notes the pass should not have added\n");
-  return { repoRoot, worktree, headBefore, headAtRound };
+function passTree(): ReturnType<typeof passTreeAt> {
+  return passTreeAt("1846-revert");
 }
 
 const req = (
@@ -276,7 +258,7 @@ console.log("# the step: one revert per pass; a SECOND stray set parks instead")
     ],
     untracked: ["scratch-notes.md"],
   };
-  const ctx = fixCtx(t.repoRoot, () => {}) as DriverContext;
+  const ctx = typedCycleCtx(t.repoRoot, 1846);
   const state: WorkState = singleState(t.worktree, []);
   const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
   const first = await revertStraysOnce(ctx, state, plans, post, 1);
@@ -318,7 +300,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
   // A sibling workstream's revert, or a revert from an EARLIER fix pass, must
   // not spend this pass's one attempt: the whole eventLog is not the window.
   const t = passTree();
-  const ctx = fixCtx(t.repoRoot, () => {}) as DriverContext;
+  const ctx = typedCycleCtx(t.repoRoot, 1846);
   const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
   const post: PostPass = {
     diffs: {},
@@ -327,8 +309,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
     strays: [{ file: "helper.ts", refused: "no-slot" }],
     untracked: [],
   };
-  const otherPassRevert: WorkEvent = {
-    kind: "fix-pass-strays-reverted",
+  const otherPassRevert: FixPassStraysRevertedEvent = {    kind: "fix-pass-strays-reverted",
     at: 1,
     // A DIFFERENT workstream's revert — this pass has reverted nothing.
     workstreamId: "sibling",
@@ -349,7 +330,7 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
   // a driver that reverted in pass 1 and re-ran the fixer in pass 2 does.
   const t2 = passTree();
   const own = await revertStraysOnce(
-    fixCtx(t2.repoRoot, () => {}) as DriverContext,
+    typedCycleCtx(t2.repoRoot, 1846),
     singleState(t2.worktree, []),
     await typedPassPlans(t2.repoRoot, t2.worktree, ["a.txt"], "a.txt: fix it"),
     post,
@@ -365,13 +346,19 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
     // same stray set is revertible again.
     const reopened: WorkState = {
       ...singleState(t2.worktree, []),
-      eventLog: [
+      eventLog: events(
         own.event,
-        { kind: "adversarial-fix-requested", at: 2, workstreamId: "default", round: 2, findings: "a.txt: fix it" },
-      ] as WorkEvent[],
+        {
+          kind: "adversarial-fix-requested",
+          at: 2,
+          workstreamId: "default",
+          round: 2,
+          findings: "a.txt: fix it",
+        },
+      ),
     };
     const again = await revertStraysOnce(
-      fixCtx(t2.repoRoot, () => {}) as DriverContext,
+      typedCycleCtx(t2.repoRoot, 1846),
       reopened,
       await typedPassPlans(t2.repoRoot, t2.worktree, ["a.txt"], "a.txt: fix it"),
       post,
@@ -449,8 +436,8 @@ console.log("# the revert target is the pass's OWN headBefore, never a round's h
     evidenceLines: ["b.txt:12 expected one"],
     headAtRound: recordedRoundHead,
   };
-  const ctx = fixCtx(t.repoRoot, () => {}) as DriverContext;
-  const state: WorkState = singleState(t.worktree, [round] as WorkEvent[]);
+  const ctx = typedCycleCtx(t.repoRoot, 1846);
+  const state: WorkState = singleState(t.worktree, events(round));
   const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
   const post: PostPass = {
     diffs: {},
