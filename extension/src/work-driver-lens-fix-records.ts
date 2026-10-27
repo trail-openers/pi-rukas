@@ -14,10 +14,9 @@
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { LENS_FIX_NO_WORKSTREAM } from "./work-driver-lens-fix-fence-gate.ts";
-import type { LensFixPlanRefusal } from "./work-driver-lens-fix-fence.ts";
-import type { LensFixPassPlan } from "./work-driver-lens-fix-fence.ts";
+import type { LensFixPassPlan, LensFixPlanRefusal } from "./work-driver-lens-fix-fence.ts";
 import type { LensFixFenceSnapshot } from "./workflow-state-schema.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
  * The operator-visible text of a refusal. The typed discriminant decides what
@@ -37,6 +36,13 @@ export function refusalReason(refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_W
       // entry claims, so neither the revert nor the fence has anything to work
       // with, and the round parks rather than landing unchecked.
       return "the lens-fix tree is not a recorded workstream, so no fence bounds it and no recorded tree can hold a revert";
+    case "repo-root-tree":
+      // PM decision #1852-1: at the repo root the driver never reverts, so the
+      // round is judged strictly — ANY stray parks and nothing is pushed. The
+      // record is what makes the gate RUN rather than skip: with no workstream
+      // entry there is no snapshot, and silence here would read as "an older
+      // driver wrote this state".
+      return "the lens-fix tree is the repo root, where the driver never reverts: the round is judged strictly and any stray parks";
     default:
       return refusal.reason;
   }
@@ -44,9 +50,20 @@ export function refusalReason(refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_W
 
 /**
  * Record that THIS round's fence could not be built, so the adversarial gate
- * fails closed instead of skipping (#1852). One writer for every arm that
- * reaches a dispatch without a fence: the gate's "no record" branch must be
- * reachable only by a state that genuinely never had a fence to require.
+ * fails closed instead of skipping (#1852).
+ *
+ * Returns the appended state ONLY — it does not persist. The caller must await
+ * `persistCycle` on the result before it makes any further call (#1852 round 3
+ * item 2, the same discipline `parkLensFixReposition` follows): the whole point
+ * of the event is that a reader which arrives later — the gate, or a resumed
+ * driver that got the state back from disk — sees it. An append nobody persisted
+ * is invisible to exactly the reader it was written for, and a resume after the
+ * dispatch would then read "no fence record at all", which means "an older driver
+ * wrote this state" and lets the round land unchecked.
+ *
+ * One writer for every arm that reaches a dispatch without a fence: the gate's
+ * "no record" branch must be reachable only by a state that genuinely never had
+ * a fence to require.
  */
 export function recordFenceUnavailable(
   state: WorkState,
@@ -66,6 +83,30 @@ export function recordFenceUnavailable(
   trace(
     `lens-fix: round ${state.pipelineState.reviewRound} has no fence — ${reason} (recorded; the adversarial gate refuses to land it unchecked)`,
   );
+  return recorded;
+}
+
+/**
+ * Append the refusal AND make it durable, in the one call every arm makes.
+ *
+ * The persist is not ceremony (#1852 round 3 item 2). `recordFenceUnavailable`
+ * is pure, so an append that is never written to disk is invisible to the two
+ * readers the event exists for: the adversarial gate after a resume, and any
+ * later step that re-reads the state file. Both would then see "no fence record
+ * at all", which the gate reads as "an older driver wrote this state" and skips
+ * — the exact skip this record is supposed to prevent. `parkLensFixReposition`
+ * already persists at its park; this is the same discipline at the same kind of
+ * boundary, and it is why the persist lives beside the writer rather than at
+ * each call site where a future arm can forget it.
+ */
+export async function persistFenceRecord(
+  ctx: CycleContext,
+  state: WorkState,
+  worktree: string,
+  reason: string,
+): Promise<WorkState> {
+  const recorded = recordFenceUnavailable(state, worktree, reason);
+  await persistCycle(ctx, recorded);
   return recorded;
 }
 

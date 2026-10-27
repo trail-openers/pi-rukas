@@ -39,7 +39,11 @@
  *
  * THE REPO-ROOT ARM IS STRICTER, because there is nothing to revert into: when
  * the lens tree IS the repo root, ANY stray parks (PM decision #1852-1) and the
- * reason says the revert was unavailable because the tree is the repo root.
+ * reason says the revert was unavailable because the tree is the repo root. A
+ * repo-root round reaches this gate through the recorded refusal the STEP writes
+ * (`repo-root-tree` in `work-driver-lens-fix-fence.ts`): with no workstream entry
+ * naming the tree there is no snapshot to judge, so the record is what makes the
+ * gate run instead of skipping — the round is never left unjudged at the root.
  *
  * SPLIT FOR THE SIZE GATE (#1852 follow-up): the record validator lives in
  * `work-driver-lens-fix-fence-validate.ts` and BOTH this gate and
@@ -202,12 +206,16 @@ export function lensFixPlanFromSnapshot(
 export const LENS_FIX_NO_WORKSTREAM = "no-workstream";
 
 /**
- * Does a planner refusal need recording as a fence failure? A refusal whose
- * `kind` is a property of the STATE (`no-base`, `no-workstream`) does not: there
- * was no fence to require, so standing down is right and recording it would
- * park every older-driver state. Every other refusal does, because a fence was
- * supposed to exist and does not — and a round that lands unchecked in that
- * shape is the pre-#1852 hole.
+ * Does a planner refusal need recording as a fence failure? Only the refusal
+ * that really is a statement about the STATE — `no-base`: an older driver, or a
+ * state that never set the field, had no fence to require, and recording it would
+ * turn #1852 into a schema break that parks every such cycle.
+ *
+ * Everything else RECORDS. `unrecorded-tree` and `repo-root-tree` are the two
+ * shapes a CURRENT driver reaches (#1852 round 3 item 1): the fixer is dispatched
+ * either way, and without a record the gate reads silence, concludes an older
+ * driver wrote the state, and lets the round land unchecked. That is the hole
+ * #1852 exists to close, so these are fence failures, not state statements.
  */
 export function lensFixPlanRefusalRecords(
   refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_WORKSTREAM,
