@@ -190,7 +190,6 @@ async function runPipelineOn(
   const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
   // #1856: the issue this plan is FOR. Only the risk child's view is filtered
   // with it (plan-investigate.ts); the angles, gate and body keep every row.
-  const sourceIssue = input.sourceIssue;
   if (signal?.aborted)
     return cancelledResult(signal, input, "inventory", priorContext, finishTimings());
 
@@ -216,7 +215,7 @@ async function runPipelineOn(
           codeIdentifiers: codeIds,
           pinnedSubIssues,
           forbiddenPhrases: directives.neverClaim,
-          ...(sourceIssue === undefined ? {} : { sourceIssue }),
+          ...(input.sourceIssue === undefined ? {} : { sourceIssue: input.sourceIssue }),
           statFn: getPlanStatFnOverride() ?? undefined,
           // #1541 review (MEDIUM) — the job's signal reaches the barrier's children.
           ...(signal ? { signal } : {}),
@@ -400,7 +399,9 @@ async function runPipelineOn(
     base.baseFallback,
     images,
     input.provenance,
-    { risk: duplicateRisk, sourceIssue },
+    // #1856: the exclusion disclosure renders only when the caller named the
+    // issue this plan is for, and only from the verdict the barrier recorded.
+    { risk: duplicateRisk, sourceIssue: input.sourceIssue },
   );
 
   const resolvedGaps = gateRan ? gaps : [];

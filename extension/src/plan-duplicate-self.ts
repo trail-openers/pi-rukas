@@ -1,4 +1,3 @@
-import type { MechanicalInventory } from "./plan-inventory.ts";
 /**
  * plan-duplicate-self — the deterministic post-filter that stops the /plan
  * duplicate-risk check naming the issue it was asked to plan (#1856).
@@ -32,6 +31,7 @@ import type { MechanicalInventory } from "./plan-inventory.ts";
  * (`OPEN`/`CLOSED`) while the inventory stores whatever `NormalizedIssue.state`
  * carried, so a case-sensitive rule never matches a GitLab-sourced row.
  */
+import type { MechanicalInventory } from "./plan-inventory.ts";
 import type { DuplicateRisk, ExcludedDuplicate } from "./plan-investigate.ts";
 
 /** The prior-context source tag the duplicate-risk child is shown for a related issue. */

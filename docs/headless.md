@@ -4,8 +4,8 @@
 
 ```
 pi-rukas-headless work <issue> [more issues] [--restart] [--continue-pr] [--timeout <minutes>] [--json]
-pi-rukas-headless plan <descriptor> (--dry-run | --file) [--type <t>] [--context <text>] [--reviewed-digest <d>] [--json]
-pi-rukas-headless plan <descriptor> --start [--type <t>] [--context <text>] [--json]
+pi-rukas-headless plan <descriptor> (--dry-run | --file) [--type <t>] [--context <text>] [--reviewed-digest <d>] [--issue <n>] [--json]
+pi-rukas-headless plan <descriptor> --start [--type <t>] [--context <text>] [--issue <n>] [--json]
 pi-rukas-headless plan --resume <session> (--answer <file> | --retry | --confirm) [--json]
 pi-rukas-headless research <topic> [--tier quick|standard|deep|adoption] [--context <text>] [--json]
 pi-rukas-headless agents-md <create|update|check> [root] [file] [--deep] [--json]
@@ -41,7 +41,7 @@ A caller that plans without a person at a terminal (#1471) holds the plan as a s
 
 | Run | What it does |
 |---|---|
-| `plan <descriptor> --start [--type <t>] [--context <text>]` | Starts a session and runs its first turn. |
+| `plan <descriptor> --start [--type <t>] [--context <text>] [--issue <n>]` | Starts a session and runs its first turn. `--issue <n>` says the plan is FOR existing issue `n` (see [Planning a session over an existing issue](#planning-a-session-over-an-existing-issue)). |
 | `plan --resume <session> --answer <file>` | Runs the next turn with the operator's answer, read from `<file>` (at most 20,000 characters). |
 | `plan --resume <session> --retry` | Runs the turn again with no new answer, after a failed one. |
 | `plan --resume <session> --confirm` | Files the plan the last turn showed. Runs no pipeline stage. |
@@ -52,7 +52,7 @@ A turn is a dry run of the /plan pipeline, with the session's descriptor and con
 |---|---|---|
 | 11 | `question` | The pipeline needs answers before it can draft. `questions` holds them. |
 | 12 | `shown` | A plan is drafted: `title`, `spec`, `reviewedDigest`. `questions` holds the open points the gap gate left for the operator (CRITICAL gaps and either/or decisions, with the proposed `resolution`); it can be empty. Answer to change the plan, or confirm. |
-| 10 | `duplicate-risk` | The plan looks like a duplicate of open work. Answer to explain, or stop. |
+| 10 | `duplicate-risk` | The plan looks like a duplicate of open work. Answer to explain, or stop. A plan started with `--issue <n>` is never halted for naming `n` itself — see [Planning a session over an existing issue](#planning-a-session-over-an-existing-issue). |
 | 40 | `failed` | The turn failed (`failure.reason`, as for a one-shot run). `--retry` runs it again. |
 
 `--confirm` exits 0 with `status: "filed"`, `url` and `issueNumber`. It files the shown `spec` byte for byte, and only the plan the last turn showed: after an answer, the plan shown before it can no longer be confirmed. A confirm when no plan is shown exits 40 with `error.code: "nothing-to-confirm"`, and an answer after the session filed exits 40 with `"already-filed"`.
@@ -67,6 +67,12 @@ A session files once. A second confirm exits 0 with `"alreadyFiled": true` and m
 Every document carries `mode: "turn"`, `status`, `session` (`id`, `turn`) and, after a turn, `text`: one sentence for the operator. Each question is `{ id, question, options, resolution? }`, numbered `q1`, `q2`, …; `options` is empty when the answer is free text. A session that does not exist, or whose record cannot be read, exits 41 with `status: "lost"` and `"lost": true`; it is never replaced by a new one. A run on a session another live run holds exits 40 with `"session-busy"`; a lock left by a run that is gone is taken over (on another host, after two hours). A turn that was killed leaves the session with no result and the earlier plan no longer confirmable; `--retry` runs it again. A session id is a UUID; anything else is a bad argument.
 
 Each turn reads the same inputs as a one-shot run, `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` and `PI_ENSEMBLE_PLAN_ISSUE` included, so a caller passes them on every turn. `--capabilities` lists the flags under `verbs.plan.flags` and the feature as `features.planTurns`.
+
+### Planning a session over an existing issue
+
+A caller that plans FROM an existing issue passes `--issue <n>` on `--start` (the same number the `start_plan_driver` tool takes as `sourceIssue`). The descriptor of such a plan is a near-copy of that issue's own title, and the mechanical inventory and prior-context rows both list that issue verbatim — so without the number, the duplicate-risk child's most confident "duplicate" is the ticket under plan, and the session halts at exit 10 asking the operator to explain a duplicate of their own issue.
+
+With the number, the issue `n` and its own `n-k` split children are never duplicate candidates: they are removed from the risk child's inventory and prior-context views, said so in its prompt, and a HIGH verdict that names nothing but them is downgraded to medium by a deterministic post-filter, so the turn drafts instead of halting. A HIGH that names any other OPEN issue still halts at 10, and a plan with no `--issue` behaves exactly as before. The session records the number with the session, so `--resume` needs no repetition, and the drafted body carries a `## Duplicate check — excluded candidates` section naming what was suppressed and on what grounds — the operator always sees what the driver decided, never a silent absence.
 
 ## The four contracts
 
