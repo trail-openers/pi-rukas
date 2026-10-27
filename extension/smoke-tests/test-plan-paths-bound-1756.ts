@@ -44,9 +44,9 @@ import {
   workstreamPathProblem,
 } from "../src/plan-workstream-schema.ts";
 import { normaliseDeclaredPath } from "../src/work-driver-declared-path.ts";
+import { foldPortPlan } from "../src/work-driver-plan-contract.ts";
 import { withDeferredProtectedFence } from "../src/work-driver-plan-fence.ts";
 import { findPathCollisions } from "../src/work-driver-plan-paths.ts";
-import { foldPortPlan } from "../src/work-driver-plan-contract.ts";
 import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 
 /** The stored workstream one call builds (these cases read the fence list, not the drops). */
@@ -187,9 +187,7 @@ function boundLineOf(traces: string[]): string | undefined {
 // ── 3. workstreamFromArgs keeps every path and stays silent when clean ─────
 {
   const paths = pathList(80);
-  const { value: stored, traces } = captureTracesSync(() =>
-    workstreamFromArgs(crowdedArgs("task-a", paths)),
-  );
+  const { value: stored, traces } = captureTracesSync(() => buildWs(crowdedArgs("task-a", paths)));
   assert(
     stored.paths.length === 80 && stored.paths.join() === paths.join(),
     `80 declared paths stay 80, in the planner's order (got ${stored.paths.length})`,
@@ -208,7 +206,7 @@ function boundLineOf(traces: string[]): string | undefined {
 {
   // Duplicates ARE worth saying out loud, and one line says them.
   const { value: dup, traces } = captureTracesSync(() =>
-    workstreamFromArgs(crowdedArgs("task-a", [...pathList(60), ...pathList(60, "src/mod")])),
+    buildWs(crowdedArgs("task-a", [...pathList(60), ...pathList(60, "src/mod")])),
   );
   const notices = traces.filter((t) => t.includes("paths bounded"));
   assert(
@@ -231,7 +229,7 @@ function boundLineOf(traces: string[]): string | undefined {
   // or the same file is authorised twice and the fanout denominator lies.
   const { value: dup } = captureTracesSync(() =>
     buildWs(
-// The three `src/b.ts` spellings are ONE file to the declared-path
+      // The three `src/b.ts` spellings are ONE file to the declared-path
       // normaliser (annotation and paired markup both stripped) while the raw
       // text is what is stored. No backticks anywhere: `plannedPathProblem`
       // refuses one outright, so a backtick is not a shape a stored plan holds.
@@ -339,8 +337,8 @@ function boundLineOf(traces: string[]): string | undefined {
 
 // ── 7. the fold keeps every path of both halves and never truncates ─────────
 {
-  const a = workstreamFromArgs(crowdedArgs("task-a", pathList(40, "src/a")));
-  const b = workstreamFromArgs(crowdedArgs("task-b", pathList(40, "src/b")));
+  const a = buildWs(crowdedArgs("task-a", pathList(40, "src/a")));
+  const b = buildWs(crowdedArgs("task-b", pathList(40, "src/b")));
   const merged = foldTwo(a, b);
   assert(
     merged.paths.length === 80,
@@ -381,9 +379,7 @@ function boundLineOf(traces: string[]): string | undefined {
   // observed on a plan that DOES have duplicates across its folds: ten
   // workstreams, each re-declaring the eight `task-0` already holds.
   const ten = Array.from({ length: 10 }, (_, i) =>
-    buildWs(
-crowdedArgs(`task-${i}`, [...pathList(8, `src/t${i}`), ...pathList(8, "src/shared")]),
-    ),
+    buildWs(crowdedArgs(`task-${i}`, [...pathList(8, `src/t${i}`), ...pathList(8, "src/shared")])),
   );
   const { value: folded, traces } = captureTracesSync(() =>
     withMaxWorkstreams(1, () => foldToCeiling(ten).workstreams),
@@ -406,21 +402,18 @@ crowdedArgs(`task-${i}`, [...pathList(8, `src/t${i}`), ...pathList(8, "src/share
   // The duplicate case, where the line actually fires: two workstreams whose
   // halves share 20 entries keep 20 and collapse 20, and the line says 20 kept.
   const dupPair = [
-    workstreamFromArgs(crowdedArgs("task-a", pathList(20, "src/shared"))),
-    buildWs(
-crowdedArgs("task-b", [...pathList(20, "src/shared"), ...pathList(20, "src/b")]),
-    ),
+    buildWs(crowdedArgs("task-a", pathList(20, "src/shared"))),
+    buildWs(crowdedArgs("task-b", [...pathList(20, "src/shared"), ...pathList(20, "src/b")])),
   ];
-  const port = captureTracesSync(() =>
-    foldPortPlan({ "task-a": dupPair[0], "task-b": dupPair[1] }, "o/r#9").workstreams,
+  const port = captureTracesSync(
+    () => foldPortPlan({ "task-a": dupPair[0], "task-b": dupPair[1] }, "o/r#9").workstreams,
   );
   const portLine = boundLineOf(port.traces) ?? "";
   // One line, and it carries the driver's own prefix: the tally sits between
   // the subject and the ceiling, and must not read as an empty workstream.
   assert(
     Object.values(port.value)[0]?.paths.length === 40 &&
-      /port o\/r#9 fold paths bounded — 40 kept, 20 duplicates collapsed/.test(portLine) ===
-        true &&
+      /port o\/r#9 fold paths bounded — 40 kept, 20 duplicates collapsed/.test(portLine) === true &&
       !/ — 0 kept/.test(portLine),
     `the port fold's one line says 40 kept / 20 collapsed for a 40-path union (got: ${portLine.trim()})`,
   );

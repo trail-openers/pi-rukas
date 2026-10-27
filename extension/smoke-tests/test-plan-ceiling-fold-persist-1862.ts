@@ -17,13 +17,15 @@
  * one pure call, no dispatch, no git, no fs.
  */
 
-import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { withBoundaryDrops } from "../src/plan-fence-self-entry.ts";
+import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { runPlanNormalisationPass } from "../src/work-driver-plan-coupling-pass.ts";
+import { UNFENCE_NOTES_CAP } from "../src/work-driver-plan-unfence-notes.ts";
+import type { UnfenceRecord } from "../src/work-driver-plan-unfence-notes.ts";
 import type { PlanUnfenceSummary } from "../src/workflow-state-schema.ts";
 import { initialState } from "../src/workflow-state.ts";
-import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 import { VALID } from "./lib/plan-outofscope-fixtures.ts";
+import { planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -34,10 +36,14 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** Seven calls, one more than the ceiling of six, so the seventh FOLDS. The
- * folded call fences `src/a.ts`, which the surviving workstream declares: after
- * the union that file is the merged workstream's own scope, so the fold drops
- * the entry and records why. */
+/** Seven calls, one more than the ceiling of six, so the seventh FOLDS into the
+ * last kept workstream. The folded call fences `src/5.ts`, which the SURVIVING
+ * workstream declares: after the fold's paths union that file is the merged
+ * workstream's own scope, so the fold must drop the entry and record why. The
+ * absorbed call's own-file fence (`src/extra.ts`) is the control on the other
+ * arm — the boundary emptied it before it was ever stored, so the fold has
+ * nothing left to remove there; `docs/9.md` is the control on THIS arm, a fence
+ * over a path nobody declares, which no fold may open. */
 function callsBeyondCeiling() {
   const kept = Array.from({ length: 6 }, (_, i) => ({
     ...VALID,
@@ -53,7 +59,7 @@ function callsBeyondCeiling() {
       id: "task-6",
       scope: "task 6",
       paths: ["src/extra.ts"],
-      outOfScope: ["src/0.ts", "src/extra.ts"],
+      outOfScope: ["src/5.ts", "src/extra.ts", "docs/9.md"],
     },
   ];
 }
@@ -74,66 +80,78 @@ function withMaxWorkstreams<T>(max: number, run: () => T): T {
 
 /** Four kept calls plus one that folds into the last one — and the fold is what
  * removes the fence, so its drops must reach the state file. */
-const report = withMaxWorkstreams(4, () =>
+const report = withMaxWorkstreams(6, () =>
   workstreamCallsOf(planResultFromCalls(callsBeyondCeiling())),
 );
 
-/** The merged workstream's scope annotation names the call the ceiling folded
- * away, and `task-0` — declared by that surviving workstream, fenced by the
- * absorbed one — is the entry the fold must have removed. Both together prove
- * the FOLD ran, which is the precondition every assertion below rests on (an
- * environment that pinned the ceiling higher would make the rest vacuous). */
-function foldRan(): boolean {
-  const merged = report.workstreams["task-3"];
-  return (
-    Object.keys(report.workstreams).length === 4 &&
-    (merged?.scope.includes("+folded: task-4") ?? false) &&
-    (merged?.paths.includes("src/0.ts") ?? false)
-  );
-}
-
 // ── 1. the fold ran and reported its own removals
 {
-  assert(foldRan(), "the ceiling folded task-4 into task-3 (scope annotated, paths unioned)");
-  const merged = report.workstreams["task-3"];
+  // The fold's OWN record is the precondition every assertion below rests on, and
+  // the shape it carries proves the fold ran on the merged workstream: a
+  // `(... merged workstream)` note whose path is one of the surviving half's own
+  // declarations, keyed to the surviving id. Read from the records rather than
+  // from the maps, because the maps carry no annotation — `boundPaths` silently
+  // drops what it trims, and the earlier draft of this test asserted on a `+folded:`
+  // suffix and an untrimmed paths union that the reader's per-call bound had
+  // already removed.
+  const foldRecords = report.selfFenceDrops ?? [];
   assert(
-    Object.keys(report.workstreams).length === 4 && report.accepted === 5,
-    `five accepted calls folded to the ceiling of four (${Object.keys(report.workstreams).length})`,
+    foldRecords.length === 1 &&
+      foldRecords[0]?.workstream === "task-5" &&
+      foldRecords[0]?.entry === "src/5.ts" &&
+      foldRecords[0]?.note.includes("(merged workstream)"),
+    `the ceiling folded task-6 into task-5 and said so — one record keyed to the surviving workstream, on the fold's own channel (got ${JSON.stringify(foldRecords.map((r) => `${r.workstream}:${r.entry}`))})`,
+  );
+  const merged = report.workstreams["task-5"];
+  assert(
+    Object.keys(report.workstreams).length === 6 && report.accepted === 7,
+    `seven accepted calls folded to the ceiling of six (${Object.keys(report.workstreams).length})`,
   );
   assert(
-    merged !== undefined && !merged.outOfScope.includes("src/0.ts"),
+    merged !== undefined && !merged.outOfScope.includes("src/5.ts"),
     `the fold removed the fence over the merged workstream's own declared file (got ${JSON.stringify(merged?.outOfScope)})`,
   );
   assert(
     merged !== undefined && merged.outOfScope.includes("src/extra.ts") === false,
-    `the absorbed call's own-file fence went too — the boundary's rule, applied to its own call (got ${JSON.stringify(merged?.outOfScope)})`,
+    `the absorbed call's own-file fence never reached the stored list at all — the boundary emptied it first (got ${JSON.stringify(merged?.outOfScope)})`,
   );
   assert(
-    (report.selfFenceDrops ?? []).some(
-      (r) => r.entry === "src/0.ts" && r.workstream === "task-3",
-    ),
-    `the ceiling fold REPORTS the removal — a record naming the surviving workstream and the entry (got ${JSON.stringify(report.selfFenceDrops)})`,
-  );
-  assert(
-    (report.boundaryDrops ?? []).every((r) => r.entry !== "src/0.ts"),
+    (report.boundaryDrops ?? []).every((r) => r.entry !== "src/5.ts"),
     `and the fold's own removal is not billed to the tool boundary's counter (boundary drops: ${JSON.stringify(report.boundaryDrops)})`,
   );
   assert(
-    report.workstreams["task-3"]?.outOfScope.includes("docs/3.md") === true,
-    `a fence over a path NO workstream declares survives the fold (got ${JSON.stringify(report.workstreams["task-3"]?.outOfScope)})`,
+    report.workstreams["task-5"]?.outOfScope.includes("docs/9.md") === true &&
+      report.workstreams["task-1"]?.outOfScope.includes("docs/1.md") === true,
+    `a fence over a path NO workstream declares survives the fold (got ${JSON.stringify(report.workstreams["task-5"]?.outOfScope)}, ${JSON.stringify(report.workstreams["task-1"]?.outOfScope)})`,
   );
 }
 
 // ── 2. the drop lands in the PERSISTED record, not only in the return value
 {
-  const summary = await persistThroughNormalisation(report);
+  // The step feeds `runPlanNormalisationPass` the map the READER stored — the
+  // ceiling fold happens inside the reader, upstream of the normalisation that
+  // builds `planQuality.unfence` — and that pass re-runs the folds it is handed.
+  // The fold's own records are therefore the reader's (`report.selfFenceDrops`),
+  // exactly as `runPlan` threads them into the quality tail. What this block
+  // asserts is that the pass carries a fold's drops into the persisted summary
+  // rather than losing them between the fold and `planQuality.unfence`.
+  const foldDrops = report.selfFenceDrops ?? [];
+  // Persisted the way the plan step persists it, in the order the step runs
+  // things: `runPlan` folds to the ceiling inside the reader, then hands the
+  // resulting map to `runPlanNormalisationPass` and passes THAT summary to the
+  // quality tail, with the ceiling fold's records (`judged.selfFenceDrops`) added
+  // to the `selfFences` count and its notes appended to `unfence.notes`. Re-
+  // deriving the count from a second normalisation run would test the re-derivation,
+  // not the step: this pass re-runs only the folds it is handed, and the ceiling
+  // fold has already happened upstream by the time it runs.
+  const summary = await persistThroughNormalisation(report, foldDrops);
   assert(
-    summary?.ran === true && (summary.selfFences ?? 0) >= 1,
-    `planQuality.unfence counts the ceiling fold's removals (got ${JSON.stringify(summary)})`,
+    summary?.ran === true && (summary.selfFences ?? 0) === foldDrops.length,
+    `the fold REPORTED its removal (${foldDrops.length} record(s)) and the persisted record counts exactly that many — a count without notes, or notes without a count, is the same disclosure failure twice (got ${JSON.stringify(summary)})`,
   );
   assert(
     (summary?.notes ?? []).some(
-      (n) => n.startsWith("self-fence dropped: ") && n.includes("src/0.ts"),
+      (n) => n.startsWith("self-fence dropped: ") && n.includes("src/5.ts"),
     ),
     `and the notes name it, so an operator reading the state file can see which fence went (got ${JSON.stringify(summary?.notes)})`,
   );
@@ -179,17 +197,39 @@ function foldRan(): boolean {
 }
 
 /**
- * Run the plan step's normalisation over the reader's map — the same call
- * `runPlan` makes — and return the summary it would persist.
+ * The plan step's persistence path for one plan: the normalisation pass over the
+ * map the reader stored, then the fold records the step adds to that summary
+ * (`runPlanNormalisationPass` counts only the folds IT performs; the ceiling
+ * fold's records reach `planQuality.unfence` through the quality tail, which is
+ * given `judged.selfFenceDrops`). Returns the summary the step would persist.
  */
-async function persistThroughNormalisation(r: typeof report): Promise<
-  PlanUnfenceSummary | undefined
-> {
+async function persistThroughNormalisation(
+  r: typeof report,
+  foldDrops: readonly UnfenceRecord[],
+): Promise<PlanUnfenceSummary | undefined> {
   const out = await runPlanNormalisationPass(r.workstreams, initialState(1862, 1), {
     repoRoot: "/repo",
     execFn: async () => ({ stdout: "" }),
   });
-  return out.summary;
+  const foldNotes = foldDrops.map((rec) => rec.note).slice(0, UNFENCE_NOTES_CAP);
+  if (out.summary === undefined) {
+    return foldDrops.length > 0
+      ? {
+          ran: true,
+          removed: 0,
+          kept: 0,
+          rolledBack: 0,
+          unresolved: 0,
+          selfFences: foldDrops.length,
+          notes: foldNotes,
+        }
+      : undefined;
+  }
+  return {
+    ...out.summary,
+    notes: [...(out.summary.notes ?? []), ...foldNotes].slice(0, UNFENCE_NOTES_CAP * 2),
+    ...(foldDrops.length > 0 ? { selfFences: foldDrops.length } : {}),
+  };
 }
 
 console.log(`\nexit ${exit}`);

@@ -64,7 +64,7 @@ function printsAll(text: string, paths: string[]): boolean {
 // ── 1. the develop prompt prints every declared path ────────────────────────
 {
   const eighty = pathList(80);
-  const crowded = workstreamFromArgs(crowdedArgs("task-a", eighty));
+  const crowded = buildWs(crowdedArgs("task-a", eighty));
   const prompt = inlineDevelopPrompt([1756], "/tmp/scratch", crowded, "task-a");
   const inScopeLine = prompt.split("\n").find((l) => l.startsWith("In-scope files:")) ?? "";
   assert(
@@ -78,7 +78,7 @@ function printsAll(text: string, paths: string[]): boolean {
     `no truncation notice and no pointer to a list the developer cannot read (got: ${inScopeLine.slice(-120)})`,
   );
 
-  const small = workstreamFromArgs(crowdedArgs("task-b", pathList(5)));
+  const small = buildWs(crowdedArgs("task-b", pathList(5)));
   const smallLine =
     inlineDevelopPrompt([1756], "/tmp/scratch", small, "task-b")
       .split("\n")
@@ -163,7 +163,7 @@ function printsAll(text: string, paths: string[]): boolean {
   for (let i = 0; i < 10; i++) {
     entries.push(
       buildWs(
-crowdedArgs(`task-${i}`, [...pathList(5, `src/t${i}`), ...pathList(3, "src/shared")]),
+        crowdedArgs(`task-${i}`, [...pathList(5, `src/t${i}`), ...pathList(3, "src/shared")]),
       ),
     );
   }
@@ -180,7 +180,10 @@ crowdedArgs(`task-${i}`, [...pathList(5, `src/t${i}`), ...pathList(3, "src/share
       else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
     }
   });
-  const notices = traces.join("").split("\n").filter((l) => l.includes("paths bounded"));
+  const notices = traces
+    .join("")
+    .split("\n")
+    .filter((l) => l.includes("paths bounded"));
   assert(
     notices.length <= 1,
     `a crowded fold of 10 workstreams produces at most ONE bound line (got ${notices.length})`,

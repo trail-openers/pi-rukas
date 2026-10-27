@@ -232,19 +232,22 @@ export function planGateView(
 export function withBoundaryDrops(
   summary: PlanUnfenceSummary | undefined,
   drops: readonly UnfenceRecord[],
+  foldDrops: readonly UnfenceRecord[] = [],
 ): PlanUnfenceSummary | undefined {
-  if (drops.length === 0) return summary;
+  if (drops.length === 0 && foldDrops.length === 0) return summary;
   const notes = [
     ...(summary?.notes ?? []),
     ...drops.map((r) => r.note).slice(0, UNFENCE_NOTES_CAP),
+    ...foldDrops.map((r) => r.note).slice(0, UNFENCE_NOTES_CAP),
   ].slice(0, UNFENCE_NOTES_CAP * 2);
+  const foldCount = (summary?.selfFences ?? 0) + foldDrops.length;
   return {
     ran: true,
     removed: summary?.removed ?? 0,
     kept: summary?.kept ?? 0,
     rolledBack: summary?.rolledBack ?? 0,
     unresolved: summary?.unresolved ?? 0,
-    ...(summary?.selfFences === undefined ? {} : { selfFences: summary.selfFences }),
+    ...(foldCount === 0 ? {} : { selfFences: foldCount }),
     boundarySelfFences: (summary?.boundarySelfFences ?? 0) + drops.length,
     ...(summary?.issueBodyUnreadable === undefined
       ? {}

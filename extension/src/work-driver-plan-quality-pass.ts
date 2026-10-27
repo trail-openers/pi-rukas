@@ -172,6 +172,10 @@ export async function runPlanQualityTail(
   // nobody develops. `?? undefined` rather than a fallback to the primary's list:
   // a corrective whose report carried no drops records no drops.
   let correctiveDrops: readonly UnfenceRecord[] | undefined;
+  // #1862 — the corrective pass's FOLD drops, kept apart from the boundary's for
+  // the same reason the two are counted apart on the record: three authorities,
+  // three counts, and a note must say which one opened the fence.
+  let correctiveFoldDrops: readonly UnfenceRecord[] | undefined;
   let droppedEdges: { from: string; to: string }[] | undefined;
   // #1756 — the two notions `redispatched` used to carry in one flag, now two
   // names derived in one place. Both mean "THIS tail dispatched a corrective"
@@ -282,7 +286,17 @@ export async function runPlanQualityTail(
           // the map the cycle actually develops: the corrective's own pass, plus
           // the drops ITS boundary made. The primary's boundary drops belong to a
           // map nobody develops, so they are not carried here.
-          withBoundaryDrops(unfence, correctiveDrops ?? input.boundaryDrops ?? []),
+          withBoundaryDrops(
+            unfence,
+            // #1862 round 2 — a corrective REPLACES both the plan AND its record,
+            // so once one was dispatched every drop this tail must disclose comes
+            // from the corrective's own round. `??` would fall back to the
+            // PRIMARY's list when the corrective reported none, attributing a
+            // fence the corrective's planner never wrote to the map the cycle
+            // develops; `|| undefined` records nothing, which is the truth.
+            correctiveDrops ?? [],
+            correctiveFoldDrops ?? [],
+          ),
         )
       : state,
     workstreams,
@@ -338,6 +352,7 @@ export async function runPlanQualityTail(
     // report at all its plan carried no boundary drops either, and the primary's
     // are NOT reused: they belong to a map nobody develops.
     correctiveDrops = round.reportedBoundaryDrops;
+    correctiveFoldDrops = round.reportedFoldDrops;
     if (round.redispatched) redispatched = true;
     if (round.repairedCleared) repairedAdded = undefined;
     correctiveAttempted = round.attempted;
@@ -432,7 +447,14 @@ export async function runPlanQualityTail(
       redispatched,
       finalReason,
       droppedEdges,
-      withBoundaryDrops(unfence, correctiveDrops ?? input.boundaryDrops ?? []),
+      withBoundaryDrops(
+        unfence,
+        // #1862 round 2 — same rule on the success path: whichever round owns the
+        // record owns its counters, so a fold's removals never borrow the
+        // boundary's counter and a primary's list never describes a replaced plan.
+        correctiveDrops ?? [],
+        correctiveFoldDrops ?? [],
+      ),
     ),
   };
 }
