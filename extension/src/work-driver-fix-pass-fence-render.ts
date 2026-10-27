@@ -17,6 +17,14 @@
  * derives nothing from it, so the equality the test asserts is still an
  * equality between two readers of one object rather than between two
  * computations.
+ *
+ * #1852 — the renderer is PASS-NEUTRAL (PM decision #1852-3). The lens-fix step
+ * runs the same fence through the same builder, and a prompt that said "this fix
+ * pass" and named cap `fix-pass-park` while printed in a LENS-FIX dispatch told
+ * the fixer the wrong gate: the cap its own strays park under is
+ * `lens-fix-scope`. So the pass noun and the cap id are parameters now, and
+ * `fixPassFenceLines` passes the words the fix pass has always printed — its
+ * rendered text is byte-identical to before this change.
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
@@ -62,16 +70,25 @@ const shown = (paths: readonly string[]): string => {
  * criterion names: the admitted set, the finding-named widening inside it, the
  * two admission rules with their ceiling, and the outOfScope list.
  */
-export function fixPassFenceLines(fence: FixPassFence): string[] {
+export function fixPassFenceLines(
+  fence: FixPassFence,
+  /** What to call the dispatch under the fence, in the heading and the refusal
+   *  line. Defaults to the adversarial fix pass's own words, so the fix pass's
+   *  rendered fence is unchanged; the lens-fix step passes "this lens fix". */
+  passNoun = "this fix pass",
+  /** The cap the fence parks the cycle under. Named so the fixer can be told
+   *  the gate that will actually stop it (PM decision #1852-3). */
+  capName = "fix-pass-park",
+): string[] {
   const basis =
     fence.declared.length > 0
       ? "the declared paths and the files the findings name"
       : "the files this worktree already changed and the files the findings name";
   const lines = [
     "",
-    "## The fence this fix pass is judged against",
+    `## The fence ${passNoun} is judged against`,
     "",
-    "The post-pass scope fence refuses the pass (cap `fix-pass-park`) unless every file you change sits in one of these:",
+    `The post-pass scope fence refuses ${passNoun} (cap \`${capName}\`) unless every file you change sits in one of these:`,
     `- **admitted directly** (${basis}): ${shown(fence.admits)}`,
     "- **admitted as a coupled test**: any test file whose name couples to one of those files — its stem contains the file's whole basename (so `tests/foo.test.ts` is coupled to `pkg/foo.ts`). Always allowed; never refused for the file count.",
     `- **admitted as an anchored helper**: an undeclared file in the same directory as one of the files you are allowed to change, while the pass's total stays within ${fence.ceiling} file(s) for its ${fence.ceilingBasis}`,
@@ -83,7 +100,7 @@ export function fixPassFenceLines(fence: FixPassFence): string[] {
   );
   lines.push(
     "",
-    "Anything outside those routes is a stray: the driver preserves it under a ref and a patch, reverts it and continues — one stray set does not park the pass, a second one does.",
+    `Anything outside those routes is a stray: the driver preserves it under a ref and a patch, reverts it and continues — one stray set does not park ${passNoun}, a second one does.`,
   );
   return lines;
 }

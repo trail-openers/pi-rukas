@@ -30,6 +30,10 @@ export type {
   PlanUnfenceSummary,
 } from "./workflow-state-schema-plan-quality.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
+// #1852 — the lens-fix round's plan-time fence lives in its own fragment (the
+// 500-line cap) and is re-exported so importers reach it from the schema module.
+export type { LensFixFenceSnapshot } from "./workflow-state-schema-lens-fix-fence.ts";
+import type { LensFixFenceSnapshot } from "./workflow-state-schema-lens-fix-fence.ts";
 
 // #1415 — the verify-gate reuse records live with the other verify-evidence
 // shapes; re-exported so importers reach them from the schema module.
@@ -395,6 +399,15 @@ export interface PipelineState extends IssueClosedState {
   cycleDeadlineMs?: number;
   /** Surfaced plumb-reports since the cycle began (for handoff body). */
   plumbReports: Array<{ step: WorkStep; role: string; body: string; at: number }>;
+  /**
+   * #1852 — the plan-time fence of the lens-fix round that has not yet been
+   * gated, written by the lens-fix step before the fixer was dispatched and
+   * read by the adversarial step's fence gate BEFORE any landing arm. A record
+   * whose `round` is not the current `reviewRound` is stale and ignored; a
+   * lens-fix round that has no record (the fence could not be built) parks
+   * rather than landing unchecked. Absent = no lens-fix round awaiting its gate.
+   */
+  lensFixFence?: LensFixFenceSnapshot;
   /**
    * #1655 — writes the write fence refused across this cycle's fenced children,
    * summed from the scratch-dir logs at each step boundary. A count, not an
