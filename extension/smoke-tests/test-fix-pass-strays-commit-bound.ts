@@ -57,6 +57,11 @@ const req = (
 ) => ({
   git: gitExec,
   worktree: t.worktree,
+  // #1849 item 7 — the recorded tree matches the tree under test; every case in
+  // this file is about its own rule, and the mismatch/refusal cases are
+  // `test-fix-pass-strays-worktree.ts`. Absent here would fail every case on the
+  // target gate instead.
+  recordedWorktree: t.worktree,
   repoRoot: t.repoRoot,
   issue: 1846,
   workstreamId: "default",

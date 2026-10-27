@@ -24,6 +24,7 @@
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
+import { trace } from "./trace.ts";
 import { runGit } from "./work-develop-git.ts";
 // #1849 — the revert's git transport is pinned to the executor whose argv form is
 // its ONLY form, the same one `work-driver-adversarial-fix.ts:269` hands the
@@ -110,6 +111,26 @@ export async function revertStraysOnce(
   if (id === undefined || strays === undefined || strays.length === 0) return undefined;
   const plan = plans.find((p) => p.id === id);
   if (plan === undefined) return undefined;
+  // #1849 item 7 — the plan's `worktree` is a field every caller fills, and the
+  // one that has been wrong is the one whose destructive calls land in someone
+  // else's tree. `assertInsideWorktrees` proves the path is A driver worktree,
+  // not THIS workstream's, and `postPassFault` judges the pass in the tree from
+  // the same field — so a plan built from a stale or cross-wired state reverts a
+  // sibling's files while reporting a revert of this workstream's strays. The
+  // recorded tree is `pipelineState.worktrees[id]`, the value Step 3 wrote and
+  // every later step reads. Compared by realpath, so a symlinked or differently
+  // spelled root does not refuse a revert that targets the right tree; an
+  // unreadable path refuses rather than trusting the lexical form, because the
+  // failure this closes is a deletion in the wrong tree, not a park.
+  const recorded = state.pipelineState.worktrees?.[id];
+  if (recorded === undefined) {
+    // Absent is a mismatch for this purpose: with nothing recorded there is no
+    // tree the driver would accept a revert into. The gate itself lives with the
+    // destructive calls (`assertInsideRecordedWorktree`) so its refusal reads the
+    // same whichever side is missing; this trace only says the gate did not get a
+    // value to compare.
+    trace(`work-driver: no recorded worktree for ${id}; the stray revert is refused`);
+  }
   // The counter is scoped to THIS pass and THIS workstream: `passWindow` starts
   // at the pass's own `adversarial-fix-requested` event, and the filter keeps
   // another workstream's revert out of this workstream's budget. Reading the
@@ -138,9 +159,19 @@ export async function revertStraysOnce(
   // namespace too, not only the patch directory — see `nextStrayAttempt`.
   const git = runGit(ctx.verifyExecFn ?? argvExecp);
   const attempt = await nextStrayAttempt(scratch, ctx.issue, id, git, plan.worktree);
+  // The plan's `worktree` names the tree, and `revertFixPassStrays` compares it
+  // against the tree the DRIVER recorded for this workstream
+  // (`pipelineState.worktrees[id]`, the value Step 3 wrote and every later step
+  // reads) before a single destructive call runs. The plan field is caller- and
+  // test-filled, and `assertInsideWorktrees` alone only proves it is A driver
+  // worktree — so a stale or cross-wired plan would revert a SIBLING's files
+  // while reporting a revert of this workstream's strays. A mismatch (or either
+  // path failing to resolve) is a refusal that leaves both trees untouched, and
+  // it reaches the operator as the park reason naming both paths.
   const result = await revertFixPassStrays({
     git,
     worktree: plan.worktree,
+    recordedWorktree: recorded,
     repoRoot: ctx.repoRoot,
     issue: ctx.issue,
     workstreamId: id,

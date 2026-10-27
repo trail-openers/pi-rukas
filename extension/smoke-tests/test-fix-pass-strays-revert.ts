@@ -86,6 +86,12 @@ const req = (
 ) => ({
   git: gitExec,
   worktree: t.worktree,
+  // #1849 item 7 — the recorded tree matches the plan's tree, because every
+  // case in THIS file is about what the revert does once it is allowed to run.
+  // The mismatch case (a sibling's tree, or none recorded) is
+  // `test-fix-pass-strays-worktree.ts`; leaving this absent would make every
+  // case here fail on the target gate and assert nothing about its own rule.
+  recordedWorktree: t.worktree,
   repoRoot: t.repoRoot,
   issue: 1846,
   workstreamId: "default",

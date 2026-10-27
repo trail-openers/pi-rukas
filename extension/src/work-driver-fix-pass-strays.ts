@@ -40,103 +40,27 @@ import {
   assertInsideWorktrees,
   errText,
   isValidBaseSha,
-  nextRetryAttempt,
-  retryPatchPath,
 } from "./work-develop-git.ts";
-import { gitReadTimeoutMs } from "./work-driver-adversarial-fix-git.ts";
 import {
   assertFixPassStraysIndexPath,
   commitRevert,
   rollbackRevert,
 } from "./work-driver-fix-pass-strays-commit.ts";
 import { type StrayState, readStrayState } from "./work-driver-fix-pass-strays-state.ts";
+import {
+  assertInsideRecordedWorktree,
+  assertRemovalInsideWorktree,
+  fixPassStraysPatchPath,
+  fixPassStraysRef,
+  gitWriteTimeoutMs,
+  nextStrayAttempt,
+} from "./work-driver-fix-pass-strays-target.ts";
 
-/**
- * The bound on every git call this module makes, reads and writes alike: the
- * fence's own read bound, so a hung revert is diagnosed inside the same budget as
- * the fence that asked for it. An unbounded destructive call is worse than one
- * that times out — it holds `index.lock` while it hangs, a second failure every
- * later git call in the worktree inherits.
- */
-export function gitWriteTimeoutMs(): number {
-  return gitReadTimeoutMs();
-}
-
-/** The namespace every stray preservation lives in. ONE literal, because
- *  `nextStrayAttempt` lists it and `fixPassStraysRef` writes it: a second copy
- *  that drifts makes the counter blind to the refs it is meant to avoid. */
-const STRAY_REF_NAMESPACE = "refs/pi-rukas/fix-pass-strays";
-
-/** The durable ref a revert preserves its pre-revert HEAD under. `attempt` is the
- *  NEXT FREE number (see `nextStrayAttempt`), never a literal 1, so a revert in a
- *  later pass cannot overwrite the earlier pass's ref — the only git-reachable copy
- *  of the content that revert deleted. */
-export function fixPassStraysRef(issue: number, workstreamId: string, attempt: number): string {
-  return `${STRAY_REF_NAMESPACE}/${issue}-${workstreamId}-${attempt}`;
-}
-
-/** The patch path a revert writes: a fixed name per (issue, workstream, attempt),
- *  so a later record can never clobber an earlier one. */
-export function fixPassStraysPatchPath(
-  scratchDir: string,
-  issue: number,
-  workstreamId: string,
-  attempt: number,
-): string {
-  // Reusing `retryPatchPath` (the develop retry's own gate) rather than
-  // re-spelling the check is what keeps the two preservation paths from
-  // disagreeing about what a safe scratch filename is.
-  return retryPatchPath(scratchDir, `fix-pass-strays-${issue}-${workstreamId}`, attempt);
-}
-
-/**
- * The attempt number this revert should use: one past the highest record that
- * already exists, so ref and patch always come in a matched pair and a second
- * revert (a later pass on the same issue and workstream) writes `-2`, never
- * `-1` again.
- *
- * BOTH halves move together deliberately. Deriving the ref from the event log and
- * the patch from the filesystem would let one of them roll back while the other
- * did not, which is a preserved ref whose patch is a different revert's. So the
- * number is the max over BOTH namespaces this revert owns — the patch files AND
- * the refs under `STRAY_REF_NAMESPACE` — because an attempt can leave a record in
- * one and not the other (it creates the patch first, then the ref, and either can
- * fail). An attempt that read only the patch directory would pick an N whose ref
- * already exists and overwrite it, destroying the only git-visible record of what
- * the first revert deleted.
- */
-export async function nextStrayAttempt(
-  scratchDir: string,
-  issue: number,
-  workstreamId: string,
-  git?: GitExec,
-  worktree?: string,
-): Promise<number> {
-  // `retryPatchPath`'s id grammar is what the patch name embeds, so the same
-  // gate decides the number and the name — `nextRetryAttempt` refuses an id it
-  // cannot spell into a file, and `-<n>` is appended by that spell.
-  const fromPatch = await nextRetryAttempt(scratchDir, `fix-pass-strays-${issue}-${workstreamId}`);
-  if (git === undefined || worktree === undefined) return fromPatch;
-  const refPrefix = `${STRAY_REF_NAMESPACE}/${issue}-${workstreamId}-`;
-  let fromRef = fromPatch;
-  try {
-    const { stdout } = await git(
-      ["for-each-ref", "--format=%(refname)", `${STRAY_REF_NAMESPACE}/`],
-      { cwd: worktree, timeout: gitWriteTimeoutMs(), maxBuffer: 4 * 1024 * 1024 },
-    );
-    for (const line of stdout.split("\n")) {
-      const name = line.trim();
-      if (!name.startsWith(refPrefix)) continue;
-      const n = Number(name.slice(refPrefix.length));
-      if (Number.isInteger(n) && n >= 1) fromRef = Math.max(fromRef, n + 1);
-    }
-  } catch {
-    // The ref namespace could not be read. The patch directory still bounds the
-    // number, and a collision with an unreadable namespace then fails on `wx`
-    // (a refusal) rather than on a silent overwrite — the safe direction.
-  }
-  return fromRef;
-}
+// The record-naming half lives with the other pre-revert decisions in
+// `work-driver-fix-pass-strays-target.ts`; it is re-exported here because it is
+// part of what a revert PRODUCES (the ref and patch a caller must be able to
+// find), so importers of the revert ask the revert for both halves.
+export { fixPassStraysPatchPath, fixPassStraysRef, gitWriteTimeoutMs, nextStrayAttempt };
 
 /** Where the untracked strays' bytes are copied, beside the patch. */
 export function fixPassStraysUntrackedDir(scratchDir: string): string {
@@ -162,6 +86,18 @@ export interface FixPassStraysRequest {
   git: GitExec;
   /** The workstream's worktree — the only tree this module touches. */
   worktree: string;
+  /**
+   * #1849 item 7 — the worktree the DRIVER recorded for this workstream
+   * (`pipelineState.worktrees[id]`, written by Step 3 and read by every later
+   * step). `worktree` is the value the pass plan carries, which is a
+   * caller-/test-filled field; this is the one the cycle itself wrote. They must
+   * name the same directory (by realpath) before anything destructive runs —
+   * `assertInsideWorktrees` only proves a path is A driver worktree, so a stale
+   * or cross-wired plan would otherwise revert a sibling workstream's files
+   * while the pass reports a revert of its own strays. Absent means nothing was
+   * ever recorded, which is a refusal, not a pass.
+   */
+  recordedWorktree?: string;
   /** The repo root the worktree hangs under (the `assertInsideWorktrees` gate). */
   repoRoot: string;
   /** The cycle's issue number, for the ref and patch names. */
@@ -289,6 +225,8 @@ function preflight(req: FixPassStraysRequest): string | undefined {
     // Destructive commands run only in a driver-owned worktree, and the patch
     // name is validated before the first `git`.
     assertInsideWorktrees(req.repoRoot, req.worktree);
+    assertInsideRecordedWorktree(req);
+    assertInsideRecordedWorktree(req);
     fixPassStraysPatchPath(req.scratchDir, req.issue, req.workstreamId, req.attempt);
     // The temporary index the commit is built from is a path git resolves on its
     // own (`GIT_INDEX_FILE`), so it is judged here rather than at the call: a
@@ -478,7 +416,12 @@ async function revertPaths(
   try {
     for (const file of untrackedFiles) {
       // In no index at all: the unlink IS the removal, and no git command can
-      // stage or restore something git has never been told about.
+      // stage or restore something git has never been told about. The removal
+      // target is checked back inside this worktree first — `rmSync` with
+      // `force` deletes an absolute or `..`-carrying path and reports success,
+      // and these path strings came from a `git status` read rather than the
+      // plan, so containment is verified here and not assumed (#1849 item 9).
+      assertRemovalInsideWorktree(req, file);
       rmSync(join(worktree, file), { force: true });
     }
     if (restored.length > 0) {

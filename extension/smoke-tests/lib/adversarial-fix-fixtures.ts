@@ -179,6 +179,27 @@ export function strayPassTree(): ReturnType<typeof passTreeAt> {
   return passTreeAt("1846-revert");
 }
 
+/**
+ * A state whose `pipelineState.worktrees` names `dir` for the `default`
+ * workstream. `singleState` hard-codes that id, and the revert's target gate
+ * (#1849 item 7) reads the recorded tree by it, so a test whose plan carries a
+ * different id must record the tree under THAT id — otherwise the gate refuses
+ * for the right reason and the rule under test never runs.
+ */
+export function stateWithWorktree(
+  st: WorkState,
+  workstreamId: string,
+  dir: string,
+): WorkState {
+  return {
+    ...st,
+    pipelineState: {
+      ...st.pipelineState,
+      worktrees: { ...st.pipelineState.worktrees, [workstreamId]: dir },
+    },
+  };
+}
+
 /** A sink that records nothing. A step under test persists through the sink; a
  *  test that asserts on the returned state needs the events, not the emission. */
 export const silentSink: EmitSink = { emit: () => undefined, fingerprints: [] };
@@ -273,7 +294,11 @@ export async function plannedPassesFor(
  *
  * `worktree` is overridden because the plan reads it from
  * `pipelineState.worktrees`, which `singleState` points at the repo root: a
- * revert test needs the plan to name its `.worktrees/…` tree instead.
+ * revert test needs the plan to name its `.worktrees/…` tree instead. That
+ * override is exactly the seam #1849 item 7 guards, so the matching
+ * `singleState` call takes the SAME tree — a state whose recorded worktree
+ * disagrees with the plan is the refusal case, and it is built on purpose in
+ * `test-fix-pass-strays-worktree.ts`, not by accident here.
  */
 export async function typedPassPlans(
   repoRoot: string,

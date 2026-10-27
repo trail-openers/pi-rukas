@@ -50,6 +50,16 @@ console.log("# a failed revert commit restores the tree exactly as the pass left
   const res = await revertFixPassStrays({
     git: commitFails,
     worktree: t.worktree,
+    // #1849 item 7 — the recorded tree matches the tree under test; every case in
+    // this file is about its own rule, and the mismatch/refusal cases are
+    // `test-fix-pass-strays-worktree.ts`. Absent here would fail every case on the
+    // target gate instead.
+    recordedWorktree: t.worktree,
+  // #1849 item 7 — the recorded tree matches the tree under test; every case in
+  // this file is about its own rule, and the mismatch/refusal cases are
+  // `test-fix-pass-strays-worktree.ts`. Absent here would fail every case on the
+  // target gate instead.
+  recordedWorktree: t.worktree,
     repoRoot: t.repoRoot,
     issue: 1846,
     workstreamId: "default",
@@ -103,6 +113,16 @@ console.log("# a rollback that cannot finish says so, and names where to recover
   const res = await revertFixPassStrays({
     git: g,
     worktree: t.worktree,
+    // #1849 item 7 — the recorded tree matches the tree under test; every case in
+    // this file is about its own rule, and the mismatch/refusal cases are
+    // `test-fix-pass-strays-worktree.ts`. Absent here would fail every case on the
+    // target gate instead.
+    recordedWorktree: t.worktree,
+  // #1849 item 7 — the recorded tree matches the tree under test; every case in
+  // this file is about its own rule, and the mismatch/refusal cases are
+  // `test-fix-pass-strays-worktree.ts`. Absent here would fail every case on the
+  // target gate instead.
+  recordedWorktree: t.worktree,
     repoRoot: t.repoRoot,
     issue: 1846,
     workstreamId: "default",

@@ -99,6 +99,24 @@ function strayInNewDirTree(label: string): {
   return { repoRoot: t.repoRoot, worktree: t.worktree, headBefore: t.headBefore };
 }
 
+/**
+ * The state one of these cases hands the revert step: the fixture's fix-pass
+ * state, with the tree it is about to revert RECORDed for the `default`
+ * workstream. #1849 item 7 added that gate (`pipelineState.worktrees[id]` must
+ * name the tree the plan carries), so a test whose plan names a `.worktrees/…`
+ * tree has to record the same one — `fixState`/`singleState` point the recorded
+ * tree at the repo root, which is the value the refusal test below wants, not
+ * what an integration case wants. The refusal for a mismatched tree is asserted
+ * on purpose in `test-fix-pass-strays-worktree.ts`.
+ */
+function passState(dir: string, worktree: string, findings = "a.txt: change one to two"): WorkState {
+  const st = fixState(dir, ["a.txt"], findings);
+  return {
+    ...st,
+    pipelineState: { ...st.pipelineState, worktrees: { default: worktree } },
+  };
+}
+
 /** A stray refusal as `postPassFault` reports it for an admissible stray. */
 function strayPost(file: string, untracked: string[]): PostPass {
   return {
@@ -125,9 +143,9 @@ console.log("# the seam: a stray set that is revertible is reverted, not parked"
   // park) is asserted by the second set's case below and by the refusal branches.
   const dir = repoWithFile("1846-seam");
   try {
-    const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
     git(dir, "worktree add -q --detach .worktrees/issue-1846 HEAD");
     const wt = `${dir}/.worktrees/issue-1846`;
+    const st = passState(dir, wt);
     const headBefore = git(wt, "rev-parse HEAD").trim();
     devCommitIn(wt, "a.txt", "two\n");
     devWriteIn(wt, "lib/helper.ts", "export const helper = () => 1;\n");
@@ -174,7 +192,7 @@ console.log("# a SECOND stray set parks: the driver reverts once, it does not lo
 {
   const t = strayInNewDirTree("1846-twice");
   try {
-    const st = fixState(t.repoRoot, ["a.txt"], "a.txt: change one to two");
+    const st = passState(t.repoRoot, t.worktree);
     const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
     const post = strayPost("lib/helper.ts", ["lib/helper.ts"]);
     const first = await revertStraysOnce(
@@ -232,7 +250,7 @@ console.log("# the revert target is the pass's OWN headBefore, never a round's")
     const roundHead = git(wt, "rev-parse HEAD").trim();
     // The pass then EDITED it out of fence.
     devWriteIn(wt, "lib/helper.ts", "export const helper = 999;\n");
-    const st = fixState(dir, ["a.txt"], "a.txt: change one to two");
+    const st = passState(dir, wt);
     const round: WorkEvent = {
       kind: "corrective-round",
       at: 1,

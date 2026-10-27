@@ -58,6 +58,7 @@
     "smoke-tests/test-fix-pass-strays-preservation.ts",
     "smoke-tests/test-fix-pass-strays-rollback.ts",
     "smoke-tests/test-fix-pass-strays-durable.ts",
+    "smoke-tests/test-fix-pass-strays-worktree.ts",
     "smoke-tests/test-lens-fix-budget-share.ts",
     "smoke-tests/test-lens-fix-budget-owed-route.ts",
     "smoke-tests/test-review-state-guard.ts",
