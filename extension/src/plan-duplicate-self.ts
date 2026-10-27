@@ -217,6 +217,18 @@ export function isIssueState(x: unknown): x is PlanIssueState {
   return x === "OPEN" || x === "CLOSED" || x === "unknown";
 }
 
+/**
+ * The shape a `sourceIssue` must have before this filter may act on it: a
+ * positive safe integer. `Number.isSafeInteger` already refuses `null`, `NaN`,
+ * a float and anything past `2**53 - 1`; the `> 0` test refuses the one value it
+ * would otherwise admit — `0`, which is not an issue number on any forge and
+ * whose `#0` token `namedIssueRefs` never emits. Written as a predicate so the
+ * narrowing survives into the body instead of living in a cast.
+ */
+function isPositiveSafeInteger(x: number | undefined): x is number {
+  return Number.isSafeInteger(x) && (x as number) > 0;
+}
+
 /** What the inventory knows about one issue number. */
 export interface KnownIssue {
   state: PlanIssueState;
@@ -231,6 +243,10 @@ export interface KnownIssue {
  * `known` maps an issue number to what the inventory carried for it; a number
  * with no row has no known state, so it can never satisfy the CLOSED-prior-art
  * rule and its HIGH stands.
+ *
+ * A `sourceIssue` that is not a positive safe integer — `undefined`, a `null`
+ * read back from the cache or a session file, `0`, a float — means there is no
+ * subject to attribute the verdict to, and the verdict comes back untouched.
  */
 export function downgradeSelfDuplicate(
   verdict: DuplicateRisk,
@@ -239,7 +255,16 @@ export function downgradeSelfDuplicate(
   if (verdict.downgradedFrom !== undefined) return verdict;
   if (verdict.level.toLowerCase() !== "high") return verdict;
   const source = args.sourceIssue;
-  if (source === undefined) return verdict;
+  // #1856 review round 4 (lens HIGH): the entry, not the call sites, decides what
+  // counts as a source issue. `sourceIssue` reaches this filter through the
+  // investigation cache and through session replay, where a JSON `null` is not
+  // `undefined` — and a `null` source would otherwise compare unequal to every
+  // named issue, so rule 1 would attribute nothing to the subject while the
+  // prior-art rule still excluded CLOSED issues on a reply nobody pinned to a
+  // ticket. Anything that is not a positive safe integer downgrades NOTHING.
+  // Narrowed with a type predicate rather than an inline cast so every later use
+  // of `source` is a `number` to the compiler, not an assertion someone re-adds.
+  if (!isPositiveSafeInteger(source)) return verdict;
   const text = args.fullText ?? verdict.rationale;
   const named = namedIssueRefs(text);
   // A HIGH that names NO issue cannot be attributed to the subject, so it is
