@@ -52,6 +52,17 @@ import {
   lensFixWindow,
 } from "./lib/lens-fix-kill-cause-fixtures.ts";
 
+/** Backward `findIndex` for one kind — `Array.prototype.findLastIndex` is
+ *  ES2023 and this project's `lib` is deliberately not widened for it (the
+ *  un-checked backlog would red). Returns -1 when the kind is absent, matching
+ *  the built-in so callers keep their own `> 0` / `>= 0` reasoning. */
+function lastIndexOfKind(log: readonly WorkEvent[], kind: string): number {
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i]?.kind === kind) return i;
+  }
+  return -1;
+}
+
 let exitCode = 0;
 function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`✓ ${msg}`);
@@ -293,8 +304,16 @@ async function killedCycle(providerMessage: string | undefined): Promise<WorkSta
     "a dispatch-failed-provider with neither field validates",
   );
   const pk = providerKind() as { eventLog: Record<string, unknown>[] };
-  pk.eventLog[0].fixerBoundSource = "review-clock";
-  pk.eventLog[0].providerMessage = 42;
+  // `noUncheckedIndexedAccess` is on for this project, so the slot is read
+  // through a local rather than indexed twice — a missing slot is a fixture bug
+  // the assertion below surfaces as a failed validation, never a silent write to
+  // `undefined`.
+  const pkEvent = pk.eventLog[0];
+  assert(pkEvent !== undefined, "the provider-kind fixture wrote exactly one event");
+  if (pkEvent) {
+    pkEvent.fixerBoundSource = "review-clock";
+    pkEvent.providerMessage = 42;
+  }
   assert(
     validateDiscriminants(pk).length === 1 &&
       (validateDiscriminants(pk)[0] ?? "").includes("providerMessage"),
@@ -315,8 +334,13 @@ async function killedCycle(providerMessage: string | undefined): Promise<WorkSta
   // Insert a completed lens-fix dispatch BETWEEN the recovered attempt's
   // failure and the second (sourceless) failure: the armed round came back
   // fine after its kill, so its source is history, not this cap's cause.
-  const lastFailed = log.findLastIndex((e) => e.kind === "dispatch-failed");
-  log.splice(lastFailed, 0, {
+  // `findLastIndex` is ES2023 and this project's `lib` stays where it is (the
+  // backlog of un-checked files would red on a widening), so the backward scan
+  // is written out — same answer, no lib change, and `lastFailed` stays a
+  // number the splice below can trust only when the scan found one.
+  const lastFailed = lastIndexOfKind(log, "dispatch-failed");
+  assert(lastFailed > 0, "the fixture holds a dispatch-failed to insert before");
+  log.splice(Math.max(lastFailed, 0), 0, {
     kind: "dispatch-completed",
     step: "lens-fix",
     role: "developer",
@@ -341,9 +365,9 @@ async function killedCycle(providerMessage: string | undefined): Promise<WorkSta
   // scan looks for THIS step's dispatch and keeps walking past a foreign one.
   const foreign = await lensFixWindow([killed()], ["fixer-bound"]);
   const flog = [...foreign.eventLog];
-  const capAt = flog.findLastIndex((e) => e.kind === "cap-hit");
+  const capAt = lastIndexOfKind(flog, "cap-hit");
   const firstFailed = flog.findIndex((e) => e.kind === "dispatch-failed");
-  flog.splice(firstFailed, 0, {
+  flog.splice(Math.max(firstFailed, 0), 0, {
     kind: "dispatch-failed",
     step: "develop",
     role: "developer",

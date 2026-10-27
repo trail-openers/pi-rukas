@@ -67,7 +67,8 @@ export function completedRound(): DispatchResult {
     ok: true,
     ms: 10 * MIN,
     exitCode: 0,
-    finalAssistantText: "fixed three findings",
+    text: "fixed three findings",
+    toolUses: [],
   } as unknown as DispatchResult;
 }
 
@@ -79,7 +80,8 @@ export function killed(over: Partial<DispatchResult> = {}): DispatchResult {
     ok: false,
     ms: FIXER_BOUND,
     exitCode: null,
-    finalAssistantText: "",
+    text: "",
+    toolUses: [],
     killCause: "timeout",
     killBudgetMs: FIXER_BOUND,
     ...over,
