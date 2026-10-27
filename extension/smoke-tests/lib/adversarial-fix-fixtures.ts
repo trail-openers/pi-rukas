@@ -11,6 +11,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DispatchResult } from "../../src/types.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
+import { defaultExec } from "../../src/work-driver-adversarial-fix-git.ts";
+import type { PassPlan } from "../../src/work-driver-adversarial-fix-scope.ts";
+import { planFixPass } from "../../src/work-driver-adversarial-fix-scope.ts";
 import { type WorkState, initialState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -130,6 +133,30 @@ export function fixCtx(
       return devOk(spec.role);
     },
   };
+}
+
+/**
+ * The `PassPlan`s one fix pass would carry, built by the REAL `planFixPass`
+ * against a real repo — the typed alternative to a test hand-rolling a plan
+ * object (which silently rots whenever the plan gains a required field, and
+ * hides nothing as well as a `cast` does).
+ *
+ * `worktree` is overridden because the plan reads it from
+ * `pipelineState.worktrees`, which `singleState` points at the repo root: a
+ * revert test needs the plan to name its `.worktrees/…` tree instead.
+ */
+export async function typedPassPlans(
+  repoRoot: string,
+  worktree: string,
+  declared: readonly string[],
+  findings: string,
+): Promise<PassPlan[]> {
+  const st = fixState(repoRoot, [...declared], findings);
+  const planned = await planFixPass(defaultExec, repoRoot, st.pipelineState, [
+    { workstreamId: "default", findings },
+  ]);
+  if (!planned.ok) throw new Error(`planFixPass failed: ${planned.reason}`);
+  return planned.value.map((p) => ({ ...p, worktree }));
 }
 
 /**

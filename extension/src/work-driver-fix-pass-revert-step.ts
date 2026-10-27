@@ -19,8 +19,7 @@ import { runGit } from "./work-develop-git.ts";
 import { defaultExec } from "./work-driver-adversarial-fix-git.ts";
 import type { PassPlan, PostPass } from "./work-driver-adversarial-fix-scope.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import { correctiveRoundFor, correctiveRoundsOf } from "./work-driver-corrective-admission.ts";
-import { revertFixPassStrays } from "./work-driver-fix-pass-strays.ts";
+import { nextStrayAttempt, revertFixPassStrays } from "./work-driver-fix-pass-strays.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -54,7 +53,16 @@ export async function revertStraysOnce(
   if (id === undefined || strays === undefined || strays.length === 0) return undefined;
   const plan = plans.find((p) => p.id === id);
   if (plan === undefined) return undefined;
-  if (state.eventLog.some((e) => e.kind === "fix-pass-strays-reverted")) {
+  // The counter is scoped to THIS pass and THIS workstream: `passWindow` starts
+  // at the pass's own `adversarial-fix-requested` event, and the filter keeps
+  // another workstream's revert out of this workstream's budget. Reading the
+  // whole eventLog made a pass whose sibling had already reverted (or a second
+  // fix pass in the same cycle) park on a first stray set it had never reverted
+  // — a "second set" the driver had actually reverted in a different pass.
+  const alreadyReverted = passWindow(state).some(
+    (e) => e.kind === "fix-pass-strays-reverted" && e.workstreamId === id,
+  );
+  if (alreadyReverted) {
     // One stray set per pass is the driver's job; a second is a pass that will
     // not stay inside its fence, and reverting again would be looping on it.
     return {
@@ -63,27 +71,32 @@ export async function revertStraysOnce(
       reason: `${id} produced a SECOND set of out-of-fence files after the driver reverted the first (${strays.map((s) => s.file).join(", ")}) — the pass is not staying inside its fence`,
     };
   }
+  // One record pair per revert, ever: the number comes from the scratch dir, so
+  // a revert in a LATER pass of the same cycle writes `-2` rather than
+  // overwriting the first pass's patch with `wx` and refusing (or, without the
+  // `wx` flag, silently replacing the only record of what the earlier revert
+  // deleted).
+  const scratch = scratchDir(ctx.repoRoot, ctx.issue);
+  const attempt = await nextStrayAttempt(scratch, ctx.issue, id);
   const result = await revertFixPassStrays({
     git: runGit(ctx.verifyExecFn ?? defaultExec),
     worktree: plan.worktree,
     repoRoot: ctx.repoRoot,
     issue: ctx.issue,
     workstreamId: id,
-    // Always the first revert of a pass: the branch above already turned a second
-    // attempt into a park, so the `-<n>` suffix on the ref and patch is `1` for
-    // every revert this function performs.
-    attempt: 1,
-    // The revert target is the LATEST head this pass positively recorded, not
-    // simply the head the pass started from. A corrective round dispatched inside
-    // the pass records the HEAD it found (`headAtRound`, #1698(b)); when one ran,
-    // that is the tree to go back to, because reverting to the pre-dispatch head
-    // would undo the commits the driver itself ordered. With no round, the pass's
-    // own recorded pre-pass head is the only referent — and neither exists, the
-    // revert module refuses rather than guessing.
+    attempt,
+    // The revert target is the PASS's OWN recorded pre-pass head — never a
+    // corrective round's `headAtRound`. The strays are computed on the pass's
+    // delta from `headBefore` (`treeChanges(worktree, plan.headBefore)`), while
+    // `headAtRound` is recorded AFTER the round's commits landed: restoring a
+    // stray to its `headAtRound` content would keep the very lines the fence just
+    // refused. A per-path revert touches ONLY the stray paths, so it cannot undo
+    // the pass's fix or a corrective round's admitted files — those are not in
+    // the path list. See `revertTarget`.
     headBefore: revertTarget(state, id, plans),
     strays: strays.map((s) => s.file),
     untracked: new Set(post.untracked ?? []),
-    scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+    scratchDir: scratch,
   });
   if ("reason" in result) return { ok: false, secondSet: false, reason: result.reason };
   return {
@@ -100,28 +113,33 @@ export async function revertStraysOnce(
 }
 
 /**
- * The SHA this pass must revert TO: the latest head the driver positively
- * recorded for this workstream during this pass.
+ * The SHA this pass must revert TO: the pass's own `plan.headBefore`, positively
+ * recorded at plan time and nothing else.
  *
- * Preferred: the HEAD a corrective round dispatched *inside* the pass found
- * (`headAtRound`, #1698(b)) — that round committed work on the driver's own
- * order, so going back past it would undo a commit the driver itself authored.
- * Otherwise: the pass's own pre-pass head, read positively at plan time.
+ * WHY not the corrective round's `headAtRound`, which looks tempting because a
+ * round dispatched inside the pass committed work on the driver's own order:
+ * `headAtRound` is the HEAD the round FOUND, which by then already contains the
+ * pass's commits — including the strays the fence is refusing. Restoring a stray
+ * path to its `headAtRound` content therefore RESTORES the stray. `headBefore` is
+ * the single referent the fence's own judgement uses (`postPassFault` reads
+ * `treeChanges(worktree, plan.headBefore)`), so a revert that targets anything
+ * else and a fence that judges by it are two different trees — which is exactly
+ * the drift #1846 PM decision 2 forbids.
+ *
+ * And a per-path revert cannot undo the pass's legitimate work: the only paths it
+ * touches are the strays, so the fix and a corrective round's admitted files are
+ * never in the path list, whichever head a round later committed them on top of.
  *
  * Never a guess. `HEAD~1`, `base` or the current HEAD are each a way to delete
- * the pass's real work, so when neither recorded head is a usable SHA this
+ * the pass's real work, so when the recorded head is not a usable SHA this
  * returns `undefined` and `revertFixPassStrays` refuses rather than picking one.
  */
 function revertTarget(
-  state: WorkState,
+  _state: WorkState,
   workstreamId: string,
   plans: readonly PassPlan[],
 ): string | undefined {
-  const plan = plans.find((p) => p.id === workstreamId);
-  // The pass-scoped window: only rounds dispatched by THIS pass count, so a head
-  // an earlier pass recorded cannot become this revert's target.
-  const round = correctiveRoundFor(correctiveRoundsOf(passWindow(state)), workstreamId);
-  return usable(round?.headAtRound) ?? usable(plan?.headBefore);
+  return usable(plans.find((p) => p.id === workstreamId)?.headBefore);
 }
 
 /** The event-log window this pass produced — everything from its own request
