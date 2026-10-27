@@ -258,7 +258,7 @@ export function withBoundaryDrops(
  * delimited word carrying a `/`, or one ending in a file extension, after the
  * surrounding punctuation is stripped. Free words ("the public API surface") are
  * not tokens, so an entry made of nothing but them names nothing at all. */
-export function pathTokens(entry: string): string[] {
+function pathTokens(entry: string): string[] {
   const out: string[] = [];
   // The scan runs on the CONTROL-FREE form of the entry. A planner (or a model
   // echoing terminal colour) can break a directory token with a control byte,
