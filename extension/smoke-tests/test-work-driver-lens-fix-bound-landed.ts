@@ -30,6 +30,7 @@ import {
 import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState, writeState } from "../src/workflow-state.ts";
+import { mkLensSummary } from "./test-helpers.ts";
 import { realExec } from "./lib/exec-fake.ts";
 import {
   assert,
@@ -38,6 +39,7 @@ import {
   killTail,
   killedFixer,
   mkFixture,
+  fixerDeclaredPaths,
   mkLensFixState,
   withTrace,
 } from "./lib/lens-fix-bound-land-fixture.ts";
@@ -48,7 +50,7 @@ import {
   const branch = "feature/lens-bound-land";
   const { root, wt, baseSha } = await mkFixture(dir, branch);
   const issue = 1801;
-  const st = mkLensFixState(issue, branch, baseSha, wt);
+  const st = mkLensFixState(issue, branch, baseSha, wt, fixerDeclaredPaths(2));
   await writeState(root, st);
   const { result: _r, traced } = await withTrace(() =>
     runWorkDriver(driverCtx(root, issue, killedFixer(wt, 2, "timeout") as never)).catch(() => {}),
@@ -160,7 +162,7 @@ import {
   let landed = false;
   try {
     const { stdout } = await realExec(
-      `git fetch -q origin ${JSON.stringify(branch)} && git show FETCH_HEAD:fix-0.txt`,
+      `git fetch -q origin ${JSON.stringify(branch)} && git show FETCH_HEAD:src/fix-0.txt`,
       { cwd: root },
     );
     landed = stdout.trim() === "fix 0";
@@ -180,8 +182,9 @@ import {
   const moveBranch = "feature/lens-bound-move";
   const mv = await mkFixture(moveDir, moveBranch);
   const fsMove = await import("node:fs/promises");
-  await fsMove.writeFile(path.join(mv.wt, "fix-0.txt"), "fix 0\n");
-  await realExec("git add fix-0.txt && git commit -q -m 'fix(lens): part 0'", {
+  await fsMove.mkdir(path.join(mv.wt, "src"), { recursive: true });
+  await fsMove.writeFile(path.join(mv.wt, "src/fix-0.txt"), "fix 0\n");
+  await realExec("git add src/fix-0.txt && git commit -q -m 'fix(lens): part 0'", {
     cwd: mv.wt,
     shell: "/bin/bash",
   });
@@ -195,7 +198,7 @@ import {
   );
   const moveJobId = "lens-fix:developer:lens-fix-1:1:1";
   const moved = await landLensFixAfterBoundKill(
-    killTail(mkLensFixState(1806, moveBranch, mv.baseSha, mv.wt), moveJobId, "timeout"),
+    killTail(mkLensFixState(1806, moveBranch, mv.baseSha, mv.wt, fixerDeclaredPaths(1)), moveJobId, "timeout"),
     { tree: mv.wt, tipSha: moveTip, jobId: moveJobId },
     realExec,
   );
@@ -247,5 +250,149 @@ import {
   );
 }
 
+// ── 2. PM decision #1852-4: a bound kill does not exempt the fixer's strays ──
+{
+  // The conversion is the arm most tempting to treat as "the driver already
+  // decided this work is landable": the kill is classified, the commits are
+  // enumerated, and the round is routed to the adversarial gate. It is not. A
+  // bound-killed fixer is judged by the same fence, on the same delta, through
+  // the fix pass's own ladder.
+  //
+  // THE SHAPE THAT PROVES IT, and why it takes two rounds. A single stray set is
+  // REVERTED and the round lands — the fence doing its job, not refusing; on a
+  // one-round fixture the assertions below could not tell "the fence ran and
+  // allowed it" from "there was no fence". The refusal that must not be pushable
+  // is the SECOND set in one round, so: round 1's killed fixer writes one
+  // out-of-fence file, the driver reverts it and lands the fix; round 2's fixer
+  // writes another, that round's one revert is already spent, and the gate parks
+  // with the branch unmoved.
+  //
+  // The second set is committed INSIDE the round-2 fixer's own dispatch. The
+  // driver's revert commits to HEAD, so anything a harness wrote after the
+  // dispatch returned would sit on top of that revert commit, outside the
+  // round's `roundTip..HEAD` delta — and the fence would correctly never see it.
+  const dir = mkdtempSync(path.join(tmpdir(), "lens-bound-stray-"));
+  const branch = "feature/lens-bound-stray";
+  const { root, wt, baseSha } = await mkFixture(dir, branch);
+  const issue = 18070;
+  await writeState(root, mkLensFixState(issue, branch, baseSha, wt, fixerDeclaredPaths(2)));
+  const written: string[] = [];
+  const strayFixer = async (
+    pi: unknown,
+    spec: { role?: string; prompt?: string; runId?: string },
+    opts?: { label?: string },
+  ): Promise<DispatchResult> => {
+    if (opts?.label?.startsWith("developer:lens-fix")) {
+      const fs = await import("node:fs/promises");
+      if (written.length === 0) {
+        // Round 1: the fix the findings asked for, plus one file outside the
+        // declared fence — the set the driver is allowed to revert.
+        for (let i = 0; i < 2; i++) {
+          await fs.writeFile(path.join(wt, `src/fix-${i}.txt`), `fix ${i}\n`);
+          await realExec(`git add src/fix-${i}.txt && git commit -q -m 'fix(lens): part ${i}'`, {
+            cwd: wt,
+            shell: "/bin/bash",
+          });
+        }
+        written.push("stray-round1.txt");
+        await fs.writeFile(path.join(wt, written[0]), "written past the fence\n");
+        await realExec(`git add ${written[0]} && git commit -q -m 'the widening'`, {
+          cwd: wt,
+          shell: "/bin/bash",
+        });
+      } else {
+        // Round 2: a SECOND out-of-fence set, in a round whose one revert has
+        // already been spent.
+        written.push("stray-round2.txt");
+        await fs.writeFile(path.join(wt, written[1]), "written past the fence again\n");
+        await realExec(`git add ${written[1]} && git commit -q -m 'the widening again'`, {
+          cwd: wt,
+          shell: "/bin/bash",
+        });
+      }
+    }
+    // The kill is reported only AFTER the commits exist — what a child stopped at
+    // its bound does, and what `landLensFixAfterBoundKill` classifies.
+    return killedFixer(wt, 0, "timeout")(pi, spec, opts);
+  };
+  const pushes: string[] = [];
+  const lensReviewFn = async () =>
+    written.length === 0
+      ? mkLensSummary({ verdict: "APPROVED" })
+      : mkLensSummary({
+          // Round 2 does NOT approve, so the cycle comes back to lens-fix a
+          // second time and that round's fixer is the one the fence must catch.
+          verdict: "ISSUES_FOUND",
+          totalFindings: 1,
+          bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 1, LOW: 0 },
+          findings: [
+            {
+              lens: "SIMPLICITY",
+              severity: "MEDIUM",
+              path: "src/fix-0.txt",
+              line: 1,
+              title: "still stale",
+              description: "the comment still contradicts the code",
+              suggestion: "fix it",
+            },
+          ],
+        });
+  const { traced } = await withTrace(() =>
+    runWorkDriver(
+      driverCtx(root, issue, strayFixer as never, {
+        netGitFn: async (args: string[]) => {
+          pushes.push(args.join(" "));
+          return { stdout: "", stderr: "" };
+        },
+        lensReviewFn,
+      }) as never,
+    ).catch(() => {}),
+  );
+  const events = (await readState(root, issue))?.eventLog ?? [];
+  const caps = events.filter((e) => e.kind === "cap-hit").map((e) => (e as { cap: string }).cap);
+  assert(
+    written.length === 2,
+    `the fixture really reached a second lens-fix round (fixer dispatches: ${written.length})`,
+  );
+  assert(
+    caps.includes("lens-fix-scope"),
+    `the round whose killed fixer would not stay inside its fence parks on the fence (caps: ${JSON.stringify(caps)})`,
+  );
+  const cap = events.find(
+    (e) => e.kind === "cap-hit" && e.cap === "lens-fix-scope",
+  ) as { evidence?: string } | undefined;
+  assert(
+    (cap?.evidence ?? "").includes("stray-round2.txt"),
+    `the park names the second set the killed fixer had no business writing (evidence: ${(cap?.evidence ?? "").slice(0, 160)})`,
+  );
+  assert(
+    events.some(
+      (e) =>
+        e.kind === "fix-pass-strays-reverted" && (e as { source?: string }).source === "lens-fix",
+    ),
+    "the first stray set was reverted by the driver — the fence ran, it did not skip",
+  );
+  assert(
+    !pushes.some((p) => p.includes("push")),
+    `nothing was pushed for the round the fence refused (attempts: ${JSON.stringify(pushes)})`,
+  );
+  let landed = true;
+  try {
+    await realExec(
+      `git fetch -q origin ${JSON.stringify(branch)} && git show FETCH_HEAD:stray-round2.txt`,
+      { cwd: root },
+    );
+  } catch {
+    landed = false;
+  }
+  assert(!landed, "the refused round's out-of-fence file did not reach origin/<branch>");
+  // The conversion itself still happened — the park is the FENCE's decision, not
+  // a lost dispatch. Without this, the assertions above would also hold for a
+  // round that never got as far as classifying the kill.
+  assert(
+    traced.includes("treated as a partial fix"),
+    "the bound kill was still converted to a partial fix — the fence, not the kill, is what parked",
+  );
+}
 console.log(`\nexit ${boundLandRun.failed ? 1 : 0}`);
 process.exit(boundLandRun.failed ? 1 : 0);

@@ -39,6 +39,7 @@ import {
   killTail,
   killedFixer,
   mkFixture,
+  fixerDeclaredPaths,
   mkLensFixState,
   withTrace,
 } from "./lib/lens-fix-bound-land-fixture.ts";
@@ -49,7 +50,7 @@ import {
   const branch = "feature/lens-bound-nocommit";
   const { root, wt, baseSha } = await mkFixture(dir, branch);
   const issue = 1802;
-  await writeState(root, mkLensFixState(issue, branch, baseSha, wt));
+  await writeState(root, mkLensFixState(issue, branch, baseSha, wt, fixerDeclaredPaths(2)));
   const { traced } = await withTrace(() =>
     runWorkDriver(driverCtx(root, issue, killedFixer(wt, 0, "timeout") as never)).catch(() => {}),
   );
@@ -67,7 +68,7 @@ import {
   let landed = true;
   try {
     await realExec(
-      `git fetch -q origin ${JSON.stringify(branch)} && git show FETCH_HEAD:fix-0.txt`,
+      `git fetch -q origin ${JSON.stringify(branch)} && git show FETCH_HEAD:src/fix-0.txt`,
       {
         cwd: root,
       },
@@ -162,7 +163,7 @@ import {
   const branch = "feature/lens-bound-land-off";
   const { root, wt, baseSha } = await mkFixture(dir, branch);
   const issue = 1805;
-  await writeState(root, mkLensFixState(issue, branch, baseSha, wt));
+  await writeState(root, mkLensFixState(issue, branch, baseSha, wt, fixerDeclaredPaths(2)));
   process.env.PI_ENSEMBLE_LENS_FIX_LAND_AHEAD = "0";
   let traced = "";
   try {
@@ -232,7 +233,7 @@ for (const [i, cause] of (
   const branch = `feature/lens-bound-cause-${cause}`;
   const { root, wt, baseSha } = await mkFixture(dir, branch);
   const issue = 1810 + i;
-  await writeState(root, mkLensFixState(issue, branch, baseSha, wt));
+  await writeState(root, mkLensFixState(issue, branch, baseSha, wt, fixerDeclaredPaths(2)));
   // The fixer commits — so the ONLY thing that must stop the conversion is the
   // kill cause, not the absence of work.
   await runWorkDriver(driverCtx(root, issue, killedFixer(wt, 2, cause) as never)).catch(() => {});
@@ -279,13 +280,13 @@ for (const [i, cause] of (
   const branch = "feature/lens-bound-jobid";
   const { root, wt, baseSha } = await mkFixture(dir, branch);
   const fs = await import("node:fs/promises");
-  await fs.writeFile(path.join(wt, "fix-0.txt"), "fix 0\n");
-  await realExec("git add fix-0.txt && git commit -q -m 'fix(lens): part 0'", {
+  await fs.writeFile(path.join(wt, "src/fix-0.txt"), "fix 0\n");
+  await realExec("git add src/fix-0.txt && git commit -q -m 'fix(lens): part 0'", {
     cwd: wt,
     shell: "/bin/bash",
   });
   const tip = (await realExec("git rev-parse HEAD~1", { cwd: wt })).stdout.trim();
-  const state = mkLensFixState(1830, branch, baseSha, wt);
+  const state = mkLensFixState(1830, branch, baseSha, wt, fixerDeclaredPaths(2));
   const jobId = "lens-fix:developer:lens-fix-1:1:1";
 
   // (a) a tail from ANOTHER job is refused, and the trace names both ids.
@@ -339,14 +340,14 @@ for (const [i, cause] of (
   const branch = "feature/lens-bound-deadline";
   const { root, wt, baseSha } = await mkFixture(dir, branch);
   const fs = await import("node:fs/promises");
-  await fs.writeFile(path.join(wt, "fix-0.txt"), "fix 0\n");
-  await realExec("git add fix-0.txt && git commit -q -m 'fix(lens): part 0'", {
+  await fs.writeFile(path.join(wt, "src/fix-0.txt"), "fix 0\n");
+  await realExec("git add src/fix-0.txt && git commit -q -m 'fix(lens): part 0'", {
     cwd: wt,
     shell: "/bin/bash",
   });
   const tip = (await realExec("git rev-parse HEAD~1", { cwd: wt })).stdout.trim();
   const jobId = "lens-fix:developer:lens-fix-1:1:1";
-  const atDeadline = killTail(mkLensFixState(1831, branch, baseSha, wt), jobId, "timeout", true);
+  const atDeadline = killTail(mkLensFixState(1831, branch, baseSha, wt, fixerDeclaredPaths(2)), jobId, "timeout", true);
   const { result, traced } = await withTrace(() =>
     landLensFixAfterBoundKill(atDeadline, { tree: wt, tipSha: tip, jobId }, realExec),
   );

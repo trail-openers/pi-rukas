@@ -97,19 +97,32 @@ delete process.env.PI_ENSEMBLE_REVIEW_ENFORCE;
 setupSpawnGuard();
 
 /** bare origin + repo on a feature branch + a detached worktree at the branch
- *  tip. The scripted fixer commits into `wt`. */
+ *  tip, in the layout a real cycle has: the lens-fix tree lives under
+ *  `<repoRoot>/.worktrees/` and is what `pipelineState.worktrees` records.
+ *
+ *  #1852 review item 2 — the tree used to sit at `<dir>/wt`, outside the repo.
+ *  That is not a shape production ever produces (every workstream develops in a
+ *  `.worktrees/` tree, #287/#445), and it made the lens-fix fence gate refuse a
+ *  round it should have admitted: the driver's own revert guard
+ *  (`assertInsideWorktrees`) refuses to touch anything outside `.worktrees/`, so
+ *  an in-fence fix was parked as if it had strays. A fixture whose tree is in a
+ *  layout the guard can never accept proves the bound-kill landing only by
+ *  accident. */
 export async function mkFixture(dir: string, branch: string) {
   const fs = await import("node:fs/promises");
   const origin = path.join(dir, "origin.git");
   const root = path.join(dir, "root");
-  const wt = path.join(dir, "wt");
+  const wt = path.join(root, ".worktrees", "issue-lens-bound");
   await realExec("git init -q --bare --initial-branch=main origin.git", { cwd: dir });
   await realExec("git init -q --initial-branch=main root", { cwd: dir });
   await realExec('git config user.email "t@t" && git config user.name "T"', {
     cwd: root,
     shell: "/bin/bash",
   });
-  writeFileSync(path.join(root, ".git", "info", "exclude"), "\n.pi/\n.tmp\n");
+  // `.worktrees/` is ignored for the same reason it is in a real cycle: the
+  // tree is driver scaffolding, and an unignored one makes the repo root dirty,
+  // which the stray revert's own commit refuses to work beside.
+  writeFileSync(path.join(root, ".git", "info", "exclude"), "\n.pi/\n.tmp\n.worktrees/\n");
   await fs.writeFile(path.join(root, "base.txt"), "hello\n");
   await realExec("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
   await realExec(`git remote add origin ${JSON.stringify(origin)}`, { cwd: root });
@@ -120,14 +133,42 @@ export async function mkFixture(dir: string, branch: string) {
   await realExec(`git checkout -qb ${branch}`, { cwd: root });
   const baseSha = (await realExec("git rev-parse HEAD", { cwd: root })).stdout.trim();
   await fs.writeFile(path.join(root, "feature.txt"), "buggy\n");
+  // A tracked file under `src/` so the tree HAS that directory: the fence's
+  // anchored-helper route admits an undeclared file in a declared path's
+  // directory, and the fixer's files live under `src/` for that reason (see
+  // `fixerDeclaredPaths`).
+  await fs.mkdir(path.join(root, "src"), { recursive: true });
+  await fs.writeFile(path.join(root, "src", "keep.txt"), "keep\n");
   await realExec(
-    `git add feature.txt && git commit -q -m 'feature' && git push -q -u origin ${JSON.stringify(branch)}`,
+    `git add feature.txt src/keep.txt && git commit -q -m 'feature' && git push -q -u origin ${JSON.stringify(branch)}`,
     { cwd: root, shell: "/bin/bash" },
   );
   await realExec(`git worktree add --detach ${JSON.stringify(wt)} ${JSON.stringify(branch)}`, {
     cwd: root,
   });
   return { origin, root, wt, baseSha };
+}
+
+/**
+ * The declared fence for the scripted fixer's files (#1852 review item 2).
+ *
+ * The lens-fix fence (#1852) judges the round's delta against the workstream's
+ * DECLARED paths plus the finding-named widening. The scripted fixer writes
+ * `src/fix-<i>.txt`, which the findings never name — so with an empty `paths`
+ * list the fence refuses its own work and the round parks `lens-fix-scope`
+ * before the landing arm can push. That is the fence working; a bound-kill test
+ * is not about it, so the fixture declares what the fixer is contracted to
+ * write and the assertions keep meaning what they say.
+ *
+ * The `src/` prefix is not decoration: the anchored-helper route admits an
+ * undeclared file that sits in the directory of a declared path, and
+ * `anchorDirs(["fix-0.txt"])` is EMPTY for a root-level file — so a root-level
+ * stray would be admitted by every route and the fence could not refuse one.
+ * Declaring under `src/` is what gives the "must not push a stray" case a stray
+ * the ladder actually refuses.
+ */
+export function fixerDeclaredPaths(commits: number): string[] {
+  return Array.from({ length: Math.max(commits, 0) }, (_, i) => `src/fix-${i}.txt`);
 }
 
 /**
@@ -164,7 +205,13 @@ export function killTail<T extends { eventLog: unknown[] }>(
 
 /** The state of a cycle that has just come back from a lens round with
  *  findings and is about to dispatch the fixer. */
-export function mkLensFixState(issue: number, branch: string, baseSha: string, wt: string) {
+export function mkLensFixState(
+  issue: number,
+  branch: string,
+  baseSha: string,
+  wt: string,
+  declaredPaths: readonly string[] = [],
+) {
   const s = initialState(issue, 1_000_000);
   return {
     ...s,
@@ -174,7 +221,12 @@ export function mkLensFixState(issue: number, branch: string, baseSha: string, w
       lastCompletedStep: "lens-review" as const,
       worktrees: { default: wt },
       workstreams: {
-        default: { id: "default", scope: "test", paths: [], outOfScope: [] },
+        default: {
+          id: "default",
+          scope: "test",
+          paths: [...declaredPaths],
+          outOfScope: [],
+        },
       },
       branchName: branch,
       baseSha,
@@ -227,8 +279,9 @@ export function killedFixer(wt: string, commits: number, killCause: DispatchResu
     if (opts?.label?.startsWith("developer:lens-fix")) {
       const fs = await import("node:fs/promises");
       for (let i = 0; i < commits; i++) {
-        await fs.writeFile(path.join(wt, `fix-${i}.txt`), `fix ${i}\n`);
-        await realExec(`git add fix-${i}.txt && git commit -q -m 'fix(lens): part ${i}'`, {
+        await fs.mkdir(path.join(wt, "src"), { recursive: true });
+        await fs.writeFile(path.join(wt, `src/fix-${i}.txt`), `fix ${i}\n`);
+        await realExec(`git add src/fix-${i}.txt && git commit -q -m 'fix(lens): part ${i}'`, {
           cwd: wt,
           shell: "/bin/bash",
         });
