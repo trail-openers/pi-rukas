@@ -360,7 +360,48 @@ export function assertLensFixPromptTestScope(
       lensFix.includes(developTestScopeLine()),
       "#1156: the lens-fix prompt embeds developTestScopeLine() verbatim — no paraphrase that can drift from the develop prompt",
     );
+    // #1798 — the commit seam must be EARLY, not gated on a suite.
+    assertLensFixCommitEarly(assert, lensFix);
   });
+}
+
+/**
+ * #1798 — the fixer commits per finding, once the typecheck passes, and never
+ * waits for a suite before its FIRST commit.
+ *
+ * Three field cycles (v0.14.27) ended `step-failed:lens-fix` with the fixer
+ * killed at its own bound and NOTHING committed: in each one it re-ran the
+ * project's whole gate inside one tool call before its first commit, and the
+ * old instruction named "a clean build, a passing test suite" as the seam. A
+ * bound kill that committed is landed by the partial-fix path; one that
+ * committed nothing is a lost round.
+ *
+ * Takes the RENDERED text rather than the constant so each caller asserts on
+ * what its own prompt really contains — the two lens-fix prompts are separate
+ * literals and the #1156 rule was once present in only one of them.
+ */
+export function assertLensFixCommitEarly(assert: Assert, prompt: string): void {
+  assert(
+    /commit your work in the worktree as you go/i.test(prompt),
+    "#1798: the lens-fix commit instruction makes committing progressive ('as you go'), not a single end-of-run seam",
+  );
+  assert(
+    /after each finding[^\n]*typecheck/i.test(prompt) &&
+      /moment it passes commit/i.test(prompt),
+    "#1798: the commit seam is one finding (or one small group) plus a passing typecheck — the cheap gate, not the expensive one",
+  );
+  assert(
+    /NEVER wait for a full test suite before your first commit/i.test(prompt),
+    "#1798: the prompt forbids waiting for the full suite before the first commit in as many words",
+  );
+  assert(
+    /full suite run is optional and comes last/i.test(prompt),
+    "#1798: a full suite run is optional and last, so it can never be what blocks the first commit",
+  );
+  assert(
+    !/natural seams \(a clean build, a passing test suite\)/i.test(prompt),
+    "#1798 canary: the old 'natural seams (a clean build, a passing test suite)' wording is GONE — it read as 'wait for the suite', which is how the field fixers died uncommitted",
+  );
 }
 
 /**
@@ -394,5 +435,8 @@ export function assertLensFixResendPromptTestScope(
       resend.includes(developTestScopeLine()),
       "#1156: the re-dispatch prompt embeds developTestScopeLine() verbatim, so the two lens-fix prompts cannot drift apart",
     );
+    // #1798 — the re-dispatch is the branch that runs AFTER a fixer was lost
+    // with nothing committed, so it is the one that most needs the rule.
+    assertLensFixCommitEarly(assert, resend);
   });
 }
