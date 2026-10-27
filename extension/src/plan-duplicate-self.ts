@@ -48,7 +48,12 @@
  *      the comma form, while "reverses the landed decision in #103" downgrades.
  *      A clause that NEGATES the prior-art word ("#103 is not prior art, it is
  *      unlanded duplicate work") is the child saying the closed issue is a real
- *      duplicate, and suppresses nothing.
+ *      duplicate, and suppresses nothing. Round 3: EVERY mention is judged, not
+ *      just the first — "#103 is prior art for this. #103 is not landed, it is
+ *      unlanded duplicate work" is one affirmation followed by a denial, and a
+ *      reply that reads only the first clause suppressed a HIGH main halts on. A
+ *      CLOSED issue is excluded only when SOME clause affirms prior art and NO
+ *      clause naming it negates it.
  *
  * Rules 1–5 read the child's FULL reply, not the 400-char slice the parser keeps
  * for display (round-1 lens H1): an OPEN duplicate named past that cut is
@@ -223,14 +228,34 @@ export function namedIssueTokens(text: string): number[] {
  * unlanded duplicate work" being satisfied by a neighbour's "prior art".
  */
 export function clauseNaming(text: string, token: string): string {
-  const marker = `#${token}`;
-  const at = text.indexOf(marker);
-  if (at < 0) return "";
-  let from = at;
-  while (from > 0 && !CLAUSE_BOUNDARY.test(text[from - 1] ?? "")) from--;
-  let to = at + marker.length;
-  while (to < text.length && !CLAUSE_BOUNDARY.test(text[to] ?? "")) to++;
-  return text.slice(from, to).trim();
+  const clauses = everyClauseNaming(text, token);
+  return clauses.length === 0 ? "" : (clauses[0] ?? "");
+}
+
+/**
+ * Every clause that names `#token`, in order of appearance — the shape rule 5
+ * actually judges (round 3). The match is anchored with `(?![\d-])` so `#7`
+ * never reads as a mention inside `#71` or `#7-2`, and each occurrence yields
+ * its own clause, so an affirmation in one sentence cannot outrank a denial in
+ * the next.
+ */
+export function everyClauseNaming(text: string, token: string): string[] {
+  const safe = escapeForRegExp(token);
+  if (safe === "") return [];
+  const out: string[] = [];
+  // A leading run of `#`s belongs to the mention (`##1856`): starting at the
+  // digits rather than at the first `#` would leave the clause beginning
+  // mid-token, which reads the same words and clips their left context.
+  const re = new RegExp(`#+${safe}(?![\\d-])`, "g");
+  for (const m of text.matchAll(re)) {
+    const at = m.index ?? 0;
+    let from = at;
+    while (from > 0 && !CLAUSE_BOUNDARY.test(text[from - 1] ?? "")) from--;
+    let to = at + m[0].length;
+    while (to < text.length && !CLAUSE_BOUNDARY.test(text[to] ?? "")) to++;
+    out.push(text.slice(from, to).trim());
+  }
+  return out;
 }
 
 /**
@@ -246,17 +271,34 @@ export function clauseNaming(text: string, token: string): string {
  * number is never a downgrade.
  */
 export function citesUnaccountedNumber(text: string, resolvedTokens: string[]): boolean {
+  return /\d/.test(strippedForNumberScan(text, resolvedTokens));
+}
+
+/**
+ * Rule 4's strip, exposed for the test that has to SEE what the citation removal
+ * left behind: a predicate returning a boolean cannot show that `##1856` lost its
+ * stray `#` rather than merely losing its digits.
+ */
+export function citesUnaccountedNumberStripped(text: string, resolvedTokens: string[]): string {
+  return strippedForNumberScan(text, resolvedTokens);
+}
+
+function strippedForNumberScan(text: string, resolvedTokens: string[]): string {
   let rest = text;
   // Longest token first, and never into a longer digit run: removing `7` before
   // `77` (or before `7-2`) would blank the digits of a token this filter did
   // NOT resolve and rule 4 would then read a real reference as accounted for.
   // `(?![\d-])` also refuses a partial match, and matches nothing that a
-  // `namedIssueRefs` token can be — every one ends in a digit.
+  // `namedIssueRefs` token can be — every one ends in a digit. The leading `#+`
+  // goes with it: a reply that writes `##1856` (a heading-flavoured citation) is
+  // one the extractor resolved, and leaving the stray `#` behind used to be
+  // harmless only because `#` carries no digit — removing the whole citation is
+  // what makes the strip match the mention the extractor read.
   for (const token of [...resolvedTokens].sort((a, b) => b.length - a.length)) {
-    rest = rest.split(new RegExp(`#${escapeForRegExp(token)}(?![\\d-])`, "g")).join(" ");
+    rest = rest.split(new RegExp(`#+${escapeForRegExp(token)}(?![\\d-])`, "g")).join(" ");
   }
   for (const re of SAFE_NUMBER_RES) rest = rest.replace(re, " ");
-  return /\d/.test(rest);
+  return rest;
 }
 
 /** Tokens are `[0-9-]+` by construction; this keeps the RegExp constructor honest. */
@@ -351,6 +393,23 @@ function priorArtClause(clause: string): boolean {
 }
 
 /**
+ * Rule 5 over EVERY mention of one issue (round 3): an issue is honoured as
+ * landed work only when SOME clause naming it affirms prior art AND no clause
+ * naming it negates it. Judging the first mention alone let the field shape
+ * "#103 is prior art for this. #103 is not landed, it is unlanded duplicate
+ * work" exclude a CLOSED issue the child had just called a real duplicate.
+ */
+function priorArtForAllMentions(clauses: string[]): boolean {
+  if (clauses.length === 0) return false;
+  let affirmed = false;
+  for (const clause of clauses) {
+    if (PRIOR_ART_NEGATED_RE.test(clause)) return false;
+    if (PRIOR_ART_RE.test(clause)) affirmed = true;
+  }
+  return affirmed;
+}
+
+/**
  * The post-filter. `verdict` is what the child's marker parsed to; a failed
  * dispatch (no verdict at all) and an absent marker both come back untouched —
  * nothing here may invent a downgrade. Pass `fullText` (the child's uncut reply)
@@ -385,7 +444,7 @@ export function downgradeSelfDuplicate(
     if (ref.id === source) continue;
     const row = known.get(ref.id);
     if (row === undefined || !isClosedState(row.state)) continue;
-    if (!priorArtClause(clauseNaming(text, ref.token))) return verdict;
+    if (!priorArtForAllMentions(everyClauseNaming(text, ref.token))) return verdict;
   }
   const excluded: ExcludedDuplicate[] = [];
   // The tokens this filter positively resolved as excluded; their digits come
@@ -415,8 +474,13 @@ export function downgradeSelfDuplicate(
       continue;
     }
     if (row !== undefined && isClosedState(row.state)) {
-      // Judged by rule 5 above, so its own clause carries the prior-art word.
-      const clause = clip(clauseNaming(text, ref.token), EXCLUSION_CLAUSE_MAX_CHARS);
+      // Judged by rule 5 above, so SOME clause naming it carries the prior-art
+      // word and none negates it. The disclosure quotes the FIRST affirming
+      // clause — the one that satisfied the rule — not merely the first mention.
+      const affirming =
+        everyClauseNaming(text, ref.token).find((c) => priorArtClause(c)) ??
+        clauseNaming(text, ref.token);
+      const clause = clip(affirming, EXCLUSION_CLAUSE_MAX_CHARS);
       resolved.push(ref.token);
       excluded.push(
         excludedRow(
