@@ -84,10 +84,11 @@ export async function revertLensFixStrays(
     Date.now(),
     // THE durability boundary (#1852 round 3 item 3). `revertStraysOnce` raises
     // this for BOTH outcomes immediately after the destructive calls and before
-    // either is returned, which is the only seam that both knows the revert is
-    // over and runs before the gate's next git call. The caller persists there
-    // rather than after this promise resolves: `integrateLensFix` and
-    // `commitLensFixChanges` are the next calls in the landing arm.
+    // either is returned. It cannot carry the event itself — at that instant the
+    // outcome does not exist yet for any caller — so it exists to let THIS
+    // function see that the destructive work has finished, and the publish
+    // happens as soon as the outcome is in hand, still inside this call and
+    // before the caller's next git run.
     onReverted === undefined
       ? undefined
       : () => {
@@ -105,6 +106,15 @@ export async function revertLensFixStrays(
     alreadyReverted,
   );
   settled.current = out;
+  // #1852 round 3 item 3 — the boundary hook fires HERE. `revertStraysOnce` has
+  // returned, so its own `onReverted` call (which runs before it returns, and so
+  // before any caller could have assigned the outcome) had nothing to publish;
+  // this is the first instant at which the outcome exists AND the destructive
+  // work is known to be finished, which is exactly the boundary the caller needs
+  // to persist at. The ordering test asserts this precedes the `await` settling.
+  if (out?.ok === true) {
+    await onReverted?.(stampLensFixRevert(out.event, plan.id, round));
+  }
   if (out === undefined) {
     trace(
       `work-driver: lens-fix stray revert not attempted for ${plan.id} (switch off, or nothing to revert)`,

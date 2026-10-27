@@ -176,5 +176,54 @@ console.log("# a retried adversarial step does NOT revert the same round twice")
   cleanup(f.repoRoot);
 }
 
+console.log("# an unattributable round gets NO revert hook (so no fallback id can spend an allowance)");
+{
+  // #1852 round 3 item 5. `lensFixRevertAlreadyUsed` matches on `workstreamId`
+  // EXACTLY. The landing arm used to fall back to `"default"` when the round
+  // could not be attributed, which asked the counter about a workstream the
+  // round does not belong to: it answered "not spent", the revert ran, and its
+  // record was stamped with an id no reader matches — the one-revert allowance
+  // became unenforceable for exactly the rounds whose attribution was unclear.
+  // Now the caller supplies no `onRevertible` at all in that case, and the gate
+  // parks on its "revert unavailable" arm.
+  const f = fixtureStrayAllowed("land-revert-no-id");
+  const st = await stateWith(f.repoRoot, f.tree, f.branch);
+  // Strip the attribution from BOTH places the gate and the caller read it from:
+  // the snapshot's `workstreamId` and the recorded `worktrees` entry that would
+  // otherwise resolve an id by path.
+  const unattributed: WorkState = {
+    ...st,
+    pipelineState: {
+      ...st.pipelineState,
+      worktrees: {},
+      lensFixFence:
+        st.pipelineState.lensFixFence === undefined
+          ? undefined
+          : { ...st.pipelineState.lensFixFence, workstreamId: "" },
+    },
+  };
+  const pushes: string[] = [];
+  const ctx = stubCtx(f.repoRoot, pushes);
+  const out = await runAdversarial(ctx, unattributed, 2_000_000);
+  assert(
+    !out.eventLog.some((e) => e.kind === "fix-pass-strays-reverted"),
+    "no revert event — the driver never reverted under a workstream id it did not have",
+  );
+  const caps = capsOf(out);
+  assert(
+    caps.includes("lens-fix-scope"),
+    `the round parked instead of landing (${JSON.stringify(caps)})`,
+  );
+  assert(
+    existsSync(`${f.tree}/scratch-notes.md`),
+    "the stray is still in the tree — a round with no attribution gets no destructive revert",
+  );
+  assert(
+    !pushes.some((p) => p.includes("push")),
+    `and nothing was pushed (${JSON.stringify(pushes)})`,
+  );
+  cleanup(f.repoRoot);
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

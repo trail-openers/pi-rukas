@@ -88,6 +88,19 @@ export async function landLensFix(
   // The fence judges the round against one workstream's fence; the id is the key
   // the revert record, its allowance and the revert note all carry.
   const lensId = lensFixWorkstreamId(lensSnap, psFix, lensTree);
+  // The persist issued at the revert's destructive boundary (#1852 round 3 item
+  // 3). Awaiting it is what makes the write durable before the landing arm runs;
+  // undefined means no revert happened, so nothing was issued.
+  let revertEventPersisted: Promise<void> | undefined;
+  // #1852 round 3 item 5 — `lensId` is the key the revert record, its one-revert
+  // allowance and the revert note all carry. `lensFixRevertAlreadyUsed` matches
+  // on it exactly, so a fallback `"default"` would ask the counter about a
+  // workstream this round does not belong to: it would answer "not spent", the
+  // revert would run, and its record would be stamped with an id no reader can
+  // match — the round's single allowance would then be unenforceable. With no id
+  // there is no revertible round: `onRevertible` stays undefined and the gate
+  // parks on "the driver could not revert".
+  const revertible = lensId === undefined ? undefined : lensId;
   const fenceCheck = await lensFixFenceCheck({
     execFn,
     ctx,
@@ -100,7 +113,7 @@ export async function landLensFix(
     // from the state inside the gate: they are facts about the log and the
     // round, and a caller that passed them could pass a different round's answer.
     onRevertible:
-      lensId === undefined || lensSnap === undefined
+      revertible === undefined || lensSnap === undefined
         ? undefined
         : (post, plan): Promise<LensFixRevertOutcome | undefined> =>
             revertLensFixStrays(
@@ -113,7 +126,19 @@ export async function landLensFix(
               // The revert asks its owner whether the allowance is spent, and the
               // gate answers from the same log and round (#1852 round 2 item 4:
               // one counter, not two that can disagree).
-              lensFixRevertAlreadyUsed(state.eventLog, lensRound, lensId ?? "default"),
+              lensFixRevertAlreadyUsed(state.eventLog, lensRound, revertible),
+              // #1852 round 3 item 3 — the record is made durable at the
+              // DESTRUCTIVE boundary, not after the call. `revertStraysOnce` raises
+              // this hook the instant the preserve/patch/rm/checkout work has run
+              // and before it returns the outcome, so a kill in the window between
+              // "files are gone" and "the state says so" cannot happen: the
+              // landing arm's own destructive calls come after this promise, and
+              // by then the event is on disk. `recordLensFixRevert` below still
+              // writes the operator's plumb note; it no longer appends the event
+              // twice (it skips when the log already carries this round's record).
+              (event) => {
+                revertEventPersisted = persistCycle(ctx, appendEvent(out, event));
+              },
             ),
   });
   if (!fenceCheck.ok) {
@@ -146,18 +171,36 @@ export async function landLensFix(
       // where that content survives.
       ...(fenceCheck.revert === undefined ? restoredLocations(state, lensRound) : {}),
     });
-    return park({ ...out, pipelineState: { ...out.pipelineState, currentStep: "handoff" } });
+    out = { ...out, pipelineState: { ...out.pipelineState, currentStep: "handoff" } };
+    // #1852 round 3 item 4 — persisted BEFORE the return. Every other park in
+    // this step persists (`parkLensFixReposition`, and the revert record above):
+    // a cap-hit that lives only in the returned state is lost if the process
+    // dies on the way back, and the resume then finds a `lens-fix` round with no
+    // cap on its log — which is the state the router reads as "nothing stopped
+    // here, run the landing arms again".
+    await persistCycle(ctx, out);
+    return park(out);
   }
   for (const note of fenceCheck.notes) trace(`work-driver: lens-fix fence · ${note}`);
+  // The persist the revert's boundary hook issued (#1852 round 3 item 3) is
+  // awaited HERE — before the first landing arm, whose git calls are the next
+  // destructive thing in this step. `revertStraysOnce` fires the hook synchronously
+  // before it returns, so by this point the write has been issued; awaiting it is
+  // what makes the bytes durable rather than merely promised. `persistCycle`
+  // serialises through a per-file promise chain, so a later writer cannot overtake
+  // it and this await is not optional bookkeeping.
+  await revertEventPersisted;
   // #1852 review round 2 — a revert the gate PERFORMED is recorded here, BEFORE
   // any landing arm runs. The refusal path above already rides the event's
   // ref/patch onto the cap-hit; the `ok: true` path used to drop it, so the round
   // landed with a driver commit that had deleted the fixer's out-of-fence files,
   // no disclosure of the preserved ref or patch, and — because
   // `lensFixRevertAlreadyUsed` reads the event log — a retried adversarial step
-  // that reverted a SECOND set in the same round. Persisted now rather than at
-  // the next boundary: the calls after this one are the destructive ones, and a
-  // crash between the revert and its record is the window this closes.
+  // that reverted a SECOND set in the same round. The EVENT itself is now written
+  // at the revert's own destructive boundary (the `onReverted` hook above,
+  // #1852 round 3 item 3); what remains here is the operator's plumb note and the
+  // state it is appended to, and `recordLensFixRevert` does not append an event
+  // the log already carries.
   out = await recordLensFixRevert(
     out,
     { round: lensRound, workstreamId: lensId, revert: fenceCheck.revert },

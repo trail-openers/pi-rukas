@@ -96,7 +96,24 @@ export async function recordLensFixRevert(
     source: "lens-fix",
     round,
   };
-  const withEvent = appendEvent(state, stamped);
+  // #1852 round 3 item 3 — the EVENT is the revert's own record, and it is
+  // appended and persisted by the caller's `onReverted` hook at the destructive
+  // boundary, where the files actually went away. Appending it again here would
+  // put two identical records on the log for one revert: harmless to the counter
+  // (`some`), fatal to anything that counts reverts, and misleading on the
+  // handoff. So this function adds the event only when the boundary hook did not
+  // — a caller that passed no hook, or a revert whose outcome was not the
+  // successful one — and otherwise just writes the disclosure note onto the state
+  // that already carries it.
+  const alreadyOnLog = state.eventLog.some(
+    (e) =>
+      e.kind === "fix-pass-strays-reverted" &&
+      e.source === stamped.source &&
+      e.round === stamped.round &&
+      e.workstreamId === stamped.workstreamId &&
+      e.preservedRef === stamped.preservedRef,
+  );
+  const withEvent = alreadyOnLog ? state : appendEvent(state, stamped);
   // The prose note is what puts the paths, the ref and the patch in front of the
   // operator on the handoff / PR body (`plumbReports` is the field the handoff
   // renders). Stamped `lens-fix` rather than the fix pass's `develop`, because
