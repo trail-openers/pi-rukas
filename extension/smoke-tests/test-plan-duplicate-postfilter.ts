@@ -22,7 +22,7 @@
 import type { MechanicalInventory } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { duplicateExclusionSection } from "../src/plan-duplicate-self.ts";
-import { filedBodyOf } from "../src/plan-gap-disclosure.ts";
+import { filedBodyOf, finalDraftBody } from "../src/plan-gap-disclosure.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
 import { assemblePriorContext } from "../src/plan-prior-context-assembly.ts";
 
@@ -259,6 +259,39 @@ async function barrier(
     duplicateExclusionSection(risk, undefined) === "" &&
       duplicateExclusionSection(undefined, 1856) === "",
     "no source issue or no verdict → no section at all",
+  );
+
+  // The one site that assembles the filed/shown body: the residual, open-point
+  // and base-fallback disclosures, the exclusion section, the image links and the
+  // provenance wrapper. Order is what the operator reviewed, so it is pinned, and
+  // the all-absent case must be a pass-through — that is what "behaviour is
+  // unchanged without a source issue" means for the whole body, not one section.
+  const assembled = finalDraftBody(
+    "BODY",
+    [],
+    [],
+    undefined,
+    [],
+    { line: "Planned by the driver", marker: { "plan-session": "abc" } },
+    { risk, sourceIssue: 1856 },
+  );
+  assert(
+    assembled.startsWith("_Planned by the driver_") &&
+      assembled.includes("BODY") &&
+      assembled.includes("## Duplicate check — excluded candidates") &&
+      assembled.trimEnd().endsWith("<!-- pi-rukas:provenance v1 plan-session=abc -->"),
+    "finalDraftBody: provenance line first, body, then the exclusion section, marker last",
+  );
+  assert(
+    assembled.indexOf("BODY") < assembled.indexOf("## Duplicate check"),
+    "finalDraftBody: the exclusion section is appended after the drafted body, never before it",
+  );
+  assert(
+    finalDraftBody("BODY", [], [], undefined, [], undefined, {
+      risk: undefined,
+      sourceIssue: undefined,
+    }) === "BODY",
+    "finalDraftBody: with nothing to disclose and no provenance, the body passes through byte-identical",
   );
 }
 
