@@ -3018,7 +3018,9 @@ and the per-child transcripts under `~/.pi/agent/ensemble-runs/` to find which c
 cycle was waiting on. A genuinely dead runner child still reports `crash` with the signal
 or exit code it died with; that path is deliberately unchanged, because a child that died
 and a child that was still thinking are different facts and the host should see the
-difference.
+difference. The supervisor therefore forwards a printed document only when the child
+exited normally — no signal, no spawn error — so a child that printed `merged` with exit
+0 and was then killed is still reported as `crash`/30 with its signal, whatever it wrote.
 
 ### Bounds
 

@@ -16,6 +16,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { RESULT_SCHEMA_VERSION } from "../src/headless/result.ts";
+import { EXIT } from "../src/headless/exit-code.ts";
 import { SUPERVISED_ENV, parseResultDocument, superviseWork } from "../src/headless/supervise.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 import { writeState } from "../src/workflow-state.ts";
@@ -136,6 +137,124 @@ try {
       { code, out },
     );
     assert(lines.length === 1, "and the garbage is not passed through alongside it", lines.length);
+  }
+
+  // ── #1863 adversarial round: a child that PRINTS a healthy document and is
+  // then killed is a crash, not the document. A process that was SIGKILLed
+  // cannot vouch for what it wrote, and reporting exit 0 / `merged` for a
+  // killed runner is the lie #1591 exists to prevent. The docs
+  // (headless.md, troubleshooting.md) promise crash + the signal.
+  {
+    let out = "";
+    const doc = JSON.stringify({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      exitCode: 0,
+      issues: [{ issue: 345, status: "merged", stateFile: "/dev/null", exitCode: 0 }],
+    });
+    const code = await superviseWork({
+      repoRoot,
+      issues: [345],
+      json: true,
+      command: [
+        bun,
+        "-e",
+        "process.stdout.write(process.argv[process.argv.length - 1] + String.fromCharCode(10)); process.kill(process.pid, 'SIGKILL')",
+        doc,
+      ],
+      write: (s) => {
+        out += s;
+      },
+    });
+    const lines = out.trim().split("\n");
+    const crash = JSON.parse(lines[0] ?? "{}");
+    assert(
+      code === 30 && crash.exitCode === 30 && crash.error?.code === "crash",
+      "a child killed by a signal after printing a valid exit-0 document is a crash, not a pass",
+      { code, out },
+    );
+    assert(
+      /SIGKILL/.test(crash.error?.message ?? ""),
+      "and the crash names the signal it died by",
+      crash.error,
+    );
+    assert(
+      lines.length === 1 && !(out.includes('"status":"merged"') && out.includes('"error"')),
+      "the killed child's own document is not forwarded alongside the crash",
+      out,
+    );
+  }
+
+  // ── #1863 adversarial round: only the document LINE reaches the host, so a
+  // child that printed stray bytes first still yields exactly one JSON document.
+  {
+    let out = "";
+    const doc = JSON.stringify({ schemaVersion: RESULT_SCHEMA_VERSION, exitCode: 10, issues: [] });
+    const code = await superviseWork({
+      repoRoot,
+      issues: [345],
+      json: true,
+      command: [
+        bun,
+        "-e",
+        "process.stdout.write('warning: stray bytes' + String.fromCharCode(10) + process.argv[process.argv.length - 1] + String.fromCharCode(10)); process.exit(10)",
+        doc,
+      ],
+      write: (s) => {
+        out += s;
+      },
+    });
+    const lines = out.trim().split("\n");
+    assert(
+      code === 10 && lines.length === 1 && lines[0] === JSON.stringify(JSON.parse(doc)),
+      "stray bytes ahead of the document are not forwarded — stdout carries one document",
+      { code, out },
+    );
+  }
+
+  // ── #1863 adversarial round: an exitCode outside the published set is not a
+  // result, so the child cannot make the supervisor report a code the CLI never
+  // publishes (Infinity, a float, a negative, or an unknown number).
+  {
+    const stray = [7, -1, 1.5, 999, "0"].map((v) =>
+      JSON.stringify(v),
+    );
+    for (const raw of stray) {
+      let out = "";
+      const code = await superviseWork({
+        repoRoot,
+        issues: [345],
+        json: true,
+        command: [
+          bun,
+          "-e",
+          "process.stdout.write(process.argv[process.argv.length - 1] + String.fromCharCode(10)); process.exit(0)",
+          `{"schemaVersion":${RESULT_SCHEMA_VERSION},"exitCode":${raw},"issues":[]}`,
+        ],
+        write: (s) => {
+          out += s;
+        },
+      });
+      const doc = JSON.parse(out.trim().split("\n")[0] ?? "{}");
+      assert(
+        code === 30 && doc.error?.code === "crash",
+        `an out-of-set exitCode ${raw} is garbage, not a result`,
+        { code, out },
+      );
+    }
+    // Every published code still passes, so the gate above is not over-tight.
+    for (const published of Object.values(EXIT)) {
+      const doc = JSON.stringify({
+        schemaVersion: RESULT_SCHEMA_VERSION,
+        exitCode: published,
+        issues: [],
+      });
+      const parsed = parseResultDocument(`${doc}\n`);
+      assert(
+        parsed?.exitCode === published,
+        `the published exit code ${published} is accepted`,
+        parsed,
+      );
+    }
   }
 
   // ── a child that aborts without a result.

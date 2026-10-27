@@ -31,6 +31,20 @@
  * printed nothing, or printed only garbage, gets — crash classification is
  * otherwise unchanged.
  *
+ * A child that DIED is a different thing from a child that answered, so the
+ * bytes only count when the child exited normally — no `exit.signal` and no
+ * `exit.error`. A child that printed a healthy-looking document and then caught
+ * SIGKILL is a crash whatever it printed: a killed process cannot vouch for the
+ * document it wrote, and a host reading exit 0 / `merged` out of a killed runner
+ * is the exact lie #1591 was filed to remove. A signal-killed or spawn-errored
+ * child therefore keeps the `crash`/30 projection and its signal message, which
+ * is what `headless.md` and `troubleshooting.md` promise. The wedge path still
+ * passes through, because `withResultGuarantee` prints its document and then
+ * RETURNS an exit code — that child exits normally.
+ *
+ * Only the document LINE is forwarded, never the whole buffer, so stdout carries
+ * exactly one JSON document even when the child printed stray bytes first.
+ *
  * SIGTERM / SIGINT / SIGHUP are forwarded to the child, so the interrupt
  * contract (run.ts) is unchanged. Setting `PI_ENSEMBLE_HEADLESS_SUPERVISED=1`
  * runs `work` in-process, without a supervisor.
@@ -70,9 +84,12 @@ export interface SuperviseOptions {
  * that is neither nothing nor a document, and calling that a result would pass
  * a half-written one to the host. So only a line that parses as a result
  * document — the schema version this build writes, an `issues` array and an
- * `exitCode` — counts, and the LAST such line wins (a runner that printed a
- * document and then a stray line still gets its document). Anything else is
- * garbage, and garbage is what the `crash` projection is for.
+ * `exitCode` that is one of the PUBLISHED codes — counts, and the LAST such
+ * line wins (a runner that printed a document and then a stray line still gets
+ * its document). The code is validated, not trusted: it is what the supervisor
+ * returns to the host, so `Infinity`, a float, a negative or a number the
+ * contract never published is not a result but garbage, and garbage is what the
+ * `crash` projection is for.
  */
 export function parseResultDocument(out: string): ResultDocument | undefined {
   const lines = out.split("\n");
@@ -90,12 +107,22 @@ export function parseResultDocument(out: string): ResultDocument | undefined {
     if (
       doc.schemaVersion === RESULT_SCHEMA_VERSION &&
       Array.isArray(doc.issues) &&
-      typeof doc.exitCode === "number"
+      isPublishedExitCode(doc.exitCode)
     ) {
       return parsed as ResultDocument;
     }
   }
   return undefined;
+}
+
+/**
+ * Is `code` one of the exit codes the CLI publishes? The document's `exitCode`
+ * becomes the supervisor's own return value, so an out-of-contract number must
+ * not reach the host: only a non-negative safe integer from `EXIT` qualifies.
+ */
+function isPublishedExitCode(code: unknown): code is number {
+  if (typeof code !== "number" || !Number.isSafeInteger(code)) return false;
+  return Object.values(EXIT).includes(code as (typeof EXIT)[keyof typeof EXIT]);
 }
 
 /** Each issue as its state file shows it; a non-terminal state exits 30. */
@@ -142,10 +169,14 @@ export async function superviseWork(opts: SuperviseOptions): Promise<number> {
   // decision therefore reads the bytes (parseResultDocument) and nothing else —
   // and #1863's wedge document reaches this function exactly like the runner's
   // own result does, because ensure-result.ts writes it to the same stdout.
-  const answered = parseResultDocument(out);
+  // A child that died by a signal, or never started, has no say: its bytes are
+  // not a result. Everything else with a complete document on stdout is.
+  const answered = exit.signal || exit.error ? undefined : parseResultDocument(out);
   if (answered !== undefined) {
-    write(out);
-    return answered.exitCode ?? exit.code ?? EXIT.crash;
+    // The document LINE, not the buffer: stray bytes ahead of it are not part
+    // of the host's contract.
+    write(`${JSON.stringify(answered)}\n`);
+    return answered.exitCode;
   }
   const how = exit.error
     ? `could not start: ${exit.error.message}`
