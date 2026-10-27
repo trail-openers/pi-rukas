@@ -42,12 +42,13 @@
  * reason says the revert was unavailable because the tree is the repo root.
  */
 
+import path from "node:path";
 import { trace } from "./trace.ts";
 import {
   type FixExec,
-  type GitRead,
   committedChanges,
   headOf,
+  isAncestor,
   treeChanges,
 } from "./work-driver-adversarial-fix-git.ts";
 import {
@@ -56,7 +57,6 @@ import {
   postPassFault,
 } from "./work-driver-adversarial-fix-scope.ts";
 import type { CycleContext } from "./work-driver-context.ts";
-import { fenceMatches } from "./work-driver-declared-path.ts";
 import { anchorDirs } from "./work-driver-declared-path.ts";
 import type { LensFixPlanRefusal } from "./work-driver-lens-fix-fence.ts";
 import { specPatternSlots } from "./work-driver-spec-slot-admission.ts";
@@ -93,36 +93,33 @@ export interface LensFixFenceGateOpts {
   /** The current lens review round. */
   round: number;
   /**
-   * Does this round RECORD a fence failure? `runLensFix` writes
-   * `lens-fix-fence-unavailable` when a pre-dispatch git read failed, so the
-   * question is answerable from the state file alone — the same answer on the
-   * first pass and after a resume. A state that CANNOT support a fence records
-   * nothing (see `lensFixPlanRefusal`), and the gate does not run there.
-   *
-   * The two states the record separates:
-   *
-   *   - a RECORDED failure means the round HAD a fence (it was part of the
-   *     prompt) and the record did not survive to the gate: fail closed, nothing
-   *     pushes;
-   *   - NO RECORD AT ALL means an older driver wrote this state, or the fixture
-   *     predates the change: the gate does not run and a trace says why. Refusing
-   *     there would make #1852 a breaking change to the persisted schema instead
-   *     of a fence.
-   *
-   * Deliberately NOT keyed on "a fixer was dispatched": a fixer dispatched under
-   * a fence the planner could not build already has the refusal on the log, and
-   * one dispatched by a driver that never had a fence has nothing to judge.
-   */
-  fenceRecorded: boolean;
-  /** The counter's answer: has this round already reverted once? */
-  revertAlreadyUsed: boolean;
-  /**
    * Perform the one revert this round may have. The caller wires this to
    * `revertStraysOnce` so the destructive path keeps its single owner; `undefined`
    * means a revert is not available (the kill-switch is off, or the caller is a
    * read-only probe) and the strays then park on their refusal.
    */
   onRevertible?: (post: PostPass, plan: PassPlan) => Promise<LensFixRevertOutcome | undefined>;
+}
+
+/**
+ * The workstream this lens-fix round belongs to — the key the revert record, its
+ * one-revert allowance and this gate all read.
+ *
+ * The snapshot's own id wins (it is what the fence was built for); otherwise the
+ * workstream whose RECORDED tree is this lens tree, by resolved path. A round
+ * with no attributable workstream gets `undefined`, which is the token the step
+ * records as its no-workstream refusal (`LENS_FIX_NO_WORKSTREAM`).
+ */
+export function lensFixWorkstreamId(
+  snapshot: LensFixFenceSnapshot | undefined,
+  ps: { workstreams?: Record<string, unknown>; worktrees?: Record<string, string> },
+  tree: string,
+): string | undefined {
+  if (snapshot?.workstreamId !== undefined) return snapshot.workstreamId;
+  return Object.keys(ps.workstreams ?? {}).find((id) => {
+    const recorded = ps.worktrees?.[id];
+    return recorded !== undefined && path.resolve(recorded) === path.resolve(tree);
+  });
 }
 
 /**
@@ -234,6 +231,17 @@ export function lensFixFenceRecorded(events: readonly WorkEvent[], round: number
  * tree alone (the revert is the only write, and it is `revertStraysOnce`'s).
  */
 export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<LensFixFenceVerdict> {
+  // Both facts are read from the state the gate is given, never handed to it by
+  // the caller (#1852 round 2 MEDIUM): a caller that got the round, the log or
+  // the workstream id wrong produced a verdict from a different round's records,
+  // and nothing downstream could tell. The workstream the fence judges is the
+  // snapshot's own, so the counter reads the same key the revert stamps.
+  const fenceRecorded = lensFixFenceRecorded(opts.state.eventLog, opts.round);
+  // The id is resolved the same way the caller resolves it, so the allowance the
+  // gate applies and the stamp on the revert name one workstream.
+  const wsId = lensFixWorkstreamId(opts.snapshot, opts.state.pipelineState, opts.tree);
+  const revertAlreadyUsed =
+    wsId !== undefined && lensFixRevertAlreadyUsed(opts.state.eventLog, opts.round, wsId);
   const snap = opts.snapshot;
   if (snap === undefined) {
     // No fence is recorded for this round, and that is NOT the same as a fence
@@ -256,7 +264,7 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
     // dispatched: a fixer dispatched under a fence the planner could not build
     // belongs to the first case (the refusal is on the log), and one dispatched
     // by a driver that never had a fence belongs to the second.
-    if (!opts.fenceRecorded)
+    if (!fenceRecorded)
       return {
         ok: true,
         notes: [
@@ -312,7 +320,20 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
   const delta = await treeChanges(opts.execFn, opts.tree, snap.roundTip);
   if (!delta.ok) return fail(`the lens tree could not be read: ${delta.reason}`);
   const passFiles = [...new Set([...range.value, ...delta.value.names, ...delta.value.untracked])];
-  if (passFiles.length === 0) return { ok: true, notes: [] };
+  // An EMPTY delta is not automatically "the fixer changed nothing": it is also
+  // what an unreachable `roundTip` produces, because `git diff <tip>..HEAD`
+  // against a SHA that is not an ancestor of HEAD reports nothing useful rather
+  // than failing. So the empty pass is earned by proving the tip the fence was
+  // built from is actually in this tree's history — the same read every other
+  // gate here makes, through the same argv exec, and it parks when it cannot.
+  if (passFiles.length === 0) {
+    const ancestor = await emptyDeltaIsReal(opts.execFn, opts.tree, snap.roundTip, head.value);
+    if (!ancestor.ok)
+      return fail(
+        `the round's delta read empty, but the recorded round tip ${snap.roundTip} could not be confirmed as an ancestor of the lens tree's HEAD ${head.value} (${ancestor.reason}) — an empty range against a tip that is not in this tree's history is not evidence that the fixer changed nothing`,
+      );
+    return { ok: true, notes: [] };
+  }
 
   const post = await postPassFault(opts.execFn, [plan], snap.roundTip, [], { noOp: true });
   if (!post.reason) return { ok: true, notes: post.admissions };
@@ -330,9 +351,13 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
     post.straysFor !== undefined &&
     post.strays !== undefined &&
     post.strays.every((s) => s.revertible);
-  if (!revertible || opts.onRevertible === undefined || opts.revertAlreadyUsed) {
+  if (!revertible || opts.onRevertible === undefined || revertAlreadyUsed) {
     return fail(
-      opts.revertAlreadyUsed
+      // The counter is scoped to a workstream, so a round whose workstream cannot
+      // be named is judged by the caller's hook alone (`revertLensFixStrays`
+      // refuses without one): the allowance question is not answerable here and
+      // must not be answered "no".
+      revertAlreadyUsed
         ? `${post.reason} — this round ALREADY had one out-of-fence set reverted by the driver (the \`fix-pass-strays-reverted\` record names the preserved ref and the patch), and a SECOND set in the same round means the fixer will not stay inside its fence; nothing was pushed`
         : post.reason,
       post.admissions,
@@ -369,6 +394,33 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
   };
 }
 
+/**
+ * The empty-delta pass is EARNED, not assumed.
+ *
+ * `git diff <tip> <head>` against a tip that is not in this tree's history reads
+ * as "nothing changed", so an empty range plus an empty tree is also what a stale
+ * or corrupt `roundTip` produces — and the fence would clear a round it never
+ * measured. The ancestor probe is what separates "the fixer changed nothing" from
+ * "the tip I was told to measure from is not here", and neither answer passes:
+ * `no` is a stale tip and `unknown` is a broken read, and the handoff says which.
+ */
+async function emptyDeltaIsReal(
+  execFn: FixExec,
+  tree: string,
+  roundTip: string,
+  head: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const verdict = await isAncestor(execFn, tree, roundTip, head);
+  if (verdict === "yes") return { ok: true };
+  return {
+    ok: false,
+    reason:
+      verdict === "no"
+        ? "it is not an ancestor of HEAD — the recorded tip is not in this tree's history"
+        : "the ancestry probe could not be run (the tip is not a SHA, or git could not answer)",
+  };
+}
+
 function fail(reason: string, notes: string[] = []): LensFixFenceVerdict {
   trace(`work-driver: lens-fix fence refused the round — ${reason.slice(0, 200)}`);
   return { ok: false, reason, notes };
@@ -377,7 +429,6 @@ function fail(reason: string, notes: string[] = []): LensFixFenceVerdict {
 /**
  * The shape of a `LensFixFenceSnapshot` that got into the state file whole
  * enough to be an object but is missing a field, or carries one of the wrong
- * type (#1852 review item 1d).
  *
  * `pipelineState.lensFixFence` is read through an untyped cast in `readState`,
  * so the type is a compile-time claim only: a hand edit, a truncated write, or
@@ -441,9 +492,3 @@ export function lensFixFenceFindings(snapshot: unknown): string[] {
   }
   return out;
 }
-
-/** The fix pass's ONE fence predicate, re-exported for the gate's own tests. */
-export const fenceCovers = (entry: string, file: string): boolean => fenceMatches(entry, file);
-
-/** `GitRead` is re-exported so a test can name the read shapes without a second import. */
-export type { GitRead };

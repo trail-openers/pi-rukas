@@ -51,8 +51,24 @@ export async function revertLensFixStrays(
   plan: PassPlan,
   post: PostPass,
   round: number,
+  /** Has this round already spent its one revert? See the call below. */
+  alreadyReverted = false,
 ): Promise<LensFixRevertOutcome | undefined> {
-  const out = await revertStraysOnce(ctx, state, [plan], post, Date.now());
+  const out = await revertStraysOnce(
+    ctx,
+    state,
+    [plan],
+    post,
+    Date.now(),
+    undefined,
+    // #1852 round 2 item 4 — ONE counter for this budget. The lens round's
+    // allowance is keyed on source + round + workstream, which `revertStraysOnce`'s
+    // own `passWindow` counter cannot express (a lens fix has no
+    // `adversarial-fix-requested` to window on, so it degenerates to the whole
+    // log). The caller that owns the key answers, and the inner counter is not
+    // consulted.
+    alreadyReverted,
+  );
   if (out === undefined) {
     trace(
       `work-driver: lens-fix stray revert not attempted for ${plan.id} (switch off, or nothing to revert)`,
@@ -73,6 +89,28 @@ export async function revertLensFixStrays(
   }
   void execFn;
   return { ok: true, event: { ...out.event, source: "lens-fix", round } };
+}
+
+/**
+ * The recovery locations of THIS round's already-recorded lens-fix revert, for a
+ * cap-hit that parks on a SECOND stray set. The gate reports a `revert` only when
+ * it performed one during this call; when the round's single allowance was spent
+ * by an earlier call (the retried step, or a fix pass that landed and then parked
+ * on a second set), the event lives on the log and the cap-hit would otherwise
+ * name neither location — so the operator reads "the record names the preserved
+ * ref and the patch" with no record in the state file to read it from.
+ */
+export function restoredLocations(
+  state: WorkState,
+  round: number,
+): { restoredToRef?: string; restoredToPath?: string } {
+  for (let i = state.eventLog.length - 1; i >= 0; i--) {
+    const e = state.eventLog[i];
+    if (e?.kind === "fix-pass-strays-reverted" && e.source === "lens-fix" && e.round === round) {
+      return { restoredToRef: e.preservedRef, restoredToPath: e.patchPath };
+    }
+  }
+  return {};
 }
 
 /**

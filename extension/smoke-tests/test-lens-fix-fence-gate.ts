@@ -16,21 +16,18 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
+import { defaultExec, isAncestor } from "../src/work-driver-adversarial-fix-git.ts";
 import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
 import type { PassPlan } from "../src/work-driver-adversarial-fix-scope.ts";
-import type { CycleContext } from "../src/work-driver-context.ts";
 import {
   lensFixFenceCheck,
   lensFixPlanFromSnapshot,
   lensFixRevertAlreadyUsed,
 } from "../src/work-driver-lens-fix-fence-gate.ts";
 import { revertLensFixStrays } from "../src/work-driver-lens-fix-fence-revert.ts";
-import { lensFixPassPlan } from "../src/work-driver-lens-fix-fence.ts";
-import type { LensFixFenceSnapshot } from "../src/workflow-state-schema.ts";
-import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
-import { initialState } from "../src/workflow-state.ts";
-import { git, repoWithFile, silentSink } from "./lib/adversarial-fix-fixtures.ts";
+import type { WorkEvent } from "../src/workflow-state.ts";
+import { git } from "./lib/adversarial-fix-fixtures.ts";
+import { FINDINGS, ctxFor, cycle, snapshotFor, stateFor } from "./lib/lens-fix-gate-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -41,81 +38,8 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const FINDINGS = '[{"path":"a.txt","severity":"MEDIUM","title":"t","suggestion":"s"}]';
-
 /** The record a real revert produces, spelled from the event type rather than `any`. */
 type LensFixEventShape = Extract<WorkEvent, { kind: "fix-pass-strays-reverted" }>;
-
-/** A repo with a develop commit, plus a `.worktrees/` tree sitting on it. */
-function cycle(label: string): { repoRoot: string; tree: string; roundTip: string } {
-  const repoRoot = repoWithFile(label);
-  const tree = `${repoRoot}/.worktrees/issue-1852`;
-  git(repoRoot, "worktree add -q --detach .worktrees/issue-1852 HEAD");
-  writeFileSync(`${tree}/a.txt`, "two\n");
-  git(tree, "add -A");
-  git(tree, 'commit -q -m "develop: the feature"');
-  return { repoRoot, tree, roundTip: git(tree, "rev-parse HEAD").trim() };
-}
-
-function stateFor(
-  repoRoot: string,
-  tree: string,
-  declared: string[],
-  outOfScope: string[],
-): WorkState {
-  const s = initialState(1852, 1_000_000);
-  return {
-    ...s,
-    pipelineState: {
-      ...s.pipelineState,
-      currentStep: "adversarial",
-      lastCompletedStep: "lens-fix",
-      reviewRound: 1,
-      baseSha: git(repoRoot, "rev-parse HEAD").trim(),
-      branchName: "feature/issue-1852",
-      worktrees: { default: tree },
-      workstreams: {
-        default: { id: "default", scope: "fix the thing", paths: declared, outOfScope },
-      },
-    },
-  };
-}
-
-async function snapshotFor(
-  repoRoot: string,
-  tree: string,
-  roundTip: string,
-  state: WorkState,
-): Promise<LensFixFenceSnapshot> {
-  const planned = await lensFixPassPlan(defaultExec, repoRoot, state.pipelineState, {
-    id: "default",
-    worktree: tree,
-    roundTip,
-    findings: FINDINGS,
-  });
-  if (!planned.ok) throw new Error(`plan failed: ${planned.reason}`);
-  return {
-    round: state.pipelineState.reviewRound,
-    workstreamId: "default",
-    roundTip,
-    fence: { ...planned.value.fence, helperDirs: [...planned.value.fence.helperDirs] },
-    declared: planned.value.declared,
-    named: planned.value.named,
-    candidates: [...planned.value.candidates],
-    findings: planned.value.findings,
-    worktree: tree,
-  };
-}
-
-function ctxFor(repoRoot: string): CycleContext {
-  return {
-    host: { sendUserMessage: () => {}, emit: () => {} } as never,
-    repoRoot,
-    issue: 1852,
-    emitSink: silentSink,
-    verifyExecFn: defaultExec,
-  } as unknown as CycleContext;
-}
 
 console.log("# a fix that stays inside the fence lands");
 {
@@ -130,8 +54,6 @@ console.log("# a fix that stays inside the fence lands");
     inWorktree: true,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: false,
-    fenceRecorded: true,
   });
   assert(v.ok, `an in-fence round is approved (reason: ${v.ok ? "" : v.reason})`);
   rmSync(c.repoRoot, { recursive: true, force: true });
@@ -152,8 +74,7 @@ console.log("# a stray in a worktree: reverted once, then allowed");
     inWorktree: true,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: false,
-    fenceRecorded: true,
+
     onRevertible: async () => {
       called++;
       // The test performs the revert the driver performs, then reports it.
@@ -213,8 +134,7 @@ console.log("# the revert the DRIVER performed leaves an event the round can cou
     inWorktree: true,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: false,
-    fenceRecorded: true,
+
     onRevertible: async (post, plan) => {
       const out = await revertLensFixStrays(realCtx, st, defaultExec, plan, post, 1);
       if (out?.ok === true) event = out.event;
@@ -257,7 +177,25 @@ console.log("# the revert the DRIVER performed leaves an event the round can cou
 console.log("# a SECOND stray set in the same round parks");
 {
   const c = cycle("gate-second");
-  const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
+  // The allowance is spent by a RECORD, not by a caller's flag: the round's own
+  // `fix-pass-strays-reverted` (source lens-fix, this round, this workstream) is
+  // what makes a second set park, which is also what makes a retried step see it.
+  const st = {
+    ...stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]),
+    eventLog: [
+      ...stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]).eventLog,
+      {
+        kind: "fix-pass-strays-reverted" as const,
+        at: 1_300_000,
+        workstreamId: "default",
+        source: "lens-fix" as const,
+        round: 1,
+        paths: ["earlier-stray.md"],
+        preservedRef: "refs/pi-rukas/fix-pass-strays/1852-default-1",
+        patchPath: "/tmp/1852-default-1.patch",
+      },
+    ],
+  };
   const snap = await snapshotFor(c.repoRoot, c.tree, c.roundTip, st);
   writeFileSync(`${c.tree}/scratch-notes.md`, "again\n");
   let called = 0;
@@ -269,8 +207,7 @@ console.log("# a SECOND stray set in the same round parks");
     inWorktree: true,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: true,
-    fenceRecorded: true,
+
     onRevertible: async () => {
       called++;
       return {
@@ -313,8 +250,7 @@ console.log("# an outOfScope change parks and is never reverted");
     inWorktree: true,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: false,
-    fenceRecorded: true,
+
     onRevertible: async () => {
       called++;
       return undefined;
@@ -349,8 +285,7 @@ console.log("# the repo-root arm parks on ANY stray and says why");
     inWorktree: false,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: false,
-    fenceRecorded: true,
+
     onRevertible: async () => {
       called++;
       return undefined;
@@ -364,26 +299,135 @@ console.log("# the repo-root arm parks on ANY stray and says why");
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
-console.log("# a RECORDED fence failure parks; no record at all means the gate does not run");
+console.log("# an EMPTY delta only passes when the recorded tip is in this tree's history");
 {
-  const c = cycle("gate-nosnap");
+  // #1852 round 2 item 3. `git diff <tip>..HEAD` against a tip that is not an
+  // ancestor of HEAD reads as "nothing changed", so the empty-range pass used to
+  // be reachable from a corrupt or stale `roundTip` — the fence would clear a
+  // round it had never measured. The ancestor read is what turns the empty
+  // answer into evidence.
+  // A clean tree whose recorded tip IS an ancestor, and which changes only files
+  // the fence admits: this is the fixture's own non-vacuity — it proves the
+  // empty-delta arm is reachable at all and that an ancestor tip still earns the
+  // pass. Without it, the case below could be passing because the gate always
+  // refuses, not because of the ancestry read.
+  const c = cycle("gate-empty-tip");
   const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
-  const noSnap = {
+  const snap = await snapshotFor(c.repoRoot, c.tree, c.roundTip, st);
+  // A clean tree whose recorded tip IS an ancestor: the pass this arm still
+  // grants, so the case below is about the tip and not about the tree.
+  const clean = await lensFixFenceCheck({
     execFn: defaultExec,
     ctx: ctxFor(c.repoRoot),
     state: st,
+    snapshot: snap,
+    inWorktree: true,
+    tree: c.tree,
+    round: 1,
+  });
+  assert(
+    clean.ok,
+    `a clean tree whose tip is an ancestor passes (${clean.ok ? "" : clean.reason})`,
+  );
+
+  // A tip this tree's HEAD does not descend from, with a tree git cannot tell
+  // apart from HEAD's. The field shape is a `roundTip` left behind by a force-push
+  // or a history rewrite: a real commit, in this object store, that the tree no
+  // longer descends from. The gate must not read the empty diff it produces as
+  // "the fixer changed nothing" — `git diff <tip> <head>` prints nothing there,
+  // and before #1852 round 2 that silence was evidence enough to land the round.
+  //
+  // The tip is built here as `commit-tree` over the tree HEAD ITSELF points at:
+  // same tree object, no parent, so it is byte-identical in content and unrelated
+  // in history. Every other shape was measured and rejected — an empty-tree commit
+  // makes each diff list HEAD's files (the fence then refuses on an unrelated
+  // arm), an unresolvable SHA makes `git diff` fatal (the gate parks earlier, in
+  // `committedChanges`), and a commit made in the lens tree or in the superproject
+  // is content-different from HEAD, so its own file name lands in the diff.
+  const roundHead = git(c.tree, "rev-parse HEAD").trim();
+  const headTree = git(c.tree, "rev-parse HEAD^{tree}").trim();
+  const orphanSha = git(c.tree, `commit-tree ${headTree} -m "orphan round tip"`).trim();
+
+  // The fixture's claims, checked before the gate is asked to act on them — each
+  // one is a way this case could pass for the wrong reason.
+  assert(
+    git(c.tree, "status --porcelain").trim() === "",
+    "NON-VACUITY: the lens tree is clean, so nothing but the tip differs from the case above",
+  );
+  const trackedRange = git(c.tree, `diff --name-only --no-renames ${orphanSha} -- HEAD`).trim();
+  assert(
+    trackedRange === "",
+    `NON-VACUITY: the tracked delta reads empty for that tip (git said ${JSON.stringify(trackedRange.slice(0, 40))})`,
+  );
+  const probe = await isAncestor(defaultExec, c.tree, orphanSha, roundHead);
+  assert(
+    probe === "no",
+    `NON-VACUITY: git says that tip is not in HEAD's history (probe: ${probe})`,
+  );
+
+  const stale = await lensFixFenceCheck({
+    execFn: defaultExec,
+    ctx: ctxFor(c.repoRoot),
+    state: st,
+    snapshot: { ...snap, roundTip: orphanSha },
+    inWorktree: true,
+    tree: c.tree,
+    round: 1,
+  });
+  assert(
+    !stale.ok,
+    `an empty delta against a tip that is NOT an ancestor of HEAD does not pass (${stale.ok ? "APPROVED — the empty range was taken as evidence" : stale.reason.slice(0, 110)})`,
+  );
+  // The gate does not merely park — it must park IN THE ANCESTRY ARM. Any other
+  // refusal (a stray file, an unreadable range) would pass this case for reasons
+  // that have nothing to do with the read under review.
+  assert(
+    !stale.ok && stale.reason.includes("could not be confirmed as an ancestor"),
+    `the refusal is the ancestry read, not an unrelated arm (${stale.ok ? "APPROVED" : stale.reason.slice(0, 90)})`,
+  );
+  assert(
+    !stale.ok && stale.reason.includes(orphanSha),
+    "the refusal names the tip it could not place",
+  );
+  rmSync(c.repoRoot, { recursive: true, force: true });
+}
+
+console.log("# a RECORDED fence failure parks; no record at all means the gate does not run");
+{
+  const c = cycle("gate-nosnap");
+  // The record is what decides, so the two cases put it on the log (or leave it
+  // off) rather than passing a boolean: #1852 round 2 MEDIUM moved both reads
+  // inside the gate, which reads them from `state.eventLog` and `round`.
+  const recorded = {
+    ...stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]),
+    eventLog: [
+      ...stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]).eventLog,
+      {
+        kind: "lens-fix-fence-unavailable" as const,
+        at: 1_400_000,
+        round: 1,
+        worktree: c.tree,
+        reason: "git ls-tree failed: exit 128",
+      },
+    ],
+  };
+  const noSnap = {
+    execFn: defaultExec,
+    ctx: ctxFor(c.repoRoot),
     snapshot: undefined,
     inWorktree: true,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: false,
   };
-  const v = await lensFixFenceCheck({ ...noSnap, fenceRecorded: true });
+  const v = await lensFixFenceCheck({ ...noSnap, state: recorded });
   assert(
     !v.ok,
     `a round that RECORDS a fence failure parks fail-closed — nothing pushes (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`,
   );
-  const skipped = await lensFixFenceCheck({ ...noSnap, fenceRecorded: false });
+  const skipped = await lensFixFenceCheck({
+    ...noSnap,
+    state: stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]),
+  });
   assert(
     skipped.ok,
     `a round with NO fence record at all is not judged — an older driver wrote this state (${skipped.ok ? "" : skipped.reason})`,
@@ -408,61 +452,11 @@ console.log("# a fence from another round cannot clear this one");
     inWorktree: true,
     tree: c.tree,
     round: 1,
-    revertAlreadyUsed: false,
-    fenceRecorded: true,
   });
   assert(
     !v.ok && v.reason.includes("round 4"),
     `the gate refuses a fence belonging to another round (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`,
   );
-  rmSync(c.repoRoot, { recursive: true, force: true });
-}
-
-console.log("# the counter reads source + round + workstream, nothing else");
-{
-  const base = initialState(1852, 1_000_000);
-  const rev = (
-    over: Partial<Extract<WorkEvent, { kind: "fix-pass-strays-reverted" }>>,
-  ): WorkEvent => ({
-    kind: "fix-pass-strays-reverted",
-    at: 1,
-    workstreamId: "default",
-    paths: ["x"],
-    preservedRef: "r",
-    patchPath: "p",
-    ...over,
-  });
-  const events: WorkEvent[] = [
-    // A FIX PASS revert in the same round/workstream must not spend the round.
-    rev({ source: "fix-pass", round: 1 }),
-    // A lens-fix revert from another round, and one for another workstream.
-    rev({ source: "lens-fix", round: 2 }),
-    rev({ source: "lens-fix", round: 1, workstreamId: "other" }),
-    // A pre-#1852 event with neither field — the fix pass's, by the default.
-    rev({}),
-  ];
-  assert(
-    !lensFixRevertAlreadyUsed(events, 1, "default"),
-    "a fix pass's revert, another round's revert, another workstream's revert and a pre-#1852 record NONE of them spend this round's one revert",
-  );
-  assert(
-    lensFixRevertAlreadyUsed([...events, rev({ source: "lens-fix", round: 1 })], 1, "default"),
-    "the round's OWN lens-fix revert is what spends it",
-  );
-  void base;
-}
-
-console.log("# the plan is rebuilt from the recorded tip, not a fresh read");
-{
-  const c = cycle("gate-tip");
-  const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
-  const snap = await snapshotFor(c.repoRoot, c.tree, c.roundTip, st);
-  const plan: PassPlan = lensFixPlanFromSnapshot(snap, c.tree, st.pipelineState);
-  assert(
-    plan.headBefore === c.roundTip,
-    "plan.headBefore is the RECORDED round tip (the round's own commits are not strays)",
-  );
-  assert(plan.worktree === c.tree, "the plan judges the tree the prompt was built from");
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 

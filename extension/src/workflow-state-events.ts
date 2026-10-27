@@ -4,12 +4,12 @@
  * `workflow-state.ts` for module-size hygiene (AGENTS.md §12). Kept lean: payloads
  * live in the `workflow-state-events-*.ts` leaves; this file only assembles them.
  */
-import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { DevelopCrashFragment } from "./work-develop-crash.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
-import type { PlanVerdict, WorkCapLiteral } from "./workflow-state-events-caps.ts";
+import type { CapHitFields } from "./workflow-state-events-cap-hit.ts";
+import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { CorrectiveRoundEvent } from "./workflow-state-events-corrective.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
@@ -277,28 +277,9 @@ export type WorkEvent =
       step: "develop";
       at: number;
     }
-  | {
+  | (CapHitFields & {
       kind: "cap-hit";
       at: number;
-      /**
-       * #492 — the worktree the lens-fix driver inspected, named so the
-       * handoff tells the operator WHERE to look (`git -C <worktree>
-       * status`) instead of "a worktree".
-       */
-      lensWorktreePath?: string;
-      /**
-       * #797 — the ref repoRoot started from before the checkout. Present on
-       * `lens-fix-not-integrated`: the recovery's post-condition is that
-       * repoRoot is on this ref again.
-       */
-      restoredToRef?: string;
-      /**
-       * The HEAD of the lens-fix worktree when a COMMITTED fix existed and
-       * could not be integrated. Present only on that
-       * `lens-fix-not-integrated` shape: the handoff names the commit to
-       * land, and does not suggest the findings were false positives.
-       */
-      committedFixSha?: string;
       /**
        * Which cap fired. Covers the handoff-doctrine caps plus the
        * "ci-retry" cap added in PR2 after the live-test infinite-loop bug:
@@ -318,39 +299,7 @@ export type WorkEvent =
        *    enumerate without losing the originating step name.
        */
       cap: WorkCapLiteral;
-      /** #543 — which role's child was cap-killed (loop/token-budget caps). */
-      role?: RoleName;
-      /** #1652 — the plan verdict behind a `plan-spec-mismatch` park. */
-      planVerdict?: PlanVerdict;
       reviewRound: number;
-      /**
-       * #492 — the git evidence that establishes WHICH failure mode
-       * produced this cap-hit, verbatim from the command that established
-       * it. On `lens-fix-not-integrated` it distinguishes "the fixer
-       * wrote nothing" from "a diff existed but integration failed".
-       */
-      evidence?: string;
-      /**
-       * #841 — the persisted raw verify output logs behind this cap (the
-       * consolidated verify's run1/run2 logs), carried STRUCTURALLY on the
-       * event instead of being regexed out of the cap's prose evidence by
-       * the explain renderer. Present only on the develop verify caps whose
-       * gate wrote one or more logs; absent everywhere else (and on all
-       * pre-#841 state files).
-       */
-      logPaths?: string[];
-      /**
-       * #657 — on `cap: "intent-park"` the machine-readable park reason
-       * (underspecified / contradicted-by-code / already-implemented /
-       * too-large / premise-unsound). Carried on the event so the renderers
-       * can show `intent-park (contradicted-by-code)` without re-deriving it.
-       */
-      parkReason?: string;
-      /**
-       * #1561 — on an `already-implemented` intent park, the cited PR the
-       * forge reported OPEN: the work awaits review, so the issue is not done.
-       */
-      awaitingReviewPr?: number;
       /**
        * What the driver will do next: "handoff" (terminal), "step-back"
        * (Step 7h), or "ci" (Step 8).
@@ -362,7 +311,7 @@ export type WorkEvent =
        * did not move with it.
        */
       nextStep: "handoff" | "step-back" | "ci";
-    }
+    })
   | {
       kind: "plumb-report";
       at: number;

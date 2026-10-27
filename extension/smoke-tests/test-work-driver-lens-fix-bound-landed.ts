@@ -24,23 +24,21 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  landLensFixAfterBoundKill,
-} from "../src/work-driver-lens-fix-bound-land.ts";
+import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
+import { landLensFixAfterBoundKill } from "../src/work-driver-lens-fix-bound-land.ts";
+import { lensFixRevertAlreadyUsed } from "../src/work-driver-lens-fix-fence-gate.ts";
 import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState, writeState } from "../src/workflow-state.ts";
-import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
-import { lensFixRevertAlreadyUsed } from "../src/work-driver-lens-fix-fence-gate.ts";
 import { realExec } from "./lib/exec-fake.ts";
 import {
   assert,
   boundLandRun,
   driverCtx,
+  fixerDeclaredPaths,
   killTail,
   killedFixer,
   mkFixture,
-  fixerDeclaredPaths,
   mkLensFixState,
   withTrace,
 } from "./lib/lens-fix-bound-land-fixture.ts";
@@ -76,9 +74,7 @@ import {
   // log one event earlier, with its exit code and error tail. A conversion that
   // deleted the failure would leave a cycle that cannot be audited: no reader
   // could tell a killed child from one that finished.
-  const failedIdx = events.findIndex(
-    (e) => e.kind === "dispatch-failed" && e.step === "lens-fix",
-  );
+  const failedIdx = events.findIndex((e) => e.kind === "dispatch-failed" && e.step === "lens-fix");
   const completedIdx = events.findIndex(
     (e) => e.kind === "dispatch-completed" && e.step === "lens-fix" && e.ok === true,
   );
@@ -86,10 +82,7 @@ import {
     failedIdx >= 0,
     "the killed lens-fix dispatch still leaves its dispatch-failed record — the conversion keeps the evidence",
   );
-  assert(
-    completedIdx >= 0,
-    "a completed lens-fix stands in the log where the kill was",
-  );
+  assert(completedIdx >= 0, "a completed lens-fix stands in the log where the kill was");
   assert(
     completedIdx === failedIdx + 1,
     `the completion was appended immediately after the failure it converted (failed ${failedIdx}, completed ${completedIdx})`,
@@ -199,7 +192,11 @@ import {
   );
   const moveJobId = "lens-fix:developer:lens-fix-1:1:1";
   const moved = await landLensFixAfterBoundKill(
-    killTail(mkLensFixState(1806, moveBranch, mv.baseSha, mv.wt, fixerDeclaredPaths(1)), moveJobId, "timeout"),
+    killTail(
+      mkLensFixState(1806, moveBranch, mv.baseSha, mv.wt, fixerDeclaredPaths(1)),
+      moveJobId,
+      "timeout",
+    ),
     { tree: mv.wt, tipSha: moveTip, jobId: moveJobId },
     realExec,
   );
@@ -357,10 +354,9 @@ import {
     inWorktree: true,
     tree: wt,
     round: 1,
-    // The step recorded nothing about losing its fence: this is the fence RUN,
-    // judging a real delta — not the missing-record arm.
-    fenceRecorded: false,
-    revertAlreadyUsed: lensFixRevertAlreadyUsed(gated.eventLog, 1, "default"),
+    // #1852 round 2 MEDIUM — both `fenceRecorded` and the revert allowance are
+    // read inside the gate from `state.eventLog` and `round`: the fixture puts
+    // this round's one revert ON THE LOG below, and asserts the gate saw it.
     onRevertible: async () => {
       // Reachable only if the gate ignored the already-spent revert — which is
       // the behaviour this case exists to rule out, so a call is a failure.

@@ -36,10 +36,10 @@ import { repoRootOriginalRef } from "./work-driver-lens-fix-commit.ts";
 import {
   type LensFixRevertOutcome,
   lensFixFenceCheck,
-  lensFixFenceRecorded,
   lensFixRevertAlreadyUsed,
+  lensFixWorkstreamId,
 } from "./work-driver-lens-fix-fence-gate.ts";
-import { revertLensFixStrays } from "./work-driver-lens-fix-fence-revert.ts";
+import { restoredLocations, revertLensFixStrays } from "./work-driver-lens-fix-fence-revert.ts";
 import { recordLensFixRevert } from "./work-driver-lens-fix-revert-record.ts";
 import { lensWorktree } from "./work-driver-lens-fix.ts";
 import { commitLensFixChanges } from "./work-driver-lens.ts";
@@ -85,12 +85,9 @@ export async function landLensFix(
   const lensTree = lensWorktree(ctx, state);
   const lensSnap = psFix.lensFixFence;
   const lensRound = state.pipelineState.reviewRound;
-  const lensId =
-    lensSnap?.workstreamId ??
-    Object.keys(psFix.workstreams ?? {}).find((id) => {
-      const recorded = psFix.worktrees?.[id];
-      return recorded !== undefined && path.resolve(recorded) === path.resolve(lensTree);
-    });
+  // The fence judges the round against one workstream's fence; the id is the key
+  // the revert record, its allowance and the revert note all carry.
+  const lensId = lensFixWorkstreamId(lensSnap, psFix, lensTree);
   const fenceCheck = await lensFixFenceCheck({
     execFn,
     ctx,
@@ -99,24 +96,25 @@ export async function landLensFix(
     inWorktree: path.resolve(lensTree) !== path.resolve(ctx.repoRoot),
     tree: lensTree,
     round: lensRound,
-    // Did this round's lens-fix step actually dispatch a fixer? A round that
-    // never did has no fence to be judged against (and a state file from before
-    // #1852 never wrote the field), so the gate stands down; a round that did had
-    // a fence, and losing it parks. Read from the step's own dispatch markers
-    // rather than from `lastCompletedStep`, which a resume can leave pointing
-    // here from a previous round.
-    // Fail closed only on what the round RECORDS: a fence failure on the log
-    // means this round had a fence and lost it. No record at all means an older
-    // driver (or a pre-#1852 fixture) wrote the state and the gate does not run
-    // — see `lensFixFenceRecorded`.
-    fenceRecorded: lensFixFenceRecorded(state.eventLog, lensRound),
-    revertAlreadyUsed:
-      lensId !== undefined && lensFixRevertAlreadyUsed(state.eventLog, lensRound, lensId),
+    // #1852 round 2 MEDIUM — `fenceRecorded` and `revertAlreadyUsed` are read
+    // from the state inside the gate: they are facts about the log and the
+    // round, and a caller that passed them could pass a different round's answer.
     onRevertible:
       lensId === undefined || lensSnap === undefined
         ? undefined
         : (post, plan): Promise<LensFixRevertOutcome | undefined> =>
-            revertLensFixStrays(ctx, state, execFn, plan, post, lensRound),
+            revertLensFixStrays(
+              ctx,
+              state,
+              execFn,
+              plan,
+              post,
+              lensRound,
+              // The revert asks its owner whether the allowance is spent, and the
+              // gate answers from the same log and round (#1852 round 2 item 4:
+              // one counter, not two that can disagree).
+              lensFixRevertAlreadyUsed(state.eventLog, lensRound, lensId ?? "default"),
+            ),
   });
   if (!fenceCheck.ok) {
     trace(
@@ -141,6 +139,12 @@ export async function landLensFix(
             restoredToPath: fenceCheck.revert.patchPath,
           }
         : {}),
+      // #1852 round 2 — when this round's OWN revert is the one on the log
+      // (the counter found it, so the gate refused the second set), the cap-hit
+      // is built before `recordLensFixRevert` runs and carries no revert of its
+      // own. Fall back to the round's recorded revert so the handoff still names
+      // where that content survives.
+      ...(fenceCheck.revert === undefined ? restoredLocations(state, lensRound) : {}),
     });
     return park({ ...out, pipelineState: { ...out.pipelineState, currentStep: "handoff" } });
   }

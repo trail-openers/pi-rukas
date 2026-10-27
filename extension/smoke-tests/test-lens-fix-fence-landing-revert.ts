@@ -30,6 +30,7 @@
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
+import { explainCap } from "../src/work-driver-explain.ts";
 import { workStateFile } from "../src/workflow-state.ts";
 import { git } from "./lib/adversarial-fix-fixtures.ts";
 import { fixtureStrayAllowed, stateWith, stubCtx } from "./lib/lens-fix-landing-fixtures.ts";
@@ -146,7 +147,7 @@ console.log("# a retried adversarial step does NOT revert the same round twice")
     `and the second stray set parks the round on its own cap (caps: ${JSON.stringify(caps)})`,
   );
   const park = second.eventLog.find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-scope") as
-    | { evidence?: string }
+    | { evidence?: string; restoredToRef?: string; restoredToPath?: string }
     | undefined;
   assert(
     (park?.evidence ?? "").includes("ALREADY had one out-of-fence set reverted"),
@@ -155,6 +156,22 @@ console.log("# a retried adversarial step does NOT revert the same round twice")
   assert(
     existsSync(`${f.tree}/scratch-again.md`),
     "the second set was left in the tree untouched — the driver refused it rather than deleting it",
+  );
+  // #1852 round 2 item 2 — the park has to NAME both recovery locations. The
+  // cap-hit now declares `restoredToPath` beside `restoredToRef`, and the
+  // handoff renderer prints both: a ref alone cannot reach an untracked stray,
+  // so an operator told only about the ref would find nothing.
+  assert(
+    park?.restoredToRef !== undefined && park.restoredToPath !== undefined,
+    `the cap-hit carries both locations (ref ${JSON.stringify(park?.restoredToRef)}, path ${JSON.stringify(park?.restoredToPath)})`,
+  );
+  const explained = explainCap("lens-fix-scope", second);
+  assert(
+    park?.restoredToRef !== undefined &&
+      explained.includes(park.restoredToRef) &&
+      park.restoredToPath !== undefined &&
+      explained.includes(park.restoredToPath),
+    "the handoff explanation renders BOTH the preserved ref and the patch path",
   );
   cleanup(f.repoRoot);
 }

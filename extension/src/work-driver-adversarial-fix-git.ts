@@ -149,6 +149,37 @@ export async function headOf(
 }
 
 /**
+ * Three-valued `git merge-base --is-ancestor <a> <b>`.
+ *
+ * The probe answers three questions and the caller must tell them apart: exit 0
+ * is "yes", exit 1 is a definitive "no", and anything else (a spawn failure, an
+ * unresolvable rev, an unreadable tree) is "could not tell". The three are read
+ * from the EXIT CODE, which is why nothing masks it here: an earlier draft of
+ * this function appended `|| true` to keep a non-zero exit from throwing, and
+ * that made every probe answer "yes" — `git merge-base` prints nothing, so with
+ * the failure masked the captured stdout was empty and an unplaced tip looked
+ * confirmed. `run()` already turns a non-zero exit into a `GitRead` failure with
+ * the code on the error, so the masking bought nothing and cost the verdict.
+ */
+export async function isAncestor(
+  execFn: FixExec,
+  cwd: string,
+  ancestor: string,
+  descendant: string,
+): Promise<"yes" | "no" | "unknown"> {
+  if (!SHA_RE.test(ancestor) || !SHA_RE.test(descendant)) return "unknown";
+  try {
+    await execFn(`git merge-base --is-ancestor ${ancestor} ${descendant}`, { cwd });
+    return "yes";
+  } catch (err) {
+    // `git merge-base --is-ancestor` exits 1 for a definitive non-ancestor and 0
+    // for an ancestor; any other failure is an unreadable probe, not evidence.
+    const code = (err as Error & { code?: number | string })?.code;
+    return code === 1 || code === "1" ? "no" : "unknown";
+  }
+}
+
+/**
  * What a worktree holds relative to `sha`: committed and uncommitted changes
  * to tracked files, plus untracked files. Any failing read fails the whole.
  */
