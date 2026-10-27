@@ -24,14 +24,16 @@
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { DispatchResult, ExtensionAPI } from "../src/types.ts";
+import type { DispatchResult } from "../src/types.ts";
+import type { DriverHost } from "../src/work-driver-host.ts";
 import { ADVERSARIAL_PER_WS_MAX_RETRIES } from "../src/work-driver-adversarial-types.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import { failureEventOf } from "../src/work-driver-failure-lookup.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { nextStep } from "../src/work-driver-context.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
+import type { CycleContext, DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import type { WorkEvent } from "../src/workflow-state.ts";
 import { initCleanRepo } from "./lib/clean-repo-fixture.ts";
 
 let exit = 0;
@@ -59,17 +61,40 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
 }
 
 /** The last event the adversarial step itself appended, before later steps. */
-function adversarialTailEvent(eventLog: readonly { kind: string; step?: string }[]) {
+function adversarialTailEvent(eventLog: readonly WorkEvent[]) {
   for (let i = eventLog.length - 1; i >= 0; i--) {
     const e = eventLog[i];
-    if (e?.step === "adversarial" || e?.kind === "adversarial-approved") return e;
+    if (e === undefined) continue;
+    if (("step" in e ? e.step : undefined) === "adversarial" || e.kind === "adversarial-approved")
+      return e;
   }
   return undefined;
 }
 
-function makeFakePi(): ExtensionAPI {
-  return { sendUserMessage: () => {} } as unknown as ExtensionAPI;
+/** The `dispatch-started` records of one step, narrowed so `.jobId` typechecks. */
+function markersOf(
+  eventLog: readonly WorkEvent[],
+  step: "adversarial",
+): Array<Extract<WorkEvent, { kind: "dispatch-started" }>> {
+  return eventLog.filter(
+    (e): e is Extract<WorkEvent, { kind: "dispatch-started" }> =>
+      e.kind === "dispatch-started" && e.step === step,
+  );
 }
+
+/** A host that swallows messages; a DriverHost is structural (#1020). */
+function makeFakePi(): DriverHost {
+  return {
+    sendUserMessage: () => undefined,
+    emit: () => undefined,
+  } as unknown as DriverHost;
+}
+
+/** The step handlers take a `CycleContext`, which requires a sink (#1162). */
+const SILENT_SINK: NonNullable<CycleContext["emitSink"]> = {
+  emit: () => undefined,
+  fingerprints: [],
+};
 
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
@@ -110,8 +135,9 @@ async function run(name: string, multi: boolean): Promise<Observation> {
     };
     await writeState(dir, s);
 
-    const ctx: DriverContext = {
+    const ctx: CycleContext = {
       host: makeFakePi(),
+      emitSink: SILENT_SINK,
       repoRoot: dir,
       issue: 1863,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -126,6 +152,7 @@ async function run(name: string, multi: boolean): Promise<Observation> {
         // first saw an in-flight marker naming it, not for call number one.
         if (
           obs.during === undefined &&
+          onDisk !== undefined &&
           onDisk.pipelineState.inFlightJobIds.includes(orchestratorJobId)
         ) {
           obs.during = onDisk;
@@ -159,9 +186,7 @@ for (const multi of [false, true]) {
   const during = obs.during;
   assert(during !== undefined, `${label}: the reviewer was actually dispatched`);
   if (!during) continue;
-  const started = during.eventLog.filter(
-    (e) => e.kind === "dispatch-started" && e.step === "adversarial",
-  );
+  const started = markersOf(during.eventLog, "adversarial");
   assert(
     started.length >= 1,
     `${label}: dispatch-started is PERSISTED while the review runs (got ${started.length})`,
@@ -209,7 +234,10 @@ async function clearedOnExit(name: string, mode: "approved" | "threw"): Promise<
   const dir = mkdtempSync(path.join(tmpdir(), `work-driver-1863-clear-`));
   try {
     const s = initialState(1863, 1_000_000);
-    const tree = { "task-a": `${dir}/.worktrees/task-a`, "task-b": `${dir}/.worktrees/task-b` };
+    const tree: Record<string, string> = {
+      "task-a": `${dir}/.worktrees/task-a`,
+      "task-b": `${dir}/.worktrees/task-b`,
+    };
     const streams: Record<
       string,
       { id: string; scope: string; paths: string[]; outOfScope: string[] }
@@ -227,8 +255,9 @@ async function clearedOnExit(name: string, mode: "approved" | "threw"): Promise<
       branchName: "feature/issue-1863",
     };
     await writeState(dir, s);
-    const ctx: DriverContext = {
+    const ctx: CycleContext = {
       host: makeFakePi(),
+      emitSink: SILENT_SINK,
       repoRoot: dir,
       issue: 1863,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -246,8 +275,12 @@ async function clearedOnExit(name: string, mode: "approved" | "threw"): Promise<
       after.pipelineState.inFlightJobIds.length === 0,
       `${name}: every write-ahead marker was cleared (left: ${JSON.stringify(after.pipelineState.inFlightJobIds)})`,
     );
-    const started = after.eventLog.filter((e) => e.kind === "dispatch-started");
+    const started = markersOf(after.eventLog, "adversarial");
     const last = after.eventLog[after.eventLog.length - 1];
+    // The re-emitted marker's IDENTITY (its `at`/`label` matching the persisted
+    // record, and the headless `durationMs` that reads them) is asserted in
+    // test-work-driver-adversarial-marker-identity.ts, which observes the
+    // on-disk record directly rather than the batch the splice built.
     assert(
       last?.kind !== "dispatch-started",
       `${name}: the step's tail is NOT a dispatch-started (got ${last?.kind})`,
@@ -265,99 +298,6 @@ async function clearedOnExit(name: string, mode: "approved" | "threw"): Promise<
 
 await clearedOnExit("approved pass", "approved");
 await clearedOnExit("throwing pass", "threw");
-
-// ── A write-ahead that cannot persist must NOT dispatch a reviewer (#1863 round 1).
-// The whole point of the write-ahead is that a killed review is on disk. If the
-// write fails and the reviewer is dispatched anyway — which is what the swallowed
-// `.catch(() => undefined)` did — the cycle spends a review whose death nothing
-// can record, and the crash-resume has nothing to read. So the pass must fail
-// closed: no reviewer call, and a NO-VERDICT infrastructure outcome with a
-// `dispatch-failed` tail, which is how every other write-ahead failure in the
-// driver routes.
-async function persistFails(): Promise<void> {
-  const dir = mkdtempSync(path.join(tmpdir(), `work-driver-1863-persistfail-`));
-  try {
-    const s = initialState(1863, 1_000_000);
-    s.pipelineState = {
-      ...s.pipelineState,
-      currentStep: "adversarial",
-      lastCompletedStep: "develop",
-      worktrees: {},
-      workstreams: undefined,
-      branchName: "feature/issue-1863",
-    };
-    await writeState(dir, s);
-    // A repository under the scratch root: the pass reads its diff before the
-    // write-ahead, and a non-repository directory fails that read instead of
-    // reaching the write.
-    initCleanRepo(dir);
-    // A real review would write the marker to `<repo>/.pi/work-state/1863.json`.
-    // A root the caller cannot read (mode 000) is the honest shape of "the
-    // persist failed": every write under it fails. The state the step is handed
-    // is the in-memory one, so the step reaches its write-ahead and fails there.
-    chmodSync(path.join(dir, ".pi", "work-state"), 0o000);
-    let reviewerCalls = 0;
-    const ctx: DriverContext = {
-      host: makeFakePi(),
-      repoRoot: dir,
-      issue: 1863,
-      issueBodyFetcherFn: async () => ({ stdout: "mock" }),
-      // A real diff: an empty one short-circuits the review before the
-      // write-ahead matters, which would make this case pass for the wrong
-      // reason.
-      verifyExecFn: (async () => ({
-        stdout: "diff --git a/f.ts b/f.ts\n@@ -1 +1 @@\n-x\n+y\n",
-      })) as unknown as DriverContext["verifyExecFn"],
-      adversarialLoopFn: async () => {
-        reviewerCalls++;
-        return mkResult();
-      },
-      dispatchFn: async () => {
-        throw new Error("no dispatch in this instrument");
-      },
-    };
-    const after = await runAdversarial(ctx, s, Date.now());
-    assert(
-      reviewerCalls === 0,
-      `a failed write-ahead dispatches NO reviewer (loop called ${reviewerCalls} time(s))`,
-    );
-    const started = after.eventLog.filter(
-      (e) => e.kind === "dispatch-started" && e.step === "adversarial",
-    );
-    assert(
-      started.length === 0,
-      `no marker claims a dispatch that was never written ahead (got ${started.length})`,
-    );
-    const failed = after.eventLog.filter(
-      (e) => e.kind === "dispatch-failed" && e.step === "adversarial",
-    );
-    assert(
-      failed.length >= 1,
-      `the failure is recorded as a dispatch-failed the step router can classify (got ${failed.length})`,
-    );
-    assert(
-      !after.eventLog.some((e) => e.kind === "dispatch-completed"),
-      "nothing is reported as a completed review that never ran",
-    );
-    assert(
-      !after.eventLog.some(
-        (e) => e.kind === "adversarial-workstream-outcome" && e.outcome === "approved",
-      ),
-      "a failed write-ahead is never an approval",
-    );
-  } finally {
-    // Restore the mode before removing: a 000 directory is not always walked
-    // into by a recursive remove.
-    try {
-      chmodSync(path.join(dir, ".pi", "work-state"), 0o755);
-    } catch {
-      /* never created */
-    }
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-await persistFails();
 
 // ── A FAILED adversarial dispatch never leaves the step on its write-ahead
 // marker, and never routes to commit-pr (#1863 cause A).
@@ -385,8 +325,9 @@ async function failedDispatchNeverAdvances(): Promise<void> {
       branchName: "feature/issue-1863",
     };
     await writeState(dir, s);
-    const ctx: DriverContext = {
+    const ctx: CycleContext = {
       host: makeFakePi(),
+      emitSink: SILENT_SINK,
       repoRoot: dir,
       issue: 1863,
       issueBodyFetcherFn: async () => ({ stdout: "mock" }),
@@ -403,7 +344,7 @@ async function failedDispatchNeverAdvances(): Promise<void> {
           adversarialRounds: [],
           text: "",
           killCause: "inactivity",
-          errorStop: { message: "killed at its run bound" },
+          errorStop: { reason: "child-bound", message: "killed at its run bound" },
         }),
       dispatchFn: async (_pi, spec, opts) => {
         if (opts?.label === "ops:handoff") {
@@ -433,15 +374,16 @@ async function failedDispatchNeverAdvances(): Promise<void> {
       adversarialTail?.kind !== "dispatch-started",
       `the adversarial step's own tail is never a write-ahead marker (tail: ${adversarialTail?.kind})`,
     );
+    const routerFailure = failureEventOf(fanState.eventLog);
     assert(
-      failureEventOf(fanState.eventLog) === undefined ||
-        failureEventOf(fanState.eventLog)?.step === "adversarial",
-      `the failure the router reads is the adversarial dispatch's (got ${failureEventOf(fanState.eventLog)?.kind ?? "none"} / ${failureEventOf(fanState.eventLog)?.step ?? "-"})`,
+      routerFailure === undefined ||
+        ("step" in routerFailure ? routerFailure.step : undefined) === "adversarial",
+      `the failure the router reads is the adversarial dispatch's (got ${routerFailure?.kind ?? "none"} / ${
+        routerFailure !== undefined && "step" in routerFailure ? routerFailure.step : "-"
+      })`,
     );
     assert(
-      fanState.eventLog.some(
-        (e) => e.kind === "dispatch-failed" && e.step === "adversarial",
-      ),
+      fanState.eventLog.some((e) => e.kind === "dispatch-failed" && e.step === "adversarial"),
       "the failed adversarial dispatch is recorded as a dispatch-failed",
     );
     assert(
@@ -460,9 +402,7 @@ async function failedDispatchNeverAdvances(): Promise<void> {
       `the fan-out's spent ladder survives in the state the step returns (got ${JSON.stringify(fanState.pipelineState.adversarialTransientRetries)})`,
     );
     assert(
-      fanState.eventLog.some(
-        (e) => e.kind === "dispatch-started" && e.step === "adversarial",
-      ),
+      fanState.eventLog.some((e) => e.kind === "dispatch-started" && e.step === "adversarial"),
       "the pass wrote its marker ahead — the audit record survives",
     );
     assert(

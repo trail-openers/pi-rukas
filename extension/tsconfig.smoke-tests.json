@@ -74,6 +74,10 @@
     "smoke-tests/test-fix-pass-strays-revertible.ts",
     "smoke-tests/test-lens-fix-budget-share.ts",
     "smoke-tests/test-lens-fix-budget-owed-route.ts",
+    "smoke-tests/lib/clean-repo-fixture.ts",
+    "smoke-tests/test-work-driver-adversarial-writeahead.ts",
+    "smoke-tests/test-work-driver-adversarial-writeahead-persist.ts",
+    "smoke-tests/test-work-driver-adversarial-marker-identity.ts",
     "smoke-tests/test-review-state-guard.ts",
     "smoke-tests/test-review-state-mechanism.ts",
     "smoke-tests/test-review-state-path.ts"
