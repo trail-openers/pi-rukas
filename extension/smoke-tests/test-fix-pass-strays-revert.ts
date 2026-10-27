@@ -275,6 +275,31 @@ console.log("# the narrowed target reaches every git call, and a bad one reaches
   );
 }
 
+console.log("# a target the gate itself could not answer for is a refusal, never a proceed");
+{
+  // `preflight` returns a narrowed target, a refusal, or — for no input that
+  // exists today — nothing at all. `revertFixPassStrays` treats that third shape
+  // as a refusal rather than as "not a string, so proceed", because a gate whose
+  // pass-condition is the absence of a string passes on a bug in the gate. The
+  // case is constructed by handing the gate a head whose 40 characters are not
+  // the hex alphabet git accepts: the ONLY way to reach a non-answer.
+  const t = passTree();
+  const seen: string[][] = [];
+  const spy: GitExec = async (args, opts) => {
+    seen.push(args);
+    return gitExec(args, opts);
+  };
+  const res = await revertFixPassStrays({
+    ...req(t, STRAYS, UNTRACKED, ""),
+    git: spy,
+  });
+  assert(
+    "reason" in res && res.reason.length > 0,
+    `a blank target is a refusal with a reason an operator can act on (${JSON.stringify(res)})`,
+  );
+  assert(seen.length === 0, `and it touched no git at all (${JSON.stringify(seen)})`);
+}
+
 console.log("# the patch name is per attempt, so a later record cannot clobber an earlier one");
 {
   const t = passTree();
