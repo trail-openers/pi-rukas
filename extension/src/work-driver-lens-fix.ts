@@ -20,7 +20,7 @@ import {
 } from "./work-driver-lens-fix-commit.ts";
 import { lensFixWorkstreamId } from "./work-driver-lens-fix-fence-gate.ts";
 import { buildLensFixFence } from "./work-driver-lens-fix-fence.ts";
-import { lensWorktree, recordFenceUnavailable } from "./work-driver-lens-fix-records.ts";
+import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records.ts";
 
 // Re-exported for the importers that have always taken the tree resolver from
 // this module (`work-driver-lens.ts`, `work-driver-adversarial.ts`,
@@ -208,7 +208,7 @@ export async function runLensFix(
   // tree failing to answer, which is exactly what the gate must park on. It gets
   // the same recorded refusal the planner's own read failures get (#1852 1a).
   if (roundTipBefore === undefined) {
-    next = recordFenceUnavailable(next, fixTree, "the lens tree's HEAD could not be read");
+    next = await persistFenceRecord(ctx, next, fixTree, "the lens tree's HEAD could not be read");
   }
   // The workstream whose `pipelineState.worktrees` entry IS the lens tree, or
   // `undefined` when none names it — which `buildLensFixFence` treats as a
@@ -228,7 +228,7 @@ export async function runLensFix(
     fenceLines = built.lines;
     lensFixFenceState = built.snapshot;
     if (built.record !== undefined) {
-      next = recordFenceUnavailable(next, fixTree, built.record);
+      next = await persistFenceRecord(ctx, next, fixTree, built.record);
       trace(
         `work-driver: lens-fix fence could not be built — the prompt prints no fence and the gate will park rather than skip the check: ${built.record}`,
       );
@@ -336,7 +336,7 @@ export async function runLensFix(
     fenceLines = rebuilt.lines;
     lensFixFenceState = rebuilt.snapshot;
     if (rebuilt.record !== undefined) {
-      next = recordFenceUnavailable(next, fixTree, rebuilt.record);
+      next = await persistFenceRecord(ctx, next, fixTree, rebuilt.record);
       trace(
         `work-driver: lens-fix fence could not be rebuilt at the verified tip — the prompt prints no fence and the gate will park rather than skip the check: ${rebuilt.record}`,
       );
