@@ -35,6 +35,7 @@ import fs from "node:fs/promises";
 import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { CouplingResult } from "./work-driver-plan-coupling.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -327,19 +328,30 @@ export function portPlanSection(ref: string | undefined): string {
  * ONCE at the end: re-dedupeing the growing union per absorbed workstream was
  * O(n²) normalisations for one number, and the line it printed claimed `0
  * kept`. Every other unioned field still comes from `foldTwo`.
+ *
+ * #1862 — returns `{ workstreams, selfFenceDrops }`: the fences the folds
+ * removed because they fenced the merged workstream's own files, so the plan
+ * step can persist them. With no reference the caller's map comes back under
+ * `workstreams` and the drop list is empty.
  */
 export function foldPortPlan(
   workstreams: Record<string, Workstream>,
   ref: string | undefined,
-): Record<string, Workstream> {
+): { workstreams: Record<string, Workstream>; selfFenceDrops: UnfenceRecord[] } {
   const all = Object.values(workstreams);
   const first = all[0];
-  if (!ref || !first) return workstreams;
+  if (!ref || !first) return { workstreams, selfFenceDrops: [] };
   let merged = first;
   // The union as the pass sees it: raw entries in the order the map holds them.
   const union: string[] = [...first.paths];
+  // #1862 — the self-fence removals every fold in this pass made, threaded to
+  // the plan step, which persists them. A port plan is one merged workstream,
+  // so the list is short by construction.
+  const selfFenceDrops: UnfenceRecord[] = [];
   for (const ws of all.slice(1)) {
-    merged = foldTwo(merged, ws);
+    const folded = foldTwo(merged, ws);
+    merged = folded.workstream;
+    selfFenceDrops.push(...folded.selfFenceDrops);
     union.push(...ws.paths);
   }
   const absorbed = all.slice(1).map((w) => w.id);
@@ -361,10 +373,13 @@ export function foldPortPlan(
     );
   }
   return {
-    [first.id]: {
-      ...rest,
-      paths: boundedPaths.paths,
-      scope: `Port ${ref}: apply that change and resolve conflicts — ${first.scope}${absorbed.length > 0 ? ` (+merged: ${absorbed.join(", ")})` : ""}`,
+    workstreams: {
+      [first.id]: {
+        ...rest,
+        paths: boundedPaths.paths,
+        scope: `Port ${ref}: apply that change and resolve conflicts — ${first.scope}${absorbed.length > 0 ? ` (+merged: ${absorbed.join(", ")})` : ""}`,
+      },
     },
+    selfFenceDrops,
   };
 }

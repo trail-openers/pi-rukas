@@ -1,4 +1,3 @@
-import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-crash.ts";
 /**
  * work-develop-fence-merge — #1005: the merge-and-retry's MERGE half (the
  * workstream map, the rebase, and the re-dispatch).
@@ -43,6 +42,11 @@ import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-cras
  * and the prompt as a `MergePrepPlan` instead of the merge reading the fence
  * records (work-develop-symbol-merge.ts).
  */
+import { classifyDevelopPass, crashedBranchCompleted } from "./work-develop-crash.ts";
+import {
+  type FoldSelfFenceDrops,
+  collectSelfFenceDrops,
+} from "./work-develop-fence-merge-records.ts";
 import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import { FENCE_VIOLATION_CAP } from "./work-develop-fence-recovery.ts";
 import { withPersistNotes } from "./work-develop-retry.ts";
@@ -107,6 +111,10 @@ export type MergePrepOutcome =
       merges: Array<{ into: string; from: string }>;
       discardedShas: string[];
       mergeHeads: Record<string, string>;
+      /** #1862 — fences the folds dropped for covering the merged workstream's
+       * own paths; recorded, not re-judged (the #784 demotion still governs
+       * whatever survives). Record shape: work-develop-fence-merge-records.ts. */
+      selfFenceDrops?: FoldSelfFenceDrops;
     };
 
 /**
@@ -174,6 +182,7 @@ export async function runMergePrep(
   const merges: Array<{ into: string; from: string }> = [];
   const mergeHeads: Record<string, string> = {};
   const carried: Record<string, boolean> = {};
+  const selfFenceDrops: FoldSelfFenceDrops = [];
   let next = stateIn;
   // #1005 — park builds from `next`, which is kept in sync with
   // `stateRef.current` after every successful iteration. The pre-#1005
@@ -220,7 +229,9 @@ export async function runMergePrep(
         `merge-and-retry refused — violator ${violator} has no workstream entry (no workstream to merge into ${owner})`,
       );
     }
-    workstreams = foldWorkstream(workstreams, owner, violator, violatorWs);
+    const folded = foldWorkstream(workstreams, owner, violator, violatorWs);
+    workstreams = folded.workstreams;
+    collectSelfFenceDrops(selfFenceDrops, folded.selfFenceDrops);
     merges.push({ into: owner, from: violator });
     // #1345 — several violators of one owner fold into ONE merged workstream,
     // so its id is recorded once and it is re-dispatched once.
@@ -410,7 +421,14 @@ export async function runMergePrep(
   }
   return {
     state: stateRef.current,
-    outcome: { parked: false, mergedIds, merges, discardedShas, mergeHeads },
+    outcome: {
+      parked: false,
+      mergedIds,
+      merges,
+      discardedShas,
+      mergeHeads,
+      ...(selfFenceDrops.length > 0 ? { selfFenceDrops } : {}),
+    },
   };
 }
 
@@ -466,24 +484,4 @@ export function fenceCapHit(
     evidence,
     ...(logPaths !== undefined && logPaths.length > 0 ? { logPaths } : {}),
   };
-}
-
-/** #1005 — the merge evidence string, shared by the re-run's cap hits. */
-export function mergeEvidence(
-  merges: Array<{ into: string; from: string }>,
-  discardedShas: string[],
-): string {
-  return `the merge was ${merges.map((m) => `${m.into}+${m.from}`).join(", ")}; first attempt discarded: ${discardedShas.join(", ") || "no commit ahead of base"}`;
-}
-
-/** #1005 — the violated (sibling-declared) records that name a merged
- * workstream, for the re-run's second-failure evidence. */
-export function secondViolationProse(fenceViolations: FenceViolationRecord[]): string {
-  return fenceViolations
-    .filter(
-      (v): v is FenceViolationRecord & { kind: "sibling-declared" } =>
-        v.kind === "sibling-declared",
-    )
-    .map((v) => `workstream ${v.workstreamId} touched ${v.file} (declared by ${v.declaredById})`)
-    .join("; ");
 }

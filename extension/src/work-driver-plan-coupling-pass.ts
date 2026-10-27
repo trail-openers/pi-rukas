@@ -26,13 +26,13 @@ import {
   unfenceDocsTestsEnabled,
 } from "./work-driver-plan-unfence-docs-tests.ts";
 import {
+  type UnfenceRecord,
   type UnfenceResult,
   unfenceIssueNamedPaths,
   unfenceSummary,
 } from "./work-driver-plan-unfence.ts";
 import { execp } from "./work-driver-verify.ts";
-import type { PlanUnfenceSummary } from "./workflow-state-schema.ts";
-import type { Workstream } from "./workflow-state-schema.ts";
+import type { PlanUnfenceSummary, Workstream } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /** The argv-form grep seam (planner-controlled paths, no shell) — the same
@@ -60,9 +60,11 @@ export async function runPlanCouplingPass(
     worktrees?: Record<string, string>;
     execFn?: GrepExecFn;
   },
-): Promise<Record<string, Workstream>> {
-  const ws = foldPortPlan(raw, opts.port);
-  if (Object.keys(ws).length <= 1) return ws;
+): Promise<{ workstreams: Record<string, Workstream>; selfFenceDrops: UnfenceRecord[] }> {
+  const ported = foldPortPlan(raw, opts.port);
+  const ws = ported.workstreams;
+  if (Object.keys(ws).length <= 1)
+    return { workstreams: ws, selfFenceDrops: ported.selfFenceDrops };
   const planExecFn = opts.execFn ?? execp;
   const coupling = await mergeWithContract(ws, (w) =>
     mergeCoupledWorkstreams(w, planExecFn, opts.worktrees, opts.repoRoot),
@@ -71,9 +73,12 @@ export async function runPlanCouplingPass(
     for (const m of coupling.merges) {
       trace(`work-driver: plan coupling merge — ${m.from} → ${m.into} (${m.reason})`);
     }
-    return coupling.workstreams;
+    return {
+      workstreams: coupling.workstreams,
+      selfFenceDrops: [...ported.selfFenceDrops, ...(coupling.selfFenceDrops ?? [])],
+    };
   }
-  return ws;
+  return { workstreams: ws, selfFenceDrops: ported.selfFenceDrops };
 }
 
 /**
@@ -102,17 +107,49 @@ export async function runPlanNormalisationPass(
     worktrees?: Record<string, string>;
     execFn?: GrepExecFn;
   },
-): Promise<{ workstreams: Record<string, Workstream>; summary?: PlanUnfenceSummary }> {
+): Promise<{
+  workstreams: Record<string, Workstream>;
+  summary?: PlanUnfenceSummary;
+  selfFenceDrops: UnfenceRecord[];
+}> {
   const merged = await runPlanCouplingPass(raw, {
     port: opts.port,
     repoRoot: opts.repoRoot,
     worktrees: opts.worktrees,
     execFn: opts.execFn,
   });
-  return runPlanUnfencePass(merged, state, {
+  const unfenced = await runPlanUnfencePass(merged.workstreams, state, {
     repoRoot: opts.repoRoot,
     execFn: opts.execFn,
   });
+  // #1862 — the fold's self-fence removals are counted APART from the issue-
+  // named pass (they answer to the merge, not to the issue), but they ride in
+  // the SAME record so the operator sees one `planQuality.unfence` per plan
+  // step. `unfenceSummary` does not count them (their note begins with none of
+  // the prefixes it keys on); they reach the persisted `notes` list.
+  const foldNotes = merged.selfFenceDrops.map((r) => r.note);
+  const summary = unfenced.summary
+    ? {
+        ...unfenced.summary,
+        ...(foldNotes.length > 0
+          ? {
+              notes: [...(unfenced.summary.notes ?? []), ...foldNotes].slice(0, 10),
+              selfFences: merged.selfFenceDrops.length,
+            }
+          : {}),
+      }
+    : merged.selfFenceDrops.length > 0
+      ? {
+          ran: true as const,
+          removed: 0,
+          kept: 0,
+          rolledBack: 0,
+          unresolved: 0,
+          selfFences: merged.selfFenceDrops.length,
+          notes: foldNotes.slice(0, 10),
+        }
+      : undefined;
+  return { workstreams: unfenced.workstreams, summary, selfFenceDrops: merged.selfFenceDrops };
 }
 
 /**

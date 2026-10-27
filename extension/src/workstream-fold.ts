@@ -16,14 +16,24 @@
  *     and a fold PASS that wants a duplicate tally accumulates the union itself
  *     and calls `boundPaths` once, instead of re-dedupeing the growing union
  *     for every absorbed workstream.
- *   - outOfScope — union of both halves MINUS the merged paths: after the
- *     merge the absorbed half's files ARE this workstream's scope, so a
- *     fence entry naming one of them would fence the merged workstream's
- *     own files (a self-fence that demotes every fence hit to a warning —
- *     the #849 shape). The #572 cross-declaration contract is what makes
- *     this safe: every file appears in exactly ONE workstream's `paths`,
- *     so the only outOfScope entries that ever overlap the merged paths are
- *     the cross-declared ones, and those are exactly the ones to drop.
+ *   - outOfScope — union of both halves MINUS anything that fences the merged
+ *     workstream's own files: after the merge the absorbed half's files ARE
+ *     this workstream's scope, so a fence entry naming one of them would fence
+ *     the merged workstream's own files (a self-fence that demotes every fence
+ *     hit to a warning — the #849 shape). The #572 cross-declaration contract
+ *     is what makes this safe: every file appears in exactly ONE workstream's
+ *     `paths`, so the only outOfScope entries that ever overlap the merged
+ *     paths are the cross-declared ones, and those are exactly the ones to
+ *     drop. #1862 (a) widened that filter from RAW STRING EQUALITY to the one
+ *     fence predicate the plan-quality gate uses — `tests/`, `tests/**` and
+ *     `tests/x.ts (new)` all fence a declared `tests/test_x.py`, and a PROSE
+ *     entry that names `tests/` as a whole path token fences it too (see
+ *     workstream-fold-self-fence.ts, which owns both readings). A SIBLING's
+ *     fence and a PROTECTED path's fence are never dropped; prose that names no
+ *     path is kept. Every drop is an `UnfenceRecord` — the fold reports them on
+ *     its own trace line, and the plan step persists them on
+ *     `pipelineState.planQuality.unfence`, so a fence the merge removed is
+ *     visible in the state file and not only in `trace()`.
  *     The entry-count cap is re-applied to the union (#1744) and each half's
  *     `outOfScopeClipped` records are carried across by ENTRY TEXT — a record
  *     whose entry the fold removed goes with it, and the re-cap says so on the
@@ -40,15 +50,20 @@
  * own — a crowded plan folds once per absorbed workstream, so a per-fold warning
  * would be N lines for one event. The caller that runs a whole fold pass
  * (`foldToCeiling`, `foldPortPlan`) accumulates the paths union across its folds,
- * bounds it ONCE at the end, and emits one line for the pass.
+ * bounds it ONCE at the end, and emits one line for the pass. The one thing the
+ * fold DOES say out loud is a self-fence it removed (#1862): those are rare,
+ * they change what the developer is allowed to touch, and the caller persists
+ * them as `UnfenceRecord`s rather than re-deriving them.
  */
 
 import { capFenceList, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
 import { clippedField } from "./plan-fence-record.ts";
 import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
-import { traceWarn } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
+import type { UnfenceRecord } from "./work-driver-plan-unfence-notes.ts";
 import type { OutOfScopeClip } from "./workflow-state-schema-workstreams.ts";
 import type { Workstream } from "./workflow-state-schema.ts";
+import { foldSelfFenceDrops } from "./workstream-fold-self-fence.ts";
 
 /**
  * #1005 — fold `from` into `into`. Returns the updated workstreams map with
@@ -65,10 +80,11 @@ export function foldWorkstream(
   into: string,
   from: string,
   absorbed: Workstream,
-): Record<string, Workstream> {
+): { workstreams: Record<string, Workstream>; selfFenceDrops: UnfenceRecord[] } {
   const intoWs = map[into];
-  if (!intoWs) return map;
-  const next: Record<string, Workstream> = { ...map, [into]: foldTwo(intoWs, absorbed) };
+  if (!intoWs) return { workstreams: map, selfFenceDrops: [] };
+  const folded = foldTwo(intoWs, absorbed);
+  const next: Record<string, Workstream> = { ...map, [into]: folded.workstream };
   delete next[from];
   // Re-point dependsOn edges that pointed at the absorbed id.
   for (const [id, ws] of Object.entries(next)) {
@@ -81,7 +97,7 @@ export function foldWorkstream(
       };
     }
   }
-  return next;
+  return { workstreams: next, selfFenceDrops: folded.selfFenceDrops };
 }
 
 /**
@@ -97,16 +113,32 @@ export function foldWorkstream(
  * and wants to say how many entries collapsed accumulates the union itself
  * and reports ONCE — `boundPaths` over the accumulated list gives it the two
  * numbers, and it does not re-dedupe the growing union per fold.
+ *
+ * #1862 — the return is `{ workstream, selfFenceDrops }` rather than a bare
+ * `Workstream`. Every one of the four call sites has somewhere to persist the
+ * drops (the two fold passes thread them to the plan step's unfence record;
+ * the develop merge threads them to its own notes), so the shape change is
+ * made once, in the helper, rather than each site re-deriving which fences the
+ * merge removed and getting it differently wrong.
  */
-export function foldTwo(a: Workstream, b: Workstream): Workstream {
+export function foldTwo(
+  a: Workstream,
+  b: Workstream,
+): { workstream: Workstream; selfFenceDrops: UnfenceRecord[] } {
   // #1756 part b — the union dedupes on the normalised identity. It NEVER
   // truncates and never counts for display: the merged workstream authorises
   // every file either half did, and the prompts print all of them.
   const mergedPaths = boundPaths([...a.paths, ...b.paths]).paths;
-  const inScope = new Set(mergedPaths);
-  const mergedList = [...new Set([...a.outOfScope, ...b.outOfScope])].filter(
-    (p) => !inScope.has(p),
-  );
+  const unioned = [...new Set([...a.outOfScope, ...b.outOfScope])];
+  // #1862 (a) — the filter is applied ONCE, by the fence predicate, rather than
+  // twice: the pre-#1862 shape dropped a raw-equal entry here and judged the
+  // rest separately, so the entry that most obviously fenced the merged
+  // workstream (a fence that IS one of its paths, or the protected-path append
+  // of the same file) left no record at all. `foldSelfFenceDrops` now sees the
+  // whole union — raw equality is the cheapest arm of its containment rule —
+  // so every removal it makes is one the operator can read in the state file.
+  const selfFence = foldSelfFenceDrops(a.id, mergedPaths, unioned);
+  const mergedList = unioned.filter((entry) => !selfFence.drop.has(entry));
   // #1744 — each half's clip records are keyed by their ENTRY TEXT, so carrying
   // them across the fold is a keep-if-still-present filter (capFenceList), not a
   // re-key: a record whose entry the fold removed (a self-fence, or the re-cap)
@@ -131,6 +163,11 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
   if (fenceWasBounded(fence)) {
     traceWarn(fenceBoundNotice(`plan fold '${a.id}' + '${b.id}'`, fence));
   }
+  // One line per SELF-FENCE the fold removed, beside the bound's own line: the
+  // records the caller persists say the same thing in the state file, and an
+  // operator greps the log for the fence the merge opened. The ENTRY is
+  // neutralised by the note builder, so this line cannot be forged from it.
+  for (const rec of selfFence.records) trace(`work-driver: plan fold — ${rec.note}`);
   // #1005 — symmetric: drop BOTH merged ids from BOTH halves' dependsOn
   // (the doc's "minus the two merged ids" — the pre-#1005 asymmetry kept
   // b.id in a's own dependsOn, so a self-reference survived the fold).
@@ -144,16 +181,19 @@ export function foldTwo(a: Workstream, b: Workstream): Workstream {
   const introduces = union(a.introduces, b.introduces);
   const consumes = union(a.consumes, b.consumes);
   return {
-    id: a.id,
-    scope: `${a.scope} (+merged: ${b.id})`,
-    paths: mergedPaths,
-    outOfScope: fence.entries,
-    ...clippedField(fence.clipped),
-    dependsOn: mergedDeps.size > 0 ? [...mergedDeps] : undefined,
-    ...((a.integrationTest ?? b.integrationTest)
-      ? { integrationTest: a.integrationTest ?? b.integrationTest }
-      : {}),
-    ...(introduces.length > 0 ? { introduces } : {}),
-    ...(consumes.length > 0 ? { consumes } : {}),
+    workstream: {
+      id: a.id,
+      scope: `${a.scope} (+merged: ${b.id})`,
+      paths: mergedPaths,
+      outOfScope: fence.entries,
+      ...clippedField(fence.clipped),
+      dependsOn: mergedDeps.size > 0 ? [...mergedDeps] : undefined,
+      ...((a.integrationTest ?? b.integrationTest)
+        ? { integrationTest: a.integrationTest ?? b.integrationTest }
+        : {}),
+      ...(introduces.length > 0 ? { introduces } : {}),
+      ...(consumes.length > 0 ? { consumes } : {}),
+    },
+    selfFenceDrops: selfFence.records,
   };
 }
