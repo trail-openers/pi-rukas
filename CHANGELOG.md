@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.25](https://github.com/trail-openers/pi-rukas/compare/v0.14.24...v0.14.25) (2026-10-27)
+
+
+### Bug Fixes
+
+* **work:** judge the planner's workstream call as the child accepted it ([#1844](https://github.com/trail-openers/pi-rukas/issues/1844)) ([3eba78e](https://github.com/trail-openers/pi-rukas/commit/3eba78ea5ab7b0d7dedee400b1e913de5369e485))
+
 ## [0.14.24](https://github.com/trail-openers/pi-rukas/compare/v0.14.23...v0.14.24) (2026-10-26)
 
 
