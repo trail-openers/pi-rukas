@@ -12,7 +12,7 @@
  * catch a missing row on its own).
  */
 
-import type { DispatchFailureCause } from "./types.ts";
+import type { DispatchFailureCause, DispatchResult } from "./types.ts";
 import {
   type FailureTail,
   classifyFailureCause,
@@ -29,7 +29,7 @@ export function failureCauseReason(tail: {
   kind: string;
   errorTail?: string;
   providerMessage?: string;
-  killCause?: string;
+  killCause?: DispatchResult["killCause"];
   providerRepeats?: number;
 }): string {
   const cls = classifyFailureCause(tail);

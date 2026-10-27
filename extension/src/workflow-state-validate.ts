@@ -11,6 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
+import { FIXER_BOUND_SOURCES } from "./work-driver-fixer-bound.ts";
 import { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
 import { PLAN_VERDICTS } from "./workflow-state-events-caps.ts";
 import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
@@ -318,8 +319,7 @@ export function validateDiscriminants(state: unknown): string[] {
           `eventLog[${i}].role has unknown value ${JSON.stringify(e.role)} (cap ${String(e.cap)} names a killed child)`,
         );
       }
-      // #543/#1338 — a cap-hit's `cap` must be a cap the driver can emit
-      // (isKnownCap: the fixed literals, checked against WorkCapLiteral, or
+      // #543/#1338 — a cap-hit's `cap` must be a cap the driver can emit      // (isKnownCap: the fixed literals, checked against WorkCapLiteral, or
       // a template value). #1263/#753/#973: an unknown cap fails re-entry.
       if (e.kind === "cap-hit" && typeof e.cap === "string" && !isKnownCap(e.cap)) {
         out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(e.cap)}`);
@@ -334,6 +334,44 @@ export function validateDiscriminants(state: unknown): string[] {
       ) {
         out.push(`eventLog[${i}].planVerdict has unknown value ${JSON.stringify(e.planVerdict)}`);
       }
+      // #1798 round 3 — the two fields a KILLED dispatch carries on a
+      // `dispatch-failed`, both of which the cause classifier reads as FACT and
+      // the handoff renders verbatim. `readState`'s untyped cast is the only
+      // runtime gate for them (#533), so a hand-edited or corrupt state file
+      // must be reported rather than answered from:
+      //  - `fixerBoundSource` decides WHICH knob the operator is told to raise;
+      //    a value outside the three the resolver can produce is a knob no clock
+      //    set (and `lensFixKillBoundSource` would happily print it);
+      //  - `providerMessage` now decides whether a kill is systemic for the
+      //    queue (#1798 round 3, `terminalProviderClassOnKill`), so a
+      //    non-string there is a queue-wide halt manufactured by a bad byte.
+      // Both are OPTIONAL — state files from before the fields validate — and
+      // the check is present-only, same rule as `planVerdict` above.
+      if (
+        (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider") &&
+        e.fixerBoundSource !== undefined &&
+        !(FIXER_BOUND_SOURCES as readonly unknown[]).includes(e.fixerBoundSource)
+      ) {
+        out.push(
+          `eventLog[${i}].fixerBoundSource has unknown value ${JSON.stringify(e.fixerBoundSource)}`,
+        );
+      }
+      if (
+        (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider") &&
+        e.providerMessage !== undefined &&
+        typeof e.providerMessage !== "string"
+      ) {
+        out.push(`eventLog[${i}].providerMessage is not a string`);
+      }
+      // #1798 round 4 — NO length bound here. The writer is the bound
+      // (`buildCompletionEvent` puts every `providerMessage` through
+      // `boundedProviderText`), and a validator that refuses a value longer than
+      // the current writer can produce halts a cycle on state an OLDER version
+      // wrote legitimately — the provider-kind writer stored the message raw and
+      // unbounded until this PR, so any pre-upgrade state file with a long
+      // provider body halted on resume with "unrecognised value". A validator
+      // that rejects old-but-valid state is worse than no validator; the type
+      // check above is the one that catches a corrupt field.
       // #1247 — a `cycle-interrupted` origin must be one the process tracker
       // can actually write. The field is OPTIONAL (state files pre-#1247 have
       // none), but when PRESENT it names what closed the session, and the

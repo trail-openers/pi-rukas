@@ -1,3 +1,4 @@
+import type { FixerBoundSource } from "./work-driver-fixer-bound.ts";
 import type { WriteFence } from "./write-fence-contract.ts";
 
 /** The dispatch option that fences a child; the driver's dispatch seams accept it (#1655). */
@@ -245,6 +246,17 @@ export interface DispatchResult {
    * (`PI_ENSEMBLE_CYCLE_DEADLINE`), which tightened the child's own bound.
    */
   killedAtCycleDeadline?: boolean;
+  /**
+   * #1798 — WHICH clock armed the bound that killed this child, recorded by
+   * the step that armed it (`reviewFixDispatchBound`) rather than guessed from
+   * the duration after the fact. A fixer killed at its own 45-minute ceiling
+   * and one killed by the 90-minute review clock looked identical downstream,
+   * so the cause table answered "environment" for both and told the operator
+   * to clear a provider that was not failing. Absent for every child that ran
+   * under a bound the driver did not resolve (the role backstop, a per-child
+   * run bound, a PM dispatch).
+   */
+  fixerBoundSource?: FixerBoundSource;
   /**
    * #1789 — the id of the DRIVER dispatch that produced this result, when a
    * driver ran the child (`runSingleDispatch` threads the id `beginDispatch`

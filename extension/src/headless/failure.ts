@@ -10,6 +10,7 @@
  */
 
 import { redactClip } from "../decision-log.ts";
+import { PROVIDER_MAX } from "../provider-text-budget.ts";
 import type { DispatchFailureCause } from "../types.ts";
 import { classifyFailureCause, failureCauseReason } from "../work-driver-failure-taxonomy.ts";
 import type { WorkEvent, WorkStep } from "../workflow-state-events.ts";
@@ -76,7 +77,9 @@ export interface ResultFailure {
 }
 
 const MESSAGE_MAX = 500;
-const PROVIDER_MAX = 1000;
+// #1798 round 5 — the provider budget now comes from the shared leaf so the
+// STORE side (`boundedProviderText`) and this RENDER side cannot drift apart;
+// the store must never be tighter than what a host is owed.
 const TAIL_MAX = 2000;
 const EVIDENCE_MAX = 2000;
 
@@ -271,6 +274,16 @@ export function failureOf(
       }
     } else {
       if (failed.errorTail) f.errorTail = redactClip(failed.errorTail, TAIL_MAX, "end");
+      // #1798 round 3 — a `dispatch-failed` that ALSO carries the provider's
+      // own words (the kill branch of `buildCompletionEvent` stamps it) reports
+      // them here as well. `failureOf` used to set `providerMessage` only for a
+      // `dispatch-failed-provider`, so the headless `failure` block of a killed
+      // child silently dropped the one fact that says the endpoint was at
+      // fault; the kill's own text in `errorTail` was all an operator saw.
+      // Same bounds and the same `redactClip` seam as the provider branch.
+      if (failed.providerMessage) {
+        f.providerMessage = redactClip(failed.providerMessage, PROVIDER_MAX);
+      }
       if (failed.killCause) f.killCause = failed.killCause;
       if (failed.exitCode !== undefined) f.exitCode = failed.exitCode;
     }

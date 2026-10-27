@@ -6,6 +6,7 @@
  */
 import type { DispatchUsage } from "./types.ts";
 import type { DevelopCrashFragment } from "./work-develop-crash.ts";
+import type { FixerBoundSource } from "./work-driver-fixer-bound.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { CapHitFields } from "./workflow-state-events-cap-hit.ts";
@@ -219,6 +220,27 @@ export type WorkEvent =
       tokenBudget?: { budget: number; used: number };
       /** #1593/#1789 — a kill the caller's cycle deadline armed. */
       killedAtCycleDeadline?: CycleDeadlineKill;
+      /**
+       * #1798 — WHICH clock armed the bound that killed this child, recorded by
+       * the step that armed it. The reason it must be on the EVENT rather than
+       * only on the `DispatchResult`: the cause classifier reads the state
+       * file's `dispatch-failed` (`headless/failure.ts`), and a cycle resumed
+       * from disk classifies exactly as the live one does. Absent = the child
+       * ran under a bound the driver did not resolve (the role backstop, a
+       * per-child run bound, a PM dispatch), which keeps the generic wording.
+       */
+      fixerBoundSource?: FixerBoundSource;
+      /**
+       * #1798 round 1 — the child came back on a provider error-stop AND was
+       * killed at a bound, so the kill branch owns this event and the
+       * `dispatch-failed-provider` branch is never reached. Without the fact
+       * here a severed stream got the "raise the bound" advice. Same shape as
+       * the sibling field on `dispatch-failed-provider`, and written the same
+       * way by the adversarial fan-out (`work-driver-adversarial-fanout-run.ts`),
+       * so every existing provider read (`failureOf`, the taxonomy, the reason
+       * renderer) sees it rather than a marker only this module understands.
+       */
+      providerMessage?: string;
       /**
        * #1634 — the driver's SYNTHESIS for a diff it could not read, not a
        * record of a child that died. Stamped at the one synthesising site

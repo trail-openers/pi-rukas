@@ -12,7 +12,12 @@ import type { CycleContext } from "./work-driver-context.ts";
 import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { landLensFixAfterBoundKill, readTreeHead } from "./work-driver-lens-fix-bound-land.ts";
-import { parkLensFixOverrun, reviewFixDispatchBoundMs } from "./work-driver-lens-fix-budget.ts";
+import {
+  parkLensFixOverrun,
+  reviewFixDispatchBound,
+  reviewRemainingMs,
+  unboundReason,
+} from "./work-driver-lens-fix-budget.ts";
 import {
   countCommittedAhead,
   countLensFixEmptyResends,
@@ -27,6 +32,7 @@ import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records
 // `work-retry-tree-clean.ts`); the definition lives with the other #1852
 // record helpers.
 export { lensWorktree };
+import type { FixerBound } from "./work-driver-fixer-bound.ts";
 import { repositionLensFixWorktree } from "./work-driver-lens-fix-reposition-gate.ts";
 import { parkLensFixReposition } from "./work-driver-lens-fix-reposition-park.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -37,6 +43,24 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import type { LensFixFenceSnapshot } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
+
+/**
+ * The commit instruction BOTH lens-fix prompts print, as ONE constant.
+ *
+ * #1798. The field shape: three cycles ended `step-failed:lens-fix` with the
+ * fixer killed at its own bound and NOTHING committed — in each one it had
+ * re-run the project's whole gate inside one tool call before its first
+ * commit. The old wording named "a clean build, a passing test suite" as the
+ * seam, which reads as *wait for the suite*. A bound kill that committed is
+ * landed by `landLensFixAfterBoundKill` and the cycle continues; a bound kill
+ * that committed nothing is a lost round.
+ *
+ * The one constant is deliberate: `inlineLensFixPrompt` and the re-dispatch
+ * branch are two separate literals and the test-scope rule was dropped from
+ * one of them once (#1156).
+ */
+export const LENS_FIX_COMMIT_INSTRUCTION =
+  "  - Commit your work in the worktree as you go: after each finding — or each small group of findings in one file — run the typecheck, and the moment it passes commit BEFORE starting the next one. NEVER wait for a full test suite before your first commit; a full suite run is optional and comes last, only if time remains. The driver is killed at a time bound and uncommitted work is lost to it. Run `git add -A` followed by `git commit -m \"<concise subject — follow the project's commit convention from AGENTS.md, or <type>(scope): description>\"`. The driver's gate REJECTS uncommitted-only work — no commit ahead of base SHA means the step fails. Do NOT push — the driver owns the branch.";
 
 /**
  * Step 7f — the lens-fix developer prompt.
@@ -75,7 +99,10 @@ export function inlineLensFixPrompt(
     // work is what the downstream steps expect.
     // #1078 — commit subject follows the project's convention (same
     // softening as the develop prompt).
-    "  - Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m \"<concise subject — follow the project's commit convention from AGENTS.md, or <type>(scope): description>\"`. The driver's gate REJECTS uncommitted-only work — no commit ahead of base SHA means the step fails. Do NOT push — the driver owns the branch.",
+    // #1798 — the seam is EARLY and cheap, and the wording is ONE constant
+    // shared with the re-dispatch arm: commit per finding once the typecheck
+    // passes, never after a full suite.
+    LENS_FIX_COMMIT_INSTRUCTION,
     "",
     "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
     "```json",
@@ -122,7 +149,18 @@ export async function runLensFix(
   // arming itself is traced once, by `reviewFixDispatchBoundMs`, including the
   // case where nothing is armed (#1779 item (e)) — no second copy of the number
   // is carried here for a later trace to re-derive or contradict.
-  const dispatchBoundMs = reviewFixDispatchBoundMs(state, "lens-fix", now, lensFixBoundMs());
+  // #1798 — the resolver now returns the duration AND the clock that set it, so
+  // the kill can name the knob instead of the per-role backstop; `runSingleDispatch`
+  // stamps the source onto the result and so onto the `dispatch-failed` event.
+  const fixerBound: FixerBound | undefined = reviewFixDispatchBound(
+    state,
+    "lens-fix",
+    now,
+    lensFixBoundMs(),
+    "lens-fix",
+    { remaining: reviewRemainingMs(state, now), unboundReason: unboundReason() },
+  );
+  const dispatchBoundMs = fixerBound?.boundMs;
   // #654 — empty-diff shape: re-dispatch the fix ONCE with no-diff evidence
   // before re-flagging identical findings at escalating severity.
   const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
@@ -239,6 +277,12 @@ export async function runLensFix(
   const body = isResend
     ? [
         `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
+        // #1798 — the re-dispatch IS the shape this clause exists for: the
+        // predecessor was killed with its work uncommitted. Say what to commit
+        // and when in the SAME constant the ordinary prompt prints, so the two
+        // arms cannot drift apart (the #1156 lesson: this array is a second
+        // literal and the rule got dropped from it once).
+        LENS_FIX_COMMIT_INSTRUCTION,
         `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
         "",
         // #1156 — the re-dispatch is the same developer in the same worktree
@@ -403,6 +447,12 @@ export async function runLensFix(
         scratch: scratchDir(ctx.repoRoot, ctx.issue),
       },
       ...(dispatchBoundMs !== undefined ? { timeoutMs: dispatchBoundMs } : {}),
+      // #1798 — the clock this bound came from, so the completion event names
+      // the knob that produced the kill. `cycle-deadline` is never returned by
+      // the resolver (the spawn layer clamps afterwards and stamps
+      // `killedAtCycleDeadline`), and the kill's own source wins over the
+      // arming source when both are present — see `buildCompletionEvent`.
+      ...(fixerBound !== undefined ? { fixerBoundSource: fixerBound.source } : {}),
       // #1789 (1) — the id this round's dispatch is named by, taken from the
       // seam that minted it, so the conversion can require the tail to be THIS
       // dispatch's kill.

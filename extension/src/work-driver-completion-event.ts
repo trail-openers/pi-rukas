@@ -14,10 +14,20 @@
  */
 
 import path from "node:path";
+import { redactClip } from "./decision-log.ts";
+import { PROVIDER_MAX } from "./provider-text-budget.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
+import { FAILURE_REASON_CHARS, clip } from "./work-driver-failure-taxonomy.ts";
+import {
+  CYCLE_DEADLINE_ENV,
+  type FixerBoundSource,
+  SPAWN_BACKSTOP_ENV,
+  fixerBoundClause,
+  fixerBoundEnv,
+} from "./work-driver-fixer-bound.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkStep, type appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
 
@@ -32,10 +42,28 @@ const ARTIFACT_THRESHOLD_BYTES = 4_000;
 /** #543 — env knob named in a self-kill's errorTail (loop/token name the cap knobs). */
 export function overrideEnvForKillCause(
   killCause: NonNullable<DispatchResult["killCause"]>,
+  /**
+   * #1798 — which clock armed a FIXER's bound, when the step that armed it
+   * recorded one. For `timeout` / `child-bound` it replaces the generic
+   * per-role answer: a lens-fix killed at its own 45-minute ceiling must name
+   * `PI_ENSEMBLE_LENS_FIX_BOUND_MS`, not the two-hour backstop nobody set.
+   * Ignored by every other cause, whose bound is a different mechanism.
+   */
+  fixerBoundSource?: FixerBoundSource,
 ): string {
   switch (killCause) {
     case "timeout":
-      return "PI_ENSEMBLE_SPAWN_TIMEOUT_MS";
+      // #1798 — a fixer's own bound first; the backstop is the fallback for a
+      // kill no fix-loop bound claims.
+      return fixerBoundSource === undefined
+        ? SPAWN_BACKSTOP_ENV
+        : fixerBoundSource === "cycle-deadline"
+          ? // The deadline branch of the caller is handled by the detail text
+            // (`killedAtCycleDeadline`), but a `child-bound` cause that the
+            // deadline clamped still needs the knob here rather than the
+            // per-role list the fallback below would print.
+            CYCLE_DEADLINE_ENV
+          : fixerBoundEnv(fixerBoundSource);
     // #754 — the plan step's own bound; its env knob is a DISTINCT name from
     // the global backstop (PI_ENSEMBLE_SPAWN_TIMEOUT_MS stays role-agnostic
     // and step-agnostic — test-spawn-bounds.ts asserts that).
@@ -59,8 +87,14 @@ export function overrideEnvForKillCause(
     // #1567 — the child-supervision kills are driver caps, so the knob that
     // turns them off is the caps master switch. The piece that emits each
     // cause adds its own bound knob here when it introduces one.
+    // #1798 — a fixer's own bound is the one child-bound kill whose knob the
+    // driver knows, so it names that knob instead of the three-role list.
     case "child-bound":
-      return "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS / PI_ENSEMBLE_LENS_BOUND_MS";
+      return fixerBoundSource === undefined
+        ? "PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS / PI_ENSEMBLE_LENS_BOUND_MS"
+        : fixerBoundSource === "cycle-deadline"
+          ? CYCLE_DEADLINE_ENV
+          : fixerBoundEnv(fixerBoundSource);
     case "no-progress":
     case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
@@ -143,6 +177,31 @@ export function runIdOfTranscript(result: DispatchResult, role: string): string 
 }
 
 /**
+ * #1798 round 3 — the provider's own words, scrubbed through the same
+ * `redactClip` seam `providerParkEvidence` uses (redacts FIRST, then clips, so
+ * a cut can never leave a credential fragment).
+ *
+ * Why it belongs HERE rather than only at render: this text is written into the
+ * durable state file by `buildCompletionEvent` and onto `ResultFailure` by
+ * `failureOf`, both of which an operator's handoff and a headless `--json` print
+ * verbatim. A provider body that quotes a request header, a key in an error
+ * page, or a stack trail used to land in both. The renderer-side caps
+ * (`headless/failure.ts`) stay — but they are no longer TIGHTER than this one.
+ *
+ * #1798 round 5 — the budget is `PROVIDER_MAX` (1000), not the 240-character
+ * reason budget. The classifier runs LATER, over the stored text, and matches
+ * the spend-cap / quota-window phrase anywhere in it; at 240 a gateway prefix
+ * pushed that phrase past the cut and a terminal outage read as an ordinary
+ * 429, so the queue kept starting groups into the same cap. The front clip is
+ * kept (a cut may drop the tail, never a credential), and the COMPOSITE
+ * `errorTail` below keeps the reason budget — it is a scrollback sentence, not
+ * the evidence the classifier reads.
+ */
+function boundedProviderText(text: string): string {
+  return redactClip(text, PROVIDER_MAX);
+}
+
+/**
  * Build a dispatch-completed (or dispatch-failed-provider / dispatch-
  * failed) event from a DispatchResult. Handles the claim-check threshold
  * for large summaries.
@@ -205,11 +264,32 @@ export async function buildCompletionEvent(
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
     } else if (result.killedAtCycleDeadline) {
       // #1593 — the caller's deadline, not the backstop, set this bound.
-      detail = `[pi-rukas] killed after ${result.killBudgetMs}ms at the caller's cycle deadline (PI_ENSEMBLE_CYCLE_DEADLINE)`;
+      // #1798 — the fixer's bound source says the same thing from the other
+      // side; the deadline form wins because it also carries the ms.
+      detail = `[pi-rukas] killed after ${result.killBudgetMs}ms at the caller's cycle deadline (${CYCLE_DEADLINE_ENV})`;
+    } else if (
+      result.fixerBoundSource !== undefined &&
+      (result.killCause === "timeout" || result.killCause === "child-bound") &&
+      result.killBudgetMs !== undefined
+    ) {
+      // #1798 — the kill pi-rukas's OWN clock produced, named as such: which
+      // source, how many minutes, and the one knob that moves it. The generic
+      // form below would print the per-role backstop this child never ran
+      // under, which is what sent operators to a provider that was fine.
+      detail =
+        `[pi-rukas] killed after ${result.killBudgetMs}ms at ${fixerBoundClause(result.fixerBoundSource, result.killBudgetMs)}` +
+        ` (override: ${overrideEnvForKillCause(result.killCause, result.fixerBoundSource)})`;
+    } else if (result.killBudgetMs === undefined) {
+      // #1798 round 1 — no budget to report means no "undefinedms": a kill with
+      // no `killBudgetMs` (a role backstop that recorded no bound, a synthetic
+      // result) states the cause and the knob alone.
+      detail =
+        `[pi-rukas] killed ${result.killCause}` +
+        ` (override: ${overrideEnvForKillCause(result.killCause, result.fixerBoundSource)})`;
     } else {
       detail =
         `[pi-rukas] killed after ${result.killBudgetMs}ms ${result.killCause}` +
-        ` (override: ${overrideEnvForKillCause(result.killCause)})`;
+        ` (override: ${overrideEnvForKillCause(result.killCause, result.fixerBoundSource)})`;
     }
     // Attribute the silence, not just the budget. `linesSeen: 0` means the
     // child never spoke — a provider stall or auth failure, not a hang.
@@ -217,6 +297,39 @@ export async function buildCompletionEvent(
     const attribution = la
       ? ` · last output: ${la.kind} ${Math.round(la.agoMs / 1000)}s before the kill, after ${la.linesSeen} line(s)`
       : "";
+    // #1798 round 1 — a kill that is ALSO a provider error-stop. The kill
+    // branch owns the event, so the `dispatch-failed-provider` branch below is
+    // never reached and the provider fact used to be discarded with it — which
+    // let a severed stream get the "raise the bound" advice. The kill still
+    // wins the KIND of the event (a self-kill is never reported as a provider
+    // failure, see `DispatchResult.killCause`), but it no longer erases the
+    // fact, and the classifier abstains on it.
+    // #1798 round 3 — the provider's own words, scrubbed and bounded BEFORE
+    // they are written anywhere: both the clause appended to `errorTail` and
+    // the field stored on the event come from this one reading, so a provider
+    // body cannot land unredacted in the durable state file (see
+    // `boundedProviderText`). `providerParkEvidence` gets the same treatment for
+    // its concatenation; this is the same seam and the same budget.
+    const providerAtKill = result.errorStop !== undefined;
+    const providerText = providerAtKill
+      ? boundedProviderText(
+          result.errorStop?.message ?? result.errorStop?.reason ?? "provider error-stop",
+        )
+      : "";
+    // #1798 round 4 — the KILL clause comes FIRST, then the provider note. The
+    // order is the bound: `errorTail` is capped to the reason budget at this
+    // write site, and a reader that lost the tail would lose the provider's
+    // words, while a reader that lost the FRONT would lose "which bound killed
+    // this child and what knob moves it" — the one sentence the whole #1798
+    // handoff exists to deliver. So the clause is composed before the note and
+    // the composite is clipped from the FRONT, which keeps the clause whole and
+    // lets the provider note lose its own tail (its full text still rides on
+    // `providerMessage`, redacted and bounded by the same seam). Without the
+    // cap, a max-length kill clause plus a 240-char provider note wrote a
+    // `errorTail` over the reason budget into the durable state file.
+    const killClause = `${detail}${attribution}`;
+    const providerNote = providerAtKill ? ` · provider error-stop: ${providerText}` : "";
+    const errorTail = clip(`${killClause}${providerNote}`) ?? "";
     return withUsage(
       {
         kind: "dispatch-failed",
@@ -227,8 +340,13 @@ export async function buildCompletionEvent(
         ms: result.ms,
         at,
         exitCode: result.exitCode ?? null,
-        errorTail: `${detail}${attribution}`,
+        errorTail,
         killCause: result.killCause,
+        // #1798 round 1 — the provider's own words, on the field every provider
+        // read already consults (`failureOf` copies `providerMessage` for a
+        // `dispatch-failed` too, which makes the classifier's provider guard
+        // reachable), while the kill keeps the event's KIND and its text.
+        ...(providerAtKill ? { providerMessage: providerText } : {}),
         // #543 — carry the structured trigger evidence on the event so the
         // step router can persist it on `pipelineState.capEvidence` when it
         // emits the cap-hit. Absent for the four non-cap causes (timeout /
@@ -243,6 +361,11 @@ export async function buildCompletionEvent(
         // the event so the lens-fix partial-fix conversion can refuse it (a cycle
         // that is out of time parks) without reaching back into the child.
         ...(result.killedAtCycleDeadline === true ? { killedAtCycleDeadline: true } : {}),
+        // #1798 — which clock armed the bound, persisted so a resumed cycle
+        // classifies its own kill identically to a live one.
+        ...(result.fixerBoundSource === undefined || result.killCause === undefined
+          ? {}
+          : { fixerBoundSource: result.fixerBoundSource }),
       },
       result.usage,
     );
@@ -257,7 +380,13 @@ export async function buildCompletionEvent(
         label,
         ms: result.ms,
         at,
-        providerMessage: result.errorStop.message,
+        // #1798 round 4 — the same seam as the kill branch above. Before this
+        // the provider-kind write stored `result.errorStop.message` RAW and
+        // unbounded: the provider's own body (which can quote a request header
+        // or a key from an error page) landed in the durable state file
+        // unredacted, and a long body made the resume validator reject the
+        // whole state file as "unrecognised value".
+        providerMessage: boundedProviderText(result.errorStop.message ?? "provider error-stop"),
         ...(result.providerRepeats ? { providerRepeats: result.providerRepeats } : {}),
         transcriptPath: result.transcriptPath,
       },

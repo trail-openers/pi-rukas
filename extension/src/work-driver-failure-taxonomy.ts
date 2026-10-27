@@ -11,12 +11,17 @@
 import type { SEAMS } from "./decision-seam-registry.ts";
 import type { DecisionWhere } from "./decision-seam.ts";
 import { shadowDecide, shadowExactRuleMatch, shadowSkip } from "./decision-shadow.ts";
+import type { DispatchResult } from "./types.ts";
 import {
   type DispatchFailureCause,
   isRateLimit429Msg,
   isSpendCapMsg,
   parseRetryDelaySeconds,
 } from "./types.ts";
+import {
+  terminalProviderClass,
+  terminalProviderClassOnKill,
+} from "./work-driver-failure-terminal.ts";
 
 // #1243 — the provider-class ladder lives in its own module (AGENTS.md §12 size
 // limit). Re-exported so every caller keeps importing the ladder alongside the
@@ -85,7 +90,11 @@ export function jitteredMs(baseMs: number, floorMs = 0, rand: () => number = Mat
 export type FailureTail = {
   kind: string;
   errorTail?: string;
-  killCause?: string;
+  /** The kill vocabulary the events and the `DispatchResult` share (#1798
+   *  round 4): the terminal-provider override asks `isFixerBoundKill` about it,
+   *  so the tail carries the type the predicate takes rather than a `string`
+   *  it cannot be handed. Derived from the result, not re-listed here. */
+  killCause?: DispatchResult["killCause"];
   providerMessage?: string;
   /** #79 — consecutive identical provider failures the adversarial loop already saw. */
   providerRepeats?: number;
@@ -133,11 +142,36 @@ function isProviderOutage(tail: FailureTail, cause: DispatchFailureCause): boole
  * A 429 pattern matched only on `errorTail` is NOT exact: that is the
  * subagent's own last words, which can talk about 429s (#1262), so the model
  * is asked there — in shadow, which is how S5 will see how often it happens.
+ *
+ * The TERMINAL branch of that rule is #1798 round 4's correction to round 3's
+ * blanket exemption. Round 3 exempted the two quota classes on ANY killed event
+ * that carried provider text; that is too wide, because a `dispatch-failed`
+ * carrying `providerMessage` is the endpoint's words only when the SPAWN layer
+ * captured them, and the exemption is meant to mean "the endpoint spoke about
+ * its own cap". So the exemption is exact only on a `dispatch-failed-provider`
+ * — the kind whose whole existence is the endpoint's own error — and any other
+ * kill (a child-supervision `child-bound` / `no-progress` / `stuck-tool`, or a
+ * bound kill whose text a child echoed) is classified from text a model may
+ * legitimately dispute, so the seam asks.
  */
 function seamLabelFor(
   tail: FailureTail,
   cause: DispatchFailureCause,
 ): FailureCauseLabel | undefined {
+  // #1798 round 3 — a TERMINAL provider class that the classifier read from
+  // the provider's OWN message (a quota-terminal / quota-window that a killed
+  // dispatch also carries) is an exact rule match: asking a model to overrule
+  // the endpoint's own words about its own spend cap is not a question with an
+  // answer in it. Without this row the `cause` switch below would return
+  // "rate-limited" for it and the seam would be consulted.
+  if (
+    (cause === "rate-limited:quota-terminal" || cause === "rate-limited:quota-window") &&
+    tail.killCause !== undefined &&
+    tail.providerMessage !== undefined &&
+    tail.kind === "dispatch-failed-provider"
+  ) {
+    return undefined;
+  }
   switch (cause) {
     case "self-killed:timeout":
     case "self-killed:inactivity":
@@ -263,12 +297,39 @@ export function repeatsNote(tail: { providerRepeats?: number }): string {
 }
 
 /**
+ * #1798 round 3/4 — the TERMINAL rungs of the 429 ladder live in
+ * `work-driver-failure-terminal.ts` (AGENTS.md §12 size split), alongside the
+ * kill override that reads them. Re-exported so a caller that wants the ladder
+ * alone does not import the classifier that consumes it.
+ */
+export {
+  type TerminalProviderCause,
+  terminalProviderClass,
+  terminalProviderClassOnKill,
+} from "./work-driver-failure-terminal.ts";
+
+/**
  * #308/#314 — classify a dispatch-failure event by its ROOT CAUSE so the retry
  * router can branch on structure (killCause / 429 / errorStop) instead of
  * regex-matching errorTail strings. Uses shared DispatchFailureCause type
  * and RATE_LIMIT_429_PATTERN from types.ts for consistency with adversarial.ts.
  */
 export function classifyFailureCause(tail: FailureTail): FailureClass {
+  // #1798 round 3 — a TERMINAL provider fact the kill carries is read BEFORE
+  // the kill branches, which return early and would otherwise swallow it. See
+  // `terminalProviderClassOnKill` (work-driver-failure-terminal.ts) for why
+  // this does not undo #296, and for the round 4 gate that keeps a
+  // child-supervision kill out of it.
+  const burstS = burstThresholdSeconds();
+  if (tail.killCause !== undefined) {
+    const terminal = terminalProviderClassOnKill(tail, burstS);
+    // A TERMINAL class is never retried and never re-dispatched — the policy the
+    // override itself documents, stated once here rather than carried across the
+    // seam (the leaf returns the FACT; the classifier owns the policy).
+    if (terminal !== undefined) {
+      return { cause: terminal.cause, shouldRetry: false, maxRetries: 0 };
+    }
+  }
   // Structured killCause (#296) — pi-rukas itself ended the child.
   // MUST be checked first; a self-kill is never a provider failure.
   if (tail.killCause === "timeout") {
@@ -337,8 +398,14 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   // wait into a dead cycle and 11 unstarted issues.
   const msg = tail.providerMessage ?? tail.errorTail ?? "";
   if (isRateLimit429Msg(msg)) {
-    if (isSpendCapMsg(msg)) {
-      return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
+    // The terminal rungs (spend cap / quota window) come from the ONE ladder
+    // the kill override uses too. Only a TERMINAL cause is returned from that
+    // ladder — `waitMs` stays this block's own, because the kill override has
+    // no wait to offer (a killed child is never re-dispatched, so claiming the
+    // transient class would be a retry the kill forbids).
+    const terminal = terminalProviderClass(msg, burstS);
+    if (terminal !== undefined) {
+      return { ...terminal, shouldRetry: false, maxRetries: 0 };
     }
     const delayS = parseRetryDelaySeconds(msg);
     if (delayS === undefined) {
@@ -346,7 +413,7 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
       // guessing a wait that might be a day long.
       return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
     }
-    if (delayS <= burstThresholdSeconds()) {
+    if (delayS <= burstS) {
       return {
         cause: "rate-limited:burst",
         shouldRetry: true,
