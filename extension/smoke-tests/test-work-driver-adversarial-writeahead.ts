@@ -106,7 +106,21 @@ async function run(name: string, multi: boolean): Promise<Observation> {
         // THE OBSERVATION: read the file from disk while this dispatch is
         // outstanding. A reviewer killed here would leave precisely this state.
         const onDisk = await readState(dir, 1863);
+        // The batch is a PARALLEL fan-out, so the two workstreams' callbacks
+        // interleave and the first to arrive is not the first in the log. This
+        // instrument's claim is "the child's id is a marker the fan-out already
+        // persisted", which is a per-call fact: record it for whichever call
+        // first saw an in-flight marker naming it, not for call number one.
+        if (
+          obs.during === undefined &&
+          onDisk.pipelineState.inFlightJobIds.includes(orchestratorJobId)
+        ) {
+          obs.during = onDisk;
+          obs.runId = orchestratorJobId;
+        }
         if (obs.during === undefined) {
+          // Still capture the first observation for the mid-review state
+          // assertions; the id assertion below pairs with the matching marker.
           obs.during = onDisk;
           obs.runId = orchestratorJobId;
         }
@@ -148,9 +162,17 @@ for (const multi of [false, true]) {
     marker !== undefined && during.pipelineState.inFlightJobIds.includes(marker.jobId),
     `${label}: the persisted marker's jobId is the in-flight id`,
   );
+  // Every id the fan-out gave a child must be a marker it wrote ahead — that is
+  // the property resume depends on, and it is per-child, so it is checked over
+  // all of them rather than against `started[0]` (whose owner is whichever child
+  // happened to be observed first).
   assert(
-    obs.runId !== undefined && marker !== undefined && obs.runId === marker.jobId,
-    `${label}: the id the child received IS the marker's id (child ${obs.runId} vs marker ${marker?.jobId})`,
+    started.every((m) => during.pipelineState.inFlightJobIds.includes(m.jobId)),
+    `${label}: every dispatched child's id is in inFlightJobIds (${started.length} marker(s), ${during.pipelineState.inFlightJobIds.length} in flight)`,
+  );
+  assert(
+    obs.runId !== undefined && started.some((m) => m.jobId === obs.runId),
+    `${label}: the id the observed child received IS one of the persisted markers (child ${obs.runId})`,
   );
   const stepStarted = during.eventLog.filter(
     (e) => e.kind === "step-started" && e.step === "adversarial",
