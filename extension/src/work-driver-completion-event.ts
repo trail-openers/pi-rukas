@@ -14,10 +14,12 @@
  */
 
 import path from "node:path";
+import { redactClip } from "./decision-log.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
+import { FAILURE_REASON_CHARS } from "./work-driver-failure-taxonomy.ts";
 import {
   CYCLE_DEADLINE_ENV,
   type FixerBoundSource,
@@ -174,6 +176,24 @@ export function runIdOfTranscript(result: DispatchResult, role: string): string 
 }
 
 /**
+ * #1798 round 3 — the provider's own words, scrubbed and bounded the way
+ * `providerParkEvidence` bounds its concatenation: same `redactClip` seam
+ * (redacts FIRST, then clips, so a cut can never leave a credential fragment)
+ * and the same `FAILURE_REASON_CHARS` budget, not a second number.
+ *
+ * Why it belongs HERE rather than only at render: this text is written into the
+ * durable state file by `buildCompletionEvent` and onto `ResultFailure` by
+ * `failureOf`, both of which an operator's handoff and a headless `--json` print
+ * verbatim. A provider body that quotes a request header, a key in an error
+ * page, or a stack trail used to land in both. The renderer-side caps
+ * (`headless/failure.ts`) stay — they are the tighter, per-surface numbers —
+ * but the STORED value is now the clean one.
+ */
+function boundedProviderText(text: string): string {
+  return redactClip(text, FAILURE_REASON_CHARS);
+}
+
+/**
  * Build a dispatch-completed (or dispatch-failed-provider / dispatch-
  * failed) event from a DispatchResult. Handles the claim-check threshold
  * for large summaries.
@@ -276,10 +296,19 @@ export async function buildCompletionEvent(
     // wins the KIND of the event (a self-kill is never reported as a provider
     // failure, see `DispatchResult.killCause`), but it no longer erases the
     // fact, and the classifier abstains on it.
+    // #1798 round 3 — the provider's own words, scrubbed and bounded BEFORE
+    // they are written anywhere: both the clause appended to `errorTail` and
+    // the field stored on the event come from this one reading, so a provider
+    // body cannot land unredacted in the durable state file (see
+    // `boundedProviderText`). `providerParkEvidence` gets the same treatment for
+    // its concatenation; this is the same seam and the same budget.
     const providerAtKill = result.errorStop !== undefined;
-    const providerNote = providerAtKill
-      ? ` · provider error-stop: ${result.errorStop?.message ?? result.errorStop?.reason ?? "stream ended"}`
+    const providerText = providerAtKill
+      ? boundedProviderText(
+          result.errorStop?.message ?? result.errorStop?.reason ?? "provider error-stop",
+        )
       : "";
+    const providerNote = providerAtKill ? ` · provider error-stop: ${providerText}` : "";
     return withUsage(
       {
         kind: "dispatch-failed",
@@ -296,12 +325,7 @@ export async function buildCompletionEvent(
         // read already consults (`failureOf` copies `providerMessage` for a
         // `dispatch-failed` too, which makes the classifier's provider guard
         // reachable), while the kill keeps the event's KIND and its text.
-        ...(providerAtKill
-          ? {
-              providerMessage:
-                result.errorStop?.message ?? result.errorStop?.reason ?? "provider error-stop",
-            }
-          : {}),
+        ...(providerAtKill ? { providerMessage: providerText } : {}),
         // #543 — carry the structured trigger evidence on the event so the
         // step router can persist it on `pipelineState.capEvidence` when it
         // emits the cap-hit. Absent for the four non-cap causes (timeout /
