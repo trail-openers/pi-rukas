@@ -52,6 +52,7 @@ import type {
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 import type { WorkstreamCallsRefusedEvent } from "./workflow-state-events-workstream.ts";
+import type { LensFixFenceUnavailableEvent } from "./workflow-state-schema-lens-fix-fence.ts";
 // #539 — single definition in the sibling fragment module.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 // #775 prep — handoff event members re-exported from the sibling fragment.
@@ -494,7 +495,8 @@ export type WorkEvent =
   | LensResidualsPostedEvent
   | InterruptedEvent
   | CorrectiveRoundEvent
-  | FixPassStraysRevertedEvent;
+  | FixPassStraysRevertedEvent
+  | LensFixFenceUnavailableEvent;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

@@ -42,6 +42,7 @@ import {
 import {
   type LensFixRevertOutcome,
   lensFixFenceCheck,
+  lensFixFenceRecorded,
   lensFixRevertAlreadyUsed,
 } from "./work-driver-lens-fix-fence-gate.ts";
 import { revertLensFixStrays } from "./work-driver-lens-fix-fence-revert.ts";
@@ -258,6 +259,17 @@ export async function runAdversarial(
         inWorktree: path.resolve(lensTree) !== path.resolve(ctx.repoRoot),
         tree: lensTree,
         round: lensRound,
+        // Did this round's lens-fix step actually dispatch a fixer? A round that
+        // never did has no fence to be judged against (and a state file from
+        // before #1852 never wrote the field), so the gate stands down; a round
+        // that did had a fence, and losing it parks. Read from the step's own
+        // dispatch markers rather than from `lastCompletedStep`, which a resume
+        // can leave pointing here from a previous round.
+        // Fail closed only on what the round RECORDS: a fence failure on the log
+        // means this round had a fence and lost it. No record at all means an
+        // older driver (or a pre-#1852 fixture) wrote the state and the gate does
+        // not run — see `lensFixFenceRecorded`.
+        fenceRecorded: lensFixFenceRecorded(state.eventLog, lensRound),
         revertAlreadyUsed:
           lensId !== undefined && lensFixRevertAlreadyUsed(state.eventLog, lensRound, lensId),
         onRevertible:

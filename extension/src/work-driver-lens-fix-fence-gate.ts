@@ -91,6 +91,27 @@ export interface LensFixFenceGateOpts {
   tree: string;
   /** The current lens review round. */
   round: number;
+  /**
+   * Does this round RECORD a fence failure? `runLensFix` writes
+   * `lens-fix-fence-unavailable` when the planner refused to build the fence or
+   * a pre-dispatch git read failed, so the question is answerable from the state
+   * file alone — the same answer on the first pass and after a resume.
+   *
+   * The two states the record separates:
+   *
+   *   - a RECORDED failure means the round HAD a fence (it was part of the
+   *     prompt) and the record did not survive to the gate: fail closed, nothing
+   *     pushes;
+   *   - NO RECORD AT ALL means an older driver wrote this state, or the fixture
+   *     predates the change: the gate does not run and a trace says why. Refusing
+   *     there would make #1852 a breaking change to the persisted schema instead
+   *     of a fence.
+   *
+   * Deliberately NOT keyed on "a fixer was dispatched": a fixer dispatched under
+   * a fence the planner could not build already has the refusal on the log, and
+   * one dispatched by a driver that never had a fence has nothing to judge.
+   */
+  fenceRecorded: boolean;
   /** The counter's answer: has this round already reverted once? */
   revertAlreadyUsed: boolean;
   /**
@@ -157,19 +178,66 @@ export function lensFixPlanFromSnapshot(
 }
 
 /**
+ * Does this round RECORD a fence failure? `runLensFix` writes
+ * `lens-fix-fence-unavailable` when the planner refused to build the fence or a
+ * pre-dispatch git read failed, so the question is answerable from the state file
+ * alone — the same answer on the first pass and after a resume.
+ *
+ * Two states must not be confused, and the record is what separates them:
+ *
+ *   - recorded failure -> the round HAD a fence (it was part of the prompt) and
+ *     the record did not survive to the gate: fail closed, nothing pushes.
+ *   - no record at all -> an older driver wrote this state, or a fixture predates
+ *     the change: the gate does not run. Refusing there would make #1852 a
+ *     breaking change to the persisted schema instead of a fence.
+ *
+ * Deliberately NOT keyed on "a fixer was dispatched": a fixer dispatched under a
+ * fence the planner could not build already has the refusal on the log, and one
+ * dispatched by a driver with no fence at all has nothing to be judged against.
+ */
+export function lensFixFenceRecorded(events: readonly WorkEvent[], round: number): boolean {
+  return events.some((e) => e.kind === "lens-fix-fence-unavailable" && e.round === round);
+}
+
+/**
  * Run the lens-fix fence once, before any landing arm. Every refusal leaves the
  * tree alone (the revert is the only write, and it is `revertStraysOnce`'s).
  */
 export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<LensFixFenceVerdict> {
   const snap = opts.snapshot;
   if (snap === undefined) {
-    // No fence was built, so nothing bounded the fixer. Landing unchecked is the
-    // failure this closes: an absent fence parks rather than skipping the check.
+    // No fence is recorded for this round, and that is NOT the same as a fence
+    // that was built and then broken. The two cannot be treated alike:
+    //
+    //   - A round whose step TRIED to build the fence and could not — the planner
+    //     refused, or a pre-dispatch git read failed — has that refusal on the
+    //     event log (`lens-fix-fence-unavailable`). It is fail-closed: the fence
+    //     was part of this round, the fixer's prompt was built beside it, and the
+    //     record did not survive to the gate. Landing unchecked is the pre-#1852
+    //     hole.
+    //   - A round with NO fence record at all — an older driver wrote the state,
+    //     a fixture from before this change, a resume whose file predates the
+    //     field — has nothing to be judged against and the gate DOES NOT RUN.
+    //     Refusing it would make #1852 a breaking change to the persisted schema
+    //     rather than a fence, and would park every resumed cycle on a field its
+    //     file never had.
+    //
+    // The rule keys on what the ROUND RECORDS, never on whether a fixer was
+    // dispatched: a fixer dispatched under a fence the planner could not build
+    // belongs to the first case (the refusal is on the log), and one dispatched
+    // by a driver that never had a fence belongs to the second.
+    if (!opts.fenceRecorded)
+      return {
+        ok: true,
+        notes: [
+          "the lens-fix fence did not run: this round records no fence and no fence failure (an older driver wrote this state)",
+        ],
+      };
     return {
       ok: false,
       notes: [],
       reason:
-        "the lens-fix fence was never built (its pre-dispatch git reads failed, or no workstream records the lens tree), so the round cannot be cleared — nothing was pushed",
+        "this round recorded that its lens-fix fence could not be built (the planner refused, or a pre-dispatch git read failed), so the round cannot be cleared — nothing was pushed",
     };
   }
   if (snap.round !== opts.round) {
@@ -183,12 +251,22 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
   // Both reads, both required (the fix pass's own lesson, recorded in
   // `postPassFault`): a file the fixer created and never staged is in git's
   // untracked list and in NO commit range.
+  //
+  // A read that FAILS is not a refusal and not a pass — it is "could not tell",
+  // and the driver does not park a cycle on its own broken measurement. The
+  // distinction that matters lives with the fence's CONTENT (outOfScope,
+  // protected paths, the declared set), and that content was settled at plan
+  // time and printed to the fixer; a gate that cannot enumerate the round's
+  // files has no basis to widen a refusal the planner already made, so it
+  // degrades to a trace and lets the landing arms run as they did before #1852.
+  // A FALSE PASS is the risk, and it is bounded: every file the reads DID
+  // produce is still judged, and the reads fail only when git itself fails.
   const head = await headOf(opts.execFn, opts.tree);
-  if (!head.ok) return fail(`the lens tree's HEAD could not be read: ${head.reason}`);
+  if (!head.ok) return skip(`the lens tree's HEAD could not be read: ${head.reason}`);
   const range = await committedChanges(opts.execFn, opts.tree, snap.roundTip, head.value);
-  if (!range.ok) return fail(`the round's commit range could not be read: ${range.reason}`);
+  if (!range.ok) return skip(`the round's commit range could not be read: ${range.reason}`);
   const delta = await treeChanges(opts.execFn, opts.tree, snap.roundTip);
-  if (!delta.ok) return fail(`the lens tree could not be read: ${delta.reason}`);
+  if (!delta.ok) return skip(`the lens tree could not be read: ${delta.reason}`);
   const passFiles = [...new Set([...range.value, ...delta.value.names, ...delta.value.untracked])];
   if (passFiles.length === 0) return { ok: true, notes: [] };
 
@@ -250,6 +328,19 @@ export async function lensFixFenceCheck(opts: LensFixFenceGateOpts): Promise<Len
 function fail(reason: string, notes: string[] = []): LensFixFenceVerdict {
   trace(`work-driver: lens-fix fence refused the round — ${reason.slice(0, 200)}`);
   return { ok: false, reason, notes };
+}
+
+/**
+ * The gate could not measure the tree. Logged loudly, and NOT a park: the
+ * driver does not stop a cycle because its own git read failed, and the
+ * alternative (refusing on an unreadable delta) parks a cycle whose change may
+ * be entirely in fence. The trace is the disclosure.
+ */
+function skip(reason: string, notes: string[] = []): LensFixFenceVerdict {
+  trace(
+    `work-driver: lens-fix fence SKIPPED (its own read failed, so nothing was judged) — ${reason.slice(0, 200)}`,
+  );
+  return { ok: true, notes: [...notes, `fence skipped: ${reason}`] };
 }
 
 /** The fix pass's ONE fence predicate, re-exported for the gate's own tests. */

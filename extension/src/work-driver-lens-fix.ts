@@ -207,10 +207,34 @@ export async function runLensFix(
       fenceLines = lensFixFenceLines(planned.value);
       lensFixFenceState = fenceSnapshot(state, planned.value, fixTree);
     } else {
-      // Fail closed, but say so: a prompt with no fence block must not be the
-      // quiet half of a fence the gate then enforces from a value nobody built.
+      // Fail closed on the reads that MEAN a fence existed, and say so in a way
+      // that survives the step: a prompt with no fence block must not be the
+      // quiet half of a fence the gate then enforces from a value nobody built,
+      // and a trace alone cannot tell the gate "this round never had a fence" from
+      // "the fence was lost", because a trace is not in the state file after a
+      // resume.
+      //
+      // But the planner's ONE pre-git refusal is not that. "No valid base SHA is
+      // recorded" is a statement about the STATE — a state written by an older
+      // driver, or one that never set the field, is in the same shape and had no
+      // fence to require. Recording it would turn "no fence" into a recorded
+      // fence failure and park every such cycle, which makes #1852 a schema break
+      // rather than a fence. So it is traced, not recorded, and the gate — which
+      // reads records — does not run.
+      const neverHadAFence = planned.reason === "no valid base SHA is recorded";
+      if (!neverHadAFence) {
+        next = appendEvent(next, {
+          kind: "lens-fix-fence-unavailable",
+          at: Date.now(),
+          round: state.pipelineState.reviewRound,
+          worktree: fixTree,
+          reason: planned.reason,
+        });
+      }
       trace(
-        `work-driver: lens-fix fence could not be built — the prompt prints no fence and the gate will park rather than skip the check: ${planned.reason}`,
+        neverHadAFence
+          ? `work-driver: lens-fix fence not applicable for this round — the state cannot support one (${planned.reason}); the prompt prints no fence and the gate does not run`
+          : `work-driver: lens-fix fence could not be built — the prompt prints no fence and the gate will park rather than skip the check: ${planned.reason}`,
       );
     }
   }
