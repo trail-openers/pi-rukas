@@ -19,7 +19,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { errText, isValidBaseSha } from "./work-develop-git.ts";
 import type { FixPassStraysRequest } from "./work-driver-fix-pass-strays.ts";
-import { gitWriteTimeoutMs } from "./work-driver-fix-pass-strays.ts";
+import { gitWriteTimeoutMs, hardenedGitArgv, revertGitEnv } from "./work-driver-fix-pass-strays.ts";
 
 /**
  * The one read of the tree, taken before anything is touched.
@@ -81,9 +81,10 @@ export async function readStrayState(req: FixPassStraysRequest): Promise<StraySt
     // interpolated: inside a template literal git's own `{commit}` suffix reads
     // as a substitution.
     const peel = "^{commit}";
-    await git(["rev-parse", "--verify", "--quiet", headBefore + peel], {
+    await git(hardenedGitArgv(["rev-parse", "--verify", "--quiet", headBefore + peel]), {
       cwd: worktree,
       timeout: gitWriteTimeoutMs(),
+      env: revertGitEnv(),
     });
   } catch (err) {
     return {
@@ -106,8 +107,21 @@ export async function readStrayState(req: FixPassStraysRequest): Promise<StraySt
       // flag is already on the `checkout`/`rm` calls in `revertPaths`; making the
       // READ literal is what keeps the two sides of one decision using one grammar.
       ({ stdout: listed } = await git(
-        ["--literal-pathspecs", "ls-tree", "-r", "--name-only", "--", headBefore, ...strays],
-        { cwd: worktree, maxBuffer: 4 * 1024 * 1024, timeout: gitWriteTimeoutMs() },
+        hardenedGitArgv([
+          "--literal-pathspecs",
+          "ls-tree",
+          "-r",
+          "--name-only",
+          "--",
+          headBefore,
+          ...strays,
+        ]),
+        {
+          cwd: worktree,
+          maxBuffer: 4 * 1024 * 1024,
+          timeout: gitWriteTimeoutMs(),
+          env: revertGitEnv(),
+        },
       ));
     } catch (err) {
       return {

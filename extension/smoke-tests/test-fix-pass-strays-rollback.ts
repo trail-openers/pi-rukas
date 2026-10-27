@@ -100,9 +100,21 @@ console.log("# a rollback that cannot finish says so, and names where to recover
   // Everything after the destructive calls fails: the tree is NOT recoverable by
   // this path, and the operator must be told which artefacts hold the content.
   const t = passTreeAt("1846-rollback-stuck");
+  // The rollback's `git apply` fails on its argv INDEX (`args[1]`), not merely on
+  // its first element: the argv now carries the `-c` hardening prefix in front,
+  // so `args[0]` is "-c" for every call. Indexing the subcommand position is what
+  // keeps this a probe of the apply call and not of whatever happens to be first.
+  let applies = 0;
   const g: GitExec = async (args, opts) => {
-    if (args.includes("commit-tree") || args[0] === "apply")
-      throw new Error("simulated failure");
+    if (args.includes("commit-tree")) throw new Error("simulated failure");
+    // The rollback's own `git apply` is the step that must fail: the argv now
+    // carries the `-c` hardening prefix in front, so a positional test on the
+    // subcommand is fragile in both directions. Counting the calls that name a
+    // `.patch` operand makes this fail exactly the restore step, once.
+    if (args.includes(".patch") || args.some((a) => a.endsWith(".patch"))) {
+      applies++;
+      if (applies === 1) throw new Error("simulated failure");
+    }
     return real(args, opts);
   };
   const res = await revertFixPassStrays({

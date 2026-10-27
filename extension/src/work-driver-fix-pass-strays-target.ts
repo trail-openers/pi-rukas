@@ -27,9 +27,11 @@
 
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { scrubGitLocation } from "./git-env.ts";
 import { type GitExec, nextRetryAttempt, retryPatchPath } from "./work-develop-git.ts";
 import { gitReadTimeoutMs } from "./work-driver-adversarial-fix-git.ts";
 import type { FixPassStraysRequest } from "./work-driver-fix-pass-strays.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 
 /** The bound on every git call the revert makes, reads and writes alike: the
  *  fence's own read bound, so a hung revert is diagnosed inside the same budget as
@@ -43,6 +45,68 @@ import type { FixPassStraysRequest } from "./work-driver-fix-pass-strays.ts";
  */
 export function gitWriteTimeoutMs(): number {
   return gitReadTimeoutMs();
+}
+
+/**
+ * The argv every git call the revert makes runs with, and the environment it runs
+ * in — one place, because a revert that hardens six calls individually hardens
+ * none of them (the seventh is the one that runs a hook).
+ *
+ * **Why `-c core.hooksPath=/dev/null -c core.fsmonitor=false`** — the same pair
+ * `git-state.ts` prefixes its reads with. A repository config is writable by
+ * anything that can write in the worktree, which includes the fixer whose stray
+ * files this revert is about to delete: a `core.fsmonitor` script or a hook
+ * dropped into `.git/hooks` would run as part of the driver's own `add`/`rm`/
+ * `checkout`/`apply`, in the parent, against a tree the fixer controls. The
+ * revert's `commit-tree`, `read-tree` and `write-tree` run no hook of their own,
+ * but `checkout`, `add`, `rm` and `apply` all consult config, and one argv shape
+ * applied to all of them removes the per-call judgement that a hardened-per-call
+ * version needs.
+ *
+ * The prefix goes FIRST, ahead of any global options the call itself carries
+ * (`--literal-pathspecs`): git accepts `-c` anywhere before the subcommand, and
+ * putting it in front means no call has to remember the ordering rule.
+ */
+export function hardenedGitArgv(args: readonly string[]): string[] {
+  return ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args];
+}
+
+/**
+ * The environment one revert git call runs with: the driver's own env with every
+ * driver knob and every git repository-location variable removed, plus what the
+ * caller adds.
+ *
+ * Two scrubs, both load-bearing, and both invisible when the call happens to work:
+ *
+ *   - **the driver's knobs** (`verifyChildEnv`) — the same rule every other
+ *     host-side git/verify call in the driver follows, so a `PI_ENSEMBLE_*` knob
+ *     exported by the headless runner cannot change what a revert's git sees
+ *     (#1064, #1557);
+ *   - **git location variables** (`scrubGitLocation`, #1571) — an inherited
+ *     `GIT_DIR` / `GIT_INDEX_FILE` / `GIT_WORK_TREE` (from a hook, a
+ *     `git rebase --exec`, a wrapper that exported one) takes precedence over
+ *     `cwd`, so a revert aimed at one worktree silently acts on another tree and
+ *     exits 0.
+ *
+ * The BASE matters as much as the removals. Node's `execFile` treats `env` as the
+ * child's WHOLE environment, so an object literal naming only `GIT_INDEX_FILE`
+ * also removes `HOME` — and with it the global git config (`safe.directory`, the
+ * commit identity) and everything else git reads from the environment. That is
+ * the defect this helper exists to close.
+ *
+ * `extra` is applied LAST so a caller can still set `GIT_INDEX_FILE`, which is the
+ * one variable this module must set and the scrub must therefore remove first —
+ * `GIT_INDEX_FILE` is in the location set precisely because nobody else may pick
+ * it for a driver git call.
+ */
+export function revertGitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...verifyChildEnv() };
+  scrubGitLocation(env);
+  for (const [name, value] of Object.entries(extra)) {
+    if (value === undefined) delete env[name];
+    else env[name] = value;
+  }
+  return env;
 }
 
 /**
@@ -184,8 +248,13 @@ export async function nextStrayAttempt(
   let fromRef = fromPatch;
   try {
     const { stdout } = await git(
-      ["for-each-ref", "--format=%(refname)", `${STRAY_REF_NAMESPACE}/`],
-      { cwd: worktree, timeout: gitWriteTimeoutMs(), maxBuffer: 4 * 1024 * 1024 },
+      hardenedGitArgv(["for-each-ref", "--format=%(refname)", `${STRAY_REF_NAMESPACE}/`]),
+      {
+        cwd: worktree,
+        timeout: gitWriteTimeoutMs(),
+        maxBuffer: 4 * 1024 * 1024,
+        env: revertGitEnv(),
+      },
     );
     for (const line of stdout.split("\n")) {
       const name = line.trim();

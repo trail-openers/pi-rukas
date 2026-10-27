@@ -24,10 +24,18 @@ export type ExecFn = NonNullable<DriverContext["verifyExecFn"]>;
 /** The develop path's git transport: argv only. `args` is the git argv (no `git`).
  *  `timeout` is the per-call bound handed to the executor: a git call that hangs
  *  holds `index.lock`, so every destructive call the driver makes is bounded. */
-export type GitExec = (
-  args: string[],
-  opts: { cwd: string; maxBuffer?: number; timeout?: number },
-) => Promise<{ stdout: string }>;
+export type GitExec = (args: string[], opts: GitCallOpts) => Promise<{ stdout: string }>;
+
+/** The options every driver git call takes. `env` is the child's WHOLE
+ *  environment (Node's `execFile` semantics), so a caller that means to add one
+ *  variable has to start from a scrubbed copy of the parent's — see
+ *  `revertGitEnv` in `work-driver-fix-pass-strays-target.ts`. */
+export interface GitCallOpts {
+  cwd: string;
+  maxBuffer?: number;
+  timeout?: number;
+  env?: NodeJS.ProcessEnv;
+}
 
 /** The one adapter from the argv-honouring executor to `GitExec`. */
 export const runGit =

@@ -54,9 +54,15 @@
 import { copyFileSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { WORKSTREAM_ID_RE, errText } from "./work-develop-git.ts";
+import type { GitCallOpts } from "./work-develop-git.ts";
 import type { StrayState } from "./work-driver-fix-pass-strays-state.ts";
 import type { FixPassStraysRequest } from "./work-driver-fix-pass-strays.ts";
-import { fixPassStraysUntrackedDir, gitWriteTimeoutMs } from "./work-driver-fix-pass-strays.ts";
+import {
+  fixPassStraysUntrackedDir,
+  gitWriteTimeoutMs,
+  hardenedGitArgv,
+  revertGitEnv,
+} from "./work-driver-fix-pass-strays.ts";
 
 /** Resolve symlinks when the path exists; a path that does not exist keeps its
  *  lexical form. Same rule `assertInsideWorktrees` uses, so the two containment
@@ -147,19 +153,30 @@ export async function commitRevert(
   // A stale temp index from an earlier attempt would seed this commit with that
   // attempt's staging, so it is cleared before `read-tree` and again at the end.
   rmSync(tmpIndex, { force: true });
-  const opts = { cwd: worktree, timeout: gitWriteTimeoutMs(), env: { GIT_INDEX_FILE: tmpIndex } };
+  // One env for the whole commit: the driver's scrubbed child env (`HOME`, the
+  // global config, no inherited `GIT_DIR`/`GIT_INDEX_FILE`) plus the temp index.
+  // An object literal naming only `GIT_INDEX_FILE` would be the child's WHOLE
+  // environment — see `revertGitEnv`.
+  const opts = {
+    cwd: worktree,
+    timeout: gitWriteTimeoutMs(),
+    env: revertGitEnv({ GIT_INDEX_FILE: tmpIndex }),
+  };
+  // One argv shape for every call: the hook/fsmonitor guard applied by
+  // `hardenedGitArgv`, never remembered per call.
+  const call = (args: string[]) => git(hardenedGitArgv(args), opts);
   try {
     // Seed from the commit being reverted from — nothing else (see the header).
-    await git(["read-tree", "HEAD"], opts);
+    await call(["read-tree", "HEAD"]);
     // Restored paths: the working tree holds their `headBefore` content (the
     // `checkout` in `revertPaths` put it there), so `add` stages exactly that.
-    if (restored.length > 0) await git(["--literal-pathspecs", "add", "--", ...restored], opts);
+    if (restored.length > 0) await call(["--literal-pathspecs", "add", "--", ...restored]);
     // Paths the pass created and the revert deleted: `git rm` removed them from the
     // REAL index and the tree, but this index was seeded from HEAD where they exist,
     // so their deletion has to be staged here too.
     if (created.length > 0)
-      await git(["--literal-pathspecs", "rm", "-q", "--force", "--", ...created], opts);
-    const { stdout: treeOut } = await git(["write-tree"], opts);
+      await call(["--literal-pathspecs", "rm", "-q", "--force", "--", ...created]);
+    const { stdout: treeOut } = await call(["write-tree"]);
     const tree = treeOut.trim();
     if (!/^[0-9a-f]{40}$/.test(tree))
       throw new Error(`write-tree returned ${JSON.stringify(tree.slice(0, 40))}`);
@@ -168,21 +185,18 @@ export async function commitRevert(
     // no git identity at all must not make the revert fail. `commit-tree` runs no
     // hook, so the old `--no-verify` is not needed — a project's pre-commit hook
     // cannot judge a driver-authored revert.
-    const { stdout: commitOut } = await git(
-      [
-        "-c",
-        "user.name=pi-rukas",
-        "-c",
-        "user.email=driver@localhost",
-        "commit-tree",
-        tree,
-        "-p",
-        "HEAD",
-        "-m",
-        "revert out-of-fence fix-pass files",
-      ],
-      opts,
-    );
+    const { stdout: commitOut } = await call([
+      "-c",
+      "user.name=pi-rukas",
+      "-c",
+      "user.email=driver@localhost",
+      "commit-tree",
+      tree,
+      "-p",
+      "HEAD",
+      "-m",
+      "revert out-of-fence fix-pass files",
+    ]);
     const commit = commitOut.trim();
     if (!/^[0-9a-f]{40}$/.test(commit))
       throw new Error(`commit-tree returned ${JSON.stringify(commit.slice(0, 40))}`);
@@ -190,7 +204,7 @@ export async function commitRevert(
     // is what makes this safe beside a concurrent step, and why the tree needs no
     // reconciliation: `revertPaths` already restored or deleted every path, and
     // nothing outside them was touched.
-    await git(["update-ref", "HEAD", commit], opts);
+    await call(["update-ref", "HEAD", commit]);
     return undefined;
   } catch (err) {
     return `the fix-pass stray revert could not be committed in ${worktree}: ${errText(err)} — target ${headBefore.slice(0, 12)}; the preserved ref and patch are intact`;
@@ -237,6 +251,16 @@ export async function rollbackRevert(
   if (headBefore === undefined)
     return "no pre-pass HEAD was recorded, so the paths could not be put back";
   const tracked = state.strays.filter((f) => !state.untracked.has(f));
+  // Every rollback call gets the same hardened argv and the same scrubbed env as
+  // the commit it undoes: a restore that runs a repo-supplied hook is the same
+  // exposure, reached only on the failure path where nobody is looking.
+  const call = (args: string[], extra: Partial<GitCallOpts> = {}) =>
+    git(hardenedGitArgv(args), {
+      cwd: worktree,
+      timeout: gitWriteTimeoutMs(),
+      env: revertGitEnv(),
+      ...extra,
+    });
   // Paths absent at `headBefore` have nothing to check out: the revert deleted
   // them, so putting them back means leaving them deleted until step 2 recreates
   // them from the patch.
@@ -244,20 +268,18 @@ export async function rollbackRevert(
   try {
     const toRestore = tracked.filter((f) => state.trackedAtBefore.has(f));
     if (toRestore.length > 0)
-      await git(["--literal-pathspecs", "checkout", headBefore, "--", ...toRestore], {
-        cwd: worktree,
-        timeout: gitWriteTimeoutMs(),
-      });
+      await call(["--literal-pathspecs", "checkout", headBefore, "--", ...toRestore]);
     if (created.length > 0)
-      await git(
-        ["--literal-pathspecs", "rm", "-q", "--force", "--ignore-unmatch", "--", ...created],
-        { cwd: worktree, timeout: gitWriteTimeoutMs() },
-      );
-    await git(["apply", "--binary", patchPath], {
-      cwd: worktree,
-      timeout: gitWriteTimeoutMs(),
-      maxBuffer: 64 * 1024 * 1024,
-    });
+      await call([
+        "--literal-pathspecs",
+        "rm",
+        "-q",
+        "--force",
+        "--ignore-unmatch",
+        "--",
+        ...created,
+      ]);
+    await call(["apply", "--binary", patchPath], { maxBuffer: 64 * 1024 * 1024 });
     // The untracked strays were unlinked and live in no commit and no diff, so the
     // copies made beside the patch are the only thing that can put them back.
     for (const file of state.strays.filter((f) => state.untracked.has(f))) {
@@ -270,11 +292,7 @@ export async function rollbackRevert(
       mkdirSync(dirname(dest), { recursive: true });
       copyFileSync(src, dest);
     }
-    if (tracked.length > 0)
-      await git(["--literal-pathspecs", "reset", "-q", "--", ...tracked], {
-        cwd: worktree,
-        timeout: gitWriteTimeoutMs(),
-      });
+    if (tracked.length > 0) await call(["--literal-pathspecs", "reset", "-q", "--", ...tracked]);
     return undefined;
   } catch (err) {
     return `${errText(err)} — tree NOT restored; recover with \`git checkout ${preservedRef} -- <path>\` or by applying ${patchPath}`;

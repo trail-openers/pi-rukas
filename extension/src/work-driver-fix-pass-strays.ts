@@ -36,6 +36,7 @@ import { dirname, join, relative } from "node:path";
 import { isPlainRepoRelativePath, plannedPathProblem } from "./plan-path-shape.ts";
 import { trace } from "./trace.ts";
 import {
+  type GitCallOpts,
   type GitExec,
   assertInsideWorktrees,
   errText,
@@ -53,14 +54,26 @@ import {
   fixPassStraysPatchPath,
   fixPassStraysRef,
   gitWriteTimeoutMs,
+  hardenedGitArgv,
   nextStrayAttempt,
+  revertGitEnv,
 } from "./work-driver-fix-pass-strays-target.ts";
 
 // The record-naming half lives with the other pre-revert decisions in
 // `work-driver-fix-pass-strays-target.ts`; it is re-exported here because it is
 // part of what a revert PRODUCES (the ref and patch a caller must be able to
-// find), so importers of the revert ask the revert for both halves.
-export { fixPassStraysPatchPath, fixPassStraysRef, gitWriteTimeoutMs, nextStrayAttempt };
+// find), so importers of the revert ask the revert for both halves. The argv/env
+// hardeners are re-exported for the same reason: they are part of how a revert
+// talks to git, and a caller (or a test) that builds its own git call for the
+// revert should not have to know the pair.
+export {
+  fixPassStraysPatchPath,
+  fixPassStraysRef,
+  gitWriteTimeoutMs,
+  hardenedGitArgv,
+  nextStrayAttempt,
+  revertGitEnv,
+};
 
 /** Where the untracked strays' bytes are copied, beside the patch. */
 export function fixPassStraysUntrackedDir(scratchDir: string): string {
@@ -116,6 +129,73 @@ export interface FixPassStraysRequest {
 }
 
 /**
+ * The narrowed revert target: `preflight`'s verdict on the recorded head, carried
+ * to the rest of the revert so the 40-hex shape is proven ONCE.
+ *
+ * #1849 — the caller used to re-read `req.headBefore` after `preflight` and cast it
+ * (`as string`), which claimed a narrowing nothing had established at that line,
+ * and then guarded `=== undefined` again at a point `preflight` had already made
+ * unreachable. Both were the same defect: the type did not carry what the gate had
+ * decided. Returning the narrowed value here makes the guarantee flow through the
+ * type instead of through a cast, and keeps `preflight` the single place that
+ * decides what a usable target is.
+ */
+export interface FixPassRevertTarget {
+  headBefore: string;
+}
+
+/**
+ * The gates that make a revert safe to attempt at all; `undefined` = proceed.
+ * Nothing here touches git: every refusal is decided from the request, so a
+ * bad target or a bad path never reaches a destructive command.
+ */
+function preflight(req: FixPassStraysRequest): FixPassRevertTarget | string | undefined {
+  if (req.headBefore === undefined || req.headBefore.trim() === "") {
+    // #1846 PM decision 2 — with no positively recorded pre-pass head there is
+    // no "back to", and inventing one (base, HEAD~1) would delete the pass's own
+    // work. This is the park, never a revert with a guessed target.
+    return `the fix pass recorded no usable pre-pass HEAD for ${req.workstreamId}, so its out-of-fence files cannot be reverted to a known state — the pass is not reverted`;
+  }
+  // The target must be a full SHA before a single git call reads it. `cat-file`
+  // failing on a garbage rev and failing on an absent path look the same to a
+  // caller that treats "unreadable" as "absent", and "absent" means `git rm`.
+  // Shape first, so a malformed target is refused without asking git anything.
+  // `isValidBaseSha` is a type predicate, so the value returned from here is
+  // typed `string` — that is what lets the caller drop its cast.
+  if (!isValidBaseSha(req.headBefore)) {
+    return `the fix pass's recorded pre-pass HEAD for ${req.workstreamId} is not a full 40-hex SHA (${JSON.stringify(req.headBefore)}), so it cannot be a revert target — the pass is not reverted`;
+  }
+  const headBefore = req.headBefore;
+  // Every stray path is judged before git sees it: these strings become argv
+  // elements of `checkout`/`rm`/`add`, and a leading `-` or a glob character
+  // turns one file argument into a flag or a pattern that matches other files.
+  for (const file of req.strays) {
+    const problem = plannedPathProblem(file);
+    if (problem !== undefined)
+      return `refusing to revert the fix pass's out-of-fence files: ${problem}`;
+    if (!isPlainRepoRelativePath(file))
+      return `refusing to revert the fix pass's out-of-fence files: '${file}' is not a plain repo-relative path`;
+  }
+  try {
+    // Destructive commands run only in a driver-owned worktree, and the patch
+    // name is validated before the first `git`.
+    assertInsideWorktrees(req.repoRoot, req.worktree);
+    assertInsideRecordedWorktree(req);
+    fixPassStraysPatchPath(req.scratchDir, req.issue, req.workstreamId, req.attempt);
+    // The temporary index the commit is built from is a path git resolves on its
+    // own (`GIT_INDEX_FILE`), so it is judged here rather than at the call: a
+    // relative one would resolve against each call's cwd, and one that escapes
+    // its own directory is outside every guarantee this module makes. It is
+    // gated to the SCRATCH dir, not to `.worktrees/` — the scratch dir lives
+    // under the repo root, so the worktree gate cannot be the one that covers it.
+    assertFixPassStraysIndexPath(req);
+  } catch (err) {
+    return `refusing to revert the fix pass's out-of-fence files: ${errText(err)}`;
+  }
+  return { headBefore };
+}
+
+/**
  * Preserve the strays, revert them, and commit the result.
  *
  * Returns the disclosure record on success or a refusal whose text becomes the
@@ -128,23 +208,26 @@ export async function revertFixPassStrays(
   req: FixPassStraysRequest,
 ): Promise<FixPassReverted | FixPassRevertRefusal> {
   const refused = preflight(req);
-  if (refused !== undefined) return { reason: refused };
+  if (typeof refused === "string") return { reason: refused };
+  if (refused === undefined) {
+    // `preflight` returns a target or a refusal; no third answer exists, but a
+    // gate whose "pass" reading is the absence of a string is a gate that passes
+    // on a bug in itself.
+    return {
+      reason: "the fix-pass stray revert's preflight produced neither a target nor a refusal",
+    };
+  }
   const { git, worktree, issue, workstreamId, attempt } = req;
-  // `headBefore` becomes a `string` at THIS boundary and nowhere else: it is
-  // optional on the request because an absent head is a legitimate caller state
-  // ("the pass recorded nothing usable") whose answer is a park reason, but
-  // everything below runs only once `preflight` has required a 40-hex SHA. One
-  // narrowing here, not a `?? ""` per call site: an empty string as a rev is a git
-  // error at best and a wrong tree at worst.
-  const headBefore = req.headBefore as string;
+  // The narrowed 40-hex target, established once by `preflight` (see
+  // `FixPassRevertTarget`): no cast, and no second `=== undefined` guard for a
+  // case the gate above already refused.
+  const { headBefore } = refused;
   // The tree is read ONCE, here, and every later decision — preserve, revert,
   // stage, commit — works from that snapshot. Asking git twice about the same
   // path ("is it tracked?", "does it exist?") across a revert that deletes files
   // is how one path gets checked out and the next staged from a stale answer.
   const state = await readStrayState(req);
   if ("reason" in state) return { reason: state.reason };
-  if (headBefore === undefined)
-    return { reason: "the fix pass recorded no usable pre-pass HEAD — nothing was reverted" };
   const strays = state.strays;
   const preservedRef = fixPassStraysRef(issue, workstreamId, attempt);
   const patchPath = fixPassStraysPatchPath(req.scratchDir, issue, workstreamId, attempt);
@@ -194,52 +277,6 @@ export async function revertFixPassStrays(
   return { paths: [...state.strays], preservedRef, patchPath, untrackedCopies };
 }
 
-/** The gates that make a revert safe to attempt at all; `undefined` = proceed.
- *  Nothing here touches git: every refusal is decided from the request, so a
- *  bad target or a bad path never reaches a destructive command. */
-function preflight(req: FixPassStraysRequest): string | undefined {
-  if (req.headBefore === undefined || req.headBefore.trim() === "") {
-    // #1846 PM decision 2 — with no positively recorded pre-pass head there is
-    // no "back to", and inventing one (base, HEAD~1) would delete the pass's own
-    // work. This is the park, never a revert with a guessed target.
-    return `the fix pass recorded no usable pre-pass HEAD for ${req.workstreamId}, so its out-of-fence files cannot be reverted to a known state — the pass is not reverted`;
-  }
-  // The target must be a full SHA before a single git call reads it. `cat-file`
-  // failing on a garbage rev and failing on an absent path look the same to a
-  // caller that treats "unreadable" as "absent", and "absent" means `git rm`.
-  // Shape first, so a malformed target is refused without asking git anything.
-  if (!isValidBaseSha(req.headBefore)) {
-    return `the fix pass's recorded pre-pass HEAD for ${req.workstreamId} is not a full 40-hex SHA (${JSON.stringify(req.headBefore)}), so it cannot be a revert target — the pass is not reverted`;
-  }
-  // Every stray path is judged before git sees it: these strings become argv
-  // elements of `checkout`/`rm`/`add`, and a leading `-` or a glob character
-  // turns one file argument into a flag or a pattern that matches other files.
-  for (const file of req.strays) {
-    const problem = plannedPathProblem(file);
-    if (problem !== undefined)
-      return `refusing to revert the fix pass's out-of-fence files: ${problem}`;
-    if (!isPlainRepoRelativePath(file))
-      return `refusing to revert the fix pass's out-of-fence files: '${file}' is not a plain repo-relative path`;
-  }
-  try {
-    // Destructive commands run only in a driver-owned worktree, and the patch
-    // name is validated before the first `git`.
-    assertInsideWorktrees(req.repoRoot, req.worktree);
-    assertInsideRecordedWorktree(req);
-    fixPassStraysPatchPath(req.scratchDir, req.issue, req.workstreamId, req.attempt);
-    // The temporary index the commit is built from is a path git resolves on its
-    // own (`GIT_INDEX_FILE`), so it is judged here rather than at the call: a
-    // relative one would resolve against each call's cwd, and one that escapes
-    // its own directory is outside every guarantee this module makes. It is
-    // gated to the SCRATCH dir, not to `.worktrees/` — the scratch dir lives
-    // under the repo root, so the worktree gate cannot be the one that covers it.
-    assertFixPassStraysIndexPath(req);
-  } catch (err) {
-    return `refusing to revert the fix pass's out-of-fence files: ${errText(err)}`;
-  }
-  return undefined;
-}
-
 /**
  * Write the durable ref and the patch BEFORE touching a single path.
  *
@@ -260,15 +297,22 @@ async function preserve(
   patchPath: string,
   state: StrayState,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const { git, worktree } = req;
+  const { worktree } = req;
+  // One argv/env shape for every call this half makes, from the single hardened
+  // pair in `work-driver-fix-pass-strays-target.ts`.
+  const call = (args: string[], extra: Partial<GitCallOpts> = {}) =>
+    req.git(hardenedGitArgv(args), {
+      cwd: worktree,
+      timeout: gitWriteTimeoutMs(),
+      env: revertGitEnv(),
+      ...extra,
+    });
   // Whether the ref was created, so a failure AFTER it can delete it again: an
   // orphan ref pointing at a tree the driver never reverted is one somebody will
   // later trust as the record of a revert that did not happen.
   let refCreated: string | undefined;
   try {
-    const head = (
-      await git(["rev-parse", "HEAD"], { cwd: worktree, timeout: gitWriteTimeoutMs() })
-    ).stdout.trim();
+    const head = (await call(["rev-parse", "HEAD"])).stdout.trim();
     if (head === "") throw new Error("the worktree's HEAD could not be read");
     const diff = await readStraysPatch(req, state, headBefore);
     // The guard asks what was ACTUALLY PRESERVED, not how big the patch is
@@ -291,7 +335,7 @@ async function preserve(
     mkdirSync(dirname(patchPath), { recursive: true });
     writeFileSync(patchPath, diff, { flag: "wx" });
     // Only now is the content reachable through a ref too.
-    await git(["update-ref", preservedRef, head], { cwd: worktree, timeout: gitWriteTimeoutMs() });
+    await call(["update-ref", preservedRef, head]);
     refCreated = preservedRef;
     // Neither write touches the tree, so preservation leaves the worktree
     // byte-identical, and it deliberately does NOT reset the index: the revert
@@ -301,7 +345,7 @@ async function preserve(
     // Undo the ref if it got created before something else failed, so a refused
     // preservation never leaves a ref behind that looks like a revert's record.
     if (refCreated !== undefined) {
-      await git(["update-ref", "-d", refCreated], { cwd: worktree }).catch(() => undefined);
+      await call(["update-ref", "-d", refCreated]).catch(() => undefined);
     }
     // Nothing has been reverted yet, so the tree is exactly as it arrived. The
     // park says so: a preservation failure is the driver DECLINING the revert,
@@ -327,11 +371,15 @@ async function readStraysPatch(
   state: StrayState,
   headBefore: string,
 ): Promise<string> {
-  const { stdout } = await req.git(["diff", "--binary", headBefore, "--", ...state.strays], {
-    cwd: req.worktree,
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: gitWriteTimeoutMs(),
-  });
+  const { stdout } = await req.git(
+    hardenedGitArgv(["diff", "--binary", headBefore, "--", ...state.strays]),
+    {
+      cwd: req.worktree,
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: gitWriteTimeoutMs(),
+      env: revertGitEnv(),
+    },
+  );
   return stdout;
 }
 
@@ -405,6 +453,12 @@ async function revertPaths(
   headBefore: string,
 ): Promise<string | undefined> {
   const { worktree } = req;
+  const call = (args: string[]) =>
+    git(hardenedGitArgv(args), {
+      cwd: worktree,
+      timeout: gitWriteTimeoutMs(),
+      env: revertGitEnv(),
+    });
   const untrackedFiles = state.strays.filter((f) => state.untracked.has(f));
   const restored = state.strays.filter(
     (f) => !state.untracked.has(f) && state.trackedAtBefore.has(f),
@@ -424,16 +478,10 @@ async function revertPaths(
       rmSync(join(worktree, file), { force: true });
     }
     if (restored.length > 0) {
-      await git(["--literal-pathspecs", "checkout", headBefore, "--", ...restored], {
-        cwd: worktree,
-        timeout: gitWriteTimeoutMs(),
-      });
+      await call(["--literal-pathspecs", "checkout", headBefore, "--", ...restored]);
     }
     if (created.length > 0) {
-      await git(["--literal-pathspecs", "rm", "-q", "--force", "--", ...created], {
-        cwd: worktree,
-        timeout: gitWriteTimeoutMs(),
-      });
+      await call(["--literal-pathspecs", "rm", "-q", "--force", "--", ...created]);
     }
     return undefined;
   } catch (err) {
