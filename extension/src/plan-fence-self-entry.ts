@@ -195,6 +195,12 @@ export function selfFenceDropsBetween(
 
 /** The note a fold or the boundary writes for one removed self-fence entry. */
 function selfFenceDroppedNote(entry: string, path: string): string {
+  // The boundary's own wording: it answers to the FENCE BOUND (the entry was
+  // never a usable fence), where the fold's note answers to the merge, and it
+  // does NOT say `(merged workstream)` — a drop this site made was made by one
+  // call's boundary, not by a fold. Both fields are neutralised and quoted, so
+  // no control byte the planner wrote reaches the state file, the handoff or a
+  // trace line raw (#1862 M4).
   return `self-fence dropped: ${JSON.stringify(neutraliseFenceEntry(entry))} covers ${JSON.stringify(neutraliseFenceEntry(path))}`;
 }
 

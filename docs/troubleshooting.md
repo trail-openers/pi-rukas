@@ -3228,11 +3228,11 @@ The second line means a findings file **exists** at the store's location and can
 
 ```
 self-fence dropped: "tests/" covers "tests/test_x.py" (merged workstream)
-work-driver: plan workstream 'implement' self-fence dropped: "…" covers its own declared "tests/test_x.py"
+work-driver: plan workstream "implement" self-fence dropped: "Every file under tests/ is frozen" covers its own declared "tests/test_x.py"
 work-driver: <subject> outOfScope bounded — … (kept: N/M)
 ```
 
-Both the entry and the path inside a note are neutralised (`plan-fence-render.ts`) and JSON-quoted: the entry is planner-derived text and the note lands in the state file, the handoff and a trace line, so a control character in a fence cannot write its own `WARN work-driver:` line or colour an operator's terminal. A mixed sentence — one naming a path this workstream does not own, a sibling's file, a protected path, or an undeclared subtree — is **kept whole**: one such token holds the entire entry, because a fence is one instruction and the driver cannot remove half a sentence.
+The workstream id on the WARN line is neutralised and JSON-quoted too: like the entry, it is the planner's own text, and an id carrying a newline would otherwise write its own `WARN work-driver:` line into the operator's log. So every value on all three surfaces — the persisted `UnfenceRecord.entry`, the note beside it, and the boundary's WARN line — is planner-derived text that goes through `neutraliseFenceEntry` (`plan-fence-render.ts`) and JSON-quoting before it is printed or stored: a control character in a fence cannot write its own log line or colour an operator's terminal. A mixed sentence — one naming a path this workstream does not own, a sibling's file, a protected path, or an undeclared subtree — is **kept whole**: one such token holds the entire entry, because a fence is one instruction and the driver cannot remove half a sentence.
 
 **Deferred, and what it still parks on:** `verifyConsolidation`'s `declaredPathInDiff` compares declared paths to `git diff --name-only` literally, the same defect class, at a HALT step — a cycle whose deliverables are declared as globs or `new `-annotated paths can still park as `commit-pr-incomplete-consolidation`. That is a follow-up; the converge-side matcher is fixed here.
 

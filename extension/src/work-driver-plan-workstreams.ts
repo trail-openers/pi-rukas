@@ -14,6 +14,7 @@ import type { BoundedOutOfScope } from "./plan-fence-bound.ts";
 import { boundOutOfScope, fenceBoundNotice, fenceWasBounded } from "./plan-fence-bound.ts";
 import { proseSelfFenceDrops } from "./plan-fence-prose.ts";
 import { clippedField } from "./plan-fence-record.ts";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import { boundPaths, pathsBoundNotice } from "./plan-paths-bound.ts";
 import { WORKSTREAM_ID_MAX, type WorkstreamArgs } from "./plan-workstream-schema.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -30,8 +31,15 @@ import { foldTwo } from "./workstream-fold.ts";
 function traceBoundaryDrops(drops: UnfenceRecord[], workstreamId: string): UnfenceRecord[] {
   for (const d of drops) {
     // The note is the persisted wording; the prefix names the site so an operator
-    // grepping one channel sees which rule removed the fence (#1862 M4).
-    traceWarn(`work-driver: plan workstream '${workstreamId}' ${d.note}`);
+    // grepping one channel sees which rule removed the fence (#1862 M4). The id
+    // is the planner's own text and is the ONE value this line did not already
+    // neutralise — every record field is built through
+    // `neutraliseFenceEntry`/`JSON.stringify` at its own site — so it is quoted
+    // with them too: an id carrying a newline writes its own `WARN work-driver:`
+    // line into the operator's log.
+    traceWarn(
+      `work-driver: plan workstream ${JSON.stringify(neutraliseFenceEntry(workstreamId))} ${d.note}`,
+    );
   }
   return drops;
 }

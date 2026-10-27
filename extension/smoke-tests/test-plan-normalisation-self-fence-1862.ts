@@ -56,7 +56,9 @@ function stubExec(definitions: Record<string, string[]>) {
     const argv = opts?.argv ?? [];
     if (argv[0] === "grep") {
       const name = argv[5] ?? "";
-      return { stdout: (definitions[name] ?? []).map((f) => `${f}\0`).join("") };
+      return {
+        stdout: (definitions[name] ?? []).map((f) => `${f}\0`).join(""),
+      };
     }
     if (argv[0] === "show") {
       const file = (argv[1] ?? "").split(":")[1] ?? "";
