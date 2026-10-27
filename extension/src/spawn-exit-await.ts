@@ -49,8 +49,6 @@ import { trace } from "./trace.ts";
  */
 export const EXIT_AWAIT_GRACE_MS = 15_000;
 
-const POLL_MS = 50;
-
 export interface ExitAwaitOpts {
   /** Ceiling past the escalation for the exit event to arrive. */
   graceMs?: number;

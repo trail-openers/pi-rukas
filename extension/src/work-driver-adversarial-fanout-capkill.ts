@@ -51,26 +51,11 @@ export function capKillOutcomeFields(result: DispatchResult): Partial<Adversaria
  */
 type RetryLadderKillCause = Exclude<
   NonNullable<DispatchResult["killCause"]>,
-  // #1863 — `child-bound` is no longer excluded: see `SupervisionKillCause`.
+  // #1863 — `child-bound` is no longer excluded: it survives the projection
+  // below, because the projection is the ONLY channel by which a cause survives
+  // `infraFailureResult` (see `retryLadderKillCause`).
   "loop" | "token-budget" | "no-progress" | "stuck-tool"
 >;
-
-/**
- * #1567 — the child-supervision kills. Each ends a child the driver judged
- * done with its time or frozen, so retrying it buys the same bound again.
- *
- * #1863 — `child-bound` is nevertheless on the projection list, because the
- * projection is not the ladder's policy — it is the ONLY channel by which a
- * cause survives `infraFailureResult`. A cause this list drops reaches the
- * fan-out with no structured signal at all, `classifyAdversarialOutcome` falls
- * through every `self-killed:*` branch and the bound kill is reported as a
- * provider severance (the #1243 shape in the other direction). The step handler
- * is what acts on the cause — it records `child-timeout:adversarial`, and that
- * is the consumer whose absence this fixes. `no-progress` / `stuck-tool` stay
- * off the list: no consumer of this projection reads them, and a cause that is
- * never acted on has no reason to travel.
- */
-type SupervisionKillCause = "no-progress" | "stuck-tool";
 
 const RETRY_LADDER_KILL_CAUSES: readonly RetryLadderKillCause[] = [
   "timeout",
@@ -78,7 +63,12 @@ const RETRY_LADDER_KILL_CAUSES: readonly RetryLadderKillCause[] = [
   "tool-inactivity",
   "abort",
   "plan-timeout",
-  // #1863 — survives the projection; see `SupervisionKillCause` above.
+  // #1863 — survives the projection. A cause this list drops reaches the
+  // fan-out with no structured signal at all, `classifyAdversarialOutcome`
+  // falls through every `self-killed:*` branch, and the bound kill is reported
+  // as a provider severance (the #1243 shape in the other direction). The step
+  // handler is what acts on the cause — it records `child-timeout:adversarial`,
+  // and that is the consumer whose absence this fixes.
   "child-bound",
 ] as const;
 

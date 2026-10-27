@@ -25,12 +25,7 @@ import { resourceReport } from "../resource-budget.ts";
 import { isTerminalState, readState, workStateFile } from "../workflow-state.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
-import {
-  type IssueResult,
-  RESULT_SCHEMA_VERSION,
-  notStartedResult,
-  projectIssue,
-} from "./result.ts";
+import { type IssueResult, notStartedResult, projectIssue, resultDocument } from "./result.ts";
 
 /**
  * How long the runner waits for its own driver before calling it wedged.
@@ -95,16 +90,15 @@ export async function wedgedRun(
 /** One result document, in the shape `cli.ts` writes for `work`. */
 export function formatResultDocument(run: RunOutcome, json: boolean): string {
   if (json) {
-    const doc = {
-      schemaVersion: RESULT_SCHEMA_VERSION,
-      buildCommit: readBuildCommit(),
-      buildVersion: readBuildVersion(),
-      exitCode: run.exitCode,
-      issues: run.results,
-      ...(run.error ? { error: run.error } : {}),
-      resources: resourceReport(),
-    };
-    return `${JSON.stringify(doc)}\n`;
+    // The ONE builder (`result.ts`'s `resultDocument`), so the wedge document
+    // and the supervisor's crash document can never drift in schema version,
+    // build fields or key order (#1863 round 1). `resources` stays the CLI's
+    // additive field, added at the write site as everywhere else.
+    const doc = resultDocument(run, {
+      commit: readBuildCommit(),
+      version: readBuildVersion(),
+    });
+    return `${JSON.stringify({ ...doc, resources: resourceReport() })}\n`;
   }
   const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
   const head = `pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`;
@@ -115,14 +109,22 @@ export interface ResultGuaranteeOpts {
   /** The run itself. If it never settles, the guarantee prints the wedge. */
   work: () => Promise<RunOutcome>;
   json: boolean;
-  repoRoot: string;
+  /**
+   * Where the wedge projection reads the state files from. A callback so the
+   * CLI can hand in the repo root it is still resolving: by the time the wedge
+   * fires the resolution has settled (or is itself the failure the document
+   * reports), and the earlier `""` made every issue project from a path that
+   * named no repository (#1863 round 1).
+   */
+  repoRoot: string | (() => string | Promise<string>);
   issues: number[];
   /** stdout sink; injectable so the offline test observes the stream. */
   write: (s: string) => void;
   /**
    * Override the wedge bound. `undefined` is the documented 6 h; `0` disables
    * the backstop. Tests inject a short bound here rather than through an env
-   * var: the production default is not a knob (see `DEFAULT_WEDGE_MS`).
+   * var or a production CLI flag: the production default is not a knob (see
+   * `DEFAULT_WEDGE_MS`).
    */
   wedgeMs?: number;
 }
@@ -174,7 +176,8 @@ export async function withResultGuarantee(opts: ResultGuaranteeOpts): Promise<nu
     // nothing settled in time.
     return EXIT.crash;
   }
-  const run = await wedgedRun(opts.repoRoot, opts.issues, reason);
+  const repoRoot = await (typeof opts.repoRoot === "function" ? opts.repoRoot() : opts.repoRoot);
+  const run = await wedgedRun(repoRoot, opts.issues, reason);
   write(formatResultDocument(run, opts.json));
   // A driver that settles later is abandoned: nothing it returns can be printed
   // now, and its locks / groups are released by cli.ts's exit path.

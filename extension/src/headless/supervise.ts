@@ -63,6 +63,7 @@ import {
   projectIssue,
   resultDocument,
 } from "./result.ts";
+import { workPathStdout } from "./work-path-stdout.ts";
 
 export const SUPERVISED_ENV = "PI_ENSEMBLE_HEADLESS_SUPERVISED";
 
@@ -78,7 +79,8 @@ export interface SuperviseOptions {
 }
 
 /**
- * The last complete result document on a child's stdout, or undefined.
+ * The last complete result document on a child's stdout, and what the supervisor
+ * needs from it, or undefined.
  *
  * "Complete" is load-bearing: a runner killed mid-write leaves a truncated line
  * that is neither nothing nor a document, and calling that a result would pass
@@ -90,6 +92,13 @@ export interface SuperviseOptions {
  * returns to the host, so `Infinity`, a float, a negative or a number the
  * contract never published is not a result but garbage, and garbage is what the
  * `crash` projection is for.
+ *
+ * The return type says exactly that much: `exitCode` was verified against the
+ * published set and `raw` is the text that verified, which is the only thing
+ * the caller echoes. Everything else in the parsed line — per-issue results,
+ * `error`, `resources` — is carried through unchecked, so it is typed
+ * `ResultDocument` (the caller re-emits the object it read, not a projection of
+ * it) rather than narrowed to fields this function never inspected.
  */
 export function parseResultDocument(out: string): ResultDocument | undefined {
   const lines = out.split("\n");
@@ -143,7 +152,13 @@ async function projectFromState(repoRoot: string, issues: number[]): Promise<Iss
 
 /** Run `work` in a child and return the exit code to use. */
 export async function superviseWork(opts: SuperviseOptions): Promise<number> {
-  const write = opts.write ?? ((s: string) => process.stdout.write(s));
+  // The ONE stdout writer on the `work` path (#1863 round 1): the default is the
+  // latch, so the supervisor's forwarded child document and its own crash
+  // projection are mutually exclusive by construction, and nothing else on this
+  // path can put a second document on the host's stream. Both arms below call
+  // `write`, never `process.stdout`, so a caller that injects a sink (every
+  // offline test) sees the same single-document property the host gets.
+  const write = opts.write ?? ((s: string) => workPathStdout(s));
   const [cmd, ...args] = opts.command as [string, ...string[]];
   const child = spawn(cmd, args, {
     env: { ...process.env, [SUPERVISED_ENV]: "1" },
@@ -174,7 +189,12 @@ export async function superviseWork(opts: SuperviseOptions): Promise<number> {
   const answered = exit.signal || exit.error ? undefined : parseResultDocument(out);
   if (answered !== undefined) {
     // The document LINE, not the buffer: stray bytes ahead of it are not part
-    // of the host's contract.
+    // of the host's contract. NOTE `write` — the injectable sink the caller may
+    // have supplied. Routing this through the process-wide latch instead made it
+    // contend with the crash projection below (the supervisor has exactly one
+    // document, whichever arm produced it), and in a process whose latch had
+    // already been armed it silently DROPPED the child's document: the host read
+    // nothing while the process exited with the code of a document nobody saw.
     write(`${JSON.stringify(answered)}\n`);
     return answered.exitCode;
   }

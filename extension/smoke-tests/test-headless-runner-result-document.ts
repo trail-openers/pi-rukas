@@ -53,6 +53,9 @@ function assert(cond: boolean, msg: string) {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(here, "..", "src", "headless", "cli.ts");
+// Drives `main()` in-process and then attempts a second stdout write; the
+// stdout-ownership case spawns this instead of the CLI (see its header).
+const latchFixture = join(here, "lib", "headless-stdout-latch-fixture.ts");
 const tmpRoot = await mkdtemp(join(tmpdir(), "pi-1863-runner-"));
 
 
@@ -61,9 +64,10 @@ async function runCli(
   args: string[],
   env: Record<string, string>,
   cwd: string,
+  entry: string = cliPath,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return await new Promise((resolve) => {
-    const child = spawn(process.execPath, [cliPath, ...args], {
+    const child = spawn(process.execPath, [entry, ...args], {
       cwd,
       env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -219,6 +223,46 @@ try {
         `the real process exits with the code its document declares (doc ${parsed?.exitCode} vs process ${out.code})`,
       );
     }
+  }
+
+  // ── 5. STDOUT OWNERSHIP: only the runner's result writer may write stdout.
+  // A second document — from a late wedge racing a healthy run, or from any
+  // code path that found `process.stdout.write` itself — would leave the host
+  // reading one line and discarding the other, and which one wins depends on
+  // the reader. The writer is a latch: the first document is the document, and
+  // a later call is refused (#1863 round 1, HIGH/security).
+  {
+    const repo = await mkdtemp(join(tmpRoot, "latch-"));
+    // THE CONTROL first: without the second attempt the stream carries exactly
+    // one line, so the case below cannot pass because the run printed nothing.
+    const alone = await runCli(["work", "1863", "--json"], {}, repo, latchFixture);
+    assert(
+      docs(alone.stdout).length === 1,
+      `the harness's own run prints one stdout line (got ${docs(alone.stdout).length}) — the control for the latch case`,
+    );
+    const out = await runCli(
+      ["work", "1863", "--json", "--extra-stdout"],
+      {},
+      repo,
+      latchFixture,
+    );
+    const lines = docs(out.stdout);
+    assert(
+      lines.length === 1,
+      `a SECOND stdout write attempt by the supervisor reaches no document (got ${lines.length} line(s))`,
+    );
+    assert(
+      !out.stdout.includes("SECOND"),
+      `the refused document never reaches the host (${JSON.stringify(out.stdout.slice(0, 120))})`,
+    );
+    assert(
+      lines.length === 1 && JSON.parse(lines[0] as string)?.exitCode === out.code,
+      "the one line the host reads is the runner's document, and its code is the process code",
+    );
+    assert(
+      out.stderr.includes("refused a second stdout result document"),
+      `the refusal is traced rather than silent (stderr tail ${JSON.stringify(out.stderr.slice(-160))})`,
+    );
   }
 
   console.log("OK: #1863 the runner always emits exactly one result document");

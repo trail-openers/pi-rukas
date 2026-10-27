@@ -64,6 +64,9 @@ function assert(cond: boolean, msg: string) {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(here, "..", "src", "headless", "cli.ts");
+// The wedge case spawns THIS rather than `cli.ts`: a short bound is a test knob,
+// and the shipped CLI publishes no flag for it (see the harness's own header).
+const wedgeEntry = join(here, "lib", "headless-wedge-entry.ts");
 
 const fakeDir = mkdtempSync(join(tmpdir(), "pi-1863-real-"));
 const repoDir = mkdtempSync(join(tmpdir(), "pi-1863-repo-"));
@@ -71,14 +74,15 @@ const savedPath = process.env.PATH;
 const savedBound = process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS;
 const savedGrace = process.env.PI_ENSEMBLE_CHILD_BOUND_GRACE_MS;
 
-/** Run the real CLI as a real child process and collect its streams. */
+/** Run the real CLI (or, with `entry`, the wedge harness) as a real child. */
 async function runCli(
   args: string[],
   env: Record<string, string>,
   cwd: string,
+  entry: string = cliPath,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return await new Promise((resolve) => {
-    const child = spawn(process.execPath, [cliPath, ...args], {
+    const child = spawn(process.execPath, [entry, ...args], {
       cwd,
       env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "pipe"],
@@ -178,6 +182,24 @@ try {
     }
   }
 
+  // ── 2b. The shipped CLI publishes NO wedge flag: a caller cannot relabel a
+  // slow run as wedged, which is the reason the knob left argv (#1863 round 1).
+  {
+    const out = await runCli(["work", "1863", "--json", "--wedge-ms", "1"], {}, repoDir);
+    const lines = docs(out.stdout);
+    const doc =
+      lines.length === 1
+        ? (JSON.parse(lines[0] as string) as {
+            exitCode?: number;
+            error?: { code?: string };
+          })
+        : undefined;
+    assert(
+      out.code === 40 && doc?.error?.code === "bad-arguments",
+      `--wedge-ms is refused as an unknown argument (exit ${out.code}, error=${JSON.stringify(doc?.error)})`,
+    );
+  }
+
   // ── 3. A driver that never answers is REPORTED, not silently dropped. The
   // wedge bound is driven to 1 ms so the guarantee fires before the driver can
   // answer, and the scratch directory is NOT a git repository: a repo-shaped
@@ -200,9 +222,10 @@ try {
     git(["add", "README.md"]);
     git(["-c", "user.email=t@invalid", "-c", "user.name=t", "commit", "-q", "-m", "base"]);
     const out = await runCli(
-      ["work", "1863", "--json", "--wedge-ms", "1"],
+      ["--wedge-ms", "1", "work", "1863", "--json"],
       { PI_ENSEMBLE_HEADLESS: "1" },
       scratch,
+      wedgeEntry,
     );
     const lines = docs(out.stdout);
     assert(
