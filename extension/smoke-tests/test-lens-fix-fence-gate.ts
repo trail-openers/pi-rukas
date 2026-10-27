@@ -53,7 +53,12 @@ function cycle(label: string): { repoRoot: string; tree: string; roundTip: strin
   return { repoRoot, tree, roundTip: git(tree, "rev-parse HEAD").trim() };
 }
 
-function stateFor(repoRoot: string, tree: string, declared: string[], outOfScope: string[]): WorkState {
+function stateFor(
+  repoRoot: string,
+  tree: string,
+  declared: string[],
+  outOfScope: string[],
+): WorkState {
   const s = initialState(1852, 1_000_000);
   return {
     ...s,
@@ -121,6 +126,7 @@ console.log("# a fix that stays inside the fence lands");
     tree: c.tree,
     round: 1,
     revertAlreadyUsed: false,
+    fenceRecorded: true,
   });
   assert(v.ok, `an in-fence round is approved (reason: ${v.ok ? "" : v.reason})`);
   rmSync(c.repoRoot, { recursive: true, force: true });
@@ -142,6 +148,7 @@ console.log("# a stray in a worktree: reverted once, then allowed");
     tree: c.tree,
     round: 1,
     revertAlreadyUsed: false,
+    fenceRecorded: true,
     onRevertible: async () => {
       called++;
       // The test performs the revert the driver performs, then reports it.
@@ -162,8 +169,14 @@ console.log("# a stray in a worktree: reverted once, then allowed");
     },
   });
   assert(called === 1, "the gate asked for exactly one revert");
-  assert(v.ok, `a reverted first stray set does not park the round (reason: ${v.ok ? "" : v.reason})`);
-  assert(v.ok && v.revert?.source === "lens-fix" && v.revert.round === 1, "the revert record carries the lens-fix source and the round (the counter reads them)");
+  assert(
+    v.ok,
+    `a reverted first stray set does not park the round (reason: ${v.ok ? "" : v.reason})`,
+  );
+  assert(
+    v.ok && v.revert?.source === "lens-fix" && v.revert.round === 1,
+    "the revert record carries the lens-fix source and the round (the counter reads them)",
+  );
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
@@ -183,12 +196,26 @@ console.log("# a SECOND stray set in the same round parks");
     tree: c.tree,
     round: 1,
     revertAlreadyUsed: true,
+    fenceRecorded: true,
     onRevertible: async () => {
       called++;
-      return { ok: true as const, event: { kind: "fix-pass-strays-reverted" as const, at: 1, workstreamId: "default", paths: [], preservedRef: "r", patchPath: "p" } };
+      return {
+        ok: true as const,
+        event: {
+          kind: "fix-pass-strays-reverted" as const,
+          at: 1,
+          workstreamId: "default",
+          paths: [],
+          preservedRef: "r",
+          patchPath: "p",
+        },
+      };
     },
   });
-  assert(!v.ok && v.reason.includes("SECOND"), `a second set parks with the reason that says so (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`);
+  assert(
+    !v.ok && v.reason.includes("SECOND"),
+    `a second set parks with the reason that says so (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`,
+  );
   assert(called === 0, "the gate does not revert a second time");
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
@@ -213,14 +240,21 @@ console.log("# an outOfScope change parks and is never reverted");
     tree: c.tree,
     round: 1,
     revertAlreadyUsed: false,
+    fenceRecorded: true,
     onRevertible: async () => {
       called++;
       return undefined;
     },
   });
   assert(!v.ok, "the outOfScope change is refused");
-  assert(v.ok === false && v.reason.includes("b.txt"), `the refusal names the fenced file (${v.ok ? "APPROVED" : v.reason.slice(0, 120)})`);
-  assert(called === 0, "an absolute refusal never reaches the revert — the fence wins over the driver's own convenience");
+  assert(
+    v.ok === false && v.reason.includes("b.txt"),
+    `the refusal names the fenced file (${v.ok ? "APPROVED" : v.reason.slice(0, 120)})`,
+  );
+  assert(
+    called === 0,
+    "an absolute refusal never reaches the revert — the fence wins over the driver's own convenience",
+  );
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
@@ -242,21 +276,25 @@ console.log("# the repo-root arm parks on ANY stray and says why");
     tree: c.tree,
     round: 1,
     revertAlreadyUsed: false,
+    fenceRecorded: true,
     onRevertible: async () => {
       called++;
       return undefined;
     },
   });
-  assert(!v.ok && v.reason.includes("repo root"), `the repo-root stray parks naming the tree as the reason the revert was skipped (${v.ok ? "APPROVED" : v.reason.slice(0, 120)})`);
+  assert(
+    !v.ok && v.reason.includes("repo root"),
+    `the repo-root stray parks naming the tree as the reason the revert was skipped (${v.ok ? "APPROVED" : v.reason.slice(0, 120)})`,
+  );
   assert(called === 0, "no revert is attempted at the repo root (PM decision #1852-1)");
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
-console.log("# an absent fence parks rather than skipping the check");
+console.log("# a RECORDED fence failure parks; no record at all means the gate does not run");
 {
   const c = cycle("gate-nosnap");
   const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
-  const v = await lensFixFenceCheck({
+  const noSnap = {
     execFn: defaultExec,
     ctx: ctxFor(c.repoRoot),
     state: st,
@@ -265,8 +303,21 @@ console.log("# an absent fence parks rather than skipping the check");
     tree: c.tree,
     round: 1,
     revertAlreadyUsed: false,
-  });
-  assert(!v.ok && v.reason.includes("never built"), `no fence means no clearance — the round parks (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`);
+  };
+  const v = await lensFixFenceCheck({ ...noSnap, fenceRecorded: true });
+  assert(
+    !v.ok,
+    `a round that RECORDS a fence failure parks fail-closed — nothing pushes (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`,
+  );
+  const skipped = await lensFixFenceCheck({ ...noSnap, fenceRecorded: false });
+  assert(
+    skipped.ok,
+    `a round with NO fence record at all is not judged — an older driver wrote this state (${skipped.ok ? "" : skipped.reason})`,
+  );
+  assert(
+    skipped.ok && (skipped.notes[0] ?? "").includes("did not run"),
+    "and the skip says so in its notes, where the trace says why",
+  );
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
@@ -284,15 +335,21 @@ console.log("# a fence from another round cannot clear this one");
     tree: c.tree,
     round: 1,
     revertAlreadyUsed: false,
+    fenceRecorded: true,
   });
-  assert(!v.ok && v.reason.includes("round 4"), `the gate refuses a fence belonging to another round (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`);
+  assert(
+    !v.ok && v.reason.includes("round 4"),
+    `the gate refuses a fence belonging to another round (${v.ok ? "APPROVED" : v.reason.slice(0, 90)})`,
+  );
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
 console.log("# the counter reads source + round + workstream, nothing else");
 {
   const base = initialState(1852, 1_000_000);
-  const rev = (over: Partial<Extract<WorkEvent, { kind: "fix-pass-strays-reverted" }>>): WorkEvent => ({
+  const rev = (
+    over: Partial<Extract<WorkEvent, { kind: "fix-pass-strays-reverted" }>>,
+  ): WorkEvent => ({
     kind: "fix-pass-strays-reverted",
     at: 1,
     workstreamId: "default",
@@ -327,7 +384,10 @@ console.log("# the plan is rebuilt from the recorded tip, not a fresh read");
   const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
   const snap = await snapshotFor(c.repoRoot, c.tree, c.roundTip, st);
   const plan: PassPlan = lensFixPlanFromSnapshot(snap, c.tree, st.pipelineState);
-  assert(plan.headBefore === c.roundTip, "plan.headBefore is the RECORDED round tip (the round's own commits are not strays)");
+  assert(
+    plan.headBefore === c.roundTip,
+    "plan.headBefore is the RECORDED round tip (the round's own commits are not strays)",
+  );
   assert(plan.worktree === c.tree, "the plan judges the tree the prompt was built from");
   rmSync(c.repoRoot, { recursive: true, force: true });
 }

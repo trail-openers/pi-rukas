@@ -25,13 +25,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
-import {
-  lensFixFenceLines,
-  lensFixPassPlan,
-} from "../src/work-driver-lens-fix-fence.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { fixPassFenceLines } from "../src/work-driver-fix-pass-fence-render.ts";
+import { lensFixFenceLines, lensFixPassPlan } from "../src/work-driver-lens-fix-fence.ts";
 import { inlineLensFixPrompt, runLensFix } from "../src/work-driver-lens-fix.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { git, repoWithFile } from "./lib/adversarial-fix-fixtures.ts";
@@ -45,8 +42,7 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const FINDINGS =
-  '[{"path":"a.txt","line":1,"severity":"MEDIUM","title":"t","suggestion":"s"}]';
+const FINDINGS = '[{"path":"a.txt","line":1,"severity":"MEDIUM","title":"t","suggestion":"s"}]';
 
 /** `initialState` does not take a review round, and a lens round is 1 — a
  *  round-0 state reads as "no lens round has run", which is not the fixture. */
@@ -107,17 +103,20 @@ console.log("# the lens-fix prompt prints the fence the gate reads");
   // #1852-3: the render is pass-neutral, so the LENS fix names its own cap and
   // never tells the fixer it is bounded by the fix pass's.
   assert(
-    fence.some((l) => l.includes("lens-fix-scope")) && !fence.some((l) => l.includes("fix-pass-park")),
+    fence.some((l) => l.includes("lens-fix-scope")) &&
+      !fence.some((l) => l.includes("fix-pass-park")),
     "the lens-fix fence names cap `lens-fix-scope` and never the fix pass's cap",
   );
   assert(
-    fence.some((l) => l.includes("this lens fix")) && !fence.some((l) => l.includes("this fix pass")),
+    fence.some((l) => l.includes("this lens fix")) &&
+      !fence.some((l) => l.includes("this fix pass")),
     "the fence block calls the dispatch a lens fix, not a fix pass",
   );
   // The fix pass's own rendering is unchanged by the new parameters.
   const fixPass = fixPassFenceLines(planned.value.fence);
   assert(
-    fixPass.some((l) => l.includes("this fix pass")) && fixPass.some((l) => l.includes("fix-pass-park")),
+    fixPass.some((l) => l.includes("this fix pass")) &&
+      fixPass.some((l) => l.includes("fix-pass-park")),
     "the fix pass's own fence render keeps its original nouns and cap (PM decision #1852-3)",
   );
   // The post-dispatch terms are the permitted asymmetry: never printed.
@@ -214,7 +213,7 @@ console.log("# the RE-DISPATCH prompt prints the same fence");
       "the RE-DISPATCH prompt contains the same plan-time fence block — the second literal is not left unfenced",
     );
   } finally {
-    if (prevResume === undefined) delete process.env.PI_ENSEMBLE_RESUME;
+    if (prevResume === undefined) process.env.PI_ENSEMBLE_RESUME = undefined;
     else process.env.PI_ENSEMBLE_RESUME = prevResume;
     rmSync(t.repoRoot, { recursive: true, force: true });
   }
