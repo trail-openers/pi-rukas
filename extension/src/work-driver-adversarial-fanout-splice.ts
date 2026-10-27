@@ -17,9 +17,17 @@ const DISPATCH_FAILURE_KINDS: ReadonlySet<string> = new Set([
   "dispatch-failed-provider",
 ]);
 
-/** The id of a `dispatch-started`, or undefined for any other event. */
+/**
+ * The id of a `dispatch-started`, or undefined for any other event.
+ *
+ * #1863 round 2 — narrowed on the discriminant, so `jobId` is read from a
+ * member that HAS it. The previous form tested `kind` and then cast the whole
+ * event to `{ jobId: string }`, which compiles whatever the union becomes: when
+ * a future member carries an optional `jobId`, the cast keeps silencing the
+ * mismatch and this reader starts calling a non-marker a marker.
+ */
 function markerId(e: WorkEvent): string | undefined {
-  return e.kind === "dispatch-started" ? (e as { jobId: string }).jobId : undefined;
+  return e.kind === "dispatch-started" ? e.jobId : undefined;
 }
 
 /**
@@ -62,14 +70,31 @@ export function splicePassBatch(
   settledMarkers: ReadonlySet<string>,
   passStart: number,
   passEnd: number,
-  ownPendingMarkers: readonly string[] = [],
+  ownPendingMarkers: ReadonlySet<string> = new Set(),
 ): WorkEvent[] {
-  const batch = batchSource.filter(
-    (e) => !(markerId(e) !== undefined && !settledMarkers.has(markerId(e) as string)),
-  );
+  const batch = batchSource.filter((e) => {
+    const id = markerId(e);
+    return id === undefined || settledMarkers.has(id);
+  });
   const tail = orderBatchBeforeTail(batch, settledMarkers);
   const replaceEnd = tailReplaceEnd(log, passEnd, settledMarkers, ownPendingMarkers);
   return [...log.eventLog.slice(0, passStart), ...tail, ...log.eventLog.slice(replaceEnd)];
+}
+
+/**
+ * #1863 round 2 — the ids the events in `log` record as `dispatch-started`, in
+ * log order. The filter lives here rather than at the call site because it is
+ * the part that must stay welded to `markerId`: a future event kind carrying a
+ * `jobId` that this reader started to treat as a marker would otherwise become
+ * absorbable at the call site without the reader changing.
+ */
+function markerIdsIn(log: WorkState): string[] {
+  const ids: string[] = [];
+  for (const e of log.eventLog) {
+    const id = markerId(e);
+    if (id !== undefined && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }
 
 /**
@@ -128,9 +153,9 @@ export function tailReplaceEnd(
   log: WorkState,
   from: number,
   settledMarkers: ReadonlySet<string>,
-  ownPendingMarkers: readonly string[] = [],
+  ownPendingMarkers: ReadonlySet<string> = new Set(),
 ): number {
-  const ownPending = new Set(ownPendingMarkers);
+  const ownPending = ownPendingMarkers;
   let end = from;
   for (let i = from; i < log.eventLog.length; i++) {
     const id = markerId(log.eventLog[i] as WorkEvent);
@@ -164,29 +189,41 @@ export function settledMarkerIds(
  * PASS RUNS — which is after the re-entry span was captured, so the span
  * cannot include them. The splice therefore has to extend over them explicitly
  * rather than rely on the span's end: without this, a prior pass's own marker
- * (or a sibling's, still in flight) sits INSIDE the region the re-entry is
- * replacing, `tailReplaceEnd` stops on it, and the prior pass's per-workstream
- * records before that point survive the splice. The visible symptom was a
- * recovered workstream logging both its stale `infra-failure` outcome and its
- * fresh `approved` one, plus the round record that went with the stale pass.
+ * sits INSIDE the region the re-entry is replacing, `tailReplaceEnd` stops on
+ * it, and the prior pass's per-workstream records before that point survive the
+ * splice. The visible symptom was a recovered workstream logging both its stale
+ * `infra-failure` outcome and its fresh `approved` one, plus the round record
+ * that went with the stale pass.
  *
- * `settledMarkers` alone is not the filter: the markers a pass carries in its
- * batch were minted by the pass that produced the batch, and a re-entry
- * settles only the workstreams it re-ran — a surviving sibling's marker is
- * still this pass's own record in the log. The `inFlight` test is what tells
- * the two apart: an id the step still carries is a pass that has not settled,
- * and `clearDispatch` removes it the moment it has, so this selects exactly the
- * markers whose passes are still running — a sibling reviewing while another's
- * batch is spliced, or the crash-resume shape where the process died before
- * clearing anything (the `interrupted` path keeps those ids on purpose).
+ * Three filters, because only the first is sufficient on its own:
+ *
+ *  - `minted` (#1863 round 2): **only ids THIS fan-out invocation minted.** The
+ *    scan used to be keyed on `inFlight` alone, which a live sibling satisfies
+ *    — so a sibling still reviewing had its marker absorbed into this pass's
+ *    replacement region and its record deleted from the log while its dispatch
+ *    was outstanding. An id this invocation never minted cannot be its own
+ *    record, whatever else is true about it.
+ *  - `settledMarkers`: a pass this fan-out finished is already re-emitted with
+ *    its batch, so its record must not also be absorbed.
+ *  - `inFlight`: a settled pass's orphan marker is a `clearForResume` record
+ *    that stays spliced away, so only a pass that has NOT settled is this
+ *    function's subject — the crash-resume shape, where the process died before
+ *    clearing anything and the ids stay on purpose.
+ *
+ * A Set, not a list: the caller scans the log once per candidate id in
+ * `tailReplaceEnd`, and a list makes that quadratic in the log's markers.
  */
-export function ownPendingMarkerIds(log: WorkState, settledMarkers: ReadonlySet<string>): string[] {
+export function ownPendingMarkerIds(
+  log: WorkState,
+  settledMarkers: ReadonlySet<string>,
+  minted: Iterable<string>,
+): Set<string> {
+  const thisInvocation = new Set(minted);
   const inFlight = new Set(log.pipelineState.inFlightJobIds);
-  const ids: string[] = [];
-  for (const e of log.eventLog) {
-    const id = markerId(e);
-    if (id === undefined || settledMarkers.has(id) || !inFlight.has(id)) continue;
-    if (!ids.includes(id)) ids.push(id);
+  const ids = new Set<string>();
+  for (const id of markerIdsIn(log)) {
+    if (settledMarkers.has(id) || !inFlight.has(id) || !thisInvocation.has(id)) continue;
+    ids.add(id);
   }
   return ids;
 }
