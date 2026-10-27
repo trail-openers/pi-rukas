@@ -41,20 +41,20 @@ export const WRAPPER_CHARS = "[#=*`-]";
  * `#`/`*`/backtick/`-` alone is not enough: main's fence class was `[-=\s]*`, so
  * `- ==END==`, `- =END=` and `- == BEGIN ==` were fences there, and a class that
  * stopped at `WRAPPER_CHARS` re-filed them as operator ITEMS — the same bug, one
- * character class over. So the padding is one UNBROKEN run over the union of the
- * two sets (`WRAPPER_CHARS` plus main's `=` and `_`) with `{1,12}`
- * bounding the run. Each side's run sits in ONE group so no alternative can
- * escape its own side of the token, and every run stays on the whitespace-and-
+ * character class over. So the padding is ONE UNBOUNDED run per side over the
+ * union of the two sets (`WRAPPER_CHARS` plus main's `=` and `_`) and whitespace,
+ * with no adjacent `\s*` groups: one run per side is linear matching, and bound
+ * the run instead of unbounding it and a long decorative rule like
+ * `================ END ================` stops being a fence, which is exactly
+ * the regression this closes. Each side's run sits in ONE group so no alternative
+ * can escape its own side of the token, and every run stays on the whitespace-and-
  * punctuation alphabet: a run may not contain a letter, so `END OF THE LINE`,
  * `ENDURANCE` and `- the END` stay items, while every line either grammar ever
  * fenced stays a fence.
  */
-const FENCE_PADDING_SOURCE = `(?:[=_${WRAPPER_CHARS.slice(1, -1)}\\s]{1,12})?`;
+const FENCE_PADDING = `[=_${WRAPPER_CHARS.slice(1, -1)}\\s]*`;
 
-export const FENCE_RE = new RegExp(
-  `^\\s*${FENCE_PADDING_SOURCE}\\s*(?:BEGIN|END)\\s*${FENCE_PADDING_SOURCE}\\s*$`,
-  "i",
-);
+export const FENCE_RE = new RegExp(`^${FENCE_PADDING}(?:BEGIN|END)${FENCE_PADDING}$`, "i");
 
 /** True when a fence line CLOSES its block: the bare token is END. */
 export function isEndFence(line: string): boolean {

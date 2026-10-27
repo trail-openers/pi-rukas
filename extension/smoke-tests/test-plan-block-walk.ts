@@ -175,6 +175,25 @@ const cases: WalkCase[] = [
     nextIndex: 3,
   },
   {
+    label: "long decorative rule closes the ACCEPTANCE CRITERIA block",
+    // The #1855 follow-up: main's fence had UNBOUNDED padding, so this decorative
+    // rule was a fence there, while the {1,12} bound round 3 introduced turned it
+    // into the block's only criterion.
+    ctx: "ACCEPTANCE CRITERIA\n================ END ================\n- one",
+    residual: "",
+    items: [],
+    consumed: [0, 1],
+    nextIndex: 2,
+  },
+  {
+    label: "bullet-prefixed long decorative rule closes the block",
+    ctx: "ACCEPTANCE CRITERIA\n- ================ END ================\n- one",
+    residual: "",
+    items: [],
+    consumed: [0, 1],
+    nextIndex: 2,
+  },
+  {
     label: "blank run then bullets keeps the block open",
     // The blanks AND the bulleted line are consumed, and the bullet is an item:
     // the walk steps over the run rather than testing the blank itself.
@@ -415,6 +434,9 @@ for (const c of cases) runCase(c);
     "- ==END==",
     "- =END=",
     "- == BEGIN ==",
+    // The two long decorative rules main fenced and the {1,12} bound lost.
+    "================ END ================",
+    "- ================ END ================",
   ]) {
     assert(FENCE_RE.test(fence), `FENCE_RE matches the wrapper fence ${JSON.stringify(fence)}`);
   }
