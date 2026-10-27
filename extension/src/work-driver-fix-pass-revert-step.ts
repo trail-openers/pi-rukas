@@ -13,6 +13,14 @@
  * revert happened, so counting those events makes a SECOND stray set park without
  * any new state to keep in step — and a resumed cycle counts the revert it
  * already performed, which a counter field would have lost.
+ *
+ * ACCEPTED CRASH WINDOW (PM decision on #1849 item 6): the revert commits, and
+ * the event that records it is persisted by the caller only once the revert has
+ * returned, so a kill that lands between the commit and that write leaves a pass
+ * which can revert a second time. This is accepted rather than closed, because
+ * the alternative — a pre-commit marker — makes a revert that never ran look like
+ * one that did; a double revert is recoverable from the preserved ref and patch
+ * each attempt writes before it touches the tree.
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
