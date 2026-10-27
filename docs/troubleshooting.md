@@ -3216,6 +3216,24 @@ The second line means a findings file **exists** at the store's location and can
 
 **Known limit:** a CRITICAL whose cited line survives because the fix landed ELSEWHERE (the cited line still exists verbatim, elsewhere in the file, or its problem was fixed by a change to a caller) still carries — the lens-side re-verification for that case is a separate follow-up.
 
+### A workstream is told not to touch the files its own issue asks for (#1862)
+
+**Symptom:** a cycle's developer says it cannot make the change because the file is excluded, or develop fails on a scope fan-out listing files under a directory the workstream itself declared. The state file shows the merged workstream carrying an `outOfScope` entry that names those files (`"tests/"`, or the sentence `"Every file under agents/ and tests/ — this workstream documents, it does not implement"`).
+
+**Why it happened:** a workstream's `outOfScope` is free text and it is copied from the plan into the merge untouched, so the sibling half's exclusions land on the survivor. Three shapes survived the fold, each for its own reason: a **path-shaped** entry (`tests/`) was compared against the merged `paths` by raw string equality, so a trailing separator or a `(new)` annotation meant no match; a **prose** entry names a directory and no file, so set membership could not see it at all; and an **array written as one string** (`'["docs/","tests/"]'`) was neither split nor understood, then clipped as long text. The develop gate's #784 self-fence demotion then turned every fence hit on a self-declared file into a warning, which is the right fallback for a plan that was never normalised and the wrong answer for a plan that was.
+
+**The rule now:** the fold and the tool boundary both drop a fence entry that covers the workstream's OWN declared paths, judged by the one containment predicate the plan-quality gate already uses (`findFenceContradictions`) plus the whole-token rule for prose (`pathTokenIn`). A **sibling's** fence is the #572 cross-declaration contract and is never dropped; prose that names no path is kept; a path-shaped entry is judged only by `fenceMatches`, never twice; and a fence naming only a **protected** path (`.github/`, `.pi/`, `CODEOWNERS`, `agents.json`) survives whatever else it names, because those are guarded by their own gate. A dropped entry's clip record goes with it — a record describing a vanished entry would hang a ` …[clipped]` marker on nothing.
+
+**What to grep, and what the drop is recorded as:** the fold's drops land on `pipelineState.planQuality.unfence.selfFences` with a note per removal, and the tool boundary says its own line — both are visible in the state file, not only in `trace()`, because a fence that was in the plan and is now gone has to be auditable:
+
+```
+self-fence dropped: "tests/" covers tests/test_x.py (merged workstream)
+work-driver: plan workstream 'implement' self-fence dropped — "…" covers its own declared tests/test_x.py
+work-driver: <subject> outOfScope bounded — … (kept: N/M)
+```
+
+**Deferred, and what it still parks on:** `verifyConsolidation`'s `declaredPathInDiff` compares declared paths to `git diff --name-only` literally, the same defect class, at a HALT step — a cycle whose deliverables are declared as globs or `new `-annotated paths can still park as `commit-pr-incomplete-consolidation`. That is a follow-up; the converge-side matcher is fixed here.
+
 ## The offline smoke suite
 
 ### The offline suite is slow, or a test interferes with its neighbours
