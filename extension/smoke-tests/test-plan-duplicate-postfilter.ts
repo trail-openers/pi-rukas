@@ -357,6 +357,53 @@ async function barrier(
   );
 }
 
+{
+  // #1856 review round 3: the DONE half of the same gate. A child that reached
+  // its bound and emitted the done signal exits `ok` with NO `killCause`, so the
+  // round-2 gate let it through — and a reply truncated at the bound is just as
+  // partial as one whose child was killed. With the done signal set, the HIGH is
+  // neither downgraded nor filed: no verdict at all, nothing excluded.
+  const dispatch = ((_pi: unknown, spec: { role: string; prompt: string }) => {
+    const base = { ok: true, toolUses: [], ms: 1, exitCode: 0 };
+    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
+      return Promise.resolve({
+        ...base,
+        role: "explore",
+        text: SELF_ONLY_HIGH,
+        endedAsDone: "reported",
+      });
+    }
+    return Promise.resolve({
+      ...base,
+      role: "explore",
+      text: "prose",
+      toolUses: [
+        {
+          name: "report_plan_item",
+          arguments: { kind: "acceptance-criterion", text: "the barrier survives", angle: "x" },
+        },
+      ],
+    });
+  }) as never;
+  const res = await runInvestigation(dispatch, {} as never, {
+    type: "bug",
+    descriptor: DESC,
+    repoRoot: process.cwd(),
+    inv,
+    priorContext: assemblePriorContext(undefined, inv).priorContext,
+    codeIdentifiers: [],
+    sourceIssue: 1856,
+  });
+  assert(
+    res.duplicateRisk === undefined,
+    `a duplicate-risk child that ended as DONE yields no verdict at all, so the HIGH is neither downgraded nor filed as medium (got ${res.duplicateRisk?.level ?? "no verdict"})`,
+  );
+  assert(
+    res.duplicateRisk?.excludedIssues === undefined,
+    "a child that ended as DONE excludes nothing — no candidate is dropped on a reply cut at the bound",
+  );
+}
+
 // =============================== the driver's halt decision, end to end =====
 
 interface RunOut {
