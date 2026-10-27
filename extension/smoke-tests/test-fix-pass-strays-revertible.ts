@@ -31,6 +31,8 @@ import { dirname, join } from "node:path";
 import type { PassPlan, PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { planFixPass, postPassFault } from "../src/work-driver-adversarial-fix-scope.ts";
+import { fixPassFence, gateFenceView } from "../src/work-driver-fix-pass-admission.ts";
+import { fanoutLimitFor } from "../src/work-driver-scope-fanout.ts";
 import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
 import {
   devCommit,
@@ -295,6 +297,107 @@ console.log("# an ordinary stray is still offered — the flag is not a ban");
   } finally {
     rmSync(t.dir, { recursive: true, force: true });
   }
+}
+// ── #1849 item 9 — the ceiling a helper is judged against ───────────────────
+//
+// `postPassFault` asks the anchored-helper route with `admit.admittedSlotCount()`
+// as the denominator's slot term, but the fence OBJECT it hands the same call
+// carries the `ceiling` `planFixPass` built at PLAN time, when the slot count was
+// necessarily zero (a slot admits a file only once the pass runs). Those are two
+// readings of one rule, and they are not equal: `fanoutLimitFor(1 + 5)` is 18,
+// while the object the gate holds says 6. The one ceiling PM decision #1846-3
+// asked for is the one the refusal must have been computed from, so the gate's
+// view now carries the slot count that was actually used — and this asserts it
+// with the real functions rather than an assertion about prose.
+console.log("# the helper route's ceiling is computed from the slots it counted");
+{
+  // The ceiling rule is `max(declared × factor, minimum)`, so a test that wants
+  // to see the slot term MOVE the ceiling has to take the floor out: with the
+  // defaults (factor 3, minimum 6) one declared path and one slot both give 6 and
+  // the assertion below would pass for the wrong reason.
+  process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR = "3";
+  process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN = "1";
+  const slots = [{ deliverableId: "d1", slot: "src", glob: "src/*.ts" }] as never[];
+  const { createSpecAdmitter } = await import("../src/work-driver-spec-slot-admission.ts");
+  const admitter = createSpecAdmitter({
+    slots,
+    source: "test",
+    isFenced: () => false,
+    onAdmit: () => {},
+  });
+  admitter.admit("default", "src/a.ts", ["src/x.ts"]);
+  admitter.admit("default", "src/b.ts", ["src/x.ts"]);
+  const counted = admitter.admittedSlotCount("default");
+  assert(counted === 1, `one slot that admitted two files counts as ONE (${counted})`);
+
+  // What the plan-time object says, and what the gate must be judged by.
+  const planTime = fixPassFence(
+    { id: "default", declared: ["src/x.ts"], named: [], alreadyChanged: [], outOfScope: [], admittingSlots: 0 },
+    fanoutLimitFor,
+  );
+  const withSlots = fixPassFence(
+    {
+      id: "default",
+      declared: ["src/x.ts"],
+      named: [],
+      alreadyChanged: [],
+      outOfScope: [],
+      admittingSlots: counted,
+    },
+    fanoutLimitFor,
+  );
+  assert(
+    planTime.ceiling === fanoutLimitFor(1 + 0) && withSlots.ceiling === fanoutLimitFor(1 + counted),
+    `each ceiling is the documented rule over its own denominator (${planTime.ceiling} vs ${withSlots.ceiling})`,
+  );
+  // THE assertions. (1) A spread of the counted slots onto the plan-time view
+  // changes nothing, because `ceiling` is DERIVED inside `fixPassFence` and never
+  // read back off the object — which is exactly why `postPassFault` must go
+  // through a spread rather than the gate's own builder. (2) `gateFenceView` —
+  // the function `postPassFault` itself composes, so the numbers below ARE the
+  // ones the gate is judged by — widens the ceiling to the same number the
+  // standalone `fixPassFence` call produces from the same denominator.
+  const gateView = gateFenceView(planTime, ["src/x.ts"], new Set(["src"]), counted);
+
+  // A slot count is meaningless without its denominator, so the pass-level check
+  // must read the accounting the VIEW was built with, not recount it. Two slots
+  // over one declared path is a wider pass than zero slots over the same path,
+  // and the object that carries the wider ceiling has to carry the wider count.
+  const twoSlots = gateFenceView(planTime, ["src/x.ts"], new Set(["src"]), 2);
+  assert(
+    twoSlots.admittingSlots === 2 &&
+      twoSlots.ceiling === fanoutLimitFor(1 + 2) &&
+      twoSlots.ceiling > gateView.ceiling,
+    `the view that reports ${twoSlots.admittingSlots} admitting slots is also the one bounded by them (${twoSlots.ceiling} over the single-slot ${gateView.ceiling})`,
+  );
+  const zeroSlots = gateFenceView(planTime, ["src/x.ts"], new Set(["src"]), 0);
+  assert(
+    zeroSlots.admittingSlots === 0,
+    "and a view built with no admitting slot reports zero, which is what keeps the plan-time number honest",
+  );
+  const spread = { ...planTime, admittingSlots: counted };
+  assert(
+    spread.ceiling === planTime.ceiling,
+    "spreading the counted slots onto the fence changes nothing, so a spread would have been the bug",
+  );
+  assert(
+    gateView.ceiling === withSlots.ceiling && gateView.ceiling > planTime.ceiling,
+    `the SAME pass is bounded at ${planTime.ceiling} by the plan-time ceiling and ${gateView.ceiling} once the counted slot is derived in — that gap is what item 9 closes`,
+  );
+  assert(
+    gateView.ceilingBasis === withSlots.ceilingBasis &&
+      gateView.ceilingBasis.includes("1 admitting slot"),
+    `the disclosure line the gate would print says the slot it was bounded by (${gateView.ceilingBasis})`,
+  );
+  // A zero-slot pass is unaffected: the helper route's ceiling has to stay put
+  // when there is nothing to account for.
+  const unchanged = gateFenceView(planTime, [], new Set(["src"]), 0);
+  assert(
+    unchanged.ceiling === planTime.ceiling && unchanged.ceilingBasis === planTime.ceilingBasis,
+    "with no admitting slot the re-derivation is the identity",
+  );
+  delete process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR;
+  delete process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN;
 }
 
 if (exit !== 0) console.log(`\n${exit} assertion(s) FAILED`);

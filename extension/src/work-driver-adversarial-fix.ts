@@ -62,7 +62,7 @@ import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
-export { namedPaths } from "./work-driver-adversarial-fix-scope.ts";
+export { namedPaths } from "./work-driver-fix-pass-named.ts";
 export { plumbQuestion, withParsedSiblings } from "./work-driver-adversarial-plumb.ts";
 
 export { FIX_FINDINGS_MAX };

@@ -62,9 +62,11 @@ import {
   fixPassFence,
   fixPassFenceLines,
   fixPassHelperDirs,
+  gateFenceView,
 } from "./work-driver-fix-pass-admission.ts";
 import { type FixPassFileGate, admitFixPassEntry } from "./work-driver-fix-pass-admit-file.ts";
-import { fixPassFanoutRefusal } from "./work-driver-fix-pass-fanout.ts";
+import { passFanoutRefusal } from "./work-driver-fix-pass-ceiling.ts";
+import { namedPaths } from "./work-driver-fix-pass-named.ts";
 import { type Stray, listed, strayReason } from "./work-driver-fix-pass-park-reason.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import {
@@ -125,30 +127,6 @@ export interface PassPlan {
    * coupled-test and anchored-helper routes are layered on it per file.
    */
   fence: FixPassFence;
-}
-
-/**
- * Named paths a fix pass may widen its fence onto. Generic, not a project list:
- * a finding-named path qualifies only if it is (a) in `candidates` — the union
- * of the tree tracked at base and the files this cycle already committed
- * (#1698: a file the cycle's own round created is never tracked at base, so
- * the tracked-at-base reading alone made it un-nameable by construction),
- * (b) not protected per `protectedPathsIn` (the single source of protected
- * paths), and (c) in the same directory as an anchor — a declared path or a
- * file the workstream already changed. A directory entry (`src/foo/`) is its
- * own directory. The repo root is not an anchor: a root-level anchor would make
- * every root file widenable. Named as a whole path token (`data.txt` does not
- * name `a.txt`).
- */
-export function namedPaths(
-  findings: string,
-  candidates: readonly string[],
-  anchors: readonly string[],
-): string[] {
-  const dirs = anchorDirs(anchors);
-  return [...new Set(candidates)].filter(
-    (p) => protectedPathsIn([p]).length === 0 && dirs.has(dirOfPath(p)) && pathTokenIn(findings, p),
-  );
 }
 
 const fenced = (reason: string): { ok: false; reason: string } => ({
@@ -426,11 +404,11 @@ export async function postPassFault(
     // bounded rule stops bounding anything.
     const strays: Stray[] = [];
     // #1846 — the helper route's anchor files, and the one ceiling's numerator
-    // (`passChanged.length`): everything this pass changed, from every route,
-    // against one denominator (PM decision #1846-3). The gate view is built once
-    // per pass with the pass's own delta filled in, and every file of the
-    // post-pass tree is put through `admitFixPassEntry` — the whole route ladder
-    // lives there with its precedence stated in one place.
+    // (`passChanged`): everything this pass changed, from every route, against
+    // ONE denominator (PM decision #1846-3). The gate view is built once per pass
+    // by `gateFenceView` below and every file of the post-pass tree is put through
+    // `admitFixPassEntry` — the whole route ladder lives there with its precedence
+    // stated in one place.
     const helperDirs = fixPassHelperDirs(
       plan.declared,
       plan.findings,
@@ -444,7 +422,23 @@ export async function postPassFault(
     // and both go through the ladder; the pre-#1846 shape passed only `names`,
     // which meant an untracked stray never reached `admitFixPassEntry` and so
     // was never recorded as a revertible stray for the driver to act on.
-    const judging: FixPassFence = { ...fence, passChanged: passFiles, helperDirs };
+    // #1849 item 9 — the slot term is read ONCE, before the view is built, and
+    // feeds both surfaces that bound this pass: the helper route's ceiling (in
+    // `gateFenceView`) and the pass-level ceiling check at the end of the
+    // iteration. Before this, the ladder was handed the PLAN-TIME `ceiling`, which
+    // `planFixPass` necessarily computed with zero admitting slots (a slot admits a
+    // file only once the pass runs), while the pass-level check derived
+    // `fanoutLimitFor(declared + counted)` — so a pass whose spec authorised a
+    // pattern slot was refused a helper file by a ceiling the pass-level check had
+    // already widened. Two rules bounding one pass, which is what decision #1846-3
+    // removed. `ceiling` is derived inside `fixPassFence`, so it is re-derived
+    // rather than assigned.
+    const judging: FixPassFence = gateFenceView(
+      fence,
+      passFiles,
+      helperDirs,
+      admit.admittedSlotCount(plan.id),
+    );
     const gate: FixPassFileGate = {
       id: plan.id,
       declared: plan.declared,
@@ -483,17 +477,21 @@ export async function postPassFault(
         ...(revertible ? { straysFor: plan.id, strays, untracked: s.value.untracked } : {}),
       };
     }
-    if (plan.declared.length > 0) {
-      // One ceiling over every route; its two easy-to-get-wrong rules (per-slot
-      // denominator, coupled tests out of the numerator) are stated in
-      // `work-driver-fix-pass-fanout.ts`. The numerator is `passFiles` — the one
-      // denominator this iteration computed, shared with the ladder above (item 9).
-      const refusal = fixPassFanoutRefusal(plan.id, plan.declared.length, passFiles, judging, {
-        slotCount: admit.admittedSlotCount(plan.id),
-        admittedFiles: admit.admittedFiles(plan.id),
-      });
-      if (refusal !== undefined) return { reason: refusal, diffs, admissions };
-    }
+    // One ceiling over every route; its two easy-to-get-wrong rules (per-slot
+    // denominator, coupled tests out of the numerator) are stated in
+    // `work-driver-fix-pass-fanout.ts`, and the reason the slot term comes off
+    // `judging` rather than the admitter is stated in
+    // `work-driver-fix-pass-ceiling.ts`. The numerator is `passFiles` — the ONE
+    // denominator this iteration computed, shared with the ladder above (#1849
+    // item 9).
+    const refusal = passFanoutRefusal(
+      plan.id,
+      plan.declared,
+      passFiles,
+      judging,
+      admit.admittedFiles(plan.id),
+    );
+    if (refusal !== undefined) return { reason: refusal, diffs, admissions };
   }
   return { diffs, admissions };
 }

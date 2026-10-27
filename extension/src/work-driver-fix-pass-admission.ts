@@ -50,6 +50,7 @@ import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { anchorDirs, entryPath, fenceMatches, pathTokenIn } from "./work-driver-declared-path.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
+import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
 import type { AdmissionRefusal } from "./work-driver-spec-slot-admission.ts";
 
 /** Which admission route took a file, for the disclosure line. */
@@ -133,6 +134,15 @@ export interface FixPassFence {
   ceiling: number;
   /** The denominator behind that ceiling, for the disclosure line. */
   ceilingBasis: string;
+  /**
+   * The admitting-slot term this view's `ceiling` and `ceilingBasis` were derived
+   * with (#1849 item 9). Written ONLY by `fixPassFence` and `gateFenceView`, which
+   * is what keeps it honest: it records the accounting the ceiling above was
+   * computed from, so the pass-level ceiling check reads the SAME number the
+   * helper route was judged by instead of recounting it and producing a second
+   * answer to one question.
+   */
+  admittingSlots: number;
 }
 
 /** Inputs to the fence view — the plan's own fields, already normalised. */
@@ -183,10 +193,59 @@ export function fixPassFence(
     passChanged: [],
     outOfScope: input.outOfScope.map(entryPath),
     ceiling: fanoutLimit(denominator),
-    ceilingBasis:
-      declared.length > 0
-        ? `${declared.length} declared path(s) plus ${input.admittingSlots} admitting slot(s)`
-        : `no declared paths, so ${input.alreadyChanged.length} already-changed file(s) plus ${input.admittingSlots} admitting slot(s)`,
+    admittingSlots: input.admittingSlots,
+    ceilingBasis: ceilingBasisFor(declared, input.admittingSlots, input.alreadyChanged.length),
+  };
+}
+
+/**
+ * The denominator behind a ceiling, in the words the park reason prints. ONE
+ * spelling for three surfaces — the gate's refusal, the prompt's disclosure line,
+ * and the re-derivation in `gateFenceView` — because three surfaces describing one
+ * number three ways is how a bound becomes unverifiable.
+ */
+function ceilingBasisFor(
+  declared: readonly string[],
+  admittingSlots: number,
+  alreadyChangedCount = 0,
+): string {
+  return declared.length > 0
+    ? `${declared.length} declared path(s) plus ${admittingSlots} admitting slot(s)`
+    : `no declared paths, so ${alreadyChangedCount} already-changed file(s) plus ${admittingSlots} admitting slot(s)`;
+}
+
+/**
+ * The gate's own fence view: the plan-time fence with the three values only the
+ * running pass knows, filled in (#1849 item 9 is the third of them).
+ *
+ * `passChanged` and `helperDirs` are plain fields the caller computes. The slot
+ * term is NOT: it feeds `ceiling` and `ceilingBasis`, which `fixPassFence` DERIVES
+ * — so a caller that wrote `{ ...planTimeFence, admittingSlots: n }` would get a
+ * field nothing reads while the ceiling it is judged by stayed the plan-time one,
+ * computed with zero slots. That is exactly the shape this replaces: the admission
+ * ladder used to be handed the plan-time `ceiling` while the pass-level check
+ * recomputed it from the counted slots, so a pass whose spec authorised a pattern
+ * slot was refused a helper file by a bound the pass-level check had already
+ * widened — one pass bounded by two rules, which is what PM decision #1846-3
+ * removed. Here the number is derived once and the view carries its own accounting.
+ *
+ * ONE CALLER, deliberately: `postPassFault`, which builds the gate view and hands
+ * the same object to `fixPassFanoutRefusal`. A second caller would be a second
+ * place the slot term is spelled.
+ */
+export function gateFenceView(
+  fence: FixPassFence,
+  passChanged: readonly string[],
+  helperDirs: ReadonlySet<string>,
+  admittingSlots: number,
+): FixPassFence {
+  return {
+    ...fence,
+    passChanged: [...passChanged],
+    helperDirs,
+    ceiling: fanoutLimitFor(fence.declared.length + admittingSlots),
+    admittingSlots,
+    ceilingBasis: ceilingBasisFor(fence.declared, admittingSlots),
   };
 }
 
