@@ -38,12 +38,22 @@ import {
   type GitExec,
   assertInsideWorktrees,
   errText,
+  nextRetryAttempt,
   retryPatchPath,
 } from "./work-develop-git.ts";
 
-/** The durable ref a revert preserves its pre-revert HEAD under. */
-export function fixPassStraysRef(issue: number, workstreamId: string, attempt: number): string {
+/** The ref name a revert preserves its pre-revert HEAD under, for attempt `n`. */
+function refFor(issue: number, workstreamId: string, attempt: number): string {
   return `refs/pi-rukas/fix-pass-strays/${issue}-${workstreamId}-${attempt}`;
+}
+
+/** The durable ref a revert preserves its pre-revert HEAD under.
+ *  `attempt` is the NEXT FREE number (see `nextStrayAttempt`), never a literal 1,
+ *  so a revert in a later pass of the same cycle cannot overwrite the earlier
+ *  pass's ref — which would have destroyed the only git-reachable copy of the
+ *  content its own revert deleted. */
+export function fixPassStraysRef(issue: number, workstreamId: string, attempt: number): string {
+  return refFor(issue, workstreamId, attempt);
 }
 
 /** The patch path a revert writes: a fixed name per (issue, workstream, attempt),
@@ -58,6 +68,27 @@ export function fixPassStraysPatchPath(
   // re-spelling the check is what keeps the two preservation paths from
   // disagreeing about what a safe scratch filename is.
   return retryPatchPath(scratchDir, `fix-pass-strays-${issue}-${workstreamId}`, attempt);
+}
+
+/**
+ * The attempt number this revert should use: one past the highest record that
+ * already exists, so ref and patch always come in a matched pair and a second
+ * revert (a later pass on the same issue and workstream) writes `-2`, never
+ * `-1` again.
+ *
+ * Both halves move together deliberately. Deriving the ref from the event log
+ * and the patch from the filesystem would let one of them roll back while the
+ * other did not, which is a preserved ref whose patch is a different revert's.
+ */
+export async function nextStrayAttempt(
+  scratchDir: string,
+  issue: number,
+  workstreamId: string,
+): Promise<number> {
+  // `retryPatchPath`'s id grammar is what the patch name embeds, so the same
+  // gate decides the number and the name — `nextRetryAttempt` refuses an id it
+  // cannot spell into a file, and `-<n>` is appended by that spell.
+  return nextRetryAttempt(scratchDir, `fix-pass-strays-${issue}-${workstreamId}`);
 }
 
 /** Where the untracked strays' bytes are copied, beside the patch. */
