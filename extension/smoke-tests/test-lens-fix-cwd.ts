@@ -61,7 +61,19 @@ const read = (f: string) =>
 
 {
   // The review (work-driver-lens.ts) and the fix (work-driver-lens-fix.ts).
-  const lens = read("work-driver-lens.ts") + read("work-driver-lens-fix.ts");
+  //
+  // #1852 adds the record helpers' module to the read set: the 500-line split
+  // moved `lensWorktree`'s DEFINITION there and left a re-export in the step,
+  // and a source gate that greps only the two files it has always grepped would
+  // report "the worktree is not resolved by one named function" for a definition
+  // that still exists exactly once — and would then be satisfied by a second
+  // function of that name appearing in either file, which is the drift this
+  // assertion exists to prevent. Reading all three keeps the claim about the
+  // code rather than about which file the text is in.
+  const lens =
+    read("work-driver-lens.ts") +
+    read("work-driver-lens-fix.ts") +
+    read("work-driver-lens-fix-records.ts");
   assert(
     /lens-fix[\s\S]{0,600}cwd:\s*lensWorktree\(/.test(lens),
     "canary: the lens-fix dispatch passes a cwd — its absence silently discarded every fix",
