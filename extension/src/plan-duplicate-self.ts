@@ -172,7 +172,7 @@ const CLAUSE_BOUNDARY = /[.!?,;:\n]/;
  * a caller that passes raw bytes gets `false` — a state nobody normalised is
  * never evidence that an issue's work landed.
  */
-export function isClosedState(state: IssueState): boolean {
+export function isClosedState(state: PlanIssueState): boolean {
   return state === "CLOSED";
 }
 
@@ -354,15 +354,19 @@ export function priorContextExcludingSource(
  * `OPEN`/`CLOSED` (`mapGhIssue` upper-cases, `mapGlIssue` maps `opened`/`closed`
  * onto them); anything else they or a cache file carry is `"unknown"`, which
  * satisfies no rule rather than being compared case-by-case at each site.
+ *
+ * `PlanIssueState`, not `IssueState`: forge-types.ts already owns that name for
+ * the two-state forge union, and a second `IssueState` here shadowed it in every
+ * file that imported both.
  */
-export type IssueState = "OPEN" | "CLOSED" | "unknown";
+export type PlanIssueState = "OPEN" | "CLOSED" | "unknown";
 
 /**
- * Normalise a forge's state string to {@link IssueState}. ONE site does this —
+ * Normalise a forge's state string to {@link PlanIssueState}. ONE site does this —
  * where the post-filter's known-issue map is built — so no downstream rule has
  * to re-case or trim a string to decide whether an issue is closed.
  */
-export function normaliseIssueState(state: string | undefined): IssueState {
+export function normaliseIssueState(state: string | undefined): PlanIssueState {
   const upper = (state ?? "").trim().toUpperCase();
   return upper === "OPEN" || upper === "CLOSED" ? upper : "unknown";
 }
@@ -374,13 +378,13 @@ export function normaliseIssueState(state: string | undefined): IssueState {
  * hand-edited entry with `"closed"` or `"wontfix"` is a MISS rather than a state
  * some rule later has to second-guess.
  */
-export function isIssueState(x: unknown): x is IssueState {
+export function isIssueState(x: unknown): x is PlanIssueState {
   return x === "OPEN" || x === "CLOSED" || x === "unknown";
 }
 
 /** What the inventory knows about one issue number. */
 export interface KnownIssue {
-  state: IssueState;
+  state: PlanIssueState;
   title: string;
 }
 

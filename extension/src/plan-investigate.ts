@@ -25,8 +25,8 @@ import { DESCRIPTOR_DATA_FRAMING, anglePromptsFor } from "./plan-angles.ts";
 import type { AngleFindings, MechanicalInventory, PlanItemKind } from "./plan-draft.ts";
 import { extractPlanItems, renderPriorContext } from "./plan-draft.ts";
 import {
-  type IssueState,
   type KnownIssue,
+  type PlanIssueState,
   downgradeSelfDuplicate,
   normaliseIssueState,
   priorContextExcludingSource,
@@ -109,8 +109,8 @@ export type DuplicateRiskLevel = "high" | "medium" | "low" | "none";
 /** One issue the duplicate-risk candidate set lost, and the rule that removed it. */
 export interface ExcludedDuplicate {
   number: number;
-  /** The normalised state ({@link IssueState}), or `"unknown"` when nothing carried one. */
-  state: IssueState;
+  /** The normalised state ({@link PlanIssueState}), or `"unknown"` when nothing carried one. */
+  state: PlanIssueState;
   title: string;
   /** One of `EXCLUSION_REASONS` in plan-duplicate-self.ts. */
   reason: string;
