@@ -277,7 +277,32 @@ export async function runAdversarialWorkstream(
   );
   const records = roundsRecords(result);
   // #1114 — the verdict decides routing (fix / pass / reject / infra).
-  const reading = interpretReview(result, reviewRoundFor(state, id));
+  //
+  // #1863 M4 — the killed-reviewer correction is applied HERE, at the one
+  // place a loop result becomes a verdict, rather than downstream.
+  // `interpretReview` sets `infra: true` only for a result that was `ok` and
+  // produced no parsable verdict, so a no-verdict result that comes back
+  // `ok: false` — exactly what `infraFailureResult` synthesises for a killed
+  // review phase — reads as `{ok: false, infra: false}`, the shape of a
+  // REJECTION. Every no-verdict route in the step handler is keyed on
+  // `infra || threw`, so that shape fell through to the reject arm:
+  // `adversarial-rejected` plus the `adversarial-loop` cap, i.e. "the reviewer
+  // rejected this diff", about a reviewer the driver itself killed at its run
+  // bound. A killed child is an infrastructure failure by the loop's own
+  // account (`loopOutcome === "infra-failure"`), so that is what it is read as.
+  // Narrow by construction: only a `!ok` result whose cause is a child-bound
+  // kill is re-read, so a PARSED verdict — including a genuine rejection —
+  // still reaches `interpretReview` untouched.
+  const reading = interpretReview(
+    result,
+    reviewRoundFor(state, id),
+    // Both accounts the loop keeps of "I stopped because a child died": the
+    // synthesised `loopOutcome` and the structured kill cause the child itself
+    // carried. Either is structural; neither is the reviewer's prose.
+    result.loopOutcome === "infra-failure" || result.killCause === "child-bound"
+      ? "infra-failure"
+      : undefined,
+  );
   const ok = reading.ok;
   // #485 — rounds are data: the loop's own count when it carried one,
   // else the count the per-round records describe.
@@ -307,6 +332,12 @@ export async function runAdversarialWorkstream(
     // abort / plan-timeout) for the retry ladder alone. Order matters:
     // `capKillOutcomeFields` wins for loop / token-budget, which it owns.
     ...(retryLadderKillCause(result) ? { killCause: retryLadderKillCause(result) } : {}),
+    // #1863 M4 — the cause of a no-verdict pass whose outcome is neither
+    // `infra` nor `threw` (see `boundKill` above), and the id of the event that
+    // proves it, so the handler can read the kill back from the log by identity
+    // and cannot pick up a sibling's kill. `killCause` above is the LADDER's
+    // field and is deliberately untouched: promoting a bound kill into it would
+    // also promote it into the cap-kill projection's consumers.
     completionEvent,
     ...cleared,
     branchEvent: multi
