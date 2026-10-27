@@ -123,37 +123,54 @@ async function barrier(
 }
 
 {
-  const risk = await barrier("DUPLICATE_RISK: high — reverses the landed decision in #103", 1856);
-  assert(
-    risk?.level === "medium" &&
-      (risk?.excludedIssues ?? []).some((e) => e.number === 103 && e.reason.includes("prior art")),
-    `a HIGH resting only on closed prior art the child named as a reversal is downgraded (got ${risk?.level})`,
-  );
-}
-
-{
-  // The GitLab shape: whatever case the forge's state arrived in, the rule holds.
-  const risk = await barrier("DUPLICATE_RISK: high — reverses #103, already landed", 1856, [
-    { number: 103, title: "landed hybrid default", state: "closed" },
-    { number: 7, title: "unrelated", state: "open" },
-  ]);
-  assert(
-    risk?.level === "medium",
-    `a lower-case "closed" state still satisfies the prior-art rule (got ${risk?.level})`,
-  );
-}
-
-{
-  // A NEGATED prior-art statement is the child saying the CLOSED issue is a
-  // real duplicate, not a landed decision: the `#103` clause names only words
-  // that are negated, so nothing is suppressed and the HIGH stands.
+  // #1856 review round 5: the CLOSED-prior-art exclusion is GONE. A reply that
+  // names the subject AND a CLOSED issue keeps the HIGH, exactly as it does on
+  // main, whatever words the child used about the closed one. Both spellings the
+  // four deleted rounds argued over are pinned here so the rule cannot creep back
+  // in through a reworded test.
   const risk = await barrier(
-    "DUPLICATE_RISK: high — #1856 restates this; #103 is not prior art, it is unlanded duplicate work",
+    "DUPLICATE_RISK: high — #1856 restates this; #103 is prior art for this",
     1856,
   );
   assert(
+    risk?.level === "high" &&
+      risk?.downgradedFrom === undefined &&
+      risk?.excludedIssues === undefined,
+    `a reply naming the subject plus a CLOSED issue called prior art keeps the HIGH (got ${risk?.level})`,
+  );
+}
+
+{
+  // The same shape with the CLOSED issue named on its own, which is the case
+  // rule 5 used to downgrade on the strength of the prior-art word alone.
+  const risk = await barrier("DUPLICATE_RISK: high — #103 is prior art", 1856);
+  assert(
+    risk?.level === "high" &&
+      risk?.downgradedFrom === undefined &&
+      risk?.excludedIssues === undefined,
+    `a HIGH resting only on a CLOSED issue the child called prior art keeps the HIGH (got ${risk?.level})`,
+  );
+}
+
+{
+  // The reversal wording the old rule honoured: also a stop now.
+  const risk = await barrier("DUPLICATE_RISK: high — reverses the landed decision in #103", 1856);
+  assert(
     risk?.level === "high" && risk?.downgradedFrom === undefined,
-    `a CLOSED issue the child explicitly denied being prior art still halts (got ${risk?.level})`,
+    `a CLOSED issue the child called a reversal target keeps the HIGH (got ${risk?.level})`,
+  );
+}
+
+{
+  // A CLOSED issue the child did NOT call prior art is a real duplicate: the
+  // verdict stands even with the source issue named alongside it.
+  const risk = await barrier(
+    "DUPLICATE_RISK: high — #1856 restates this, and #103 is unlanded duplicate work",
+    1856,
+  );
+  assert(
+    risk?.level === "high",
+    `a CLOSED issue the child called unlanded duplicate work is not prior art (got ${risk?.level})`,
   );
 }
 
@@ -211,13 +228,13 @@ async function barrier(
 }
 
 {
-  // The same shape, negated-proof: with no other number in the rationale, the
-  // closed prior-art reply still downgrades — so the fail-closed gate above
-  // fires on the un-accounted number, not on its own caution.
-  const risk = await barrier("DUPLICATE_RISK: high — reverses the landed decision in #103", 1856);
+  // The same shape, negated-proof: with no other number in the rationale, a
+  // subject-only reply still downgrades — so the fail-closed gate above fires on
+  // the un-accounted number, not on its own caution.
+  const risk = await barrier("DUPLICATE_RISK: high — #1856 restates this verbatim", 1856);
   assert(
     risk?.level === "medium",
-    `a rationale with no unaccounted number still downgrades on closed prior art (got ${risk?.level})`,
+    `a rationale with no unaccounted number still downgrades on a subject-only HIGH (got ${risk?.level})`,
   );
 }
 
@@ -229,19 +246,6 @@ async function barrier(
   assert(
     risk?.level === "high" && risk?.downgradedFrom === undefined,
     `a HIGH that also names another OPEN issue still halts (got ${risk?.level})`,
-  );
-}
-
-{
-  // A CLOSED issue the child did NOT call prior art is a real duplicate: the
-  // verdict stands even with the source issue named alongside it.
-  const risk = await barrier(
-    "DUPLICATE_RISK: high — #1856 restates this, and #103 is unlanded duplicate work",
-    1856,
-  );
-  assert(
-    risk?.level === "high",
-    `a CLOSED issue the child called unlanded duplicate work is not prior art (got ${risk?.level})`,
   );
 }
 

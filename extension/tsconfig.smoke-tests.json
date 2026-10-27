@@ -46,7 +46,6 @@
     "smoke-tests/test-plan-duplicate-failclosed.ts",
     "smoke-tests/test-plan-duplicate-disclosure-site.ts",
     "smoke-tests/test-plan-duplicate-exclusion-budget.ts",
-    "smoke-tests/lib/plan-duplicate-base-probe.ts",
     "smoke-tests/test-plan-source-lineage.ts",
     "smoke-tests/test-spec-slot-fence-admission.ts",
     "smoke-tests/test-fix-pass-fence-1698.ts",

@@ -12,9 +12,10 @@
  * Why a budget at all: #1383 lens round 2 measured this section at 4,753 chars
  * for ten fully-loaded rows against a `POST_FIT_APPENDS_MAX_CHARS` of 3,072 for
  * ALL the post-fit appends together — the section alone could file a body over
- * the limit. The reason a row carries is itself composed (a fixed rule sentence
- * plus the child's quoted clause) and only the clause had been clipped, so the
- * width of one row was a property of whatever the model wrote. Every interpolable
+ * the limit. The reason a row carries is itself composed (a fixed rule sentence,
+ * and until #1856 round 5 a clause quoted from the child) and only one slot had
+ * been clipped, so the width of one row was a property of whatever the model
+ * wrote. Every interpolable
  * slot is bounded here and the whole section is arithmetic over those bounds, the
  * way `DROPPED_LINE_MAX_CHARS` / `DROPPED_SECTION_MAX_CHARS` are.
  *
@@ -37,35 +38,25 @@ import type { DuplicateRisk, ExcludedDuplicate } from "./plan-investigate.ts";
  */
 export const EXCLUSION_DISCLOSURE_MAX_ROWS = 10;
 
-/**
- * The longest quoted prior-art clause one row can carry. Deliberately NARROWER
- * than the 300-char `truncateForDisclosure` the residual/open-point disclosures
- * use: the clause is the child's own sentence quoted back as evidence, and the
- * row that carries it also carries a fixed rule sentence, so the room the clause
- * takes is room the section does not have.
- */
-export const EXCLUSION_CLAUSE_MAX_CHARS = 120;
-
 /** The clip on one row's title — the widest title the disclosure can carry. */
 export const EXCLUSION_TITLE_MAX_CHARS = 120;
 
 /**
- * The clip on one row's reason. The widest reason is the prior-art one: the fixed
- * rule sentence plus the quoted clause in its quotes plus the evidence tail, which
- * `plan-duplicate-self.ts` composes as
- * `EXCLUSION_REASONS["prior-art"] + ' — "' + clause + '" (' + PRIOR_ART_EVIDENCE + ')'`.
- * Those two constants and this composition are pinned EQUAL to the strings below
- * by `test-plan-duplicate-exclusion-budget.ts` — a circular import is not a price
- * worth paying for a bound, but an unpinched literal here would drift the moment
- * the wording is reworded, and the bound would then be arithmetic over prose
- * nobody writes any more.
+ * The clip on one row's reason. Both reasons are short fixed prose composed by
+ * `plan-duplicate-self.ts` from `EXCLUSION_REASONS` — there is no longer a slot
+ * whose width is a property of what the model wrote (#1856 round 5 removed the
+ * prior-art reason and the clause it quoted). The bound is therefore generous
+ * rather than derived: it comfortably clears the producer's longest sentence
+ * while keeping the section's arithmetic honest, and the budget test asserts
+ * both halves — that the producer's real reasons fit it, and that an oversized
+ * one is cut.
  *
- * The other two reasons are shorter, so this is the bound that matters.
+ * It is a literal rather than an expression over `EXCLUSION_REASONS` because
+ * that import would be circular (the producer imports this module for its
+ * clips); the budget test compares the producer's constants against this number
+ * so a reworded rule sentence fails there rather than here quietly widening.
  */
-export const EXCLUSION_REASON_MAX_CHARS =
-  "a CLOSED issue the risk check itself called prior art or a reversal target".length +
-  ` — "${"the risk check called it that in this clause"}" () `.length +
-  EXCLUSION_CLAUSE_MAX_CHARS;
+export const EXCLUSION_REASON_MAX_CHARS = 240;
 
 /**
  * The widest row the renderer can emit: `- #`, an id at the widest the
@@ -186,30 +177,16 @@ function exclusionRow(e: ExcludedDuplicate): string {
 }
 
 /**
- * Cut a reason to the row's width, leaving the quoted clause whole and closed.
- *
- * The widest reason is the prior-art one, and a plain `slice` cut it in the
- * middle of the quotation — `…target — "ccc`, a quote the section opens and never
- * closes, which is not something a reader of a filed body can trust. So the
- * clause is clipped FIRST, at the width the disclosure documents
- * ({@link EXCLUSION_CLAUSE_MAX_CHARS}), exactly as the producer clips it before
- * composing the reason at all; the row is then cut at the reason bound, which
- * every reason the producer composes already satisfies. A row is therefore never
- * cut inside a quotation, and a caller that somehow supplies an oversized reason
- * still cannot exceed {@link EXCLUSION_ROW_MAX_CHARS}.
+ * Cut a reason to the row's width. Every reason the producer composes is fixed
+ * prose that already satisfies this bound, so this clip is the guard against a
+ * hostile or stale input (a cached verdict written by an older build) rather
+ * than a cut the producer relies on; the budget test pins that the producer's
+ * own longest reason fits it, so a real row is never silently shortened.
  */
 function fitReason(reason: string): string {
-  const open = reason.indexOf('"');
-  const close = reason.lastIndexOf('"');
-  const bounded =
-    open >= 0 && close > open
-      ? `${reason.slice(0, open + 1)}${reason
-          .slice(open + 1, close)
-          .slice(0, EXCLUSION_CLAUSE_MAX_CHARS)}${reason.slice(close)}`
-      : reason;
-  return bounded.length <= EXCLUSION_REASON_MAX_CHARS
-    ? bounded
-    : bounded.slice(0, EXCLUSION_REASON_MAX_CHARS);
+  return reason.length <= EXCLUSION_REASON_MAX_CHARS
+    ? reason
+    : reason.slice(0, EXCLUSION_REASON_MAX_CHARS);
 }
 
 /** The lead paragraph — one template, so the budget constant and the render agree. */

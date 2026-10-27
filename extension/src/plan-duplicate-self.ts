@@ -10,21 +10,29 @@
  * inventory plus the prior-context rows both feed the child a verbatim listing
  * of it — so the child's most confident duplicate is the ticket under plan.
  *
- * Six rules, all deterministic, none of them a judgment about the model's
+ * Five rules, all deterministic, none of them a judgment about the model's
  * reasoning (numbered as in docs/troubleshooting.md):
  *
  *   1. The source issue N and its own split children are never duplicates. They
  *      are the SUBJECT of the plan. Excluded wherever they appear: the
  *      inventory rows, the prior-context rows, the child's prompt, and the
  *      verdict's named issues.
- *   2. A CLOSED issue that the child ITSELF called prior art or a reversal
- *      target is what the child's own charter says is not a duplicate, so a
- *      HIGH that rests only on those is downgraded, not believed. Prior art can
- *      be satisfied ONLY by an inventory row known to be CLOSED: a named issue
- *      the inventory never carried has no known state, and rule 3 keeps it.
- *   3. Anything else keeps the halt: a HIGH that names one other OPEN issue
- *      halts exactly as it did before, and so does a `#X-k` token whose parent is
- *      not the source — that is someone else's decomposition, not this plan's.
+ *   2. Anything the subject rule does not place keeps the halt: a HIGH that names
+ *      one other OPEN issue halts exactly as it did before, and so does a `#X-k`
+ *      token whose parent is not the source — that is someone else's
+ *      decomposition, not this plan's. It halts whatever that issue's STATE is,
+ *      CLOSED included, and whatever prose the child wrote about it.
+ *   3. There is deliberately NO CLOSED-prior-art exclusion (#1856 review round 5).
+ *      Four rounds tried to decide, from the child's words alone, whether a
+ *      CLOSED issue it named was landed prior art or unlanded duplicate work, and
+ *      every round found a new phrasing that slipped past the prose matcher:
+ *      comma clauses, a denial in the next sentence, "reverses nothing", `#00103`
+ *      padding, `UN-LANDED` and other hyphenated or unlisted negators. Prose
+ *      cannot be judged reliably here, so it is not judged: a CLOSED issue named
+ *      in the reply keeps the HIGH, exactly as it does on main. That is the
+ *      fail-closed side of the trade — a plan that reverses landed work halts and
+ *      the operator re-runs with a `context` acknowledgment, rather than a real
+ *      duplicate filing silently because the child phrased its denial well.
  *   4. A number this filter cannot account for keeps the HIGH (#1856 review
  *      rounds 1–2). The extraction above reads `#N` tokens only, so a rationale
  *      that cites the rest of its evidence some other way — `GH-12`, `ticket 12`,
@@ -41,27 +49,11 @@
  *      never the reverse, so an unenumerated spelling of a reference cannot
  *      downgrade anything: the failure mode moves from a silent wrong downgrade
  *      to a halt the operator can see.
- *   5. The prior-art word must sit in the SAME CLAUSE as the CLOSED issue's
- *      token (#1856 review round 2), where a clause ends at `. ! ? ; , :` or a
- *      newline. Words from an adjacent issue's clause count for nothing, so
- *      "#1856 is prior art; #103 is unlanded duplicate work" halts, and so does
- *      the comma form, while "reverses the landed decision in #103" downgrades.
- *      Round 3: EVERY mention is judged, not just the first — a reply that reads
- *      only the first clause suppressed a HIGH main halts on. Round 4: negation
- *      is judged REPLY-WIDE, not per clause and not within a word window. A
- *      CLOSED issue is excluded as prior art only when BOTH hold: every mention
- *      of it has a clause carrying an affirming prior-art word, AND the WHOLE
- *      reply contains no negator token — `not`, `never`, `no`, `nothing`, `none`,
- *      `without`, `unlanded`, `isn't`, `wasn't`, `doesn't`, `didn't`, `hasn't`,
- *      `aren't` or any `n't` contraction, case-insensitive whole words. One
- *      negator anywhere in the reply excludes NOTHING: an unlanded duplicate
- *      described in prose is a real duplicate whatever clause the word sits in,
- *      and the HIGH stands. The subject rule (rule 1) is unaffected.
- *   6. Anything else the rules above do not place stands: an absent marker is
+ *   5. Anything else the rules above do not place stands: an absent marker is
  *      never a downgrade, and a verdict this filter cannot attribute keeps the
  *      halt exactly as it did before the filter existed.
  *
- * Rules 1–6 read the child's FULL reply, not the 400-char slice the parser keeps
+ * Rules 1–5 read the child's FULL reply, not the 400-char slice the parser keeps
  * for display (round-1 lens H1): an OPEN duplicate named past that cut is
  * invisible to the slice, and a HIGH that halts on main must not be downgraded
  * here because the evidence fell off the end of a window.
@@ -73,19 +65,11 @@
  * Issue state is normalised ONCE, where the post-filter's known-issue map is
  * built (`normaliseIssueState` in plan-investigate.ts), so every reader of
  * `KnownIssue.state` / `ExcludedDuplicate.state` sees the same three values and
- * no comparison has to re-case the string.
+ * no comparison has to re-case the string. Since round 5 no RULE decides on a
+ * state — the disclosure still records what the inventory carried for a row.
  */
+import { citesUnaccountedNumber, namedIssueRefs } from "./plan-duplicate-citations.ts";
 import {
-  citesUnaccountedNumber,
-  clauseNaming,
-  everyClauseNaming,
-  namedIssueRefs,
-  priorArtClause,
-  priorArtForAllMentions,
-  replyNegates,
-} from "./plan-duplicate-citations.ts";
-import {
-  EXCLUSION_CLAUSE_MAX_CHARS,
   EXCLUSION_REASON_MAX_CHARS,
   EXCLUSION_TITLE_MAX_CHARS,
 } from "./plan-duplicate-disclosure.ts";
@@ -99,12 +83,8 @@ import type { DuplicateRisk, ExcludedDuplicate } from "./plan-investigate.ts";
 export {
   citesUnaccountedNumber,
   citesUnaccountedNumberStripped,
-  clauseNaming,
-  everyClauseNaming,
   namedIssueRefs,
   namedIssueTokens,
-  priorArtForAllMentions,
-  replyNegates,
   type NamedIssueRef,
 } from "./plan-duplicate-citations.ts";
 
@@ -115,20 +95,12 @@ const ISSUE_SOURCE_RE = /^issue #(\d+) \(/;
 export const EXCLUSION_REASONS = {
   source: "the issue this plan is for (a plan is not the duplicate of its own subject)",
   "split-child": "the planned issue's own split child",
-  "prior-art": "a CLOSED issue the risk check itself called prior art or a reversal target",
 } as const;
-
-/**
- * Tail of the prior-art disclosure: the clause the rule matched is quoted, so
- * the operator reads the child's own words instead of a fixed claim the filter
- * asserts about them.
- */
-export const PRIOR_ART_EVIDENCE = "the risk check called it that in this clause";
 
 /**
  * The disclosure itself — the section renderer and every character bound on it —
  * lives in plan-duplicate-disclosure.ts, which also names why each slot is
- * bounded the width it is. `EXCLUSION_REASONS` and `PRIOR_ART_EVIDENCE` stay
+ * bounded the width it is. `EXCLUSION_REASONS` stays
  * HERE because the rules below compose them into the row they explain; a row
  * whose wording the rule that removed it cannot see is a disclosure nobody can
  * check.
@@ -139,6 +111,10 @@ export const PRIOR_ART_EVIDENCE = "the risk check called it that in this clause"
  * {@link normaliseIssueState} is the only place a forge's spelling is cased, and
  * a caller that passes raw bytes gets `false` — a state nobody normalised is
  * never evidence that an issue's work landed.
+ *
+ * No rule of this filter decides on it since round 5 (#1856): a CLOSED issue the
+ * reply names keeps the HIGH. The predicate stays because its exactness is what
+ * the disclosure's state slot depends on, and its tests pin that.
  */
 export function isClosedState(state: PlanIssueState): boolean {
   return state === "CLOSED";
@@ -240,9 +216,9 @@ export interface KnownIssue {
  * dispatch (no verdict at all) and an absent marker both come back untouched —
  * nothing here may invent a downgrade. Pass `fullText` (the child's uncut reply)
  * so the fail-closed rules read evidence the 400-char display slice dropped.
- * `known` maps an issue number to what the inventory carried for it; a number
- * with no row has no known state, so it can never satisfy the CLOSED-prior-art
- * rule and its HIGH stands.
+ * `known` maps an issue number to what the inventory carried for it — the
+ * disclosure's lookup only. Since round 5 the state of a named issue decides
+ * nothing: any issue that is not the subject keeps the HIGH, CLOSED included.
  *
  * A `sourceIssue` that is not a positive safe integer — `undefined`, a `null`
  * read back from the cache or a session file, `0`, a float — means there is no
@@ -259,9 +235,9 @@ export function downgradeSelfDuplicate(
   // counts as a source issue. `sourceIssue` reaches this filter through the
   // investigation cache and through session replay, where a JSON `null` is not
   // `undefined` — and a `null` source would otherwise compare unequal to every
-  // named issue, so rule 1 would attribute nothing to the subject while the
-  // prior-art rule still excluded CLOSED issues on a reply nobody pinned to a
-  // ticket. Anything that is not a positive safe integer downgrades NOTHING.
+  // named issue, so rule 1 would attribute nothing to a subject nobody pinned to
+  // a ticket while the filter still read the reply as a self-only HIGH.
+  // Anything that is not a positive safe integer downgrades NOTHING.
   // Narrowed with a type predicate rather than an inline cast so every later use
   // of `source` is a `number` to the compiler, not an assertion someone re-adds.
   if (!isPositiveSafeInteger(source)) return verdict;
@@ -271,25 +247,11 @@ export function downgradeSelfDuplicate(
   // not the defect this filter exists for and it halts as any other HIGH does.
   if (named.length === 0) return verdict;
   const known = args.known ?? new Map<number, KnownIssue>();
-  // Rule 5's reply-wide half, computed once: ONE negator token anywhere in the
-  // child's reply means no CLOSED issue is prior art, so the HIGH stands. The
-  // subject rule below is untouched — a plan is never the duplicate of its own
-  // subject whatever the prose says about it.
-  const negated = replyNegates(text);
-  // Rules 3 and 5, judged first, on the untouched text: a CLOSED issue whose own
-  // clause carries no unnegated prior-art word, and an `X-k` token that is not
-  // this plan's decomposition, are evidence the child meant as a real duplicate —
-  // no later reasoning about the subject may talk the operator out of that halt.
+  // Rule 2, judged first on the untouched text: an `X-k` token whose parent is
+  // not this plan's decomposition is somebody else's work, and no later
+  // reasoning about the subject may talk the operator out of that halt.
   for (const ref of named) {
-    if (ref.parent !== undefined) {
-      if (!isSplitChildOf(ref.parent, source)) return verdict;
-      continue;
-    }
-    if (ref.id === source) continue;
-    const row = known.get(ref.id);
-    if (row === undefined || !isClosedState(row.state)) continue;
-    if (negated) return verdict;
-    if (!priorArtForAllMentions(everyClauseNaming(text, ref.token))) return verdict;
+    if (ref.parent !== undefined && !isSplitChildOf(ref.parent, source)) return verdict;
   }
   const excluded: ExcludedDuplicate[] = [];
   // The tokens this filter positively resolved as excluded; their digits come
@@ -318,27 +280,11 @@ export function downgradeSelfDuplicate(
       excluded.push(excludedRow(n, row, EXCLUSION_REASONS.source));
       continue;
     }
-    if (row !== undefined && isClosedState(row.state)) {
-      // Judged by rule 5 above: the reply carries no negator token at all and
-      // EVERY clause naming this issue affirms prior art. The disclosure quotes
-      // the FIRST affirming clause — the one that satisfied the rule — not merely
-      // the first mention.
-      const affirming =
-        everyClauseNaming(text, ref.token).find((c) => priorArtClause(c)) ??
-        clauseNaming(text, ref.token);
-      const clause = clip(affirming, EXCLUSION_CLAUSE_MAX_CHARS);
-      resolved.push(ref.token);
-      excluded.push(
-        excludedRow(
-          n,
-          row,
-          `${EXCLUSION_REASONS["prior-art"]} — "${clause}" (${PRIOR_ART_EVIDENCE})`,
-        ),
-      );
-      continue;
-    }
-    // A named issue the filter may not suppress: no inventory row means no
-    // known state, so the CLOSED-prior-art rule cannot apply to it (rule 2).
+    // Rule 2: any issue the reply names that is not the subject — OPEN, CLOSED
+    // or unknown — is a real duplicate candidate and keeps the halt. Round 5 of
+    // #1856 removed the CLOSED-prior-art exclusion that used to sit here: four
+    // rounds of prose matching on the child's own wording never converged, so the
+    // state of a named issue now decides nothing (see the module header, rule 3).
     return verdict;
   }
   // Rule 4, after every token has been judged: a number this filter has not
@@ -350,7 +296,7 @@ export function downgradeSelfDuplicate(
     ...verdict,
     level: "medium",
     downgradedFrom: "high",
-    downgradeReason: `every issue the duplicate-risk check named was the plan's own subject or closed prior art (${excluded
+    downgradeReason: `every issue the duplicate-risk check named was the plan's own subject (${excluded
       .map((e) => `#${e.number}: ${e.reason}`)
       .join("; ")})`,
     excludedIssues: excluded,
@@ -372,8 +318,8 @@ function excludedRow(
 
 /**
  * The row's own clip: cut to width, no ellipsis — a row's slots are bounded
- * rather than decorated, and the prior-art reason ends in a closing bracket
- * whose mate the quoted clause opened, which an ellipsis would drop.
+ * rather than decorated, and the widest reason is fixed prose whose closing
+ * bracket an ellipsis would drop.
  */
 function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) : s;

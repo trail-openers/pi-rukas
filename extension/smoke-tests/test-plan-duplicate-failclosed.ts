@@ -10,8 +10,10 @@
  * them was in the list. Round 2 replaces the list with two structural rules and
  * this file pins both, plus the evidence-supply fixes the round-1 lenses asked
  * for (the filter reads the child's FULL reply, not the 400-char display slice)
- * and the canonical citation tokens of round 4. Rule 5 — the prior-art test —
- * has its own file, `test-plan-duplicate-rule5.ts` (AGENTS.md §12 size cap).
+ * and the canonical citation tokens of round 4. Round 5 removed the CLOSED
+ * prior-art exclusion (and the clause/negation prose matching it rested on), so
+ * every "reverses the landed decision in #103" shape now keeps the HIGH and is
+ * pinned in test-plan-duplicate-postfilter.ts.
  *
  * BEFORE-BEHAVIOUR EVIDENCE (observed, not argued): the pre-fix copies of
  * plan-duplicate-self.ts / plan-investigate.ts were saved to a scratch directory
@@ -29,10 +31,7 @@ import {
 import {
   citesUnaccountedNumber,
   citesUnaccountedNumberStripped,
-  clauseNaming,
-  everyClauseNaming,
   namedIssueRefs,
-  replyNegates,
 } from "../src/plan-duplicate-self.ts";
 import { runInvestigation } from "../src/plan-investigate.ts";
 
@@ -152,16 +151,17 @@ async function barrier(
 }
 
 {
-  // A version of THREE OR MORE parts beside the self token is a legitimate
-  // number, not a reference: stripped, and the HIGH still downgrades.
+  // #1856 round 5: a CLOSED issue named as a reversal target now keeps the HIGH
+  // — the prior-art prose test that used to downgrade it is gone. The three-part
+  // version beside it is still stripped, which is what this row pins: the stop
+  // comes from the named CLOSED issue, not from the version string.
   const risk = await barrier(
     "DUPLICATE_RISK: high — reverses the landed decision in #103 (as of v0.14.27)",
     1856,
   );
   assert(
-    risk?.level === "medium" &&
-      (risk?.excludedIssues ?? []).some((e) => e.number === 103 && e.reason.includes("prior art")),
-    `a version string alongside the token still downgrades (got ${risk?.level})`,
+    risk?.level === "high" && risk?.downgradedFrom === undefined,
+    `a CLOSED issue named as a reversal target keeps the HIGH even beside a safe version string (got ${risk?.level})`,
   );
 }
 
@@ -366,7 +366,7 @@ async function barrier(
   assert(risk?.level === "high", "H1 control: the same duplicate inside the window still halts");
 }
 
-// ============ H2: an issue with no inventory row can never be prior art
+// ============ H2: an issue the inventory never carried keeps the HIGH
 
 {
   const risk = await barrier(
@@ -375,7 +375,7 @@ async function barrier(
   );
   assert(
     risk?.level === "high" && risk?.downgradedFrom === undefined,
-    `H2: a named issue the inventory never carried has no known state, so prior art cannot apply (got ${risk?.level})`,
+    `H2: a named issue the inventory never carried has no known state, so nothing suppresses it (got ${risk?.level})`,
   );
 }
 
@@ -386,7 +386,7 @@ async function barrier(
     number: 200 + i,
     state: "CLOSED" as const,
     title: "t".repeat(500),
-    reason: "a CLOSED issue the risk check itself called prior art",
+    reason: "the planned issue's own split child",
   }));
   const section = duplicateExclusionSection(
     { level: "medium", rationale: "", downgradedFrom: "high", excludedIssues: many },

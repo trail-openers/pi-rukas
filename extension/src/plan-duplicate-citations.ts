@@ -9,64 +9,23 @@
  * functions over one rationale, with no knowledge of verdicts, inventories or
  * issue state, so they move as a unit.
  *
+ * What is NOT here, and why: the clause/negation prose matching the CLOSED
+ * prior-art exclusion used to run on. Four review rounds of #1856 each found a
+ * new phrasing that slipped past it (comma clauses, a denial in the next
+ * sentence, "reverses nothing", `#00103` padding, `UN-LANDED` and other
+ * hyphenated or unlisted negators), so round 5 deleted the rule and with it
+ * every clause-boundary and negator matcher in this module. Prose about a CLOSED
+ * issue now decides nothing.
+ *
  * Two invariants the rules upstream depend on, and the reason these matchers are
  * anchored rather than loose:
  *
  *   - a mention is `#+token` with a `(?![\d-])` guard, so `#7` never reads as a
- *     mention inside `#71` or `#7-2` — one issue's clause is never another's;
+ *     mention inside `#71` or `#7-2` — one issue's token is never another's;
  *   - rule 4 strips the WHOLE citation, leading `#` run and all, and only then
  *     asks whether any digit survives. Anything it cannot place is left in
  *     place, which is what makes the rule fail closed.
  */
-
-/**
- * Words that make a CLOSED issue the child's own prior art / reversal target —
- * the vocabulary its charter hands it ("prior art or a REVERSAL target").
- * Matched per clause (rule 5), never across the whole reply: a reply that
- * discharges rule 1 for the planned issue and then halts on a genuinely open
- * duplicate must not have that open finding's own wording read back as a
- * prior-art claim about the closed issue.
- *
- * Negation is NOT matched here. Round 4 removed the word-window negation that
- * used to sit beside this: "is not prior art", "no … prior art" and "it is not
- * landed" are the same claim in three spacings, and a window can only ever
- * enumerate spellings. Negation is decided reply-wide by {@link replyNegates}
- * and it takes precedence over every affirmation.
- */
-const PRIOR_ART_RE =
-  /\b(prior art|reversal|revers(?:e|es|ed|ing)|supersed\w*|overturn\w*|landed|deliberate(?:ly)?\s+chang\w*)\b/i;
-
-/**
- * Rule 5's negator tokens (#1856 review round 4), matched case-insensitively as
- * WHOLE WORDS anywhere in the child's reply: `not`, `never`, `no`, `nothing`,
- * `none`, `without`, `unlanded`, the listed contractions, and any `n't`
- * contraction. `unlanded` is spelled out because the `\b`-anchored list would
- * not catch it as a `no`-style word and it is the exact word the field case's
- * rationales use for "this closed issue is a duplicate that never shipped".
- */
-const NEGATOR_RE =
-  /\b(?:not|never|no|nothing|none|without|unlanded|isn'?t|wasn'?t|weren'?t|doesn'?t|don'?t|didn'?t|hasn'?t|haven'?t|aren'?t|can'?t|cannot|couldn'?t|shouldn'?t|wouldn'?t|won'?t)\b/i;
-
-/**
- * Does the reply negate anything, anywhere? Rule 5's reply-wide half: one
- * negator token anywhere means NO CLOSED issue is excluded as prior art, so the
- * HIGH stands. Judged over the whole reply rather than the clause naming an
- * issue because the child's denial of prior art and its affirmation of it are
- * routinely two different sentences about the same issue ("#103 is prior art.
- * It is not landed."), and a clause-scoped negation reads the second sentence as
- * somebody else's business.
- */
-export function replyNegates(text: string): boolean {
-  return NEGATOR_RE.test(text);
-}
-
-/**
- * Clause boundaries for rule 5: sentence terminators, a semicolon, a comma and a
- * colon, plus a newline. Narrower than a sentence on purpose — the common
- * rationale is one long dash-separated line, so at sentence scope a word about
- * `#1856` leaks into `#103`'s judgement.
- */
-const CLAUSE_BOUNDARY = /[.!?,;:\n]/;
 
 /**
  * The number shapes a rationale legitimately carries that are NOT evidence about
@@ -171,67 +130,6 @@ export function namedIssueTokens(text: string): number[] {
   return namedIssueRefs(text)
     .map((r) => r.id)
     .filter((n) => Number.isSafeInteger(n));
-}
-
-/**
- * Every clause that names `#token`, in order of appearance — the shape rule 5
- * actually judges (round 3). The match is anchored with `(?![\d-])` so `#7`
- * never reads as a mention inside `#71` or `#7-2`, and each occurrence yields
- * its own clause, so an affirmation in one sentence cannot outrank a denial in
- * the next.
- */
-export function everyClauseNaming(text: string, token: string): string[] {
-  const safe = escapeForRegExp(token);
-  if (safe === "") return [];
-  const out: string[] = [];
-  // A leading run of `#`s belongs to the mention (`##1856`): starting at the
-  // digits rather than at the first `#` would leave the clause beginning
-  // mid-token, which reads the same words and clips their left context.
-  const re = new RegExp(`#+${safe}(?![\\d-])`, "g");
-  for (const m of text.matchAll(re)) {
-    const at = m.index ?? 0;
-    let from = at;
-    while (from > 0 && !CLAUSE_BOUNDARY.test(text[from - 1] ?? "")) from--;
-    let to = at + m[0].length;
-    while (to < text.length && !CLAUSE_BOUNDARY.test(text[to] ?? "")) to++;
-    out.push(text.slice(from, to).trim());
-  }
-  return out;
-}
-
-/**
- * The clause rule 5 reads for one named issue: the text around the `#token` up
- * to the nearest clause boundary on either side. The token itself is kept and no
- * other token's words are read, which is what stops an adjacent finding's "is
- * unlanded duplicate work" being satisfied by a neighbour's "prior art".
- */
-export function clauseNaming(text: string, token: string): string {
-  const clauses = everyClauseNaming(text, token);
-  return clauses.length === 0 ? "" : (clauses[0] ?? "");
-}
-
-/**
- * Did the child honour this CLOSED issue as landed work in the clause naming it?
- * An affirming clause is the child deferring to a landed decision; anything else
- * — no prior-art word at all — is the child calling the closed issue a real
- * duplicate. Negation is NOT judged here: {@link replyNegates} decides that over
- * the whole reply, and it outranks every affirmation.
- */
-export function priorArtClause(clause: string): boolean {
-  return PRIOR_ART_RE.test(clause);
-}
-
-/**
- * Rule 5 over EVERY mention of one issue: an issue is honoured as landed work
- * only when EVERY clause naming it carries an affirming prior-art word. Judging
- * the first mention alone let the field shape "#103 is prior art for this. #103
- * is not landed, it is unlanded duplicate work" exclude a CLOSED issue the child
- * had just called a real duplicate. Round 4 adds the reply-wide half of the rule
- * at the call site: no mention counts when {@link replyNegates} fires.
- */
-export function priorArtForAllMentions(clauses: string[]): boolean {
-  if (clauses.length === 0) return false;
-  return clauses.every((clause) => PRIOR_ART_RE.test(clause));
 }
 
 /**

@@ -6,10 +6,15 @@
  * The defect: `POST_FIT_APPENDS_MAX_CHARS` (3,072) is the whole budget for
  * EVERYTHING appended after `fitDraftToBudget` returns — residual gaps, open
  * points, the base fallback, the image links, the provenance wrapper, and this
- * section. The section's only bound was `truncateForDisclosure` (300) on the
- * clause INSIDE the prior-art reason, while the reason is composed: a fixed rule
- * sentence plus that clause plus an evidence tail. Ten fully-loaded rows rendered
+ * section. The section's only bound was `truncateForDisclosure` (300) on one slot
+ * INSIDE the reason, while the reason is composed from several parts. Ten
+ * fully-loaded rows rendered
  * 4,753 chars — more than the entire append budget, on their own.
+ *
+ * Since #1856 round 5 every reason is fixed prose the producer composes from
+ * `EXCLUSION_REASONS` — the prior-art reason and the clause it quoted out of the
+ * child's reply are gone — so the widest row is now title + reason, and this file
+ * pins the arithmetic over those two slots plus the lead and the omission line.
  *
  * BASE-BEHAVIOUR EVIDENCE was established OUTSIDE the repo, against the pre-fix
  * renderer checked out at the commit this branch was cut from: the same
@@ -20,12 +25,8 @@
  */
 
 import { POST_FIT_APPENDS_MAX_CHARS } from "../src/plan-dropped-budget.ts";
+import { EXCLUSION_REASONS } from "../src/plan-duplicate-self.ts";
 import {
-  EXCLUSION_REASONS,
-  PRIOR_ART_EVIDENCE,
-} from "../src/plan-duplicate-self.ts";
-import {
-  EXCLUSION_CLAUSE_MAX_CHARS,
   EXCLUSION_DISCLOSURE_MAX_ROWS,
   EXCLUSION_REASON_MAX_CHARS,
   EXCLUSION_ROW_MAX_CHARS,
@@ -45,23 +46,21 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** The widest reason the producer composes: the rule sentence + a full clause + the tail. */
-function worstReason(clauseLen: number): string {
-  const clause = "c".repeat(clauseLen);
-  return `${PRIOR_ART_RULE} — "${clause}" (${PRIOR_ART_TAIL})`;
+/** The widest reason the renderer can be handed. */
+function worstReason(reasonLen: number): string {
+  return "r".repeat(reasonLen);
 }
 
 /**
- * The rule sentence and the evidence tail the producer composes the reason from
- * (`EXCLUSION_REASONS["prior-art"]` and `PRIOR_ART_EVIDENCE` in
- * plan-duplicate-self.ts). The clip constant is derived over THOSE constants, so
- * the widest reason a producer can hand the renderer is composed here from the
- * same wording — a fixture whose reason could never reach the clip would let a
- * bound measured against an impossible input pass.
+ * The rule sentences the producer actually composes rows from (`EXCLUSION_REASONS`
+ * in plan-duplicate-self.ts). The reason clip is a literal rather than an
+ * expression over them — that import would be circular — so the producer's own
+ * strings are compared against the bound here: a fixture whose reason could never
+ * reach the clip would let a bound measured against an impossible input pass, and
+ * a reworded rule sentence must fail here rather than drift.
  */
-const PRIOR_ART_RULE =
-  "a CLOSED issue the risk check itself called prior art or a reversal target";
-const PRIOR_ART_TAIL = "the risk check called it that in this clause";
+const PRODUCER_REASONS = Object.values(EXCLUSION_REASONS);
+const LONGEST_PRODUCER_REASON = Math.max(...PRODUCER_REASONS.map((r) => r.length));
 
 /**
  * The measured width of the non-exclusion appends at their own bounds: the
@@ -109,7 +108,7 @@ function worstSection(count?: number): string {
   const section = worstSection();
   assert(
     section.length <= EXCLUSION_SECTION_MAX_CHARS,
-    `worst case: 10 rows with max-length title/state/reason/clause render inside the section cap (${section.length} <= ${EXCLUSION_SECTION_MAX_CHARS})`,
+    `worst case: 10 rows with max-length title/state/reason render inside the section cap (${section.length} <= ${EXCLUSION_SECTION_MAX_CHARS})`,
   );
   // The fixture is a worst case only if it is actually loaded: an unfilled slot
   // would let a vacuous cap pass.
@@ -120,9 +119,12 @@ function worstSection(count?: number): string {
     `the fixture really loads every row near its clip (shortest ${Math.min(...bullets.map((b) => b.length))}, row cap ${EXCLUSION_ROW_MAX_CHARS})`,
   );
   assert(
-    section.includes(`"${"c".repeat(EXCLUSION_CLAUSE_MAX_CHARS)}"`) &&
-      !section.includes(`${"c".repeat(EXCLUSION_CLAUSE_MAX_CHARS + 1)}`),
-    `the quoted clause is clipped to ${EXCLUSION_CLAUSE_MAX_CHARS}, not left at whatever the child wrote`,
+    !section.includes("r".repeat(EXCLUSION_REASON_MAX_CHARS + 1)),
+    "a reason longer than the clip never reaches the rendered section",
+  );
+  assert(
+    section.includes("r".repeat(EXCLUSION_REASON_MAX_CHARS)),
+    `the fixture really loads a reason right at the clip (${EXCLUSION_REASON_MAX_CHARS})`,
   );
 }
 
@@ -169,28 +171,21 @@ function worstSection(count?: number): string {
     `the arithmetic worst case alone would overrun the shared budget, which is why the section is capped below it (${EXCLUSION_WORST_CASE_CHARS} > ${POST_FIT_APPENDS_MAX_CHARS})`,
   );
   assert(
-    EXCLUSION_REASON_MAX_CHARS > EXCLUSION_CLAUSE_MAX_CHARS &&
-      EXCLUSION_TITLE_MAX_CHARS === 120,
-    `the row slots each have their own clip (reason ${EXCLUSION_REASON_MAX_CHARS}, title ${EXCLUSION_TITLE_MAX_CHARS}, clause ${EXCLUSION_CLAUSE_MAX_CHARS})`,
+    EXCLUSION_REASON_MAX_CHARS > 0 && EXCLUSION_TITLE_MAX_CHARS === 120,
+    `the row slots each have their own clip (reason ${EXCLUSION_REASON_MAX_CHARS}, title ${EXCLUSION_TITLE_MAX_CHARS})`,
   );
   assert(
     worstReason(400).length > EXCLUSION_REASON_MAX_CHARS,
-    `an unclipped prior-art reason exceeds the row's reason clip (${worstReason(400).length} > ${EXCLUSION_REASON_MAX_CHARS}) — so the clip does real work`,
+    `an unclipped reason exceeds the row's reason clip (${worstReason(400).length} > ${EXCLUSION_REASON_MAX_CHARS}) — so the clip does real work`,
   );
-  // The reason bound is spelled as literals in the budget module to keep this
+  // The reason bound is spelled as a literal in the budget module to keep that
   // module free of a circular import back to the rules. That is only sound while
-  // the literals still ARE the producer's wording, so the producer's own
-  // constants are compared against them here — reword a rule sentence and this
-  // fails instead of the bound quietly becoming arithmetic over dead prose.
+  // the bound still clears the producer's actual wording, so every reason the
+  // producer composes is compared against it below — reword a rule sentence past
+  // the clip and this fails instead of the disclosure silently shortening.
   assert(
-    PRIOR_ART_RULE === EXCLUSION_REASONS["prior-art"] && PRIOR_ART_TAIL === PRIOR_ART_EVIDENCE,
-    "the fixture's prior-art wording is the producer's own EXCLUSION_REASONS/PRIOR_ART_EVIDENCE",
-  );
-  assert(
-    `${EXCLUSION_REASONS["prior-art"]} — "x" (${PRIOR_ART_EVIDENCE})`.length - 2 +
-      EXCLUSION_CLAUSE_MAX_CHARS <=
-      EXCLUSION_REASON_MAX_CHARS,
-    "the reason bound still covers the producer's actual composition at a full clause",
+    PRODUCER_REASONS.length > 0 && LONGEST_PRODUCER_REASON <= EXCLUSION_REASON_MAX_CHARS,
+    `the producer's longest EXCLUSION_REASONS sentence still fits the clip (${LONGEST_PRODUCER_REASON} <= ${EXCLUSION_REASON_MAX_CHARS})`,
   );
   // The longest reason the producer can emit for any rule must fit the clip it is
   // clipped to — otherwise `fitReason` is truncating real output, not just hostile

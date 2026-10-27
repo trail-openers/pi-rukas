@@ -88,9 +88,10 @@ export interface DuplicateRisk {
   /**
    * #1856 — set only when a HIGH verdict was downgraded to medium because EVERY
    * issue it named was one the driver may suppress: the source issue this plan
-   * is for, one of that issue's own split children, or a CLOSED issue the child
-   * itself called prior art or a reversal target (plan-duplicate-self.ts). An
-   * absent marker (`parseDuplicateRisk`'s medium default) is NEVER a downgrade.
+   * is for, or one of that issue's own split children (plan-duplicate-self.ts).
+   * Round 5 removed the third case, a CLOSED issue the child called prior art:
+   * a CLOSED issue named in the reply keeps the HIGH whatever its prose says.
+   * An absent marker (`parseDuplicateRisk`'s medium default) is NEVER a downgrade.
    */
   downgradedFrom?: DuplicateRiskLevel;
   /** Why the downgrade was allowed, in the driver's words. Present with `downgradedFrom`. */
@@ -225,7 +226,7 @@ export async function runInvestigation(
     /**
      * #1856: the existing issue this plan is FOR. Its rows leave the candidate
      * set the risk child sees, and a HIGH that names only it (or its split
-     * children, or closed prior art) is downgraded. Absent → the pre-#1856
+     * children) is downgraded. Absent → the pre-#1856
      * prompt and verdict, byte for byte.
      */
     sourceIssue?: number;
@@ -301,9 +302,10 @@ export async function runInvestigation(
   const riskInv =
     sourceIssue === undefined ? inv : { ...inv, related: relatedExcludingSource(inv, sourceIssue) };
   const riskPrior = priorContextExcludingSource(priorContext, sourceIssue);
-  // What the inventory can tell the post-filter about each named issue (its
-  // state decides the CLOSED-prior-art rule). Built from the FULL inventory: a
-  // closed prior-art issue is not the subject and stays knowable. The state is
+  // What the inventory can tell the post-filter about each named issue (the
+  // disclosure records the state; since #1856 round 5 no rule decides on it).
+  // Built from the FULL inventory: a named issue the filter may not suppress is
+  // not the subject and stays knowable. The state is
   // NORMALISED HERE and nowhere else: `mapGhIssue` upper-cases and `mapGlIssue`
   // maps `opened`/`closed`, and a cached entry carries whatever bytes a
   // hand-edited file held — so this is the one site that decides what a state
