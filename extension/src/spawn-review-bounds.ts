@@ -82,13 +82,10 @@ export function wireReviewBounds(deps: {
   boundArmed: () => boolean;
   reported: () => boolean;
   willRetry: () => boolean;
-  /** #1847 — the spawn's kill flags. The bounds' liveness question is asked of
-   *  the ONE seam (`childHasExited`, spawn-support.ts) so the caps stack, the
-   *  per-child bound and this cap cannot disagree about the same child.
-   *  `spawn.ts` builds `exited` from the same pair. */
-  flags?: { childExited: () => boolean };
   /** #1847 — true once the child process has exited. The re-read kill stands down
-   *  on a dead child; an intermediate `agent_end` is not this. */
+   *  on a dead child; an intermediate `agent_end` is not this. `spawn.ts` builds
+   *  it from `childHasExited` (spawn-support.ts), the ONE liveness seam all three
+   *  supervisors ask. */
   exited: () => boolean;
 }): ReviewBoundWiring {
   const { skillRead, verdictStop } = createReviewBounds(deps.role, deps.opts, deps.reported, {
