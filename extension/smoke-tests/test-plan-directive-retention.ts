@@ -142,25 +142,106 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
 }
 
 {
-  // A heading with NO item after it is no outcome at all: the channel stays
-  // empty and the heading is left unconsumed, so the inventory keeps it.
-  for (const ctx of [
-    "Done when:",
-    "Done when:\n\nsome prose after",
-    "Done when:\nDecisions:\n- a decision",
-    "Done when:\nBEGIN\nEND",
-  ]) {
+  // A heading whose block holds NO ITEM AT ALL is no outcome (PM decision 2,
+  // sharpened in review round 1): the channel stays empty and the heading is
+  // left unconsumed, so the inventory keeps it. A lead-in line, a blank line or
+  // a fence token BEFORE real bullets does not void the block — those cases are
+  // pinned below.
+  // #1855 review round 1: a `Done when:` heading whose block holds only prose is
+  // a block whose items happen to be unbulleted — exactly what every OTHER typed
+  // block accepts (`PITFALLS:` followed by plain lines is items, not a lead-in),
+  // and the parser's own loop produces those lines. So that IS an outcome; what
+  // closes a block is a `label:` line or an `END`/`BEGIN` fence, never the shape
+  // of the first line. `inventoryLine` is the line the filed inventory is
+  // expected to still carry, and `consumed` how many lines the parser took as
+  // typed-block lines (0 for a heading that never opened a block; 1 for a heading
+  // it consumed and then demoted at a blank line — the loop's own behaviour).
+  const emptyCases: [string, string, number][] = [
+    ["Done when:", "Done when:", 0],
+    ["Done when:\n\nsome prose after", "some prose after", 1],
+    ["Done when:\nDecisions:\n- a decision", "Done when:", 0],
+    ["Done when:\nBEGIN\nEND", "Done when:", 0],
+    // Fences only: every line is a delimiter, so no item exists.
+    ["Done when:\nBEGIN\n\nEND", "Done when:", 0],
+    // A fence residual or the `KEYWORD END` form closes the block on its own
+    // heading line, so nothing under it is scanned.
+    ["Done when: END\n- x\nEND", "Done when: END", 0],
+    ["Done when END\n- x", "Done when END", 0],
+    ["Done when:\nEND\n- x", "Done when:", 0],
+    // A blank run followed by prose is the loop's own demotion: no item, and the
+    // prose after the blank is not an outcome either.
+    ["Done when:\n\nthe following must hold", "the following must hold", 1],
+  ];
+  for (const [ctx, inventoryLine, consumed] of emptyCases) {
     const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
     assert(
-      (directives.operatorOutcomes?.length ?? 0) === 0 && consumedLines.length === 0,
-      `empty outcome block ${JSON.stringify(ctx)}: no item, nothing consumed`,
+      (directives.operatorOutcomes?.length ?? 0) === 0 && consumedLines.length === consumed,
+      `empty outcome block ${JSON.stringify(ctx)}: no outcome (${consumed} line(s) consumed)`,
     );
     const { inventoryContext } = assemblePriorContext(ctx, EMPTY_INV);
     assert(
-      inventoryContext.some((e) => e.fact === "Done when:"),
-      `empty outcome block ${JSON.stringify(ctx)}: the heading stays in the inventory`,
+      inventoryContext.some((e) => e.fact === inventoryLine),
+      `empty outcome block ${JSON.stringify(ctx)}: ${JSON.stringify(inventoryLine)} stays in the inventory`,
     );
   }
+}
+
+{
+  // #1855 review round 1 — the shapes the first-meaningful-line lookahead got
+  // WRONG. Each has an item somewhere in its block, so each IS an outcome, and
+  // the parser's own item loop would have produced the bullet anyway: the
+  // lookahead must agree with what the parser does, not with what the line right
+  // below the heading looks like.
+  const cases: [string, string][] = [
+    // A prose lead-in before the bullets.
+    ["Done when: the following must hold\n- the tool registers", "lead-in line"],
+    // A blank line (even a run of them) before the bullets.
+    ["Done when:\n\n- the tool registers", "blank line"],
+    // A BEGIN fence token before the bullets.
+    ["Done when:\nBEGIN\n- the tool registers\nEND", "BEGIN fence"],
+    // Prose-only block: unbulleted contiguous lines are items for every typed
+    // block, so they are the outcome here too.
+    ["Done when:\nthe following must hold\n- the tool registers", "prose items"],
+  ];
+  for (const [ctx, label] of cases) {
+    const { directives, consumedLines } = parseOperatorDirectivesWithLines(ctx);
+    const items = directives.operatorOutcomes ?? [];
+    assert(
+      items.length > 0 && items[items.length - 1] === "the tool registers",
+      `outcome block with a ${label} before the bullets yields the outcome (got ${JSON.stringify(items)})`,
+    );
+    assert(
+      consumedLines.length > 1,
+      `outcome block with a ${label}: the heading and the item are consumed (#858)`,
+    );
+    const { inventoryContext } = assemblePriorContext(ctx, EMPTY_INV);
+    assert(
+      !inventoryContext.some((e) => e.fact === "- the tool registers"),
+      `outcome block with a ${label}: the bullet is not double-listed in the inventory`,
+    );
+  }
+}
+
+{
+  // The troubleshooting doc advertises bare `Acceptance criteria:` (as an
+  // English heading, not the typed directive) as an outcome alias. The parser
+  // has always routed that exact keyword to the DIRECTIVE channel — see
+  // `channelFor` and the note on `parseOperatorDirectives` — so the assertion
+  // below is that it still fills an Acceptance-criteria source, whichever
+  // channel it lands in. If the two docs and the code ever disagree, this is
+  // the row that says so.
+  const { directives } = parseOperatorDirectivesWithLines("ACCEPTANCE\n- the tool registers");
+  assert(
+    directives.operatorOutcomes.length === 1 &&
+      directives.operatorOutcomes[0] === "the tool registers",
+    "bare ACCEPTANCE (no colon) opens the outcome channel, as the troubleshooting doc claims",
+  );
+  const spelled = parseOperatorDirectivesWithLines("Acceptance criteria:\n- the tool registers");
+  assert(
+    spelled.directives.acceptanceCriteria.length === 1 &&
+      spelled.directives.operatorOutcomes.length === 0,
+    "`Acceptance criteria:` keeps the DIRECTIVE channel (the doc's alias claim is by that route)",
+  );
 }
 
 {

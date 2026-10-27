@@ -54,11 +54,18 @@ export interface OperatorDirectives {
    * could never fill its Acceptance criteria section and halted draft-invalid.
    * Bullets under one of these headings feed the SAME operator-authority AC
    * source as an ACCEPTANCE CRITERIA block (rendered verbatim, never clipped
-   * or count-capped on the angle cap). A heading with no item after it is NOT
-   * an outcome: the channel stays empty and the heading is left unconsumed,
-   * so it stays in the inventory exactly as an unrecognised heading does.
+   * or count-capped on the angle cap). A heading whose block holds NO item at
+   * all is NOT an outcome: the channel stays empty and the heading is left
+   * unconsumed, so it stays in the inventory exactly as an unrecognised
+   * heading does. A lead-in line, a blank line or a fence token BEFORE real
+   * bullets does not void the block — the scan runs to the block's terminator
+   * (the same one the main loop applies; see `nextItemInBlock`).
+   *
+   * REQUIRED (review round 1): this is the single channel carrying the
+   * operator's outcome to both draftSpec call sites, so nothing downstream may
+   * treat its absence as "the operator wrote no outcome".
    */
-  operatorOutcomes?: string[];
+  operatorOutcomes: string[];
 }
 
 /**
@@ -91,9 +98,14 @@ export interface OperatorDirectiveParse {
 // #1855: the OUTCOME aliases (DONE WHEN / ACCEPTANCE) open their own channel,
 // NOT `acceptanceCriteria`: an outcome block is a weaker claim than the typed
 // directive, and a channel that merged the two would make `ACCEPTANCE` alone
-// the directive. `ACCEPTANCE CRITERIA` stays FIRST in the alternation so the
-// directive form keeps matching it (the regex alternation is leftmost-first).
-// Bare `ACCEPTANCE` is tried only after the longer forms fail.
+// the directive. JS regex alternation is ORDERED, not longest-match: at the one
+// position the engine reaches, the first alternative that matches wins, so
+// `ACCEPTANCE[\s-]*CRITERIA` is listed before bare `ACCEPTANCE` to keep the
+// directive form matching its own heading, and bare `ACCEPTANCE` is reached only
+// when the longer forms do not match. (Anchored at this position the order is
+// not load-bearing — a keyword running into a word char matches nothing and
+// backtracks either way — but the claim the old comment made about the engine
+// was wrong.)
 const KEYWORD =
   "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION\\s*\\/\\s*SUB[\\s-]*ISSUES?|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN|DONE[\\s-]*WHEN|ACCEPTANCE)";
 
@@ -128,10 +140,10 @@ const LABEL_RE = /^[A-Z][A-Za-z/-]*(?: [A-Za-z/-]+){0,2}:$/;
 function channelFor(name: string): keyof OperatorDirectives {
   const up = name.toUpperCase();
   return up.startsWith("ACCEPTANCE")
-    ? up === "ACCEPTANCE"
-      ? // #1855: a bare `ACCEPTANCE` heading is the OUTCOME channel; the typed
-        // directive form is `ACCEPTANCE CRITERIA` (matched first by KEYWORD).
-        "operatorOutcomes"
+    ? // #1855: a bare `ACCEPTANCE` heading is the OUTCOME channel; the typed
+      // directive form is `ACCEPTANCE CRITERIA` (matched ahead of it by KEYWORD).
+      up === "ACCEPTANCE"
+      ? "operatorOutcomes"
       : "acceptanceCriteria"
     : up.startsWith("OUT")
       ? "outOfScope"
@@ -141,40 +153,89 @@ function channelFor(name: string): keyof OperatorDirectives {
           ? "decomposition"
           : up.startsWith("NEVER") || up.startsWith("FORBIDDEN")
             ? "neverClaim"
-            : up.startsWith("DONE") || up === "ACCEPTANCE"
+            : up.startsWith("DONE")
               ? "operatorOutcomes"
               : "pitfalls";
 }
 
 /**
- * True when the block a heading opens yields at least one item (#1855). Pure
- * read over `lines`; the caller decides what a false answer means. A non-empty
- * colon residual on the heading line itself ("Done when: the tool registers")
- * IS the item, so the answer is immediate. Otherwise the block is scanned past
- * blanks: fence tokens (`BEGIN`/`END`) are delimiters rather than items, an
- * unrecognised bare label (`Decisions:`) closes the block, and the first line
- * that is neither supplies the item only when stripping its bullet marker
- * leaves text. A block that reaches the end, a blank, or a closer without ever
- * producing text has NO outcome.
+ * An item candidate — the colon residual on a heading, or a line inside an open
+ * block. Wrapper chars ("**Done when:**") and a bare `BEGIN`/`END` token are
+ * delimiters, never items. ONE predicate, shared by the outcome lookahead below
+ * and the main parser loop, so "does this block have an item?" cannot drift from
+ * "is this line an item?" (the parser's own residual rule and its in-block
+ * `FENCE_RE` rule are the two halves this unifies).
  */
-function blockHasItem(lines: string[], headingIndex: number, residual: string): boolean {
-  // The same item test the parser applies below: wrapper chars ("**Done
-  // when:**") and fence tokens are not items.
-  if (residual && !/^[#=*`]+$/.test(residual) && !/^END$/i.test(residual)) return true;
+function itemCandidate(text: string): boolean {
+  return !!text && !/^[#=*`]+$/.test(text) && !/^BEGIN$/i.test(text) && !/^END$/i.test(text);
+}
+
+/**
+ * The FIRST item the block a heading opens yields (#1855), or `undefined` when
+ * it yields none. Pure read over `lines`; the caller decides what an absence
+ * means. A colon residual that is itself an item ("Done when: the tool
+ * registers") answers immediately.
+ *
+ * Otherwise the scan runs the block to its REAL terminator using the SAME rules
+ * the main parser loop applies to that block: a blank line is skipped and the
+ * scan continues past it — but a blank run followed by a NON-bullet line ends it
+ * with no item, because that is precisely where the loop's own blank-line
+ * lookahead demotes the block — a `LABEL_RE` line (`Decisions:`) or an `END`
+ * fence line terminates the block, a `BEGIN` token is a delimiter the scan walks
+ * past, and any other line supplies the item when `itemCandidate` accepts it and
+ * stripping its bullet marker leaves text (contiguous non-bulleted lines are
+ * items for every typed block, so they do here too). A heading that closes its
+ * own block on the spot — an `END` colon residual (`Done when: END`), the
+ * `KEYWORD END` wrapper form (`Done when END`), or an `END` fence line directly
+ * under the heading — yields no item, exactly as the parser's own loop leaves it.
+ *
+ * Stopping at the first meaningful line is what made the old version wrong: it
+ * answered on that line alone, so `Done when: the following must hold\n- x` and
+ * `Done when:\n\n- x` were both reported as "no outcome" even though the
+ * parser's own loop produces those bullets. A heading counts as no outcome only
+ * when its block holds NO item at all.
+ */
+function nextItemInBlock(
+  lines: string[],
+  headingIndex: number,
+  residual: string,
+  fenceClosed: boolean,
+): string | undefined {
+  // The two ways a heading line closes its own block on the spot, both of them
+  // the parser's own rules below: a colon residual that is an `END` token
+  // (`Done when: END`) and the `KEYWORD END` wrapper form (`Done when END`,
+  // captured as m[3]). Such a heading is treated as no outcome — it is left
+  // unconsumed and its lines stay in the inventory — so the scan never runs.
+  if (fenceClosed || /^END$/i.test(residual)) return undefined;
+  if (itemCandidate(residual)) return residual;
   let j = headingIndex + 1;
-  while (j < lines.length && !(lines[j] ?? "").trim()) j++;
   while (j < lines.length) {
     const l = (lines[j] ?? "").trim();
-    if (!l) return false;
-    if (LABEL_RE.test(l)) return false;
-    if (FENCE_RE.test(l)) {
-      if (/END/i.test(l)) return false;
+    // Blank lines do not end the scan, but a run of them followed by anything
+    // that is NOT a bullet does: that is the main loop's own blank-line
+    // lookahead, which demotes the block on a non-bullet lookahead. Keeping the
+    // two answers identical is the point of the shared predicate.
+    const blankRun = !l;
+    if (blankRun) {
       j++;
       continue;
     }
-    return BULLET_RE.test(l) && stripBullet(l).length > 0;
+    if (LABEL_RE.test(l)) return undefined;
+    // The parser's own fence rule: END terminates, BEGIN is a skipped token.
+    if (FENCE_RE.test(l)) {
+      if (/END/i.test(l)) return undefined;
+      j++;
+      continue;
+    }
+    if (!itemCandidate(l)) {
+      // A prose line the loop would have consumed as an item — but only while
+      // the block is still open. After a run of blanks the loop closes it (the
+      // demotion above), so no item exists past that point.
+      return blankRun ? undefined : l;
+    }
+    return stripBullet(l) || undefined;
   }
-  return false;
+  return undefined;
 }
 
 /**
@@ -195,9 +256,11 @@ function stripBullet(line: string): string {
 /**
  * Parse operator-supplied typed fields out of the `context` param (D7).
  * Headings: ACCEPTANCE CRITERIA, PITFALLS (or EDGE CASES), OUT OF SCOPE,
- * TEST SURFACE, DECOMPOSITION (or SUB-ISSUES), NEVER CLAIM (or FORBIDDEN),
- * and the #1855 outcome headings DONE WHEN / ACCEPTANCE / ACCEPTANCE CRITERIA
- * (the last two without the directive form).
+ * TEST SURFACE, DECOMPOSITION (or SUB-ISSUES), NEVER CLAIM (or FORBIDDEN), and
+ * the #1855 outcome headings DONE WHEN / ACCEPTANCE. `ACCEPTANCE CRITERIA` is
+ * the DIRECTIVE heading, NOT an outcome alias: `channelFor` routes the
+ * `ACCEPTANCE…` prefix by the exact keyword, so the directive form keeps its own
+ * channel and only a bare `ACCEPTANCE` heading opens the outcome one.
  * Grammar in the module header.
  */
 export function parseOperatorDirectives(context: string | undefined): OperatorDirectives {
@@ -254,12 +317,17 @@ export function parseOperatorDirectivesWithLines(
       const channel = channelFor(m[1] ?? "");
       const rest = (m[2] ?? "").trim();
       // A heading that opens an OUTCOME block is consumed only if the block
-      // actually yields an item (#1855): a bare `Done when:`, a prose lead-in
-      // instead of bullets, or a block holding only fence/`END` tokens is
-      // treated as no outcome at all, and its lines stay unconsumed so the
-      // inventory keeps them exactly as it keeps any other unrecognised
-      // heading. The lookahead is a pure read over `lines`.
-      if (channel === "operatorOutcomes" && !blockHasItem(lines, i, rest)) {
+      // yields an item ANYWHERE before its terminator (#1855): a bare `Done
+      // when:`, prose with no item at all, or a block holding only fence tokens
+      // is no outcome, and its lines stay unconsumed so the inventory keeps them
+      // exactly as it keeps any other unrecognised heading. A lead-in, a blank
+      // line or a fence token before real bullets does NOT void the block —
+      // `nextItemInBlock` is the scan, and it shares the parser's own item
+      // predicate and blank-line handling.
+      if (
+        channel === "operatorOutcomes" &&
+        nextItemInBlock(lines, i, rest, (m[3] ?? "").toUpperCase() === "END") === undefined
+      ) {
         target = null;
         continue;
       }
@@ -274,7 +342,7 @@ export function parseOperatorDirectivesWithLines(
       // — unless it is wrapper chars ("**ACCEPTANCE CRITERIA:**") or a
       // fence token ("TEST SURFACE: BEGIN").
       if (/^END$/i.test(rest)) target = null;
-      else if (rest && !/^[#=*`]+$/.test(rest) && !/^BEGIN$/i.test(rest)) out[channel].push(rest);
+      else if (itemCandidate(rest)) out[channel].push(rest);
       continue;
     }
     if (!target) {
