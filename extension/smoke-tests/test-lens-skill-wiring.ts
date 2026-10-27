@@ -89,7 +89,8 @@ function eq(actual: unknown, expected: unknown, msg: string): boolean {
  * Module-level responder: the installed `spawnSpecialist` closure reads
  * this on every call. Cases set it before calling `runLensReview`.
  * `spawnCalls` records every call (prompt + extraArgs) so the test can
- * assert "spawnSpecialist was never called for the missing skill".
+ * assert "spawnSpecialist was never called for the missing skill" — and, since
+ * #1847, that the lens argv carries `--no-skills` and NOT `--skill`.
  */
 type Responder = (spec: { prompt: string }, opts?: { extraArgs?: string[] }) => unknown;
 let spawnResponder: Responder = () => ({
@@ -133,14 +134,15 @@ function bodyMarker(s: string): string {
 /** Build a fixture skills dir; `present` controls which lens skill dirs
  * exist inside it. Returns the fixture root (and a cleanup fn).
  *
- * #1847 — the fixture carries the body prose in a SEPARATE file (`__body.md`)
- * so case (e) can delete that one file. The roster (`buildLensRoster`, re-parsed
- * for every review) and the parent's body read both open `<dir>/SKILL.md`, so
- * with one file there is no way to make only the body read fail — the roster
- * blocks first with its own "no readable SKILL.md" and the case would be
- * testing the roster. The same split keeps the "the prompt carries this lens's
- * skill body" assertion non-vacuous: a frontmatter-only fixture would inline
- * nothing and pass anyway. */
+ * #1847 — the fixture writes the body prose into `SKILL.md` itself, with the
+ * frontmatter above it. The split that used to live here (a separate
+ * `__body.md`, deleted by case (e) to make the body read fail) is DEAD: case (e)
+ * now drives the failure through `setSkillFileReaderForTests`, which is the only
+ * way to fail the parent's read while the roster keeps parsing the same
+ * `SKILL.md`, and nothing has opened `__body.md` since. A file the fixture wrote
+ * and no code read was a fixture that could rot silently. The body stays real
+ * for the same reason as before: a frontmatter-only fixture would inline nothing
+ * and make the "the prompt carries this lens's skill body" assertion vacuous. */
 function fixtureSkillsDir(present: string[], name: string): { dir: string; cleanup: () => void } {
   const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens872-${name}-`)), "skills");
   mkdirSync(dir, { recursive: true });
@@ -157,13 +159,7 @@ function fixtureSkillsDir(present: string[], name: string): { dir: string; clean
     // frontmatter would inline an empty string and make the "the prompt
     // carries this lens's skill body" assertion vacuous.
     const frontmatter = `---\nname: ${s}\nprecedence: ${prec}\n---`;
-    // The body lives in a SEPARATE file so case (e) can remove it alone: the
-    // roster only needs the frontmatter, the #1847 body read wants the prose.
-    writeFileSync(path.join(skillDir, "__body.md"), bodyMarker(s));
-    writeFileSync(
-      path.join(skillDir, "SKILL.md"),
-      `${frontmatter}\n\n${bodyMarker(s)}`,
-    );
+    writeFileSync(path.join(skillDir, "SKILL.md"), `${frontmatter}\n\n${bodyMarker(s)}`);
     prec += 10;
   }
   return {

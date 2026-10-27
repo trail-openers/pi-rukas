@@ -70,7 +70,14 @@ function lensLine(r: LensRunResult, maxLensAttempts: number): string {
     // wrote about itself and had no way to check it. The row now carries the
     // driver's OWN record of the delivery: the parent read the file and put the
     // body in the prompt, so the lens was guided by construction.
-    const skillNote = r.skillDelivered ? ` — ${r.skillDelivered}` : "";
+    //
+    // `neutraliseEvidence`, like every other agent-adjacent field on this line:
+    // the string embeds the skill name, and a lens row whose skill directory was
+    // planted (`skill/../../x`, or a SKILL.md name an agent chose) puts that name
+    // into a report this repo pastes into PR comments. One neutralise call keeps
+    // this line consistent with the finding prose below and with the suppression
+    // sections, and costs nothing when the name is ordinary.
+    const skillNote = r.skillDelivered ? ` — ${neutraliseEvidence(r.skillDelivered)}` : "";
     tag = `${findingCount}${retry}${skippedNote}${skillNote}`;
   } else {
     tag = r.parseError ?? "fail";
