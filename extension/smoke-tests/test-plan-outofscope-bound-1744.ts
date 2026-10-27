@@ -49,10 +49,6 @@ import {
 import { fenceMatches } from "../src/work-driver-declared-path.ts";
 import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
-
-/** The stored workstream one call builds (these cases read the fence list, not the drops). */
-const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
-  workstreamFromArgs(args).workstream;
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";
 import {
@@ -314,10 +310,15 @@ const REPO_DIRS: string[] = [];
   // round — the cut character was the original, wrong, signal).
   const spaceCut = boundOutOfScope([`src/legacy/deep/thing.ts ${"x".repeat(600)}`]);
   const spaceKept = spaceCut.entries[0] ?? "";
-  assert(spaceKept === "src/legacy/deep/thing.ts", `the space cut kept the path (got ${JSON.stringify(spaceKept)})`);
+  assert(
+    spaceKept === "src/legacy/deep/thing.ts",
+    `the space cut kept the path (got ${JSON.stringify(spaceKept)})`,
+  );
   assert(
     spaceCut.widened.includes(spaceKept) &&
-      spaceCut.clipped.some((r) => r.kind === "clipped" && r.entry === spaceKept && r.widened === true),
+      spaceCut.clipped.some(
+        (r) => r.kind === "clipped" && r.entry === spaceKept && r.widened === true,
+      ),
     "a cut on a SPACE that leaves a bare path is disclosed as widening, and the record carries `widened: true`",
   );
 
@@ -326,10 +327,15 @@ const REPO_DIRS: string[] = [];
   // prose and the clip is what remains.
   const commaCut = boundOutOfScope([`src/legacy/deep/thing.ts,${"y".repeat(600)}`]);
   const commaKept = commaCut.entries[0] ?? "";
-  assert(commaKept === "src/legacy/deep/thing.ts", `the comma cut kept the path (got ${JSON.stringify(commaKept)})`);
+  assert(
+    commaKept === "src/legacy/deep/thing.ts",
+    `the comma cut kept the path (got ${JSON.stringify(commaKept)})`,
+  );
   assert(
     commaCut.widened.includes(commaKept) &&
-      commaCut.clipped.some((r) => r.kind === "clipped" && r.entry === commaKept && r.widened === true),
+      commaCut.clipped.some(
+        (r) => r.kind === "clipped" && r.entry === commaKept && r.widened === true,
+      ),
     "a cut on a COMMA that leaves a bare path is disclosed as widening too",
   );
 
@@ -337,15 +343,12 @@ const REPO_DIRS: string[] = [];
   // a path anyone could have declared, so it is NOT reported as a widened
   // fence — the length clause is what keeps the disclosure honest.
   const hardCut = boundOutOfScope(["z".repeat(900)]);
-  assert(
-    hardCut.widened.length === 0,
-    "a 500-character hard cut is not called a widened fence",
-  );
+  assert(hardCut.widened.length === 0, "a 500-character hard cut is not called a widened fence");
 
   // The fold carries the widened set on the records, so the fold's own re-cap
   // can say the same thing the tool boundary said (#1744 review — the fold
   // used to report an empty widened list).
-  const widenedWs = buildWs({
+  const widenedWs = workstreamFromArgs({
     ...VALID,
     id: "w",
     paths: ["src/w.ts"],
@@ -354,16 +357,14 @@ const REPO_DIRS: string[] = [];
       ...Array.from({ length: WORKSTREAM_LIST_MAX - 1 }, (_, i) => `src/w-${i}.ts`),
     ],
   });
-  const otherWs = buildWs({
+  const otherWs = workstreamFromArgs({
     ...VALID,
     id: "p",
     paths: ["src/p.ts"],
     outOfScope: Array.from({ length: WORKSTREAM_LIST_MAX }, (_, i) => `src/p-${i}.ts`),
   });
   assert(
-    (widenedWs.outOfScopeClipped ?? []).some(
-      (r) => r.kind === "clipped" && r.widened === true,
-    ),
+    (widenedWs.outOfScopeClipped ?? []).some((r) => r.kind === "clipped" && r.widened === true),
     "the widened half arrived at the fold already carrying the flag on its clip record",
   );
   const { value: widenedFold, traces: reCapTraces } = captureTracesSync(() =>
@@ -371,9 +372,7 @@ const REPO_DIRS: string[] = [];
   );
   assert(
     widenedFold.outOfScope.length === WORKSTREAM_LIST_MAX &&
-      (widenedFold.outOfScopeClipped ?? []).some(
-        (r) => r.kind === "clipped" && r.widened === true,
-      ),
+      (widenedFold.outOfScopeClipped ?? []).some((r) => r.kind === "clipped" && r.widened === true),
     "the folded workstream still carries the widened flag on its clip record",
   );
   assert(
@@ -426,7 +425,7 @@ const REPO_DIRS: string[] = [];
   );
 
   const { traces } = captureTracesSync(() =>
-    buildWs({ ...VALID, id: "widening", outOfScope: [LONG_PATH_FENCE] }),
+    workstreamFromArgs({ ...VALID, id: "widening", outOfScope: [LONG_PATH_FENCE] }),
   );
   const warned = traces.filter((t) => t.includes("outOfScope bounded"));
   assert(
@@ -435,7 +434,7 @@ const REPO_DIRS: string[] = [];
     `a clip that landed on a '/' says which SUBTREE the fence now covers (got: ${(warned[0] ?? "").replace("[pi-rukas] WARN work-driver: ", "")})`,
   );
   const noWiden = captureTracesSync(() =>
-    buildWs({ ...VALID, id: "prose", outOfScope: [LONG_PROSE] }),
+    workstreamFromArgs({ ...VALID, id: "prose", outOfScope: [LONG_PROSE] }),
   );
   assert(
     !noWiden.traces.some((t) => t.includes("clipped fence now covers")),

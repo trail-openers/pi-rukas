@@ -36,13 +36,13 @@
  */
 
 import { workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
-
-/** The stored workstream one call builds (these cases read the fence list, not the drops). */
-const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
-  workstreamFromArgs(args).workstream;
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { foldMerged, foldSelfFenceNotes, foldTwoForTests } from "./lib/fold-two-helpers.ts";
 import { VALID } from "./lib/plan-outofscope-fixtures.ts";
+
+/** One `report_workstream` call, built the way the plan step builds it. These
+ * cases judge the FOLD, so they only need a workstream to fold. */
+const buildWs = workstreamFromArgs;
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

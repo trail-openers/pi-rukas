@@ -7,11 +7,15 @@
  * SHAPE — the union, the clip records, the fence bound — read the half they
  * care about through one of these two, so the shape change is a one-line edit
  * per call site instead of a re-write of the assertion.
+ *
+ * The `selfFenceDrops` half is load-bearing: a fold that removes a fence and
+ * records nothing is the disclosure failure #1862 exists to close, so tests
+ * assert on it beside the merged shape.
  */
 
 import type { UnfenceRecord } from "../../src/work-driver-plan-unfence-notes.ts";
-import { foldTwo } from "../../src/workstream-fold.ts";
 import type { Workstream } from "../../src/workflow-state-schema.ts";
+import { foldTwo } from "../../src/workstream-fold.ts";
 
 /** The raw result, for a test that wants both halves of it. */
 export function foldTwoForTests(

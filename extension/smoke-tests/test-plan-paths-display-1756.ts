@@ -26,9 +26,10 @@ import { quotedPaths } from "../src/plan-path-shape.ts";
 import { correctiveDevelopPrompt } from "../src/work-driver-corrective-prompt.ts";
 import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 
-/** The stored workstream one call builds (these cases read the fence list, not the drops). */
-const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
-  workstreamFromArgs(args).workstream;
+/** One `report_workstream` call, built the way the plan step builds it. These
+ * cases judge the bound and the display, not the fence drops, so the alias is
+ * just the reader's own entry point under a shorter name. */
+const buildWs = workstreamFromArgs;
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 import { inlineCommitPrPrompt } from "../src/work-driver-prompts-late.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";

@@ -49,9 +49,10 @@ import { withDeferredProtectedFence } from "../src/work-driver-plan-fence.ts";
 import { findPathCollisions } from "../src/work-driver-plan-paths.ts";
 import { foldToCeiling, workstreamFromArgs } from "../src/work-driver-plan-workstreams.ts";
 
-/** The stored workstream one call builds (these cases read the fence list, not the drops). */
-const buildWs = (args: Parameters<typeof workstreamFromArgs>[0]) =>
-  workstreamFromArgs(args).workstream;
+/** One `report_workstream` call, built the way the plan step builds it. These
+ * cases judge the bound and the display, not the fence drops, so the alias is
+ * just the reader's own entry point under a shorter name. */
+const buildWs = workstreamFromArgs;
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import type { Workstream } from "../src/workflow-state-schema.ts";
 import { foldMerged as foldTwo } from "./lib/fold-two-helpers.ts";

@@ -49,8 +49,9 @@
  */
 import { recordCommentEvidence } from "./comment-evidence.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
+import { fenceCapHit } from "./work-develop-fence-merge-notes.ts";
 import { mergeEvidence, secondViolationProse } from "./work-develop-fence-merge-prose.ts";
-import { applyMergedSafetyNet, fenceCapHit, runMergePrep } from "./work-develop-fence-merge.ts";
+import { applyMergedSafetyNet, runMergePrep } from "./work-develop-fence-merge.ts";
 import { mergeRetryCap } from "./work-develop-fence-retry-cap.ts";
 import {
   applyFenceVerdicts,

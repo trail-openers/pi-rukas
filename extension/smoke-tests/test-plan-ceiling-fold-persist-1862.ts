@@ -17,7 +17,6 @@
  * one pure call, no dispatch, no git, no fs.
  */
 
-import { withBoundaryDrops } from "../src/plan-fence-self-entry.ts";
 import { workstreamCallsOf } from "../src/work-driver-plan-calls.ts";
 import { runPlanNormalisationPass } from "../src/work-driver-plan-coupling-pass.ts";
 import { UNFENCE_NOTES_CAP } from "../src/work-driver-plan-unfence-notes.ts";
@@ -38,12 +37,10 @@ function assert(cond: boolean, msg: string) {
 
 /** Seven calls, one more than the ceiling of six, so the seventh FOLDS into the
  * last kept workstream. The folded call fences `src/5.ts`, which the SURVIVING
- * workstream declares: after the fold's paths union that file is the merged
- * workstream's own scope, so the fold must drop the entry and record why. The
- * absorbed call's own-file fence (`src/extra.ts`) is the control on the other
- * arm — the boundary emptied it before it was ever stored, so the fold has
- * nothing left to remove there; `docs/9.md` is the control on THIS arm, a fence
- * over a path nobody declares, which no fold may open. */
+ * workstream declares, and `src/extra.ts`, its OWN declaration: with the tool
+ * boundary gone (#1862's scope cut) the FOLD is the only site that opens a
+ * fence, so both go and both are recorded. `docs/9.md` is the control on this
+ * arm — a fence over a path nobody declares, which no fold may open. */
 function callsBeyondCeiling() {
   const kept = Array.from({ length: 6 }, (_, i) => ({
     ...VALID,
@@ -96,11 +93,13 @@ const report = withMaxWorkstreams(6, () =>
   // already removed.
   const foldRecords = report.selfFenceDrops ?? [];
   assert(
-    foldRecords.length === 1 &&
-      foldRecords[0]?.workstream === "task-5" &&
-      foldRecords[0]?.entry === "src/5.ts" &&
-      foldRecords[0]?.note.includes("(merged workstream)"),
-    `the ceiling folded task-6 into task-5 and said so — one record keyed to the surviving workstream, on the fold's own channel (got ${JSON.stringify(foldRecords.map((r) => `${r.workstream}:${r.entry}`))})`,
+    foldRecords.length === 2 &&
+      foldRecords.every(
+        (r) => r.workstream === "task-5" && r.note.includes("(merged workstream)"),
+      ) &&
+      foldRecords.some((r) => r.entry === "src/5.ts") &&
+      foldRecords.some((r) => r.entry === "src/extra.ts"),
+    `the ceiling folded task-6 into task-5 and said so — one record per removal keyed to the surviving workstream, on the fold's own channel (got ${JSON.stringify(foldRecords.map((r) => `${r.workstream}:${r.entry}`))})`,
   );
   const merged = report.workstreams["task-5"];
   assert(
@@ -112,12 +111,8 @@ const report = withMaxWorkstreams(6, () =>
     `the fold removed the fence over the merged workstream's own declared file (got ${JSON.stringify(merged?.outOfScope)})`,
   );
   assert(
-    merged !== undefined && merged.outOfScope.includes("src/extra.ts") === false,
-    `the absorbed call's own-file fence never reached the stored list at all — the boundary emptied it first (got ${JSON.stringify(merged?.outOfScope)})`,
-  );
-  assert(
-    (report.boundaryDrops ?? []).every((r) => r.entry !== "src/5.ts"),
-    `and the fold's own removal is not billed to the tool boundary's counter (boundary drops: ${JSON.stringify(report.boundaryDrops)})`,
+    merged !== undefined && !merged.outOfScope.includes("src/extra.ts"),
+    `the absorbed call's own-file fence goes by the FOLD, the one site that may open a fence now the tool boundary drops nothing (got ${JSON.stringify(merged?.outOfScope)})`,
   );
   assert(
     report.workstreams["task-5"]?.outOfScope.includes("docs/9.md") === true &&
@@ -160,39 +155,8 @@ const report = withMaxWorkstreams(6, () =>
     "the issue-named count stays the issue-named pass's own — a fold drop answers to the merge",
   );
   assert(
-    (summary?.boundarySelfFences ?? 0) === 0,
-    "and the boundary's counter is untouched by a fold drop — three authorities, three counts",
-  );
-}
-
-// ── 3. the boundary's counter is its own, and the two never merge into `removed`
-{
-  const base: PlanUnfenceSummary = { ran: true, removed: 3, kept: 0, rolledBack: 0, unresolved: 0 };
-  const withBoundary = withBoundaryDrops(base, [
-    {
-      workstream: "task-5",
-      path: "src/a.ts",
-      entry: "src/a.ts",
-      note: 'self-fence dropped: "src/a.ts" covers its own declared "src/a.ts"',
-    },
-    {
-      workstream: "task-5",
-      path: "src/b.ts",
-      entry: "src/b.ts",
-      note: 'self-fence dropped: "src/b.ts" covers its own declared "src/b.ts"',
-    },
-  ]);
-  assert(
-    withBoundary?.removed === 3 && withBoundary.boundarySelfFences === 2,
-    `the boundary's drops get their own counter and leave the issue-named count alone (got ${JSON.stringify(withBoundary)})`,
-  );
-  assert(
-    withBoundary?.selfFences === undefined,
-    "and a record with no fold drops does not grow a fold count",
-  );
-  assert(
-    withBoundaryDrops(base, []) === base,
-    "no drops, no record: the pass's own record is returned unchanged",
+    (summary?.selfFences ?? 0) === foldDrops.length,
+    "and the fold's counter is the fold's own — the only site that adds to it is the pass that ran the folds",
   );
 }
 
