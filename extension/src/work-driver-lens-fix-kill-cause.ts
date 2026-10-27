@@ -50,14 +50,14 @@ function isLensFixStepCap(cap: string): boolean {
 }
 
 /**
- * A failed dispatch of this step, either kind. `WorkEvent`'s two failure
- * members are structurally identical apart from a few optional fields, so
- * naming them by hand in four signatures bought nothing — this is the union
- * `failedLensFixDispatch` resolves and every reader below projects from.
+ * A failed dispatch of this step, either kind — the union itself, so the type
+ * and `isLensFixFailure` cannot drift apart. #1798 round 4 dropped the
+ * `& { providerMessage?: string }` that used to sit on the `dispatch-failed`
+ * member: both members already declare `providerMessage` in the union
+ * (`workflow-state-events.ts`), so the intersection was a second declaration of
+ * a field the union owns — one more place for the two to disagree.
  */
-type LensFixFailure = Extract<WorkEvent, { kind: "dispatch-failed" }> & {
-  providerMessage?: string;
-};
+type LensFixFailure = Extract<WorkEvent, { kind: "dispatch-failed" | "dispatch-failed-provider" }>;
 
 /** A failed dispatch of this step — the two kinds, because #1682 moved the
  *  lens-fix child-supervision kills onto the PROVIDER kind and that is a real
@@ -171,9 +171,20 @@ function boundMinutesFromText(text: string): number | undefined {
 /** The bound source of the kill this cap explains, or `undefined` when the
  *  dispatch left no such record. Module-private for the same reason as
  *  `isLensFixStepCap`: the only reader is the verdict below. Takes the
- *  resolved dispatch (#1798 round 3) rather than re-scanning for it. */
+ *  resolved dispatch (#1798 round 3) rather than re-scanning for it.
+ *
+ * #1798 round 4 — it now takes the KILL side of that dispatch. The three fields
+ * this reads (`fixerBoundSource`, `errorTail`, and `killCause` at the caller)
+ * exist only on the `dispatch-failed` member: a `dispatch-failed-provider` is
+ * #1682's shape for a child-supervision or provider death, and `buildCompletionEvent`
+ * records NO kill line on that kind at all, so reading them off the union means
+ * reading `undefined` and then falling through to text scanning that has nothing
+ * to find. Narrowing at the seam makes that explicit — a provider-kind event is
+ * answered `undefined`, and `isLensFixFailure` keeps accepting both kinds
+ * because the scan still has to WALK past them (`failureOf` reads them).
+ */
 function lensFixKillBoundSource(
-  dispatch: LensFixFailure | undefined,
+  dispatch: Extract<WorkEvent, { kind: "dispatch-failed" }> | undefined,
   state: WorkState,
   cap: string,
 ): FixerBoundSource | undefined {
@@ -192,7 +203,11 @@ function lensFixKillBoundSource(
 /** The kill's own line, which carries the source, the minutes and the knob —
  *  from the same dispatch the cause and the source came from. Falls back to the
  *  cap-hit's own evidence when the window holds no dispatch to read. */
-function killLine(dispatch: LensFixFailure | undefined, state: WorkState, cap: string): string {
+function killLine(
+  dispatch: Extract<WorkEvent, { kind: "dispatch-failed" }> | undefined,
+  state: WorkState,
+  cap: string,
+): string {
   if (dispatch !== undefined) return dispatch.errorTail ?? "";
   return lastCapHit(state, cap)?.evidence ?? "";
 }
@@ -223,7 +238,12 @@ export function lensFixBoundKillVerdict(
   // `kind` is the projection of the event's, and reading a field it does not
   // set would abstain on every cycle). The vocabulary is the conversion's own
   // predicate (#1789), not a re-listing of the two causes here.
-  if (!isFixerBoundKill(dispatch?.killCause)) return undefined;
+  // #1798 round 4 — the kill side of the dispatch, which exists only on the
+  // `dispatch-failed` kind. A provider-kind event has no kill line and no
+  // source to read, so it is refused here rather than walked through the text
+  // fallbacks below.
+  const kill = dispatch?.kind === "dispatch-failed" ? dispatch : undefined;
+  if (!isFixerBoundKill(kill?.killCause)) return undefined;
   // A provider error-stop is the fault it was: the endpoint severed the stream
   // and no bound is the reason. Round 1: this guard used to read ONLY
   // `failure.providerMessage`, which `failureOf` sets solely for a
@@ -242,9 +262,9 @@ export function lensFixBoundKillVerdict(
   // two are consistent — a terminal outage is not a bound to raise, whichever
   // surface is asked.
   if (dispatch?.providerMessage !== undefined) return undefined;
-  const source = lensFixKillBoundSource(dispatch, state, cap);
+  const source = lensFixKillBoundSource(kill, state, cap);
   if (source === undefined) return undefined;
-  const line = killLine(dispatch, state, cap);
+  const line = killLine(kill, state, cap);
   const minutes = boundMinutesFromText(line);
   // No minutes in the kill's clause (a state file whose tail was clipped, an
   // older builder) still names the clock and the knob — but never "0m", which

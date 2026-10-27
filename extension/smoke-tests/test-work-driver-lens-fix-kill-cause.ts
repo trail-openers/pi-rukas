@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import type { HeadlessCap } from "../src/headless/caps.ts";
 /**
  * #1798 — a lens-fix killed by pi-rukas's own clock says so, and names the
  * knob it killed it.
@@ -34,6 +33,7 @@ import type { HeadlessCap } from "../src/headless/caps.ts";
  * here comes from a production writer.
  */
 import { type ResultFailure, failureOf } from "../src/headless/failure.ts";
+import type { HeadlessCap } from "../src/headless/caps.ts";
 import {
   LENS_FIX_BOUND_DEFAULT_MS,
   LENS_FIX_BOUND_ENV,
@@ -59,7 +59,6 @@ import {
   FIXER_BOUND,
   MIN,
   NOW,
-  WALL,
   boundKillTail,
   byKind,
   failFor,
@@ -71,7 +70,6 @@ import {
 } from "./lib/lens-fix-kill-cause-fixtures.ts";
 
 const ctx = lensFixCtx(killed({})) as unknown as CycleContext;
-void MIN;
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) {
