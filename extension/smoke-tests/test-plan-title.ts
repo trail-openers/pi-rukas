@@ -287,7 +287,7 @@ function assert(cond: boolean, msg: string) {
   // 4. The full unclipped context still reaches draftSpec (the filed body).
   //    draftSpec renders priorContext uncapped — this test confirms the cap
   //    is at the CHILD-PROMPT render site only, not at the filed body.
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
   const { body } = draftSpec("feature", "descriptor", [], longItems, [], [], 0, NO_DIRS, []);
   const ctxSection = body.slice(
     body.indexOf("## Prior context inventory"),

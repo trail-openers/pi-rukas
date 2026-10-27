@@ -197,7 +197,7 @@ setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
 
 {
   // Epic depth limit: depth >= 3 → no sub-issues section, note present.
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
   const findings = [
     {
       name: "decomposition-surface",

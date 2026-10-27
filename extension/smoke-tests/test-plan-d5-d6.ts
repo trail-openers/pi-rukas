@@ -62,7 +62,7 @@ function assert(cond: boolean, msg: string) {
 
   // Now verify through draftSpec: the item text appears in the typed section
   // but NOT in the Technical context section.
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
   const items = extractPlanItems(
     [
       { name: "report_plan_item", arguments: { kind: "acceptance-criterion", text: "the tool registers with the exact TypeBox schema", angle: "interfaces" } },

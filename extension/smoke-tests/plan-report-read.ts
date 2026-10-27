@@ -54,15 +54,15 @@ export function parseReportDetails(
   const head = report.slice(0, 2000);
   const details: Record<string, unknown> = {};
   const type = head.match(/^Type: (\S+)/m);
-  if (type) details.type = type[1];
+  if (type) details.type = type[1] ?? "";
   const title = head.match(/^Title: (.+)$/m);
-  if (title) details.title = title[1].trim();
+  if (title) details.title = (title[1] ?? "").trim();
   const digest = head.match(/reviewedDigest: ([0-9a-f]{8,})/);
-  if (digest) details.reviewedDigest = digest[1];
+  if (digest) details.reviewedDigest = digest[1] ?? "";
   const url = head.match(/https?:\/\/\S+\/issues\/(\d+)/);
   if (url) {
     details.issueUrl = url[0];
-    details.issueNumber = Number(url[1]);
+    details.issueNumber = Number(url[1] ?? "0");
   }
   details.filed = /PLAN FILED/.test(head);
   details.dryRun = asked.dryRun === true;
@@ -74,7 +74,7 @@ export function parseReportDetails(
   }
   const dispositions = report.match(/=== GAP DISPOSITIONS ===\n([\s\S]*?)\n\n/);
   if (dispositions) {
-    const block = dispositions[1];
+    const block = dispositions[1] ?? "";
     // '(none)' is a clean review, not zero-parsed-from-prose: the count is 0,
     // and the assertion that distinguishes them is the block's own text.
     details.gapCount = /^- \[/m.test(block)
@@ -84,7 +84,7 @@ export function parseReportDetails(
           .filter((l) => l.startsWith("- [")).length
       : 0;
     const first = block.match(/^- \[([A-Z]+)\]/m);
-    if (first) details.firstGapSeverity = first[1];
+    if (first) details.firstGapSeverity = first[1] ?? "";
   }
   if (/FILED FROM REVIEWED DRY RUN/.test(report)) details.filedFromDryRun = { ageMs: 0 };
   if (/THE REVIEWED SPEC CHANGED/.test(report))
@@ -112,7 +112,7 @@ export function parseReportDetails(
   // dryRun renders PLAN COMPLETED for some reasons) stays readable.
   const status = report.match(/=== FILING STATUS ===\n+([^\n]+)/);
   if (status && !details.filingFailure) {
-    const line = status[1];
+    const line = status[1] ?? "";
     const policy = line.match(/^Not filed \(by policy\): ([\s\S]*)/);
     const reason = line.match(/Reason: ([A-Za-z0-9_-]+)/);
     details.filingFailure = { reason: reason?.[1] ?? policy?.[1]?.slice(0, 40), detail: line };

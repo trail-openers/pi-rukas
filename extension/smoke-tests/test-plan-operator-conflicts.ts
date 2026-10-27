@@ -33,6 +33,11 @@ const NO_DIRS: OperatorDirectives = {
   acceptanceCriteria: [],
   pitfalls: [],
   outOfScope: [],
+  // #1855 review round 1: required on OperatorDirectives — this object is handed
+  // straight to draftSpec, which reads the channel unguarded. Non-empty on
+  // purpose: `operatorLinesOf` pools it into the operator-line set, and a fixture
+  // that left it empty could not tell "required field" from "field nobody reads".
+  operatorOutcomes: ["the tool registers"],
 };
 
 function angle(name: string, items: { kind: string; text: string }[]): AngleFindings {
@@ -373,8 +378,8 @@ const CONSISTENT_EDGE = "an absent config file falls back to the default protect
     { source: VIPUNE_PRIOR_SOURCE, fact: "a stale fact" },
   ]);
   assert(
-    lines.length === 1 && lines[0] === OP_AC,
-    "source: operatorLinesOf selects operator entries via OPERATOR_SOURCE",
+    lines.length === 2 && lines[0] === "the tool registers" && lines[1] === OP_AC,
+    "source: operatorLinesOf selects operator entries via OPERATOR_SOURCE (and the outcome channel, which is not a prior-context line)",
   );
 }
 

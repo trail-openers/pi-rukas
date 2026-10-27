@@ -135,7 +135,7 @@ function clashingDroppedItems(): DroppedInvestigationItem[] {
     [],
     [],
     0,
-    { acceptanceCriteria: [OP], pitfalls: [], outOfScope: [] },
+    { acceptanceCriteria: [OP], pitfalls: [], outOfScope: [], operatorOutcomes: [] },
     [],
   );
   return lastDroppedRender()?.items ?? [];
@@ -391,7 +391,7 @@ delete process.env.PI_ENSEMBLE_FORGE;
     [],
     [],
     0,
-    { acceptanceCriteria: [OP], pitfalls: [], outOfScope: [] },
+    { acceptanceCriteria: [OP], pitfalls: [], outOfScope: [], operatorOutcomes: [] },
     [],
   ).body;
   const start = body.indexOf(DROPPED_SECTION_HEADING);

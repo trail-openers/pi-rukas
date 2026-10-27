@@ -19,7 +19,7 @@ import { setPlanGitStateFn } from "../src/plan-investigation-cache.ts";
 import type { RegisteredPlanTool } from "../src/plan-tool.ts";
 import type { PlanDriverInput, PlanResult } from "../src/plan-types.ts";
 import type { RegisteredResearchTool } from "../src/research-tool.ts";
-import type { SearchResult } from "../src/vipune.ts";
+import type { SearchOpts, SearchResult } from "../src/vipune.ts";
 import type { vipuneSearch } from "../src/vipune.ts";
 import { parseReportDetails, reportBody } from "./plan-report-read.ts";
 
@@ -204,7 +204,7 @@ export function installNoPlanCacheStub(): void {
  * vipuneSearch.
  */
 export function setPlanVipuneStub(
-  fn: ((q: string, o: { hybrid?: boolean }) => Promise<SearchResult>) | null,
+  fn: ((q: string, o: SearchOpts) => Promise<SearchResult>) | null,
 ): void {
   if (fn === null) {
     setPlanVipuneSearch(null);
@@ -212,8 +212,8 @@ export function setPlanVipuneStub(
   }
   // The partial signature is safe: the inventory calls vipuneSearch with
   // (terms, searchOpts) only — no other shape ever reaches this seam.
-  setPlanVipuneSearch(((q: string, o: { cwd: string }) =>
-    fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
+  setPlanVipuneSearch(((q: string, o: SearchOpts) =>
+    fn(q, { cwd: o.cwd, hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
 }
 
 /**

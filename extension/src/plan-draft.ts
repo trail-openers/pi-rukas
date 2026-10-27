@@ -41,6 +41,7 @@ import {
   dedupeByNormalised,
   normalisedTextKey,
   omissionNote,
+  operatorAcSource,
   operatorOmissions,
 } from "./plan-validate.ts";
 import {
@@ -148,6 +149,11 @@ export function itemsByKind(findings: AngleFindings[], kind: PlanItemKindName): 
 // research-driver). draftSpec (the FILED body) renders priorContext
 // uncapped (D2) — the caps exist only at the child-prompt render site.
 export {
+  VIPUNE_PRECEDENCE_NOTE,
+  VIPUNE_PRIOR_SOURCE,
+  priorContextHasVipune,
+} from "./plan-prior-sources.ts";
+export {
   OPERATOR_PRIOR_CONTEXT_CHILD_PROMPT_CAP,
   PRIOR_CONTEXT_CHILD_PROMPT_CAP,
   forbiddenPhrasesBlock,
@@ -162,36 +168,6 @@ const DEPTH_LIMIT_NOTE =
 
 /** Max items rendered per typed section — generous enough for a real spec (D2). */
 const SECTION_MAX_ITEMS = 20;
-
-/**
- * D6: the source tag for vipune-sourced prior-context entries.
- *
- * A blocked planning session naturally saves its spec to vipune; the next
- * run retrieves that stale copy, and the gap gate can raise a CRITICAL over a
- * "contradiction" between the operator's CURRENT context and their own
- * two-runs-old snapshot (FIELD-CONFIRMED in transcript mtsnbz8b — the same
- * vipune entry "ebfa12c1" quoted its own prior ACs into the next round's
- * gap-gate prompt). The tag makes the entry's provenance visible to the
- * reviewer, and the precedence instruction (VIPUNE_PRECEDENCE_NOTE) tells
- * both the Phase-2 angle children and the gap gate that a vipune entry is a
- * prior snapshot, not live authority.
- */
-export const VIPUNE_PRIOR_SOURCE = "vipune (prior snapshot — may be stale)";
-
-/**
- * D6: the explicit precedence instruction rendered into BOTH the angle
- * prompts (plan-angles.ts: buildAnglePrompt) and the gap-gate prompt
- * (plan-driver.ts: gapGatePrompt) whenever prior context contains vipune
- * entries. On conflict between a vipune-sourced entry and a context-param
- * entry or live code, the LIVE context wins: vipune entries are from a
- * previous run and may be stale.
- */
-export const VIPUNE_PRECEDENCE_NOTE =
-  "PRECEDENCE: entries tagged with a vipune source are snapshots saved during a previous planning run and MAY BE STALE. On conflict between a vipune-sourced entry and a context-param entry or live code, the LIVE context (context param / current code) wins — do not raise a gap for a vipune entry that conflicts with live context, and do not let a stale vipune entry contradict the operator's current instructions.";
-
-export function priorContextHasVipune(priorContext: { source: string; fact: string }[]): boolean {
-  return priorContext.some((p) => p.source.startsWith("vipune"));
-}
 
 /**
  * D5: the Technical-context line for one angle — a per-kind COUNT of its
@@ -259,6 +235,13 @@ export function draftSpec(
   // (operator authority, D2) — they count toward the budget and the
   // tooLarge halt covers the extreme.
   budget?: RenderBudget,
+  // #1855 (review round 1): the operator-outcome AC source travels ONLY inside
+  // `directives`. There is deliberately no trailing parameter for it: a second
+  // channel meant a caller could hand round 1 the parsed directives and round 2
+  // something else, and the round-2 body would quietly lose the operator's own
+  // criteria. `directives` reaches both draftSpec call sites (phase3Draft and
+  // CorrectiveRedraftCtx both carry it from the ONE parse in
+  // assemblePriorContext), so one channel is enough.
 ): {
   title: string;
   body: string;
@@ -266,8 +249,11 @@ export function draftSpec(
   operatorOmitted: OperatorOmission[];
 } {
   const title = planTitle(descriptor, type);
-  // #1151: two stages, in order. Stage 1 drops items that contradict an operator
-  // line; stage 2 drops items that restate one. Both disclose through `dropped`.
+  // #1151: stage 1 drops items that contradict an operator line; stage 2 drops
+  // items that restate one. Both disclose through `dropped`. The operator-line
+  // view IS `directives` — the same object both the judging stages and the AC
+  // section below read, so a drop is never judged against a different line set
+  // than the one that renders. Precedence lives in operatorAcSource.
   const conflicts = applyOperatorConflicts(rawFindings, directives, priorContext);
   const duplicates = applyOperatorDedupe(
     conflicts.findings,
@@ -303,15 +289,15 @@ export function draftSpec(
   // lines). #858: de-duplicated on normalised text across BOTH sources
   // (first occurrence wins — an operator line beats an angle item that
   // restates it modulo case/whitespace/punctuation).
-  // #1087: operator items are authority, so the investigation cap never
-  // applies to them — they are bounded only by capOperatorItems (plan-validate)
-  // and the tooLarge halt. An unterminated block (round 9) swallowed trailing
-  // prose unbounded; the ceiling is what stops that. When the operator supplied
-  // ACCEPTANCE CRITERIA they ARE the section; angle-derived criteria (often
-  // paraphrases of the operator's own) move under a separate heading instead
-  // of sitting beside them. #858: de-duplicated on normalised text (first
-  // occurrence wins).
-  const opAcRaw = dedupeByNormalised(directives.acceptanceCriteria);
+  // #1087: operator items are authority, so the investigation cap never applies
+  // to them — they are bounded only by capOperatorItems and the tooLarge halt.
+  // When the operator supplied criteria they ARE the section; angle-derived
+  // criteria (often paraphrases of the operator's own) move under a separate
+  // heading instead of sitting beside them.
+  // #1855: an operator OUTCOME block is the same authority source as the
+  // directive form — see operatorAcSource (plan-validate.ts), which owns that
+  // precedence and the empty-heading rule.
+  const opAcRaw = operatorAcSource(directives);
   const opAc = capOperatorItems(opAcRaw);
   const angleAc = dedupeByNormalised(
     itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),

@@ -332,7 +332,7 @@ async function invoke(params: Record<string, unknown>) {
     ],
     "decomposition-surface",
   );
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
   const { body } = draftSpec(
     "epic",
     "epic descriptor",
@@ -427,7 +427,7 @@ async function invoke(params: Record<string, unknown>) {
     ],
     "test-surface",
   );
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
   const { body } = draftSpec(
     "feature",
     "add a retry path to the plan driver",

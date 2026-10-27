@@ -38,7 +38,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [], operatorOutcomes: [] };
 
 function findingsFor(
   name: string,
