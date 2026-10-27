@@ -31,9 +31,10 @@ import { trace } from "./trace.ts";
 import type { PostPass } from "./work-driver-adversarial-fix-scope.ts";
 import type { PassPlan } from "./work-driver-adversarial-fix-scope.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import type { RevertStraysOutcome } from "./work-driver-fix-pass-revert-step.ts";
 import { revertStraysOnce } from "./work-driver-fix-pass-revert-step.ts";
 import type { LensFixRevertOutcome } from "./work-driver-lens-fix-fence-gate.ts";
-import type { LensFixFenceSnapshot } from "./workflow-state-schema.ts";
+import type { LensFixRevertEvent } from "./work-driver-lens-fix-revert-record.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -43,6 +44,19 @@ import type { ExecFn } from "./worktree.ts";
  * `null` = the revert was not attempted (the kill switch is off, or
  * `revertStraysOnce` had nothing to act on); the caller parks on the fence's
  * own refusal, which is what happened before the revert existed.
+ *
+ * `alreadyReverted` is REQUIRED here (round 3 item 5): at the lens seam the
+ * round's allowance is the caller's to answer — the inner `passWindow` counter
+ * cannot express source + round + workstream, so a caller that omitted the
+ * answer would silently fall back to a counter that is wrong for this budget.
+ * It stays optional only inside `revertStraysOnce`, where the fix pass's own
+ * window counter IS the right answer.
+ *
+ * `onReverted` is the durability hook: called by `revertStraysOnce` at the
+ * instant the destructive work is done, which is where this round's
+ * `fix-pass-strays-reverted` event is appended AND persisted — before the
+ * landing arm's first git call, so a crash cannot leave files deleted and a
+ * state file that says nothing (#1852 round 3 item 3).
  */
 export async function revertLensFixStrays(
   ctx: CycleContext,
@@ -52,15 +66,36 @@ export async function revertLensFixStrays(
   post: PostPass,
   round: number,
   /** Has this round already spent its one revert? See the call below. */
-  alreadyReverted = false,
+  alreadyReverted: boolean,
+  /** Persist this round's revert event at the destructive boundary. */
+  onReverted?: (event: LensFixRevertEvent) => Promise<void> | void,
 ): Promise<LensFixRevertOutcome | undefined> {
+  // The revert's outcome, published to the boundary hook below. `revertStraysOnce`
+  // raises that hook before it RETURNS, so at the moment the hook fires this
+  // binding is not assigned yet — the closure therefore reads it lazily through
+  // the box, and the assignment happens before the promise this function awaits
+  // settles.
+  const settled: { current?: RevertStraysOutcome } = {};
   const out = await revertStraysOnce(
     ctx,
     state,
     [plan],
     post,
     Date.now(),
-    undefined,
+    // THE durability boundary (#1852 round 3 item 3). `revertStraysOnce` raises
+    // this for BOTH outcomes immediately after the destructive calls and before
+    // either is returned, which is the only seam that both knows the revert is
+    // over and runs before the gate's next git call. The caller persists there
+    // rather than after this promise resolves: `integrateLensFix` and
+    // `commitLensFixChanges` are the next calls in the landing arm.
+    onReverted === undefined
+      ? undefined
+      : () => {
+          const outcome = settled.current;
+          if (outcome?.ok === true) {
+            onReverted(stampLensFixRevert(outcome.event, plan.id, round));
+          }
+        },
     // #1852 round 2 item 4 — ONE counter for this budget. The lens round's
     // allowance is keyed on source + round + workstream, which `revertStraysOnce`'s
     // own `passWindow` counter cannot express (a lens fix has no
@@ -69,6 +104,7 @@ export async function revertLensFixStrays(
     // consulted.
     alreadyReverted,
   );
+  settled.current = out;
   if (out === undefined) {
     trace(
       `work-driver: lens-fix stray revert not attempted for ${plan.id} (switch off, or nothing to revert)`,
@@ -78,17 +114,27 @@ export async function revertLensFixStrays(
   if (!out.ok) {
     // A second set inside the window (`revertStraysOnce`'s own answer) or a
     // failed revert: either way the tree is untouched and the caller parks.
-    //
-    // `execFn` is threaded for the call-site contract only: the revert owns its
-    // own git transport (`ctx.verifyExecFn ?? argvExecp`), and letting a caller
-    // substitute a second one would put a different shell behind the destructive
-    // calls than behind the ones the gate guards. It stays in the signature so a
-    // reader of the call site sees the same exec every other lens-fix git read uses.
-    void execFn;
     return { ok: false, reason: out.reason };
   }
-  void execFn;
-  return { ok: true, event: { ...out.event, source: "lens-fix", round } };
+  return { ok: true, event: stampLensFixRevert(out.event, plan.id, round) };
+}
+
+/**
+ * The record the round's counter reads: `revertStraysOnce`'s event plus the two
+ * fields that make it a LENS round's revert.
+ *
+ * ONE function does the stamping (#1852 round 3 item 3), because the boundary
+ * hook and the return value must carry the same bytes: if the persisted copy
+ * said `source: "develop"` while the returned one said `"lens-fix"`, the record
+ * on disk would be invisible to `lensFixRevertAlreadyUsed` and a retried step
+ * would revert a second set — the exact budget the record exists to enforce.
+ */
+function stampLensFixRevert(
+  event: LensFixRevertEvent,
+  workstreamId: string,
+  round: number,
+): LensFixRevertEvent {
+  return { ...event, workstreamId, source: "lens-fix", round };
 }
 
 /**
@@ -111,13 +157,4 @@ export function restoredLocations(
     }
   }
   return {};
-}
-
-/**
- * The snapshot's round, read where the revert is stamped. A lens fix dispatched
- * in round N and gated in round N+1 must not spend round N+1's allowance, which
- * is why the round travels on the record rather than being read at revert time.
- */
-export function lensFixRevertRound(snap: LensFixFenceSnapshot): number {
-  return snap.round;
 }

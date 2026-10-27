@@ -25,7 +25,7 @@ export type GitRead<T> = { ok: true; value: T } | GitReadFailure;
  * see `LensFixPlanned` / `LensFixPlanRefusal` in
  * `work-driver-lens-fix-fence.ts`.
  */
-export type GitReadFailure = { ok: false; reason: string };
+export type GitReadFailure = { ok: false; reason: string; code?: number };
 
 /** What a worktree holds relative to a commit: changed names, the diff, untracked files. */
 export interface TreeChanges {
@@ -69,7 +69,21 @@ async function run(
     return { ok: true, value: stdout };
   } catch (err) {
     const why = (err as Error).message?.slice(0, 200) ?? String(err);
-    return { ok: false, reason: `\`${cmd}\` failed in ${cwd}: ${why}` };
+    // The exit code, when the child ran and git answered. `isAncestor` is the
+    // one reader that must tell "git said no" from "git could not answer", and
+    // carrying the code here keeps that classification out of a second try/catch
+    // around a second call shape (#1852 round 3 item 6). A spawn failure has no
+    // numeric code and stays `undefined` — never a zero.
+    const code = (err as Error & { code?: number | string })?.code;
+    return {
+      ok: false,
+      reason: `\`${cmd}\` failed in ${cwd}: ${why}`,
+      ...(typeof code === "number"
+        ? { code }
+        : typeof code === "string" && /^\d+$/.test(code)
+          ? { code: Number(code) }
+          : {}),
+    };
   }
 }
 
@@ -158,8 +172,16 @@ export async function headOf(
  * this function appended `|| true` to keep a non-zero exit from throwing, and
  * that made every probe answer "yes" — `git merge-base` prints nothing, so with
  * the failure masked the captured stdout was empty and an unplaced tip looked
- * confirmed. `run()` already turns a non-zero exit into a `GitRead` failure with
- * the code on the error, so the masking bought nothing and cost the verdict.
+ * confirmed.
+ *
+ * #1852 round 3 item 6 — it goes through `run()` like every other read in this
+ * module, so it carries the module's bound (`gitReadTimeoutMs()`) and
+ * `maxBuffer` instead of neither, and the verdict is classified from the
+ * structured failure `run()` reports (`GitRead.code`) rather than from a second
+ * try/catch around a second call shape. A hung `git` no longer outranks the
+ * fence's own 30-second bound — the probe gates an empty delta, so "unknown" is
+ * a park, and a probe that never answered used to be the one answer the gate
+ * could not reach.
  */
 export async function isAncestor(
   execFn: FixExec,
@@ -168,15 +190,16 @@ export async function isAncestor(
   descendant: string,
 ): Promise<"yes" | "no" | "unknown"> {
   if (!SHA_RE.test(ancestor) || !SHA_RE.test(descendant)) return "unknown";
-  try {
-    await execFn(`git merge-base --is-ancestor ${ancestor} ${descendant}`, { cwd });
-    return "yes";
-  } catch (err) {
-    // `git merge-base --is-ancestor` exits 1 for a definitive non-ancestor and 0
-    // for an ancestor; any other failure is an unreadable probe, not evidence.
-    const code = (err as Error & { code?: number | string })?.code;
-    return code === 1 || code === "1" ? "no" : "unknown";
-  }
+  const r = await run(
+    execFn,
+    `git merge-base --is-ancestor ${ancestor} ${descendant}`,
+    cwd,
+    gitReadTimeoutMs(),
+  );
+  if (r.ok) return "yes";
+  // `git merge-base --is-ancestor` exits 1 for a definitive non-ancestor and 0
+  // for an ancestor; any other failure is an unreadable probe, not evidence.
+  return r.code === 1 ? "no" : "unknown";
 }
 
 /**

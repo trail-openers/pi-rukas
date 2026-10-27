@@ -38,6 +38,20 @@ import { fixPassRevertNote } from "./work-driver-fix-pass-revert-step.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
+/**
+ * A `fix-pass-strays-reverted` event as the LENS seam speaks it: `source`,
+ * `round` and `workstreamId` are the three fields
+ * `lensFixRevertAlreadyUsed` matches on, so every writer and every reader of a
+ * lens round's revert names the same shape (#1852 round 3 item 3).
+ *
+ * The three are optional on the underlying event type because the fix pass
+ * wrote neither before #1852 — a pre-#1852 record must still load. A LENS seam
+ * that leaves one out produces a revert no counter can see, which is why the
+ * stamping lives in one function (`stampLensFixRevert`) rather than at each
+ * return path.
+ */
+export type LensFixRevertEvent = FixPassStraysRevertedEvent;
+
 /** What the caller passed to `lensFixFenceCheck` and what it decided. */
 export interface LensFixRevertRecord {
   /** The round's review round — the field the counter matches on. */

@@ -40,7 +40,6 @@
  * which the prompt never sees.
  */
 
-import { resolve } from "node:path";
 import {
   type FixExec,
   type GitRead,
@@ -58,7 +57,6 @@ import { namedPaths } from "./work-driver-fix-pass-named.ts";
 import { lensFixPlanRefusalRecords } from "./work-driver-lens-fix-fence-gate.ts";
 import { fenceSnapshot, refusalReason } from "./work-driver-lens-fix-records.ts";
 import { fanoutLimitFor } from "./work-driver-scope-fanout.ts";
-import { specPatternSlots } from "./work-driver-spec-slot-admission.ts";
 import type { LensFixFenceSnapshot, PipelineState } from "./workflow-state-schema.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -103,14 +101,22 @@ export async function buildLensFixFence(
   roundTip: string,
   findings: string,
 ): Promise<LensFixFenceBuild> {
-  // No `pipelineState.worktrees` entry names the lens tree (#1852-8). Like the
-  // missing base SHA, that is a statement about the STATE — an older driver or a
-  // pre-#1852 fixture has no `worktrees` entry naming the tree either — so it is
-  // traced, not recorded, and the gate stands down. The planner's own
-  // `no-workstream` kind never reaches here: this refusal is decided before the
-  // plan runs, so the decision is made once, on the same typed discriminant as
-  // every other refusal below.
-  if (fenceId === undefined) return { snapshot: undefined, lines: undefined };
+  // No `pipelineState.worktrees` entry names the lens tree (#1852-8, round 3).
+  // This is NOT the same silence as a missing base SHA: `fixTree` is the tree the
+  // fixer is about to be dispatched into (`lensWorktree` falls back to
+  // `ctx.repoRoot` when the state records no tree at all), so a tree no entry
+  // names is a tree whose strays nothing has ever claimed — `revertStraysOnce`
+  // refuses it for want of a recorded tree, and the gate has no workstream to
+  // judge the delta against. Left unrecorded, the gate's "no fence record, skip"
+  // branch was the answer: the pre-#1852 hole, for the shape that needs the
+  // fence most. So it RECORDS, and the gate parks.
+  if (fenceId === undefined) {
+    return {
+      snapshot: undefined,
+      lines: undefined,
+      record: refusalReason({ kind: "unrecorded-tree" }),
+    };
+  }
   const planned: LensFixPlanned = await lensFixPassPlan(execFn, repoRoot, state.pipelineState, {
     id: fenceId,
     worktree: fixTree,
@@ -154,39 +160,30 @@ export interface LensFixFenceInput {
 }
 
 /**
- * The workstream id whose recorded worktree IS the lens tree (#1852-8):
- * `default` when the cycle records one, else the first recorded tree that names
- * the same directory. The revert's recorded-tree gate is keyed on this id, so a
- * lens round whose tree is recorded under an id nobody reads has no id to build
- * a fence with, and `undefined` says so rather than inventing one.
- */
-export function lensFixWorkstreamId(
-  worktrees: Record<string, string> | undefined,
-  tree: string,
-): string | undefined {
-  const entries = Object.entries(worktrees ?? {});
-  if (entries.some(([id, p]) => id === "default" && resolve(p) === resolve(tree))) return "default";
-  return entries.find(([, p]) => resolve(p) === resolve(tree))?.[0];
-}
-
-/**
  * Why the planner could not build a fence (#1852 review item 1b).
  *
- * The gate has to tell two refusals apart, and it must not do it by comparing
- * prose: `runLensFix` records one of these as a fence FAILURE (and the gate
- * parks on it) while the other only says the STATE cannot support a fence — a
+ * The gate has to tell the refusals apart, and it must not do it by comparing
+ * prose: `runLensFix` records some of these as a fence FAILURE (and the gate
+ * parks on them) while others only say the STATE cannot support a fence — a
  * state file written before the field existed, or by an older driver. Both
  * arrived as the same string (`"no valid base SHA is recorded"`), and a worded
  * match silently becomes a no-match whenever the sentence is reworded: the
  * recorded-failure branch goes quiet and the round lands unchecked, which is
  * the hole #1852 exists to close. A discriminant is not rewordable.
+ *
+ * `lensFixPlanRefusalRecords` is the single answer to "does this record?", so
+ * the split lives in one function rather than in each caller's memory.
  */
 export type LensFixPlanRefusal =
   /** The state records no usable base SHA: there is no fence to require. */
   | { kind: "no-base" }
-  /** No `pipelineState.worktrees` entry names the lens tree: also a statement
-   *  about the STATE, so also not a fence failure. */
+  /** A workstream names no lens tree at all — the token the step's own
+   *  no-workstream branch records. */
   | { kind: "no-workstream" }
+  /** The lens tree is named by no `pipelineState.worktrees` entry (#1852 round
+   *  3): `revertStraysOnce` has no recorded tree to revert into and the gate has
+   *  no workstream to judge the delta against, so the round cannot be cleared. */
+  | { kind: "unrecorded-tree" }
   /** Every other refusal (an unreadable tree, base or round tip): a fence
    *  should exist and does not, so the round fails closed. */
   | { kind: "unavailable"; reason: string };
@@ -304,9 +301,4 @@ export async function lensFixPassPlan(
  */
 export function lensFixFenceLines(plan: LensFixPassPlan): string[] {
   return fixPassFenceLines(plan.fence, "this lens fix", "lens-fix-scope");
-}
-
-/** The spec-pattern slots the lens-fix fence admits new files from. */
-export function lensFixSpecSlots(ps: PipelineState) {
-  return specPatternSlots(ps.normalisedSpec);
 }

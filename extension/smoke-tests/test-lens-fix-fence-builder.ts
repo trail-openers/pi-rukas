@@ -19,8 +19,8 @@ import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
 import {
   lensFixFenceLines,
   lensFixPassPlan,
-  lensFixWorkstreamId,
 } from "../src/work-driver-lens-fix-fence.ts";
+import { lensFixWorkstreamId } from "../src/work-driver-lens-fix-fence-gate.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { git, repoWithFile } from "./lib/adversarial-fix-fixtures.ts";
 
@@ -86,8 +86,17 @@ console.log("# the round tip is the base, so the round's own commits are not str
 console.log("# the workstream is found by its recorded tree, not by position");
 {
   const a = mkdtempSync(path.join(tmpdir(), "1852-wt-"));
+  // The snapshot argument is `undefined` throughout: these are the no-snapshot
+  // readings — the step's own lookup, before any fence exists. When a snapshot
+  // DOES exist its `workstreamId` wins, which the gate's cases pin.
+  const id = (worktrees: Record<string, string>, tree: string): string | undefined =>
+    lensFixWorkstreamId(undefined, { worktrees, workstreams: {} }, tree);
+  const withWorkstreams = (worktrees: Record<string, string>) => ({
+    worktrees,
+    workstreams: Object.fromEntries(Object.keys(worktrees).map((k) => [k, { id: k }])),
+  });
   assert(
-    lensFixWorkstreamId({ wsB: "/x/.worktrees/b", wsA: "/x/.worktrees/a" }, "/x/.worktrees/a") ===
+    lensFixWorkstreamId(undefined, withWorkstreams({ wsB: "/x/.worktrees/b", wsA: "/x/.worktrees/a" }), "/x/.worktrees/a") ===
       "wsA",
     "the id whose path names the lens tree wins, whatever order the record is in",
   );
@@ -95,19 +104,19 @@ console.log("# the workstream is found by its recorded tree, not by position");
   // is the same tree, and a fence keyed on the lexical form would silently find
   // no workstream and dispatch unfenced.
   assert(
-    lensFixWorkstreamId({ default: "/x/.worktrees/a/" }, "/x/.worktrees/a") === "default",
+    lensFixWorkstreamId(undefined, withWorkstreams({ default: "/x/.worktrees/a/" }), "/x/.worktrees/a") === "default",
     "a trailing slash on the recorded path still matches",
   );
   assert(
-    lensFixWorkstreamId({ default: "/x/.worktrees/a" }, "/x/.worktrees/issue-1852/../a") ===
+    lensFixWorkstreamId(undefined, withWorkstreams({ default: "/x/.worktrees/a" }), "/x/.worktrees/issue-1852/../a") ===
       "default",
     "a `..` segment in the lens tree path still matches (compared by resolve)",
   );
   assert(
-    lensFixWorkstreamId({ default: "/x/.worktrees/a" }, "/x/.worktrees/b") === undefined,
+    id({ default: "/x/.worktrees/a" }, "/x/.worktrees/b") === undefined,
     "no match yields undefined rather than guessing the first key",
   );
-  assert(lensFixWorkstreamId({}, "/x") === undefined, "an empty map yields undefined");
+  assert(id({}, "/x") === undefined, "an empty map yields undefined");
   rmSync(a, { recursive: true, force: true });
 }
 

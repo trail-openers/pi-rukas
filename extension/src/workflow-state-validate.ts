@@ -11,7 +11,7 @@
  * kind must still load (a parked cycle's history has to stay observable).
  */
 
-import { lensFixFenceFindings } from "./work-driver-lens-fix-fence-gate.ts";
+import { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
 import { PLAN_VERDICTS } from "./workflow-state-events-caps.ts";
 import { isKnownExitOrigin } from "./workflow-state-events-exit-origin.ts";
 import { WORK_STEPS, type WorkEvent, type WorkStep } from "./workflow-state-events.ts";

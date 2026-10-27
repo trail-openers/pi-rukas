@@ -75,21 +75,6 @@ console.log("# the plan is rebuilt from the recorded tip, not a fresh read");
   rmSync(c.repoRoot, { recursive: true, force: true });
 }
 
-console.log("# the plan is rebuilt from the recorded tip, not a fresh read");
-{
-  const c = cycle("plan-tip");
-  const st = stateFor(c.repoRoot, c.tree, ["a.txt"], ["b.txt"]);
-  const snap = await snapshotFor(c.repoRoot, c.tree, c.roundTip, st);
-  const plan: PassPlan = lensFixPlanFromSnapshot(snap, c.tree, st.pipelineState);
-  assert(
-    plan.headBefore === c.roundTip,
-    "plan.headBefore is the RECORDED round tip (the round's own commits are not strays)",
-  );
-  assert(plan.worktree === c.tree, "the plan judges the tree the prompt was built from");
-  rmSync(c.repoRoot, { recursive: true, force: true });
-}
-
-
 console.log("# roundTip is validated as a full 40-hex SHA, not just a string");
 {
   // The record is read through an untyped cast, so a `roundTip` that is a good

@@ -31,6 +31,12 @@ export function refusalReason(refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_W
       return "the state records no base SHA, so no fence can be measured";
     case "no-workstream":
       return LENS_FIX_NO_WORKSTREAM;
+    case "unrecorded-tree":
+      // The reason the operator reads has to say what is missing and what the
+      // consequence is: the fixer wrote in a tree no `pipelineState.worktrees`
+      // entry claims, so neither the revert nor the fence has anything to work
+      // with, and the round parks rather than landing unchecked.
+      return "the lens-fix tree is not a recorded workstream, so no fence bounds it and no recorded tree can hold a revert";
     default:
       return refusal.reason;
   }

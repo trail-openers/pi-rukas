@@ -18,7 +18,8 @@ import {
   countLensFixEmptyResends,
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
-import { buildLensFixFence, lensFixWorkstreamId } from "./work-driver-lens-fix-fence.ts";
+import { lensFixWorkstreamId } from "./work-driver-lens-fix-fence-gate.ts";
+import { buildLensFixFence } from "./work-driver-lens-fix-fence.ts";
 import { lensWorktree, recordFenceUnavailable } from "./work-driver-lens-fix-records.ts";
 
 // Re-exported for the importers that have always taken the tree resolver from
@@ -209,7 +210,10 @@ export async function runLensFix(
   if (roundTipBefore === undefined) {
     next = recordFenceUnavailable(next, fixTree, "the lens tree's HEAD could not be read");
   }
-  const fenceId = lensFixWorkstreamId(state.pipelineState.worktrees, fixTree);
+  // The workstream whose `pipelineState.worktrees` entry IS the lens tree, or
+  // `undefined` when none names it — which `buildLensFixFence` treats as a
+  // recorded fence failure rather than silence (#1852 round 3 item 1).
+  const fenceId = lensFixWorkstreamId(undefined, state.pipelineState, fixTree);
   let fenceLines: string[] | undefined;
   if (roundTipBefore !== undefined) {
     const built = await buildLensFixFence(

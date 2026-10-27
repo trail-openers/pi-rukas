@@ -41,10 +41,10 @@
  * the lens tree IS the repo root, ANY stray parks (PM decision #1852-1) and the
  * reason says the revert was unavailable because the tree is the repo root.
  *
- * SPLIT FOR THE SIZE GATE (#1852 follow-up): the record validator now lives in
- * `work-driver-lens-fix-fence-validate.ts` and is re-exported from here, so the
- * gate module keeps holding only the reads that decide a round and the importers
- * keep resolving the validator from this module.
+ * SPLIT FOR THE SIZE GATE (#1852 follow-up): the record validator lives in
+ * `work-driver-lens-fix-fence-validate.ts` and BOTH this gate and
+ * `workflow-state-validate.ts` import it from there — no re-export from here,
+ * so one module owns the shape check and either reader finds it in one hop.
  */
 
 import path from "node:path";
@@ -67,7 +67,7 @@ import { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
 import type { LensFixPlanRefusal } from "./work-driver-lens-fix-fence.ts";
 import { specPatternSlots } from "./work-driver-spec-slot-admission.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
-import type { LensFixFenceSnapshot } from "./workflow-state-schema.ts";
+import type { LensFixFenceSnapshot, PipelineState } from "./workflow-state-schema.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** What the caller's revert hook returns; `undefined` = a revert is not possible. */
@@ -111,10 +111,13 @@ export interface LensFixFenceGateOpts {
  * The workstream this lens-fix round belongs to — the key the revert record, its
  * one-revert allowance and this gate all read.
  *
- * The snapshot's own id wins (it is what the fence was built for); otherwise the
- * workstream whose RECORDED tree is this lens tree, by resolved path. A round
- * with no attributable workstream gets `undefined`, which is the token the step
- * records as its no-workstream refusal (`LENS_FIX_NO_WORKSTREAM`).
+ * ONE function, two readings (#1852 round 3 item 8): the snapshot's own id wins
+ * when a snapshot exists (it is the id the fence was built for), and with none
+ * the answer comes from the recorded trees — `default` first when it names the
+ * tree, else the first recorded tree that names the same directory. Both
+ * readings were separately named functions before, and a rule with two owners
+ * is a rule where the step that builds the fence and the gate that judges it can
+ * name different workstreams for one round.
  */
 export function lensFixWorkstreamId(
   snapshot: LensFixFenceSnapshot | undefined,
@@ -162,7 +165,7 @@ export function lensFixRevertAlreadyUsed(
 export function lensFixPlanFromSnapshot(
   snap: LensFixFenceSnapshot,
   tree: string,
-  ps: { baseSha?: string; normalisedSpec?: unknown },
+  ps: { baseSha?: string; normalisedSpec?: PipelineState["normalisedSpec"] },
 ): PassPlan {
   const anchors = [...new Set([...snap.fence.declared, ...snap.candidates])];
   return {
@@ -175,7 +178,11 @@ export function lensFixPlanFromSnapshot(
     named: snap.named,
     widened: snap.declared.length > 0 ? snap.named.filter((x) => !snap.declared.includes(x)) : [],
     outOfScope: snap.fence.outOfScope,
-    specSlots: specPatternSlots(ps.normalisedSpec as never),
+    // Typed, not `as never` (#1852 round 3 item 7): the parameter is the same
+    // `NormalisedSpec` the persisted `PipelineState` carries, so a spec field
+    // that changes shape is a compile error here rather than a slot set read
+    // from a value nobody checked.
+    specSlots: specPatternSlots(ps.normalisedSpec),
     candidates: new Set(snap.candidates),
     dirs: anchorDirs(anchors),
     fence: { ...snap.fence, helperDirs: new Set(snap.fence.helperDirs) },
@@ -431,9 +438,3 @@ function fail(reason: string, notes: string[] = []): LensFixFenceVerdict {
   trace(`work-driver: lens-fix fence refused the round — ${reason.slice(0, 200)}`);
   return { ok: false, reason, notes };
 }
-
-// The record validator is a pure shape check with no git and no worktree, so it
-// lives in its own module (AGENTS.md §12 size cap) and is re-exported here for
-// the importers that have always taken it from the gate: `lensFixFenceCheck`
-// above and `workflow-state-validate.ts` at the state read.
-export { lensFixFenceFindings } from "./work-driver-lens-fix-fence-validate.ts";
