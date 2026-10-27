@@ -32,15 +32,19 @@ import {
   projectIssue,
 } from "./result.ts";
 
-/** How long the runner waits for its own driver before calling it wedged. */
-const DEFAULT_WEDGE_MS = 6 * 60 * 60_000;
-
-/** Override: PI_ENSEMBLE_HEADLESS_DRIVER_WEDGE_MS. 0 disables the backstop. */
-export function driverWedgeMs(): number {
-  const n = Number(process.env.PI_ENSEMBLE_HEADLESS_DRIVER_WEDGE_MS);
-  if (Number.isFinite(n) && n >= 0) return n;
-  return DEFAULT_WEDGE_MS;
-}
+/**
+ * How long the runner waits for its own driver before calling it wedged.
+ *
+ * There is deliberately **no env knob** for this. It is a reporting backstop, not
+ * a timeout policy: lowering it makes the runner print `driver-wedged` for a
+ * cycle that is merely slow, so an operator who "tightens" it gets a lie rather
+ * than a faster cycle. Tests that need the bound to fire reach it through
+ * `ResultGuaranteeOpts.wedgeMs`, which is the injection seam `write` already is
+ * for the stream. A knob nobody is meant to turn cannot drift, cannot be set to
+ * a value that misreports a healthy run, and never has to appear in
+ * `HEADLESS_INPUTS` — where every entry is a promise a host may set.
+ */
+export const DEFAULT_WEDGE_MS = 6 * 60 * 60_000;
 
 export interface RunOutcome {
   exitCode: number;
@@ -115,6 +119,11 @@ export interface ResultGuaranteeOpts {
   issues: number[];
   /** stdout sink; injectable so the offline test observes the stream. */
   write: (s: string) => void;
+  /**
+   * Override the wedge bound. `undefined` is the documented 6 h; `0` disables
+   * the backstop. Tests inject a short bound here rather than through an env
+   * var: the production default is not a knob (see `DEFAULT_WEDGE_MS`).
+   */
   wedgeMs?: number;
 }
 
@@ -130,7 +139,7 @@ export interface ResultGuaranteeOpts {
  * appended a wedge document to a healthy run's own output.
  */
 export async function withResultGuarantee(opts: ResultGuaranteeOpts): Promise<number> {
-  const wedgeMs = opts.wedgeMs ?? driverWedgeMs();
+  const wedgeMs = opts.wedgeMs ?? DEFAULT_WEDGE_MS;
   const work = opts.work();
   // Byte-level, not "did it call write": the supervisor's stdout is a passthrough
   // of the runner's, so the only honest test of "produced no result" is that

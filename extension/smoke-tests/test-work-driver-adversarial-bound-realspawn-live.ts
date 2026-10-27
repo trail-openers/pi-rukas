@@ -200,8 +200,8 @@ try {
     git(["add", "README.md"]);
     git(["-c", "user.email=t@invalid", "-c", "user.name=t", "commit", "-q", "-m", "base"]);
     const out = await runCli(
-      ["work", "1863", "--json"],
-      { PI_ENSEMBLE_HEADLESS: "1", PI_ENSEMBLE_HEADLESS_DRIVER_WEDGE_MS: "1" },
+      ["work", "1863", "--json", "--wedge-ms", "1"],
+      { PI_ENSEMBLE_HEADLESS: "1" },
       scratch,
     );
     const lines = docs(out.stdout);

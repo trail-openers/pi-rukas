@@ -40,7 +40,7 @@ import { resolveRepoRoot } from "../work-entry.ts";
 import { runAgentsMdHeadless } from "./agents-md.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { buildCapabilities } from "./capabilities.ts";
-import { withResultGuarantee } from "./ensure-result.ts";
+import { DEFAULT_WEDGE_MS, withResultGuarantee } from "./ensure-result.ts";
 import { EXIT } from "./exit-code.ts";
 import { createVerbHost } from "./host.ts";
 import { runLensReviewVerb } from "./lens-review.ts";
@@ -108,6 +108,12 @@ export function parseHeadlessArgs(argv: string[]): ParsedArgs | { error: string 
       const n = Number(tok);
       if (n <= 0) return { error: `invalid issue number "${tok}"` };
       issues.push(n);
+    } else if (tok === "--wedge-ms") {
+      // Read by the CLI entry point and passed in as a parameter, never treated
+      // as a run setting — but it reaches here too, because the supervisor
+      // re-spawns the runner with this same argv (#1863). Its value is validated
+      // at the entry point, so here it is only skipped along with its argument.
+      i += 1;
     } else {
       // S5 (#1025) — there is deliberately no `--merge` (nor `--sandboxed`).
       // Headless merge authority comes only from AGENTS.md through the policy
@@ -129,7 +135,7 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function main(argv: string[]): Promise<number> {
+async function main(argv: readonly string[], wedgeMs: number = DEFAULT_WEDGE_MS): Promise<number> {
   const [verb, ...rest] = argv;
   // #1571 — this process runs the driver without the extension activating:
   // drop an inherited GIT_DIR & co. here too (git-env.ts).
@@ -209,6 +215,9 @@ async function main(argv: string[]): Promise<number> {
     repoRoot: "",
     issues: args.issues,
     write: writeResult,
+    // Threaded from argv by the CLI entry below; a library caller keeps the
+    // documented default. There is no env knob for it (see DEFAULT_WEDGE_MS).
+    wedgeMs,
     work: async () => {
       const repoRoot = await repoRootPromise;
       return runHeadless({
@@ -226,7 +235,29 @@ async function main(argv: string[]): Promise<number> {
 // Run only when executed directly (bun cli.ts ...), never when imported by a test.
 const invokedDirectly = process.argv[1]?.endsWith("cli.ts") === true;
 if (invokedDirectly) {
-  main(process.argv.slice(2))
+  // `--wedge-ms` is the child-process counterpart of `ResultGuaranteeOpts.wedgeMs`:
+  // the real-CLI test needs to trip the wedge in seconds, and an env knob for a
+  // **reporting backstop** would let an operator make a slow cycle report
+  // `driver-wedged`. A flag a caller passes is not a knob the environment happens
+  // to carry, so the runner lists no `PI_ENSEMBLE_*` var for it (#1863).
+  const cliArgv = process.argv.slice(2);
+  let wedgeMs = DEFAULT_WEDGE_MS;
+  const at = cliArgv.indexOf("--wedge-ms");
+  if (at !== -1) {
+    const raw = Number(cliArgv[at + 1]);
+    if (!Number.isFinite(raw) || raw < 0) {
+      process.stdout.write(
+        `${JSON.stringify({ error: { code: "bad-arguments", message: "--wedge-ms needs a number >= 0" } })}\n`,
+      );
+      process.exit(EXIT.refused);
+    }
+    wedgeMs = raw;
+    // NOT spliced out: `main` hands this very argv to the supervisor, which
+    // re-spawns this CLI with it, and the process that actually holds the wedge
+    // timer is that inner child — the supervisor is only the outer pass-through.
+    // So the flag travels with the argv and `parseHeadlessArgs` ignores it.
+  }
+  main(cliArgv, wedgeMs)
     .catch((err: unknown) => {
       process.stdout.write(
         `${JSON.stringify({ error: { code: "crash", message: errorMessage(err) } })}\n`,
