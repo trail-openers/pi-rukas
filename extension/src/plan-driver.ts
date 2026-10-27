@@ -187,7 +187,6 @@ async function runPipelineOn(
   // is the authority — test-plan-prior-context.ts pins those caps), the
   // FILED-body inventory gets the untyped prose lines only (the typed-block
   // lines consumed by the directive parser render in their section, #858).
-  const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
   // #1855: the operator OUTCOME block (`Done when:` / `Acceptance:` with bullets)
   // is a second operator-authority Acceptance-criteria source; the assembly
   // parsed it with the same line-index accounting, and it rides INSIDE
@@ -195,6 +194,7 @@ async function runPipelineOn(
   // so there is no second channel that a round could drop.
   // #1856: the issue this plan is FOR. Only the risk child's view is filtered
   // with it (plan-investigate.ts); the angles, gate and body keep every row.
+  const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
   if (signal?.aborted)
     return cancelledResult(signal, input, "inventory", priorContext, finishTimings());
 
