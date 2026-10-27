@@ -167,13 +167,14 @@ export async function fanOutAdversarial(
     writeChain = step.catch(() => undefined);
     return step;
   };
-  const writeAheadFor = (id: string): { jobId: string; label: string } => {
+  const writeAheadFor = (id: string): { jobId: string; label: string; at: number } => {
     const label = multi ? `adversarial[${id}]` : "adversarial_loop";
+    const at = Date.now();
     // ONE minting per pass, handed to the leaf (see `RunOneArgs.writeAhead`) and
     // registered for the splice. A second `Date.now()` read makes a second
     // minting a different string, and then the marker, the dispatch events and
     // the outcome's `clearedJobId` no longer name one dispatch (#1863).
-    return { jobId: mintJobId("adversarial", `${label}:${id}`, Date.now()), label };
+    return { jobId: mintJobId("adversarial", `${label}:${id}`, at), label, at };
   };
   // De-duplicated: a workstream the in-step retry re-ran registers one per attempt.
   const registerMarker = (jobId: string): void => {
@@ -216,7 +217,6 @@ export async function fanOutAdversarial(
   };
   const runOne = async (id: string): Promise<AdversarialOutcome> => {
     const wa = writeAheadFor(id);
-    const startedAt = Date.now();
     let begunLog: WorkState;
     try {
       begunLog = await writeThrough(async (s) => {
@@ -226,20 +226,22 @@ export async function fanOutAdversarial(
           "adversarial",
           "adversarial-loop",
           wa.label,
-          startedAt,
+          wa.at,
           undefined,
           // The id this pass's dispatch events carry, and the id its `finally`
           // clears: ONE string, taken from the marker rather than minted again
           // (#1863 — see `writeAheadFor`).
           wa.jobId,
         );
-        // #1863 — the marker's real id, from the helper that wrote it, is the id
-        // the pass uses everywhere: `beginDispatch` mints its own when the
-        // caller passes none, and two mintings a millisecond apart are two
-        // strings. The leaf then stamps its dispatch events with one and the
-        // marker carries the other, and the batch's marker no longer names the
-        // dispatch it precedes.
-        if (b.jobId !== wa.jobId) wa.jobId = b.jobId;
+        // #1863 — the marker's OWN id, label and timestamp are the ones this pass
+        // carries everywhere, taken from the record the helper wrote. A second
+        // minting a millisecond apart is a different string, and a re-derived
+        // label or a `Date.now()` at re-emit time is a different record: the
+        // leaf then stamps its dispatch events with one identity and the marker
+        // keeps another, so the batch's marker no longer names the dispatch it
+        // precedes. `beginDispatch` also no-ops under `PI_ENSEMBLE_RESUME=0`, so
+        // the id it returns is not necessarily the one passed in.
+        wa.jobId = b.jobId;
         registerMarker(b.jobId);
         return b.state;
       });
@@ -461,7 +463,7 @@ export async function fanOutAdversarial(
   // first one and the prior pass's stale records survive beside the fresh
   // batch (a recovered workstream logging both its infra-failure and its
   // approved outcome).
-  const ownPending = ownPendingMarkerIds(log, settledMarkers);
+  const ownPending = ownPendingMarkerIds(log, settledMarkers, passMarkers);
   next = {
     ...log,
     pipelineState: {

@@ -118,6 +118,23 @@ export interface AdversarialOutcome {
    */
   clearedJobId?: string;
   /**
+   * #1863 — the `label` the persisted `dispatch-started` carried, copied from the
+   * marker the fan-out wrote, NOT re-derived at re-emit time. The fan-out re-emits
+   * the marker with the batch it splices (see `outcomeEvents`), and a re-emitted
+   * record that does not read as the original one is a second audit record of one
+   * dispatch. Paired with `markerAt`.
+   */
+  dispatchLabel?: string;
+  /**
+   * #1863 — the `at` the persisted `dispatch-started` carried, i.e. the wall-clock
+   * moment the dispatch was begun. `outcomeEvents` re-emits the marker and a
+   * fabricated value here is not cosmetic: `durationMs` in the headless result
+   * document is derived from event `at`s, and one measured cycle reported a
+   * 56-year duration for an adversarial step whose marker had been re-stamped
+   * `at: 7`. One dispatch, one timestamp — taken from the record.
+   */
+  markerAt?: number;
+  /**
    * #1863 — false when the write-ahead itself failed: the pass minted an id but
    * never dispatched, so it has no `dispatch-started` record to carry, and its
    * id must not be treated as a marker the splice region absorbs.

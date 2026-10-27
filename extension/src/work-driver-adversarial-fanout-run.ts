@@ -55,8 +55,33 @@ export interface RunOneArgs {
    * awaited, and clears it in a `finally` at the pass's exit — the same
    * granularity develop uses, and the reason a killed round review leaves the
    * step's tail a `dispatch-failed` rather than a bare `dispatch-started`.
+   *
+   * `at` is the timestamp the marker was persisted with. The leaf copies the
+   * whole marker onto the outcome it returns (`dispatchLabel` / `markerAt`) so
+   * the fan-out's splice can re-emit the SAME record rather than a lookalike
+   * (#1863 round 2) — a value the batch cannot know has to be carried in.
    */
-  writeAhead?: { jobId: string; label: string };
+  writeAhead?: { jobId: string; label: string; at: number };
+}
+
+/**
+ * #1863 round 2 — the marker fields the fan-out persisted for this pass, copied
+ * onto the outcome so the splice's re-emit reproduces the SAME record. A value
+ * the batch invents is a second audit record for one dispatch, so every field
+ * comes from the marker the fan-out wrote. Empty when nothing was written ahead.
+ */
+function markerFields(writeAhead: RunOneArgs["writeAhead"]): {
+  clearedJobId?: string;
+  dispatchLabel?: string;
+  markerAt?: number;
+} {
+  return writeAhead
+    ? {
+        clearedJobId: writeAhead.jobId,
+        dispatchLabel: writeAhead.label,
+        markerAt: writeAhead.at,
+      }
+    : {};
 }
 
 /**
@@ -137,11 +162,13 @@ export async function runAdversarialWorkstream(
   }
 
   const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
-  /** #1863 — the id whose in-flight marker the fan-out's splice drops, once
-   *  this pass has produced its events. Absent when nothing was written ahead. */
-  const cleared = writeAhead
-    ? { clearedJobId: writeAhead.jobId, dispatchLabel: writeAhead.label }
-    : {};
+  /**
+   * #1863 — the write-ahead marker this pass owns, and the two fields the
+   * fan-out's splice needs to RE-EMIT it as the record it already persisted
+   * (`dispatchLabel` / `markerAt` on the outcome). Minted once by
+   * `writeAheadFor`, so nothing here mints a second identity.
+   */
+  const cleared = markerFields(writeAhead);
   // The reviewer dispatch's `runId`. When the fan-out wrote a head for this
   // pass, the child's id IS the marker's id, so the write-ahead record, the
   // child's transcript and the completion event name one identity (#1789's
