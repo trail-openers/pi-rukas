@@ -15,7 +15,7 @@ import path from "node:path";
 import { execp } from "./exec.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
+import { capHitForCapKill, capHitForChildBound } from "./work-driver-adversarial-capkill.ts";
 import {
   adversarialDiffUnreadableCapHit,
   isDiffUnreadableOutcome,
@@ -119,6 +119,15 @@ export async function runAdversarial(
           pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
         };
       }
+      return next;
+    }
+    // #1863 — a round review the per-child run bound ended is its own cap, not
+    // the generic infra cap that would blame a provider for a kill we made.
+    const bounded = infraShortfall
+      .map((o) => capHitForChildBound(o, state.pipelineState.reviewRound))
+      .find(Boolean);
+    if (bounded) {
+      next = appendEvent(next, bounded.event);
       return next;
     }
     // #1634 — the shortfall is the driver's own diff READ, so the park names
@@ -250,6 +259,18 @@ export async function runAdversarial(
     if (!priorHadInfraFailure) {
       // #79 — say WHY: the reviewer children's provider error, classified.
       const o = failed[0];
+      // #1863 — a bound kill is a cap, not a dispatch to be retried. The
+      // router cannot record it: `adversarial` is `RETRY_ONCE` with a budget
+      // of one, so its `child-timeout:${step}` branch is unreachable for this
+      // step. The one site that owns the literal is this handler — checked
+      // BEFORE the tail is left for the router, and written directly.
+      const bounded = o ? capHitForChildBound(o, state.pipelineState.reviewRound) : undefined;
+      if (bounded) {
+        trace(
+          "work-driver: adversarial round review ended at its run bound (N=1) — parking with cap 'child-timeout:adversarial' (no verdict exists; NOT a rejection)",
+        );
+        return appendEvent(next, bounded.event);
+      }
       const cls = o ? classifyAdversarialOutcome(o) : undefined;
       const why = o && cls ? `: ${failureCauseReasonForClass(o, cls)} (cause=${cls.cause})` : "";
       trace(
@@ -271,6 +292,17 @@ export async function runAdversarial(
             pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
           };
         }
+        return next;
+      }
+      // #1863 — the fan-out equivalent of the N=1 branch below: a bound kill
+      // records `child-timeout:adversarial` here, directly, rather than
+      // `adversarial-infra-failure`. Checked after the cap kills (which own
+      // their own fixed literals) and before the generic infra cap.
+      const bounded = failed
+        .map((o) => capHitForChildBound(o, state.pipelineState.reviewRound))
+        .find(Boolean);
+      if (bounded) {
+        next = appendEvent(next, bounded.event);
         return next;
       }
       next = appendEvent(next, {

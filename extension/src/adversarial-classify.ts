@@ -82,6 +82,24 @@ export function classifyDispatchOutcome(r: DispatchResult): {
       headline: "killed by pi-rukas (token budget crossed) — a cost cap, not a provider fault",
     };
   }
+  // #1863 — the per-child run bound (#1560): the reviewer was steered to wrap
+  // up at its bound and ended a grace period later. Without this branch it
+  // fell to the `!r.ok` → `crashed` fallback below, which returns
+  // shouldRetry:true / maxRetries:1 — so `runPhaseWithInfraRetry` re-spawned
+  // the SAME round review into the SAME bound (measured: three of three
+  // headless cycles died with the reviewer killed twice and no handoff).
+  // Parity with work-driver-failure-taxonomy.ts's `child-bound` branch, which
+  // already answers self-killed / no-retry: the two classifiers must not
+  // disagree about what one kill means.
+  if (r.killCause === "child-bound") {
+    return {
+      cause: "self-killed:child-bound",
+      shouldRetry: false,
+      maxRetries: 0,
+      headline:
+        "killed by pi-rukas (per-child run bound) — it was steered to wrap up and never finished; re-spawning would spend the bound again",
+    };
+  }
 
   // Provider error-stop (transport severance, timeout, 429, missing model).
   // #79 — the driver's taxonomy decides, so a reviewer child and a step
