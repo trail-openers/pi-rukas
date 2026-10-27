@@ -226,7 +226,6 @@ function preflight(req: FixPassStraysRequest): string | undefined {
     // name is validated before the first `git`.
     assertInsideWorktrees(req.repoRoot, req.worktree);
     assertInsideRecordedWorktree(req);
-    assertInsideRecordedWorktree(req);
     fixPassStraysPatchPath(req.scratchDir, req.issue, req.workstreamId, req.attempt);
     // The temporary index the commit is built from is a path git resolves on its
     // own (`GIT_INDEX_FILE`), so it is judged here rather than at the call: a
