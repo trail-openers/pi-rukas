@@ -37,7 +37,9 @@ const NO_DIRS: OperatorDirectives = {
   testSurface: [],
   decomposition: [],
   neverClaim: [],
+  operatorOutcomes: [],
 };
+
 
 function angle(name: string, kind: string, texts: string[]): AngleFindings {
   return {

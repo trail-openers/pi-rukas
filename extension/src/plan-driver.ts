@@ -187,6 +187,10 @@ async function runPipelineOn(
   // FILED-body inventory gets the untyped prose lines only (the typed-block
   // lines consumed by the directive parser render in their section, #858).
   const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
+  // #1855: the operator OUTCOME block (`Done when:` / `Acceptance:` with bullets)
+  // is a second operator-authority Acceptance-criteria source; the assembly
+  // parsed it with the same line-index accounting, so it travels to BOTH
+  // draftSpec call sites and is never re-derived here.
   if (signal?.aborted)
     return cancelledResult(signal, input, "inventory", priorContext, finishTimings());
 
@@ -253,22 +257,18 @@ async function runPipelineOn(
   if (signal?.aborted)
     return cancelledResult(signal, input, "investigate", priorContext, finishTimings());
 
-  // Phase 3 — draft WITHIN the forge body budget (vipune session: four
-  // filings hit the 65,536-char wall after clean gates; plan-validate.ts
-  // owns the stage-0/compaction/tooLarge policy).
-  //
-  // #1377: the caller's provenance lines are appended by code AFTER the fitter,
-  // so compaction can never trim them — and their rendered size is reserved out
-  // of the budget up front so the FINAL body still fits the forge cap. The
-  // reservation is 0 with no provenance, so an existing caller's chosen body is
-  // byte-identical. The draft itself is assembled by phase3Draft (one home for
-  // the fitter's 12 positional args and its tooLarge halt).
+  // Phase 3 — draft WITHIN the forge body budget (plan-validate.ts owns the
+  // stage-0/compaction/tooLarge policy); #1377 reserves the provenance lines
+  // that are appended after the fitter so the FINAL body still fits the forge
+  // cap. #1855: the operator OUTCOME block travels here AND to the round-2 gate
+  // below, so a corrective re-draft cannot lose the operator's own criteria.
   const phase3 = phase3Draft({
     type,
     descriptor,
     findings,
     inventoryContext,
     directives,
+    operatorOutcomes: directives.operatorOutcomes,
     depth,
     provenance: input.provenance,
     priorContext,
@@ -345,6 +345,7 @@ async function runPipelineOn(
       priorContext,
       inventoryContext,
       directives,
+      operatorOutcomes: directives.operatorOutcomes,
       settled,
       openQuestions,
       outOfScope,
