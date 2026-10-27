@@ -205,6 +205,14 @@ export interface PiMessage {
   toolCallId?: string;
   /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
   isError?: boolean;
+  /**
+   * #1756 round 2 — stamped on `toolResult` messages by pi-agent-core's
+   * `createToolResultMessage` from the tool's own `result.details`, i.e.
+   * whatever an extension put there. Typed `unknown` deliberately: Pi declares
+   * no schema for it, so the only consumer (the plan reader) treats a shape it
+   * cannot read as no echo at all.
+   */
+  details?: unknown;
   content?: PiContentBlock[];
   toolResults?: unknown[];
   usage?: PiUsage;

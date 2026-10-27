@@ -24,6 +24,9 @@
  * what it was before this feature.
  */
 
+import { isPlainObject } from "./plain-object.ts";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
+
 /** At most five labels per filing — the gh/glab create call stays one argv line. */
 export const MAX_LABELS = 5;
 
@@ -141,16 +144,11 @@ export function isProvenanceShape(v: unknown): v is PlanProvenance {
  * `line`, and reading inherited properties is how a validator comes to approve
  * bytes nothing ever renders.
  *
- * Exported because the cache entry guard (`plan-investigation-guard.ts`) makes
- * the same promise about the same bytes: two hand-rolled copies of "plain
- * object" drift on exactly the case that matters (an exotic prototype), and the
- * guard and this validator must never disagree about what a provenance is.
+ * The implementation lives in `plain-object.ts`, the import-free leaf every
+ * channel shares (the plan companion cannot pull this module into the plan
+ * child, so the predicate lives below both graphs rather than in either).
  */
-export function isPlainObject(v: unknown): v is Record<string, unknown> {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
-}
+export { isPlainObject } from "./plain-object.ts";
 
 /**
  * The own enumerable string-keyed pairs of a marker, rejecting a non-string

@@ -8,6 +8,26 @@
  * the same grounds — contributes nothing, and its reason is kept so the
  * cycle's event log and handoff can say what the planner got wrong.
  *
+ * #1756 — those checks do NOT run on the raw arguments. Pi's tool validation
+ * clones them and normalises/coerces them before its `Check`, so a model that
+ * sends an array field as a single string can be accepted in the child and
+ * refused HERE — the workstream recorded in the child and lost by the driver,
+ * and the planner's retry under the same id then drew the duplicate refusal.
+ *
+ * ROUND 2 — the parent does NOT mirror that conversion; it tried (this branch's
+ * first commit) and got it wrong in both directions. The full reason — which
+ * TypeBox package the INSTALLED Pi validates with, and why there is no
+ * version-independent answer to "what did Pi pass the child" — is stated ONCE in
+ * plan-workstream-schema.ts, at `RECORDED_ARGS_DETAILS_KEY`; read it there. The
+ * consequence for this reader: the CHILD reports the params object its `execute`
+ * actually recorded (workstream-reporter.ts), the parent BINDS that report to the
+ * call it claims to describe (`echoMatchesCall` — an echo that widens `paths`,
+ * empties `outOfScope` or renames the workstream is refused, not judged), and
+ * only a bound echo goes through the schema, path and duplicate checks. A result
+ * with no echo (an older companion, or a channel that dropped the payload) is
+ * judged on its raw arguments exactly as before #1756 — the reader never invents
+ * a shape nobody reported.
+ *
  * A call with NO result entry is different: the channel that carries results
  * failed, so nothing says the planner did anything wrong. Those calls are
  * counted as `unreadable`, and the step parks on them rather than reading them
@@ -19,12 +39,15 @@
 
 import path from "node:path";
 import { Value } from "@sinclair/typebox/value";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import {
   WORKSTREAM_ID_MAX,
   WORKSTREAM_ID_PATTERN,
   WORKSTREAM_PARAMETERS,
   type WorkstreamArgs,
   duplicateWorkstreamIdMessage,
+  echoMatchesCall,
+  recordedWorkstreamArgs,
   workstreamPathProblem,
 } from "./plan-workstream-schema.ts";
 import { statReporterPath } from "./reporter-preflight.ts";
@@ -78,6 +101,13 @@ export function emptyWorkstreamReport(): WorkstreamReport {
   return { workstreams: {}, accepted: 0, refused: [], unreadable: 0 };
 }
 
+/**
+ * The refusal of a result whose `details` echo does not describe the call it
+ * arrived with (#1756 round 2). Stated here rather than inline so a test can
+ * pin the exact wording the handoff shows.
+ */
+export const ECHO_MISMATCH_REASON = "the recorded workstream does not match the call";
+
 type ToolUse = { id?: unknown; name?: unknown; arguments?: unknown };
 
 function isWorkstreamArgs(v: unknown): v is WorkstreamArgs {
@@ -85,8 +115,26 @@ function isWorkstreamArgs(v: unknown): v is WorkstreamArgs {
 }
 
 /**
+ * A trace-safe form of a model-derived string: a key name or a call id quoted
+ * into a WARN line.
+ *
+ * `neutraliseFenceEntry` is used rather than the call id being interpolated raw:
+ * `toolCallId` is whatever the child's stream named it and the echoed key names
+ * are model text outright, so both are as untrusted as a fence entry, and an
+ * entry that can contain a newline can write its own `WARN work-driver:` line.
+ * The fence renderer owns the one neutraliser (#1744) — control characters
+ * collapsed, backticks gone, the driver's own clip marker stripped — so a forged
+ * second trace line is refused by the same rule a prompt fence is.
+ */
+function traceSafe(value: string): string {
+  return neutraliseFenceEntry(value);
+}
+
+/**
  * The workstreams a plan dispatch reported. A call whose result is an error is
  * refused with the error text; a call whose result is missing is unreadable.
+ * A call whose result is a success is judged on the value the child echoed, or
+ * on its raw arguments when the result carried no echo (#1756 round 2).
  */
 export function workstreamCallsOf(
   result: Pick<DispatchResult, "toolUses" | "toolResults">,
@@ -131,23 +179,55 @@ export function workstreamCallsOf(
       refuse(rawId, r.text || "refused");
       continue;
     }
-    // Pi validated the call, but the parent judges it again: a value this check
-    // would refuse must not reach state because the child let it through.
-    if (!isWorkstreamArgs(args)) {
+    // The value to judge: what the child says it recorded, when it said AND when
+    // what it said is a coercion of the call the transcript holds. The parent
+    // never converts — it cannot know which TypeBox the installed Pi used, so
+    // only the child's own report is authoritative (#1756 round 2). An echo that
+    // is not a coercion of this call is REFUSED rather than judged: it is not a
+    // report of the call, it is a different call smuggled in on the result, and
+    // accepting one would let an echo replace the authorised `paths`, drop the
+    // fence, or mint a field the model never sent (`echoMatchesCall`). No echo
+    // (an older companion, a dropped payload) falls back to the raw arguments,
+    // which is the pre-#1756 behaviour, unchanged.
+    const echoed = recordedWorkstreamArgs(r);
+    if (r.details !== undefined && echoed === undefined) {
+      // A `details` the transport carried that the reader cannot use: NOT the same
+      // event as "no companion echo", and the two must read apart in a trace
+      // (round 3). An over-capacity payload never reaches here — the transport
+      // drops it, so it is absence, not malformation.
+      traceWarn(
+        `work-driver: report_workstream result ${traceSafe(r.toolCallId)} carried a malformed recorded echo — judged on the raw arguments`,
+      );
+    }
+    if (echoed !== undefined) {
+      const binding = echoMatchesCall(args, echoed);
+      if (!binding.ok) {
+        traceWarn(
+          `work-driver: report_workstream result ${traceSafe(r.toolCallId)} echoed arguments that are not a coercion of the call — refused (${binding.keys.map(traceSafe).join(", ")})`,
+        );
+        // Every refusal below is filed under the CALL's id: the binding has
+        // already proven an accepted echo's `id` is exactly the raw `id`, so there
+        // is no echoed id left to disagree with it.
+        refuse(rawId, ECHO_MISMATCH_REASON);
+        continue;
+      }
+    }
+    const judged = echoed === undefined ? args : echoed;
+    if (!isWorkstreamArgs(judged)) {
       refuse(rawId, "arguments do not match the report_workstream schema");
       continue;
     }
-    const pathProblem = workstreamPathProblem(args);
+    const pathProblem = workstreamPathProblem(judged);
     if (pathProblem) {
-      refuse(args.id, pathProblem);
+      refuse(rawId, pathProblem);
       continue;
     }
-    if (seen.has(args.id)) {
-      refuse(args.id, duplicateWorkstreamIdMessage(args.id));
+    if (seen.has(judged.id)) {
+      refuse(rawId, duplicateWorkstreamIdMessage(judged.id));
       continue;
     }
-    seen.add(args.id);
-    accepted.push(workstreamFromArgs(args));
+    seen.add(judged.id);
+    accepted.push(workstreamFromArgs(judged));
   }
   return {
     workstreams: foldToCeiling(accepted),
