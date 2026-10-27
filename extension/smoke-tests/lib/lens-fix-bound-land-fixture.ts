@@ -97,32 +97,37 @@ delete process.env.PI_ENSEMBLE_REVIEW_ENFORCE;
 setupSpawnGuard();
 
 /** bare origin + repo on a feature branch + a detached worktree at the branch
- *  tip, in the layout a real cycle has: the lens-fix tree lives under
- *  `<repoRoot>/.worktrees/` and is what `pipelineState.worktrees` records.
+ *  tip.
  *
- *  #1852 review item 2 — the tree used to sit at `<dir>/wt`, outside the repo.
- *  That is not a shape production ever produces (every workstream develops in a
- *  `.worktrees/` tree, #287/#445), and it made the lens-fix fence gate refuse a
- *  round it should have admitted: the driver's own revert guard
- *  (`assertInsideWorktrees`) refuses to touch anything outside `.worktrees/`, so
- *  an in-fence fix was parked as if it had strays. A fixture whose tree is in a
- *  layout the guard can never accept proves the bound-kill landing only by
- *  accident. */
+ *  THE TREE SITS OUTSIDE THE REPO, on purpose, and that is a load-bearing
+ *  difference from a real cycle. Every production workstream develops under
+ *  `<repoRoot>/.worktrees/` (#287/#445), but a worktree under the repo root
+ *  makes the ROOT dirty — `git status` at repoRoot lists `.worktrees/` — and the
+ *  driver's follow-up integration then refuses with `dirty-repoRoot` on
+ *  scenarios that are not about the integration arm at all. So these fixtures
+ *  run the tree in the scratch dir, and the price is paid explicitly: the
+ *  driver's own revert guard (`assertInsideWorktrees`) will not touch such a
+ *  tree, so the ONE case that needs a stray revert to actually RUN is driven
+ *  through the fence gate with `inWorktree: true` (see the second scenario of
+ *  `test-work-driver-lens-fix-bound-landed.ts`, which says so where it does)
+ *  rather than through the whole driver.
+ *
+ *  #1852 review item 2 first moved this tree under `.worktrees/` to make the
+ *  revert path reachable; the `dirty-repoRoot` refusals it caused in the
+ *  integration arm — which no assertion here is about — cost more than the path
+ *  they opened, so the outer layout is back and the revert case is exercised
+ *  where its own guard accepts it. */
 export async function mkFixture(dir: string, branch: string) {
   const fs = await import("node:fs/promises");
   const origin = path.join(dir, "origin.git");
   const root = path.join(dir, "root");
-  const wt = path.join(root, ".worktrees", "issue-lens-bound");
+  const wt = path.join(dir, "wt");
   await realExec("git init -q --bare --initial-branch=main origin.git", { cwd: dir });
   await realExec("git init -q --initial-branch=main root", { cwd: dir });
   await realExec('git config user.email "t@t" && git config user.name "T"', {
     cwd: root,
     shell: "/bin/bash",
   });
-  // `.worktrees/` is ignored for the same reason it is in a real cycle: the
-  // tree is driver scaffolding, and an unignored one makes the repo root dirty,
-  // which the stray revert's own commit refuses to work beside.
-  writeFileSync(path.join(root, ".git", "info", "exclude"), "\n.pi/\n.tmp\n.worktrees/\n");
   await fs.writeFile(path.join(root, "base.txt"), "hello\n");
   await realExec("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
   await realExec(`git remote add origin ${JSON.stringify(origin)}`, { cwd: root });

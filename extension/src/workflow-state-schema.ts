@@ -6,9 +6,9 @@
 import type { Verdict } from "./lens-review.ts";
 import type { ContinuedPr } from "./work-driver-continue-pr-state.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
-import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
+import type { PipelineStateReviewTail } from "./workflow-state-schema-lens-fix.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
 // Re-exported so existing importers keep their paths.
 export type {
@@ -86,7 +86,7 @@ import type {
  * eventLog (authoritative on divergence) but stored for O(1) reads. (#861:
  * `PlanQualityReason` lives in `workflow-state-schema-plan-quality.ts`.)
  */
-export interface PipelineState extends IssueClosedState {
+export interface PipelineState extends IssueClosedState, PipelineStateReviewTail {
   /** Current step. Drives template selection and transition table. */
   currentStep: WorkStep;
   /**
@@ -461,32 +461,6 @@ export interface PipelineState extends IssueClosedState {
    * pre-#782 means no re-run, so schemaVersion stays 1.
    */
   verifyEvidence?: VerifyEvidence;
-  /**
-   * #1415 — the verify gate's reuse records: whole-gate passes this cycle RAN and
-   * PASSED (keyed by `<treeHash>\0<cmd>\0<timeoutMs>`) plus each workstream's own
-   * per-worktree green. A develop pass whose own triple is present, fresh, cheap
-   * enough to skip, and matched by every changed workstream's green runs NOTHING.
-   * Grouped so the two travel together; absent = never a pass. Shape + rule:
-   * `workflow-state-schema-gate-reuse.ts` / `work-driver-verify-gate-reuse.ts`.
-   */
-  gateReuse?: {
-    /** Whole-gate passes RAN and PASSED, keyed by (tree, command, bound). */
-    passes: Record<string, GatePass>;
-    /** Per-workstream greens; the whole-gate skip needs every workstream's. */
-    workstreamGreens: Record<string, WorkstreamGreen>;
-  };
-  /**
-   * #1647 — tests the selected verify let through without blocking: `flaky`
-   * (failed once, passed on the rerun) and `baselineRed` (red on the base commit
-   * too). Commit-pr renders both into the PR body and the handoff renders them.
-   * Absent = none recorded.
-   */
-  verifyAttribution?: VerifyAttributionRecord;
-  /**
-   * #1765 — the branch step's pre-develop base probe (shape and rule:
-   * `workflow-state-schema-base-health.ts`). Absent = never probed.
-   */
-  baseHealthProbe?: import("./workflow-state-schema-base-health.ts").BaseHealthVerdict;
   /**
    * Terminal status. "running" while active; flips on `merged` or `handoff`.
    * S4a (#1162) — "interrupted" is written by `markInterrupted` (SIGTERM /

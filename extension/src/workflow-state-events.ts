@@ -26,6 +26,8 @@ import type {
 } from "./workflow-state-events-interrupted.ts";
 import type { InterruptedEvent } from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
+import type { LensFixFenceUnavailableEvent } from "./workflow-state-events-lens-fix-fence.ts";
+import type { LensFixEmptyResendEvent } from "./workflow-state-events-lens-fix-resend.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type {
   CycleDeadlineKill,
@@ -52,7 +54,6 @@ import type {
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 import type { WorkstreamCallsRefusedEvent } from "./workflow-state-events-workstream.ts";
-import type { LensFixFenceUnavailableEvent } from "./workflow-state-schema-lens-fix-fence.ts";
 // #539 — single definition in the sibling fragment module.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 // #775 prep — handoff event members re-exported from the sibling fragment.
@@ -363,17 +364,6 @@ export type WorkEvent =
       nextStep: "handoff" | "step-back" | "ci";
     }
   | {
-      /** #654 — empty-diff re-dispatch marker (see runLensFix). */
-      kind: "lens-fix-empty-resend";
-      at: number;
-      jobId: string;
-      round: number;
-      /** The worktree the driver inspected and found clean. */
-      worktree: string;
-      /** The git evidence that established the no-diff classification. */
-      evidence: string;
-    }
-  | {
       kind: "plumb-report";
       at: number;
       /** Which step surfaced the structural decision. */
@@ -496,6 +486,7 @@ export type WorkEvent =
   | InterruptedEvent
   | CorrectiveRoundEvent
   | FixPassStraysRevertedEvent
+  | LensFixEmptyResendEvent
   | LensFixFenceUnavailableEvent;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */

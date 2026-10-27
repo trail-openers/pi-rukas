@@ -23,6 +23,18 @@ import {
   lensFixPlanRefusalRecords,
 } from "./work-driver-lens-fix-fence-gate.ts";
 import {
+  fenceSnapshot,
+  lensWorktree,
+  recordFenceUnavailable,
+  refusalReason,
+} from "./work-driver-lens-fix-records.ts";
+
+// Re-exported for the importers that have always taken the tree resolver from
+// this module (`work-driver-lens.ts`, `work-driver-adversarial.ts`,
+// `work-retry-tree-clean.ts`); the definition lives with the other #1852
+// record helpers.
+export { lensWorktree };
+import {
   type LensFixPassPlan,
   type LensFixPlanRefusal,
   type LensFixPlanned,
@@ -204,7 +216,7 @@ export async function runLensFix(
   // tree failing to answer, which is exactly what the gate must park on. It gets
   // the same recorded refusal the planner's own read failures get (#1852 1a).
   if (roundTipBefore === undefined) {
-    next = recordFenceUnavailable(next, state, fixTree, "the lens tree's HEAD could not be read");
+    next = recordFenceUnavailable(next, fixTree, "the lens tree's HEAD could not be read");
   }
   const fenceId = lensFixWorkstreamId(state.pipelineState.worktrees, fixTree);
   let fenceLines: string[] | undefined;
@@ -379,7 +391,7 @@ export async function runLensFix(
       // have had a fence, and standing down there is right.
       const refusal = rebuilt.refusal;
       if (lensFixPlanRefusalRecords(refusal)) {
-        next = recordFenceUnavailable(next, state, fixTree, refusalReason(refusal));
+        next = recordFenceUnavailable(next, fixTree, refusalReason(refusal));
       }
       trace(
         lensFixPlanRefusalRecords(refusal)
@@ -470,78 +482,4 @@ export async function runLensFix(
     { tree: fixTree, tipSha: roundTipSha, jobId: fixerJobId },
     execFn,
   );
-}
-
-/**
- * The operator-visible text of a refusal. The typed discriminant decides what
- * gets RECORDED; this only renders it, so a reworded reason can never change a
- * branch (`lensFixPlanRefusalRecords` answers that question).
- */
-function refusalReason(refusal: LensFixPlanRefusal | typeof LENS_FIX_NO_WORKSTREAM): string {
-  if (typeof refusal === "string") return refusal;
-  switch (refusal.kind) {
-    case "no-base":
-      return "the state records no base SHA, so no fence can be measured";
-    case "no-workstream":
-      return LENS_FIX_NO_WORKSTREAM;
-    default:
-      return refusal.reason;
-  }
-}
-
-/**
- * Record that THIS round's fence could not be built, so the adversarial gate
- * fails closed instead of skipping (#1852). One writer for every arm that
- * reaches a dispatch without a fence: the gate's "no record" branch must be
- * reachable only by a state that genuinely never had a fence to require.
- */
-function recordFenceUnavailable(
-  state: WorkState,
-  round: WorkState,
-  worktree: string,
-  reason: string,
-): WorkState {
-  return appendEvent(state, {
-    kind: "lens-fix-fence-unavailable",
-    at: Date.now(),
-    round: round.pipelineState.reviewRound,
-    worktree,
-    reason,
-  });
-}
-
-/**
- * The tree the lens gate works in. #492 — exported so the adversarial gate's
- * lens-fix integration path names the SAME tree. Falls back to repoRoot.
- */
-export function lensWorktree(ctx: CycleContext, state: WorkState): string {
-  const wt = state.pipelineState.worktrees ?? {};
-  return wt.default ?? wt[Object.keys(wt)[0] ?? ""] ?? ctx.repoRoot;
-}
-
-/**
- * The record the adversarial step's fence gate reads back: the plan-time fence
- * this round's prompt printed, keyed on the round so a gate that runs in a later
- * round cannot read this one's fence (#1852).
- */
-function fenceSnapshot(
-  state: WorkState,
-  plan: LensFixPassPlan,
-  tree: string,
-): LensFixFenceSnapshot {
-  return {
-    round: state.pipelineState.reviewRound,
-    workstreamId: plan.id,
-    roundTip: plan.headBefore,
-    fence: { ...plan.fence, helperDirs: [...plan.fence.helperDirs] },
-    declared: plan.declared,
-    named: plan.named,
-    candidates: [...plan.candidates],
-    findings: plan.findings,
-    // The tree the gate must read, recorded rather than re-derived: the gate
-    // resolves the lens tree by a separate read, and a gate that checked one
-    // tree while the fence was built from another is two fences (the reason
-    // `revertStraysOnce` compares its plan's tree against the recorded one).
-    worktree: tree,
-  };
 }
