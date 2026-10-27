@@ -59,17 +59,43 @@ export const DESCRIPTOR_DATA_FRAMING =
  * know which angle is running), so per-angle permission is a PROMPT-LEVEL
  * contract. For a feature, `test-surface` is the SOLE chartered emitter of
  * `acceptance-criterion` and the other two prompts carry the explicit
- * prohibition. The marker text is what test-plan-ac-outcome.ts pins: it asserts
- * the charter is PRESENT in the test-surface prompt and ABSENT from the other
- * two, so the assertion cannot pass on the shared kind menu mentioning the kind
- * (which it always did).
+ * prohibition. The marker text (`FEATURE_AC_CHARTER_MARKER`) is what
+ * test-plan-ac-outcome.ts pins: it asserts the charter is PRESENT in the
+ * test-surface prompt and ABSENT from the other two, so the assertion cannot
+ * pass on the shared kind menu mentioning the kind (which it always did).
+ *
+ * Emission is GROUNDED, not demanded (review round 1): see the note on
+ * `FEATURE_AC_CHARTER` — the charter must never pressure the angle into
+ * inventing criteria.
  */
-export const FEATURE_AC_CHARTER =
-  "You are the ONLY feature angle chartered to report acceptance-criterion items: for each testable outcome this feature must deliver, report one acceptance-criterion item (a single checkable statement of what is true when it works). The plan's Acceptance criteria section has no other source for a feature whose operator did not state the outcome, so an empty criteria list is not a valid result — but never restate the operator's own outcome lines.";
+const FEATURE_AC_CHARTER_MARKER = "ONLY feature angle chartered";
 
-/** The counterpart prohibition (PM decision 3): the two feature angles that must NOT emit criteria. */
+/**
+ * #1855 review round 1: the charter INVITES criteria, it never DEMANDS them.
+ * The first version told the angle that "an empty criteria list is not a valid
+ * result", which is exactly the pressure that makes a model invent criteria for
+ * a feature whose outcome nobody stated — invented criteria then file as the
+ * operator's own Acceptance criteria. Grounding is the bar instead of a
+ * non-empty list: report a criterion only for an outcome the angle can point at
+ * in the descriptor, the prior context, or code it actually read, and report
+ * none when it cannot. A feature whose operator stated the outcome in the
+ * `context` param does not need this angle at all.
+ */
+export const FEATURE_AC_CHARTER = `You are the ${FEATURE_AC_CHARTER_MARKER} to report acceptance-criterion items: a single checkable statement of what is true when the feature works. Report one ONLY for an outcome grounded in the descriptor, the prior context above, or code you actually read this run — name that source in the item. An empty criteria list is a perfectly valid result when nothing is grounded: NEVER invent a criterion to fill the section, and never restate the operator's own outcome lines. When the operator stated no outcome and nothing is grounded, say so in your prose instead of guessing.`;
+
+/**
+ * The counterpart prohibition (PM decision 3): the two feature angles that must
+ * NOT emit criteria.
+ *
+ * #1855 review round 1: the prohibition has to be EXPLICIT about why it exists,
+ * because the shared PLAN_REPORTER_PROMPT kind menu lists `acceptance-criterion`
+ * for every angle of every type — so an angle reading this prompt is being
+ * TOLD it may report the kind by one block and told not to by another. The
+ * schema cannot know which angle is running (schema hardening is future work),
+ * which is precisely why this sentence names the menu and overrules it.
+ */
 export const AC_CRITERIA_FORBIDDEN =
-  "Do NOT report acceptance-criterion items: that kind is the feature test-surface angle's charter, and criteria two angles both report are reconciled away anyway. Report only the kinds this prompt names.";
+  "Do NOT report acceptance-criterion items: the shared reporter menu lists that kind to every angle because the schema cannot tell the angles apart, but for a feature it is the test-surface angle's charter alone — and criteria two angles both report are reconciled away anyway. Report only the kinds this prompt names.";
 
 const ANGLES: Record<PlanType, Angle[]> = {
   bug: [
