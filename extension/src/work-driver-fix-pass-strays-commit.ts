@@ -51,12 +51,12 @@
  * "copy it and subtract" is a list of everything the author forgot.
  */
 
-import { realpathSync, rmSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { copyFileSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { WORKSTREAM_ID_RE, errText } from "./work-develop-git.ts";
 import type { StrayState } from "./work-driver-fix-pass-strays-state.ts";
 import type { FixPassStraysRequest } from "./work-driver-fix-pass-strays.ts";
-import { gitWriteTimeoutMs } from "./work-driver-fix-pass-strays.ts";
+import { fixPassStraysUntrackedDir, gitWriteTimeoutMs } from "./work-driver-fix-pass-strays.ts";
 
 /** Resolve symlinks when the path exists; a path that does not exist keeps its
  *  lexical form. Same rule `assertInsideWorktrees` uses, so the two containment
@@ -129,9 +129,9 @@ export function assertFixPassStraysIndexPath(req: FixPassStraysRequest): void {
 export async function commitRevert(
   req: FixPassStraysRequest,
   state: StrayState,
+  headBefore: string,
 ): Promise<string | undefined> {
   const { git, worktree, issue, workstreamId, attempt } = req;
-  const headBefore = req.headBefore ?? "";
   // Which paths the commit may name, decided from git's OWN pre-revert reads
   // (`state`) and never from what happens to be staged. Three roles:
   const restored = state.strays.filter(
@@ -193,8 +193,90 @@ export async function commitRevert(
     await git(["update-ref", "HEAD", commit], opts);
     return undefined;
   } catch (err) {
-    return `the fix-pass stray revert could not be committed in ${worktree}: ${errText(err)} — the preserved ref and patch are intact${headBefore === "" ? "" : ` (target ${headBefore.slice(0, 12)})`}`;
+    return `the fix-pass stray revert could not be committed in ${worktree}: ${errText(err)} — target ${headBefore.slice(0, 12)}; the preserved ref and patch are intact`;
   } finally {
     rmSync(tmpIndex, { force: true });
+  }
+}
+
+/**
+ * Put the tree back after a failure that happened AFTER the destructive calls.
+ *
+ * `revertPaths` deletes and restores; `commitRevert` runs after it. If the commit
+ * cannot be built the pass parks — and a park whose reason says "not reverted"
+ * while the driver has already deleted the files is the harness destroying work on
+ * the way to telling the operator nothing happened. So the strays are put back
+ * before the refusal is returned, in the order git itself can attest to:
+ *
+ *   1. every stray path back to its `headBefore` state (a `checkout` for the ones
+ *      that existed there, a removal for the ones that did not) — the same baseline
+ *      the patch was written against, so the next step is a clean apply;
+ *   2. `git apply --binary <patchPath>` — the patch is exactly
+ *      `git diff --binary <headBefore> -- <strays>` against the working tree, so
+ *      applying it to the `headBefore` state reproduces the tree the revert found,
+ *      committed lines and uncommitted ones alike. No hand-parsing of the patch:
+ *      git wrote it, git reads it, and `--binary` keeps a binary stray's bytes;
+ *   3. the untracked strays re-copied from the byte-verified copies beside the
+ *      patch — they are in no commit and in no diff, so nothing else holds them;
+ *   4. `git reset -q -- <strays>` to drop the staging `revertPaths` and the failed
+ *      commit attempt left behind, so the index is as the pass handed it over.
+ *
+ * Returns `undefined` when the restore is complete, or the failure text. It never
+ * throws: the revert already refused itself, and a rollback that cannot finish is
+ * disclosed in the reason ("tree NOT restored; recover from …") rather than
+ * turning one failure into two.
+ */
+export async function rollbackRevert(
+  req: FixPassStraysRequest,
+  state: StrayState,
+  preservedRef: string,
+  patchPath: string,
+): Promise<string | undefined> {
+  const { git, worktree } = req;
+  const headBefore = req.headBefore;
+  if (headBefore === undefined)
+    return "no pre-pass HEAD was recorded, so the paths could not be put back";
+  const tracked = state.strays.filter((f) => !state.untracked.has(f));
+  // Paths absent at `headBefore` have nothing to check out: the revert deleted
+  // them, so putting them back means leaving them deleted until step 2 recreates
+  // them from the patch.
+  const created = tracked.filter((f) => !state.trackedAtBefore.has(f));
+  try {
+    const toRestore = tracked.filter((f) => state.trackedAtBefore.has(f));
+    if (toRestore.length > 0)
+      await git(["--literal-pathspecs", "checkout", headBefore, "--", ...toRestore], {
+        cwd: worktree,
+        timeout: gitWriteTimeoutMs(),
+      });
+    if (created.length > 0)
+      await git(
+        ["--literal-pathspecs", "rm", "-q", "--force", "--ignore-unmatch", "--", ...created],
+        { cwd: worktree, timeout: gitWriteTimeoutMs() },
+      );
+    await git(["apply", "--binary", patchPath], {
+      cwd: worktree,
+      timeout: gitWriteTimeoutMs(),
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    // The untracked strays were unlinked and live in no commit and no diff, so the
+    // copies made beside the patch are the only thing that can put them back.
+    for (const file of state.strays.filter((f) => state.untracked.has(f))) {
+      if (!state.present.has(file)) continue;
+      const src = join(
+        fixPassStraysUntrackedDir(req.scratchDir),
+        relative(worktree, join(worktree, file)),
+      );
+      const dest = join(worktree, file);
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(src, dest);
+    }
+    if (tracked.length > 0)
+      await git(["--literal-pathspecs", "reset", "-q", "--", ...tracked], {
+        cwd: worktree,
+        timeout: gitWriteTimeoutMs(),
+      });
+    return undefined;
+  } catch (err) {
+    return `${errText(err)} — tree NOT restored; recover with \`git checkout ${preservedRef} -- <path>\` or by applying ${patchPath}`;
   }
 }
