@@ -136,7 +136,7 @@ console.log("# the revert the DRIVER performed leaves an event the round can cou
     round: 1,
 
     onRevertible: async (post, plan) => {
-      const out = await revertLensFixStrays(realCtx, st, defaultExec, plan, post, 1);
+      const out = await revertLensFixStrays(realCtx, st, defaultExec, plan, post, 1, false);
       if (out?.ok === true) event = out.event;
       return out;
     },
