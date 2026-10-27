@@ -227,16 +227,14 @@ for (const heading of ["DECOMPOSITION/SUB-ISSUES:", "DECOMPOSITION / SUB-ISSUES:
     // Prose-only block: unbulleted contiguous lines are items for every typed
     // block, so they are the outcome here too.
     ["Done when:\nthe following must hold\n- the tool registers", "prose items"],
-    // #1855 review round 2 — the three shapes the second copy of the walk
-    // (nextItemInBlock) still got wrong while the loop got them right. Each is
-    // the loop's own rule, restated: a blank run the lookahead must step PAST
-    // (not test the blank itself against), an END fence matched UNANCHORED the
-    // way FENCE_RE matches it, and a following typed heading that ENDS the
-    // block rather than being swallowed as its item.
-    // #1855 review round 2 — two more shapes of the same class: a following
-    // typed heading ENDS the block rather than being swallowed as its item, and
-    // an END fence is matched UNANCHORED the way the loop's FENCE_RE matches it
-    // (the fence rule is the loop's own, so the two agree by construction).
+    // #1855 review round 2 — the shapes a SECOND copy of the block rules got
+    // wrong while the loop got them right. Each is the loop's own rule,
+    // restated: a blank run the walk steps PAST (never testing the blank itself
+    // against), an END fence matched the way `FENCE_RE` matches it, and a
+    // following typed heading that ENDS the block rather than being swallowed
+    // as its item. Now that one `walkBlock` reads every block, these agree by
+    // construction — and `test-plan-block-walk.ts` pins the same shapes on the
+    // walk's own items/consumed/nextIndex triple.
     ["Done when:\n- the tool registers\nPITFALLS:\n- a pitfall", "following PITFALLS heading"],
   ];
   for (const [ctx, label] of cases) {

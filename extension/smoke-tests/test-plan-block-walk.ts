@@ -6,9 +6,9 @@
  * or `draftSpec` and reads the CHANNELS, so a walk bug surfaced only as "the AC
  * section is empty" or "a bullet is missing from the inventory" — the assertion
  * was about the product, never about the walk's own three outputs. The two
- * walks that drifted apart in rounds 1 and 2 (`nextItemInBlock`, then the
- * hand-copied keyword twin) each produced a wrong `items`/`consumed`/`nextIndex`
- * triple, and no test could name which one was wrong.
+ * copies of the block rules that drifted apart in rounds 1 and 2 each produced a
+ * wrong `items`/`consumed`/`nextIndex` triple, and no test could name which one
+ * was wrong.
  *
  * So this pins the triple directly, for each shape the walk has a rule about:
  * a fence-closed block, the `=`-wrapped fences the round-3 regression let
