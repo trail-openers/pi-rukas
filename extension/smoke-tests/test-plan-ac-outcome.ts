@@ -22,6 +22,11 @@
  *   - a NEVER CLAIM phrase inside an outcome bullet halts (PM decision 8).
  */
 
+import {
+  AC_CRITERIA_FORBIDDEN,
+  FEATURE_AC_CHARTER,
+  anglePromptsFor,
+} from "../src/plan-angles.ts";
 import { parseOperatorDirectives } from "../src/plan-directives.ts";
 import { runGate } from "../src/plan-driver-gate.ts";
 import { correctiveRedraft } from "../src/plan-driver-redraft.ts";
@@ -327,6 +332,69 @@ const OUTCOME_CTX = "Done when:\n- the tool registers\n- dryRun never files";
   assert(
     validateDraft("feature", body, 0, { operatorOmitted: [] }).ok,
     "#1855 threading: the re-drafted body still passes validateDraft",
+  );
+}
+
+
+// --------------------------------------- the feature test-surface AC charter
+
+{
+  // PM decisions 3 + 4: the feature `test-surface` angle is the SOLE chartered
+  // emitter of `acceptance-criterion` items and the other two feature prompts
+  // forbid the kind. The assertion is made on each angle's OWN TASK CHARTER
+  // (the marker string the charter appends), never on the shared
+  // PLAN_REPORTER_PROMPT kind menu — which already listed the kind for every
+  // angle of every type before this issue, so a "the prompt mentions
+  // acceptance-criterion" assertion would pass on the unmodified prompts.
+  const prompts = anglePromptsFor(
+    "feature",
+    "add a latency probe to extension/src/plan-tool.ts",
+    [],
+    ["plan-tool.ts", "runPlanPipeline"],
+  );
+  const byName = new Map(prompts.map((p) => [p.name, p.prompt]));
+  assert(
+    prompts.length === 3 && byName.size === 3,
+    `feature angle set is prior-art + interfaces-and-contracts + test-surface (got ${[...byName.keys()].join(", ")})`,
+  );
+  const chartered = byName.get("test-surface") ?? "";
+  assert(
+    chartered.includes(FEATURE_AC_CHARTER),
+    "charter: the feature test-surface prompt carries the AC-emission charter (charter-unique marker)",
+  );
+  for (const name of ["prior-art", "interfaces-and-contracts"]) {
+    const prompt = byName.get(name) ?? "";
+    assert(
+      !prompt.includes(FEATURE_AC_CHARTER),
+      `charter: the ${name} prompt does NOT carry the AC-emission charter (the marker is charter-unique)`,
+    );
+    assert(
+      prompt.includes(AC_CRITERIA_FORBIDDEN),
+      `charter: the ${name} prompt explicitly forbids the acceptance-criterion kind`,
+    );
+  }
+  // The invite and the prohibition are two distinct charter-unique strings: a
+  // shared-menu mention can satisfy neither.
+  assert(
+    FEATURE_AC_CHARTER.includes("ONLY feature angle chartered") &&
+      AC_CRITERIA_FORBIDDEN.includes("Do NOT report acceptance-criterion items") &&
+      FEATURE_AC_CHARTER !== AC_CRITERIA_FORBIDDEN &&
+      !FEATURE_AC_CHARTER.includes(AC_CRITERIA_FORBIDDEN),
+    "charter: the invite and the prohibition are distinct charter-unique strings, not the shared kind menu",
+  );
+
+  // The bug type's test-surface angle must NOT gain the charter: this issue is
+  // scoped to feature plans.
+  const bugPrompts = anglePromptsFor(
+    "bug",
+    "crash in extension/src/plan-tool.ts when labels are empty",
+    [],
+    ["plan-tool.ts"],
+  );
+  const bugTestSurface = bugPrompts.find((p) => p.name === "test-surface")?.prompt ?? "";
+  assert(
+    bugTestSurface.length > 0 && !bugTestSurface.includes(FEATURE_AC_CHARTER),
+    "charter: the bug test-surface prompt is unchanged (no feature AC charter)",
   );
 }
 
