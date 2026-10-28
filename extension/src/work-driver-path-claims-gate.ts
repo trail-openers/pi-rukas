@@ -21,6 +21,7 @@
  * evidence, the same shape the conflict park two lines above already used.
  */
 
+import { formatIdentity, selfIdentity } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { claimsFilePath, readRawClaims, writeClaims } from "./work-driver-path-claims-file.ts";
@@ -36,6 +37,25 @@ import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const PID = process.pid;
+
+/**
+ * #1871 — how to render a claim's holder in a park message. Only ever a
+ * PARSED, validated identity (`validClaimEntry` ran first), because this text
+ * reaches handoff markdown. A claim with no identity fields at all is a
+ * pre-#1871 row and says so, because "identity unknown" is the fact an
+ * operator needs: that entry predates the identity change and is judged by pid
+ * alone.
+ */
+function describeClaimHolder(entry: PathClaimEntry): string {
+  return entry.host === undefined || entry.pidns === undefined || entry.startTime === undefined
+    ? `pid ${entry.pid} (identity unknown — written before #1871)`
+    : formatIdentity({
+        host: entry.host,
+        pidns: entry.pidns,
+        pid: entry.pid,
+        startTime: entry.startTime,
+      });
+}
 
 /**
  * ACCEPTED test seam (the shape `setClaimsLockWriteFaultForTests` is): replace
@@ -124,7 +144,14 @@ export async function checkAndRegisterClaims(
       // `claimant<N>` is the machine-readable carrier humanActionFor and
       // explainCap read — prose is not a stable interface.
       cap: "cross-group-conflict" as const,
-      evidence: `claimant${sibling.issue} issue #${sibling.issue} claims: ${sibling.paths.join(", ")}; overlapping: ${overlap.join(", ")}`,
+      // #1871 — the holder's identity and the claim file are named so an
+      // operator can clear a claim a dead container left behind: a foreign
+      // holder is never deleted automatically, so the message is the only
+      // route to it.
+      evidence:
+        `claimant${sibling.issue} issue #${sibling.issue} claims: ${sibling.paths.join(", ")}; ` +
+        `overlapping: ${overlap.join(", ")}; ` +
+        `holder: ${describeClaimHolder(sibling)}; claim file: ${claimsFilePath(ctx.repoRoot)}`,
     });
   }
   // No conflicts — register so siblings see our claim.
@@ -222,9 +249,16 @@ export async function registerClaim(
     // Remove our own previous claim (same issue, possibly re-registered).
     const withoutSelf = live.filter((c) => c.issue !== issue);
     // Add our new claim.
+    // #1871 — the claim carries this process's identity, so a sibling that
+    // cannot verify it treats the claim as alive rather than deleting it —
+    // until the foreign-expiry bound passes (`claimDeletionReason`).
+    const me = selfIdentity();
     const entry: PathClaimEntry = {
       issue,
       pid: PID,
+      host: me.host,
+      pidns: me.pidns,
+      startTime: me.startTime,
       paths: normalised,
       startedAt: Date.now(),
     };

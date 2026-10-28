@@ -17,7 +17,7 @@ import {
   lensConcurrency,
   verifyConcurrency,
 } from "./host-resources.ts";
-import { hostSpawnCap } from "./host-spawn-slots.ts";
+import { hostSpawnCap, hostSpawnDegraded } from "./host-spawn-slots.ts";
 import { spawnCap } from "./spawn-semaphore.ts";
 import { trace } from "./trace.ts";
 import { effectiveParallelGroups, resolvedParallelGroups } from "./work-driver-grouping.ts";
@@ -43,7 +43,18 @@ export interface ResourceReport {
     /** Concurrent children of this process. `0` = unbounded (the semaphore is off). */
     spawnCap: Limit & { scope: "process" };
     /** Concurrent children host-wide (#1528). `0` = unbounded (the host bound is off). */
-    hostSpawnCap: Limit & { scope: "host" };
+    hostSpawnCap: Limit & {
+      scope: "host";
+      /**
+       * #1871 — present when the host-wide bound is NOT in force (a slot
+       * directory that exists but this process cannot write). The spawn still
+       * runs and the per-process cap still applies, but a host reading
+       * `value` alone would believe a cap that is not being enforced.
+       * Additive to the published capabilities document: no
+       * `CAPABILITIES_VERSION` bump.
+       */
+      degraded?: { reason: string };
+    };
   };
 }
 
@@ -89,6 +100,10 @@ export function resourceReport(): ResourceReport {
         value: hostSpawnCap(),
         source: fromEnv("PI_ENSEMBLE_HOST_SPAWN_CAP", hostSpawnCap()),
         scope: "host",
+        // Read at report time: the reason is whatever the last acquisition
+        // attempt found, so a directory that became unusable shows up in the
+        // next budget the cycle prints.
+        ...(hostSpawnDegraded() ? { degraded: hostSpawnDegraded() } : {}),
       },
     },
   };
@@ -100,7 +115,8 @@ export function traceResourceBudget(issue: number): void {
   const gib = (r.host.memoryBytes / 1024 ** 3).toFixed(1);
   const l = r.limits;
   const pids = r.host.pidsMax ?? "unlimited";
+  const degraded = l.hostSpawnCap.degraded ? ` [DEGRADED: ${l.hostSpawnCap.degraded.reason}]` : "";
   trace(
-    `work-driver: #${issue} resource budget — ${r.host.cpus} cpu (${r.host.cpuSource}), ${gib} GiB (${r.host.memorySource}), pids ${pids}, cgroup ${r.host.cgroup}; groups ${l.parallelGroups.value} (${l.parallelGroups.source}), workstreams ${l.maxWorkstreams.value} (${l.maxWorkstreams.source}), verify ${l.verifyConcurrency.value || "unbounded"} (${l.verifyConcurrency.source}), lenses ${l.lensConcurrency.value || "unbounded"} (${l.lensConcurrency.source}), children ${l.spawnCap.value || "unbounded"} per process / ${l.hostSpawnCap.value || "unbounded"} host-wide`,
+    `work-driver: #${issue} resource budget — ${r.host.cpus} cpu (${r.host.cpuSource}), ${gib} GiB (${r.host.memorySource}), pids ${pids}, cgroup ${r.host.cgroup}; groups ${l.parallelGroups.value} (${l.parallelGroups.source}), workstreams ${l.maxWorkstreams.value} (${l.maxWorkstreams.source}), verify ${l.verifyConcurrency.value || "unbounded"} (${l.verifyConcurrency.source}), lenses ${l.lensConcurrency.value || "unbounded"} (${l.lensConcurrency.source}), children ${l.spawnCap.value || "unbounded"} per process / ${l.hostSpawnCap.value || "unbounded"} host-wide${degraded}`,
   );
 }

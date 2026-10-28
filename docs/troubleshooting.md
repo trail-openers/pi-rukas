@@ -1214,6 +1214,144 @@ PR: [#217](https://github.com/trail-openers/pi-rukas/pull/217)
 
 **Fix:** `./install.sh` to pull the rebuilt image (v0.12.68+). The image now bakes the mount points in as `vscode`-owned, and the entrypoint repairs an existing root-owned named volume (`chown vscode:vscode`) at boot — but only for targets the launcher passes via `PI_ENSEMBLE_VOLUME_MOUNTS`, so a bind-mounted host directory is never touched. One-time manual repair if you can't upgrade: `docker volume rm pi-ensemble-sessions pi-ensemble-runs pi-ensemble-vipune` (destroys only container-scoped state) and/or `mkdir -p ~/.pi/agent/sessions ~/.pi/agent/ensemble-runs ~/.vipune` on the host so the launcher uses bind mounts instead.
 
+## Host-wide spawn slots and path claims (#1871)
+
+Owner identity is four space-separated fields — `<host> <pidns> <pid> <starttime>` —
+where `pidns` is the decimal inode of `/proc/self/ns/pid` and `starttime` is field
+22 of `/proc/self/stat`, each `"-"` where unavailable (macOS has no `/proc`). The
+boot id is gone: `/proc/sys/kernel/random/boot_id` is identical on the host and in
+every container on it, because they share one kernel, so it separated nothing in
+the deployment the identity exists for. A pid probe is consulted **only** when the
+hostname and the pid namespace both match the judging process; if they do and both
+start times are known, the recorded one is compared against `/proc/<pid>/stat` and
+a mismatch is a reused pid. Every other holder — another host, another namespace, a
+half-written identity, or a body written before #1871 — is *foreign*, and foreign is
+answered as **alive**. That single rule covers spawn slots (`host-spawn-slots.ts`),
+`WorkState.owner` (resume, the queue's park reason, the worktree sweep) and path
+claims (`work-driver-path-claims-*`). Foreign is never reaped on liveness, never
+deleted and never swept, so clearing one after its container is gone is largely a
+manual action — with two bounded exceptions: a foreign **slot** silent past the
+10-minute lease is reaped, and a foreign **claim** past 24 × the stale bound is
+deleted by the next writer. See [headless.md](headless.md) → "Who owns a slot".
+
+### The host spawn cap is silently off
+
+**Symptom:** `PI_ENSEMBLE_HOST_SPAWN_CAP` is set (or left at its default 64),
+yet more than that many Pi children run at once on the host. Before #1871 the
+only trace line was one `WARN host-spawn-slots: <dir> is unusable …` printed
+once, at whichever spawn first touched the directory, and every later spawn
+ran without the host bound in silence. The resource report still showed
+`hostSpawnCap: { value: 64, source: "default", scope: "host" }` — a cap that
+was never being enforced.
+
+**Cause:** the slot directory exists but this process cannot write it. The
+shape reported from a container: a `0755` directory created by a root step
+while the workers run as uid 1500 — `mkdir` succeeds, then `lstat` uid check or
+`accessSync(W_OK)` fails with `EACCES`. `slotDir()` returns `undefined` and the
+host bound fails **open** by design: the per-process `spawnCap` still applies,
+and an unavailable shared directory is not allowed to stop a cycle.
+
+**Fix:** make the directory writable by the uid that runs the workers, and have
+one owner create it rather than letting a root step do it at `0755`:
+
+```
+install -d -m 0700 -o <runtime-uid> "$PI_ENSEMBLE_HOST_SPAWN_DIR"
+```
+
+Set `PI_ENSEMBLE_HOST_SPAWN_DIR` to the same path in every worker that is meant
+to share one ceiling (containers: the same bind-mounted path). Nothing is
+inferred — processes share a bound exactly when they share the directory.
+
+**How to tell it is fixed, without waiting for a spawn:** the degradation is
+now data, not just a log line.
+
+```
+pi-rukas --capabilities | jq '.resources.limits.hostSpawnCap'
+```
+
+While the directory is unusable the entry carries
+`degraded: { "reason": "<dir> is unusable (EACCES: …) — host-wide bound off, per-process cap still applies" }`;
+the cycle-start `traceResourceBudget` line ends
+`… 64 host-wide [DEGRADED: …]`; and the `WARN` line prints when the directory's
+usability **changes** — once when it becomes unusable and once when it becomes
+writable again — not once per process (silence) and not once per acquisition
+either, since the wait loop polls every 250 ms and a wedged host would print
+thousands of identical lines. The field clears by itself as soon as the directory
+is writable again, so a transient fault cannot disable the cap for the life of the
+process.
+`degraded` is an additive optional field: no `CAPABILITIES_VERSION` bump, so a
+host that parses `resources.limits.hostSpawnCap` sees it appear mid-release.
+
+### A slot or a path claim is held by another container
+
+**Symptom:** a spawn fails with `host-wide spawn bound: no slot freed within
+<ms>ms (PI_ENSEMBLE_HOST_SPAWN_CAP=<cap>; held by <host> <pidns> <pid> <starttime>)`, or
+a cycle parks at `plan` with a `cross-group-conflict` whose evidence reads
+`holder: <host> <pidns> <pid> <starttime>; claim file: <repo>/.pi/work-state/path-claims.json`.
+The named pid no longer exists anywhere — it belonged to a container that was
+killed.
+
+**Cause:** the holder's identity is not this process's, so this process is not
+allowed to judge whether it is alive. Four shapes reach that answer: a **different**
+hostname, the same hostname with a **different pid-namespace inode** (a sibling
+container that shares `--hostname`), a record carrying **some but not all** of
+host/pidns/startTime (a half identity is never probed), and a body in the pre-#1871
+two-field `<host> <pid>` form — which is judged by pid, not probed for a namespace.
+All of them are foreign, and #1871 made foreign mean *alive* on purpose: answering
+the other way would let one container reap a live sibling's slot, or let a writer
+prune a live sibling's claim and put two workstreams into one file — the failure the
+claim registry exists to prevent.
+
+**What clears by itself:** a foreign **slot** whose mtime has been silent for the
+10-minute lease (a live holder touches its slots every 60 s, so ten beats of
+silence means the holder stopped). A foreign **claim** is ignored by the plan-time
+gate once it is older than the claim stale bound `PI_ENSEMBLE_CLAIM_STALE_MS` (1 h
+by default) — past that it reserves nothing and parks nobody — and the next reader
+may prune it; as a backstop the next writer **deletes** any foreign claim older
+than **24 ×** that bound, with reason `foreign-expired`. What does **not** clear on
+a clock: a same-namespace holder (judged by pid, however silent), a pre-#1871
+two-field body (its writer never heartbeated), and a claim whose full identity
+this process has **verified alive** — the pid-namespace/start-time probe outranks
+the age rules, so a live holder keeps its reservation whatever the timestamp says.
+
+**Fix — a slot:** read the bodies, then remove only the one you have decided is
+orphaned.
+
+```
+ls -l "${PI_ENSEMBLE_HOST_SPAWN_DIR:?}/"
+cat "${PI_ENSEMBLE_HOST_SPAWN_DIR:?}/slot-3"
+rm "${PI_ENSEMBLE_HOST_SPAWN_DIR:?}/slot-3"
+```
+
+Check the body before deleting: if its host and pid namespace are a container that
+is still running, the slot is legitimately held and deleting it double-admits that
+child. A `<slot>.reap` entry is a per-slot recovery lock, not a slot. It does
+**not** age out on its own — nothing polls the directory when nobody is claiming —
+so it is cleared by the next reap attempt on that slot once it is older than 10 s
+(`REAP_LOCK_STALE_MS`), and that attempt then proceeds.
+
+**Fix — a path claim:** the park evidence names the file. Remove the entry whose
+`pid`/`host`/`pidns`/`startTime` match the holder it named, keeping every other entry
+(`releaseClaim`/`pruneClaims` are deliberately conservative and will not do it
+for a foreign holder before the 24 × bound). When that evidence shows a **full**
+identity (`<host> <pidns> <pid> <starttime>`), the holder lives in another pid
+namespace or on another host: checking its pid **here** proves nothing, so do not
+go looking in this machine's pid table. The claim stops counting for a cycle on
+this host past the stale bound and is deleted by the next writer past 24 × it —
+or remove this one entry by hand, now, which is what this section is for. An entry
+carrying `identity unknown` predates #1871 and is judged by pid alone, so it ages
+out without help and its pid **is** on this host.
+
+**Both:** the durable fix is not to share a slot or claim directory across
+containers that can outlive each other. Give each container its own
+`PI_ENSEMBLE_HOST_SPAWN_DIR`, and keep `.pi/work-state/` inside the clone rather
+than a shared volume. See [headless.md](headless.md) → "Who owns a slot".
+
+**macOS / no `/proc`:** the pid namespace and the start time both read as `"-"`, and
+two `"-"` values on one hostname count as matching, so the pid probe still answers
+there — a dead pid on your own machine is still reaped and still swept, exactly as
+before #1871.
+
 ## Diagnostics
 
 ### Confirm a bind-mount is reaching the container
