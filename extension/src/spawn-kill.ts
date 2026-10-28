@@ -38,6 +38,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import { traceWarn } from "./trace.ts";
 
 /** Grace between SIGTERM and SIGKILL for a process group (headless). */
 export const KILL_GRACE_MS = 2_000;
@@ -111,11 +112,21 @@ function signalChild(child: ChildProcess, signal: NodeJS.Signals, processGroup: 
  *
  * No observer is installed for a child nobody is waiting on (a bare
  * `killProcessTree` from a test, or from the group reaper, is then just a kill).
- * An observer that throws never delays a SIGTERM.
+ * An observer that throws never delays a SIGTERM — the failure is traced so a
+ * broken seam is visible rather than silent, and swallowed so it cannot cost the
+ * child its signal.
  */
 const killSeam = new WeakMap<ChildProcess, () => void>();
 
-/** Install (or replace) the observer that a kill of THIS child notifies. */
+/**
+ * Install (or replace) the observer that a kill of THIS child notifies.
+ *
+ * ORDERING IS LOAD-BEARING: call this immediately after `registerChild`, BEFORE
+ * any supervisor (the wall-clock backstop, the caps stack, the child bound, the
+ * inactivity poll, the abort arm) is armed. A timer armed before the seam exists
+ * can fire its kill — and its SIGKILL escalation — into a child nobody is
+ * watching, and the dispatch waiting on it waits forever (#1863).
+ */
 export function installKillSeam(child: ChildProcess, notify: () => void): void {
   killSeam.set(child, notify);
 }
@@ -129,8 +140,10 @@ export function killProcessTree(child: ChildProcess): void {
   // now entitled to stop waiting (#1863 hotfix).
   try {
     killSeam.get(child)?.();
-  } catch {
-    /* attribution is never allowed to delay the signal below */
+  } catch (err) {
+    /* attribution is never allowed to delay the signal below, but a broken seam
+     * is worth seeing in the trace rather than disappearing into a bare catch. */
+    traceWarn(`spawn-kill: kill-seam observer threw for child ${child.pid ?? "?"}: ${String(err)}`);
   }
   const group = isGroupChild(child);
   signalChild(child, "SIGTERM", group);

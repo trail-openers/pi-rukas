@@ -36,27 +36,30 @@
  * `await once(child, "exit")` had gone. But a ref'd poll must not *act* for an
  * un-killed child, because `spawn.ts` enters this await for the child's whole
  * life: an early cut of this hotfix armed a ref'd grace on entry and the offline
- * suite hung on an un-killed 20 s child that nothing could drain away. So the
- * handle polls and does nothing until `killed()` says true, and the spawn
- * installs its kill observer next to `registerChild` — before any supervisor is
- * armed — so a kill can never land in a window where nothing is watching. From
- * that tick the handle owns the grace, and every path through this function
- * clears it: a normal dispatch leaves no timer behind, and a wedged one cannot
- * drain the loop out from under itself.
+ * suite hung on an un-killed child that nothing could drain away. So the handle
+ * polls and does nothing until `killed()` says true, and the spawn installs its
+ * kill observer next to `registerChild` — before any supervisor is armed — so a
+ * kill can never land in a window where nothing is watching. From that tick the
+ * handle owns the grace, and every path through this function clears it: a
+ * normal dispatch leaves no timer behind, and a wedged one cannot drain the loop
+ * out from under itself.
+ *
+ * THE POLL READS LIVENESS BEFORE IT SIGNS ANYTHING. A child that has already
+ * exited — `child.exitCode !== null || child.signalCode !== null` — has exited,
+ * whether or not the `exit` event reached this await. Node fills those fields
+ * when it reaps the child and only emits `exit` on the next turn of the loop,
+ * so between the two there is a real window in which a poll that ignored them
+ * would re-signal a dead child and hand back `[null, null]`. Every tick checks
+ * liveness first, and so does the branch that is about to re-kill: the wedge
+ * verdict is only ever reached for a child that is genuinely still running.
  *
  * The fix cannot be to ref the child's handle (that restores the hang,
  * differently), and must not be to trust the escalation alone:
  * `killProcessTree`'s SIGKILL is unref'd for a child that is not a registered
  * group leader, so a non-group child's escalation cannot fire once the loop
- * drains. So this waits for the exit event AND for a hard ceiling past the
- * escalation's grace window, and re-signals on the way out so a wedged tree is
- * not left running behind the result.
- *
- * The ceiling races the `exit` event itself rather than counting events or
- * polling liveness: `once(child, "exit")` is the one signal every supervisor
- * already agrees has fired, and the ceiling only decides when to stop waiting
- * for it. The exit tuple is completed from `child.exitCode` / `child.signalCode`
- * when the event arrives without them.
+ * drains. So this waits for the exit event AND for a grace that starts when a
+ * kill is observed, and re-signals on the way out — for a child that is still
+ * running — so a wedged tree is not left running behind the result.
  */
 
 import type { ChildProcess } from "node:child_process";
@@ -73,9 +76,9 @@ import { trace } from "./trace.ts";
  * alternative — waiting forever on an event that will not come — is what left
  * the adversarial step's dispatch unresolved and the runner silent.
  *
- * It is a GRACE, so it is measured from the kill, never from the spawn. A
- * spawn-wide deadline is what killed every subagent 15 s after it started in
- * v0.14.30.
+ * It is a GRACE, so it is measured from the KILL, never from the spawn: the
+ * countdown starts on the first tick that observes one. A spawn-wide deadline is
+ * what killed every subagent 15 s after it started in v0.14.30.
  */
 export const EXIT_AWAIT_GRACE_MS = 15_000;
 
@@ -114,18 +117,9 @@ export interface ExitAwaitOpts {
  * must always resolve, because the driver's routing, the handoff and the headless
  * result document all hang off it.
  *
- * EVERY TIMER IS CLEARED ON EVERY PATH — exit, wedge, or a rejection from the
- * event helper. That contract is what makes the handle safe to keep ref'd: the
- * longest it can exist is one child's post-kill grace.
- *
- * #1863 — THE HANDLE, named: the old `once(child, "exit")` was kept alive only
- * by the child's own libuv process handle. Nothing supervising the child keeps it
- * alive — the bound's timers, the cap grace polls, the inactivity poll and this
- * module's ceiling are all `unref()`d — so once the child's handle stopped being
- * ref'd the only ref'd thing left was the 2 h wall-clock backstop, and a driver
- * that reached this await with a wedged child waited for an event that never came
- * while nothing it owned could still report anything. bun then drained the loop
- * and the runner was gone with no result document.
+ * EVERY TIMER IS CLEARED ON EVERY PATH — exit, already-exited, wedge, or a
+ * rejection from the event helper. That contract is what makes the handle safe to
+ * keep ref'd: the longest it can exist is one child's post-kill grace.
  */
 
 export async function awaitExitWithin(
@@ -140,23 +134,55 @@ export async function awaitExitWithin(
   const settled = exitEvent.catch(() => [null, null] as [number | null, NodeJS.Signals | null]);
 
   return await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+    // THE LIVESS CHECK, the one the wedge verdict must never contradict: Node
+    // fills `exitCode` / `signalCode` when it reaps the child, and either being
+    // non-null means the child is GONE — whatever the event queue still owes
+    // this await. See the module doc for why the check leads every tick.
+    //
+    // It is the project's ONE liveness predicate (#1847, `childHasExited`), so
+    // the wait agrees with the caps stack and the child bound about whether this
+    // child may still be killed: the spawn's OBSERVED flag when the caller has
+    // one, else the handle's own fields.
+    const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+    const resolveExited = (): void => {
+      clearInterval(handle);
+      resolve([child.exitCode ?? null, child.signalCode ?? null]);
+      // Reached only from the poll, never from the `exit` event, so the trace is
+      // the record of an exit nobody observed through the event.
+      trace(
+        `spawn-exit-await: child ${child.pid ?? "?"} had already exited (code ${child.exitCode}, signal ${child.signalCode}) but the exit event never reached the await — resolved without re-signalling it`,
+      );
+    };
     // The ONE handle this module owns, ref'd ON PURPOSE. Before a kill its tick
-    // is a single flag read and nothing more (arming a ref'd grace on entry is
-    // the whole-life-death bug again); once `killed()` turns true it starts the
+    // is a liveness read and a flag read (arming a ref'd grace on entry is the
+    // whole-life-death bug again); once `killed()` turns true it starts the
     // grace and, `graceMs` later, ends the wait for a child that will not exit.
     let armedAt = 0;
     // `killed()` defaults to true so a caller with no kill seam keeps the
     // pre-hotfix contract: the deadline starts here, at the top of the tick.
     const isKilled = opts.killed ?? (() => true);
     const handle = setInterval(() => {
+      // LIVENESS FIRST, on both ticks — and it never contradicts the wedge
+      // verdict below, which is guarded on `observed` remaining false.
+      if (hasExited()) {
+        resolveExited();
+        return;
+      }
       if (armedAt === 0) {
         if (!isKilled()) return;
         armedAt = Date.now();
       }
       if (Date.now() - armedAt < graceMs) return;
-      // The escalation has had its turn (spawn-kill.ts armed it when it
-      // killed). Signal once more on the way out so the tree is not left
-      // running behind the result we report.
+      // Re-read liveness: the grace expired, but a child that exited while
+      // nobody was looking must be reported as exited, not signalled again.
+      if (hasExited()) {
+        resolveExited();
+        return;
+      }
+      // STILL RUNNING, and no exit reported: this is the wedge the field symptom
+      // left unresolved forever. The escalation has had its turn
+      // (spawn-kill.ts armed it when it killed), so signal once more on the way
+      // out and do not leave the tree running behind the result we report.
       try {
         opts.kill?.();
       } catch (err) {

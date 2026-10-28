@@ -12,13 +12,16 @@
  *   3. the bounded wait itself (`awaitExitWithin` in `spawn-exit-await.ts`) —
  *      which has NO deadline until that observer says a kill happened.
  *
- * They are one function because their ORDERING is load-bearing and a caller who
- * gets it wrong gets the bug back: install the seam BEFORE any supervisor is
- * armed (every supervisor in `spawn.ts` — the backstop, the abort arm, the caps
- * and the bound — is armed after this returns), and enter the await after it.
- * It lives in its own module rather than inline because `spawn.ts` sits at the
- * AGENTS.md §12 size cap and the alternative was to compress the reasoning that
- * keeps the next maintainer from "simplifying" the predicate back into a flag.
+ * They are one module because their ORDERING is load-bearing and a caller who
+ * gets it wrong gets the bug back: `installExitKillSeam` runs right after
+ * `registerChild` and BEFORE every supervisor in `spawn.ts` — the backstop, the
+ * caps, the bound, the inactivity poll and the abort arm — is armed, and
+ * `startExitWait` is entered after them all. If `spawn.ts` inlined them, the
+ * install would sit at the tail with the supervisors above it and a kill from
+ * the earliest armed timer could land before anything was watching. It lives in
+ * its own module rather than inline because `spawn.ts` sits at the AGENTS.md §12
+ * size cap and the alternative was to compress the reasoning that keeps the next
+ * maintainer from "simplifying" the predicate back into a flag.
  *
  * Nothing here decides policy: how long the grace is belongs to
  * `spawn-exit-await.ts`, and who is allowed to kill a child belongs to the
@@ -27,26 +30,26 @@
 
 import type { ChildProcess } from "node:child_process";
 import { EXIT_AWAIT_GRACE_MS, awaitExitWithin } from "./spawn-exit-await.ts";
-import { createKillObserver } from "./spawn-kill-observed.ts";
-import { installKillSeam, killProcessTree } from "./spawn-kill.ts";
+import { installKillObserver } from "./spawn-kill-observed.ts";
+import { killProcessTree } from "./spawn-kill.ts";
 
 /** What `spawn.ts` holds onto: the wait, and nothing else. */
 export interface ChildExitWait {
   /** Resolves with the child's `[code, signal]`, at most a grace past its kill. */
   promise: Promise<[number | null, NodeJS.Signals | null]>;
-  /** True once any supervisor has killed this child. The spawn does not read it
-   *  (its kill-cause attribution comes from the flags each supervisor sets);
-   *  exposing it keeps the predicate testable and stops it being write-only. */
-  killed(): boolean;
 }
 
 /**
- * Wire and start the exit wait for `child`. Call this immediately after
- * `registerChild`/`attachAbortKill` and immediately before the `finally` block
- * that tears the supervisors down — see the module doc for the ordering that
- * makes it correct.
+ * Install the kill OBSERVER + SEAM for `child`. Call this immediately after
+ * `registerChild` and BEFORE any supervisor is armed — see the module doc for
+ * why the ordering is the fix rather than a nicety.
+ *
+ * Returns the predicate the wait needs (`killed`); pass it to
+ * `startExitWait` when the spawn reaches its exit await. Keeping the two calls
+ * separate is what lets the seam exist from the first instant of the child's
+ * life while the wait itself is entered at the end of the spawn.
  */
-export function awaitChildExit(child: ChildProcess): ChildExitWait {
+export function installExitKillSeam(child: ChildProcess): () => boolean {
   // #1863 hotfix (v0.14.30) — the grace clock starts AT THE KILL. ONE predicate
   // is what the await waits on, and it is set by `killProcessTree` itself, so
   // every owner that can end this child is covered by construction rather than
@@ -55,13 +58,19 @@ export function awaitChildExit(child: ChildProcess): ChildExitWait {
   // its settled-child reap and its backstop takeover) and the #1827 reviewer
   // bounds. Before any of them fires, the exit await has NO deadline at all —
   // which is what the whole-life 15 s ceiling used to impose on every subagent.
-  const observer = createKillObserver();
-  installKillSeam(child, observer.notifyKill);
+  return installKillObserver(child).killed;
+}
+
+/**
+ * Enter the bounded wait for `child`'s exit, using the predicate
+ * `installExitKillSeam` returned. Call this where the spawn's `try` block
+ * begins, immediately before `await`ing the promise.
+ */
+export function startExitWait(child: ChildProcess, killed: () => boolean): ChildExitWait {
   return {
-    killed: observer.killed,
     promise: awaitExitWithin(child, {
       graceMs: EXIT_AWAIT_GRACE_MS,
-      killed: observer.killed,
+      killed,
       // Re-signal the tree if the grace expires: a child that ignored the first
       // SIGTERM must not be left running behind the result we report.
       kill: () => killProcessTree(child),

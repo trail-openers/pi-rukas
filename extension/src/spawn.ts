@@ -35,7 +35,7 @@ import { createBoundArmed } from "./spawn-bound-armed.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
 import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
-import { awaitChildExit } from "./spawn-exit-await-session.ts";
+import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
 import {
   applyUserExtension,
@@ -186,6 +186,8 @@ async function spawnSpecialistInner(
     ...groupSpawnOpts(leadsGroup),
   });
   registerChild(child, leadsGroup);
+  // #1863 — the kill SEAM goes in HERE, before any supervisor is armed below.
+  const exitKillSeam = installExitKillSeam(child);
 
   // #932 — universal EPIPE backstop (stdin-guard.ts): EPIPE fires async as `error`,
   // so without this listener the kickoff write, end(), or any later steer becomes
@@ -401,12 +403,12 @@ async function spawnSpecialistInner(
   const detachAbortKill = attachAbortKill(child, opts.signal, () => {
     flags.setAborted(true);
   });
-  // #1863 hotfix (v0.14.30) — the grace clock starts AT THE KILL, and the
-  // observer / seam / wait wiring lives in `awaitChildExit`
-  // (spawn-exit-await-session.ts) rather than inline: `spawn.ts` sits at the
-  // AGENTS.md §12 size cap, and the point of the fix is that no kill owner is
-  // listed by hand, which is what the call site can no longer show.
-  const exitWait = awaitChildExit(child);
+  // #1863 hotfix (v0.14.30) — the grace clock starts AT THE KILL; the observer /
+  // seam / wait wiring lives in `spawn-exit-await-session.ts` rather than inline:
+  // `spawn.ts` sits at the AGENTS.md §12 size cap, and the point of the fix is
+  // that no kill owner is listed by hand, which is what the call site can no
+  // longer show. The seam itself went in at `registerChild`, above every arm.
+  const exitWait = startExitWait(child, exitKillSeam);
   let exitCode: number | null = null;
   try {
     [exitCode] = await exitWait.promise;

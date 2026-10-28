@@ -42,7 +42,6 @@ import { installKillSeam } from "../src/spawn-kill.ts";
 import { createKillObserver } from "../src/spawn-kill-observed.ts";
 import { attachAbortKill, createWallClockBackstop } from "../src/spawn-supervision.ts";
 import { declareKillFlags } from "../src/spawn-watchdog.ts";
-
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
@@ -54,6 +53,10 @@ function assert(cond: boolean, msg: string) {
 
 const spawned: Array<ReturnType<typeof spawn>> = [];
 const tmpDirs: string[] = [];
+/** Host value of `PI_ENSEMBLE_DISPATCH_CAPS`, captured before this file clears
+ *  it and restored in `finally`. Declared here (not in `try`) so `finally` sees
+ *  it even when a case throws before the capture line runs. */
+let savedCaps: string | undefined;
 
 function reap(child: ReturnType<typeof spawn>): void {
   try {
@@ -82,12 +85,20 @@ async function liveChild(): Promise<ReturnType<typeof spawn>> {
   return child;
 }
 
-/** A long grace, so an un-killed child is still being awaited when the case
- *  checks, and a ceiling well under the 15 s the old code imposed on everyone. */
-const GRACE_MS = 8_000;
-const POLL_MS = 100;
-/** grace + the 2 s group escalation + scheduling slack. */
-const CEILING_MS = GRACE_MS + 4_000;
+/** THE ENV, OWNED. Every case that mutates `process.env` goes through here so a
+ *  failure in one case cannot hand a poisoned budget to the next one (the kill
+ *  budgets are read from the environment on EVERY poll, so a leaked
+ *  `PI_ENSEMBLE_*_TIMEOUT_MS` makes later cases kill early and their assertions
+ *  mean something else entirely). */
+function withEnv<T>(key: string, value: string | undefined, body: () => Promise<T>): Promise<T> {
+  const saved = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+  return body().finally(() => {
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  });
+}
 
 /** Start the wait the way `spawn.ts` does: before anyone has killed the child. */
 function awaitingExit(
@@ -107,6 +118,17 @@ function awaitingExit(
     },
   });
 }
+
+/** A long grace, so an un-killed child is still being awaited when the case
+ *  checks. It is NOT the 15 s production grace (`EXIT_AWAIT_GRACE_MS`) — these
+ *  cases want a wait that ends inside the test's lifetime, and the timing of the
+ *  production grace is pinned by the sibling file. */
+const GRACE_MS = 8_000;
+const POLL_MS = 100;
+/** The bound a resolved wait must beat: the grace, plus the group escalation's
+ *  `KILL_GRACE_MS` (2 s, `spawn-kill.ts`) which the kill arms on its own, plus
+ *  slack for scheduling. Anything past this is a wait that did not end. */
+const CEILING_MS = GRACE_MS + 4_000;
 
 /** The assertions every kill path shares: notified, and the wait ended on its own. */
 async function expectResolved(
@@ -129,6 +151,14 @@ async function expectResolved(
 }
 
 try {
+  // THE ENV THIS FILE ASSUMES. `createCapSession` consults
+  // `PI_ENSEMBLE_DISPATCH_CAPS`, and a host that has it set to `off` makes the
+  // loop/token cases no-ops whose assertions would then pass on a child nothing
+  // killed. Delete it for the whole run and restore it at the end, so the file
+  // tests the caps rather than whatever the operator's shell happens to export.
+  savedCaps = process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+  delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+
   // ── 1. THE WALL-CLOCK BACKSTOP (`spawn-supervision.ts` createWallClockBackstop).
   {
     const child = await liveChild();
@@ -166,6 +196,11 @@ try {
   // A committed, unreported child in its own git repo: `settled()` finds HEAD
   // unchanged, so the bound KILLS (rather than ending as done) — the branch
   // under test is `kill()`, and the done branch calls the same function.
+  //
+  // `childExited: () => false` is a STUB, not this child's liveness: the bound
+  // must not talk itself out of killing a child that is in fact alive. Where a
+  // case needs the real answer it reads the handle, not a constant — see the
+  // liveness assertion below.
   {
     const dir = await mkdtemp(join(tmpdir(), "pi-1863-bound-"));
     tmpDirs.push(dir);
@@ -197,6 +232,12 @@ try {
     assert(
       bound.killed() === true,
       "[child-bound] the bound really killed this child (else the case is vacuous)",
+    );
+    // REAL LIVENESS, read off the handle rather than asserted from the stub: the
+    // child is gone, so the wait that resolved did so about a child that died.
+    assert(
+      child.exitCode !== null || child.signalCode !== null,
+      `[child-bound] the child really died (code=${child.exitCode} signal=${child.signalCode}) — liveness read from the handle, not from the case's stub`,
     );
   }
 
@@ -243,33 +284,33 @@ try {
 
   // ── 5. THE TOKEN-BUDGET CAP (`spawn-caps.ts` budgetKill), via the real tracker.
   {
-    process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = "100";
-    const child = await liveChild();
-    const observer = createKillObserver();
-    installKillSeam(child, observer.notifyKill);
-    const flags = declareKillFlags();
-    const caps = createCapSession({
-      role: "developer",
-      child,
-      onSteer: () => {},
-      totalTokens: () => 100_000, // far over the 100-token budget armed above
-      timedOut: flags.timedOut,
-      inactivityKilled: flags.inactivityKilled,
-      toolInactivityKilled: flags.toolInactivityKilled,
-      aborted: flags.aborted,
-      capKillGraceMs: 0,
-      childExited: flags.childExited,
+    await withEnv("PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER", "100", async () => {
+      const child = await liveChild();
+      const observer = createKillObserver();
+      installKillSeam(child, observer.notifyKill);
+      const flags = declareKillFlags();
+      const caps = createCapSession({
+        role: "developer",
+        child,
+        onSteer: () => {},
+        totalTokens: () => 100_000, // far over the 100-token budget armed above
+        timedOut: flags.timedOut,
+        inactivityKilled: flags.inactivityKilled,
+        toolInactivityKilled: flags.toolInactivityKilled,
+        aborted: flags.aborted,
+        capKillGraceMs: 0,
+        childExited: flags.childExited,
+      });
+      const wait = awaitingExit(child, observer);
+      const t0 = Date.now();
+      caps.tokenBudgetTracker?.check(Date.now());
+      await expectResolved("token-budget", observer, wait, t0);
+      caps.cleanup();
+      assert(
+        caps.tokenBudgetTracker?.killed === true,
+        "[token-budget] the tracker really killed this child (else the case is vacuous)",
+      );
     });
-    const wait = awaitingExit(child, observer);
-    const t0 = Date.now();
-    caps.tokenBudgetTracker?.check(Date.now());
-    await expectResolved("token-budget", observer, wait, t0);
-    caps.cleanup();
-    delete process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER;
-    assert(
-      caps.tokenBudgetTracker?.killed === true,
-      "[token-budget] the tracker really killed this child (else the case is vacuous)",
-    );
   }
 
   // ── 6. THE INACTIVITY ARMS (`spawn-inflight.ts` createInactivityPoll), both
@@ -279,56 +320,66 @@ try {
       arm === "inactivity"
         ? "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS"
         : "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
-    const saved = process.env[key];
-    process.env[key] = "300";
-    const child = await liveChild();
-    const observer = createKillObserver();
-    installKillSeam(child, observer.notifyKill);
-    const flags = declareKillFlags();
-    const inFlightTools = new InFlightTools();
-    if (arm === "tool-inactivity") {
-      // The public way to open a span is the event feed the spawn itself uses:
-      // a `message_end` whose MESSAGE is the assistant turn with a toolCall block
-      // (`spanEdges` reads `event.message`, not the event itself).
-      inFlightTools.observe({
-        type: "message_end",
-        message: {
-          role: "assistant",
-          stopReason: "toolUse",
-          content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: "{}" }],
+    // Only the tool-inactivity arm touches the model-silence budget, and only to
+    // shorten it: the poll's period is `min(active budgets)` and its tick
+    // re-reads the env every time, so with a span open and the model-silence
+    // budget left at its default the period would be the default and no kill
+    // would happen inside this test's lifetime. The plain-inactivity arm leaves
+    // it ALONE — clearing it here would hand the poll its 30-min default period
+    // and hang the case.
+    const extras: Array<[string, string | undefined]> =
+      arm === "tool-inactivity"
+        ? [["PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS", "600"]]
+        : [];
+    await withEnv(key, "300", async () => {
+      for (const [k, v] of extras) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      const child = await liveChild();
+      const observer = createKillObserver();
+      installKillSeam(child, observer.notifyKill);
+      const flags = declareKillFlags();
+      const inFlightTools = new InFlightTools();
+      if (arm === "tool-inactivity") {
+        // The public way to open a span is the event feed the spawn itself uses:
+        // a `message_end` whose MESSAGE is the assistant turn with a toolCall
+        // block (`spanEdges` reads `event.message`, not the event itself). Typed
+        // literally — every field below is a declared member of `PiJsonEvent`,
+        // `PiMessage` and `PiContentBlock`, so no cast stands between this
+        // fixture and a rename of any of them.
+        const toolCallEvent: PiJsonEvent = {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: "{}" }],
+          },
+        };
+        inFlightTools.observe(toolCallEvent);
+      }
+      let cause = "";
+      const stop = createInactivityPoll({
+        child,
+        inFlightTools,
+        lastActivityAt: () => Date.now() - 5_000, // permanently silent
+        onKill: (c, budgetMs) => {
+          cause = c;
+          if (c === "tool-inactivity") flags.setToolInactivityKilled(true);
+          else flags.setInactivityKilled(true);
+          assert(budgetMs === 300, `[${arm}] the poll read the budget this case armed (${budgetMs})`);
         },
-      } as unknown as PiJsonEvent);
-      // With a span open the poll arms the TOOL budget, but the poll's period is
-      // `min(active budgets)` and its tick re-reads the env every time: leaving
-      // the model-silence budget at its 30-min default would mean a 30-min poll
-      // and no kill inside this test's lifetime. Both stay armed; the in-flight
-      // set decides which one the tick applies.
-      process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "600";
-    }
-    let cause = "";
-    const stop = createInactivityPoll({
-      child,
-      inFlightTools,
-      lastActivityAt: () => Date.now() - 5_000, // permanently silent
-      onKill: (c, budgetMs) => {
-        cause = c;
-        if (c === "tool-inactivity") flags.setToolInactivityKilled(true);
-        else flags.setInactivityKilled(true);
-        assert(budgetMs === 300, `[${arm}] the poll read the budget this case armed (${budgetMs})`);
-      },
+      });
+      const wait = awaitingExit(child, observer);
+      const t0 = Date.now();
+      await expectResolved(arm, observer, wait, t0);
+      stop();
+      assert(cause === arm, `[${arm}] the poll fired its OWN arm (got "${cause}")`);
+      assert(
+        inFlightTools.active === (arm === "tool-inactivity"),
+        `[${arm}] the in-flight set still says what the case built (${arm === "tool-inactivity"})`,
+      );
     });
-    const wait = awaitingExit(child, observer);
-    const t0 = Date.now();
-    await expectResolved(arm, observer, wait, t0);
-    stop();
-    if (arm === "tool-inactivity") delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
-    if (saved === undefined) delete process.env[key];
-    else process.env[key] = saved;
-    assert(cause === arm, `[${arm}] the poll fired its OWN arm (got "${cause}")`);
-    assert(
-      inFlightTools.active === (arm === "tool-inactivity"),
-      `[${arm}] the in-flight set still says what the case built (${arm === "tool-inactivity"})`,
-    );
   }
 
   // ── 7. NO kill, NO deadline: an un-killed child is awaited for its whole life
@@ -365,6 +416,8 @@ try {
 
   console.log("OK: #1863 hotfix — the exit grace starts at the kill, on every kill path");
 } finally {
+  if (savedCaps === undefined) delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+  else process.env.PI_ENSEMBLE_DISPATCH_CAPS = savedCaps;
   for (const child of spawned) reap(child);
   for (const dir of tmpDirs) await rm(dir, { recursive: true, force: true });
 }

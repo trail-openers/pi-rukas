@@ -35,6 +35,9 @@
  * wait.
  */
 
+import type { ChildProcess } from "node:child_process";
+import { installKillSeam } from "./spawn-kill.ts";
+
 export interface KillObserver {
   /**
    * The seam `killProcessTree` calls before it signals. Records the kill; the
@@ -46,6 +49,22 @@ export interface KillObserver {
   /** True once a kill has been observed — i.e. once someone decided this child
    *  dies. Until then the exit await has no deadline. */
   killed(): boolean;
+}
+
+/**
+ * The observer + its seam on ONE child, in one call, so the two halves of the
+ * #1863 wiring cannot be separated by a later edit. `spawn-exit-await-session.ts`
+ * is the only production caller: it runs right after `registerChild` and BEFORE
+ * any supervisor is armed, and passes `killed` to the wait.
+ *
+ * A caller that does not need to read the predicate can ignore the return value:
+ * `killProcessTree` holds the seam on the child itself, so a kill reaches the
+ * observer whether or not anyone keeps the handle.
+ */
+export function installKillObserver(child: ChildProcess): KillObserver {
+  const observer = createKillObserver();
+  installKillSeam(child, observer.notifyKill);
+  return observer;
 }
 
 export function createKillObserver(): KillObserver {
