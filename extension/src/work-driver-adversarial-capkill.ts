@@ -18,6 +18,7 @@
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import type { CapEvidence } from "./workflow-state-cap.ts";
+import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 /**
@@ -61,6 +62,42 @@ export function capHitForCapKill(
         role: "adversarial-developer",
       },
       ...(evidence ? { evidence } : {}),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * #1863 — the cap-hit for a round review the per-child run bound ended.
+ *
+ * A bound kill is NOT a dispatch-cap kill, so `capKilledString` answers
+ * undefined for it and the branch above cannot fire: `DISPATCH_CAP_KILL_CAUSES`
+ * governs checkpoint semantics, which this kill does not share. The step
+ * handler therefore records the cap itself, with a direct `child-bound` check
+ * beside the `capHitForCapKill` probe, at BOTH of its no-verdict sites (the
+ * N=1 pure-infra branch and the fan-out equivalent).
+ *
+ * The step router's own `child-timeout:${step}` branch is not relied on: it
+ * lives in the HALT arm and the RETRY_ONCE-exhausted arm, and `adversarial` is
+ * `RETRY_ONCE` with a budget of one, so that literal is unattainable for this
+ * step from the router. `terminalReasonAtHandoff` already computes the same
+ * literal for a kill that ended a step whose verdict said something else, and
+ * the two must agree — hence the fixed literal here rather than a paraphrase.
+ */
+export function capHitForChildBound(
+  o: AdversarialOutcome,
+  reviewRound: number,
+): { event: Extract<WorkEvent, { kind: "cap-hit" }> } | undefined {
+  if (!o.ok && (o.infra || o.threw) && o.killCause === "child-bound") {
+    return {
+      event: {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "child-timeout:adversarial" as WorkCapLiteral,
+        reviewRound,
+        nextStep: "handoff",
+        role: "adversarial-developer",
+      },
     };
   }
   return undefined;

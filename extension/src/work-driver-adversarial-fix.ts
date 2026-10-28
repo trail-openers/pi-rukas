@@ -155,8 +155,24 @@ export interface ReviewReading {
  * Interpret one reportOnly review. Every review carries its round record
  * (#1114), so a successful dispatch without a parsed verdict is infra, never
  * an approval. The decision is `actionFor`, the same table the log rebuild uses.
+ *
+ * #1863 M4 — `noVerdictAs`: the caller's structural account of a result that
+ * produced NO verdict. When the caller passes `"infra-failure"` the reading is
+ * unconditionally the no-verdict reading, and a verdict embedded in the text of
+ * a result the loop itself declared dead cannot re-read as a rejection. The
+ * caller supplies it from `DispatchResult.loopOutcome` — the loop's own account
+ * of why it stopped — never from the reviewer's prose. It is a discriminant,
+ * not a string to pattern-match, and an absent value is today's behaviour.
  */
-export function interpretReview(result: DispatchResult, reviewRound: number): ReviewReading {
+export function interpretReview(
+  result: DispatchResult,
+  reviewRound: number,
+  noVerdictAs?: "infra-failure",
+): ReviewReading {
+  // A result the loop declared infrastructure-dead has no verdict, whatever it
+  // says; that account outranks the text, which is the dead child's last words
+  // and may quote any verdict at all.
+  if (noVerdictAs === "infra-failure") return { ok: false, infra: true, fixRequested: false };
   const ok = result.ok && !result.errorStop;
   if (!ok) return { ok: false, infra: false, fixRequested: false };
   const rec = result.adversarialRounds?.[0];

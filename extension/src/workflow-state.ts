@@ -224,11 +224,18 @@ export function writeState(repoRoot: string, state: WorkState, sink?: EmitSink):
 /**
  * The driver's single persist call (S4a, #1162). Every driver-path write goes
  * through here so the emit sink is never forgotten at a call site.
+ *
+ * Returns the snapshot it wrote, not the state it was handed: on an aborted
+ * cycle the two differ (`applyInterrupt` rewrites `running` as `interrupted`
+ * and appends the interrupt event), and a caller that kept building on its own
+ * copy would write the pre-interrupt state back over the file it just wrote.
+ * `beginDispatch` threads the returned state on so the adversarial step's
+ * write-ahead is a write the rest of the step is built on (#1863).
  */
-export function persistCycle(
+export async function persistCycle(
   ctx: { repoRoot: string; emitSink: EmitSink; signal?: AbortSignal },
   state: WorkState,
-): Promise<void> {
+): Promise<WorkState> {
   // Headless S4 (#1024): once the cycle's signal has fired, a snapshot that
   // still reads `running` is written as `interrupted`, with its interrupt event.
   // The driver's in-memory copy can predate an interrupt the runner already
@@ -237,7 +244,8 @@ export function persistCycle(
   const signal = ctx.signal;
   const snapshot =
     signal?.aborted === true ? applyInterrupt(state, interruptReasonOf(signal), Date.now()) : state;
-  return writeState(ctx.repoRoot, snapshot, ctx.emitSink);
+  await writeState(ctx.repoRoot, snapshot, ctx.emitSink);
+  return snapshot;
 }
 
 /** The interrupt reason an aborted cycle signal carries (`timeout`, else `signal`). */

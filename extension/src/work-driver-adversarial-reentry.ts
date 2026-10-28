@@ -148,11 +148,16 @@ export function classifyAdversarialOutcome(o: AdversarialOutcome) {
  * batch (the events `fanOutAdversarial` appends in a single contiguous
  * run): the dispatch events, the per-round records, the per-workstream
  * outcome, `branch-completed` (N>1), `branches-converged` (N>1) and the
- * aggregate verdicts. `step-started` / `branches-fanned-out` / `cap-hit`
- * are NOT batch kinds — they mark the start of a pass or the park, and
- * the span never eats into them.
+ * aggregate verdicts. `dispatch-started` IS a batch kind (#1863): the
+ * fan-out writes one ahead per workstream pass, so it sits INSIDE the run,
+ * between a workstream's `branch-completed` and the next workstream's
+ * `dispatch-completed` — excluding it would break the run there and leave
+ * the whole earlier part of the prior pass in the log. `step-started` /
+ * `branches-fanned-out` / `cap-hit` are NOT batch kinds — they mark the
+ * start of a pass or the park, and the span never eats into them.
  */
 const ADVERSARIAL_BATCH_KINDS: ReadonlySet<WorkEvent["kind"]> = new Set([
+  "dispatch-started",
   "dispatch-completed",
   "dispatch-failed",
   "dispatch-failed-provider",
@@ -183,8 +188,9 @@ const ADVERSARIAL_BATCH_KINDS: ReadonlySet<WorkEvent["kind"]> = new Set([
  * cap-hit) or any non-batch event.
  *
  * The batch extends BACKWARD from the anchor over the OTHER
- * workstreams' records (dispatch + round + outcome + branch events). The
- * backward run stops at:
+ * workstreams' records (dispatch + round + outcome + branch events, and
+ * the `dispatch-started` write-aheads that sit between workstreams —
+ * #1863). The backward run stops at:
  *  - a `cap-hit` (the prior pass's park cap — never eat into older
  *    records),
  *  - any other non-batch event (e.g. `step-started`).
