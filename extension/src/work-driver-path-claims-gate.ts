@@ -44,7 +44,7 @@ const PID = process.pid;
  * operator needs: that entry predates the identity change and is judged by pid
  * alone.
  */
-export function describeClaimHolder(entry: PathClaimEntry): string {
+function describeClaimHolder(entry: PathClaimEntry): string {
   return entry.host === undefined || entry.bootId === undefined
     ? `pid ${entry.pid} (identity unknown — written before #1871)`
     : `${entry.host} ${entry.bootId} ${entry.pid}`;

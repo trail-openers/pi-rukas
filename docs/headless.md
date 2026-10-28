@@ -242,13 +242,27 @@ The same object appears in the `--json` result and in `--capabilities` (`extensi
     "lensConcurrency":   { "value": 3, "source": "budget" },  // env | budget; 0 = unbounded
     "spawnCap":     { "value": 64, "source": "default", "scope": "process" },  // 0 = unbounded
     "hostSpawnCap": { "value": 64, "source": "default", "scope": "host" }      // 0 = unbounded
+    // …and, only while the host bound is NOT in force, the same entry carries
+    // "degraded": { "reason": "<dir> is unusable (EACCES…) — host-wide bound
+    // off, per-process cap still applies" } — see below.
   }
 }
 ```
 
 `host` is what the machine allows: `os.availableParallelism()` and `os.totalmem()`, each lowered by a cgroup CPU quota or memory limit when one is set. `budget` is derived from it: `workstreamSlots` is two per CPU or one per GiB, whichever is lower; `verifyConcurrency` is one per two CPUs or per 2 GiB, at least 1; `lensSlots` (#1591) is `workstreamSlots` lowered to one per 1024 of the cgroup's `pids.max` (which counts threads too), at least 1. `limits` are what a cycle runs with. `source: "env"` means an explicit setting decided the value, `"budget"` that the host budget lowered the default, `"default"` that the static default applied. The budget never raises a default. The group and workstream defaults hold from about 9 CPUs and 18 GiB up.
 
-**Several workers on one host (#1528).** Every limit above is per process except `hostSpawnCap`. `spawnCap` (`PI_ENSEMBLE_SPAWN_CAP`) bounds one process's live children. `hostSpawnCap` (`PI_ENSEMBLE_HOST_SPAWN_CAP`, default 64) bounds the children of every process that shares its slot directory (`PI_ENSEMBLE_HOST_SPAWN_DIR`, default a per-user directory under the OS temp dir). N workers on one host therefore share one ceiling instead of getting N of them; containers share it only if they mount the same directory. A spawn that waits longer than `PI_ENSEMBLE_HOST_SPAWN_WAIT_MS` (30 min) for a slot fails with an error naming the bound and the holding pids. A slot left by a crashed worker is recovered once its pid is gone, but only by a process on the same hostname: a pid from another container's namespace proves nothing, so a slot a crashed container left stays until its `slot-<n>` file is deleted. `0` turns either cap off; it does not mean zero children.
+**Several workers on one host (#1528).** Every limit above is per process except `hostSpawnCap`. `spawnCap` (`PI_ENSEMBLE_SPAWN_CAP`) bounds one process's live children. `hostSpawnCap` (`PI_ENSEMBLE_HOST_SPAWN_CAP`, default 64) bounds the children of every process that shares its slot directory (`PI_ENSEMBLE_HOST_SPAWN_DIR`, default a per-user directory under the OS temp dir). N workers on one host therefore share one ceiling instead of getting N of them; containers share it only if they mount the same directory. A spawn that waits longer than `PI_ENSEMBLE_HOST_SPAWN_WAIT_MS` (30 min) for a slot fails with an error naming the bound and the holders. `0` turns either cap off; it does not mean zero children.
+
+**Who owns a slot (#1871).** A slot body is `<hostname> <boot-id> <pid>`, where the boot id is `/proc/sys/kernel/random/boot_id` — distinct per boot and per container. A hostname alone is not an identity: two containers started with the same `--hostname` each see their own pid namespace, so before this change every one of them called another's live holder a corpse and stole its slot. The pid probe therefore runs only when hostname **and** boot id both match the judging process. Everything else is *foreign*, and foreign means **alive**: never reaped, never deleted, never swept.
+
+That safe direction has an accepted cost, and clearing it is a manual action:
+
+- a slot left by a container that was SIGKILLed, or by a process from before a reboot, stays in the slot directory forever; so does a pre-#1871 two-field `<host> <pid>` body.
+- to clear one: `ls -l "${PI_ENSEMBLE_HOST_SPAWN_DIR:-$TMPDIR/pi-rukas-spawn-slots-<uid>}"` to see the bodies, then `rm` the named `slot-<n>` file. Check the body first — if its pid is alive on *its* host, the slot is legitimately held.
+- path claims behave the same way (`docs/troubleshooting.md` → "A path claim is held by another container"): a foreign claim is never stale and never deleted, and the park evidence names the holder identity and the claim file to clear.
+- hosts with no `/proc` (macOS) get the boot id `"-"`; two `"-"` ids on one hostname still match, so the pid probe keeps working there exactly as before.
+
+**A host cap that is not in force is reported, not silent (#1871).** A slot directory that exists but cannot be written — EACCES, or owned by another uid, the shape a root-owned `0755` directory gives a non-root container — makes the host bound fail **open**: the spawn still runs, the per-process cap still applies. It is no longer invisible. `resourceReport().limits.hostSpawnCap` carries `degraded: { reason }` (#1871 — additive, no `CAPABILITIES_VERSION` bump), so it reaches the `--json` result, the `--capabilities` document and the cycle-start `traceResourceBudget` line (`… 64 host-wide [DEGRADED: … is unusable (EACCES…)]`), and the warning prints on every acquisition attempt rather than once per process. The field clears as soon as the directory becomes writable again.
 
 ### The `cap` vocabulary
 

@@ -17,18 +17,26 @@
  * what stops an upgrade calling every pre-#1871 file dead.
  */
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { selfIdentity } from "../src/process-liveness.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import {
+  checkAndRegisterClaims,
+  setClaimsConflictsForTests,
+} from "../src/work-driver-path-claims-gate.ts";
+import {
+  type PathClaimEntry,
   claimDeletionReason,
   claimStaleReason,
   validClaimEntry,
-  type PathClaimEntry,
 } from "../src/work-driver-path-claims-staleness.ts";
-import { decideSweepAction } from "../src/work-driver-sweep-policy.ts";
-import { describeClaimHolder } from "../src/work-driver-path-claims-gate.ts";
 import { classifyRunningState, markDispatchStarted } from "../src/work-driver-resume.ts";
-import { selfIdentity } from "../src/process-liveness.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import { decideSweepAction } from "../src/work-driver-sweep-policy.ts";
 import type { SweepTargetResult } from "../src/work-driver-worktree-sweep.ts";
+import { type WorkEvent, initialState } from "../src/workflow-state.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 let exit = 0;
@@ -185,18 +193,52 @@ const runningState = async () =>
   );
 }
 
-// ── the park message names the holder and the file -------------------------
+// ── the park message names the holder's identity and the claim file --------
+// Driven through the real gate with the accepted `setClaimsConflictsForTests`
+// seam (the shape `test-work-driver-claims-gate-parks.ts` uses): what an
+// operator READS is the contract, and a renderer no caller reaches is not one.
 {
-  const foreign = claim({ host: FOREIGN_HOST, bootId: FOREIGN_BOOT, pid: 4242 });
-  const legacy = claim({ pid: 4242 });
-  assert(
-    describeClaimHolder(foreign) === `${FOREIGN_HOST} ${FOREIGN_BOOT} 4242`,
-    "the holder renders as its full identity so an operator can clear the file",
-  );
-  assert(
-    /identity unknown/.test(describeClaimHolder(legacy)),
-    "a pre-#1871 holder says its identity is unknown rather than pretending",
-  );
+  const dir = mkdtempSync(join(tmpdir(), "owner-identity-park-"));
+  mkdirSync(join(dir, ".git"), { recursive: true });
+  const ctx = { repoRoot: dir, issue: 701, emitSink: () => {} } as unknown as CycleContext;
+  const parkOn = async (entry: PathClaimEntry): Promise<string> => {
+    setClaimsConflictsForTests([entry]);
+    try {
+      const outcome = await checkAndRegisterClaims(
+        ctx,
+        initialState(701, 0),
+        { default: { paths: ["src/foo.ts"], outOfScope: [] } },
+        NOW,
+      );
+      assert(outcome.parked, "the overlapping claim parks the cycle at plan");
+      const hits = outcome.state.eventLog.filter(
+        (e): e is Extract<WorkEvent, { kind: "cap-hit" }> => e.kind === "cap-hit",
+      );
+      return hits.at(-1)?.evidence ?? "";
+    } finally {
+      setClaimsConflictsForTests(undefined);
+    }
+  };
+  try {
+    const foreign = await parkOn(
+      claim({ issue: 702, host: FOREIGN_HOST, bootId: FOREIGN_BOOT, pid: 4242 }),
+    );
+    assert(
+      /holder: not-this-container 00000000-1111-2222-3333-444444444444 4242/.test(foreign),
+      "the park evidence names the foreign holder's full identity",
+    );
+    assert(
+      /claim file: .*path-claims\.json/.test(foreign),
+      "and the claim file an operator has to clear",
+    );
+    const legacy = await parkOn(claim({ issue: 703, pid: 4242 }));
+    assert(
+      /identity unknown/.test(legacy),
+      "a pre-#1871 holder is rendered as identity-unknown, not as a bare pid",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // ── the sweep: a foreign owner is not swept; a legacy one behaves as today --
