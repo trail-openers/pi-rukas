@@ -10,39 +10,29 @@
  * rejection.
  */
 
-import { runAdversarialLoop } from "./adversarial.ts";
-import { adversarialFixDelta } from "./fix-delta.ts";
-import { slowRecorder } from "./slow-events.ts";
-import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { cycleChildOpts } from "./work-cycle-trust.ts";
 import { isDiffUnreadableOutcome } from "./work-driver-adversarial-diff-cap.ts";
-import {
-  capKillOutcomeFields,
-  retryLadderKillCause,
-} from "./work-driver-adversarial-fanout-capkill.ts";
+import { withSpentLadderBudget } from "./work-driver-adversarial-fanout-budget.ts";
+import { retryLadderKillCause } from "./work-driver-adversarial-fanout-capkill.ts";
 import { outcomeEvents } from "./work-driver-adversarial-fanout-events.ts";
 import { runAdversarialWorkstream } from "./work-driver-adversarial-fanout-run.ts";
 import {
-  interpretReview,
-  reviewRoundFor,
-  reviewTrack,
-  workstreamsToReview,
-} from "./work-driver-adversarial-fix.ts";
+  ownPendingMarkerIds,
+  settledMarkerIds,
+  splicePassBatch,
+} from "./work-driver-adversarial-fanout-splice.ts";
+import { reviewTrack, workstreamsToReview } from "./work-driver-adversarial-fix.ts";
 import {
   classifyAdversarialOutcome,
   isTransientAdversarialOutcome,
   mergeFreshOutcomes,
   reentryPassBatchSpan,
-  roundsRecords,
 } from "./work-driver-adversarial-reentry.ts";
-import { scopeFor } from "./work-driver-adversarial-scope.ts";
 import { survivorsOf } from "./work-driver-adversarial-survivors.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
   type AdversarialOutcome,
-  outcomeOf,
 } from "./work-driver-adversarial-types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import {
@@ -51,13 +41,10 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
-import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { beginDispatch, clearDispatch, mintJobId } from "./work-driver-resume.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { providerSleep } from "./work-driver-step-router.ts";
-import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
-import { driverGateCmd } from "./work-driver-verify-pr17.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-export { capKillOutcomeFields };
 
 /**
  * #543 — the cap-kill fields of an AdversarialOutcome: the killCause
@@ -108,11 +95,7 @@ export async function fanOutAdversarial(
     rest: { outcomes: AdversarialOutcome[]; parked: boolean; parkedInfra: boolean },
   ) => {
     cancelStepNotice();
-    return { next: final, ...rest };
-  };
-  let next: WorkState = {
-    ...state,
-    pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
+    return { next: withSpentBudget(final), ...rest };
   };
   // #485/#486 — on re-entry, the previous pass's per-workstream records are
   // REPLACED where the re-run workstreams produced a fresh batch (R1): the
@@ -124,13 +107,175 @@ export async function fanOutAdversarial(
   // errorTail. The span is captured by the caller on the ORIGINAL event
   // log — BEFORE this pass's events are appended.
   const passStart = priorBatchSpan ? priorBatchSpan[0] : state.eventLog.length;
+  let next: WorkState = {
+    ...state,
+    pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
+  };
   // #485/#486 — the per-workstream pass (diff read + reviewer loop) lives in
   // work-driver-adversarial-fanout-run.ts (§12 size). A failed read carries its
   // own reason on the outcome and on the cap's evidence, so nothing is threaded
   // through a mutable pipeline-state field (which sibling won the race used to
   // decide what the handoff said).
-  const runOne = (id: string): Promise<AdversarialOutcome> =>
-    runAdversarialWorkstream(id, { ctx, state, multi, wsMap, priorOutcomes });
+  //
+  // #1863 — WRITE-AHEAD, one marker per workstream pass (develop's granularity:
+  // resume granularity is the step, a half-finished fan-out re-enters wholesale).
+  // Before this the family wrote ahead ONLY for the fix dispatch, so a cycle whose
+  // round review was killed had nothing on disk for its whole review window.
+  //
+  // ONE mutable log for the whole fan-out, and ONE chained writer for it.
+  // `next` was a local rebuilt at each step, but N workstreams now write ahead
+  // CONCURRENTLY (`Promise.all`), and each one's write must see its siblings' —
+  // a snapshot taken at pass start would drop a sibling's `dispatch-started`
+  // and its in-flight id. So every write goes through `writeThrough`, which
+  // reads the current log, runs `beginDispatch` / `clearDispatch` against it
+  // and installs the result; the chain makes that read-modify-write atomic, so
+  // two siblings starting in the same tick cannot each clobber the other's
+  // marker, and a clear can never be lost under another workstream's write.
+  //
+  // The MARKER ITSELF is the shared helper: `beginDispatch` / `clearDispatch`
+  // (work-driver-resume.ts), the same pair every other write-ahead in the
+  // driver routes through. The hand-rolled `markDispatchStarted` + bare
+  // `persistCycle` this file used to carry duplicated the helper's body and
+  // dropped one thing it does: a persist failure REJECTS, and the caller does
+  // not dispatch (see `runSingleDispatch` / `beginDispatch` callers).
+  //
+  // The id is minted HERE and handed to the child as its `runId`, so the
+  // write-ahead marker, the child's transcript and the completion event are one
+  // identity (#1789's rule, which `runSingleDispatch` already follows).
+  let log: WorkState = next;
+  let writeChain: Promise<unknown> = Promise.resolve();
+  // #1863 — the marker ids this fan-out minted, in order. `settledMarkerIds`
+  // turns them into the set the splice keys on.
+  const passMarkers: string[] = [];
+  // #1863 — #486's per-workstream ladder budget must survive this pass in the
+  // state the step RETURNS, not only in the one every retry branch
+  // `persistCycle`s — see work-driver-adversarial-fanout-budget.ts for why both
+  // publishers merge rather than replace. Applied to every `next` this function
+  // produces, so the RETRY_ONCE re-entry seeds from the spent budget (#357 T8).
+  const withSpentBudget = (s: WorkState): WorkState => withSpentLadderBudget(s, localRetries);
+  const writeThrough = (fn: (s: WorkState) => Promise<WorkState>): Promise<WorkState> => {
+    const step = writeChain.then(async () => {
+      log = await fn(log);
+      // The step resolves with the log AS INSTALLED, which is what makes the
+      // read-modify-write atomic for the caller: it sees the log its own write
+      // produced, siblings' writes and all.
+      return log;
+    });
+    // A FAILED step must not poison the chain — a sibling's clear still has to
+    // run — but the failure is not swallowed either: `step` is what the caller
+    // awaits, and `runOne` turns it into a no-dispatch outcome.
+    writeChain = step.catch(() => undefined);
+    return step;
+  };
+  const writeAheadFor = (id: string): { jobId: string; label: string; at: number } => {
+    const label = multi ? `adversarial[${id}]` : "adversarial_loop";
+    const at = Date.now();
+    // ONE minting per pass, handed to the leaf (see `RunOneArgs.writeAhead`) and
+    // registered for the splice. A second `Date.now()` read makes a second
+    // minting a different string, and then the marker, the dispatch events and
+    // the outcome's `clearedJobId` no longer name one dispatch (#1863).
+    return { jobId: mintJobId("adversarial", `${label}:${id}`, at), label, at };
+  };
+  // De-duplicated: a workstream the in-step retry re-ran registers one per attempt.
+  const registerMarker = (jobId: string): void => {
+    if (!passMarkers.includes(jobId)) passMarkers.push(jobId);
+  };
+  const writeAheadFailed = (id: string, label: string, jobId: string, e: unknown) => {
+    const errMsg = (e as Error).message?.slice(-200);
+    trace(
+      `work-driver: adversarial[${id}] write-ahead persist FAILED — not dispatching a reviewer nobody recorded`,
+    );
+    return {
+      id,
+      ok: false,
+      rounds: 0,
+      records: [],
+      // The driver's own write failed: a NO-VERDICT infrastructure failure,
+      // never a rejection and never something the retry ladder re-spawns into
+      // the same unreadable state file.
+      infra: true,
+      threw: true,
+      skipped: false,
+      priorInfra: priorOutcomes.get(id) === "infra-failure",
+      rejectionText: `adversarial write-ahead failed: ${errMsg}`,
+      errorTail: errMsg,
+      // Never dispatched: excluded from the splice's marker set by
+      // `settledMarkerIds`, so it absorbs no region and claims no dispatch.
+      clearedJobId: jobId,
+      markerWritten: false,
+      failureEvent: {
+        kind: "dispatch-failed",
+        step: "adversarial",
+        role: "adversarial-loop",
+        jobId,
+        label,
+        ms: 0,
+        at: Date.now(),
+        errorTail: errMsg,
+      } as const,
+    } satisfies AdversarialOutcome;
+  };
+  const runOne = async (id: string): Promise<AdversarialOutcome> => {
+    const wa = writeAheadFor(id);
+    let begunLog: WorkState;
+    try {
+      begunLog = await writeThrough(async (s) => {
+        const b = await beginDispatch(
+          ctx,
+          s,
+          "adversarial",
+          "adversarial-loop",
+          wa.label,
+          wa.at,
+          undefined,
+          // The id this pass's dispatch events carry, and the id its `finally`
+          // clears: ONE string, taken from the marker rather than minted again
+          // (#1863 — see `writeAheadFor`).
+          wa.jobId,
+        );
+        // #1863 — the marker's OWN id, label and timestamp are the ones this pass
+        // carries everywhere, taken from the record the helper wrote. A second
+        // minting a millisecond apart is a different string, and a re-derived
+        // label or a `Date.now()` at re-emit time is a different record: the
+        // leaf then stamps its dispatch events with one identity and the marker
+        // keeps another, so the batch's marker no longer names the dispatch it
+        // precedes. `beginDispatch` also no-ops under `PI_ENSEMBLE_RESUME=0`, so
+        // the id it returns is not necessarily the one passed in.
+        wa.jobId = b.jobId;
+        registerMarker(b.jobId);
+        return b.state;
+      });
+    } catch (e) {
+      // The intent is what makes a killed review visible on resume. If it could
+      // not be written, dispatching anyway would spend a reviewer whose death
+      // nothing records — the exact cause B this step is about. So: no dispatch.
+      return writeAheadFailed(id, wa.label, wa.jobId, e);
+    }
+    // #1863 — the marker's OWN log, not the shared one: every outcome below
+    // carries the dispatch events the pass produced, so they must sit AFTER this
+    // pass's `dispatch-started`, and the `finally` clears the id out of this
+    // copy. The fan-out re-emits the outcome's events at the splice, and merges
+    // the in-flight clears from every outcome's copy — reading the shared log
+    // here would strand a sibling's dispatch events behind this workstream's.
+    try {
+      return await runAdversarialWorkstream(id, {
+        ctx,
+        // The state the write-ahead PERSISTED is the one the pass builds on.
+        state: begunLog,
+        multi,
+        wsMap,
+        priorOutcomes,
+        writeAhead: wa,
+      });
+    } finally {
+      // Cleared on EVERY exit, including a throw out of the loop: the step's
+      // tail must be the dispatch event, never the `dispatch-started`. The
+      // splice builds the batch from `log`, which this queued write installs,
+      // so the clear is awaited before this pass resolves — no separate
+      // boundary persist.
+      await writeThrough(async (s) => clearDispatch(s, wa.jobId)).catch(() => undefined);
+    }
+  };
 
   const isTransient = (o: AdversarialOutcome): boolean =>
     // #1634 — the driver's own diff read is DETERMINISTIC: a re-run of a
@@ -272,10 +417,9 @@ export async function fanOutAdversarial(
       budget[o.id] = incremented;
       localRetries[o.id] = incremented;
     }
-    next = {
-      ...next,
-      pipelineState: { ...next.pipelineState, adversarialTransientRetries: budget },
-    };
+    // The ladder's own spend, merged into whatever `next` already carries
+    // (`log`'s pipeline state survives the in-loop write-aheads).
+    next = withSpentLadderBudget(next, budget);
     trace(
       `work-driver: adversarial per-workstream infra retry: ${candidates.map((o) => o.id).join(", ")}` +
         ` (waited ${waitMs}ms)`,
@@ -288,11 +432,47 @@ export async function fanOutAdversarial(
   // batch on re-entry (see `priorBatchSpan` above). On a first pass
   // `priorBatchSpan` is null and `passStart` is the end of the log, so this
   // degenerates to an append.
+  //
+  // #1863 — the batch is built on the log the write-aheads PRODUCED (`log`),
+  // not on the `next` snapshot taken before any dispatch happened. Replacing
+  // that snapshot would silently delete every `dispatch-started` this pass
+  // wrote — which is what a crash-resume reads as "this step never started",
+  // the exact cause B this issue is about.
+  //
+  // Two things survive the splice:
+  //
+  //  - a `dispatch-started` whose id is STILL in flight: a sibling still
+  //    reviewing while another workstream's batch is spliced. Removing its
+  //    marker would leave the id in `inFlightJobIds` with no backing event, so
+  //    `classifyRunningState` could not see the crash and
+  //    `detectInconsistencies` would call the file corrupt. An id already
+  //    cleared is a finished pass's orphan (the crash-resume shape, which
+  //    `clearForResume` deliberately keeps) and stays spliced away.
+  //  - every outcome's `inFlightJobIds`, which its own `finally` cleared. The
+  //    aggregate never saw those clears (each pass held its own copy), so
+  //    without this merge a completed review would still look in-flight and the
+  //    next invocation would resume a step that already finished.
   const events = outcomeEvents(outcomes, multi);
   const passEnd = priorBatchSpan ? priorBatchSpan[1] : passStart;
+  // #1863 — the splice and its invariant live in the splice module: a step that
+  // failed ends on its failure event, never on a write-ahead marker.
+  const settledMarkers = settledMarkerIds(outcomes, passMarkers);
+  // #1863 — the prior pass's own markers, still in flight, sit INSIDE the
+  // re-entry's replacement region: they were persisted while that pass ran,
+  // after `priorBatchSpan` was captured. Without them the scan stops on the
+  // first one and the prior pass's stale records survive beside the fresh
+  // batch (a recovered workstream logging both its infra-failure and its
+  // approved outcome).
+  const ownPending = ownPendingMarkerIds(log, settledMarkers, passMarkers);
   next = {
-    ...next,
-    eventLog: [...next.eventLog.slice(0, passStart), ...events, ...next.eventLog.slice(passEnd)],
+    ...log,
+    pipelineState: {
+      ...log.pipelineState,
+      inFlightJobIds: log.pipelineState.inFlightJobIds.filter(
+        (id) => !outcomes.some((o) => o.clearedJobId === id),
+      ),
+    },
+    eventLog: splicePassBatch(log, events, settledMarkers, passStart, passEnd, ownPending),
   };
 
   if (multi) {

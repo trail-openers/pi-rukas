@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.31](https://github.com/trail-openers/pi-rukas/compare/v0.14.30...v0.14.31) (2026-10-28)
+
+
+### Bug Fixes
+
+* **spawn:** the exit-wait grace starts at the kill, not at spawn ([#1875](https://github.com/trail-openers/pi-rukas/issues/1875)) ([ef41a1a](https://github.com/trail-openers/pi-rukas/commit/ef41a1acf9771c55214e1826974e8b23effcd26e))
+
+## [0.14.30](https://github.com/trail-openers/pi-rukas/compare/v0.14.29...v0.14.30) (2026-10-28)
+
+
+### Bug Fixes
+
+* **work:** a bound-killed review parks with a handoff instead of exiting 30 ([#1866](https://github.com/trail-openers/pi-rukas/issues/1866)) ([e885259](https://github.com/trail-openers/pi-rukas/commit/e88525935ebaeb3562779f0998415454576c0221))
+
 ## [0.14.29](https://github.com/trail-openers/pi-rukas/compare/v0.14.28...v0.14.29) (2026-10-27)
 
 

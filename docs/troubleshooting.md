@@ -3125,6 +3125,77 @@ A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not b
 
 By design (no env knob): chore/spike are low-blast-radius and deterministic validation is their gate. The old `PI_ENSEMBLE_PLAN_GAP_GATE` variable is deleted and inert. Bug/feature/epic always run the gate; its round 2 (fires only on CRITICAL) is a scoped verification of the carried resolutions, not a second full review — multi-round full re-review of the same artifact measurably adds false positives (arXiv:2603.16244).
 
+## A headless run exits 30 with no handoff (`#1863`)
+
+### The symptom
+
+A headless `/work` cycle ends with no handoff artifact and no PR, and the host reports:
+
+```
+pi-rukas-headless: #1863 not-started (exit 30)
+error: crash — the runner process exited 0 without a result
+```
+
+The state file exists and shows the cycle was mid-`adversarial`. Nothing in the run's
+output says which child died or why. `~/.pi/agent/ensemble-runs/<date>/` shows the
+round-review children killed at their run bound, and the driver never advanced past them.
+
+### What was wrong
+
+Four defects between the child boundary and the host, all on the same path:
+
+1. **The kill cause had no classification.** A child killed at its per-child run bound
+   reported no `killCause`, so the adversarial loop's classifier fell through to
+   `crashed` with `shouldRetry: true` and re-spawned the same review into the same bound
+   — a second kill, and no cap-hit either way.
+2. **The fan-out wrote ahead too late.** `dispatch-started` was appended after the
+   dispatch, so a cycle interrupted mid-fan-out left a state file claiming `running`
+   with no in-flight job: indistinguishable from a live cycle, and unresumable.
+3. **The exit await had no bound.** `spawn.ts` awaited the child's `exit` event without a
+   limit. Every supervision timer on that child — the run bound, the caps, the inactivity
+   watchdog — is `unref()`'d, so once the child's own handle was the only thing keeping
+   the loop alive, releasing it let Bun drain the event loop and exit **0** with an empty
+   stdout. The handle is the child process's libuv handle.
+4. **The runner had no result contract.** Nothing guaranteed a document on stdout, so a
+   driver that never settled became the supervisor's generic `crash` verdict on a cycle
+   that had done real work.
+
+### The fix
+
+- `adversarial-classify.ts` recognises `child-bound` as a self-kill that is **not**
+  retried, and `work-driver-adversarial-capkill.ts` turns it into a cap-hit the router can
+  act on. A killed round review is an **infra failure, never a rejection** —
+  `interpretReview` no longer reads `ok: false` as "the reviewer said no".
+- The adversarial fan-out persists `dispatch-started` and `inFlightJobIds` **before**
+  dispatching, so an interrupted round is resumable.
+- `spawn-exit-await.ts` bounds the `exit` await (15 s grace after the kill, re-signalling
+  the tree) so no child can hold a dispatch open indefinitely.
+- `headless/ensure-result.ts` gives the runner its contract: exactly one result document
+  on every terminating path, and never a silent 0. A driver that never answers is reported
+  as `error.code: "driver-wedged"` with each issue projected from its state file.
+
+### What it is not
+
+`driver-wedged` is not a diagnosis — it says nothing answered in time. Read the state file
+and the per-child transcripts under `~/.pi/agent/ensemble-runs/` to find which child the
+cycle was waiting on. A genuinely dead runner child still reports `crash` with the signal
+or exit code it died with; that path is deliberately unchanged, because a child that died
+and a child that was still thinking are different facts and the host should see the
+difference. The supervisor therefore forwards a printed document only when the child
+exited normally — no signal, no spawn error — so a child that printed `merged` with exit
+0 and was then killed is still reported as `crash`/30 with its signal, whatever it wrote.
+
+### Bounds
+
+`PI_ENSEMBLE_ADVERSARIAL_BOUND_MS` is the review child's run bound;
+`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS` is the grace between the wrap-up steer and the kill
+(default 10 min). The runner's own wait on its driver (6 h) has **no operator-facing
+surface at all**: no env knob and no CLI flag. It is a reporting backstop, never a way to
+end work early, and a caller that could lower it could make a merely slow cycle report
+`driver-wedged` — a flag an agent could pass is a flag an agent could pass. Tests reach
+the bound through `smoke-tests/lib/headless-wedge-entry.ts`, which composes
+`withResultGuarantee`'s `wedgeMs` option itself; no production file learns the knob exists.
+
 ## /research — the compiled research spine
 
 ### What it is

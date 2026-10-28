@@ -4,8 +4,21 @@
  * (AGENTS.md §12 file-size limit). Pure: outcomes in, WorkEvents out.
  */
 
+import { traceWarn } from "./trace.ts";
 import { type AdversarialOutcome, outcomeOf } from "./work-driver-adversarial-types.ts";
 import type { WorkEvent } from "./workflow-state.ts";
+
+/**
+ * The event kinds that report ONE dispatch's outcome. Explicit, not
+ * `kind.startsWith("dispatch-")`: `dispatch-started` shares the prefix and is
+ * not an outcome, and a prefix test would silently count a future
+ * `dispatch-<something>` that means something else.
+ */
+const DISPATCH_OUTCOME_KINDS = [
+  "dispatch-completed",
+  "dispatch-failed",
+  "dispatch-failed-provider",
+] as const;
 
 /**
  * Append per-workstream events in deterministic order: dispatch-completed
@@ -27,9 +40,79 @@ export function outcomeEvents(
   multi: boolean,
 ): WorkEvent[] {
   const events: WorkEvent[] = [];
+  const emitted = new Set<string>();
   for (const o of outcomes) {
+    // #1863 — the marker this pass wrote travels WITH the events it precedes.
+    // The fan-out's splice replaces the region the write-ahead grew into (the
+    // markers are persisted DURING the pass, whose span was captured before it
+    // started), so a batch that did not carry them would leave them sitting in
+    // the retained tail — AFTER the events reporting their dispatch's outcome.
+    // For N=1 the tail is the only event `failureEventOf` reads and `nextStep()`
+    // has no `dispatch-failed` branch at all, so a step whose reviewer died fell
+    // through the linear table into commit-pr: an unreviewed diff past the
+    // adversarial gate. Carried here so the audit record survives the
+    // replacement. A pass whose write-ahead itself FAILED never dispatched, so
+    // it has no marker to record (`writeAheadFailed` says so with
+    // `markerWritten: false`) and its id is not one the region absorbs.
+    //
+    // #1863 round 2 — the re-emitted record is the SAME record, not a new one.
+    // Its `at` and `label` are the ones the fan-out persisted (`markerAt` /
+    // `dispatchLabel`, carried on the outcome from the marker itself). An earlier
+    // draft fabricated `at: 7` and `label: o.id` here, which made one dispatch
+    // look like two with different timestamps and different names, and put a
+    // 1970 epoch into a log whose other events are wall-clock — the headless
+    // result document derived a 56-year `durationMs` from it. A value this
+    // function cannot know must be carried IN, never invented.
+    if (o.clearedJobId && o.markerWritten !== false && !emitted.has(o.clearedJobId)) {
+      emitted.add(o.clearedJobId);
+      // #1863 round 2 — an outcome that claims it wrote a marker MUST say when
+      // and under what label: a re-emitted record whose `at` was invented here
+      // differs from the one on disk, and `durationMs` in the headless result
+      // document is derived from event `at`s (one measured cycle reported a
+      // 56-year span for a marker re-stamped `at: 7`).
+      //
+      // #1863 round 3 — the answer to a malformed outcome is NOT to throw. This
+      // function runs in the MIDDLE of the fan-out's batch assembly, after every
+      // pass has already cleared its marker, so a throw here aborted the whole
+      // /work cycle on a bookkeeping defect — the very failure mode the step is
+      // meant to remove. The rule is therefore: never fabricate, never abort,
+      // always say. A missing `at`/`label` emits no re-emitted marker (the record
+      // the pass PERSISTED is still on disk inside the retained region) and warns
+      // with the workstream id.
+      if (o.markerAt === undefined || o.dispatchLabel === undefined) {
+        traceWarn(
+          `work-driver: adversarial outcome ${o.id}: marker ${o.clearedJobId} claims a persisted dispatch-started without its at/label — not re-emitting it (the persisted record stays in the log)`,
+        );
+      } else {
+        events.push({
+          kind: "dispatch-started",
+          step: "adversarial",
+          role: "adversarial-loop",
+          label: o.dispatchLabel,
+          jobId: o.clearedJobId,
+          at: o.markerAt,
+        });
+      }
+    }
     if (o.completionEvent) events.push(o.completionEvent);
     if (o.failureEvent) events.push(o.failureEvent);
+    // #1863 round 2 — one marker per dispatch, and the batch must say so. An
+    // outcome carries a single `clearedJobId`, so if it ever produced TWO
+    // dispatch events the second would splice in with no marker of its own —
+    // the exact shape the ordering rule cannot recover (a step whose tail is a
+    // bare marker, or a failure with nothing written ahead of it). The invariant
+    // the whole write-ahead rests on is asserted here rather than assumed.
+    const dispatchEvents = [
+      ...(o.completionEvent ? [o.completionEvent] : []),
+      ...(o.failureEvent ? [o.failureEvent] : []),
+    ].filter((e) => (DISPATCH_OUTCOME_KINDS as readonly string[]).includes(e.kind));
+    if (dispatchEvents.length > 1) {
+      // All of them are kept: dropping one would delete the only record that a
+      // dispatch happened, which is worse than the ambiguity it reports.
+      traceWarn(
+        `work-driver: adversarial outcome ${o.id}: ${dispatchEvents.length} dispatch outcome events on one write-ahead marker (${o.clearedJobId ?? "none"}) — keeping them all; the batch cannot guarantee one marker per dispatch`,
+      );
+    }
     const recordsAt = Date.now();
     for (const r of o.records) {
       events.push({

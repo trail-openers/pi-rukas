@@ -137,7 +137,9 @@ export async function landLensFix(
               // writes the operator's plumb note; it no longer appends the event
               // twice (it skips when the log already carries this round's record).
               (event) => {
-                revertEventPersisted = persistCycle(ctx, appendEvent(out, event));
+                revertEventPersisted = persistCycle(ctx, appendEvent(out, event)).then(
+                  () => undefined,
+                );
               },
             ),
   });
@@ -215,7 +217,7 @@ export async function landLensFix(
   out = await recordLensFixRevert(
     out,
     { round: lensRound, workstreamId: lensId, revert: fenceCheck.revert },
-    (st) => persistCycle(ctx, st),
+    (st) => persistCycle(ctx, st).then(() => undefined),
     Date.now(),
   );
 

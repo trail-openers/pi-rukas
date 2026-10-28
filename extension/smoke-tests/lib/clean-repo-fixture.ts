@@ -86,9 +86,18 @@ export function initCleanRepo(dir: string): string {
  * exactly, so a fixture that matches some other argv fails to compile rather
  * than answering a command production never sends.
  */
-const GATE_ARGV_READS = [
+/**
+ * The gate's scripted reads, spelled as the argv types rather than as a bare
+ * tuple list. `GATE_ARGV_READS.find(...)` used to return the union of those
+ * tuples, which the declared return type rejected — the 2-tuple `["diff",
+ * "--end-of-options"]` is not a `GateDiffArgv` (which carries the path) — so
+ * `gateArgvRead` only compiled because the whole tree sat outside every tsc
+ * project's `include`. Annotated with the types it claims, so the reads it can
+ * answer are checked against them: the diff read must name a path.
+ */
+const GATE_ARGV_READS: readonly (GateDiffArgv | GateToplevelArgv)[] = [
   ["rev-parse", "--show-toplevel"],
-  ["diff", "--end-of-options"],
+  ["diff", "--end-of-options", "<path>"],
 ] as const;
 
 /** The gate's ONE diff argv, typed as the shape `readWorktreeDiff` builds. */
@@ -99,8 +108,18 @@ type GateToplevelArgv = readonly ["rev-parse", "--show-toplevel"];
 
 function gateArgvRead(argv: string[] | undefined): GateDiffArgv | GateToplevelArgv | undefined {
   if (!argv) return undefined;
-  if (argv.length === 3 && argv[0] === "diff" && argv[1] === "--end-of-options") {
-    return ["diff", "--end-of-options", argv[2]];
+  const third = argv[2];
+  // `argv[2]` is checked, not assumed: the length test above does not narrow an
+  // indexed access, and `noUncheckedIndexedAccess` rightly reads it as
+  // possibly-undefined. The shape is a three-part diff read, so a missing third
+  // part is not a read at all.
+  if (
+    argv.length === 3 &&
+    third !== undefined &&
+    argv[0] === "diff" &&
+    argv[1] === "--end-of-options"
+  ) {
+    return ["diff", "--end-of-options", third];
   }
   return GATE_ARGV_READS.find((read) => read.every((part, i) => argv[i] === part));
 }
@@ -221,13 +240,16 @@ export function answerDiffReads(
   return (async (cmd, o) => {
     const read = gateArgvRead(o?.argv);
     // A shell-form fake may already have folded argv into the command string,
-    // in which case `o.argv` is gone and only the line below matches.
-    if (cmd === "git" && read) {
-      materialise(cmd, o?.cwd);
-      const answered = read[0] === "rev-parse" ? { stdout: `${o.cwd}\n` } : diff(o.cwd, read[2]);
+    // in which case `o.argv` is gone and only the line below matches. The tree
+    // the read is answered against is the one the caller named, so a call with
+    // no cwd cannot be answered — it falls through to the scripted fake.
+    if (cmd === "git" && read !== undefined && o?.cwd !== undefined) {
+      const cwd = o.cwd;
+      materialise(cmd, cwd);
+      const answered = read[0] === "rev-parse" ? { stdout: `${cwd}\n` } : diff(cwd, read[2]);
       // The toplevel probe is the read that NEEDED the directory; the diff read
       // is the last one the gate makes, so the tree is residue from here on.
-      if (read[0] !== "rev-parse") dematerialise(cmd, o.cwd);
+      if (read[0] !== "rev-parse") dematerialise(cmd, cwd);
       return answered;
     }
     const line = typeof cmd === "string" ? commandOf(cmd, o) : "";
