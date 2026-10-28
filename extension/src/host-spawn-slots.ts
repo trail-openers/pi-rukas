@@ -7,22 +7,32 @@
  * the process boundary.
  *
  * A slot is a file `slot-<i>` (0 ≤ i < cap) in one private directory per host
- * user. It is claimed atomically, appearing already holding `<hostname> <pid>`
- * (a hard link of a written temp file, so no reader ever sees it empty). A
- * child runs while its process holds a slot; the slot is removed when the
- * child settles, and only while it still names this process. A holder that
- * died without releasing (SIGKILL, power loss) is recovered by PID liveness,
+ * user. It is claimed atomically, appearing already holding
+ * `<hostname> <boot-id> <pid>` (a hard link of a written temp file, so no
+ * reader ever sees it empty) — the identity `process-liveness.ts` produces
+ * (#1871). A child runs while its process holds a slot; the slot is removed
+ * when the child settles, and only while it still names this process. A holder
+ * that died without releasing (SIGKILL, power loss) is recovered by liveness,
  * never by age — an age sweep would double-admit a live but slow holder — and
- * only when it is provably dead: same hostname (pid namespaces differ across
- * containers, so a foreign pid proves nothing) and the pid gone. Recovery is
- * serialised per slot by a short `mkdir` lock, so two reapers cannot both
- * unlink and steal each other's fresh claim. A process that exits normally
- * drops its slots in an `exit` hook.
+ * only when it is PROVABLY dead: `judgeOwner` answers the pid probe only when
+ * the hostname AND the boot id both match this process, so a container sharing
+ * a `--hostname` with a sibling, or a slot left by a previous boot, is never
+ * mistaken for a corpse. Recovery is serialised per slot by a short `mkdir`
+ * lock, so two reapers cannot both unlink and steal each other's fresh claim.
+ * A process that exits normally drops its slots in an `exit` hook.
+ *
+ * The accepted cost of that safe direction: a slot left by a process whose
+ * identity this one cannot verify — a SIGKILLed container, a process from
+ * before a reboot — stays in the directory until someone removes its
+ * `slot-<n>` file (`PI_ENSEMBLE_HOST_SPAWN_DIR`). See docs/headless.md.
  *
  * Waiting is bounded (`PI_ENSEMBLE_HOST_SPAWN_WAIT_MS`, 30 min): past it the
  * spawn fails with an error naming the bound and the holders, so the step
  * parks rather than running unbounded. An abort ends the wait. An unusable
- * slot directory fails open (traced): the per-process cap still applies.
+ * slot directory fails open (traced): the per-process cap still applies, and
+ * since #1871 the reason is readable through `hostSpawnDegraded()` so the
+ * cycle's resource report says the host cap is not in force rather than going
+ * quiet.
  *
  * Scope: the directory is under `os.tmpdir()` (override
  * `PI_ENSEMBLE_HOST_SPAWN_DIR`); processes share the bound when they share it.
@@ -33,6 +43,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { formatIdentity, judgeOwner, parseIdentity, selfIdentity } from "./process-liveness.ts";
 import { trace, traceWarn } from "./trace.ts";
 
 /** Host-wide concurrent children. Default 64, the per-process default. */
@@ -58,18 +69,24 @@ export function hostSpawnDir(): string {
 const POLL_MS = 250;
 /** A reap lock older than this belongs to a reaper that died mid-reap. */
 const REAP_LOCK_STALE_MS = 10_000;
-const SELF = `${os.hostname()} ${process.pid}`;
 const held = new Set<string>();
 let exitHooked = false;
-let warnedUnusable = false;
 
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
+/** Why the host-wide bound is NOT in force for this process, or undefined. */
+let degradedReason: string | undefined;
+
+/**
+ * Why the host-wide bound was skipped, or undefined when it is in force.
+ *
+ * #1871 — the module used to warn ONCE about an unusable directory and then
+ * run every spawn without a host cap in silence, so a root-owned slot dir
+ * (EACCES for a non-root uid) quietly disabled the cap for the whole host and
+ * nothing downstream could see it. The reason is kept so `resourceReport()`
+ * can mark the limit degraded, and the warning is printed on every
+ * acquisition attempt rather than once per process.
+ */
+export function hostSpawnDegraded(): { reason: string } | undefined {
+  return degradedReason === undefined ? undefined : { reason: degradedReason };
 }
 
 function holderOf(file: string): string | undefined {
@@ -80,18 +97,20 @@ function holderOf(file: string): string | undefined {
   }
 }
 
-/** Dead only when provably so: this host, a real pid, not ours, and gone. */
+/**
+ * Dead only when provably so. #1871: the judgement is `judgeOwner`'s, which
+ * consults the pid probe only for a holder carrying THIS host and THIS boot
+ * id; a foreign body — other host, other boot id, or the old two-field format
+ * — is never dead, so it is never reaped.
+ */
 function provablyDead(holder: string | undefined): boolean {
-  const [host, pidText] = holder?.split(" ") ?? [];
-  const pid = Number(pidText);
-  if (host !== os.hostname() || !Number.isInteger(pid) || pid <= 0) return false;
-  return pid !== process.pid && !pidAlive(pid);
+  return judgeOwner(parseIdentity(holder), selfIdentity()) === "dead";
 }
 
 /** Atomic claim: link a written temp file to the slot name. */
 function link(dir: string, file: string): boolean {
   const tmp = path.join(dir, `.claim-${process.pid}-${Math.random().toString(36).slice(2)}`);
-  fs.writeFileSync(tmp, SELF);
+  fs.writeFileSync(tmp, formatIdentity(selfIdentity()));
   try {
     fs.linkSync(tmp, file);
     return true;
@@ -155,13 +174,22 @@ function holders(dir: string): string[] {
 function release(file: string): void {
   held.delete(file);
   try {
-    if (holderOf(file) === SELF) fs.unlinkSync(file);
+    if (holderOf(file) === formatIdentity(selfIdentity())) fs.unlinkSync(file);
   } catch {
     /* already gone */
   }
 }
 
-/** The slot directory, private to this user; undefined when unusable. */
+/**
+ * The slot directory, private to this user; undefined when unusable.
+ *
+ * The directory that EXISTS but cannot be written (EACCES, or owned by another
+ * uid) is the failure the reporter hit: a root-owned 0755 dir with a non-root
+ * uid. Both the trace line and `degradedReason` are set on EVERY call, so the
+ * warning recurs once per acquisition — never once per 250 ms poll, which is
+ * why it lives here and not in `withHostSpawnSlot`'s loop — and the reason is
+ * live for whoever reports the budget.
+ */
 function slotDir(): string | undefined {
   const dir = hostSpawnDir();
   try {
@@ -170,14 +198,12 @@ function slotDir(): string | undefined {
     const uid = typeof process.getuid === "function" ? process.getuid() : st.uid;
     if (!st.isDirectory() || st.uid !== uid) throw new Error("not a directory this user owns");
     fs.accessSync(dir, fs.constants.W_OK);
+    degradedReason = undefined;
     return dir;
   } catch (err) {
-    if (!warnedUnusable) {
-      warnedUnusable = true;
-      traceWarn(
-        `host-spawn-slots: ${dir} is unusable (${(err as Error).message}) — host-wide bound off, per-process cap still applies`,
-      );
-    }
+    const reason = `${dir} is unusable (${(err as Error).message}) — host-wide bound off, per-process cap still applies`;
+    degradedReason = reason;
+    traceWarn(`host-spawn-slots: ${reason}`);
     return undefined;
   }
 }
