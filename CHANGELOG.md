@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.33](https://github.com/trail-openers/pi-rukas/compare/v0.14.32...v0.14.33) (2026-10-28)
+
+
+### Bug Fixes
+
+* **work:** refuse a typecheck from a compiler that accepts a known type error ([#1881](https://github.com/trail-openers/pi-rukas/issues/1881)) ([35c3b08](https://github.com/trail-openers/pi-rukas/commit/35c3b088ec54cf298bedbcdd6ec3149d41ef3aa7))
+
 ## [0.14.32](https://github.com/trail-openers/pi-rukas/compare/v0.14.31...v0.14.32) (2026-10-28)
 
 
