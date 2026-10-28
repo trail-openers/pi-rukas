@@ -32,6 +32,7 @@ import { FOREIGN_HOST, NOW, claim, makeAssert } from "./lib/owner-identity-fixtu
 
 const { assert, status } = makeAssert();
 const SELF_NS = selfIdentity().pidns;
+const SELF_HOST = selfIdentity().host;
 /** A pid namespace inode that is not this container's. */
 const FOREIGN_NS = SELF_NS === "4026532999" ? "4026532111" : "4026532999";
 
@@ -121,6 +122,36 @@ try {
       /\.pi\/work-state\/703\.json/.test(legacyProse) &&
       !/another pid namespace/i.test(legacyProse),
     "a legacy park keeps the check-the-pid-and-the-state-file sentence, untouched",
+  );
+
+  // ── F8 on a host with no /proc: a "-" pidns is NOT "another namespace" ----
+  // `selfIdentity()` writes NO_ID_FIELD for pidns on macOS and under a hidepid
+  // procfs. The regex used to require a decimal pidns there, so those parks got
+  // the legacy wording — and `judgeOwner` calls two "-" namespaces a MATCH, so
+  // there the pid really is this host's and really is checkable. Two cases, one
+  // per host, because the wording follows the host and not the sentinel.
+  const sentinel = await parkOn(
+    claim({ issue: 704, host: SELF_HOST, pidns: "-", startTime: "-", pid: 4242 }),
+  );
+  assert(
+    sentinel.includes(`holder: ${SELF_HOST} - 4242 -`),
+    "a no-/proc holder renders its identity with the '-' sentinel in both id fields",
+  );
+  const sentinelProse = explain(sentinel);
+  assert(
+    /check the pid/.test(sentinelProse) &&
+      /\.pi\/work-state\/704\.json/.test(sentinelProse) &&
+      !/another pid namespace/i.test(sentinelProse),
+    "on THIS host a '-' pidns keeps the check-the-pid wording — the probe works there (two '-' namespaces match)",
+  );
+  const sentinelForeign = await parkOn(
+    claim({ issue: 705, host: FOREIGN_HOST, pidns: "-", startTime: "-", pid: 4242 }),
+  );
+  const sentinelForeignProse = explain(sentinelForeign);
+  assert(
+    !/check the pid/i.test(sentinelForeignProse) &&
+      /another pid namespace|other pid namespace|another host/i.test(sentinelForeignProse),
+    "on ANOTHER host a '-' pidns gets the full-identity wording — there is nothing on this host to check",
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });

@@ -24,7 +24,7 @@
  * Eight concurrent claim writers lost seven of their claims to it.
  */
 
-import { judgeStateOwner, selfIdentity, validHost } from "./process-liveness.ts";
+import { NO_ID_FIELD, judgeStateOwner, selfIdentity, validHost } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { isTerminalState, readState } from "./workflow-state.ts";
@@ -107,9 +107,18 @@ export const CLAIM_STALE_MS: number = resolveClaimStaleMs(process.env.PI_ENSEMBL
  */
 export const FOREIGN_CLAIM_DELETE_FACTOR = 24;
 
-/** An identity field is a decimal id or the "-" sentinel — never free text. */
+/**
+ * An identity field is a decimal id or the "-" sentinel — never free text.
+ *
+ * #1871 — the sentinel is a VALID value, not a malformed one: `selfIdentity()`
+ * emits `NO_ID_FIELD` for `pidns` and `startTime` on any host with no `/proc`
+ * (macOS) or a hidepid procfs, so refusing it here would call every claim from
+ * such a host `malformed-entry` and prune it on read. The comparison rule lives
+ * in `process-liveness.ts` (`sameIdField`), which treats "-" as "cannot tell
+ * two holders apart"; the shape rule here has to accept the same value.
+ */
 function validIdField(value: unknown): boolean {
-  return typeof value === "string" && /^\d+$/.test(value);
+  return typeof value === "string" && (value === NO_ID_FIELD || /^\d+$/.test(value));
 }
 
 /**

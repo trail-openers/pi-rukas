@@ -29,8 +29,8 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { formatIdentity, selfIdentity, startTimeOfPid } from "../src/process-liveness.ts";
 import { withHostSpawnSlot } from "../src/host-spawn-slots.ts";
+import { formatIdentity, selfIdentity, startTimeOfPid } from "../src/process-liveness.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -336,6 +336,61 @@ try {
     assert(
       !oursSurvives,
       "our own identity's slot is never reaped on the lease — the wait bound, not a reap, is what ends it",
+    );
+  }
+  // ── 11. an UNSTAT-ABLE slot is never lease-reaped -------------------------
+  // The lease is an evidence rule: `silentForMs` returns NEGATIVE_INFINITY when
+  // `stat` throws, so a slot whose body this process cannot stat is one whose
+  // silence it has NOT established. Reading that failure as "silent forever"
+  // would let a momentary EACCES (or a torn write) double-admit a live child —
+  // the exact failure the host cap exists to prevent.
+  //
+  // This is a real filesystem condition, not a simulation: the slot's PARENT
+  // directory loses `r` (mode 0600, which keeps `--x`), and on Linux `stat`
+  // needs read permission on the parent while search alone is enough to open the
+  // file. A chmod fixture on the SLOT itself cannot work — `slotDir()` would
+  // declare an unwritable directory unusable and run the spawn unbounded, which
+  // is a different rule — so the EACCES is injected at the `stat` call the lease
+  // makes, which is the whole judgement under test.
+  {
+    const d = dir("unstatable");
+    const f = slot(d);
+    // An UNPARSEABLE body: the one shape the lease alone can take. A parseable
+    // foreign body with a reaped pid is `provablyDead` and the LIVENESS path
+    // unlinks it whatever the clock says, which would make this assert that path
+    // instead. A read failure is the same shape to the reap (`holderOf` also
+    // swallows its own EACCES into `undefined`), so this is the condition the
+    // docstring describes.
+    fs.writeFileSync(f, "written-by-something-else-entirely");
+    age(f, ANCIENT_S);
+    fs.chmodSync(d, 0o600);
+    const realStat = fs.statSync;
+    let statThrew = false;
+    (fs as unknown as { statSync: typeof fs.statSync }).statSync = ((p: fs.PathLike) => {
+      if (String(p) === f) {
+        statThrew = true;
+        throw Object.assign(new Error("EACCES: permission denied, stat"), { code: "EACCES" });
+      }
+      return realStat(p as fs.PathLike);
+    }) as typeof fs.statSync;
+    const { ran, err } = await acquire(d, 1);
+    (fs as unknown as { statSync: typeof fs.statSync }).statSync = realStat;
+    fs.chmodSync(d, 0o700);
+    assert(
+      statThrew,
+      "the fixture really did make the lease's stat of the slot fail (so the case is not vacuous)",
+    );
+    assert(
+      !ran && /host-wide spawn bound/.test(err) && fs.existsSync(f),
+      "a slot this process cannot stat is NEVER lease-reaped — the lease takes no slot on evidence it does not have",
+    );
+    // Positive control for the two lines above: the same unparseable, aged slot
+    // IS reaped once `stat` works, so the case above measures the stat rule and
+    // not a reap that never runs at all.
+    const control = await acquire(d, 1);
+    assert(
+      control.ran && !fs.existsSync(f),
+      "control: the same slot IS reaped on the same lease once stat succeeds",
     );
   }
 } finally {
