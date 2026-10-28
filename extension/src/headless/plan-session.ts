@@ -21,6 +21,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { PlanProvenance } from "../plan-provenance.ts";
 import type { PlanType } from "../plan-types.ts";
+import { processAlive } from "../process-liveness.ts";
 
 const execFileP = promisify(execFile);
 
@@ -150,14 +151,10 @@ export async function writeSession(dir: string, s: PlanSession): Promise<void> {
 /** A lock from another host (a container) older than this is taken over: its liveness cannot be checked. */
 export const FOREIGN_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+// #1871 — the probe is the shared predicate, not a local copy. A second
+// kill(pid,0) here is how two notions of "alive" come to disagree; the leaf
+// module owns the one answer.
+const alive = processAlive;
 
 /**
  * Whether a lock's holder may still be running. A lock is `{ pid, host, at, token }`.
@@ -174,6 +171,10 @@ function heldBy(raw: string, now: number): boolean {
   }
   const { pid, host, at } = lock;
   if (typeof pid !== "number" || typeof host !== "string" || typeof at !== "number") return false;
+  // #1871 — the plan-session lock already carried a host, and its rule for a
+  // foreign holder is deliberately UNCHANGED: only the age answers, because a
+  // pid from another machine's namespace says nothing (Decision 2). What the
+  // shared helper adds here is that the probe itself is no longer local.
   if (host !== os.hostname()) return now - at < FOREIGN_LOCK_STALE_MS;
   return pid !== process.pid && alive(pid);
 }

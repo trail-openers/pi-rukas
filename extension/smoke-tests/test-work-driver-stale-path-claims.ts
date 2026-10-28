@@ -362,7 +362,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-
 // ================================================================ 25. #1454 — fixtures are the repro's shape, and stay in sync
 {
   // The three inline JSON.stringify writes this suite used to build its own
@@ -434,10 +433,30 @@ function assert(cond: boolean, msg: string) {
     !strip(staleness).includes("isProcessAlive"),
     "the staleness module defines no isProcessAlive of its own",
   );
-  assert(!strip(staleness).includes("process.kill"), "the staleness module contains no kill(pid,0)");
   assert(
-    /import \{[^}]*processAlive[^}]*\} from "\.\/work-driver-resume\.ts"/.test(staleness),
-    "the staleness module imports processAlive from work-driver-resume.ts",
+    !strip(staleness).includes("process.kill"),
+    "the staleness module contains no kill(pid,0)",
+  );
+  // #1871 — the predicate module now judges liveness through the shared
+  // identity helper in process-liveness.ts, which is the one place a pid probe
+  // may be reached. Accept either importer shape, and pin the ban on a local
+  // probe either way: the requirement is that neither file owns a kill(pid,0).
+  const importsLivenessSeam =
+    /import \{[^}]*(processAlive|judgeStateOwner|judgeOwner)[^}]*\} from "\.\/(work-driver-resume|process-liveness)\.ts"/.test(
+      staleness,
+    );
+  assert(
+    importsLivenessSeam,
+    "the staleness module imports its liveness verdict from the shared seam (processAlive or judgeOwner)",
+  );
+  const resume = readFileSync(path.join(dir, "work-driver-resume.ts"), "utf8");
+  assert(
+    /export \{ processAlive \}/.test(resume) || /from "\.\/process-liveness\.ts"/.test(resume),
+    "work-driver-resume still re-exports the canonical processAlive predicate",
+  );
+  assert(
+    !strip(registry).includes("kill(") && !strip(staleness).includes("kill("),
+    "neither registry nor staleness module reaches process.kill directly",
   );
 }
 

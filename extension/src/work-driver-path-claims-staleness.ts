@@ -24,8 +24,8 @@
  * Eight concurrent claim writers lost seven of their claims to it.
  */
 
+import { judgeStateOwner, selfIdentity } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
-import { processAlive } from "./work-driver-resume.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { isTerminalState, readState } from "./workflow-state.ts";
 
@@ -33,6 +33,18 @@ import { isTerminalState, readState } from "./workflow-state.ts";
 export interface PathClaimEntry {
   issue: number;
   pid: number;
+  /**
+   * #1871 — where the claim was written. OPTIONAL: a claim written before this
+   * change carries no identity and keeps today's pid-only verdict (Decision 6).
+   * When both ARE present the liveness probe runs only if host and boot id
+   * match this process; anything else is `foreign`, which counts as ALIVE in
+   * both predicates below — never stale, never deleted.
+   *
+   * `validClaimEntry` requires them as a PAIR: an entry naming one without the
+   * other is malformed rather than silently identity-less.
+   */
+  host?: string;
+  bootId?: string;
   paths: string[];
   startedAt: number;
 }
@@ -95,6 +107,13 @@ export function validClaimEntry(entry: unknown): entry is PathClaimEntry {
   if (entry === null || typeof entry !== "object") return false;
   const rec = entry as Record<string, unknown>;
   if (typeof rec.issue !== "number" || !Number.isInteger(rec.issue)) return false;
+  // #1871 — host/boot-id are optional, but a half-written identity is not a
+  // claim: a record that names one and not the other cannot be judged, and
+  // silently reading it as "no identity" would hand a foreign holder today's
+  // pid-only verdict — the exact cross-container reap this change removes.
+  if (rec.host !== undefined && typeof rec.host !== "string") return false;
+  if (rec.bootId !== undefined && typeof rec.bootId !== "string") return false;
+  if ((rec.host === undefined) !== (rec.bootId === undefined)) return false;
   // pid 0 means "signal my whole process group" and a negative pid means a
   // process GROUP — neither is ever a claim holder, and the pre-#1454 liveness
   // helper read both as proof of life in the wrong direction. The bound is
@@ -129,7 +148,13 @@ export async function claimStaleReason(
   stateReader: (repoRoot: string, issue: number) => Promise<WorkState | undefined> = readState,
 ): Promise<string | null> {
   if (!validClaimEntry(entry)) return "malformed-entry";
-  if (!processAlive(entry.pid)) return "owner-exited";
+  // #1871 — the READER: only a holder this process can positively call dead
+  // stops reserving its paths. `foreign` (other host, other boot id) is NOT
+  // stale — pruning a live sibling container's reservation is the failure the
+  // registry exists to prevent, and the accepted cost (a claim from a dead
+  // container parks a cycle until someone clears the file) is documented in
+  // docs/headless.md. The park message names the holder identity and the file.
+  if (judgeStateOwner(entry, selfIdentity()) === "dead") return "owner-exited";
   let claimant: WorkState | undefined;
   let stateUnreadable = false;
   try {
@@ -187,7 +212,9 @@ export async function claimDeletionReason(
 ): Promise<string | null> {
   if (!validClaimEntry(entry)) return "malformed-entry";
   const aged = now - entry.startedAt > CLAIM_STALE_MS;
-  if (!processAlive(entry.pid)) {
+  // #1871 — the WRITER deletes only on positive proof of death, and a foreign
+  // identity is the opposite of proof: never deleted, whatever the age.
+  if (judgeStateOwner(entry, selfIdentity()) === "dead") {
     // A corpse is only deletable once it has been a corpse long enough that no
     // plausible owner is still mid-step. Young and unverified is kept.
     return aged ? "owner-exited" : null;

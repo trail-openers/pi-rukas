@@ -11,9 +11,9 @@
  */
 
 import { resolve } from "node:path";
+import { ownerIsGone, selfIdentity } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
-import { processAlive } from "./work-driver-resume.ts";
 import { groupClaimedByState, hasRealDependencyTree } from "./work-driver-sweep-rules.ts";
 import type { SweepTargetResult } from "./work-driver-worktree-sweep.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
@@ -94,7 +94,12 @@ export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> 
   // Rule 3: Live owner check
   const issueNumber = state.issue;
   const ownerPid = state.owner?.pid;
-  const deadOwner = ownerPid !== undefined && ownerPid !== selfPid && !processAlive(ownerPid);
+  // #1871 — "foreign" counts as alive: an owner whose host/boot-id this process
+  // cannot verify is NOT swept, because calling it dead would delete a live
+  // sibling container's worktree. A legacy {pid, at} owner keeps the pid-only
+  // verdict, so pre-upgrade state files still age out exactly as before.
+  const deadOwner =
+    ownerPid !== undefined && ownerPid !== selfPid && ownerIsGone(state.owner, selfIdentity());
   // A running file whose recorded owner is dead claims nothing: the group
   // claim exists for files with no owner yet, not for crashed cycles (#1454).
   if (!deadOwner && groupClaimedByState(state, target.name)) {

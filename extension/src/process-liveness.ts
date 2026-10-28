@@ -135,3 +135,51 @@ export function judgeOwner(holder: OwnerIdentity | undefined, self: OwnerIdentit
   if (holder.pid === self.pid) return "alive";
   return processAlive(holder.pid) ? "alive" : "dead";
 }
+
+/** The shape of a `WorkState.owner` / `PathClaimEntry` holder. */
+export interface OwnerRecord {
+  pid: number;
+  host?: string;
+  bootId?: string;
+}
+
+/**
+ * Judge a state-file owner or a path-claim entry, legacy shape included.
+ *
+ * A record carrying NO `host`/`bootId` is what pre-#1871 processes wrote, and
+ * Decision 6 pins its answer: today's pid-only verdict, unchanged. Calling it
+ * "identity unknown" and answering `foreign` would make every pre-upgrade state
+ * file unreadable-as-dead, which is the opposite failure — `work-driver-sweep-policy`
+ * would sweep live cycles' worktrees on an upgrade. So the legacy branch
+ * delegates to `processAlive` directly, and only a record that DOES carry an
+ * identity goes through `judgeOwner`.
+ *
+ * Pure, and takes `self` as an argument: that is the test seam.
+ */
+export function judgeStateOwner(
+  holder: OwnerRecord | undefined,
+  self: OwnerIdentity,
+): OwnerVerdict {
+  if (!holder) return "foreign";
+  if (holder.host === undefined && holder.bootId === undefined) {
+    return processAlive(holder.pid) ? "alive" : "dead";
+  }
+  return judgeOwner(
+    { host: holder.host ?? "", bootId: holder.bootId ?? NO_BOOT_ID, pid: holder.pid },
+    self,
+  );
+}
+
+/**
+ * May this process treat a state-file owner / claim entry as GONE?
+ *
+ * `"foreign"` counts as ALIVE everywhere it is used: a holder this process
+ * cannot verify is never reaped, never swept, never deleted, and a resume
+ * refuses against it. That is the direction the registry and the worktree
+ * sweep both take for an unprovable owner, and the accepted cost — a slot or
+ * claim from a dead container stays until someone clears it — is documented in
+ * docs/headless.md.
+ */
+export function ownerIsGone(holder: OwnerRecord | undefined, self: OwnerIdentity): boolean {
+  return judgeStateOwner(holder, self) === "dead";
+}

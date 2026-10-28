@@ -37,8 +37,15 @@ export interface WorkState {
    * corpse's, and those need opposite responses: resume the corpse, refuse
    * the live one. Without this the driver could not tell them apart, so it
    * did neither.
+   *
+   * #1871 — `host` and `bootId` make the owner an IDENTITY rather than a bare
+   * pid, so a container sharing a hostname with a sibling cannot call the
+   * sibling's live driver a corpse. Both are OPTIONAL: a state file written
+   * before #1871 carries only `{ pid, at }`, and every reader must keep
+   * today's pid-only verdict for that legacy shape (Decision 6) rather than
+   * call every pre-upgrade file dead and sweep a live cycle's worktree.
    */
-  owner?: { pid: number; at: number };
+  owner?: { pid: number; at: number; host?: string; bootId?: string };
   /**
    * Primary issue number — anchors the state-file path (`.pi/work-state/
    * <issue>.json`) + branch name. PR10: first of `issues` (the full list

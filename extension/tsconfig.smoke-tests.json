@@ -94,6 +94,7 @@
     "smoke-tests/test-plan-self-fence-note-cap-1862.ts",
     "smoke-tests/test-work-develop-fence-self-fence-1862.ts",
     "smoke-tests/test-plan-fence-note-neutralise-1862.ts",
-    "smoke-tests/test-process-identity.ts"
+    "smoke-tests/test-process-identity.ts",
+    "smoke-tests/test-owner-identity-readers.ts"
   ]
 }

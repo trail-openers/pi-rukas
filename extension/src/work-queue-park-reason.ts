@@ -1,22 +1,26 @@
+import { ownerIsGone, selfIdentity } from "./process-liveness.ts";
 /**
  * Why a queued group parked, read from its state file. Moved out of
  * work-queue.ts (#1093) to make room for the once-per-invocation start-ref
  * capture; the logic is unchanged.
  */
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
-import { processAlive } from "./work-driver-resume.ts";
 import { deferredLeftoverPath, deferredLeftoverStep } from "./work-queue-parks.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /**
- * A live owner is only trusted while its pid still exists. `processAlive`
- * treats an EPERM as alive (the pid exists, owned by another user), which is
- * the safe direction here: mistaking a live cycle for a corpse is what produced
- * the `--restart` advice that would race two drivers on one issue.
+ * A live owner is only trusted while its record still answers "alive".
+ *
+ * #1871 — the verdict is the identity judge's: a record carrying host/boot-id
+ * is probed only when both match this process, so a driver in a sibling
+ * container that shares this hostname is not called a corpse, and a "foreign"
+ * owner counts as ALIVE here (the group stays parked rather than being handed
+ * `--restart` advice that would race two drivers on one issue). A record with
+ * no identity is a pre-#1871 file and keeps today's pid-only answer.
  */
 function ownerAlive(state: WorkState): boolean {
-  const pid = state.owner?.pid;
-  return typeof pid === "number" && processAlive(pid);
+  const owner = state.owner;
+  return owner !== undefined && !ownerIsGone(owner, selfIdentity());
 }
 
 /** The reason suffix `humanActionFor` reads for a gate the host could not run. */

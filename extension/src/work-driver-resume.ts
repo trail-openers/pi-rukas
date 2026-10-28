@@ -39,7 +39,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { processAlive } from "./process-liveness.ts";
+import { ownerIsGone, processAlive, selfIdentity } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
@@ -206,7 +206,10 @@ export function markDispatchStarted(
   return {
     ...state,
     resumable: true,
-    owner: { pid: process.pid, at },
+    // #1871 — the full identity, so a sibling container sharing this hostname
+    // cannot read this owner as a pid it may call dead. A reader that finds no
+    // host/boot-id is looking at a pre-#1871 file and keeps the pid-only rule.
+    owner: { pid: process.pid, at, host: selfIdentity().host, bootId: selfIdentity().bootId },
     pipelineState: {
       ...state.pipelineState,
       inFlightJobIds: [...state.pipelineState.inFlightJobIds, jobId],
@@ -275,6 +278,10 @@ export type RunningVerdict =
  * two-syscall question. The re-export stays because every existing importer —
  * the claims staleness gate, the sweep policy, the park reason, and the resume
  * suite itself — names this module as its home for it.
+ *
+ * #1871 added `judgeOwner` / `judgeStateOwner` / `ownerIsGone` beside it in
+ * `process-liveness.ts`; the identity verdicts are read from there directly so
+ * there is exactly one place that decides what "alive" means for a holder.
  */
 export { processAlive };
 
@@ -292,7 +299,10 @@ export { processAlive };
  */
 export function classifyRunningState(state: WorkState, selfPid = process.pid): RunningVerdict {
   const owner = state.owner;
-  if (owner && owner.pid !== selfPid && processAlive(owner.pid)) {
+  // #1871 — judged by identity, and "foreign" counts as alive: an owner this
+  // process cannot verify is refused, never assumed gone. A legacy {pid, at}
+  // owner keeps the plain pid check.
+  if (owner && owner.pid !== selfPid && !ownerIsGone(owner, selfIdentity())) {
     return { action: "refuse", ownerPid: owner.pid };
   }
   // Only ids backed by a `dispatch-started` event are evidence of a crash.
