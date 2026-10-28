@@ -102,6 +102,9 @@
     "smoke-tests/test-spawn-exit-await-kill-paths.ts",
     "smoke-tests/test-process-identity.ts",
     "smoke-tests/test-owner-identity-readers.ts",
+    "smoke-tests/lib/owner-identity-fixtures.ts",
+    "smoke-tests/test-owner-claim-entry-shape.ts",
+    "smoke-tests/test-owner-claim-park-message.ts",
     "smoke-tests/test-host-spawn-lease.ts",
     "smoke-tests/test-claim-foreign-expiry.ts"
   ]
