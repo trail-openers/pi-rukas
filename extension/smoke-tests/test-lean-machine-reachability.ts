@@ -31,7 +31,8 @@
  * `engine.ts` enforces by keying steps on the entry count.
  */
 
-import { MAX_BUILD_ATTEMPTS, type Transition, next, outcomeKindsFor } from "../src/lean/machine.ts";
+import { MAX_BUILD_ATTEMPTS, next, outcomeKindsFor } from "../src/lean/machine.ts";
+import type { Transition } from "../src/lean/transitions.ts";
 import { INITIAL_COUNTERS, type LeanRun, type LeanState, isTerminal } from "../src/lean/state.ts";
 
 let exit = 0;

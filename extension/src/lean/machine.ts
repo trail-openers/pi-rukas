@@ -21,7 +21,8 @@
  * one did.
  */
 
-import type { LeanRun, LeanState, Outcome, RunCounters } from "./state.ts";
+import type { LeanRun, LeanState, Outcome } from "./state.ts";
+import { type Transition, to, viaBuild } from "./transitions.ts";
 
 /** Outcome kinds per state. The handler for a state may return only these. */
 export const OUTCOME_KINDS = {
@@ -62,11 +63,6 @@ export function exitCodeFor(state: LeanState): number {
 /** How many build rounds a run gets before it ships a draft instead. */
 export const MAX_BUILD_ATTEMPTS = 2;
 
-export interface Transition {
-  state: LeanState;
-  counters: RunCounters;
-}
-
 /**
  * Is this pair in the table? `next()` throws on a pair it does not have, so
  * callers that must not throw (the engine, the table test) ask first.
@@ -79,34 +75,6 @@ export function hasTransition(state: LeanState, kind: string): boolean {
 /** The kinds a state's handler may return. Empty for terminal states. */
 export function outcomeKindsFor(state: LeanState): readonly string[] {
   return (OUTCOME_KINDS as Partial<Record<LeanState, readonly string[]>>)[state] ?? [];
-}
-
-/** `build` is the only state that consumes an attempt. */
-function viaBuild(
-  run: LeanRun,
-  state: LeanState,
-  draft?: boolean,
-  patch: Partial<RunCounters> = {},
-): Transition {
-  return {
-    state,
-    counters: {
-      ...run.counters,
-      buildAttempts: run.counters.buildAttempts + 1,
-      // `undefined` is a pass-through: the transition does not opine on the
-      // marker, so a CI fix round re-enters build without clearing the red a
-      // verify step set. `true`/`false` set it explicitly. `patch` is applied
-      // last so a transition that sets both a marker and a flag stays
-      // consistent rather than having one overwrite the other.
-      ...(draft === undefined ? {} : { draft }),
-      ...patch,
-    },
-  };
-}
-
-/** Every other state passes the counters through unchanged unless it says so. */
-function to(run: LeanRun, state: LeanState, patch: Partial<RunCounters> = {}): Transition {
-  return { state, counters: { ...run.counters, ...patch } };
 }
 
 /**

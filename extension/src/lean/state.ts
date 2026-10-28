@@ -110,6 +110,24 @@ export function stepKey(issue: number, state: LeanState, n: number): string {
   return `${issue}:${state}:${n}`;
 }
 
+/**
+ * The trailing `:N` of a step key: how many times this state has been entered
+ * before this step. A malformed key reads as attempt 0 rather than throwing,
+ * because the engine keys its re-run decision on this number and a corrupt
+ * key must not turn into a crash inside the resume path.
+ */
+export function attemptOf(key: string): number {
+  const n = Number(key.slice(key.lastIndexOf(":") + 1));
+  return Number.isInteger(n) && n >= 0 ? n : 0;
+}
+
+/** The next attempt number for a state: one past the highest already logged. */
+export function nextAttempt(run: LeanRun, state: LeanState): number {
+  let max = -1;
+  for (const s of run.steps) if (s.state === state) max = Math.max(max, attemptOf(s.key));
+  return max + 1;
+}
+
 export function createRun(
   init: Pick<LeanRun, "issue" | "version" | "models" | "baseSha" | "branch">,
 ): LeanRun {

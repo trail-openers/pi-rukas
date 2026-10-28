@@ -23,8 +23,10 @@ import {
   type LeanRun,
   type LeanState,
   type Outcome,
+  attemptOf,
   isTerminal,
   loadRun,
+  nextAttempt,
   saveRun,
   stepKey,
 } from "./state.ts";
@@ -76,19 +78,6 @@ function reasonFor(state: LeanState, outcome: Outcome | undefined): string {
   if (outcome && typeof outcome.reason === "string") return outcome.reason;
   if (outcome && typeof outcome.message === "string") return outcome.message;
   return `ended at ${state}`;
-}
-
-/** The trailing `:N` of a step key. A malformed key reads as attempt 0, not a crash. */
-function attemptOf(key: string): number {
-  const n = Number(key.slice(key.lastIndexOf(":") + 1));
-  return Number.isInteger(n) && n >= 0 ? n : 0;
-}
-
-/** The next attempt number for a state: one past the highest already logged. */
-function nextAttempt(run: LeanRun, state: LeanState): number {
-  let max = -1;
-  for (const s of run.steps) if (s.state === state) max = Math.max(max, attemptOf(s.key));
-  return max + 1;
 }
 
 /** A first run: `ready`, plus whatever the caller already knows. */
