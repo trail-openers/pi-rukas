@@ -385,13 +385,32 @@ export async function typecheckWorktree(cwd: string, run: DriverExecFn): Promise
   // unsound (or unaskable) compiler makes the outcome "could not run": never
   // "typecheck passed", which is exactly what the stub produced.
   const compiler = await toolchainCanary(ext, run);
-  if (compiler.ok !== true) {
-    const why = compiler.ok === false ? compiler.why : compiler.why;
-    trace(`work-driver: checkpoint typecheck cannot be trusted in ${cwd}: ${why}`.slice(0, 240));
+  if (compiler.ok === false) {
+    // A compiler that WAS there and accepted the known error: every verdict it
+    // would print is void, so the checkpoint records none.
+    trace(
+      `work-driver: checkpoint typecheck cannot be trusted in ${cwd}: ${compiler.why}`.slice(
+        0,
+        240,
+      ),
+    );
     return {
       verdict: undefined,
-      why: `the pinned type-checker is not sound, so its verdict means nothing (${why})`,
+      why: `the pinned type-checker is not sound, so its verdict means nothing (${compiler.why})`,
     };
+  }
+  if (compiler.ok === undefined) {
+    // #1879 (H3) — the canary could not be asked (no compiler under this cwd,
+    // or a canary that faulted). That is not a finding about the compiler, and
+    // stopping here would replace the typecheck's own honest reason — "could
+    // not run" for a missing binary, a real verdict for everything else — with
+    // a claim about a check that never happened. So the command runs.
+    trace(
+      `work-driver: checkpoint typecheck ran without a compiler-integrity answer in ${cwd}: ${compiler.why}`.slice(
+        0,
+        240,
+      ),
+    );
   }
   try {
     await withVerifySlot(() =>

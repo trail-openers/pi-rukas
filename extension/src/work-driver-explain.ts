@@ -6,7 +6,6 @@
  */
 
 import { reviewWallClockMs } from "./review-budget.ts";
-import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainContinueCap, isContinueCap } from "./work-driver-continue-pr-explain.ts";

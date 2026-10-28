@@ -110,6 +110,7 @@
     "smoke-tests/test-toolchain-canary-1879.ts",
     "smoke-tests/test-write-fence-deps-1879.ts",
     "smoke-tests/test-toolchain-canary-1879-cap.ts",
+    "smoke-tests/test-toolchain-canary-1879-park.ts",
     "smoke-tests/lib/toolchain-canary-support.ts",
     "smoke-tests/lib/toolchain-canary-assert.ts"
   ]

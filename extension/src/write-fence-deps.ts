@@ -15,6 +15,17 @@
  * untouched; only the three roles whose tools already exclude write/edit are
  * held to this through their bash.
  *
+ * What this rule actually sees is exactly what the bash target list resolves:
+ * the tabled writers (`cp`/`mv`/`install`/`ln`/`link`, `sed -i`, `tar -C`, `rm`,
+ * `tee`, redirections the lexer can resolve — see write-fence-bash-writers.ts).
+ * It judges NOTHING else, and it is not trying to: an interpreter one-liner
+ * (`node -e`, `python -c`), a heredoc or any other target the lexer cannot
+ * resolve, and git's own writes all reach the tree without appearing in that
+ * list. The compiler-integrity canary (work-driver-toolchain-canary.ts) is the
+ * backstop for precisely those — it asks the compiler itself whether it still
+ * refuses a known type error, so a clobber that this rule could not see is still
+ * caught before any tier is trusted as GREEN.
+ *
  * Judged on the RESOLVED path, so `<worktree>/node_modules/tsc` — which the OS
  * resolves into `<repo>/node_modules/tsc` through the provisioned link — is
  * caught, and so is the same path named directly. A symlink the CHILD creates

@@ -27,11 +27,13 @@ import path from "node:path";
 import { LOCAL_TSC_CMD } from "../src/work-driver-cap-checkpoint-typecheck.ts";
 import { runCiVerifyFull } from "../src/work-driver-ci-verify.ts";
 import {
+  CANARY_NOT_JUDGED,
   CANARY_SKIPPED_NOTE,
   guardCompilerIntegrity,
   isToolchainUnsoundFailure,
   resetToolchainCanaryCache,
   toolchainCanary,
+  toolchainCanaryEnabled,
   usesPinnedCompiler,
 } from "../src/work-driver-toolchain-canary.ts";
 import { verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
@@ -225,8 +227,8 @@ async function gateFixture(body: string): Promise<{
       `the project's verify command was never run — an unsound compiler is decided first (ran: ${ran.join(" | ")})`,
     );
     assert(
-      verifyCapFor("develop", failures) === "verify-failed:develop",
-      "a canary failure is a plain failure string; the CAP is the router's decision, made once at the park site",
+      verifyCapFor("develop", failures) === "toolchain-unsound",
+      `the canary failure routes to its own cap, not verify-failed (got ${verifyCapFor("develop", failures)})`,
     );
   } finally {
     rmTree(root);
@@ -296,8 +298,85 @@ async function gateFixture(body: string): Promise<{
   }
 }
 
+{
+  // #1879 fix round (H3) — NO compiler under the cwd is not a finding about the
+  // compiler. A fixture tree with no `node_modules` at all must not be reported
+  // unsound: the tier runs, and its own command is what says the dependency
+  // tree is missing.
+  const root = fixtureRoot("absent");
+  const pkg = path.join(root, "extension");
+  mkdirSync(pkg, { recursive: true });
+  try {
+    resetToolchainCanaryCache();
+    const { exec, ran } = recording();
+    const outcome = await toolchainCanary(pkg, exec);
+    assert(
+      outcome.ok === undefined && outcome.why === CANARY_NOT_JUDGED,
+      `no compiler is "${CANARY_NOT_JUDGED}", never a failure (got ${outcome.ok}: ${outcome.ok !== true ? outcome.why : ""})`,
+    );
+    assert(ran.length === 0, "and nothing was executed — there was no compiler to ask");
+    const guarded = await guardCompilerIntegrity({
+      cmd: `cd extension && ${LOCAL_TSC_CMD} --noEmit -p tsconfig.json`,
+      cwd: pkg,
+      where: "a tier whose dependencies were never installed",
+      run: realExec,
+    });
+    assert(
+      guarded?.failure === undefined,
+      `an absent compiler never parks a tier (got failure: ${String(guarded?.failure)?.slice(0, 80)})`,
+    );
+    // The checkpoint keeps the opposite rule for the same answer: it records no
+    // verdict rather than a pass, and it lets the command run so the real
+    // reason ("could not run") is the one the operator reads.
+    const { typecheckWorktree } = await import("../src/work-driver-cap-checkpoint-typecheck.ts");
+    writeFileSync(path.join(pkg, "x.ts"), "export const a = 1;\n");
+    writeFileSync(path.join(pkg, "tsconfig.json"), '{"compilerOptions":{}}\n');
+    const { exec: cpExec, ran: cpRan } = recording();
+    const outcome2 = await typecheckWorktree(root, cpExec);
+    assert(
+      cpRan.some((r) => r.includes("tsc --noEmit")),
+      `the checkpoint still RUNS the typecheck when there is no compiler to canary (ran: ${cpRan.join(" | ") || "nothing"})`,
+    );
+    assert(
+      outcome2.verdict !== true,
+      `a missing compiler never reads as "typecheck passed" (got ${String(outcome2.verdict)})`,
+    );
+  } finally {
+    rmTree(root);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("3. the escape hatch skips the canary and SAYS so");
+{
+  // The hatch accepts the repo's shared vocabulary — the same set
+  // `consolidatedVerifySkipEnabled` and `gateReuseEnabled` accept — trimmed and
+  // case-folded, and a malformed value keeps the check ON.
+  const prev = process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
+  const OFF = ["0", "false", "off", "no", "  OFF  ", "No", "FALSE"];
+  const ON = ["1", "true", "yes", "", "banana"];
+  try {
+    for (const v of OFF) {
+      process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY = v;
+      assert(
+        toolchainCanaryEnabled() === false,
+        `hatch value ${JSON.stringify(v)} turns the canary off`,
+      );
+    }
+    for (const v of ON) {
+      process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY = v;
+      assert(
+        toolchainCanaryEnabled() === true,
+        `hatch value ${JSON.stringify(v)} keeps the canary on (the safe side runs the check)`,
+      );
+    }
+    delete process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
+    assert(toolchainCanaryEnabled() === true, "unset keeps the canary on");
+  } finally {
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
+    else process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY = prev;
+  }
+}
 {
   const root = fixtureRoot("hatch");
   const pkg = packageWithCompiler(root, STUB);

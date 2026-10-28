@@ -42,6 +42,15 @@
  *     `os.tmpdir()`, because a type error committed into the tree it is
  *     verifying would fail the very gate it exists to validate.
  *
+ *   - **No compiler, no judgement.** When the pinned entry file does not exist
+ *     under the cwd the canary answers {@link CANARY_NOT_JUDGED} and the tier
+ *     runs unchanged: a missing `node_modules` is not a tampered compiler, and
+ *     the typecheck itself fails on a missing binary anyway ("could not run").
+ *     The canary blocks only what it actually observed — a compiler that was
+ *     there and accepted the known error. The call sites that must not report a
+ *     verdict at all (the cap checkpoint) still treat an unasked question as
+ *     "could not run", never as a pass.
+ *
  * Failure is not a verify failure: {@link TOOLCHAIN_UNSOUND_LABEL} marks the
  * park as `toolchain-unsound`, a cap of its own, so an operator is told to
  * reinstall dependencies rather than to look at a diff that may be fine. The
@@ -72,17 +81,32 @@ const CANARY_SOURCE = 'const x: number = "no";\n';
 /** The diagnostic that error's code. Printed by the real compiler as TS2322. */
 const CANARY_DIAGNOSTIC = "TS2322";
 
+/** The values that turn the escape hatch off, matching every other hatch. */
+const DISABLED_VALUES = new Set(["0", "false", "off", "no"]);
+
 /** The operator-facing reason a canary park carries (also the `explainCap` advice). */
 export const TOOLCHAIN_UNSOUND_ADVICE =
   "The type-checker accepted a file with a known type error, so a green typecheck proves nothing. Reinstall dependencies (`bun install --frozen-lockfile --force` in the package directory) and restart the cycle.";
 
-/** Why the canary declined to run: the pinned spelling is not a path under this cwd. */
-function notFoundReason(spelling: string): string {
-  return `no compiler at ${spelling} under this directory, so the pinned type-checker could not be asked`;
-}
-
-/** The note the gate records when the operator turned the canary off. */
+/**
+ * The note the gate records when the canary could not be asked at all — the
+ * operator turned it off, or there was no compiler under that cwd to ask.
+ */
 export const CANARY_SKIPPED_NOTE = "compiler integrity not checked";
+
+/**
+ * #1879 fix round (H3) — the answer a tier gets when there is no compiler to
+ * ask: {@link CANARY_NOT_JUDGED}, not a failure. The develop and ci tiers let
+ * the command run unchanged, because a missing compiler is an absent
+ * dependency tree — not a stub substituted for one — and the tier's own
+ * command fails on it anyway (node reports `Cannot find module`, which the
+ * checkpoint's classifier already reads as "could not run").
+ *
+ * A tier must never turn this into a park: the operator's problem would be an
+ * uninstalled `node_modules`, and the advice for that is a reinstall the tier
+ * itself already says with its own ENOENT.
+ */
+export const CANARY_NOT_JUDGED = "not judged";
 
 /** What the canary observed about the compiler it was pointed at. */
 export type CanaryOutcome =
@@ -99,6 +123,12 @@ type Cached = CanaryOutcome & { key: string | undefined };
 /**
  * Is the canary enabled? `PI_ENSEMBLE_TOOLCHAIN_CANARY=0` turns it off.
  *
+ * The vocabulary is the repo's shared one — `0`, `false`, `off`, `no`, trimmed
+ * and lower-cased — the same set `consolidatedVerifySkipEnabled` and
+ * `gateReuseEnabled` accept, so an operator who writes `off` on one hatch gets
+ * it honoured on every hatch. A malformed value keeps the canary ON: the safe
+ * side is the one that runs the check.
+ *
  * Reads the parent env the way every other escape hatch in the driver does
  * (compare `transientRetryEnabled`) rather than taking the whole environment as
  * an optional parameter: this module's answer is consulted inside verify gates
@@ -107,8 +137,9 @@ type Cached = CanaryOutcome & { key: string | undefined };
  * so it can never become one.
  */
 export function toolchainCanaryEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
-  return v !== "0" && v !== "false";
+  const raw = process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
+  if (raw === undefined) return true;
+  return !DISABLED_VALUES.has(raw.trim().toLowerCase());
 }
 
 /** Does this verify command invoke the pinned compiler spelling? */
@@ -238,7 +269,12 @@ export async function toolchainCanary(cwd: string, run: DriverExecFn): Promise<C
   try {
     fsSync.accessSync(entry);
   } catch {
-    return { ok: undefined, why: notFoundReason(LOCAL_TSC_CMD) };
+    // No compiler to ask — the canary judges NOTHING. It is not evidence of a
+    // stub (a stub is a file that exists and answers wrongly), and the tier's
+    // own command fails on a missing binary by itself. `guardCompilerIntegrity`
+    // therefore lets the tier run; a caller that must not record a verdict at
+    // all (the cap checkpoint) reads `ok !== true` and says "could not run".
+    return { ok: undefined, why: CANARY_NOT_JUDGED };
   }
   try {
     return await ask(entry, cwd, run);
@@ -308,7 +344,10 @@ export async function guardCompilerIntegrity(opts: {
   const outcome = await toolchainCanary(opts.cwd, opts.run);
   if (outcome.ok === true) return undefined;
   if (outcome.ok === undefined) {
-    return { note: `compiler integrity not checked — ${outcome.why}` };
+    // "Could not look" is never a park — for a missing compiler or an
+    // unaskable one alike. The tier runs, and its own command is the thing
+    // that reports a dependency tree that is not installed.
+    return { note: CANARY_SKIPPED_NOTE };
   }
   return {
     failure: toolchainUnsoundFailure(opts.where, outcome.why),

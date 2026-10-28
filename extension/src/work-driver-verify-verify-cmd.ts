@@ -13,20 +13,14 @@
 import path from "node:path";
 import { reportConsolidatedVerifyOutcome } from "./work-driver-consolidated-verify-report.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
-import { buildPerWorktreeFailuresByWs } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { guardCompilerIntegrity, packageDirFor } from "./work-driver-toolchain-canary.ts";
 import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
 import type { BaselineRedEstablished } from "./work-driver-verify-aggregate.ts";
 import type { VerifyCommandGateBaseHealth } from "./work-driver-verify-base-health-channels.ts";
-import {
-  buildConsolidatedRetry,
-  buildConsolidatedVerifyOpts,
-} from "./work-driver-verify-consolidated-opts.ts";
 import { runConsolidatedLeg } from "./work-driver-verify-consolidated-run.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
-import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { recordConsolidatedGateVerdict } from "./work-driver-verify-gate-record.ts";
 import {
   type GatePass,

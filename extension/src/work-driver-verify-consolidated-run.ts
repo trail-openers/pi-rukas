@@ -75,7 +75,6 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
     reusedWholeGate,
     reused,
   } = args;
-  const execp = execFn;
   const scratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
   // #807 — the retry gate and the Case-2 root-cause match below must read
   // the SAME per-worktree failure map: if the retry fires on one view of
@@ -126,7 +125,7 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
   // run above already judged. The eligibility rule (and why the identity is
   // read here but compared inside the probe) is in `developVerifiedTree`.
   // Any failure yields `undefined` and the consolidated verify runs as before.
-  const alreadyVerifiedTree = await developVerifiedTree(execp, ctx, {
+  const alreadyVerifiedTree = await developVerifiedTree(execFn, ctx, {
     changedWorktrees,
     worktrees: state.pipelineState.worktrees ?? {},
     perWorktreeVerifyFailures,
@@ -139,7 +138,7 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
   const cons: ConsolidatedVerifyResult = reusedWholeGate
     ? { status: "passed", applied: [], reused }
     : await runConsolidatedVerify(
-        execp,
+        execFn,
         buildConsolidatedVerifyOpts({
           repoRoot: ctx.repoRoot,
           baseSha,
