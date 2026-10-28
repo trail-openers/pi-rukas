@@ -386,6 +386,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // Unset: no budget for any role (#1642); an explicit value arms a ceiling.
   family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
   ms("TOOL_INACTIVITY_TIMEOUT_MS", 3_600_000),
+  // #1879 — the compiler-integrity canary. 0 skips it and every guarded tier
+  // then says "compiler integrity not checked" rather than going silent.
+  flag("TOOLCHAIN_CANARY", true),
   input("TRANSCRIPT_RETENTION_DAYS", "number", 5, "cycle", { unit: "days" }),
   flag("TRANSIENT_RETRY", true),
   ms("TRANSIENT_RETRY_BACKOFF_MS", 5_000),

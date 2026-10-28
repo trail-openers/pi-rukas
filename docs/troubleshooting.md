@@ -1566,6 +1566,7 @@ Every cap id the driver can record has exactly one row in this table (`extension
 | `verify-env:<step>` | The system refused to start a process, so the gate never ran. See "What `verify-failed:<step>` means, and the caps that split from it". | Free the host's resources, then re-run. |
 | `verify-failed:<step>` | The verify gate ran and judged the change red. See "Outcome-verification gates — `verify-failed:<step>` cap-hits". | Read the per-check evidence in the handoff and fix the code. |
 | `verify-timeout:<step>` | The verify command hit its time bound and reached no verdict. See "`verify-timeout:<step>`: the gate did not finish". | As that section says. |
+| `toolchain-unsound` | #1879 — the pinned type-checker accepted a file with a known type error (`TS2322` never printed), so every green typecheck this cycle reported means nothing. NOT a verdict on the code: the compiler was the failure. See "A green typecheck meant nothing: `toolchain-unsound`". | Reinstall dependencies (`bun install --frozen-lockfile --force` in the package directory), then re-run `/work N --restart`. `PI_ENSEMBLE_TOOLCHAIN_CANARY=0` skips the check and the notes then say so. |
 | `workstream-results-unreadable` | The plan child made `report_workstream` calls but their tool results could not be read from its event stream, so the driver cannot tell which calls Pi accepted. This is a Pi event-shape problem, not a bad plan, so no corrective is spent and no plan-spec verdict is given (#1652). | Check the Pi version against `docs/pi-compatibility.md`, run `test-pi-shape-live.ts`, then re-run. |
 | `worktree-listing-unreadable` | The branch step could not read `git worktree list` (bounded; git hung or failed), so it could not tell whether a same-issue worktree holds work. | Clear what blocks git (a stale `.git/worktrees` lock), then re-run. |
 
@@ -2868,6 +2869,24 @@ If the handoff names a bound but not the knob, that is a documentation gap worth
 - Add a `.pi/verify-cmd-fast` (see "Verify command discovery" below). Developers then stop running the full suite in parallel, and a type error fails in seconds instead of after the whole suite.
 
 Do not set `PI_ENSEMBLE_VERIFY=0` for this. The gate did not reject the change; it did not finish.
+
+#### A green typecheck meant nothing: `toolchain-unsound`
+
+**Symptom:** The cycle parks as `toolchain-unsound`, not `verify-failed:<step>`. The evidence starts with `[toolchain-unsound]` and says the pinned type-checker *accepted a file with a known type error*. Nothing about the diff is implicated.
+
+**What happened:** Before any tier is trusted as GREEN, the driver runs the pinned compiler (`node node_modules/typescript/bin/tsc`) — the same one, from the same cwd — on a file holding one known type error, `const x: number = "no";`, written under `os.tmpdir()` (never inside the repository). The compiler must exit non-zero **and** print `TS2322`. A compiler that accepts that file has judged nothing, and every green it printed is void. The cap is separate from `verify-failed:<step>` for that reason: the code was never judged.
+
+**The incident this closes (#1879):** a read-only reviewer child (a `/plan` gap-gate reviewer, cwd = the main checkout, bash unfenced by design) overwrote the shared `extension/node_modules/typescript/bin/tsc` and `lib/tsc.js` with a `sleep 9.5; exit 0` stub. Every worktree links that same tree, so every local typecheck and `bun run check` exited 0 on any tree for about eleven minutes. GitHub CI was unaffected because it installs fresh.
+
+**Fix:** Reinstall the dependencies, then restart the cycle:
+
+```bash
+bun install --frozen-lockfile --force
+```
+
+Run it in the package directory (for this repo, `extension/`). The canary's result is cached per process under the compiler file's realpath, mtime and size, so a reinstall changes the key and the check runs again — you do not have to restart anything but the cycle.
+
+The check guards the develop verify gate (per-worktree and consolidated), the ci tier's `.pi/verify-cmd-full`, and the cap checkpoint's typecheck. A verify command that does not contain the pinned spelling is not canaried — that is a rule about the driver's own convention, not a general compiler auditor, and it keeps the check from becoming an outage generator for projects that spell their typecheck otherwise. `PI_ENSEMBLE_TOOLCHAIN_CANARY=0` turns it off; every guarded tier then records `compiler integrity not checked` in its notes rather than going silent, which is the only honest state for a gate whose positive control was never run.
 
 #### Scope fan-out: the developer changed too many files
 

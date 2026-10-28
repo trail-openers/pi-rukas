@@ -125,6 +125,9 @@ export const FIXED_CAPS = [
   "spawn-backstop",
   "step-back-revise-spec",
   "token-budget",
+  // #1879 — the pinned compiler accepted a file with a known type error, so a
+  // green typecheck proved nothing. Its own cap, never `verify-failed:<step>`.
+  "toolchain-unsound",
   // #1652 — the plan child's tool results could not be read, so its
   // report_workstream calls cannot be judged accepted or refused.
   "workstream-results-unreadable",

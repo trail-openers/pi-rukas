@@ -48,6 +48,7 @@ import { withVerifySlot } from "./host-resources.ts";
 import { trace } from "./trace.ts";
 import type { DriverExecFn } from "./work-driver-context.ts";
 import { isHostForkExhaustion } from "./work-driver-exec-error.ts";
+import { toolchainCanary } from "./work-driver-toolchain-canary.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import {
   boundText,
@@ -379,6 +380,19 @@ export async function typecheckWorktree(cwd: string, run: DriverExecFn): Promise
   // this call names the run's configured bound explicitly rather than letting a
   // default read the environment behind the caller's back.
   const timeoutMs = verifyTimeoutMs();
+  // #1879 — a green this checkpoint records is a claim about the tree, and the
+  // pinned compiler can only make it if it still refuses a known type error. An
+  // unsound (or unaskable) compiler makes the outcome "could not run": never
+  // "typecheck passed", which is exactly what the stub produced.
+  const compiler = await toolchainCanary(ext, run);
+  if (compiler.ok !== true) {
+    const why = compiler.ok === false ? compiler.why : compiler.why;
+    trace(`work-driver: checkpoint typecheck cannot be trusted in ${cwd}: ${why}`.slice(0, 240));
+    return {
+      verdict: undefined,
+      why: `the pinned type-checker is not sound, so its verdict means nothing (${why})`,
+    };
+  }
   try {
     await withVerifySlot(() =>
       run(CHECKPOINT_TYPECHECK_CMD, {

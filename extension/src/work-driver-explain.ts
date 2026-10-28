@@ -37,6 +37,7 @@ import {
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
+import { TOOLCHAIN_UNSOUND_ADVICE } from "./work-driver-toolchain-canary.ts";
 import { INTEGRATE_CREATE_FAILED_PREFIX, lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
@@ -348,6 +349,14 @@ export function explainCap(
     }
     case "fix-pass-park":
       return explainNoVerdictCap(cap, state) as string;
+    case "toolchain-unsound": {
+      // #1879 — the compiler was PROVEN unsound, so every green typecheck this
+      // cycle reported is void. The operator's action is a reinstall, not a
+      // diff: naming the diff would send them to code the gate never judged.
+      const hit = lastCapHit(state, cap);
+      const ev = hit?.evidence ?? TOOLCHAIN_UNSOUND_ADVICE;
+      return `the pinned type-checker failed its canary — ${ev}`;
+    }
     case "develop-child-crash":
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);

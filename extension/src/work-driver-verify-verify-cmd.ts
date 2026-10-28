@@ -17,6 +17,7 @@ import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import { buildPerWorktreeFailuresByWs } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import { guardCompilerIntegrity, packageDirFor } from "./work-driver-toolchain-canary.ts";
 import { aggregateVerifyOutcome } from "./work-driver-verify-aggregate.ts";
 import type { BaselineRedEstablished } from "./work-driver-verify-aggregate.ts";
 import type { VerifyCommandGateBaseHealth } from "./work-driver-verify-base-health-channels.ts";
@@ -213,6 +214,24 @@ async function runVerifyCommandGateBody(
   const suiteTimeoutMs = suiteTierTimeoutMsOpt ?? (await verifyTimeoutMs());
   // #1667 — each failure with the cwd it ran in; the flat failure list is derived from these.
   const perWorktreeRecords = record.perWorktree;
+  // #1879 — compiler integrity, asked ONCE per gate before a green from any
+  // tier below is trusted. The command is canaried when it invokes the pinned
+  // compiler spelling; a compiler that accepts a known type error makes every
+  // green it prints meaningless, so an unsound one is the gate's only failure
+  // string — the code was never judged and is not indicted.
+  const compiler = await guardCompilerIntegrity({
+    cmd,
+    cwd: packageDirFor(cmd, ctx.repoRoot),
+    where: `the develop verify gate (repo root ${ctx.repoRoot})`,
+    run: ctx.verifyExecFn ?? execp,
+  });
+  if (compiler?.note !== undefined) notes.push(compiler.note);
+  if (compiler?.failure !== undefined) {
+    failures.push(compiler.failure);
+    record.failures = [compiler.failure];
+    record.perWorktree = [];
+    return;
+  }
   // The tier-resolved bound is also part of the reuse identity.
   const passTimeoutMs = suiteTimeoutMs;
   // #1415 — the whole-gate reuse, decided BEFORE a single command runs. When

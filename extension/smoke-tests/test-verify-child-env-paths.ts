@@ -262,6 +262,9 @@ async function main(): Promise<void> {
     // The baseline probe's OWN git calls take the named host env — computed in
     // the probe, not handed in by a caller that could name any knob it liked.
     ["work-driver-verify-baseline.ts", "const hostEnv = verifyHostEnv();"],
+    // #1879 — the compiler canary runs the project's own compiler, so it takes
+    // the same scrubbed env rather than the driver's ambient one.
+    ["work-driver-toolchain-canary.ts", "env: verifyChildEnv(),"],
   ];
   const inheritedBy = new Set([
     // The one seam that legitimately reads a snapshot of the parent for the
