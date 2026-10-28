@@ -96,9 +96,19 @@ export type CanaryOutcome =
 /** A canary run, with the identity it was cached under (undefined = not cacheable). */
 type Cached = CanaryOutcome & { key: string | undefined };
 
-/** Is the canary enabled? `PI_ENSEMBLE_TOOLCHAIN_CANARY=0` turns it off. */
-export function toolchainCanaryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PI_ENSEMBLE_TOOLCHAIN_CANARY !== "0";
+/**
+ * Is the canary enabled? `PI_ENSEMBLE_TOOLCHAIN_CANARY=0` turns it off.
+ *
+ * Reads the parent env the way every other escape hatch in the driver does
+ * (compare `transientRetryEnabled`) rather than taking the whole environment as
+ * an optional parameter: this module's answer is consulted inside verify gates
+ * whose child envs the driver scrubs, and the env-inheritance gate
+ * (test-verify-child-env-paths.ts) refuses a whole-environment default outright
+ * so it can never become one.
+ */
+export function toolchainCanaryEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
+  return v !== "0" && v !== "false";
 }
 
 /** Does this verify command invoke the pinned compiler spelling? */
@@ -292,10 +302,9 @@ export async function guardCompilerIntegrity(opts: {
   cwd: string;
   where: string;
   run: DriverExecFn;
-  env?: NodeJS.ProcessEnv;
 }): Promise<{ failure?: string; note?: string } | undefined> {
   if (!usesPinnedCompiler(opts.cmd)) return undefined;
-  if (!toolchainCanaryEnabled(opts.env)) return { note: CANARY_SKIPPED_NOTE };
+  if (!toolchainCanaryEnabled()) return { note: CANARY_SKIPPED_NOTE };
   const outcome = await toolchainCanary(opts.cwd, opts.run);
   if (outcome.ok === true) return undefined;
   if (outcome.ok === undefined) {
