@@ -38,14 +38,17 @@ export interface WorkState {
    * the live one. Without this the driver could not tell them apart, so it
    * did neither.
    *
-   * #1871 — `host` and `bootId` make the owner an IDENTITY rather than a bare
-   * pid, so a container sharing a hostname with a sibling cannot call the
-   * sibling's live driver a corpse. Both are OPTIONAL: a state file written
-   * before #1871 carries only `{ pid, at }`, and every reader must keep
-   * today's pid-only verdict for that legacy shape (Decision 6) rather than
-   * call every pre-upgrade file dead and sweep a live cycle's worktree.
+   * #1871 — `host`, `pidns` and `startTime` make the owner an IDENTITY rather
+   * than a bare pid, so a container sharing a hostname with a sibling cannot
+   * call the sibling's live driver a corpse, and a pid the kernel recycled
+   * after its process exited cannot be mistaken for the original. All three
+   * are OPTIONAL as a GROUP: a state file written before #1871 carries only
+   * `{ pid, at }`, and every reader must keep that release's pid-only verdict
+   * for it (Decision D3) rather than call every pre-upgrade file dead and sweep
+   * a live cycle's worktree. A record carrying SOME but not all of the three is
+   * `foreign` — never probed (Decision D4).
    */
-  owner?: { pid: number; at: number; host?: string; bootId?: string };
+  owner?: { pid: number; at: number; host?: string; pidns?: string; startTime?: string };
   /**
    * Primary issue number — anchors the state-file path (`.pi/work-state/
    * <issue>.json`) + branch name. PR10: first of `issues` (the full list

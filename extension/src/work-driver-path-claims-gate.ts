@@ -21,7 +21,7 @@
  * evidence, the same shape the conflict park two lines above already used.
  */
 
-import { selfIdentity } from "./process-liveness.ts";
+import { formatIdentity, selfIdentity } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { claimsFilePath, readRawClaims, writeClaims } from "./work-driver-path-claims-file.ts";
@@ -39,15 +39,22 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 const PID = process.pid;
 
 /**
- * #1871 — how to render a claim's holder in a park message. A claim with no
- * identity is a pre-#1871 row and says so, because "unknown" is the fact an
+ * #1871 — how to render a claim's holder in a park message. Only ever a
+ * PARSED, validated identity (`validClaimEntry` ran first), because this text
+ * reaches handoff markdown. A claim with no identity fields at all is a
+ * pre-#1871 row and says so, because "identity unknown" is the fact an
  * operator needs: that entry predates the identity change and is judged by pid
  * alone.
  */
 function describeClaimHolder(entry: PathClaimEntry): string {
-  return entry.host === undefined || entry.bootId === undefined
+  return entry.host === undefined || entry.pidns === undefined || entry.startTime === undefined
     ? `pid ${entry.pid} (identity unknown — written before #1871)`
-    : `${entry.host} ${entry.bootId} ${entry.pid}`;
+    : formatIdentity({
+        host: entry.host,
+        pidns: entry.pidns,
+        pid: entry.pid,
+        startTime: entry.startTime,
+      });
 }
 
 /**
@@ -243,12 +250,15 @@ export async function registerClaim(
     const withoutSelf = live.filter((c) => c.issue !== issue);
     // Add our new claim.
     // #1871 — the claim carries this process's identity, so a sibling that
-    // cannot verify it treats the claim as alive rather than deleting it.
+    // cannot verify it treats the claim as alive rather than deleting it —
+    // until the foreign-expiry bound passes (`claimDeletionReason`).
+    const me = selfIdentity();
     const entry: PathClaimEntry = {
       issue,
       pid: PID,
-      host: selfIdentity().host,
-      bootId: selfIdentity().bootId,
+      host: me.host,
+      pidns: me.pidns,
+      startTime: me.startTime,
       paths: normalised,
       startedAt: Date.now(),
     };

@@ -26,7 +26,11 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { formatIdentity, selfIdentity } from "../src/process-liveness.ts";
+import {
+  NO_ID_FIELD,
+  formatIdentity,
+  selfIdentity,
+} from "../src/process-liveness.ts";
 import { hostSpawnDegraded, withHostSpawnSlot } from "../src/host-spawn-slots.ts";
 import { resourceReport } from "../src/resource-budget.ts";
 
@@ -45,9 +49,10 @@ const worker = path.join(import.meta.dir, "lib", "host-spawn-worker.ts");
 const dead = spawnSync("true").pid ?? 999_999;
 /** A dead pid stamped with THIS process's full identity: the reap case. */
 const deadHolder = formatIdentity({ ...selfIdentity(), pid: dead });
-/** A shape-valid boot id that is not this boot's — a sibling container. */
-const FOREIGN_BOOT = "00000000-1111-2222-3333-444444444444";
-const LIVE_HOLD_MS = 20_000;
+/** A pid-namespace inode that is not this container's — a sibling container. */
+const FOREIGN_NS = "4026532999";
+/** Field 22 of a long-gone process: any value that is not the holder's. */
+const DEAD_START = "1";
 
 function mkSlots(name: string): string {
   const slots = path.join(root, `${name}-slots`);
@@ -55,25 +60,34 @@ function mkSlots(name: string): string {
   return slots;
 }
 
-/** Read the bodies of this directory's slots (`.reap` locks are not slots). */
-function slotBodies(dir: string): string[] {
-  return fs
-    .readdirSync(dir)
-    .filter((f) => /^slot-\d+$/.test(f))
-    .map((f) => fs.readFileSync(path.join(dir, f), "utf8").trim());
+/** Field 22 of `/proc/<pid>/stat` for a child this test spawned, or "-". */
+function readStart(pid: string): string {
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const tail = raw.slice(raw.lastIndexOf(")") + 1).trim();
+    return tail.split(/\s+/)[19] ?? NO_ID_FIELD;
+  } catch {
+    return NO_ID_FIELD;
+  }
 }
 
 async function peakAcrossTwoProcesses(cap: number, name: string, seedDead = 0): Promise<number> {
   const slots = mkSlots(name);
   const probe = path.join(root, `${name}-probe`);
   fs.mkdirSync(probe, { recursive: true });
-  // #1871 — seedDead=0 is what this harness always passes. A parent-seeded
-  // corpse slot is NOT an idle slot: a worker may observe it between the
-  // parent's unlink and its own claim and then wait out the bound, which reads
-  // as a hang rather than a failure. The dead-holder reap path is covered by
-  // the deterministic `own-dead` case below, so the race here is the pure
-  // two-process claim race.
-  for (let i = 0; i < seedDead; i++) fs.writeFileSync(path.join(slots, `slot-${i}`), deadHolder);
+  // Each seed is a slot whose holder is PROVABLY dead: this container's
+  // namespace, a pid that existed and exited, and the start time it had while
+  // it ran. `raced` passes 2 so both workers must RECOVER rather than merely
+  // claim, which is the fixture this case lost (with 0 seeds both simply take
+  // slot-0 and slot-1 and the race judges nothing).
+  for (let i = 0; i < seedDead; i++) {
+    const gone = spawn("sleep", ["0.05"]);
+    await new Promise((r) => gone.on("exit", r));
+    fs.writeFileSync(
+      path.join(slots, `slot-${i}`),
+      formatIdentity({ ...selfIdentity(), pid: gone.pid ?? dead, startTime: DEAD_START }),
+    );
+  }
   const env = {
     ...process.env,
     PI_ENSEMBLE_HOST_SPAWN_DIR: slots,
@@ -112,14 +126,25 @@ try {
   );
   // Both processes race to recover the same dead slots: still never above the cap.
   const raced = await peakAcrossTwoProcesses(2, "raced", 2);
-  assert(raced >= 1 && raced <= 2, `racing recoverers stay within the cap (peak ${raced})`);
+  assert(raced === 2, `both racing recoverers each got a slot off the dead holders (peak ${raced})`);
   const control = await peakAcrossTwoProcesses(0, "control");
   assert(control > 2, `control: with the host bound off they overlap past 2 (peak ${control})`);
 
   // ── A slot whose holder died is recovered by PID liveness, not age.
   const recDir = path.join(root, "recover");
   fs.mkdirSync(recDir);
-  fs.writeFileSync(path.join(recDir, "slot-0"), deadHolder);
+  // A holder this process can PROVE is gone: our namespace, a pid that existed
+  // and exited, and the start time it really had while it ran (`/proc/<pid>/stat`
+  // now fails, so a reader must answer "-", which is not the recorded value —
+  // the second half of the judgement is exercised, not skipped).
+  const gone = spawn("sleep", ["0.05"]);
+  const gonePid = gone.pid ?? dead;
+  const goneStart = readStart(String(gonePid));
+  await new Promise((r) => gone.on("exit", r));
+  fs.writeFileSync(
+    path.join(recDir, "slot-0"),
+    formatIdentity({ ...selfIdentity(), pid: gonePid, startTime: goneStart }),
+  );
   process.env.PI_ENSEMBLE_HOST_SPAWN_DIR = recDir;
   process.env.PI_ENSEMBLE_HOST_SPAWN_CAP = "1";
   process.env.PI_ENSEMBLE_HOST_SPAWN_WAIT_MS = "500";
@@ -138,9 +163,16 @@ try {
   fs.mkdirSync(liveDir);
   const holder = spawn("sleep", ["5"]);
   liveChildren.push(holder);
+  // The holder's REAL start time: a slot stamped with a start time that does
+  // not match `/proc` is a recycled pid and is reaped, which is the opposite
+  // of what this case is about.
   fs.writeFileSync(
     path.join(liveDir, "slot-0"),
-    formatIdentity({ ...selfIdentity(), pid: holder.pid ?? 0 }),
+    formatIdentity({
+      ...selfIdentity(),
+      pid: holder.pid ?? 0,
+      startTime: readStart(String(holder.pid)),
+    }),
   );
   process.env.PI_ENSEMBLE_HOST_SPAWN_DIR = liveDir;
   let err = "";
@@ -180,36 +212,64 @@ try {
   }
   assert(/host-wide spawn bound/.test(foreign), "a slot held on another host is not reaped");
 
-  // ── #1871 — SAME host, FOREIGN boot id, a LIVE pid: never reaped.
+  // ── #1871 — SAME host, FOREIGN pid namespace, a LIVE pid: never reaped.
   //
   // The fixture carries this host's real hostname and a pid that really lives
-  // (our own `sleep` child), so the ONLY thing separating it from the reap
-  // case is the boot id. Under the pre-#1871 pid-only judgement this slot is
-  // called dead and stolen, the spawn runs, and the assertion fails.
+  // (our own `sleep` child), so the ONLY thing separating it from the reap case
+  // is the namespace. Under a pid-only judgement this slot is called dead and
+  // stolen, the spawn runs, and the assertion fails.
   {
-    const dir = path.join(root, "foreign-boot");
+    const dir = path.join(root, "foreign-ns");
     fs.mkdirSync(dir);
     const sleep = spawn("sleep", ["30"]);
     deadChildren.push(sleep);
     const body = formatIdentity({
       host: selfIdentity().host,
-      bootId: FOREIGN_BOOT,
+      pidns: FOREIGN_NS,
       pid: sleep.pid ?? 0,
+      startTime: readStart(String(sleep.pid)),
     });
     fs.writeFileSync(path.join(dir, "slot-0"), body);
     process.env.PI_ENSEMBLE_HOST_SPAWN_DIR = dir;
     process.env.PI_ENSEMBLE_HOST_SPAWN_CAP = "1";
     process.env.PI_ENSEMBLE_HOST_SPAWN_WAIT_MS = "400";
-    let foreignBoot = "";
+    let foreignNs = "";
     try {
       await withHostSpawnSlot(async () => undefined);
     } catch (e) {
-      foreignBoot = (e as Error).message;
+      foreignNs = (e as Error).message;
     }
     assert(
-      /host-wide spawn bound/.test(foreignBoot) &&
+      /host-wide spawn bound/.test(foreignNs) &&
         fs.readFileSync(path.join(dir, "slot-0"), "utf8").trim() === body,
-      "a slot on OUR host with a FOREIGN boot id and a live pid is not reaped",
+      "a slot on OUR host with a FOREIGN pid namespace and a live pid is not reaped",
+    );
+    sleep.kill();
+  }
+
+  // ── #1871 — a LIVE pid whose recorded start time is not its own is a recycled
+  // pid and IS reaped. This is the case a pid-only judgement cannot express.
+  {
+    const dir = path.join(root, "recycled-pid");
+    fs.mkdirSync(dir);
+    const sleep = spawn("sleep", ["30"]);
+    deadChildren.push(sleep);
+    const body = formatIdentity({
+      ...selfIdentity(),
+      pid: sleep.pid ?? 0,
+      startTime: DEAD_START,
+    });
+    fs.writeFileSync(path.join(dir, "slot-0"), body);
+    process.env.PI_ENSEMBLE_HOST_SPAWN_DIR = dir;
+    process.env.PI_ENSEMBLE_HOST_SPAWN_CAP = "1";
+    process.env.PI_ENSEMBLE_HOST_SPAWN_WAIT_MS = "2000";
+    let recycledRan = false;
+    await withHostSpawnSlot(async () => {
+      recycledRan = true;
+    });
+    assert(
+      recycledRan,
+      "a slot naming a live pid with the WRONG start time is a recycled pid and is reaped",
     );
     sleep.kill();
   }
@@ -244,7 +304,10 @@ try {
     const gone = spawn("sleep", ["0.05"]);
     deadChildren.push(gone);
     await new Promise((r) => gone.on("exit", r));
-    fs.writeFileSync(dir + "/slot-0", formatIdentity({ ...selfIdentity(), pid: gone.pid ?? 0 }));
+    fs.writeFileSync(
+      dir + "/slot-0",
+      formatIdentity({ ...selfIdentity(), pid: gone.pid ?? 0, startTime: DEAD_START }),
+    );
     process.env.PI_ENSEMBLE_HOST_SPAWN_DIR = dir;
     process.env.PI_ENSEMBLE_HOST_SPAWN_CAP = "1";
     process.env.PI_ENSEMBLE_HOST_SPAWN_WAIT_MS = "2000";

@@ -13,8 +13,8 @@
  *     worktree.
  *
  * The safe direction is the same in all three: `foreign` counts as ALIVE. A
- * legacy entry (no host / boot-id) keeps today's pid-only verdict, which is
- * what stops an upgrade calling every pre-#1871 file dead.
+ * legacy entry (no identity fields at all) keeps that release's pid-only
+ * verdict, which is what stops an upgrade calling every pre-#1871 file dead.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -27,6 +27,8 @@ import {
   setClaimsConflictsForTests,
 } from "../src/work-driver-path-claims-gate.ts";
 import {
+  CLAIM_STALE_MS,
+  FOREIGN_CLAIM_DELETE_FACTOR,
   type PathClaimEntry,
   claimDeletionReason,
   claimStaleReason,
@@ -49,7 +51,9 @@ function assert(cond: boolean, msg: string) {
 }
 
 const FOREIGN_HOST = "not-this-container";
-const FOREIGN_BOOT = "00000000-1111-2222-3333-444444444444";
+const SELF_NS = selfIdentity().pidns;
+/** A pid namespace inode that is not this container's. */
+const FOREIGN_NS = SELF_NS === "4026532999" ? "4026532111" : "4026532999";
 const NOW = 1_800_000_000_000;
 /** A pid that is certainly not ours; its fate must not matter, because the
  * identity check runs first and the probe is never reached. */
@@ -88,17 +92,37 @@ const runningState = async () =>
 // ── the reader: a foreign claim is never stale, at any age ------------------
 {
   const cases: Array<[string, Partial<PathClaimEntry>]> = [
+    ["a foreign host", { host: FOREIGN_HOST, pidns: SELF_NS, startTime: "1", pid: SOMEONE_ELSES_PID }],
     [
-      "a foreign host",
-      { host: FOREIGN_HOST, bootId: selfIdentity().bootId, pid: SOMEONE_ELSES_PID },
+      "a foreign pid namespace",
+      { host: selfIdentity().host, pidns: FOREIGN_NS, startTime: "1", pid: SOMEONE_ELSES_PID },
     ],
     [
-      "a foreign boot id",
-      { host: selfIdentity().host, bootId: FOREIGN_BOOT, pid: SOMEONE_ELSES_PID },
+      "both foreign",
+      { host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1", pid: SOMEONE_ELSES_PID },
     ],
-    ["both foreign", { host: FOREIGN_HOST, bootId: FOREIGN_BOOT, pid: SOMEONE_ELSES_PID }],
+    [
+      "a half identity (host only)",
+      // Not a claim at all — `validClaimEntry` refuses it and the reader calls
+      // it stale, which is what stops a half-written row being read as "no
+      // identity" and judged by the bare pid.
+      { host: selfIdentity().host, pid: SOMEONE_ELSES_PID } as Partial<PathClaimEntry>,
+    ],
   ];
   for (const [label, over] of cases) {
+    // A half identity is not a claim at all — `validClaimEntry` refuses it, and
+    // that refusal IS the D4 answer (never routed to the pid probe). Assert it
+    // directly and skip the age-rule loop, which is about entries that ARE
+    // claims; asserting "not stale" for a malformed row would be asserting the
+    // opposite of the rule.
+    if (!validClaimEntry(claim({ ...over }))) {
+      assert(
+        (await claimStaleReason("/repo", claim({ ...over, startedAt: NOW }), NOW, runningState)) ===
+          "malformed-entry",
+        `${label} is refused as a claim rather than judged by its bare pid`,
+      );
+      continue;
+    }
     const entry = claim({ ...over, startedAt: ANCIENT });
     // A FRESH timestamp isolates the liveness rule; the age rule below is the
     // one that reads `unverifiable-age` / `unreadable-state`.
@@ -124,11 +148,12 @@ const runningState = async () =>
   }
 }
 
-// ── the writer: a foreign claim is never deleted, at any age ----------------
+// ── the writer: a foreign claim is never deleted before the foreign bound ---
 {
   const entry = claim({
     host: FOREIGN_HOST,
-    bootId: FOREIGN_BOOT,
+    pidns: FOREIGN_NS,
+    startTime: "1",
     // An impossible pid AND ancient: only a pid-only judgement would delete
     // this. The identity check must answer first.
     pid: 999_999,
@@ -137,7 +162,51 @@ const runningState = async () =>
   const reason = await claimDeletionReason("/repo", entry, NOW, noState);
   assert(
     reason === null,
-    `the writer never deletes a foreign holder, even an ancient one with an impossible pid (got ${String(reason)})`,
+    `the writer never deletes a foreign holder on the ordinary bound, whatever its pid says (got ${String(reason)})`,
+  );
+}
+
+// ── D7: a foreign claim DOES expire, at 24 × the bound ----------------------
+{
+  const foreign = (startedAt: number) =>
+    claim({ host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1", pid: 999_999, startedAt });
+  const young = await claimDeletionReason(
+    "/repo",
+    foreign(NOW - CLAIM_STALE_MS * FOREIGN_CLAIM_DELETE_FACTOR + 60_000),
+    NOW,
+    noState,
+  );
+  assert(
+    young === null,
+    `a foreign claim just UNDER 24 × the bound is kept (got ${String(young)})`,
+  );
+  const expired = await claimDeletionReason(
+    "/repo",
+    foreign(NOW - CLAIM_STALE_MS * FOREIGN_CLAIM_DELETE_FACTOR - 60_000),
+    NOW,
+    noState,
+  );
+  assert(
+    expired === "foreign-expired",
+    `a foreign claim past 24 × the bound is deleted by the writer, so the registry stops growing (got ${String(expired)})`,
+  );
+  // Our OWN identity past the same age is not a foreign expiry: it is judged
+  // by pid, and a live owner keeps its entry whatever the age.
+  const oursOld = await claimDeletionReason(
+    "/repo",
+    claim({
+      host: selfIdentity().host,
+      pidns: SELF_NS,
+      startTime: selfIdentity().startTime,
+      pid: process.pid,
+      startedAt: NOW - CLAIM_STALE_MS * FOREIGN_CLAIM_DELETE_FACTOR - 60_000,
+    }),
+    NOW,
+    noState,
+  );
+  assert(
+    oursOld === null,
+    `a LIVE claim with our own identity is kept even past the foreign bound (got ${String(oursOld)})`,
   );
 }
 
@@ -169,28 +238,65 @@ const runningState = async () =>
   assert(young === null, "a legacy claim with a dead YOUNG pid is kept (the #1454 r2 asymmetry)");
   const ours = await claimStaleReason("/repo", claim({ startedAt: NOW }), NOW, noState);
   assert(ours === null, "a legacy claim with our own live pid is fresh");
-  // The identity half of the legacy rule: a record naming host without bootId
-  // is not a claim at all, so it cannot smuggle a foreign holder into the
-  // pid-only branch.
+  // The identity half of the legacy rule: a record naming SOME but not all of
+  // host/pidns/startTime is not a claim at all, so it cannot smuggle a foreign
+  // holder into the pid-only branch.
   assert(
     !validClaimEntry({ ...claim({ host: "h" }) }),
-    "an entry with host but no bootId is malformed, not identity-less",
+    "an entry with host but no pidns/startTime is malformed, not identity-less",
+  );
+  assert(
+    !validClaimEntry({ ...claim({ host: selfIdentity().host, pidns: SELF_NS }) }),
+    "an entry with host+pidns but no startTime is malformed (a half identity is never probed)",
+  );
+  assert(
+    !validClaimEntry({ ...claim({ host: "bad host!", pidns: SELF_NS, startTime: "1" }) }),
+    "an entry whose host fails validation is malformed, so an invalid host never reaches a renderer",
+  );
+  assert(
+    !validClaimEntry({ ...claim({ host: selfIdentity().host, pidns: "0x10", startTime: "1" }) }),
+    "a non-decimal pidns is malformed",
+  );
+  assert(
+    validClaimEntry({
+      ...claim({ host: selfIdentity().host, pidns: SELF_NS, startTime: "1" }),
+    }),
+    "a full three-field identity is a valid claim",
   );
 }
 
 // ── our OWN identity still answers the probe (no rubber stamp) --------------
 {
-  const me = { host: selfIdentity().host, bootId: selfIdentity().bootId };
+  const me = { host: selfIdentity().host, pidns: SELF_NS };
   const gone = await claimStaleReason(
     "/repo",
-    claim({ ...me, pid: deadPid(), startedAt: NOW }),
+    claim({ ...me, startTime: "99999999999", pid: deadPid(), startedAt: NOW }),
     NOW,
     noState,
   );
   assert(
     gone === "owner-exited",
-    "a claim with OUR host and OUR boot id and a dead pid still reads stale",
+    "a claim with OUR host, OUR pidns and a dead pid still reads stale",
   );
+  // A live pid carrying a start time that is not its own is a recycled pid:
+  // stale too. A pid probe alone cannot see this.
+  const recycled = await claimStaleReason(
+    "/repo",
+    claim({ ...me, startTime: "99999999999", pid: process.pid, startedAt: NOW }),
+    NOW,
+    noState,
+  );
+  assert(
+    recycled === "owner-exited",
+    "a claim naming OUR OWN live pid with the wrong start time reads stale (a recycled pid)",
+  );
+  const live = await claimStaleReason(
+    "/repo",
+    claim({ ...me, startTime: selfIdentity().startTime, pid: process.pid, startedAt: NOW }),
+    NOW,
+    noState,
+  );
+  assert(live === null, "a claim with our exact full identity is fresh");
 }
 
 // ── the park message names the holder's identity and the claim file --------
@@ -221,10 +327,10 @@ const runningState = async () =>
   };
   try {
     const foreign = await parkOn(
-      claim({ issue: 702, host: FOREIGN_HOST, bootId: FOREIGN_BOOT, pid: 4242 }),
+      claim({ issue: 702, host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1", pid: 4242 }),
     );
     assert(
-      /holder: not-this-container 00000000-1111-2222-3333-444444444444 4242/.test(foreign),
+      foreign.includes(`holder: ${FOREIGN_HOST} ${FOREIGN_NS} 4242 1`),
       "the park evidence names the foreign holder's full identity",
     );
     assert(
@@ -279,21 +385,31 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
     pid: 999,
     at: 0,
     host: FOREIGN_HOST,
-    bootId: selfIdentity().bootId,
+    pidns: SELF_NS,
+    startTime: "1",
   });
   assert(
     /^live-owner pid=999$/.test(foreignHost),
     `a state owner on another host is not swept (got ${foreignHost})`,
   );
-  const foreignBoot = await decideWith({
+  const foreignNs = await decideWith({
     pid: 999,
     at: 0,
     host: selfIdentity().host,
-    bootId: FOREIGN_BOOT,
+    pidns: FOREIGN_NS,
+    startTime: "1",
   });
   assert(
-    /^live-owner pid=999$/.test(foreignBoot),
-    `a state owner from another boot is not swept (got ${foreignBoot})`,
+    /^live-owner pid=999$/.test(foreignNs),
+    `a state owner in another pid namespace is not swept (got ${foreignNs})`,
+  );
+  // D4 — a HALF identity is never routed to the pid probe: it is foreign, and
+  // foreign is alive. Pid 999 is one this process can certainly call dead, so
+  // a judge that probed would sweep the worktree and this line would go red.
+  const half = await decideWith({ pid: 999, at: 0, host: selfIdentity().host });
+  assert(
+    /^live-owner pid=999$/.test(half),
+    `a HALF identity (host only) is foreign, never probed, so it is not swept (got ${half})`,
   );
   const legacyDead = await decideWith({ pid: 999, at: 0 });
   assert(
@@ -302,6 +418,19 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
   );
   const oursLive = await decideWith({ pid: process.pid, at: 0 });
   assert(/^live-owner pid=\d+$/.test(oursLive), "our own live pid still skips the sweep");
+  // Our own namespace and pid, but a start time that is not ours: the owner is
+  // a DIFFERENT process that happens to hold our pid, so the sweep may run.
+  const recycled = await decideWith({
+    pid: process.pid,
+    at: 0,
+    host: selfIdentity().host,
+    pidns: SELF_NS,
+    startTime: "99999999999",
+  });
+  assert(
+    !/^live-owner/.test(recycled),
+    `a full identity whose start time does not match /proc is a recycled pid and IS swept (got ${recycled})`,
+  );
 }
 
 // ── resume: a foreign owner refuses with a named owner; legacy unchanged ----
@@ -327,12 +456,20 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
     }) as unknown as WorkState;
 
   const foreign = classifyRunningState(
-    inFlight({ pid: 999, at: 0, host: FOREIGN_HOST, bootId: FOREIGN_BOOT }),
+    inFlight({ pid: 999, at: 0, host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1" }),
     999_999,
   );
   assert(
     foreign.action === "refuse" && foreign.ownerPid === 999,
     "a foreign owner is REFUSED: resume will not join a driver it cannot verify",
+  );
+  const half = classifyRunningState(
+    inFlight({ pid: 999, at: 0, host: selfIdentity().host }),
+    999_999,
+  );
+  assert(
+    half.action === "refuse",
+    "a HALF identity is foreign and REFUSED — resume never probes a pid it cannot verify",
   );
   const legacyDead = classifyRunningState(inFlight({ pid: 999_999, at: 0 }), 999_998);
   assert(
@@ -354,9 +491,16 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
     eventLog: [],
   } as unknown as WorkState;
   const next = markDispatchStarted(state, "develop", "developer", "l", "job-1", 5);
+  const me = selfIdentity();
   assert(
-    next.owner?.host === selfIdentity().host && next.owner?.bootId === selfIdentity().bootId,
-    "the write-ahead records the full identity, not just a pid",
+    next.owner?.host === me.host &&
+      next.owner?.pidns === me.pidns &&
+      next.owner?.startTime === me.startTime,
+    "the write-ahead records the full identity — host, pidns AND start time",
+  );
+  assert(
+    next.owner?.startTime !== undefined && next.owner?.startTime !== "",
+    "the stamped start time is present, so a later reader can spot a recycled pid",
   );
 }
 

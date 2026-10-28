@@ -174,7 +174,11 @@ function heldBy(raw: string, now: number): boolean {
   // #1871 — the plan-session lock already carried a host, and its rule for a
   // foreign holder is deliberately UNCHANGED: only the age answers, because a
   // pid from another machine's namespace says nothing (Decision 2). What the
-  // shared helper adds here is that the probe itself is no longer local.
+  // shared helper adds here is that the probe itself is no longer local. This
+  // lock is NOT an owner identity: it carries a host and a pid but no pid
+  // namespace, so `judgeOwner`'s rules do not apply and it is not migrated. A
+  // plan-session lock carries no pid namespace, so it is NOT an identity —
+  // `judgeOwner`'s rules do not apply to it and it is not migrated.
   if (host !== os.hostname()) return now - at < FOREIGN_LOCK_STALE_MS;
   return pid !== process.pid && alive(pid);
 }

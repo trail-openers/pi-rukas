@@ -203,13 +203,21 @@ export function markDispatchStarted(
   at: number,
   transcriptPath?: string,
 ): WorkState {
+  const me = selfIdentity();
   return {
     ...state,
     resumable: true,
     // #1871 — the full identity, so a sibling container sharing this hostname
-    // cannot read this owner as a pid it may call dead. A reader that finds no
-    // host/boot-id is looking at a pre-#1871 file and keeps the pid-only rule.
-    owner: { pid: process.pid, at, host: selfIdentity().host, bootId: selfIdentity().bootId },
+    // cannot read this owner as a pid it may call dead. A reader that finds NO
+    // identity field at all is looking at a pre-#1871 file and keeps the
+    // pid-only rule; one that finds only some of them is foreign, never probed.
+    owner: {
+      pid: process.pid,
+      at,
+      host: me.host,
+      pidns: me.pidns,
+      startTime: me.startTime,
+    },
     pipelineState: {
       ...state.pipelineState,
       inFlightJobIds: [...state.pipelineState.inFlightJobIds, jobId],
