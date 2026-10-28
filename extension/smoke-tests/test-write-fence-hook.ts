@@ -11,8 +11,8 @@
  *      reader — the channel the cycle state's counter is built from;
  *   D. the companion registers the fence in BOTH trust mode and
  *      PI_ENSEMBLE_SUBAGENT_MODE=1, and registers nothing without a root;
- *   E. the fence is inert without PI_ENSEMBLE_WRITE_ROOT and with
- *      PI_ENSEMBLE_WRITE_FENCE=0.
+ *   E. the whole-tree fence is inert without a root / under the hatch, while the
+ *      read-only-role dependency rule registers on the role alone (#1879).
  */
 
 import { readFileSync, readdirSync, rmSync } from "node:fs";
@@ -61,6 +61,10 @@ const ENV_KEYS = [
   "PI_ENSEMBLE_WRITE_SCRATCH",
   "PI_ENSEMBLE_WRITE_FENCE",
   "PI_ENSEMBLE_SUBAGENT_MODE",
+  // #1879: the dependency rule registers on the ROLE alone, so an ambient reviewer
+  // role in the caller's environment would make it register in section E's
+  // "registers nothing" assertions. Saved, cleared and restored like the rest.
+  "PI_ENSEMBLE_ROLE",
 ] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 const savedCwd = process.cwd();
@@ -80,6 +84,10 @@ process.env.PI_ENSEMBLE_WRITE_REPO = fx.repo;
 process.env.PI_ENSEMBLE_WRITE_SCRATCH = fx.scratch;
 Reflect.deleteProperty(process.env, "PI_ENSEMBLE_WRITE_FENCE");
 Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SUBAGENT_MODE");
+// #1879: the dependency rule registers on the ROLE alone, so an ambient reviewer
+// role in the caller's environment would add a second tool_call hook to every
+// fakePi below and shift the counts in D/E.
+Reflect.deleteProperty(process.env, "PI_ENSEMBLE_ROLE");
 // The hook resolves relative paths against the child's working directory, which is the worktree.
 process.chdir(fx.wt);
 
@@ -215,10 +223,13 @@ for (const [tool, input] of directAllowed) {
 }
 
 // ============================================================
-// E. Inert without a root, and under the escape hatch.
+// E. The whole-tree fence is inert without a root; the dependency rule registers
+//    on the role alone (#1879).
 // ============================================================
 {
   const savedRoot = process.env.PI_ENSEMBLE_WRITE_ROOT;
+  // A writer role: nothing but the missing root keeps the whole-tree fence off.
+  process.env.PI_ENSEMBLE_ROLE = "developer";
   Reflect.deleteProperty(process.env, "PI_ENSEMBLE_WRITE_ROOT");
   const unfenced = fakePi();
   registerWriteFence(unfenced);
@@ -230,15 +241,45 @@ for (const [tool, input] of directAllowed) {
   childGuards(bare);
   assert(
     (bare.handlers.tool_call ?? []).length === 6,
-    "E: no root: the companion keeps its six guards and no fence",
+    "E: no root, writer role: the companion keeps its six guards and no fence",
   );
   process.env.PI_ENSEMBLE_WRITE_ROOT = savedRoot;
 
   process.env.PI_ENSEMBLE_WRITE_FENCE = "0";
   const hatch = fakePi();
   registerWriteFence(hatch);
-  assert(!hatch.handlers.tool_call, "E: PI_ENSEMBLE_WRITE_FENCE=0 → the fence registers nothing");
+  assert(
+    !hatch.handlers.tool_call,
+    "E: writer role: PI_ENSEMBLE_WRITE_FENCE=0 → the whole-tree fence registers nothing",
+  );
+
+  // #1879 — the dependency rule has neither gate: no write root and no hatch can
+  // disarm it. With a read-only role the hook registers either way.
+  process.env.PI_ENSEMBLE_ROLE = "adversarial-developer";
+  const reviewerNoRoot = fakePi();
+  registerWriteFence(reviewerNoRoot);
+  assert(
+    (reviewerNoRoot.handlers.tool_call ?? []).length === 1,
+    "E: read-only role, no root → the dependency rule still registers its hook",
+  );
+  const reviewerHatch = fakePi();
+  registerWriteFence(reviewerHatch);
+  assert(
+    (reviewerHatch.handlers.tool_call ?? []).length === 1,
+    "E: read-only role under PI_ENSEMBLE_WRITE_FENCE=0 → the dependency rule still registers",
+  );
+  // The hatch is the developer whole-tree fence's switch, never the rule's.
+  process.env.PI_ENSEMBLE_ROLE = "developer";
+  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_WRITE_ROOT");
+  const writerHatchNoRoot = fakePi();
+  registerWriteFence(writerHatchNoRoot);
+  assert(
+    !writerHatchNoRoot.handlers.tool_call,
+    "E: writer role, no root, hatch on → registers nothing",
+  );
+  process.env.PI_ENSEMBLE_WRITE_ROOT = savedRoot;
   Reflect.deleteProperty(process.env, "PI_ENSEMBLE_WRITE_FENCE");
+  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_ROLE");
 }
 
 // ============================================================

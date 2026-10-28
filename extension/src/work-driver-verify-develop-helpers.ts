@@ -26,6 +26,7 @@ import {
   extractRunningTests,
   gateHangClause,
 } from "./work-driver-gate-hang.ts";
+import { isToolchainUnsoundFailure } from "./work-driver-toolchain-canary.ts";
 import { VERIFY_SUITE_TIMEOUT_ENV, verifyTimeoutMs } from "./work-driver-verify-budget.ts";
 
 /**
@@ -248,6 +249,13 @@ export function isVerifyTimeoutFailure(failure: string): boolean {
  *     nothing about the change was judged. An environment refusal, like the
  *     fork failure beside it.
  *
+ *   - `toolchain-unsound` — #1879, and it is NOT a per-step template: the
+ *     compiler itself was proven unsound by the canary, so no verdict on the
+ *     code exists at this step or any other. It leads the whole function
+ *     because a canary failure is the gate's ONLY failure string when it fires
+ *     (the tier never runs), and because the operator's action — reinstall the
+ *     dependencies — is different from every cap below.
+ *
  * One real failure among them is a code failure, so the cap stays verify-failed.
  * The residue branch sits INSIDE the every-no-verdict guard for that reason:
  * a timeout beside a residue decline is still a run that reached no verdict,
@@ -260,8 +268,17 @@ export function verifyCapFor<S extends string>(
   failures: readonly string[],
   baselineRedOnly = false,
   buildResidueOnly = false,
-): `verify-failed:${S}` | `verify-timeout:${S}` | `verify-env:${S}` | `verify-baseline-red:${S}` {
+):
+  | `verify-failed:${S}`
+  | `verify-timeout:${S}`
+  | `verify-env:${S}`
+  | `verify-baseline-red:${S}`
+  | "toolchain-unsound" {
   if (failures.length === 0) return `verify-failed:${step}`;
+  // #1879 — the compiler was proven unable to judge, so the step is not the
+  // thing that failed. Checked first: no per-step cap may swallow the one
+  // finding that says every green this cycle reported is void.
+  if (failures.some(isToolchainUnsoundFailure)) return "toolchain-unsound";
   const noVerdict = (f: string) =>
     isHostExhaustionFailure(f) || isVerifyTimeoutFailure(f) || isBuildResidueFailure(f);
   if (!failures.every(noVerdict))
@@ -331,6 +348,14 @@ const VALID_SHA_RE = /^[0-9a-f]{40}$/;
 export function isValidSha(s: string | undefined): s is string {
   return typeof s === "string" && VALID_SHA_RE.test(s);
 }
+
+/**
+ * The exact arm group 5 mutates, exported so the mutant is anchored on a
+ * literal the test reads back rather than a hand-typed copy that can drift from
+ * the source and silently mutate nothing.
+ */
+export const TOOLCHAIN_UNSOUND_CAP_ARM =
+  '  if (failures.some(isToolchainUnsoundFailure)) return "toolchain-unsound";\n';
 
 /** #307 — maximum number of net-removed test blocks tolerated in a diff. */
 export function testDeleteTolerance() {

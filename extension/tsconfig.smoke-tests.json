@@ -106,6 +106,12 @@
     "smoke-tests/test-owner-claim-entry-shape.ts",
     "smoke-tests/test-owner-claim-park-message.ts",
     "smoke-tests/test-host-spawn-lease.ts",
-    "smoke-tests/test-claim-foreign-expiry.ts"
+    "smoke-tests/test-claim-foreign-expiry.ts",
+    "smoke-tests/test-toolchain-canary-1879.ts",
+    "smoke-tests/test-write-fence-deps-1879.ts",
+    "smoke-tests/test-toolchain-canary-1879-cap.ts",
+    "smoke-tests/test-toolchain-canary-1879-park.ts",
+    "smoke-tests/lib/toolchain-canary-support.ts",
+    "smoke-tests/lib/toolchain-canary-assert.ts"
   ]
 }

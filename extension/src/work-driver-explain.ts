@@ -6,7 +6,6 @@
  */
 
 import { reviewWallClockMs } from "./review-budget.ts";
-import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainContinueCap, isContinueCap } from "./work-driver-continue-pr-explain.ts";
@@ -29,6 +28,8 @@ import { explainPlan } from "./work-driver-explain-plan.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainRepeatPark } from "./work-driver-explain-repeat.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
+import { explainStepFailed } from "./work-driver-explain-step-failed.ts";
+import { explainToolchainUnsound } from "./work-driver-explain-toolchain.ts";
 import {
   explainNoVerdictCap,
   explainVerifyFailed,
@@ -348,6 +349,10 @@ export function explainCap(
     }
     case "fix-pass-park":
       return explainNoVerdictCap(cap, state) as string;
+    case "toolchain-unsound":
+      // #1879 — the sentence lives with its own family module, like every other
+      // cap family in this switch.
+      return explainToolchainUnsound(state);
     case "develop-child-crash":
       // #1403 — the dead-child sentence lives with its own family module.
       return explainDevelopCrash(state);
@@ -422,74 +427,8 @@ export function explainCap(
     const step = cap.slice("driver-crash:".length);
     return `the driver itself crashed while running the ${step} step (an unhandled error in the step handler — not a subagent failure). The cycle routed the crash through the handoff so the issue carries a comment + label; the crash detail (message + stack) is the last entry in the state file's event log. Fix the underlying error and re-run /work`;
   }
-  // Template-literal `step-failed:<step>` values land here. Switch on the
-  // step suffix to produce a tailored sentence.
   if (cap.startsWith("step-failed:")) {
-    const step = cap.slice("step-failed:".length) as WorkStep;
-    // PR7 — for multi-workstream halts (PR3 fanout steps: develop +
-    // lens-review), append a parenthetical with the per-branch verdict
-    // count. The branches-converged event already carries the granular
-    // verdicts; explainCap surfaces the count so the operator can tell
-    // "all 3 branches failed" from "1 of 3 failed" without reading the
-    // event log.
-    // The develop count must agree with the handoff's verdict section, so it
-    // comes from the same shared source; other steps keep their own converged event.
-    const developLines = step === "develop" ? developVerdictLines(state) : undefined;
-    const lastConverged =
-      developLines === undefined
-        ? [...state.eventLog]
-            .reverse()
-            .find(
-              (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
-                e.kind === "branches-converged" && e.step === step,
-            )
-        : undefined;
-    const fanoutTag = developLines
-      ? developLines.length > 0
-        ? ` (${developLines.filter((v) => !v.ok).length}/${developLines.length} workstream branches failed)`
-        : ""
-      : lastConverged
-        ? ` (${lastConverged.verdicts.filter((v) => !v.ok).length}/${lastConverged.verdicts.length} workstream branches failed)`
-        : "";
-    switch (step) {
-      case "explore":
-        return "the explore step dispatch failed before producing a usable spec — cycle cannot continue without recon context";
-      case "plan":
-        return "the plan step dispatch failed before decomposing the issue into workstreams — cycle would silently regress to single-task develop without out-of-scope fences";
-      case "branch":
-        return "the branch step dispatch failed before creating the feature branch — develop would edit HEAD (likely main), commit-pr has nothing to push, CI has nothing to watch";
-      case "develop":
-        return `the develop step dispatch failed with ${fileBlurb} on disk${fanoutTag} — adversarial review of partial work is not meaningful, halting cleanly`;
-      case "adversarial": {
-        // #79 — name the endpoint's fault, not the driver's retry budget: a
-        // quota window or a missing model is not retried at all.
-        const cause = adversarialFailureCause(state);
-        return `the adversarial gate produced no verdict${cause ? ` — reviewer unavailable: ${cause}` : " (dispatch failed, retry exhausted)"} — cannot commit code that has not passed the adversarial gate`;
-      }
-      case "commit-pr":
-        return "the commit-pr step dispatch failed before pushing the PR — lens-review of uncommitted work would waste hours, CI has nothing to watch";
-      case "lens-review":
-        return `the lens-review dispatch failed twice (retry exhausted)${fanoutTag} — cannot ship code that has not passed the six-pass review`;
-      case "lens-fix":
-        return "the lens-fix step dispatch failed mid-fix — re-running adversarial on a partial fix is not meaningful";
-      case "ci":
-        return "the CI monitoring step dispatch failed — cannot mark a cycle merged without confirming CI passed";
-      case "merged":
-        // PR10 — merged step is now HALT. The `gh pr merge` invocation
-        // (mechanized or LLM fallback) can fail on auth, branch
-        // protection, conflicts, or a missing required review. Authority and
-        // the evidence gate already PASSED before this attempt — this is a
-        // hard failure of the merge itself, a distinct cap from
-        // `awaiting-human-merge`. A re-run would just hit the same wall,
-        // so `gh pr merge` by hand is the only recovery here — the
-        // exception, not the project's normal path.
-        return "the merge step failed — authority was granted and CI passed, but `gh pr merge` itself did not succeed (auth / branch protection / conflicts / missing required review). This cap means the merge ATTEMPT failed, not that the project denies agents — a re-run would hit the same wall, so remove the blocking cause and merge once with `gh pr merge <PR-N> --squash --delete-branch` (check `gh repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed` for allowed methods)";
-      case "step-back":
-      case "handoff":
-        // These remain DEGRADED_OK in STEP_FAILURE_POLICY and should never
-        // produce a step-failed:<step> cap. Render generic if it ever happens.
-        return `step "${step}" failed unexpectedly — see state-file event log`;
-    }
+    return explainStepFailed(cap.slice("step-failed:".length) as WorkStep, state, fileBlurb);
   }
   // Should be unreachable when the WorkEvent union is exhaustively
   // covered above; if we land here, surface the raw cap so the user
