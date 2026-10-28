@@ -13,27 +13,34 @@
  * (#1871). A child runs while its process holds a slot; the slot is removed
  * when the child settles, and only while it still names this process. While
  * this process holds ANY slot it also refreshes every held slot's mtime on a
- * 60-second beat, so a holder that dies without releasing (SIGKILL, power
- * loss) goes quiet and is recovered — never by the mtime of a holder that is
- * merely slow. Recovery runs only when the holder is PROVABLY dead:
- * `judgeOwner` answers the pid probe only when the hostname AND the pid
- * namespace both match this process and the holder's start time still matches
- * `/proc`, so a container sharing a `--hostname` with a sibling, or a holder
- * whose pid has been recycled, is never mistaken for a corpse. A holder that
- * is FOREIGN — a namespace this process cannot see into, or a body it cannot
- * parse — is recovered only once its mtime is older than the 10-minute lease:
- * a live holder heartbeats, so a silent one has stopped heartbeating. A pre-#1871
- * two-field body is never reaped at all, because old writers do not heartbeat.
- * Recovery is serialised per slot by a short `mkdir` lock, so two reapers cannot
- * both unlink and steal each other's fresh claim; a lock left by a reaper that
- * died mid-reap is cleared by the next attempt on that slot. A process that
- * exits normally drops its slots in an `exit` hook.
+ * 60-second UNREF'd beat, so a holder that dies without releasing (SIGKILL,
+ * power loss) goes quiet and is recoverable — never by the age of a holder that
+ * is merely slow, which heartbeats and so never looks silent.
  *
- * The accepted cost of that safe direction: a slot left by a process whose
- * identity this one cannot verify stays in the directory for up to one lease
- * (10 min), and a same-namespace holder is never reaped on the lease at all —
- * so a live holder that is SIGSTOPped for longer than the lease can have its
- * slot taken by a sibling container. See docs/headless.md.
+ * Recovery has two rules, and which one applies depends on whether this process
+ * may judge the holder at all:
+ *
+ *   - JUDGEABLE (this host, this pid namespace): only when `judgeOwner` proves
+ *     it dead — the pid is gone, or it is alive but its `/proc` start time no
+ *     longer matches the recorded one (the pid was recycled). Never by age.
+ *   - FOREIGN (another host or namespace, or a body that does not parse): the
+ *     probe cannot run, so silence is the only evidence. A holder silent past
+ *     the 10-minute LEASE is reclaimed; a live one heartbeats.
+ *   - LEGACY `<host> <pid>` (pre-#1871): the released pid-only verdict and
+ *     NOTHING else — no lease, because those writers never heartbeated and
+ *     their silence means nothing (D3).
+ *
+ * Recovery is serialised per slot by a short `mkdir` lock, so two reapers cannot
+ * both unlink and steal each other's fresh claim. A lock left by a reaper that
+ * died mid-reap is CLEARED by the next attempt on that slot, and that attempt
+ * then proceeds — a lock does not age out on its own, because nothing polls the
+ * directory when nobody is claiming. A process that exits normally drops its
+ * slots in an `exit` hook.
+ *
+ * The accepted cost of that safe direction: a live holder that is SIGSTOPped
+ * for longer than the lease can have its slot taken by a sibling container
+ * (nothing it does while stopped refreshes the lease); a same-namespace holder
+ * never is, because that one is settled by pid. See docs/headless.md.
  *
  * Waiting is bounded (`PI_ENSEMBLE_HOST_SPAWN_WAIT_MS`, 30 min): past it the
  * spawn fails with an error naming the bound and the holders, so the step
@@ -84,16 +91,16 @@ export function hostSpawnDir(): string {
 const POLL_MS = 250;
 /**
  * A reap lock older than this belongs to a reaper that died mid-reap. The next
- * reap attempt on THAT slot clears it and proceeds — a lock does not age out
- * on its own, because nothing is polling the directory when no one is claiming.
+ * reap attempt on THAT slot clears it and PROCEEDS — a lock never ages out on
+ * its own, because nothing is polling the directory when no one is claiming.
  */
 const REAP_LOCK_STALE_MS = 10_000;
 /**
- * How long a FOREIGN (or unparseable) slot may stay silent before a sibling
- * may take it. Only meaningful against the heartbeat: a live holder touches its
- * slots every `HEARTBEAT_MS`, so a foreign slot past this age has been silent
- * for at least a lease. A slot whose holder this process can judge by pid is
- * reaped on liveness alone, never on this clock.
+ * How long a FOREIGN (or unparseable) slot may stay silent before a sibling may
+ * take it. Only meaningful against the heartbeat: a live holder touches its
+ * slots every `HEARTBEAT_MS`, so ten beats of slack separate "slow" from
+ * "stopped". A holder this process can judge by pid is reaped on liveness
+ * alone, never on this clock.
  */
 const FOREIGN_SLOT_LEASE_MS = 10 * 60_000;
 /** How often a holder refreshes the mtimes of the slots it holds. */
@@ -127,22 +134,28 @@ function holderOf(file: string): string | undefined {
   }
 }
 
-/** The slot's last heartbeat — the mtime a holder refreshes while it runs. */
-function mtimeOf(file: string): number {
-  try {
-    return fs.statSync(file).mtimeMs;
-  } catch {
-    return Date.now();
-  }
-}
-
 /**
- * Cheap pre-lock test for the lease: is this slot silent past it? `reap` makes
- * the real decision from a fresh sample under the lock; this only decides
- * whether the lock is worth taking.
+ * How long this slot's holder has been silent, in ms.
+ *
+ * The clock is `min(mtime, ctime)` of the body, never the two clocks of two
+ * machines: the beat writes with `utimesSync(now, now)`, which moves mtime
+ * forward, so mtime alone is "last heartbeat"; ctime moves when the body is
+ * created or re-written, so a body swapped under a live slot restarts its lease
+ * rather than being reclaimed on the age of the original link. Taking the
+ * earlier of the two is the conservative choice for BOTH: a holder that has not
+ * beaten recently looks silent, and a body that was just touched is not taken.
+ *
+ * An unreadable file reads as infinitely silent, which errs towards NOT
+ * reaping for a slot this process holds itself (see `leaseExpired`) — a file we
+ * cannot stat is not one we should prove alive.
  */
-function leaseExpired(file: string, leaseMs: number, now: number): boolean {
-  return now - mtimeOf(file) > leaseMs;
+function silentForMs(file: string): number {
+  try {
+    const st = fs.statSync(file);
+    return Date.now() - Math.min(st.mtimeMs, st.ctimeMs);
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 /**
@@ -150,26 +163,42 @@ function leaseExpired(file: string, leaseMs: number, now: number): boolean {
  * consults the pid probe only for a holder carrying THIS host and THIS pid
  * namespace whose start time still matches `/proc`; a foreign body — other
  * host, other namespace, or half an identity — is never dead, so it is never
- * reaped on liveness. A legacy two-field body IS judged by pid, exactly as the
- * last release judged it (D3), and is kept out of the lease below.
+ * reaped on liveness.
  */
 function provablyDead(holder: string | undefined): boolean {
   return judgeOwner(parseIdentity(holder), selfIdentity()) === "dead";
 }
 
 /**
- * May a slot nobody may judge by pid be taken on the lease alone? Yes for a
- * FOREIGN or unparseable body: a live holder heartbeats, so one that has been
- * silent past the lease has stopped heartbeating. Never for a legacy two-field
- * body — its writer predates the heartbeat, so its silence means nothing, and
- * D3 gives it the pid probe and nothing else.
+ * May a slot nobody may judge by pid be taken on the lease alone?
+ *
+ * A body naming THIS host — this process's own identity among them — is never
+ * taken on silence: the pid probe settles that holder, and an age rule on a
+ * judgeable holder could only ever steal a live-but-slow holder's slot.
+ *
+ * Never for a legacy two-field body either — its writer predates the heartbeat,
+ * so silence means nothing about it, and D3 gives it the pid probe and nothing
+ * else. A FOREIGN or unparseable body whose holder has gone silent past the
+ * lease IS taken: silence is the only evidence available for a namespace this
+ * process cannot probe, and without it every container that dies mid-cycle
+ * leaves a slot no one may ever reclaim.
  */
-function leaseReapable(body: string | undefined, leaseMs: number, mtimeMs: number, now: number) {
+function leaseReapable(body: string | undefined, silentPastLease: boolean): boolean {
+  if (!silentPastLease) return false;
   const id = parseIdentity(body);
-  if (id === undefined) return now - mtimeMs > leaseMs;
-  if (id.pidns === NO_ID_FIELD && id.startTime === NO_ID_FIELD) return false;
-  if (id.host === selfIdentity().host) return false;
-  return now - mtimeMs > leaseMs;
+  if (id !== undefined && id.host === selfIdentity().host) return false;
+  if (id === undefined) return true;
+  if (id.pidns === NO_ID_FIELD && id.startTime === "") return false;
+  return true;
+}
+
+/**
+ * Is this slot both silent past the lease and eligible for the lease at all?
+ * `leaseMs` is a parameter, not an env read: it exists so the offline suite can
+ * pin the lease without sleeping ten minutes.
+ */
+function reclaimableOnLease(file: string, holder: string | undefined, leaseMs: number): boolean {
+  return leaseReapable(holder, silentForMs(file) >= leaseMs);
 }
 
 /** Atomic claim: link a written temp file to the slot name. */
@@ -187,19 +216,18 @@ function link(dir: string, file: string): boolean {
   }
 }
 
-/** Remove a slot whose holder is provably dead, or foreign and past the lease, under a per-slot lock. */
-function reap(
-  file: string,
-  leaseMs: number = FOREIGN_SLOT_LEASE_MS,
-  now: number = Date.now(),
-): void {
+/**
+ * Remove a slot whose holder is provably dead, or foreign and silent past the
+ * lease, under a per-slot lock.
+ */
+function reap(file: string, leaseMs: number = FOREIGN_SLOT_LEASE_MS): void {
   const lock = `${file}.reap`;
   try {
     fs.mkdirSync(lock);
   } catch {
     // The lock exists: whoever holds it is mid-reap, UNLESS it is older than a
-    // reaper can plausibly take, in which case its owner died and THIS attempt
-    // clears it and proceeds rather than giving up on the slot.
+    // reaper can plausibly take. Then its owner died, and THIS attempt clears
+    // it and proceeds rather than giving up on the slot for another caller.
     try {
       if (Date.now() - fs.statSync(lock).mtimeMs > REAP_LOCK_STALE_MS) {
         fs.rmdirSync(lock);
@@ -212,17 +240,16 @@ function reap(
     }
   }
   try {
-    // Re-read body AND mtime under the lock: a heartbeat that lands while we
-    // were waiting for the lock must be seen, not judged from a stale sample.
+    // Re-read body AND age under the lock: a heartbeat that lands while we were
+    // waiting for the lock must be seen, not judged from a stale sample.
     const holder = holderOf(file);
-    const mtimeMs = mtimeOf(file);
     if (provablyDead(holder)) {
       fs.unlinkSync(file);
       trace(`host-spawn-slots: recovered ${path.basename(file)} from dead holder ${holder}`);
-    } else if (leaseReapable(holder, leaseMs, mtimeMs, now)) {
+    } else if (reclaimableOnLease(file, holder, leaseMs)) {
       fs.unlinkSync(file);
       trace(
-        `host-spawn-slots: recovered ${path.basename(file)} from a silent foreign holder ${holder ?? "<unreadable>"} (${Math.round((now - mtimeMs) / 1000)}s past the lease)`,
+        `host-spawn-slots: recovered ${path.basename(file)} from a silent foreign holder ${holder ?? "<unreadable>"} (past the lease)`,
       );
     }
   } finally {
@@ -234,18 +261,14 @@ function reap(
   }
 }
 
-/** Claim one free slot, recovering slots whose holder is provably dead or foreign and past the lease. */
-function tryClaim(
-  dir: string,
-  cap: number,
-  leaseMs: number = FOREIGN_SLOT_LEASE_MS,
-  now: number = Date.now(),
-): string | undefined {
+/** Claim one free slot, recovering dead and lease-expired holders. */
+function tryClaim(dir: string, cap: number, leaseMs: number = FOREIGN_SLOT_LEASE_MS) {
   for (let i = 0; i < cap; i++) {
     const file = path.join(dir, `slot-${i}`);
     if (link(dir, file)) return file;
-    if (!provablyDead(holderOf(file)) && !leaseExpired(file, leaseMs, now)) continue;
-    reap(file, leaseMs, now);
+    const holder = holderOf(file);
+    if (!provablyDead(holder) && !reclaimableOnLease(file, holder, leaseMs)) continue;
+    reap(file, leaseMs);
     if (link(dir, file)) return file;
   }
   return undefined;
@@ -335,6 +358,10 @@ function slotDir(): string | undefined {
 /**
  * Run `fn` holding one host-wide slot. Throws a named error when no slot frees
  * within `hostSpawnWaitMs()`, and stops waiting when `signal` aborts.
+ *
+ * `leaseMs` is a parameter and not an env read: it exists so the offline suite
+ * can pin the foreign-holder lease without sleeping ten minutes. Production
+ * callers never pass it.
  */
 export async function withHostSpawnSlot<T>(
   fn: () => Promise<T>,
@@ -375,6 +402,10 @@ export async function withHostSpawnSlot<T>(
   if (waited >= POLL_MS) trace(`host-spawn-slots: waited ${waited}ms for a host-wide slot`);
   held.add(file);
   startHeartbeat();
+  // Touch on claim as well as on the beat: the first `HEARTBEAT_MS` of a hold
+  // would otherwise show an mtime as old as the claim itself, which is exactly
+  // the window a sibling is most likely to be scanning the directory in.
+  heartbeatHeldSlots();
   try {
     return await fn();
   } finally {
