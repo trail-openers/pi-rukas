@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.32](https://github.com/trail-openers/pi-rukas/compare/v0.14.31...v0.14.32) (2026-10-28)
+
+
+### Bug Fixes
+
+* **work:** spawn-slot and claim owners carry a container-safe identity ([#1873](https://github.com/trail-openers/pi-rukas/issues/1873)) ([685fee6](https://github.com/trail-openers/pi-rukas/commit/685fee6384a0870a24fbe48b8d98ae36ecff7bed))
+
 ## [0.14.31](https://github.com/trail-openers/pi-rukas/compare/v0.14.30...v0.14.31) (2026-10-28)
 
 
