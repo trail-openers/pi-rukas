@@ -60,6 +60,15 @@ export interface Step {
   endedAt?: number;
   /** Absent means the step started and never finished: re-run it. */
   outcome?: Outcome;
+  /**
+   * Set when the step's handler reported that the side effect it exists to
+   * perform did not land. The step keeps its outcome (the table still routes
+   * on it) but the replay rule treats it as an attempt rather than a fact, and
+   * re-runs the step once. The distinguishing mark between "this step was
+   * attempted and its delivery failed" and "this step happened": both carry an
+   * outcome, and only one of them may be trusted as the outside world's state.
+   */
+  deliveryError?: string;
 }
 
 export interface RunCounters {
@@ -235,6 +244,20 @@ function assertRun(obj: unknown, file: string): LeanRun {
       (typeof s.outcome !== "object" || s.outcome === null || Array.isArray(s.outcome))
     )
       bad(`step ${s.key} outcome must be an object`);
+    // `deliveryError` is the marker the engine uses to say "attempted, delivery
+    // failed, do not trust this outcome as a fact about the forge". A
+    // hand-edited value there must not survive into a drive that reads it.
+    if (s.deliveryError !== undefined && typeof s.deliveryError !== "string")
+      bad(`step ${s.key} deliveryError must be a string`);
+    if (s.outcome !== undefined && typeof s.outcome === "object" && !Array.isArray(s.outcome)) {
+      const oc = s.outcome as Record<string, unknown>;
+      // `unrecoverable` is the engine's own "the retry failed too" stamp, read
+      // by the loop to decide whether to ask again. A hand-edited truthy value
+      // would silently turn a retryable reporting step into one that never
+      // re-posts, so it is the one outcome field this file validates.
+      if (oc.unrecoverable !== undefined && typeof oc.unrecoverable !== "boolean")
+        bad(`step ${s.key} outcome.unrecoverable must be a boolean`);
+    }
     // The `:N` suffix is a derived field (the entry count) and the engine
     // trusts it when deciding whether a state still owes a handler call, so
     // a corrupt suffix is refused rather than read as attempt 0.

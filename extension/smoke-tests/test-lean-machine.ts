@@ -59,10 +59,26 @@ function run(state: LeanState, over: Partial<LeanRun> = {}): LeanRun {
   };
 }
 
-const HANDLER_STATES = Object.keys(OUTCOME_KINDS) as Exclude<
-  LeanState,
-  (typeof TERMINAL_STATES)[number]
->[];
+/**
+ * The states whose outcome the table routes FORWARD. `not-ready` declares its
+ * own kinds (it has a handler that posts a comment) but is not one of these:
+ * it is the run's verdict, and its outcome decides only whether the step
+ * memoizes, never where the run goes. Enumerating it with the rest would ask
+ * a terminal state for an exit code it legitimately has.
+ */
+const HANDLER_STATES = (Object.keys(OUTCOME_KINDS) as LeanState[]).filter(
+  (state) => !isTerminal(state),
+);
+// The registry has to stay a partition: every declared state is either routed
+// forward or terminal, and a state that fell between the two would be silently
+// skipped by the enumeration below — which is exactly how a handler can ship
+// with no test at all.
+assert(
+  Object.keys(OUTCOME_KINDS).length ===
+    HANDLER_STATES.length +
+      Object.keys(OUTCOME_KINDS).filter((s) => isTerminal(s as LeanState)).length,
+  "every declared state is either routed forward or terminal",
+);
 
 // ── every declared pair has a rule, and lands somewhere legal ──────────────
 
@@ -88,8 +104,47 @@ for (const state of HANDLER_STATES) {
 }
 assert(
   pairs === 17,
-  `all ${pairs} declared pairs enumerated — the registry grew or shrank, check the spec`,
+  `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
+
+// ── `not-ready` reports, it does not route ──────────────────────────
+
+// The two kinds the reporting step may return, and what each one means. Both
+// land the run at the same terminal state with the same exit code; the
+// difference is not in the table but in the step log, and the engine test
+// (`test-lean-engine-not-ready-retry.ts`) is what pins it. Asserting it here
+// too, because a table edit that sent `fail` to `handback` would silently turn
+// a refusal-to-build (11) into a driver fault (10).
+{
+  // Both reporting kinds are legal pairs, and neither may move the run: the
+  // engine's arrival check reads the state they return, and a `fail` routed to
+  // `handback` would silently relabel a refusal-to-build (11) as a driver
+  // fault (10).
+  for (const kind of ["done", "fail"] as const) {
+    let moved: { state: LeanState } | undefined;
+    let threw = false;
+    try {
+      moved = next(run("not-ready"), { kind });
+    } catch {
+      threw = true;
+    }
+    assert(!threw, `not-ready + ${kind} is a legal pair`);
+    assert(
+      moved?.state === "not-ready" && exitCodeFor(moved.state) === 11,
+      `not-ready + ${kind} ends at the not-ready verdict (exit 11), never a handback`,
+    );
+  }
+  let unlisted: unknown;
+  try {
+    next(run("not-ready"), { kind: "green" });
+  } catch (e) {
+    unlisted = e;
+  }
+  assert(
+    unlisted instanceof UnlistedOutcome,
+    "the reporting step accepts only the two kinds it declares",
+  );
+}
 
 // ── `land` has exactly one way in ──────────────────────────────────────────
 

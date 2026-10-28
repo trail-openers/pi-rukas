@@ -36,14 +36,27 @@ export const OUTCOME_KINDS = {
   ci: ["green", "red"],
   land: ["merged", "refused"],
   handback: ["done"],
-} as const satisfies Record<
-  Exclude<LeanState, "landed" | "handed-back" | "not-ready">,
-  readonly string[]
->;
+  // The reporting step. It is listed here because the engine ends a run for
+  // "no handler" on any state missing from this registry, and `not-ready` does
+  // have a handler (it posts the comment naming the failed rules). What its
+  // handler may return is narrower than the list suggests: only `done`, which
+  // confirms the run ended at the verdict `ready + fail` already reached. A
+  // posting failure is NOT a kind in this table — see `REPORT_FAILED` in
+  // `engine.ts`, which is an outcome the engine intercepts rather than routes,
+  // because there is no arrow out of a terminal state that could carry it.
+  "not-ready": ["done"],
+} as const satisfies Partial<Record<LeanState, readonly string[]>>;
 
 export type OutcomeKind<S extends keyof typeof OUTCOME_KINDS> = (typeof OUTCOME_KINDS)[S][number];
 
 /** Non-terminal states: the ones a handler is written for. */
+/**
+ * The states a run can be driven through: the ones whose outcome the table
+ * routes forward, plus `not-ready`, which has a handler (it posts the comment
+ * naming the rules that failed) even though its own outcome no longer routes
+ * anywhere. A missing entry here ends the run for "no handler", so the
+ * reporting step must be listed.
+ */
 export const HANDLER_STATES = Object.keys(OUTCOME_KINDS) as (keyof typeof OUTCOME_KINDS)[];
 
 /** What a run exits with. Chosen so a shell can branch on it without parsing. */
@@ -233,9 +246,21 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
       if (outcome.kind === "done") return to(run, "handed-back");
       break;
 
+    case "not-ready":
+      // The reporting step confirms the verdict `ready + fail` already put the
+      // run in; it does not choose it. There is deliberately no second kind
+      // here: a posting failure is not a routing question, and giving the
+      // vocabulary one would invite a future reader to send a spec refusal
+      // (exit 11) to `handback` (exit 10), which reports a refusal to build as
+      // though the harness itself were broken. See `REPORT_FAILED`.
+      if (outcome.kind === "done") return to(run, "not-ready");
+      break;
+
+    // Terminal: the run has ended, so nothing routes on its outcome. `not-ready`
+    // is NOT in this group — it is terminal as an ANSWER but still runs its
+    // reporting handler, which is the case immediately above.
     case "landed":
     case "handed-back":
-    case "not-ready":
       break;
   }
   throw new UnlistedOutcome(run.state, outcome.kind);

@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
-import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
+import { type LeanHandlers, REPORT_FAILED, type RunLeanResult, runLean } from "./engine.ts";
 import { fetchIssueBody, mainlineSha, mainlineShaFailure, postNotReady } from "./io.ts";
 import { HANDLER_STATES } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
@@ -131,7 +131,13 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
       await postNotReady(repoRoot, issue, judged.failedRules);
       return { kind: "done" };
     } catch (err) {
-      return { kind: "done", reason: `comment not posted: ${(err as Error).message}` };
+      // NOT `done`: the step log memoizes a completed step forever, so a
+      // swallowed throw here used to mean "the comment was posted" when it
+      // meant "the network dropped". `fail` is the vocabulary that says the
+      // run's verdict stands (still 11) and the step keeps no outcome, so the
+      // next `/work-lean` on this issue re-posts it and exit 10 is free to
+      // mean a run that could not report itself at all.
+      return { kind: REPORT_FAILED, reason: `comment not posted: ${(err as Error).message}` };
     }
   };
   return handlers;
