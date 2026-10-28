@@ -109,6 +109,11 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "build":
       switch (outcome.kind) {
         case "ok":
+          // The cap is a TABLE invariant, not a handler courtesy: a handler
+          // that never returns `exhausted` must not walk past the budget. At
+          // the cap the run stops building and goes to its gate, which either
+          // clears the draft by going green or ends the run.
+          if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           // The first build ever earned a challenge round; a build that came
           // back from one has already been challenged and goes to verify.
           return viaBuild(run, c.challengeDone ? "verify" : "challenge");
@@ -123,14 +128,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           //   - no draft means the code was green and the run simply ran out
           //     of rounds. A draft is then the honest degradation: review sees
           //     it, and the operator decides.
-          if (c.draft) return to(run, "handback");
-          // Ship what exists as a draft and let review see it — but a draft is
-          // a PR that says "this was not verified", so it is not a thing a run
-          // gets to acquire twice. Once a run has been recorded as shipping
-          // unverified work it has spent the benefit of the doubt: a second
-          // exhausted build means the fix round after the draft produced
-          // nothing verifiable either, and the only honest move is to hand
-          // back. Without this, a red run could re-draft its way past the one
+          // A draft is a PR that says "this was not verified", and it is not
+          // a thing a run gets to acquire twice: a second exhausted build
+          // means the round after the draft produced nothing verifiable
+          // either. Without this a run could re-draft its way past the one
           // gate that called it red and merge on a green CI nobody read the
           // criteria against.
           if (c.draft) return to(run, "handback");
@@ -196,6 +197,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // what makes "the tests were green at CI" a fact about this run
           // rather than an assertion — `test-lean-machine.ts` enumerates every
           // reachable path from a red verify to prove no variant of it lands.
+          // The table cannot express the other half of that claim (the log's
+          // newest `verify` must itself be green), because `next()` sees one
+          // outcome, not the sequence: the engine's `apply()` refuses the
+          // arrival when the record says otherwise.
           return to(run, "land");
         case "red":
           // Exactly one fix round: a second red means the run and CI disagree

@@ -16,6 +16,7 @@
 import { execp } from "../exec.ts";
 import { detectForge } from "../forge-detect.ts";
 import { type Forge, type ForgeDetection, createForge } from "../forge.ts";
+import { detectMainline } from "../mainline.ts";
 
 /** The forge adapter for this repo, or undefined when it cannot be resolved. */
 async function forgeFor(repoRoot: string): Promise<Forge | undefined> {
@@ -47,9 +48,24 @@ export async function fetchIssueBody(repoRoot: string, issue: number): Promise<s
   return parsed.body;
 }
 
-/** The mainline sha: `origin/HEAD`, then `origin/main`, then `main`. Empty for none. */
+/** Refs probed for the mainline sha, in order. The first that resolves wins. */
+const MAINLINE_REFS = ["origin/HEAD", "origin/main", "main"] as const;
+
+/**
+ * The mainline sha: `origin/HEAD`, then `origin/main`, then `main`, then the
+ * branch `detectMainline` resolves (which falls back to `gh repo view` when
+ * `origin/HEAD` is unset). Empty for none.
+ *
+ * The sha the whole cycle reads its config at is chosen here, so two things
+ * are recorded rather than swallowed: which refs were probed, and why each
+ * one failed. A `git` failure that is not "this ref does not exist" used to
+ * read exactly like an absent ref, and the operator got "could not resolve
+ * the mainline sha" with nothing to act on. Note also that these are LOCAL
+ * refs: no fetch happens here, so the sha is the tip the clone last saw.
+ */
 export async function mainlineSha(repoRoot: string): Promise<string> {
-  for (const ref of ["origin/HEAD", "origin/main", "main"]) {
+  const causes: string[] = [];
+  for (const ref of MAINLINE_REFS) {
     try {
       const { stdout } = await execp("git", {
         argv: ["rev-parse", "--verify", "--quiet", ref],
@@ -58,11 +74,58 @@ export async function mainlineSha(repoRoot: string): Promise<string> {
       });
       const sha = stdout.trim();
       if (sha) return sha;
-    } catch {
-      /* that ref does not exist — try the next one */
+      causes.push(`${ref}: no such ref`);
+    } catch (err) {
+      causes.push(`${ref}: ${(err as Error)?.message ?? String(err)}`.slice(0, 120));
     }
   }
+  // No local ref resolved: ask the same detector the old driver asks, whose
+  // `gh repo view` fallback covers a clone whose origin/HEAD was never set.
+  // The name it returns is probed bare and as `origin/<name>`, since the
+  // detector gives a branch name and the tip usually lives on the remote.
+  const detected = await resolveMainlineBranch(repoRoot);
+  if (!detected) {
+    mainlineFailure = `${causes.join("; ")}; detectMainline: unresolved`;
+    return "";
+  }
+  for (const ref of [detected, `origin/${detected}`]) {
+    try {
+      const { stdout } = await execp("git", {
+        argv: ["rev-parse", "--verify", "--quiet", ref],
+        cwd: repoRoot,
+        timeout: 15_000,
+      });
+      const sha = stdout.trim();
+      if (sha) return sha;
+      causes.push(`${ref} (detectMainline): no such ref`);
+    } catch (err) {
+      causes.push(
+        `${ref} (detectMainline): ${(err as Error)?.message ?? String(err)}`.slice(0, 120),
+      );
+    }
+  }
+  mainlineFailure = causes.join("; ");
   return "";
+}
+
+/**
+ * Why the last `mainlineSha` call returned empty, for the fail rule text.
+ * Module state rather than a return channel: the callers that want a sha
+ * already have one shape, and only the not-ready comment reads the detail.
+ */
+let mainlineFailure = "";
+export function mainlineShaFailure(): string {
+  return mainlineFailure;
+}
+
+/** The branch name `detectMainline` resolves, or undefined for none. */
+async function resolveMainlineBranch(repoRoot: string): Promise<string | undefined> {
+  try {
+    const result = await detectMainline(repoRoot, execp);
+    return result.ok ? result.branch : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -121,6 +121,21 @@ export function attemptOf(key: string): number {
   return Number.isInteger(n) && n >= 0 ? n : 0;
 }
 
+/**
+ * A step's attempt number, or `undefined` when its key has no `:N` suffix.
+ *
+ * The engine's replay decision has to tell "this is attempt 0" apart from
+ * "this key is corrupt": treating both as 0 let a hand-edited key collide
+ * with the real first step of its state, and the run then replayed an
+ * outcome for a step it had never run. `loadRun` refuses such a file; this
+ * is the same distinction on the inside, where a caller must not fall back
+ * to 0.
+ */
+export function attemptOfStrict(key: string): number | undefined {
+  const suffix = key.slice(key.lastIndexOf(":") + 1);
+  return /^\d+$/.test(suffix) ? Number(suffix) : undefined;
+}
+
 /** The next attempt number for a state: one past the highest already logged. */
 export function nextAttempt(run: LeanRun, state: LeanState): number {
   let max = -1;
@@ -200,11 +215,31 @@ function assertRun(obj: unknown, file: string): LeanRun {
   if (!models || typeof models !== "object" || Array.isArray(models))
     bad("models must be an object");
   if (!Array.isArray(r.steps)) bad("steps must be an array");
+  const seenKeys = new Set<string>();
   const run = r as unknown as LeanRun;
   for (const s of run.steps) {
     if (typeof s?.key !== "string" || typeof s?.startedAt !== "number")
       bad("every step needs key and startedAt");
     if (typeof s.state !== "string") bad(`step ${s.key} needs a state`);
+    // Keys are the identity the re-run decision is keyed on: two steps
+    // sharing one key means the replay path can pick either, so a hand-edited
+    // file that duplicated a key must be refused rather than driven.
+    if (seenKeys.has(s.key)) bad(`duplicate step key ${JSON.stringify(s.key)}`);
+    seenKeys.add(s.key);
+    // A step whose `outcome` is not an object would reach the replay path as
+    // a step that "has" an outcome, and `next()` would then route on an
+    // undefined `kind` — a corrupt file must be refused here rather than
+    // become an unlisted-pair handback mid-drive.
+    if (
+      s.outcome !== undefined &&
+      (typeof s.outcome !== "object" || s.outcome === null || Array.isArray(s.outcome))
+    )
+      bad(`step ${s.key} outcome must be an object`);
+    // The `:N` suffix is a derived field (the entry count) and the engine
+    // trusts it when deciding whether a state still owes a handler call, so
+    // a corrupt suffix is refused rather than read as attempt 0.
+    const suffix = s.key.slice(s.key.lastIndexOf(":") + 1);
+    if (!/^\d+$/.test(suffix)) bad(`step key ${JSON.stringify(s.key)} needs a numeric :N suffix`);
   }
   return run;
 }

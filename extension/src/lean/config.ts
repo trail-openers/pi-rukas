@@ -40,6 +40,43 @@ export class LeanConfigError extends Error {
 /** The executor seam: same signature as `execp`, injected so tests stay local. */
 export type ConfigExec = typeof execp;
 
+/** Ceiling for one committed config/verify-cmd blob; overflow is its own error class. */
+const GIT_SHOW_MAX_BUFFER = 1024 * 1024;
+
+/** Did this rejection come from a stream breaking its buffer, not from git? */
+function isBufferOverflow(err: unknown): boolean {
+  const e = err as { code?: number | null; killed?: boolean; message?: string; stderr?: string };
+  if (typeof e?.message === "string" && /maxBuffer/i.test(e.message)) return true;
+  return e?.killed === true && e.code === null && /maxBuffer/i.test(e.stderr ?? "");
+}
+
+/**
+ * The git object type at `ref` (`blob`, `tree`, `commit`, `tag`, `object`),
+ * or undefined when the path is not in that commit.
+ *
+ * `cat-file -t` exits 128 for an unknown path, so a missing file and a bad
+ * sha both land in the "absent" branch — which is what a config loader wants
+ * for a missing file, and the subsequent `git show` is what still surfaces a
+ * genuinely broken repository.
+ */
+async function gitType(
+  exec: ConfigExec,
+  repoRoot: string,
+  ref: string,
+): Promise<string | undefined> {
+  try {
+    const { stdout } = await exec("git", {
+      argv: ["cat-file", "-t", ref],
+      cwd: repoRoot,
+      timeout: 30_000,
+    });
+    const type = stdout.trim();
+    return type === "" ? undefined : type;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Per-state ceilings. States not listed have none yet — a phase that adds a
  * handler adds its budget with it, rather than inheriting a number nobody
@@ -113,21 +150,42 @@ function validate(obj: unknown): string | undefined {
   return undefined;
 }
 
-/** Read one blob at a commit. `undefined` for "that path is not in that commit". */
+/**
+ * Read one blob at a commit. `undefined` for "that path is not in that commit".
+ *
+ * "Not in that commit" has three shapes git reports differently, and all
+ * three mean the same thing to a caller that wants defaults: the path is
+ * absent (`git show` exits 128), the path is a *tree* rather than a file
+ * (`git show` exits 0 and prints a listing, so the bytes would otherwise
+ * reach the JSON parser and be reported as a typo'd config), and the path is
+ * a symlink. `cat-file -t` is asked first precisely because it separates the
+ * second from the first instead of leaving it to be guessed at from stdout.
+ */
 async function gitShow(
   exec: ConfigExec,
   repoRoot: string,
   ref: string,
 ): Promise<string | undefined> {
+  const type = await gitType(exec, repoRoot, ref);
+  if (type === undefined) return undefined;
+  if (type !== "blob") return undefined;
   try {
     const { stdout } = await exec("git", {
       argv: ["show", ref],
       cwd: repoRoot,
       timeout: 30_000,
-      maxBuffer: 1024 * 1024,
+      maxBuffer: GIT_SHOW_MAX_BUFFER,
     });
     return stdout;
   } catch (err) {
+    // A blob the reader could not hold is an infra failure, not a config
+    // problem: a 2 MB committed file must not be reported as "not valid
+    // JSON", because the operator would go looking for a typo in a file the
+    // driver simply refused to read.
+    if (isBufferOverflow(err))
+      throw new LeanConfigError(
+        `could not read ${ref}: larger than the ${GIT_SHOW_MAX_BUFFER} byte read limit`,
+      );
     // Exit 128 with "does not exist" is an absent file; anything else (a bad
     // sha, no git, a locked index) is a real failure the caller must see.
     const e = err as { code?: number | null; stderr?: string; message?: string };

@@ -184,6 +184,63 @@ for (const [name, content, expected] of invalidCases) {
   }
 }
 
+// ── a directory at the config path is absent, not "invalid JSON" ───────────
+
+{
+  // `git show <sha>:.pi/work.json` exits 0 for a TREE and prints a listing, so
+  // without a type check those bytes reach the JSON parser and a repo that
+  // merely has a directory at that path is told its config is broken. It is
+  // the absent path that is correct: no config, take the defaults.
+  const { repoRoot, baseSha, cleanup } = makeRepo({ ".pi/work.json/keep": "x\n" });
+  try {
+    const cfg = await loadWorkConfig(execp, repoRoot, baseSha);
+    assert(cfg.autoMerge === false, "a directory at .pi/work.json loads the defaults");
+    assert(cfg.version === 1, "and the defaults are the version-1 defaults");
+  } finally {
+    cleanup();
+  }
+}
+
+{
+  // Same shape for the verify-cmd fallback: a tree there must not become a
+  // `verify.full` command the ci step then runs.
+  const { repoRoot, baseSha, cleanup } = makeRepo({ ".pi/verify-cmd/keep": "x\n" });
+  try {
+    const cfg = await loadWorkConfig(execp, repoRoot, baseSha);
+    assert(cfg.verify.full === undefined, "a directory at .pi/verify-cmd yields no full command");
+  } finally {
+    cleanup();
+  }
+}
+
+{
+  // A blob larger than the read limit is an infra failure, not a typo: the
+  // message must not send an operator looking for a syntax error in a file
+  // the driver simply refused to read.
+  const { repoRoot, baseSha, cleanup } = makeRepo({
+    ".pi/work.json": `${JSON.stringify({ version: 1 })}${" ".repeat(1024 * 1024 + 64)}`,
+  });
+  try {
+    let thrown: unknown;
+    try {
+      await loadWorkConfig(execp, repoRoot, baseSha);
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown instanceof LeanConfigError, "an oversized config throws LeanConfigError");
+    assert(
+      thrown instanceof Error && /read limit/.test(thrown.message),
+      `the error names the read limit, not the JSON parser (got: ${(thrown as Error).message.slice(0, 90)})`,
+    );
+    assert(
+      thrown instanceof Error && !/not valid JSON/i.test(thrown.message),
+      "an oversized config is never reported as invalid JSON",
+    );
+  } finally {
+    cleanup();
+  }
+}
+
 // A valid file that merely omits the optional sections is not invalid.
 {
   const { repoRoot, baseSha, cleanup } = makeRepo({

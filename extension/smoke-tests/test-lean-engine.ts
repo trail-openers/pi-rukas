@@ -17,7 +17,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { runLean } from "../src/lean/engine.ts";
 import type { LeanRun } from "../src/lean/state.ts";
-import { leanStateFile, loadRun } from "../src/lean/state.ts";
+import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
 import { CLOCK, HAPPY, makeAssert, scripted, seedUpTo, tempDir, ticking } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
@@ -231,6 +231,195 @@ const { assert, failures } = makeAssert();
     }
     assert(thrown instanceof Error, "an unknown schema throws rather than starting a fresh run");
     assert(/schema/.test((thrown as Error).message), "the error names the schema as the problem");
+  } finally {
+    cleanup();
+  }
+}
+
+// ── the land gate: a run whose own gate said red never merges ─────────────
+
+{
+  // The adversarial shape: a state file whose step log ends with a RED verify
+  // followed by a recorded `ci:green`, driven on a fresh process. The engine's
+  // replay path applies recorded outcomes without running their handlers, so
+  // before the arrival gate this walked straight into `land` — the merge
+  // handler — on a run whose own gate had said the work was not verified.
+  const { dir, cleanup } = tempDir();
+  try {
+    const steps = [
+      { key: "23:ready:0", state: "ready", startedAt: CLOCK, endedAt: CLOCK, outcome: { kind: "ok" } },
+      {
+        key: "23:specify:0",
+        state: "specify",
+        startedAt: CLOCK,
+        endedAt: CLOCK,
+        outcome: { kind: "ok" },
+      },
+      { key: "23:build:0", state: "build", startedAt: CLOCK, endedAt: CLOCK, outcome: { kind: "ok" } },
+      {
+        key: "23:challenge:0",
+        state: "challenge",
+        startedAt: CLOCK,
+        endedAt: CLOCK,
+        outcome: { kind: "none" },
+      },
+      // Index 4 — the last verdict the run's own gate returned. Cases below
+      // swap its `kind` and the counters to drive the two halves of the gate.
+      {
+        key: "23:verify:0",
+        state: "verify",
+        startedAt: CLOCK,
+        endedAt: CLOCK,
+        outcome: { kind: "red" },
+      },
+      { key: "23:publish:0", state: "publish", startedAt: CLOCK, endedAt: CLOCK, outcome: { kind: "ok" } },
+      {
+        key: "23:review:0",
+        state: "review",
+        startedAt: CLOCK,
+        endedAt: CLOCK,
+        outcome: { kind: "done" },
+      },
+      { key: "23:ci:0", state: "ci", startedAt: CLOCK, endedAt: CLOCK, outcome: { kind: "green" } },
+    ];
+    const baseRun = {
+      schema: 1 as const,
+      issue: 23,
+      version: "test",
+      models: {},
+      baseSha: "base",
+      branch: "feature/issue-23",
+      state: "ci" as const,
+    };
+    const writeSeed = (counters: Partial<LeanRun["counters"]>, verifyKind: string): void => {
+      mkdirSync(path.dirname(leanStateFile(dir, 23)), { recursive: true });
+      const withVerify = steps.map((s) =>
+        s.key === "23:verify:0" ? { ...s, outcome: { kind: verifyKind } } : s,
+      );
+      const seed = {
+        ...baseRun,
+        // draft true is the honest version of this record: a red verify is
+        // what raises the marker. Both halves of the gate are driven below.
+        counters: {
+          ...INITIAL_COUNTERS,
+          buildAttempts: 2,
+          challengeDone: true,
+          reviewDone: true,
+          draft: true,
+          ...counters,
+        },
+        steps: withVerify,
+      };
+      writeFileSync(leanStateFile(dir, 23), JSON.stringify(seed, null, 2), "utf8");
+    };
+
+    writeSeed({ draft: true }, "red");
+    const { handlers, calls } = scripted(HAPPY);
+    const result = await runLean({ repoRoot: dir, issue: 23, handlers, now: ticking().now });
+    assert(result.state === "handed-back", "a replay whose last verify was red does not land");
+    assert(result.code === 10, "the refused run exits 10, not 0");
+    assert(calls.land === undefined, "the merge handler never ran");
+    assert(
+      (result.run.result?.reason ?? "").startsWith("land refused: verify not green"),
+      `the reason names the refused arrival (got: ${result.run.result?.reason})`,
+    );
+
+    // The other half of the gate: the newest verify is green but the marker
+    // still says draft — a run that never re-ran its gate after the fix does
+    // not merge on a CI green alone.
+    writeSeed({ draft: true }, "green");
+    const markerOnly = await runLean({ repoRoot: dir, issue: 23, handlers, now: ticking().now });
+    assert(
+      markerOnly.state === "handed-back" && calls.land === undefined,
+      "a run still carrying the draft marker cannot land even with a green verify",
+    );
+
+    // The positive control: green verify and no marker is the one record that
+    // earns the merge, so the gate above is a filter and not a wall.
+    writeSeed({ draft: false }, "green");
+    const earned = await runLean({ repoRoot: dir, issue: 23, handlers, now: ticking().now });
+    assert(
+      earned.state === "landed" && earned.code === 0 && calls.land === 1,
+      `green verify and no marker does land (got ${earned.state} exit ${earned.code}, land calls ${calls.land})`,
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+// ── a hand-corrupted step key is refused at load, not driven ───────────────
+
+{
+  // Two steps sharing one key lets the replay path pick either, so a run can
+  // replay a verdict for a step it never ran. `loadRun` refuses the file.
+  const { dir, cleanup } = tempDir();
+  try {
+    mkdirSync(path.dirname(leanStateFile(dir, 25)), { recursive: true });
+    writeFileSync(
+      leanStateFile(dir, 25),
+      JSON.stringify(
+        {
+          schema: 1,
+          issue: 25,
+          version: "test",
+          models: {},
+          baseSha: "base",
+          branch: "b",
+          state: "build",
+          counters: { ...INITIAL_COUNTERS },
+          steps: [
+            { key: "5:build:0", state: "build", startedAt: CLOCK, endedAt: CLOCK, outcome: { kind: "ok" } },
+            { key: "5:build:0", state: "build", startedAt: CLOCK },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    let thrown: unknown;
+    try {
+      await runLean({ repoRoot: dir, issue: 25, handlers: scripted(HAPPY).handlers });
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown instanceof Error, "a duplicated step key is refused rather than driven");
+    assert(
+      /duplicate step key/.test((thrown as Error).message),
+      `the error names the duplicate key (got: ${(thrown as Error).message})`,
+    );
+
+    // A key with no readable `:N` would otherwise read as attempt 0 and
+    // collide with the state's real first step.
+    writeFileSync(
+      leanStateFile(dir, 25),
+      JSON.stringify(
+        {
+          schema: 1,
+          issue: 25,
+          version: "test",
+          models: {},
+          baseSha: "base",
+          branch: "b",
+          state: "build",
+          counters: { ...INITIAL_COUNTERS },
+          steps: [{ key: "5:build:x", state: "build", startedAt: CLOCK }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    let suffixErr: unknown;
+    try {
+      await runLean({ repoRoot: dir, issue: 25, handlers: scripted(HAPPY).handlers });
+    } catch (err) {
+      suffixErr = err;
+    }
+    assert(
+      suffixErr instanceof Error && /numeric :N suffix/.test(suffixErr.message),
+      `a malformed step key suffix is refused (got: ${(suffixErr as Error).message})`,
+    );
   } finally {
     cleanup();
   }

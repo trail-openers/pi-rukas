@@ -24,7 +24,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { execp } from "../exec.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
-import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
+import { fetchIssueBody, mainlineSha, mainlineShaFailure, postNotReady } from "./io.ts";
 import { HANDLER_STATES } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 
@@ -74,11 +74,19 @@ export async function readyOutcome(
   const failed = readiness(parsed.spec);
   if (failed.length > 0) return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
   const baseSha = await mainlineSha(repoRoot);
-  if (!baseSha)
+  if (!baseSha) {
+    // The refs probed and why each failed — a run whose mainline could not be
+    // resolved is not ready, and the operator reading the issue comment has
+    // to be able to tell "this clone has no origin/HEAD" from "git broke".
+    const why = mainlineShaFailure();
     return {
       kind: "fail",
-      facts: { spec: parsed.spec, failedRules: ["could not resolve the mainline sha"] },
+      facts: {
+        spec: parsed.spec,
+        failedRules: [`could not resolve the mainline sha${why ? `: ${why}` : ""}`],
+      },
     };
+  }
   try {
     const config = await loadWorkConfig(execp, repoRoot, baseSha);
     return { kind: "ok", facts: { spec: parsed.spec, config, baseSha, failedRules: [] } };

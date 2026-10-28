@@ -317,6 +317,32 @@ assert(
   "build exhausted on a run its verify called red hands back instead of drafting",
 );
 
+// The build cap binds on the TABLE, not only on what a handler chooses to
+// return: `build + ok` at the cap must stop building. Without this edge a
+// handler that never returned `exhausted` walked verify:red → build:ok →
+// verify → publish → ci:green → land forever, and MAX_BUILD_ATTEMPTS was
+// advisory. Asserted on both branches of `ok` (challenge owed / already done).
+for (const challengeDone of [false, true]) {
+  const atCap = next(
+    run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS, challengeDone } }),
+    { kind: "ok" },
+  );
+  assert(
+    atCap.state === "verify" && atCap.counters.buildAttempts === MAX_BUILD_ATTEMPTS,
+    `build + ok at the cap goes to verify and spends nothing (challengeDone=${challengeDone})`,
+  );
+}
+{
+  const oneBelow = next(
+    run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS - 1 } }),
+    { kind: "ok" },
+  );
+  assert(
+    oneBelow.state === "challenge" && oneBelow.counters.buildAttempts === MAX_BUILD_ATTEMPTS,
+    "build + ok one attempt below the cap still earns its challenge round",
+  );
+}
+
 // Every build transition consumes exactly one attempt, and never two.
 for (const [state, kind] of [
   ["build", "ok"],

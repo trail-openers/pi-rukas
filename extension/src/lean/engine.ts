@@ -23,7 +23,7 @@ import {
   type LeanRun,
   type LeanState,
   type Outcome,
-  attemptOf,
+  attemptOfStrict,
   isTerminal,
   loadRun,
   nextAttempt,
@@ -117,23 +117,45 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
- * Apply the table, then enforce the one arrival rule a (state, kind) pair
- * cannot express: `land` is entered by `ci` + `green` and nothing else. Every
- * transition in the table that names `land` as its destination IS that pair,
- * so this fires only on a future edit that opens a second edge — and it fires
- * before anything can merge, which is the only thing the rule is for. The
- * exhaustive pair enumeration and the reachability walk in
+ * Apply the table, then enforce the two arrival rules a (state, kind) pair
+ * cannot express.
+ *
+ * 1. `land` is entered by `ci` + `green` and nothing else — fires only on a
+ *    future edit that opens a second edge.
+ * 2. `land` is entered only by a run whose OWN gate currently says green.
+ *    The pair check cannot say this: `ci` + `green` is a legal arrival for a
+ *    run whose last `verify` said red, because the outcomes arrive through
+ *    the step log, and the replay path re-applies a recorded `ci:green`
+ *    without asking what the log before it recorded. The merge is the
+ *    irreversible act, so the gate sits on the arrival rather than on the
+ *    edge: the newest `verify` step must carry a green outcome and the run
+ *    must not still carry the draft marker its gate raised.
+ *
+ * The exhaustive pair enumeration and the reachability walk in
  * `test-lean-machine.ts` are the offline halves of the same guarantee.
  */
 function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
   const moved = next(run, outcome);
-  if (moved.state === "land" && !(run.state === "ci" && outcome.kind === "green")) {
-    return endRun(
-      drive,
-      run,
-      "handed-back",
-      `illegal arrival at land from ${run.state} + ${JSON.stringify(outcome.kind)}`,
-    );
+  if (moved.state === "land") {
+    if (!(run.state === "ci" && outcome.kind === "green")) {
+      return endRun(
+        drive,
+        run,
+        "handed-back",
+        `illegal arrival at land from ${run.state} + ${JSON.stringify(outcome.kind)}`,
+      );
+    }
+    const lastVerify = [...run.steps].reverse().find((s) => s.state === "verify");
+    if (run.counters.draft || lastVerify?.outcome?.kind !== "green") {
+      return endRun(
+        drive,
+        run,
+        "handed-back",
+        `land refused: verify not green (draft=${run.counters.draft}, last verify=${
+          lastVerify?.outcome?.kind ?? "none"
+        })`,
+      );
+    }
   }
   const advanced: LeanRun = { ...run, state: moved.state, counters: moved.counters };
   if (isTerminal(advanced.state))
@@ -223,8 +245,13 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
     // red. Same attempt number means the same step, and only that step is
     // re-run after a crash.
     const entries = run.steps.filter((s) => s.state === state).length;
+    // A step whose key cannot be read as an attempt number is refused by
+    // `loadRun`, so it reaches here only from an in-memory run. Treating it
+    // as attempt 0 would let such a key collide with the state's real first
+    // step and replay a verdict the run never earned — so no attempt number
+    // means no replay: the state is entered again instead.
     const completed = run.steps.find(
-      (s) => s.state === state && s.outcome !== undefined && attemptOf(s.key) === entries - 1,
+      (s) => s.state === state && s.outcome !== undefined && attemptOfStrict(s.key) === entries - 1,
     );
     if (completed?.outcome) {
       // Completed on this entry: never re-run. Apply the table and move on.

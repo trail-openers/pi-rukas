@@ -99,6 +99,48 @@ assert(
   reasonOf('```pi-spec v1\n{"problem": "unclosed"') === "no pi-spec v1 block",
   "an unterminated fence is no block at all, not broken JSON",
 );
+// A truncated body whose EARLIER fence closed still reaches the JSON parser,
+// and an operator told "invalid JSON" there goes looking for a typo that is
+// not there — the body was simply cut off mid-JSON. (A body cut off before its
+// FIRST fence is the other case, and it says "no pi-spec v1 block".)
+assert(
+  reasonOf(
+    [
+      "prose",
+      "",
+      "```pi-spec v1",
+      '{"problem": "truncated",',
+      '"criteria": [',
+      "```",
+      "",
+      "prose after the spec",
+      "",
+      "```sh",
+      "npm test",
+    ].join("\n"),
+  ).startsWith("pi-spec v1 block is not valid JSON: the fence it sits in was never closed"),
+  "a truncated trailing fence is named as truncation, not as a broken byte",
+);
+// ...and the spec is genuinely read when every fence closed, so the new
+// reason cannot become a catch-all that hides a parseable block.
+assert(
+  parsePiSpec(
+    [
+      "prose",
+      "",
+      "```pi-spec v1",
+      JSON.stringify(SPEC),
+      "```",
+      "",
+      "prose",
+      "",
+      "```sh",
+      "npm test",
+      "```",
+    ].join("\n"),
+  ).ok === true,
+  "the same body with its trailing fence closed parses",
+);
 // Tildes and indentation are legal CommonMark; a spec written by hand uses them.
 assert(
   parsePiSpec(`\`\`\`pi-spec v1\n${JSON.stringify(SPEC)}\n\`\`\``).ok === true,
@@ -123,8 +165,8 @@ assert(
       { id: "AC1", text: "t", verify: "test" },
       { id: "AC1", text: "u", verify: "test" },
     ],
-  }).some((r) => r.includes('duplicate criterion id "AC1"')),
-  "duplicate ids fail",
+  }).some((r) => r.includes("criterion AC1: duplicate id")),
+  "duplicate ids fail — and say it once, not twice",
 );
 assert(
   readiness({ ...SPEC, criteria: [{ id: "accept-1", text: "t", verify: "test" }] }).some((r) =>
