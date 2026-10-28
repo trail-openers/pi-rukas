@@ -1216,16 +1216,23 @@ PR: [#217](https://github.com/trail-openers/pi-rukas/pull/217)
 
 ## Host-wide spawn slots and path claims (#1871)
 
-Owner identity is `<hostname> <boot-id> <pid>`, the boot id read from
-`/proc/sys/kernel/random/boot_id`. A pid probe is consulted **only** when the
-hostname and the boot id both match the judging process; every other holder —
-another host, another boot of this host, or a body written before #1871 — is
-*foreign*, and foreign is answered as **alive**. That single rule covers spawn
-slots (`host-spawn-slots.ts`), `WorkState.owner` (resume, the queue's park
-reason, the worktree sweep) and path claims (`work-driver-path-claims-*`). The
-consequence is deliberate and is the reason the two entries below exist: a
-foreign holder is never reaped, never deleted and never swept, so clearing one
-after its container is gone is a manual action.
+Owner identity is four space-separated fields — `<host> <pidns> <pid> <starttime>` —
+where `pidns` is the decimal inode of `/proc/self/ns/pid` and `starttime` is field
+22 of `/proc/self/stat`, each `"-"` where unavailable (macOS has no `/proc`). The
+boot id is gone: `/proc/sys/kernel/random/boot_id` is identical on the host and in
+every container on it, because they share one kernel, so it separated nothing in
+the deployment the identity exists for. A pid probe is consulted **only** when the
+hostname and the pid namespace both match the judging process; if they do and both
+start times are known, the recorded one is compared against `/proc/<pid>/stat` and
+a mismatch is a reused pid. Every other holder — another host, another namespace, a
+half-written identity, or a body written before #1871 — is *foreign*, and foreign is
+answered as **alive**. That single rule covers spawn slots (`host-spawn-slots.ts`),
+`WorkState.owner` (resume, the queue's park reason, the worktree sweep) and path
+claims (`work-driver-path-claims-*`). Foreign is never reaped on liveness, never
+deleted and never swept, so clearing one after its container is gone is largely a
+manual action — with two bounded exceptions: a foreign **slot** silent past the
+10-minute lease is reaped, and a foreign **claim** past 24 × the stale bound is
+deleted by the next writer. See [headless.md](headless.md) → "Who owns a slot".
 
 ### The host spawn cap is silently off
 
@@ -1275,22 +1282,30 @@ host that parses `resources.limits.hostSpawnCap` sees it appear mid-release.
 ### A slot or a path claim is held by another container
 
 **Symptom:** a spawn fails with `host-wide spawn bound: no slot freed within
-<ms>ms (PI_ENSEMBLE_HOST_SPAWN_CAP=<cap>; held by <host> <boot-id> <pid>)`, or
+<ms>ms (PI_ENSEMBLE_HOST_SPAWN_CAP=<cap>; held by <host> <pidns> <pid> <starttime>)`, or
 a cycle parks at `plan` with a `cross-group-conflict` whose evidence reads
-`holder: <host> <boot-id> <pid>; claim file: <repo>/.pi/work-state/path-claims.json`.
+`holder: <host> <pidns> <pid> <starttime>; claim file: <repo>/.pi/work-state/path-claims.json`.
 The named pid no longer exists anywhere — it belonged to a container that was
 killed.
 
 **Cause:** the holder's identity is not this process's, so this process is not
-allowed to judge whether it is alive. Three shapes reach that answer: the same
-hostname with a **different** boot id (a sibling container that shares
-`--hostname`, or a slot left by a process from before a reboot), a **different**
-hostname with the same boot id, and a body in the pre-#1871 two-field
-`<host> <pid>` form. All three are foreign, and #1871 made foreign mean *alive*
-on purpose: answering the other way would let one container reap a live
-sibling's slot, or let a writer prune a live sibling's claim and put two
-workstreams into one file — the failure the claim registry exists to prevent.
-So nothing clears them automatically.
+allowed to judge whether it is alive. Four shapes reach that answer: a **different**
+hostname, the same hostname with a **different pid-namespace inode** (a sibling
+container that shares `--hostname`), a record carrying **some but not all** of
+host/pidns/startTime (a half identity is never probed), and a body in the pre-#1871
+two-field `<host> <pid>` form — which is judged by pid, not probed for a namespace.
+All of them are foreign, and #1871 made foreign mean *alive* on purpose: answering
+the other way would let one container reap a live sibling's slot, or let a writer
+prune a live sibling's claim and put two workstreams into one file — the failure the
+claim registry exists to prevent.
+
+**What clears by itself:** a foreign **slot** whose mtime has been silent for the
+10-minute lease (a live holder touches its slots every 60 s, so ten beats of
+silence means the holder stopped). A foreign **claim** is deleted by the next writer
+once it is older than 24 × `PI_ENSEMBLE_CLAIM_STALE_MS`, with reason
+`foreign-expired`. What does **not** clear on a clock: a same-namespace holder
+(judged by pid, however silent), and a pre-#1871 two-field body (its writer never
+heartbeated).
 
 **Fix — a slot:** read the bodies, then remove only the one you have decided is
 orphaned.
@@ -1301,25 +1316,27 @@ cat "${PI_ENSEMBLE_HOST_SPAWN_DIR:?}/slot-3"
 rm "${PI_ENSEMBLE_HOST_SPAWN_DIR:?}/slot-3"
 ```
 
-Check the body before deleting: if its host and boot id are a container that is
-still running, the slot is legitimately held and deleting it double-admits that
-child. `.reap` entries are per-slot recovery locks, not slots — they age out
-after 10 s on their own.
+Check the body before deleting: if its host and pid namespace are a container that
+is still running, the slot is legitimately held and deleting it double-admits that
+child. `.reap` entries are per-slot recovery locks, not slots. A lock does **not**
+age out on its own: it is cleared by the next reap attempt on that slot once it is
+older than 10 s, and that attempt then proceeds.
 
 **Fix — a path claim:** the park evidence names the file. Remove the entry whose
-`pid`/`host`/`bootId` match the holder it named, keeping every other entry
+`pid`/`host`/`pidns`/`startTime` match the holder it named, keeping every other entry
 (`releaseClaim`/`pruneClaims` are deliberately conservative and will not do it
-for a foreign holder). An entry carrying `identity unknown` predates #1871 and is
-judged by pid alone, so it ages out without help.
+for a foreign holder before the 24 × bound). An entry carrying `identity unknown`
+predates #1871 and is judged by pid alone, so it ages out without help.
 
 **Both:** the durable fix is not to share a slot or claim directory across
 containers that can outlive each other. Give each container its own
 `PI_ENSEMBLE_HOST_SPAWN_DIR`, and keep `.pi/work-state/` inside the clone rather
 than a shared volume. See [headless.md](headless.md) → "Who owns a slot".
 
-**macOS / no `/proc`:** the boot id reads as `"-"`, and two `"-"` ids on one
-hostname count as matching, so the pid probe still answers there — a dead pid
-on your own machine is still reaped and still swept, exactly as before #1871.
+**macOS / no `/proc`:** the pid namespace and the start time both read as `"-"`, and
+two `"-"` values on one hostname count as matching, so the pid probe still answers
+there — a dead pid on your own machine is still reaped and still swept, exactly as
+before #1871.
 
 ## Diagnostics
 

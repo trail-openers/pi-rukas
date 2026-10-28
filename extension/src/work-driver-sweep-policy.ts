@@ -94,7 +94,7 @@ export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> 
   // Rule 3: Live owner check
   const issueNumber = state.issue;
   const ownerPid = state.owner?.pid;
-  // #1871 — "foreign" counts as alive: an owner whose host/boot-id this process
+  // #1871 — "foreign" counts as alive: an owner whose host/pidns/startTime this process
   // cannot verify is NOT swept, because calling it dead would delete a live
   // sibling container's worktree. A legacy {pid, at} owner keeps the pid-only
   // verdict, so pre-upgrade state files still age out exactly as before.

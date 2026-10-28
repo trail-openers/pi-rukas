@@ -11,7 +11,8 @@ import type { WorkState } from "./workflow-state.ts";
 /**
  * A live owner is only trusted while its record still answers "alive".
  *
- * #1871 — the verdict is the identity judge's: a record carrying host/boot-id
+ * #1871 — the verdict is the identity judge's: a record carrying host / pidns /
+ * startTime
  * is probed only when both match this process, so a driver in a sibling
  * container that shares this hostname is not called a corpse, and a "foreign"
  * owner counts as ALIVE here (the group stays parked rather than being handed

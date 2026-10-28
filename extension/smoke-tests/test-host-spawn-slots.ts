@@ -16,11 +16,13 @@
  * the bound fails with a named error, an abort ends the wait, and the resource
  * report labels the two spawn caps per-process and host-wide.
  *
- * #1871 adds the OWNER IDENTITY to the same protocol — `<host> <boot-id>
- * <pid>` — and with it the cases the pid-only body could not express: a slot
- * whose host and boot id match but whose pid belongs to a sibling container is
- * NOT reaped; and an unwritable slot directory is visible as `degraded` in the
- * resource report and warns on every acquisition instead of once per process.
+ * #1871 adds the OWNER IDENTITY to the same protocol — `<host> <pidns> <pid>
+ * <starttime>` — and with it the cases the pid-only body could not express: a
+ * slot whose host matches but whose pid namespace belongs to a sibling container
+ * is NOT reaped; a slot naming a LIVE pid whose recorded start time is not its
+ * own IS reaped, because that pid was recycled; and an unwritable slot directory
+ * is visible as `degraded` in the resource report and warns on every acquisition
+ * instead of once per process.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";

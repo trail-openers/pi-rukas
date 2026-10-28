@@ -25,7 +25,7 @@
  * A legacy two-field `<host> <pid>` body gets NEITHER lease: its writer
  * predates the heartbeat, so its silence is not evidence (D3).
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -153,7 +153,9 @@ try {
   // ── 1. the heartbeat: the module refreshes each held slot's mtime ----------
   {
     const src = fs.readFileSync(
-      path.join(import.meta.dir, "..", "src", "host-spawn-slots.ts"),
+      // Resolved from the suite's own cwd (extension/), which is how every
+      // other test in this project locates a source file to scan.
+      path.resolve(process.cwd(), "src", "host-spawn-slots.ts"),
       "utf8",
     );
     assert(/utimesSync\(/.test(src), "the heartbeat touches held slots with fs.utimesSync");
@@ -267,7 +269,7 @@ try {
   // ── 7. a same-namespace holder alive is never reaped on the lease ---------
   {
     const d = dir("same-host-old");
-    const sleep = Bun.spawn(["sleep", "30"]);
+    const sleep = spawn("sleep", ["30"]);
     children.push(() => {
       try {
         sleep.kill();
@@ -279,7 +281,8 @@ try {
     // value that does not match `/proc` makes this a recycled pid, which the
     // pid probe reaps, and the case would then prove the probe rather than the
     // lease.
-    const body = formatIdentity({ ...ME, pid: sleep.pid, startTime: readStart(String(sleep.pid)) });
+    const holderPid = sleep.pid ?? 999_998;
+    const body = formatIdentity({ ...ME, pid: holderPid, startTime: readStart(String(holderPid)) });
     fs.writeFileSync(slot(d), body);
     age(slot(d), ANCIENT_S);
     const { ran, err } = await acquire(d, LEASE_MS);
