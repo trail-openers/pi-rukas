@@ -15,7 +15,6 @@ const CHANGE_FIX = "fix the change the evidence names, then re-run `/work {issue
 const ENV_CLEAR = "clear the environment fault the evidence names, then re-run `/work {issue}`";
 
 /** Template families. `verify-failed` is routed by evidence in work-driver-cause-class. */
-/** Template families. `verify-failed` is routed by evidence in work-driver-cause-class. */
 export const TEMPLATE_CAP_CAUSE: Record<keyof typeof CAP_TEMPLATES, CapCause> = {
   "verify-failed": {
     cls: "change",

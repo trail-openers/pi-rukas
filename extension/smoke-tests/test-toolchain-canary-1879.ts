@@ -13,7 +13,9 @@
  * is split along the AGENTS.md §12 file-size cap — run BOTH):
  *
  *   1. the canary itself — a STUB compiler (fixture tree under os.tmpdir) fails
- *      it, and this repo's REAL compiler passes it;
+ *      it, a compiler that prints TS2322 passes it, and one that exits non-zero
+ *      without the diagnostic is NOT judged (H1: only an exit-0 run is unsound);
+ *      the per-identity cache expires on an age bound (H2);
  *   2. each guarded call site refuses a green from a stub compiler: the develop
  *      gate parks with `toolchain-unsound`, the ci tier fails, the cap
  *      checkpoint reports "could not run" — never a pass;
@@ -22,11 +24,12 @@
  * Nothing here writes into the repo's own `node_modules` or any linked tree:
  * every stub lives in a fixture under `os.tmpdir()`.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { LOCAL_TSC_CMD } from "../src/work-driver-cap-checkpoint-typecheck.ts";
 import { runCiVerifyFull } from "../src/work-driver-ci-verify.ts";
 import {
+  CANARY_DIR_PREFIX,
   CANARY_NOT_JUDGED,
   CANARY_SKIPPED_NOTE,
   guardCompilerIntegrity,
@@ -79,6 +82,34 @@ console.log("1. the canary separates a stub compiler from one that judges");
   assert(stray === null || stray.stdout.trim() === "", "no canary file left under the repo");
 }
 {
+  // M2 — the canary file is written in a PRIVATE per-process temp dir, not a
+  // predictable name in the shared one (a predictable name is a symlink target
+  // for another uid, and `writeFile` follows it). The dir is located from the
+  // path the probe actually ran with, so the assertion names where the file
+  // really was rather than where this process guesses `os.tmpdir()` points.
+  resetToolchainCanaryCache();
+  const root = fixtureRoot("private-dir");
+  const pkg = packageWithCompiler(root, STUB);
+  const { exec, ran } = recording();
+  await toolchainCanary(pkg, exec);
+  const probeArg = (ran[0] ?? "").split(" ").pop() ?? "";
+  const dir = path.dirname(probeArg);
+  const base = path.basename(dir);
+  assert(
+    probeArg !== "" &&
+      base.startsWith(CANARY_DIR_PREFIX) &&
+      new RegExp(`^${CANARY_DIR_PREFIX}[A-Za-z0-9_-]{6,}$`).test(base) &&
+      path.dirname(dir) !== dir &&
+      !path.basename(path.dirname(dir)).includes(String(process.pid)),
+    `the canary file lives in one unguessable mkdtemp dir, not a per-pid name (got: ${dir || "no run"})`,
+  );
+  const mode = existsSync(dir) ? statSync(dir).mode & 0o777 : -1;
+  assert(
+    mode === 0o700 && readdirSync(dir).length === 0,
+    `that dir is mode 0700 and emptied after the probe (mode ${mode.toString(8)})`,
+  );
+}
+{
   // A compiler that rejects with the right diagnostic: pass.
   const root = fixtureRoot("sound");
   const pkg = packageWithCompiler(root, SOUND);
@@ -90,9 +121,12 @@ console.log("1. the canary separates a stub compiler from one that judges");
   );
 }
 {
-  // Non-zero but the WRONG diagnostic is not a pass: the compiler must refuse
-  // THIS error, not merely be unhappy.
-  const root = fixtureRoot("wrong-diagnostic");
+  // #1879 fix round (H1) — a non-zero run WITHOUT the diagnostic is NOT proof
+  // of an unsound compiler: it is a crash or an environment fault, and a crash
+  // says nothing about whether the compiler would refuse this assignment. Not
+  // judged, so `guardCompilerIntegrity` records a note and lets the tier run —
+  // never a park accusing a compiler it never got an answer from.
+  const root = fixtureRoot("crash-no-diagnostic");
   const pkg = packageWithCompiler(
     root,
     "process.stderr.write('error TS1234: something else\\n');process.exit(2);\n",
@@ -100,8 +134,34 @@ console.log("1. the canary separates a stub compiler from one that judges");
   resetToolchainCanaryCache();
   const outcome = await toolchainCanary(pkg, realExec);
   assert(
-    outcome.ok === false,
-    `a non-zero run without TS2322 does not pass the canary (got ${outcome.ok})`,
+    outcome.ok === undefined,
+    `a non-zero run without TS2322 is NOT judged, never reported unsound (got ${outcome.ok})`,
+  );
+  assert(
+    outcome.ok === undefined && /without the expected TS2322/.test(outcome.why),
+    `the note names the missing diagnostic as the reason (got: ${outcome.ok === undefined ? outcome.why : ""})`,
+  );
+  const guarded = await guardCompilerIntegrity({
+    cmd: `cd extension && ${LOCAL_TSC_CMD} --noEmit -p tsconfig.json`,
+    cwd: pkg,
+    where: "a tier whose compiler crashed",
+    run: realExec,
+  });
+  assert(
+    guarded?.failure === undefined && guarded?.note !== undefined,
+    `a crashed compiler never parks a tier, and the note says so (got ${JSON.stringify(guarded)})`,
+  );
+}
+{
+  // H1, third arm: a non-zero run that died with NO output at all is the same
+  // answer — an environment fault, not a judgement.
+  const root = fixtureRoot("crash-silent");
+  const pkg = packageWithCompiler(root, "process.exit(1);\n");
+  resetToolchainCanaryCache();
+  const outcome = await toolchainCanary(pkg, realExec);
+  assert(
+    outcome.ok === undefined,
+    `a non-zero run with no output at all is NOT judged (got ${outcome.ok})`,
   );
 }
 {
@@ -114,7 +174,7 @@ console.log("1. the canary separates a stub compiler from one that judges");
   );
 }
 {
-  // Cache: one identity is asked once.
+  // Cache: one identity is asked once …
   const root = fixtureRoot("cache");
   const pkg = packageWithCompiler(root, SOUND);
   resetToolchainCanaryCache();
@@ -125,6 +185,28 @@ console.log("1. the canary separates a stub compiler from one that judges");
   assert(
     ran.length === after,
     `the second call is served from the cache (${after} → ${ran.length})`,
+  );
+}
+{
+  // … and the cache EXPIRES. The identity key cannot catch every swap: the
+  // pinned entry file is a launcher over lib/tsc.js, and the #1879 stub replaced
+  // BOTH — a swap that leaves the entry file untouched changes no mtime and no
+  // size, so an age bound is the only thing that re-asks.
+  const root = fixtureRoot("cache-age");
+  const pkg = packageWithCompiler(root, SOUND);
+  resetToolchainCanaryCache();
+  const { exec, ran } = recording();
+  let clock = 1_000_000;
+  const now = () => clock;
+  await toolchainCanary(pkg, exec, now);
+  const afterFirst = ran.length;
+  await toolchainCanary(pkg, exec, now);
+  assert(ran.length === afterFirst, "inside the age bound the verdict is still cached");
+  clock += 10 * 60_000 + 1; // past CANARY_CACHE_MAX_AGE_MS
+  await toolchainCanary(pkg, exec, now);
+  assert(
+    ran.length > afterFirst,
+    `an identity whose verdict is older than the age bound is RE-PROBED (${afterFirst} → ${ran.length})`,
   );
 }
 {

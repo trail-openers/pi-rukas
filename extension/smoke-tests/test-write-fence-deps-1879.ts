@@ -15,7 +15,9 @@
  *   D. a DEVELOPER is untouched by this rule (it may install: that is what
  *      provisioning is for), and the whole-tree fence is not weakened;
  *   E. the hook wiring: registered for a read-only child with NO write root
- *      (the reviewer's real configuration), and the refusal is logged.
+ *      (the reviewer's real configuration), and the refusal is logged;
+ *   F. H3 — `PI_ENSEMBLE_WRITE_FENCE=0` disarms the developer whole-tree fence
+ *      ONLY: a reviewer-role dependency write is refused with the hatch set.
  */
 
 import path from "node:path";
@@ -213,6 +215,56 @@ const adversarialRefused = await roleEnv(
 assert(adversarialRefused !== undefined, "E: adversarial-developer is held too");
 const reviewerLogged = await roleEnv("code-review-specialist", undefined, `echo x > ${REPO_TSC}`);
 assert(reviewerLogged !== undefined, "E: code-review-specialist is held too");
+
+// ============================================================
+// F. H3 — the operator's `PI_ENSEMBLE_WRITE_FENCE=0` hatch is the DEVELOPER
+// whole-tree fence's switch, not this rule's. A reviewer with the hatch set (and
+// a write root, the worst case: a fenced dispatch that is also read-only) is
+// still refused, while the same hatch does disarm the whole-tree fence.
+// ============================================================
+const hatchEnv = async (
+  role: string | undefined,
+  root: string | undefined,
+  cmd: string,
+): Promise<string | undefined> => {
+  restoreEnv();
+  process.env.PI_ENSEMBLE_WRITE_FENCE = "0";
+  if (role !== undefined) process.env.PI_ENSEMBLE_ROLE = role;
+  if (root !== undefined) {
+    process.env.PI_ENSEMBLE_WRITE_ROOT = root;
+    process.env.PI_ENSEMBLE_WRITE_REPO = fx.repo;
+    process.env.PI_ENSEMBLE_WRITE_SCRATCH = fx.scratch;
+  }
+  process.chdir(fx.wt);
+  const pi = fakePi();
+  registerWriteFence(pi);
+  const res = await toolCall(pi, { toolName: "bash", input: { command: cmd } });
+  return res?.reason;
+};
+
+const hatchReviewerRefused = await hatchEnv("explore", undefined, `echo x > ${REPO_TSC}`);
+assert(
+  hatchReviewerRefused !== undefined && /read-only role/.test(hatchReviewerRefused),
+  "F: PI_ENSEMBLE_WRITE_FENCE=0 does NOT disarm the read-only dependency rule",
+);
+const hatchReviewerWithRoot = await hatchEnv("explore", fx.wt, `echo x > ${REPO_TSC}`);
+assert(
+  hatchReviewerWithRoot !== undefined && /read-only role/.test(hatchReviewerWithRoot),
+  "F: nor does it disarm the rule when a write root IS set",
+);
+// Control: the hatch really did reach loadFenceConfig, so F above is not passing
+// because the hatch was ignored everywhere.
+const outside = path.join(fx.base, "outside-fence.txt");
+const devHatch = await hatchEnv("developer", fx.wt, `echo x > ${outside}`);
+assert(
+  devHatch === undefined,
+  "F: the hatch DOES disarm the developer's whole-tree fence (so F is the rule, not a no-op env)",
+);
+const devNoHatch = await roleEnv("developer", fx.wt, `echo x > ${outside}`);
+assert(
+  devNoHatch !== undefined,
+  "F: without the hatch that same write is refused by the whole-tree fence",
+);
 
 restoreEnv();
 console.log(

@@ -24,8 +24,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 import { bashWriteTargets } from "./write-fence-bash.ts";
-import { depWriteRefusal } from "./write-fence-deps.ts";
-import { isReadOnlyRole } from "./write-fence-deps.ts";
+import { depWriteRefusal, isReadOnlyRole } from "./write-fence-deps.ts";
 import { appendWriteFenceRefusal } from "./write-fence-log.ts";
 import {
   type FenceConfig,
@@ -114,22 +113,33 @@ function depsRefusalFor(input: unknown, role: string | undefined): Refusal | und
     : { tool: "bash", path: "(dependency write)", message: reason };
 }
 
-/** Register the fence for this child. A no-op unless the dispatch set PI_ENSEMBLE_WRITE_ROOT. */
+/**
+ * Register the fence for this child. A no-op unless the dispatch set
+ * `PI_ENSEMBLE_WRITE_ROOT` (the whole-tree fence) or the child is one of the
+ * read-only roles the dependency rule covers — see the two gates below.
+ */
 export function registerWriteFence(pi: ExtensionAPI): void {
+  // The two rules are INDEPENDENT gates and each reads its own switch.
+  //
+  //   - the whole-tree fence: the developer's fence, which the operator's
+  //     `PI_ENSEMBLE_WRITE_FENCE=0` escape hatch exists to switch off (it is
+  //     also inert when the dispatch set no `PI_ENSEMBLE_WRITE_ROOT`).
+  //   - the dependency-tree rule for read-only roles: NOT switchable by that
+  //     hatch. The hatch is documented for the developer whole-tree fence; a
+  //     reviewer has no write root at all, so the hatch was never its gate, and
+  //     one env var that silently disarmed the shared-toolchain rule would
+  //     reopen #1879 with the escape hatch as the vector.
   const cfg = loadFenceConfig(process.env);
-  // #1879 — the dependency-tree rule for read-only roles runs on its OWN gate:
-  // a reviewer has no PI_ENSEMBLE_WRITE_ROOT (the driver fences develop and
-  // lens-fix dispatches only), so the whole-tree fence is inert for it and this
-  // is the only thing standing between its bash and the shared toolchain.
+  const wholeTree = cfg !== undefined;
   const readOnlyRole = process.env.PI_ENSEMBLE_ROLE;
-  const depsOnly = cfg === undefined && isReadOnlyRole(readOnlyRole);
-  if (cfg === undefined && !depsOnly) return;
+  const depRule = isReadOnlyRole(readOnlyRole);
+  if (!wholeTree && !depRule) return;
   const scratch = process.env.PI_ENSEMBLE_WRITE_SCRATCH;
   const repo = process.env.PI_ENSEMBLE_WRITE_REPO;
   pi.on("tool_call", async (event) => {
     let refusal: Refusal | undefined;
     try {
-      refusal = cfg === undefined ? undefined : refusalFor(event.toolName, event.input, cfg);
+      refusal = wholeTree ? refusalFor(event.toolName, event.input, cfg) : undefined;
       if (refusal === undefined && event.toolName === "bash") {
         refusal = depsRefusalFor(event.input, readOnlyRole);
       }

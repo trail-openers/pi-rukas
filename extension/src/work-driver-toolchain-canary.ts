@@ -34,9 +34,15 @@
  *     `bun smoke-tests/test-toolchain-canary-1879.ts` is the detector.
  *
  *   - **Per-process cache keyed by the compiler's identity**, not its name:
- *     realpath of the entry file plus its mtime and size. A stub swap changes
- *     at least one of the three, so a canary never goes stale across a
- *     reinstall or a re-clobber; two identical calls in one process pay once.
+ *     realpath of the entry file plus its mtime and size, and bounded by age.
+ *     A stub swap changes at least one of the three, so a canary never goes
+ *     stale across a reinstall or a re-clobber; two identical calls in one
+ *     process pay once. The age bound exists because the identity alone does
+ *     not: `bin/tsc` is a launcher that loads `lib/tsc.js`, and the #1879
+ *     incident clobbered BOTH files — a swap that leaves the entry file itself
+ *     untouched changes no mtime and no size, and an unbounded cache would
+ *     carry the old verdict for the life of a long driver process. A cached
+ *     verdict older than {@link CANARY_CACHE_MAX_AGE_MS} is re-probed.
  *
  *   - **Never writes inside the repo.** The canary file lives under
  *     `os.tmpdir()`, because a type error committed into the tree it is
@@ -117,9 +123,6 @@ export type CanaryOutcome =
   /** The canary could not ask the question. Never reported as a pass or a failure. */
   | { ok: undefined; why: string };
 
-/** A canary run, with the identity it was cached under (undefined = not cacheable). */
-type Cached = CanaryOutcome & { key: string | undefined };
-
 /**
  * Is the canary enabled? `PI_ENSEMBLE_TOOLCHAIN_CANARY=0` turns it off.
  *
@@ -175,10 +178,43 @@ async function compilerIdentity(entry: string): Promise<string | undefined> {
   }
 }
 
-/** The canary file, under the OS temp dir: outside every repository it might verify. */
-function canaryPath(key: string, runId: string): string {
-  const digest = Buffer.from(key).toString("base64url").slice(0, 24);
-  return path.join(os.tmpdir(), `pi-rukas-canary-${digest}-${runId}.ts`);
+/**
+ * The private directory the canary files live in: one per process, mode 0700,
+ * under the OS temp dir. A predictable name in the shared temp dir is a
+ * symlink target for any other uid on the host — `writeFile` follows it and the
+ * canary becomes a write primitive outside the tree. `mkdtemp` makes the name
+ * unguessable and refuses to reuse one that exists; the mode is the one `mkdir`
+ * would have given anyway (the process umask widens it, hence the explicit
+ * `chmod`), so nobody else can read or replace what is compiled.
+ */
+/**
+ * The prefix of the private per-process canary directory. Exported so the test
+ * can name the directory it expects without copying the literal and drifting.
+ */
+export const CANARY_DIR_PREFIX = "pi-rukas-canary-";
+
+let canaryDir: Promise<string> | undefined;
+function canaryDirOnce(): Promise<string> {
+  if (canaryDir === undefined) {
+    canaryDir = fs
+      .mkdtemp(path.join(os.tmpdir(), CANARY_DIR_PREFIX))
+      .then(async (dir) => {
+        await fs.chmod(dir, 0o700).catch(() => undefined);
+        return dir;
+      })
+      .catch((err) => {
+        // A failed creation is not a verdict about the compiler — but it must
+        // not be retried forever on a temp dir that will not be made either.
+        canaryDir = undefined;
+        throw err;
+      });
+  }
+  return canaryDir;
+}
+
+/** The canary file, in that private dir: outside every repository it might verify. */
+async function canaryPath(runId: string): Promise<string> {
+  return path.join(await canaryDirOnce(), `${runId}.ts`);
 }
 
 /** The compiler's own account of a non-zero run, gathered from every field it reports. */
@@ -187,12 +223,33 @@ function rejectionText(err: unknown): string {
   return [e.stdout, e.stderr, e.message].map((x) => (typeof x === "string" ? x : "")).join("\n");
 }
 
-/** Run the compiler on the canary file and classify what came back. */
+/**
+ * Run the compiler on the canary file and classify what came back.
+ *
+ * Exactly three answers, and the rule for telling them apart is that **only an
+ * exit-0 run is proof of an unsound compiler**:
+ *
+ *   - exit 0 on the known error → `ok: false`. The compiler was there, it read
+ *     the file, and it refused to judge it. That is the stub.
+ *   - non-zero WITH the `TS2322` diagnostic → `ok: true`. It refused THIS
+ *     error, which is the only question the canary asks.
+ *   - non-zero WITHOUT it → `ok: undefined`, **never** `false`. A compiler that
+ *     crashes, cannot parse its own invocation, is killed at its bound or finds
+ *     no lib directory exits non-zero having said nothing about the assignment.
+ *     That is an environment fault, and an environment fault is not a finding
+ *     about the compiler — `guardCompilerIntegrity` reads `undefined` as "could
+ *     not look", records the note and lets the tier run, where the tier's own
+ *     command reports the real problem. Calling it `false` would park a cycle
+ *     accusing a compiler of unsoundness on the strength of a crash it never
+ *     completed.
+ */
 async function probe(entry: string, cwd: string, run: DriverExecFn): Promise<CanaryOutcome> {
   const script = LOCAL_TSC_CMD.split(" ").pop() as string;
-  const file = canaryPath(entry, `${process.pid}-${Date.now().toString(36)}`);
+  const runId = `${process.pid}-${Date.now().toString(36)}`;
+  let file: string;
   try {
-    await fs.writeFile(file, CANARY_SOURCE, "utf8");
+    file = await canaryPath(runId);
+    await fs.writeFile(file, CANARY_SOURCE, { mode: 0o600 });
   } catch (err) {
     return {
       ok: undefined,
@@ -203,12 +260,16 @@ async function probe(entry: string, cwd: string, run: DriverExecFn): Promise<Can
     // argv form: no shell re-parse, and the temp path stays one argument
     // however the tree's path is spelled. A verify run, so it takes a slot:
     // it compiles a real tree's worth of library code, not a no-op.
+    // `killGroup` matches the checkpoint's typecheck exec options: the compiler
+    // grandchild inherits the pipes, so a plain timeout would leave it holding
+    // the promise after its own bound fired.
     await withVerifySlot(() =>
       run("node", {
         argv: [script, "--noEmit", file],
         cwd,
         timeout: CANARY_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
+        killGroup: true,
         env: verifyChildEnv(),
       }),
     );
@@ -219,14 +280,16 @@ async function probe(entry: string, cwd: string, run: DriverExecFn): Promise<Can
     };
   } catch (err) {
     const output = rejectionText(err);
-    if (!new RegExp(`\\berror ${CANARY_DIAGNOSTIC}\\b`, "i").test(output)) {
-      const first = output.split("\n").find((l) => l.trim().length > 0) ?? "no output";
-      return {
-        ok: false,
-        why: `it failed without the expected ${CANARY_DIAGNOSTIC} diagnostic (${first.slice(0, 160)})`,
-      };
+    if (new RegExp(`\\berror ${CANARY_DIAGNOSTIC}\\b`, "i").test(output)) {
+      return { ok: true };
     }
-    return { ok: true };
+    // A non-zero run that never printed the diagnostic judged nothing about
+    // this assignment: not judged, not a verdict. See the docblock.
+    const first = output.split("\n").find((l) => l.trim().length > 0) ?? "no output";
+    return {
+      ok: undefined,
+      why: `it exited non-zero without the expected ${CANARY_DIAGNOSTIC} diagnostic, which is a crash or an environment fault rather than a judgement (${first.slice(0, 160)})`,
+    };
   } finally {
     await fs.rm(file, { force: true }).catch(() => undefined);
   }
@@ -235,24 +298,42 @@ async function probe(entry: string, cwd: string, run: DriverExecFn): Promise<Can
 /** The canary's own bound: a real tsc answers a one-file check in seconds. */
 const CANARY_TIMEOUT_MS = 60_000;
 
-/** Process-lifetime cache: compiler identity → what the canary observed. */
-const cache = new Map<string, Cached>();
+/**
+ * How long a cached verdict stays trusted. Long enough that a tier which asks
+ * many times in one minute pays once; short enough that a compiler clobbered
+ * while the driver sat in a long dispatch is asked again before the next tier
+ * trusts it. The identity key alone cannot catch that swap — see the module
+ * header — so the age bound is the freshness guarantee.
+ */
+const CANARY_CACHE_MAX_AGE_MS = 10 * 60_000;
+
+/** Process-lifetime cache: compiler identity → what the canary observed, and when. */
+const cache = new Map<string, { at: number; outcome: CanaryOutcome }>();
 
 /** Drops every cached verdict. Test seam for the cache, not a production hook. */
 export function resetToolchainCanaryCache(): void {
   cache.clear();
 }
 
-/** Ask the compiler, once per identity, whether it still compiles. */
-async function ask(entry: string, cwd: string, run: DriverExecFn): Promise<Cached> {
+/**
+ * Ask the compiler, once per identity per {@link CANARY_CACHE_MAX_AGE_MS},
+ * whether it still compiles. `now` is injectable so the age bound is testable
+ * without waiting out ten minutes; production callers never pass it.
+ */
+async function ask(
+  entry: string,
+  cwd: string,
+  run: DriverExecFn,
+  now: () => number = Date.now,
+): Promise<CanaryOutcome> {
   const key = await compilerIdentity(entry);
   if (key !== undefined) {
     const hit = cache.get(key);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined && now() - hit.at < CANARY_CACHE_MAX_AGE_MS) return hit.outcome;
   }
-  const result: Cached = { ...(await probe(entry, cwd, run)), key };
-  if (key !== undefined) cache.set(key, result);
-  return result;
+  const outcome = await probe(entry, cwd, run);
+  if (key !== undefined) cache.set(key, { at: now(), outcome });
+  return outcome;
 }
 
 /**
@@ -264,7 +345,11 @@ async function ask(entry: string, cwd: string, run: DriverExecFn): Promise<Cache
  * reason — the caller decides what an unasked question costs (the develop gate
  * fails the tier; the cap checkpoint reports "could not run", never "passed").
  */
-export async function toolchainCanary(cwd: string, run: DriverExecFn): Promise<CanaryOutcome> {
+export async function toolchainCanary(
+  cwd: string,
+  run: DriverExecFn,
+  now: () => number = Date.now,
+): Promise<CanaryOutcome> {
   const entry = compilerEntryPath(cwd);
   try {
     fsSync.accessSync(entry);
@@ -277,7 +362,7 @@ export async function toolchainCanary(cwd: string, run: DriverExecFn): Promise<C
     return { ok: undefined, why: CANARY_NOT_JUDGED };
   }
   try {
-    return await ask(entry, cwd, run);
+    return await ask(entry, cwd, run, now);
   } catch (err) {
     // The canary is a guard, not a dependency: an unexpected fault is an
     // unasked question, and each caller already handles one.
