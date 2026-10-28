@@ -54,7 +54,7 @@ const tmpRoot = await mkdtemp(join(tmpdir(), "pi-1863-exit-"));
 async function cleanup() {
   for (const child of spawned) {
     try {
-      process.kill(-child.pid as number, "SIGKILL");
+      if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
     } catch {
       /* gone */
     }
@@ -130,11 +130,126 @@ try {
     );
   }
 
+  // ── 2b. THE v0.14.30 HOTFIX: the grace starts at the KILL, not at the spawn.
+  //
+  // The field shape this pins: `spawn.ts` enters this await for the child's
+  // whole life, so a ceiling armed on entry was a 15 s death sentence for every
+  // subagent. A long-running child that nobody killed must come back with its
+  // REAL exit, at its real time — not with `[null, null]` at 15 s.
+  {
+    const slow = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 20_000)"], {
+      stdio: "pipe",
+    });
+    spawned.push(slow);
+    slow.stdout?.on("data", () => {});
+    slow.stderr?.on("data", () => {});
+    const tKill = Date.now();
+    let reKilled = 0;
+    const [slowCode] = await awaitExitWithin(slow, {
+      // Shorter than the child's runtime on purpose: if the deadline still
+      // started at entry, this resolves at 2 s with no exit code.
+      graceMs: 2_000,
+      killed: () => false, // nobody ever killed it
+      kill: () => {
+        reKilled += 1;
+      },
+    });
+    const slowElapsed = Date.now() - tKill;
+    assert(
+      slowElapsed >= 19_000,
+      `an un-killed child is awaited for its full 20 s, not cut off at the grace (${slowElapsed}ms)`,
+    );
+    assert(
+      slowElapsed < 26_000,
+      `the un-killed wait returned when the child actually exited (${slowElapsed}ms)`,
+    );
+    assert(
+      slowCode === 0,
+      `the un-killed child still reported its real exit code through an unbounded wait (got ${slowCode})`,
+    );
+    assert(
+      reKilled === 0,
+      "an un-killed child is never re-signalled on the way out — the re-kill belongs to the wedged branch only",
+    );
+  }
+
+  // ── 2c. A KILLED child still gets only the grace (the #1863 behaviour, kept).
+  //
+  // The kill lands 4 s INTO the await. A deadline armed on entry would have
+  // resolved at `graceMs` with no exit event; a deadline armed at the kill
+  // resolves at kill + grace, which is what this asserts.
+  {
+    const dir2 = await mkdtemp(join(tmpRoot, "trap-killed-"));
+    const script2 = join(dir2, "pi");
+    writeFileSync(script2, "#!/bin/sh\ntrap '' TERM\nwait\n");
+    await chmod(script2, 0o755);
+    const wedged = spawn(script2, [], { stdio: ["pipe", "pipe", "pipe"], detached: true });
+    spawned.push(wedged);
+    wedged.stdout?.on("data", () => {});
+    wedged.stderr?.on("data", () => {});
+    await new Promise((r) => setTimeout(r, 200));
+    const pid2 = wedged.pid as number;
+    const killAt = Date.now() + 4_000;
+    let reKilled2 = 0;
+    const tKill2 = Date.now();
+    const [wedgedCode, wedgedSignal] = await awaitExitWithin(wedged, {
+      graceMs: 1_000,
+      killed: () => Date.now() >= killAt,
+      kill: () => {
+        reKilled2 += 1;
+        try {
+          process.kill(-pid2, "SIGKILL");
+        } catch {
+          /* gone */
+        }
+      },
+    });
+    const killElapsed = Date.now() - tKill2;
+    assert(
+      killElapsed >= 4_000,
+      `a killed child's grace did NOT start before the kill happened (resolved after ${killElapsed}ms, kill armed at 4000ms)`,
+    );
+    assert(
+      killElapsed < 4_000 + 4_000,
+      `a killed-and-wedged child still resolves within kill time + grace (${killElapsed}ms, grace 1000ms)`,
+    );
+    assert(reKilled2 >= 1, "the killed branch re-signalled the tree on the way out");
+    // What matters is that the wait ENDED on its own after the grace and still
+    // handed back a well-formed tuple; the tuple's contents come from
+    // `child.exitCode`/`signalCode`, which Node fills from the escalation.
+    assert(
+      Array.isArray(wedgedCode) === false &&
+        (wedgedCode === null || typeof wedgedCode === "number") &&
+        (wedgedSignal === null || typeof wedgedSignal === "string"),
+      `the killed child still resolved a well-formed [code, signal] tuple (code=${wedgedCode} signal=${wedgedSignal})`,
+    );
+  }
+
   // ── 3. The default ceiling is derived from the kill policy, and is bounded.
   assert(
     EXIT_AWAIT_GRACE_MS > 0 && EXIT_AWAIT_GRACE_MS <= 60_000,
     `the exit-await ceiling is a bounded grace past the kill escalation (${EXIT_AWAIT_GRACE_MS}ms) rather than the 2-h spawn backstop`,
   );
+
+  // ── 3b. No timer outlives the await: a resolved wait leaves the loop drainable.
+  //
+  // The ref'd handle is what keeps a wedged child's runner from exiting 0 with
+  // no result (#1863), and clearing it is what keeps a NORMAL dispatch from
+  // hanging the process for a grace window after its child is gone.
+  {
+    const ok2 = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "pipe" });
+    spawned.push(ok2);
+    ok2.stdout?.on("data", () => {});
+    ok2.stderr?.on("data", () => {});
+    await awaitExitWithin(ok2, { graceMs: 30_000, killed: () => false });
+    // -1: the test file's own cleanup interval, the only Timeout that is not
+    // this module's.
+    const timers = process.getActiveResourcesInfo().filter((kind) => kind === "Timeout");
+    assert(
+      timers.length <= 1,
+      `the resolved exit-await cleared EVERY timer it owned — no ref'd handle is left keeping the runner alive (${JSON.stringify(process.getActiveResourcesInfo())})`,
+    );
+  }
 
   // ── 4. THE RUNNER CONTRACT: exactly one result document, even on a wedged run.
   {
