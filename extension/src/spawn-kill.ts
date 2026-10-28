@@ -38,6 +38,7 @@
  */
 
 import type { ChildProcess } from "node:child_process";
+import { traceWarn } from "./trace.ts";
 
 /** Grace between SIGTERM and SIGKILL for a process group (headless). */
 export const KILL_GRACE_MS = 2_000;
@@ -100,10 +101,50 @@ function signalChild(child: ChildProcess, signal: NodeJS.Signals, processGroup: 
 }
 
 /**
+ * #1863 hotfix — the kill SEAM. `awaitExitWithin` must start its grace when a
+ * kill happens, not when the spawn began, and the only signal that covers every
+ * kill path is this function: the wall-clock backstop, Pi's user-cancel, the
+ * inactivity and tool-inactivity polls, the loop and token-budget caps, the
+ * per-child run bound (its kill, its settled-child reap and its backstop
+ * takeover) and the #1827 reviewer bounds ALL end a child by calling here. An
+ * observer installed per spawn therefore cannot miss a supervisor the way a
+ * list of kill flags does, because there is no kill that goes around this line.
+ *
+ * No observer is installed for a child nobody is waiting on (a bare
+ * `killProcessTree` from a test, or from the group reaper, is then just a kill).
+ * An observer that throws never delays a SIGTERM — the failure is traced so a
+ * broken seam is visible rather than silent, and swallowed so it cannot cost the
+ * child its signal.
+ */
+const killSeam = new WeakMap<ChildProcess, () => void>();
+
+/**
+ * Install (or replace) the observer that a kill of THIS child notifies.
+ *
+ * ORDERING IS LOAD-BEARING: call this immediately after `registerChild`, BEFORE
+ * any supervisor (the wall-clock backstop, the caps stack, the child bound, the
+ * inactivity poll, the abort arm) is armed. A timer armed before the seam exists
+ * can fire its kill — and its SIGKILL escalation — into a child nobody is
+ * watching, and the dispatch waiting on it waits forever (#1863).
+ */
+export function installKillSeam(child: ChildProcess, notify: () => void): void {
+  killSeam.set(child, notify);
+}
+
+/**
  * SIGTERM the child (its whole group when it was registered as one), SIGKILL
  * after the policy's grace period.
  */
 export function killProcessTree(child: ChildProcess): void {
+  // First: tell the dispatch that is waiting for this child to exit that it is
+  // now entitled to stop waiting (#1863 hotfix).
+  try {
+    killSeam.get(child)?.();
+  } catch (err) {
+    /* attribution is never allowed to delay the signal below, but a broken seam
+     * is worth seeing in the trace rather than disappearing into a bare catch. */
+    traceWarn(`spawn-kill: kill-seam observer threw for child ${child.pid ?? "?"}: ${String(err)}`);
+  }
   const group = isGroupChild(child);
   signalChild(child, "SIGTERM", group);
   const escalate = setTimeout(
