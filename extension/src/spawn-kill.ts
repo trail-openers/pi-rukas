@@ -100,10 +100,38 @@ function signalChild(child: ChildProcess, signal: NodeJS.Signals, processGroup: 
 }
 
 /**
+ * #1863 hotfix — the kill SEAM. `awaitExitWithin` must start its grace when a
+ * kill happens, not when the spawn began, and the only signal that covers every
+ * kill path is this function: the wall-clock backstop, Pi's user-cancel, the
+ * inactivity and tool-inactivity polls, the loop and token-budget caps, the
+ * per-child run bound (its kill, its settled-child reap and its backstop
+ * takeover) and the #1827 reviewer bounds ALL end a child by calling here. An
+ * observer installed per spawn therefore cannot miss a supervisor the way a
+ * list of kill flags does, because there is no kill that goes around this line.
+ *
+ * No observer is installed for a child nobody is waiting on (a bare
+ * `killProcessTree` from a test, or from the group reaper, is then just a kill).
+ * An observer that throws never delays a SIGTERM.
+ */
+const killSeam = new WeakMap<ChildProcess, () => void>();
+
+/** Install (or replace) the observer that a kill of THIS child notifies. */
+export function installKillSeam(child: ChildProcess, notify: () => void): void {
+  killSeam.set(child, notify);
+}
+
+/**
  * SIGTERM the child (its whole group when it was registered as one), SIGKILL
  * after the policy's grace period.
  */
 export function killProcessTree(child: ChildProcess): void {
+  // First: tell the dispatch that is waiting for this child to exit that it is
+  // now entitled to stop waiting (#1863 hotfix).
+  try {
+    killSeam.get(child)?.();
+  } catch {
+    /* attribution is never allowed to delay the signal below */
+  }
   const group = isGroupChild(child);
   signalChild(child, "SIGTERM", group);
   const escalate = setTimeout(

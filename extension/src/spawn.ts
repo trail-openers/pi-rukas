@@ -35,7 +35,7 @@ import { createBoundArmed } from "./spawn-bound-armed.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
 import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
-import { EXIT_AWAIT_GRACE_MS, awaitExitWithin } from "./spawn-exit-await.ts";
+import { awaitChildExit } from "./spawn-exit-await-session.ts";
 
 import {
   applyUserExtension,
@@ -48,7 +48,7 @@ import {
   createInactivityPoll,
   createStdoutLineHandler,
 } from "./spawn-inflight.ts";
-import { groupSpawnOpts, killProcessTree, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
+import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
 import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
@@ -396,18 +396,20 @@ async function spawnSpecialistInner(
   // execute promise resolves and Pi un-stuck immediately (guarded in the
   // helper, #1510).
   // #1863 — nothing supervising this child keeps the event loop alive (bound,
-  // caps and inactivity timers are all `unref()`d), so the exit await needed a
-  // bound of its own. The handle that kept it alive: `awaitExitWithin`.
+  // caps and inactivity timers are all `unref()`d), so the exit await needs a
+  // ref'd handle of its own. That handle: `awaitExitWithin`.
   const detachAbortKill = attachAbortKill(child, opts.signal, () => {
     flags.setAborted(true);
   });
-
+  // #1863 hotfix (v0.14.30) — the grace clock starts AT THE KILL, and the
+  // observer / seam / wait wiring lives in `awaitChildExit`
+  // (spawn-exit-await-session.ts) rather than inline: `spawn.ts` sits at the
+  // AGENTS.md §12 size cap, and the point of the fix is that no kill owner is
+  // listed by hand, which is what the call site can no longer show.
+  const exitWait = awaitChildExit(child);
   let exitCode: number | null = null;
   try {
-    [exitCode] = await awaitExitWithin(child, {
-      graceMs: EXIT_AWAIT_GRACE_MS,
-      kill: () => killProcessTree(child),
-    });
+    [exitCode] = await exitWait.promise;
   } finally {
     stopWallClockBackstop();
     childBound.stop();
