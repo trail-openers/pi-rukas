@@ -96,6 +96,7 @@
     "smoke-tests/test-plan-fence-note-neutralise-1862.ts",
     "smoke-tests/test-process-identity.ts",
     "smoke-tests/test-owner-identity-readers.ts",
-    "smoke-tests/test-host-spawn-lease.ts"
+    "smoke-tests/test-host-spawn-lease.ts",
+    "smoke-tests/test-claim-foreign-expiry.ts"
   ]
 }

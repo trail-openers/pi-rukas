@@ -45,6 +45,7 @@ const NS = "4026532101";
 const OTHER_NS = "4026532404";
 const START = "1234567";
 const SELF: OwnerIdentity = { host: HOST, pidns: NS, pid: 4242, startTime: START };
+const ME: OwnerIdentity = selfIdentity();
 
 const id = (over: Partial<OwnerIdentity> = {}): OwnerIdentity => ({ ...SELF, ...over });
 /** A reader that always reports `value` for the holder's start time. */
@@ -89,10 +90,31 @@ const startsWith = (value: string) => (_pid: number) => value;
       "a DIFFERENT host is foreign whatever else matches",
     );
     assert(
-      judgeOwner({ ...SELF, pid: SELF.pid }, SELF, () => {
-        throw new Error("the probe must not run for our own pid");
-      }) === "alive",
-      "our own identity is alive without a probe",
+      // This process IS the holder: the judge is `selfIdentity()` and the holder
+      // is a copy of it, so the pid probe reaches `/proc` for a pid that is
+      // certainly alive. The point of the case is the OUTCOME, not an exemption:
+      // our own slot is never mistaken for a corpse, and there is no code path
+      // in `judgeOwner` that exempts `self.pid` from the probe (see the next
+      // two cases, which prove the probe runs for a pid that merely LOOKS like
+      // ours). Passing a reader that throws would fail for the right reason and
+      // the wrong cause, so the real reader is used.
+      judgeOwner({ ...ME }, ME) === "alive",
+      "our own identity is alive — our own slot is never mistaken for a corpse",
+    );
+    assert(
+      // A DIFFERENT process judging a body that names its own pid: the
+      // four-field form is written from `/proc/self/stat`, so this is a pid the
+      // kernel handed out again and the start time is the only thing that can
+      // tell the two holders apart — the reader IS consulted. `livePid` is a
+      // child this test spawned, so `processAlive` cannot be what answers here.
+      judgeOwner({ ...SELF, pid: livePid }, { ...SELF, pid: livePid }, startsWith(START)) ===
+        "alive",
+      "a holder naming our pid is alive when /proc confirms its recorded start time",
+    );
+    assert(
+      judgeOwner({ ...SELF, pid: livePid }, { ...SELF, pid: livePid }, startsWith("99999")) ===
+        "dead",
+      "a holder naming our pid whose start time /proc disagrees with is RECYCLED and dead",
     );
     assert(
       judgeOwner(undefined, SELF, startsWith(START)) === "foreign",

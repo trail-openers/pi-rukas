@@ -27,8 +27,6 @@ import {
   setClaimsConflictsForTests,
 } from "../src/work-driver-path-claims-gate.ts";
 import {
-  CLAIM_STALE_MS,
-  FOREIGN_CLAIM_DELETE_FACTOR,
   type PathClaimEntry,
   claimDeletionReason,
   claimStaleReason,
@@ -163,50 +161,6 @@ const runningState = async () =>
   assert(
     reason === null,
     `the writer never deletes a foreign holder on the ordinary bound, whatever its pid says (got ${String(reason)})`,
-  );
-}
-
-// ── D7: a foreign claim DOES expire, at 24 × the bound ----------------------
-{
-  const foreign = (startedAt: number) =>
-    claim({ host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1", pid: 999_999, startedAt });
-  const young = await claimDeletionReason(
-    "/repo",
-    foreign(NOW - CLAIM_STALE_MS * FOREIGN_CLAIM_DELETE_FACTOR + 60_000),
-    NOW,
-    noState,
-  );
-  assert(
-    young === null,
-    `a foreign claim just UNDER 24 × the bound is kept (got ${String(young)})`,
-  );
-  const expired = await claimDeletionReason(
-    "/repo",
-    foreign(NOW - CLAIM_STALE_MS * FOREIGN_CLAIM_DELETE_FACTOR - 60_000),
-    NOW,
-    noState,
-  );
-  assert(
-    expired === "foreign-expired",
-    `a foreign claim past 24 × the bound is deleted by the writer, so the registry stops growing (got ${String(expired)})`,
-  );
-  // Our OWN identity past the same age is not a foreign expiry: it is judged
-  // by pid, and a live owner keeps its entry whatever the age.
-  const oursOld = await claimDeletionReason(
-    "/repo",
-    claim({
-      host: selfIdentity().host,
-      pidns: SELF_NS,
-      startTime: selfIdentity().startTime,
-      pid: process.pid,
-      startedAt: NOW - CLAIM_STALE_MS * FOREIGN_CLAIM_DELETE_FACTOR - 60_000,
-    }),
-    NOW,
-    noState,
-  );
-  assert(
-    oursOld === null,
-    `a LIVE claim with our own identity is kept even past the foreign bound (got ${String(oursOld)})`,
   );
 }
 
