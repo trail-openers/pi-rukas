@@ -126,8 +126,13 @@ export function resolveLikeOs(abs: string, depth = 0, probe?: { missing: boolean
   return cur;
 }
 
-/** resolveLikeOs, or undefined when the path cannot be resolved. */
-function safeResolve(p: string): string | undefined {
+/**
+ * resolveLikeOs, or undefined when the path cannot be resolved. Exported for
+ * #1879: the read-only dependency rule judges the RESOLVED path, so a
+ * provisioned link into the main checkout's tree resolves to the tree it really
+ * writes — which is exactly the shape the incident had.
+ */
+export function safeResolve(p: string): string | undefined {
   try {
     return resolveLikeOs(path.resolve(p));
   } catch {

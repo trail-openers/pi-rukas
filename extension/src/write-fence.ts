@@ -24,6 +24,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 import { bashWriteTargets } from "./write-fence-bash.ts";
+import { depWriteRefusal } from "./write-fence-deps.ts";
+import { isReadOnlyRole } from "./write-fence-deps.ts";
 import { appendWriteFenceRefusal } from "./write-fence-log.ts";
 import {
   type FenceConfig,
@@ -31,6 +33,7 @@ import {
   judgeWrite,
   loadFenceConfig,
   refusalText,
+  safeResolve,
 } from "./write-fence-path.ts";
 
 /** The write tools whose `path` argument is the file they write. */
@@ -87,16 +90,49 @@ function notJudged(toolName: string, why: string): Refusal {
   return { tool: toolName, path, message: refusalText(path, `it could not be judged: ${why}`) };
 }
 
+/**
+ * #1879 — the read-only-role dependency rule, expressed as a refusal. Only
+ * bash is judged: the write/edit/multiedit tools are already structurally
+ * excluded for these roles by role-tools.ts, and if that ever leaks, the
+ * whole-tree fence catches their writes anyway.
+ */
+function depsRefusalFor(input: unknown, role: string | undefined): Refusal | undefined {
+  const args = (typeof input === "object" && input !== null ? input : {}) as Record<
+    string,
+    unknown
+  >;
+  if (typeof args.command !== "string") return undefined;
+  const reason = depWriteRefusal(
+    role,
+    bashWriteTargets(args.command, process.cwd()),
+    // The OS rule, so a provisioned link into the main checkout's tree resolves
+    // to the tree it really writes — the exact shape of the #1879 incident.
+    safeResolve,
+  );
+  return reason === undefined
+    ? undefined
+    : { tool: "bash", path: "(dependency write)", message: reason };
+}
+
 /** Register the fence for this child. A no-op unless the dispatch set PI_ENSEMBLE_WRITE_ROOT. */
 export function registerWriteFence(pi: ExtensionAPI): void {
   const cfg = loadFenceConfig(process.env);
-  if (!cfg) return;
+  // #1879 — the dependency-tree rule for read-only roles runs on its OWN gate:
+  // a reviewer has no PI_ENSEMBLE_WRITE_ROOT (the driver fences develop and
+  // lens-fix dispatches only), so the whole-tree fence is inert for it and this
+  // is the only thing standing between its bash and the shared toolchain.
+  const readOnlyRole = process.env.PI_ENSEMBLE_ROLE;
+  const depsOnly = cfg === undefined && isReadOnlyRole(readOnlyRole);
+  if (cfg === undefined && !depsOnly) return;
   const scratch = process.env.PI_ENSEMBLE_WRITE_SCRATCH;
   const repo = process.env.PI_ENSEMBLE_WRITE_REPO;
   pi.on("tool_call", async (event) => {
     let refusal: Refusal | undefined;
     try {
-      refusal = refusalFor(event.toolName, event.input, cfg);
+      refusal = cfg === undefined ? undefined : refusalFor(event.toolName, event.input, cfg);
+      if (refusal === undefined && event.toolName === "bash") {
+        refusal = depsRefusalFor(event.input, readOnlyRole);
+      }
     } catch (err) {
       // An internal fault is a refusal too: the call is not judged, so it does not run.
       const reason = `write fence could not judge this call: ${(err as Error).message}`;
