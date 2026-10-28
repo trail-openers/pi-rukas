@@ -45,8 +45,9 @@
  * out from under itself.
  *
  * THE POLL READS LIVENESS BEFORE IT SIGNS ANYTHING. A child that has already
- * exited — `child.exitCode !== null || child.signalCode !== null` — has exited,
- * whether or not the `exit` event reached this await. Node fills those fields
+ * exited — `child.exitCode != null || child.signalCode != null`, the project's
+ * one predicate `childHasExited` — has exited, whether or not the `exit` event
+ * reached this await. Node fills those fields
  * when it reaps the child and only emits `exit` on the next turn of the loop,
  * so between the two there is a real window in which a poll that ignored them
  * would re-signal a dead child and hand back `[null, null]`. Every tick checks
@@ -64,6 +65,7 @@
 
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { childHasExited } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -141,11 +143,14 @@ export async function awaitExitWithin(
     //
     // It is the project's ONE liveness predicate (#1847, `childHasExited`), so
     // the wait agrees with the caps stack and the child bound about whether this
-    // child may still be killed: the spawn's OBSERVED flag when the caller has
-    // one, else the handle's own fields.
-    const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+    // child may still be killed. This call has no kill-flags accessor to offer
+    // (the spawn's kill seam arrives as `killed()` instead), so `undefined` lets
+    // the handle's own fields decide — read with the NULLISH operator, because a
+    // fake child that simply omits the two leaves them `undefined`, and an
+    // exact-`null` comparison would call such a child not-yet-exited.
+    const hasExited = () => childHasExited(undefined, child);
     const resolveExited = (): void => {
-      clearInterval(handle);
+      stopHandles();
       resolve([child.exitCode ?? null, child.signalCode ?? null]);
       // Reached only from the poll, never from the `exit` event, so the trace is
       // the record of an exit nobody observed through the event.
@@ -153,50 +158,85 @@ export async function awaitExitWithin(
         `spawn-exit-await: child ${child.pid ?? "?"} had already exited (code ${child.exitCode}, signal ${child.signalCode}) but the exit event never reached the await — resolved without re-signalling it`,
       );
     };
-    // The ONE handle this module owns, ref'd ON PURPOSE. Before a kill its tick
-    // is a liveness read and a flag read (arming a ref'd grace on entry is the
-    // whole-life-death bug again); once `killed()` turns true it starts the
-    // grace and, `graceMs` later, ends the wait for a child that will not exit.
-    let armedAt = 0;
+    // THE TWO HANDLES THIS MODULE OWNS, and why neither is a stopwatch. The poll
+    // is ref'd ON PURPOSE and does only two things: read liveness, and read the
+    // kill flag (arming a ref'd grace on entry is the whole-life-death bug
+    // again). The grace is the OTHER handle — ONE `setTimeout(graceMs)` armed on
+    // the tick that FIRST observes the kill — so the wait ends at kill + graceMs
+    // whatever the poll's period happens to be. Measuring the grace off
+    // `Date.now()` inside the tick instead made the real deadline a multiple of
+    // `pollMs`: with the 1 s default a 15 s grace was up to 16 s, and a caller
+    // that set `pollMs` near its own bound could not tell. Both handles are
+    // cleared on every path, including a tick that throws.
+    let grace: ReturnType<typeof setTimeout> | undefined;
     // `killed()` defaults to true so a caller with no kill seam keeps the
-    // pre-hotfix contract: the deadline starts here, at the top of the tick.
+    // pre-hotfix contract: the grace is armed by the very first tick.
     const isKilled = opts.killed ?? (() => true);
-    const handle = setInterval(() => {
-      // LIVENESS FIRST, on both ticks — and it never contradicts the wedge
-      // verdict below, which is guarded on `observed` remaining false.
-      if (hasExited()) {
-        resolveExited();
-        return;
-      }
-      if (armedAt === 0) {
-        if (!isKilled()) return;
-        armedAt = Date.now();
-      }
-      if (Date.now() - armedAt < graceMs) return;
-      // Re-read liveness: the grace expired, but a child that exited while
-      // nobody was looking must be reported as exited, not signalled again.
-      if (hasExited()) {
-        resolveExited();
-        return;
-      }
-      // STILL RUNNING, and no exit reported: this is the wedge the field symptom
-      // left unresolved forever. The escalation has had its turn
-      // (spawn-kill.ts armed it when it killed), so signal once more on the way
-      // out and do not leave the tree running behind the result we report.
+    // THE ONE PLACE EITHER HANDLE IS RELEASED, so no path can clear one and keep
+    // the other. Called before `resolve` on every route out of this await.
+    const stopHandles = (): void => {
+      clearInterval(handle);
+      if (grace !== undefined) clearTimeout(grace);
+    };
+    // A tick that throws must not leave a ref'd interval running: `killed()` is
+    // caller code and `hasExited()` reads a handle, so either blowing up would
+    // otherwise keep the loop alive forever AND never settle the dispatch that is
+    // counting on this await. Report what the handle does know, and stop.
+    const failTick = (err: unknown): void => {
+      trace(
+        `spawn-exit-await: the grace handle failed for child ${child.pid ?? "?"}: ${String(err)} — resolving the wait from the child's own fields`,
+      );
+      stopHandles();
+      resolve([child.exitCode ?? null, child.signalCode ?? null]);
+    };
+    // The grace expired on a child neither handle has seen exit: the wedge the
+    // field symptom left unresolved forever. The escalation has had its turn
+    // (spawn-kill.ts armed it when it killed), so signal once more on the way
+    // out and do not leave the tree running behind the result we report.
+    const resolveWedged = (): void => {
       try {
         opts.kill?.();
       } catch (err) {
         trace(`spawn-exit-await: re-kill of the wedged child failed: ${String(err)}`);
       }
-      clearInterval(handle);
+      stopHandles();
       trace(
         `spawn-exit-await: child ${child.pid ?? "?"} never reported exit within ${graceMs}ms after the kill — resolving without it`,
       );
       resolve([child.exitCode ?? null, child.signalCode ?? null]);
-    }, pollMs);
+    };
+    const tick = (): void => {
+      try {
+        // LIVENESS FIRST, on every tick — and it never contradicts the wedge
+        // verdict below, which is reached only for a child still running.
+        if (hasExited()) {
+          resolveExited();
+          return;
+        }
+        if (grace !== undefined) return; // already armed; the expiry decides
+        if (!isKilled()) return;
+        // THE ONE ARMING SITE: one timer, from the kill, for exactly the grace.
+        grace = setTimeout(() => {
+          try {
+            // Re-read liveness: the grace expired, but a child that exited while
+            // nobody was looking must be reported as exited, not signalled again.
+            if (hasExited()) {
+              resolveExited();
+              return;
+            }
+            resolveWedged();
+          } catch (err) {
+            failTick(err);
+          }
+        }, graceMs);
+      } catch (err) {
+        failTick(err);
+      }
+    };
+    const handle = setInterval(tick, pollMs);
     // The exit event wins outright — no grace, no re-kill.
     void settled.then((winner) => {
-      clearInterval(handle);
+      stopHandles();
       const [code, signal] = winner;
       // The tuple may still be missing values (a reaped child whose fields Node
       // filled in only on `close`).

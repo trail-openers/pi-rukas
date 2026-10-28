@@ -328,8 +328,8 @@ try {
       `an already-exited child was NOT re-signalled on the way out (kill called ${reKilledDead}x)`,
     );
     assert(
-      deadElapsed < 5_000,
-      `the poll resolved the wait at once rather than waiting out the 30 s grace (${deadElapsed}ms)`,
+      deadElapsed < 1_000,
+      `the POLL resolved the wait, not the grace: the poll runs every 25ms and the grace is 30 000ms, so a resolution inside 1s can only have come from the liveness read (${deadElapsed}ms)`,
     );
   }
 
@@ -339,24 +339,82 @@ try {
     `the exit-await ceiling is a bounded grace past the kill escalation (${EXIT_AWAIT_GRACE_MS}ms) rather than the 2-h spawn backstop`,
   );
 
-  // ── 3b. No timer outlives the await: a resolved wait leaves the loop drainable.
+  // ── 3b. No timer outlives the await: a resolved wait leaves the loop DRAINABLE.
   //
   // The ref'd handle is what keeps a wedged child's runner from exiting 0 with
   // no result (#1863), and clearing it is what keeps a NORMAL dispatch from
   // hanging the process for a grace window after its child is gone.
+  //
+  // BEHAVIOURAL, NOT INTROSPECTIVE. The obvious probe —
+  // `process.getActiveResourcesInfo()` — is not a thing on bun: it returns an
+  // empty array there, so counting `"Timeout"` entries compared 0 to 0 and the
+  // assertion could not be false. What DOES prove it is the observable
+  // consequence: a ref'd timer is the only thing that can keep a process alive
+  // after its child is gone, so run the whole await inside a child whose ONLY
+  // work is the await, on a short-lived child and a grace far longer than the
+  // child's life. If the handle leaked, the runner would sit on it for the grace
+  // and the bound below would be blown; if it was cleared, the loop has nothing
+  // ref'd and the process exits on its own.
   {
-    const ok2 = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "pipe" });
-    spawned.push(ok2);
-    ok2.stdout?.on("data", () => {});
-    ok2.stderr?.on("data", () => {});
-    // Snapshot the loop's timers BEFORE the await, so the assertion is about
-    // what THIS call owned rather than a global count something else can move.
-    const before = process.getActiveResourcesInfo().filter((k) => k === "Timeout").length;
-    await awaitExitWithin(ok2, { graceMs: 30_000, killed: () => false });
-    const after = process.getActiveResourcesInfo().filter((k) => k === "Timeout").length;
+    // ESM is what this file is, so the throwaway runner is an ESM script in the
+    // scratch dir run by path — `node -e` would parse as CJS and reject the
+    // top-level await.
+    const runnerDir = await mkdtemp(join(tmpRoot, "drain-"));
+    const runnerScript = join(runnerDir, "drain.mjs");
+    writeFileSync(
+      runnerScript,
+      [
+        "import { spawn } from 'node:child_process';",
+        `import { awaitExitWithin } from ${JSON.stringify(join(import.meta.dirname, "..", "src", "spawn-exit-await.ts"))};`,
+        "const c = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 300)'], { stdio: 'pipe' });",
+        "c.stdout.on('data', () => {});",
+        "c.stderr.on('data', () => {});",
+        "await awaitExitWithin(c, { graceMs: 60_000, pollMs: 50, killed: () => false });",
+      ].join("\n"),
+    );
+    const runner = spawn(process.execPath, [runnerScript], { stdio: ["pipe", "pipe", "pipe"] });
+    spawned.push(runner);
+    let runnerOut = "";
+    let runnerErr = "";    runner.stdout?.on("data", (b) => {
+      runnerOut += String(b);
+    });
+    runner.stderr?.on("data", (b) => {
+      runnerErr += String(b);
+    });
+    const runnerExited = await Promise.race([
+      // The runner must exit of its own accord, so a signal would be a false
+      // pass: the timer leaked and the harness reaped it.
+      new Promise<{ timedOut: boolean; code: number | null; signal: NodeJS.Signals | null }>(
+        (res) =>
+          runner.once("exit", (code, signal) =>
+            res({
+              timedOut: false,
+              code: code ?? (signal ? null : 0),
+              signal,
+            }),
+          ),
+      ),
+      new Promise<{ timedOut: boolean; code: number | null; signal: NodeJS.Signals | null }>(
+        (res) => {
+          const killer = setTimeout(() => {
+            try {
+              runner.kill("SIGKILL");
+            } catch {
+              /* gone */
+            }
+            res({ timedOut: true, code: null, signal: null });
+          }, 8_000);
+          killer.unref?.();
+        },
+      ),
+    ]);
     assert(
-      after <= before,
-      `the resolved exit-await cleared EVERY timer it owned — the loop held ${before} Timeout(s) before the call and holds ${after} after (${JSON.stringify(process.getActiveResourcesInfo())})`,
+      runnerExited.timedOut === false,
+      `a child of a resolved exit-await exits the process on its own — no timer survived the await (grace was 60 000ms, bound 8 000ms; stdout=${JSON.stringify(runnerOut)} stderr=${JSON.stringify(runnerErr)})`,
+    );
+    assert(
+      runnerExited.code === 0,
+      `the await's own process exited 0 rather than on a signal, so it drained rather than being reaped (code=${runnerExited.code} signal=${runnerExited.signal})`,
     );
   }
 
