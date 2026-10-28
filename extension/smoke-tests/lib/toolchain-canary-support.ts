@@ -18,7 +18,8 @@ import type { DriverExecFn } from "../../src/work-driver-context.ts";
 import { realExec } from "./exec-fake.ts";
 
 export const pexec = promisify(execFile);
-export const REPO = path.resolve(import.meta.dirname, "..", "..");
+/** The repository root, resolved from THIS file (two levels up from smoke-tests/lib). */
+export const REPO = path.resolve(import.meta.dirname, "..", "..", "..");
 
 const ROOTS: string[] = [];
 

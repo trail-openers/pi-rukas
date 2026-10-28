@@ -13,7 +13,6 @@
 import path from "node:path";
 import { reportConsolidatedVerifyOutcome } from "./work-driver-consolidated-verify-report.ts";
 import type { ConsolidatedVerifyResult } from "./work-driver-consolidated-verify-types.ts";
-import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import { buildPerWorktreeFailuresByWs } from "./work-driver-consolidation-classify.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
@@ -25,6 +24,7 @@ import {
   buildConsolidatedRetry,
   buildConsolidatedVerifyOpts,
 } from "./work-driver-verify-consolidated-opts.ts";
+import { runConsolidatedLeg } from "./work-driver-verify-consolidated-run.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { developVerifiedTree } from "./work-driver-verify-eligibility.ts";
 import { recordConsolidatedGateVerdict } from "./work-driver-verify-gate-record.ts";
@@ -336,100 +336,29 @@ async function runVerifyCommandGateBody(
     }
     return;
   }
-  const scratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
-  // #807 — the retry gate and the Case-2 root-cause match below must read
-  // the SAME per-worktree failure map: if the retry fires on one view of
-  // the failures and the classifier later compares a different, filtered
-  // view, a "shared assertion" decision can diverge between the gate and
-  // the verdict (the #798 class of marker-vs-marker mismatch). Both now
-  // read `perWorktreeFailuresByWs`.
-  const perWorktreeFailuresByWs = buildPerWorktreeFailuresByWs(
+  // The consolidated leg — extracted to work-driver-verify-consolidated-run.ts
+  // (AGENTS.md §12 size cap); moved as-is, flake-retry gate and all.
+  const consolidated = await runConsolidatedLeg({
+    execFn,
+    ctx,
+    state,
+    cmd,
+    baseSha: baseSha as string,
+    suiteTimeoutMs,
+    ...(suiteTimeoutKnob !== undefined ? { suiteTimeoutKnob } : {}),
+    ...(fastTimeoutMs === undefined ? {} : { fastTimeoutMs }),
     worktrees,
     changedWorktrees,
+    ...(workstreamBaseShas !== undefined ? { workstreamBaseShas } : {}),
+    ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
     perWorktreeVerifyFailures,
-  );
-  // #782/#807/#826 — the consolidated-verify flake retry, two-phase gate:
-  // (1) a length-only precondition admits the FIRST consolidated run — it
-  // fires when this is a genuine consolidation (N>1) AND the per-worktree
-  // failures are at most one (zero = the #782 shape; one = a possible
-  // flake, the #798 shape where a timing-flaky test failed in a worktree
-  // AND on the combined tree — one unstable test, not two independent
-  // defects). The consolidated assertion is not known before the run, so
-  // nothing more can be checked up front.
-  // (2) the RE-RUN is decided by onFirstFailure against the RAW first-run
-  // failure (deliberately raw: the elided detail can drop the ✗ line —
-  // see #827 — while the classifier compares the elided detail): a KNOWN
-  // per-worktree assertion that the first run does NOT share is suppressed
-  // (a single per-worktree failure with a different assertion is a genuine
-  // defect — the re-run would burn a full verify run and could mask it,
-  // the #821 defect); a SHARED assertion or an UNKNOWN (unextractable) one
-  // ALLOWS the re-run (pre-#826 behaviour for the unknown case). The
-  // decision is computed ONCE in onFirstFailure and reported on the result
-  // as `retryDecision` — the post-run notes are rendered from it, not from
-  // a second comparator call.
-  const singlePerWorktreeFailure = perWorktreeVerifyFailures.length === 1;
-  const flakeRetryPrecondition =
-    (!singlePerWorktreeFailure || Object.keys(perWorktreeFailuresByWs).length === 1) &&
-    Object.keys(worktrees).length > 1;
-  // The #807 invariant: the per-worktree assertion is extracted BEFORE the
-  // consolidated run so the post-run note reads the same value the
-  // classifier will compare. `null` = honest absence (nothing extractable),
-  // which the gate treats as unknown, not as a mismatch.
-  const singlePerWs = singlePerWorktreeFailure
-    ? Object.keys(perWorktreeFailuresByWs)[0]
-    : undefined;
-  const singlePerAssertion: string | null | undefined =
-    singlePerWs !== undefined ? gatePerAssertion(perWorktreeFailuresByWs[singlePerWs]) : undefined;
-  // #1240 — the N=1 duplicate run: with ONE workstream whose per-worktree
-  // verify just passed, the consolidated probe cherry-picks that workstream's
-  // own commits onto baseSha and verifies the result — the same content the
-  // run above already judged. The eligibility rule (and why the identity is
-  // read here but compared inside the probe) is in `developVerifiedTree`.
-  // Any failure yields `undefined` and the consolidated verify runs as before.
-  const alreadyVerifiedTree = await developVerifiedTree(execp, ctx, {
-    changedWorktrees,
-    worktrees: state.pipelineState.worktrees ?? {},
-    perWorktreeVerifyFailures,
+    notes,
+    ...(onVerifyFlakeRecovered !== undefined ? { onVerifyFlakeRecovered } : {}),
+    reusedWholeGate,
+    reused: plan.wholeGateHeld,
   });
-  // Wall-clock of the consolidated COMMAND, measured only when it runs. The
-  // record the pass leaves behind carries it so the next round can tell a
-  // 30-second gate from a 9-minute one — the difference between a verdict worth
-  // reusing and one whose run the bound exists to cap.
-  const consolidatedStartedAt = Date.now();
-  const cons: ConsolidatedVerifyResult = reusedWholeGate
-    ? { status: "passed", applied: [], reused: plan.wholeGateHeld }
-    : await runConsolidatedVerify(
-        execFn,
-        buildConsolidatedVerifyOpts({
-          repoRoot: ctx.repoRoot,
-          baseSha: baseSha as string,
-          stateWorktrees: state.pipelineState.worktrees ?? {},
-          workstreamBaseShas,
-          scratchDir,
-          verifyCmd: cmd,
-          timeoutMs: suiteTimeoutMs,
-          ...(suiteTimeoutKnob !== undefined ? { suiteTimeoutKnob } : {}),
-          ...(fastTimeoutMs === undefined ? {} : { fastTierTimeoutMs: fastTimeoutMs }),
-          ...(alreadyVerifiedTree !== undefined ? { alreadyVerifiedTree } : {}),
-          dirtyRootExempt: ctx.dirtyRootExempt,
-          ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
-          retry: buildConsolidatedRetry({
-            canRetry: flakeRetryPrecondition,
-            singlePerAssertion,
-            onRecover: (evidenceTail) => {
-              notes.push(
-                `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
-              );
-              onVerifyFlakeRecovered?.(evidenceTail);
-            },
-          }),
-        }),
-      );
+  const { cons, consolidatedDurationMs } = consolidated;
   if (cons.status === "failed") record.consolidatedRaw = cons.rawFailure;
-  // The consolidated run's wall-clock: measured, not estimated, because it is
-  // the number the next round's reuse decision is screened against — and a
-  // reused pass has no duration, because it ran nothing.
-  const consolidatedDurationMs = reusedWholeGate ? undefined : Date.now() - consolidatedStartedAt;
   // #1415 — the verdict is recorded in the seam that decided it, in the arms
   // `work-driver-verify-gate-record.ts` documents (a reused pass records nothing;
   // a failed pass still retires the greens its own run refuted).
@@ -456,9 +385,9 @@ async function runVerifyCommandGateBody(
     worktrees,
     // #813 — declared paths let the conflict text say "likely coupled".
     workstreams: state.pipelineState.workstreams,
-    perWorktreeFailuresByWs,
-    singlePerWs,
-    singlePerAssertion,
+    perWorktreeFailuresByWs: consolidated.perWorktreeFailuresByWs,
+    singlePerWs: consolidated.singlePerWs,
+    singlePerAssertion: consolidated.singlePerAssertion,
     fenceViolations,
     onConsolidatedLogPath: opts.onConsolidatedLogPath,
     onVerifyFlakeRecovered: opts.onVerifyFlakeRecovered,
