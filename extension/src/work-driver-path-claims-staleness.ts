@@ -113,13 +113,23 @@ function validIdField(value: unknown): boolean {
 }
 
 /**
+ * #1871 F2 — how far in the future a claim's `startedAt` may sit before the
+ * record is a lie rather than a claim. A small allowance is kept because two
+ * container clocks on one host are never perfectly synchronised; anything past
+ * it means the writer's clock (or an editor) moved the timestamp ahead, and an
+ * entry that has not started yet can never satisfy "younger than the bound",
+ * so it reserves its paths for as long as the skew is carried.
+ */
+export const FUTURE_SKEW_MS = 5 * 60_000;
+
+/**
  * The two halves of the identity predicate, shared by `validClaimEntry`.
  * A record carries EITHER all three identity fields OR none of them: a half
  * identity is not a claim (D4) — `judgeStateOwner` would answer `foreign` for
  * it, and reading it as "no identity" instead would hand a foreign holder the
  * pid-only verdict this change removes.
  */
-function identityShapeOk(rec: Record<string, unknown>): boolean {
+export function identityShapeOk(rec: Record<string, unknown>): boolean {
   if (rec.host !== undefined && (typeof rec.host !== "string" || !validHost(rec.host)))
     return false;
   if (rec.pidns !== undefined && !validIdField(rec.pidns)) return false;
@@ -138,8 +148,13 @@ function identityShapeOk(rec: Record<string, unknown>): boolean {
  * it is reported stale at the read boundary and pruned by whoever got the read.
  * A half-written entry that survives is a `TypeError` in someone else's plan
  * step.
+ *
+ * #1871 F2 — `now` is optional because the shape checks are pure and every
+ * other caller wants them that way; the two staleness predicates pass it, and
+ * with it a `startedAt` in the future (which no clock skew explains) is
+ * malformed rather than immortal.
  */
-export function validClaimEntry(entry: unknown): entry is PathClaimEntry {
+export function validClaimEntry(entry: unknown, now?: number): entry is PathClaimEntry {
   if (entry === null || typeof entry !== "object") return false;
   const rec = entry as Record<string, unknown>;
   if (typeof rec.issue !== "number" || !Number.isInteger(rec.issue)) return false;
@@ -166,6 +181,11 @@ export function validClaimEntry(entry: unknown): entry is PathClaimEntry {
   // one and refused by the other.
   if (typeof rec.pid !== "number" || !Number.isInteger(rec.pid) || rec.pid <= 0) return false;
   if (typeof rec.startedAt !== "number" || !Number.isFinite(rec.startedAt)) return false;
+  // #1871 F2 — a future `startedAt` is malformed WHEN the caller supplies the
+  // clock. The age rules below all read `now - startedAt`, so an entry stamped
+  // ahead of the present reads younger than it is forever: it cannot expire and
+  // cannot be deleted, and its paths stay reserved for the whole of the skew.
+  if (now !== undefined && rec.startedAt > now + FUTURE_SKEW_MS) return false;
   if (!Array.isArray(rec.paths)) return false;
   return rec.paths.every((p) => typeof p === "string");
 }
@@ -183,14 +203,23 @@ export async function claimStaleReason(
   now: number = Date.now(),
   stateReader: (repoRoot: string, issue: number) => Promise<WorkState | undefined> = readState,
 ): Promise<string | null> {
-  if (!validClaimEntry(entry)) return "malformed-entry";
+  if (!validClaimEntry(entry, now)) return "malformed-entry";
   // #1871 — the READER: only a holder this process can positively call dead
   // stops reserving its paths. `foreign` (other host, other pid namespace) is
   // NOT stale — pruning a live sibling container's reservation is the failure
   // the registry exists to prevent. A foreign entry past the age bound falls
   // through to the age rules below, which is what stops an orphan from parking
   // a cycle forever; the writer deletes it at 24 × the bound.
-  if (judgeStateOwner(entry, selfIdentity()) === "dead") return "owner-exited";
+  const verdict = judgeStateOwner(entry, selfIdentity());
+  // #1871 F1 — a holder this process has VERIFIED alive reserves its paths no
+  // matter how old the row is. The age bound exists to stop an *unverifiable*
+  // claim parking cycles forever; once the identity probe has answered, the
+  // clock is judging a holder the probe just proved is running, and the answer
+  // the clock would give is wrong. `startTime` is the one field that marks a
+  // full identity (a legacy row carries none, and a half one fails
+  // `validClaimEntry`), so a pre-#1871 entry keeps today's age rules.
+  if (verdict === "alive" && entry.startTime !== undefined) return null;
+  if (verdict === "dead") return "owner-exited";
   let claimant: WorkState | undefined;
   let stateUnreadable = false;
   try {
@@ -251,7 +280,7 @@ export async function claimDeletionReason(
   now: number = Date.now(),
   stateReader: (repoRoot: string, issue: number) => Promise<WorkState | undefined> = readState,
 ): Promise<string | null> {
-  if (!validClaimEntry(entry)) return "malformed-entry";
+  if (!validClaimEntry(entry, now)) return "malformed-entry";
   const aged = now - entry.startedAt > CLAIM_STALE_MS;
   const verdict = judgeStateOwner(entry, selfIdentity());
   if (verdict === "foreign") {

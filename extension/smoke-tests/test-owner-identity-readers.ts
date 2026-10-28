@@ -31,6 +31,7 @@ import {
   claimDeletionReason,
   claimStaleReason,
   validClaimEntry,
+  identityShapeOk,
 } from "../src/work-driver-path-claims-staleness.ts";
 import { classifyRunningState, markDispatchStarted } from "../src/work-driver-resume.ts";
 import { decideSweepAction } from "../src/work-driver-sweep-policy.ts";
@@ -219,6 +220,73 @@ const runningState = async () =>
   );
 }
 
+// ── F2: `identityShapeOk` is the exported predicate the 1-of-3 / 2-of-3 rule -
+// It is exported because the malformed answer an operator sees comes from this
+// one rule, and a source-text assertion would pass with the rule deleted.
+{
+  const full = { host: selfIdentity().host, pidns: SELF_NS, startTime: "1" };
+  assert(identityShapeOk({ ...full }), "identityShapeOk accepts a full identity");
+  assert(identityShapeOk({}), "identityShapeOk accepts NO identity field (a legacy row)");
+  assert(
+    !identityShapeOk({ host: selfIdentity().host }),
+    "identityShapeOk refuses 1-of-3 (host alone) — a half identity is never probed",
+  );
+  assert(
+    !identityShapeOk({ pidns: SELF_NS }),
+    "identityShapeOk refuses 1-of-3 (pidns alone)",
+  );
+  assert(
+    !identityShapeOk({ startTime: "1" }),
+    "identityShapeOk refuses 1-of-3 (startTime alone)",
+  );
+  assert(
+    !identityShapeOk({ host: selfIdentity().host, pidns: SELF_NS }),
+    "identityShapeOk refuses 2-of-3 (host+pidns)",
+  );
+  assert(
+    !identityShapeOk({ host: selfIdentity().host, startTime: "1" }),
+    "identityShapeOk refuses 2-of-3 (host+startTime)",
+  );
+  assert(
+    !identityShapeOk({ pidns: SELF_NS, startTime: "1" }),
+    "identityShapeOk refuses 2-of-3 (pidns+startTime)",
+  );
+}
+
+// ── F2: the shape rules that need the clock --------------------------------
+// Every row below is a claim WITHOUT `now` and malformed WITH it: a rule that
+// only ever runs when the caller forgets to pass the clock judges nothing.
+{
+  const FUTURE = NOW + 10 * 60_000;
+  assert(
+    validClaimEntry(claim({ startedAt: FUTURE })),
+    "a future startedAt is a claim when the caller supplies no clock (the shape checks are pure)",
+  );
+  assert(
+    !validClaimEntry(claim({ startedAt: FUTURE }), NOW),
+    "a startedAt more than 5 min in the future is malformed — it can never age out",
+  );
+  assert(
+    validClaimEntry(claim({ startedAt: NOW + 60_000 }), NOW),
+    "a minute of clock skew between containers is tolerated, not malformed",
+  );
+  assert(
+    !validClaimEntry({ ...claim(), pidns: SELF_NS, startTime: "1" }, NOW),
+    "2 of 3 identity fields are malformed with a clock too (the group rule is not clock-dependent)",
+  );
+  // The staleness predicates pass `now`, so the malformed answer reaches the
+  // reader and the writer rather than sitting in the file forever.
+  const futureEntry = claim({ startedAt: FUTURE });
+  assert(
+    (await claimStaleReason("/repo", futureEntry, NOW, runningState)) === "malformed-entry",
+    "the reader calls a future-dated entry malformed rather than forever fresh",
+  );
+  assert(
+    (await claimDeletionReason("/repo", futureEntry, NOW, noState)) === "malformed-entry",
+    "the writer deletes a future-dated entry as malformed",
+  );
+}
+
 // ── our OWN identity still answers the probe (no rubber stamp) --------------
 {
   const me = { host: selfIdentity().host, pidns: SELF_NS };
@@ -251,6 +319,77 @@ const runningState = async () =>
     noState,
   );
   assert(live === null, "a claim with our exact full identity is fresh");
+
+  // ── F1: a VERIFIED-ALIVE full identity is never stale, at any age --------
+  // The age bound exists to stop an UNVERIFIABLE claim parking cycles forever.
+  // Once the identity probe has answered `alive`, the clock is judging a holder
+  // it just proved is running, and the age answer is simply wrong: a develop
+  // round that legitimately runs past the bound would lose its own reservation.
+  const ANCIENT_OWN = NOW - 2 * 3_600_000;
+  const ownAncient = await claimStaleReason(
+    "/repo",
+    claim({
+      ...me,
+      startTime: selfIdentity().startTime,
+      pid: process.pid,
+      startedAt: ANCIENT_OWN,
+    }),
+    NOW,
+    noState,
+  );
+  assert(
+    ownAncient === null,
+    `this process's OWN verified identity is honoured at 2× the stale bound (got ${String(ownAncient)})`,
+  );
+  // A verified-alive holder whose state file also cannot be read: the probe, not
+  // the missing state, is what decides.
+  const ownAncientNoState = await claimStaleReason(
+    "/repo",
+    claim({
+      ...me,
+      startTime: selfIdentity().startTime,
+      pid: process.pid,
+      startedAt: ANCIENT_OWN,
+    }),
+    NOW,
+    runningState,
+  );
+  assert(
+    ownAncientNoState === null,
+    "a verified-alive identity with a readable state is honoured past the bound too",
+  );
+  // The other half of F1: a FOREIGN entry gets no such exemption. It is not
+  // verified alive, so the age rules still decide, and past the bound the reader
+  // stops honouring it — which is what keeps this from being "identity means
+  // immortal".
+  const foreignAncient = await claimStaleReason(
+    "/repo",
+    claim({
+      host: FOREIGN_HOST,
+      pidns: FOREIGN_NS,
+      startTime: "1",
+      pid: SOMEONE_ELSES_PID,
+      startedAt: ANCIENT_OWN,
+    }),
+    NOW,
+    runningState,
+  );
+  assert(
+    foreignAncient === "unverifiable-age",
+    `a foreign entry aged 2× the bound is stale to the reader (got ${String(foreignAncient)})`,
+  );
+  // And a legacy row (no identity at all) keeps today's rule even when its pid
+  // is ours and alive: F1 is an identity exemption, not a pid exemption.
+  const legacyOwnAncient = await claimStaleReason(
+    "/repo",
+    claim({ pid: process.pid, startedAt: ANCIENT_OWN }),
+    NOW,
+    noState,
+  );
+  assert(
+    legacyOwnAncient === "unreadable-state",
+    `a legacy (identity-less) row with our live pid still ages out (got ${String(legacyOwnAncient)})`,
+  );
 }
 
 // ── the park message names the holder's identity and the claim file --------
