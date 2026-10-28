@@ -56,6 +56,7 @@
  * per-process cap stays underneath it either way.
  */
 
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -111,6 +112,16 @@ let heartbeat: ReturnType<typeof setInterval> | undefined;
 
 /** Why the host-wide bound is NOT in force for this process, or undefined. */
 let degradedReason: string | undefined;
+/**
+ * The last `degradedReason` a WARN line was printed for. `slotDir()` runs on
+ * every acquisition — once per spawn, and once per 250 ms poll of a wait loop —
+ * so printing on every call is a flood, and printing once per process was the
+ * silence #1871 removed. The line is therefore printed on a CHANGE of value:
+ * once when the directory becomes unusable, once when it becomes writable
+ * again. `degradedReason` itself is still assigned on every call, so the
+ * resource report never goes stale.
+ */
+let warnedDegradedReason: string | undefined;
 
 /**
  * Why the host-wide bound was skipped, or undefined when it is in force.
@@ -145,16 +156,22 @@ function holderOf(file: string): string | undefined {
  * earlier of the two is the conservative choice for BOTH: a holder that has not
  * beaten recently looks silent, and a body that was just touched is not taken.
  *
- * An unreadable file reads as infinitely silent, which errs towards NOT
- * reaping for a slot this process holds itself (see `leaseExpired`) — a file we
- * cannot stat is not one we should prove alive.
+ * An unreadable file reads as `Number.NEGATIVE_INFINITY` silent, which is
+ * NEVER lease-reapable: `silentPastLease` compares against the lease, so a
+ * file this process cannot stat is one whose silence it has not established,
+ * and a lease may not take a slot on evidence it does not have. Proving a
+ * holder dead from a failed `stat` is the same class of bug as proving one
+ * alive from a missing field — a torn write or a momentary EACCES on the body
+ * would double-admit a live child, which is the failure this cap exists to
+ * prevent. The heartbeat tolerates the same failure in the other direction: a
+ * slot we hold but cannot touch stays held, it simply does not look fresh.
  */
 function silentForMs(file: string): number {
   try {
     const st = fs.statSync(file);
     return Date.now() - Math.min(st.mtimeMs, st.ctimeMs);
   } catch {
-    return Number.POSITIVE_INFINITY;
+    return Number.NEGATIVE_INFINITY;
   }
 }
 
@@ -172,24 +189,32 @@ function provablyDead(holder: string | undefined): boolean {
 /**
  * May a slot nobody may judge by pid be taken on the lease alone?
  *
- * A body naming THIS host — this process's own identity among them — is never
- * taken on silence: the pid probe settles that holder, and an age rule on a
- * judgeable holder could only ever steal a live-but-slow holder's slot.
+ * #1871 F5 — the rule is one verdict: `judgeOwner`'s. A slot is lease-reapable
+ * exactly when its body does not parse at all, or when the same judge the
+ * liveness path uses calls the holder `foreign`. A holder that is judgeable
+ * (this host, this pid namespace) is settled by the pid probe and is NEVER
+ * taken on silence — an age rule on a judgeable holder could only ever steal a
+ * live-but-slow holder's slot, and letting the lease and the probe disagree on
+ * one body is how a live child's slot disappears.
  *
- * Never for a legacy two-field body either — its writer predates the heartbeat,
- * so silence means nothing about it, and D3 gives it the pid probe and nothing
- * else. A FOREIGN or unparseable body whose holder has gone silent past the
- * lease IS taken: silence is the only evidence available for a namespace this
- * process cannot probe, and without it every container that dies mid-cycle
- * leaves a slot no one may ever reclaim.
+ * A legacy two-field body never lease-reaps. `parseIdentity` gives it
+ * `pidns: "-"` and `startTime: ""` — the ABSENCE of both fields, which a writer
+ * with an unreadable `/proc` does not have — and its writer predates the
+ * heartbeat, so its silence means nothing: D3 gives it the pid probe and nothing
+ * else. The `"-"`/`""` pair is checked by name rather than inferred from the
+ * verdict, because a legacy body on ANOTHER host parses to `foreign` and would
+ * otherwise be reaped on a clock its writer never kept.
  */
 function leaseReapable(body: string | undefined, silentPastLease: boolean): boolean {
   if (!silentPastLease) return false;
   const id = parseIdentity(body);
-  if (id !== undefined && id.host === selfIdentity().host) return false;
   if (id === undefined) return true;
+  // The legacy `<host> <pid>` shape first: `parseIdentity` gives it `pidns: "-"`
+  // and `startTime: ""`, and it is recognised by BOTH fields being absent, not
+  // by the sentinel (a Linux writer whose `/proc` is unreadable has a real
+  // namespace field and a `"-"` start time, and IS judgeable).
   if (id.pidns === NO_ID_FIELD && id.startTime === "") return false;
-  return true;
+  return judgeOwner(id, selfIdentity()) === "foreign";
 }
 
 /**
@@ -203,7 +228,11 @@ function reclaimableOnLease(file: string, holder: string | undefined, leaseMs: n
 
 /** Atomic claim: link a written temp file to the slot name. */
 function link(dir: string, file: string): boolean {
-  const tmp = path.join(dir, `.claim-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  // #1871 F7 — a random suffix, not `Math.random()`: two processes that reach
+  // the same slot in the same tick on the same pid must not collide on their
+  // scratch name (and a slot directory is world-tmp, so a predictable name is
+  // also a name another uid can pre-create).
+  const tmp = path.join(dir, `.claim-${process.pid}-${randomBytes(8).toString("hex")}`);
   fs.writeFileSync(tmp, formatIdentity(selfIdentity()));
   try {
     fs.linkSync(tmp, file);
@@ -241,7 +270,12 @@ function reap(file: string, leaseMs: number = FOREIGN_SLOT_LEASE_MS): void {
   }
   try {
     // Re-read body AND age under the lock: a heartbeat that lands while we were
-    // waiting for the lock must be seen, not judged from a stale sample.
+    // waiting for the lock must be seen, not judged from a stale sample. A lock
+    // left by a reaper that died does not block the slot forever: it is cleared
+    // by the next reap attempt once older than `REAP_LOCK_STALE_MS` (10 s) and
+    // that attempt proceeds — the same threshold, stated identically here, in
+    // `REAP_LOCK_STALE_MS` above, and in docs/headless.md and
+    // docs/troubleshooting.md.
     const holder = holderOf(file);
     if (provablyDead(holder)) {
       fs.unlinkSync(file);
@@ -298,13 +332,35 @@ function release(file: string): void {
 }
 
 /**
+ * Stop holding a slot this process can no longer prove it owns (#1871 F6).
+ * Separate from `release` because this one never unlinks: the slot belongs to
+ * someone else now, and unlinking it would steal *their* admission.
+ */
+function dropHeld(file: string, why: string): void {
+  trace(`host-spawn-slots: dropped ${path.basename(file)} from the held set — ${why}`);
+  held.delete(file);
+  stopHeartbeatIfIdle();
+}
+
+/**
  * Touch every slot this process holds, so a sibling cannot mistake a slow but
  * live holder for an orphan on the lease. Errors are traced and ignored: the
  * heartbeat is a courtesy to the reaper, never a reason to fail a spawn.
+ *
+ * #1871 F6 — a slot whose body no longer names this process is not ours to keep
+ * fresh: a sibling took it (or an operator cleared it and someone re-claimed the
+ * name), so beating on it would hold a stranger's admission open forever. It
+ * leaves `held` with a trace, and `dropHeld` never unlinks — the slot is not
+ * ours to remove.
  */
 function heartbeatHeldSlots(): void {
   const now = new Date();
+  const mine = formatIdentity(selfIdentity());
   for (const file of [...held]) {
+    if (holderOf(file) !== mine) {
+      dropHeld(file, "its body no longer names this process");
+      continue;
+    }
     try {
       fs.utimesSync(file, now, now);
     } catch (err) {
@@ -345,12 +401,31 @@ function slotDir(): string | undefined {
     const uid = typeof process.getuid === "function" ? process.getuid() : st.uid;
     if (!st.isDirectory() || st.uid !== uid) throw new Error("not a directory this user owns");
     fs.accessSync(dir, fs.constants.W_OK);
+    // #1871 F7 — `mode: 0o700` is only applied when `mkdir` CREATES the
+    // directory: an existing one keeps whatever mode its creator gave it, which
+    // is how a `0777` slot directory survives in a shared `/tmp` and lets one
+    // uid unlink another's slots. When this uid owns it, enforce the private
+    // mode. A directory we do not own is refused above, never chmod'd.
+    if (typeof process.getuid === "function" && st.uid === process.getuid())
+      fs.chmodSync(dir, 0o700);
     degradedReason = undefined;
+    if (warnedDegradedReason !== undefined) {
+      traceWarn(
+        "host-spawn-slots: the slot directory is usable again — host-wide bound back in force",
+      );
+      warnedDegradedReason = undefined;
+    }
     return dir;
   } catch (err) {
     const reason = `${dir} is unusable (${(err as Error).message}) — host-wide bound off, per-process cap still applies`;
     degradedReason = reason;
-    traceWarn(`host-spawn-slots: ${reason}`);
+    // #1871 F3 — one line per TRANSITION, not one per call: `slotDir()` runs on
+    // every acquisition and every 250 ms poll of the wait loop, so the old
+    // "warn every time" printed thousands of identical lines on one wedged host.
+    if (warnedDegradedReason !== reason) {
+      traceWarn(`host-spawn-slots: ${reason}`);
+      warnedDegradedReason = reason;
+    }
     return undefined;
   }
 }

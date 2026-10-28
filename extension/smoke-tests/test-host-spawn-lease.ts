@@ -29,12 +29,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  NO_ID_FIELD,
-  formatIdentity,
-  selfIdentity,
-  startTimeOfPid,
-} from "../src/process-liveness.ts";
+import { formatIdentity, selfIdentity, startTimeOfPid } from "../src/process-liveness.ts";
 import { withHostSpawnSlot } from "../src/host-spawn-slots.ts";
 
 let exit = 0;
@@ -153,9 +148,10 @@ try {
   // ── 1. the heartbeat: the module refreshes each held slot's mtime ----------
   {
     const src = fs.readFileSync(
-      // Resolved from the suite's own cwd (extension/), which is how every
-      // other test in this project locates a source file to scan.
-      path.resolve(process.cwd(), "src", "host-spawn-slots.ts"),
+      // #1871 — resolved from THIS file's own directory, not the process cwd: a
+      // suite run from anywhere but extension/ used to read the wrong path (or
+      // nothing) and the whole block below asserted on an empty string.
+      path.join(import.meta.dirname, "..", "src", "host-spawn-slots.ts"),
       "utf8",
     );
     assert(/utimesSync\(/.test(src), "the heartbeat touches held slots with fs.utimesSync");
@@ -171,7 +167,9 @@ try {
       /\.unref\?\.\(\)/.test(src) || /\.unref\(\)/.test(src),
       "the heartbeat interval is unref'd — a held slot cannot keep the process alive",
     );
-    const startLine = src.split("\n").findIndex((l) => l.includes("setInterval(heartbeatHeldSlots"));
+    const startLine = src
+      .split("\n")
+      .findIndex((l) => l.includes("setInterval(heartbeatHeldSlots"));
     assert(startLine >= 0, "the beat is one setInterval over the held set");
     const window = src
       .split("\n")

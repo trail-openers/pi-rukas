@@ -15,83 +15,49 @@
  * The safe direction is the same in all three: `foreign` counts as ALIVE. A
  * legacy entry (no identity fields at all) keeps that release's pid-only
  * verdict, which is what stops an upgrade calling every pre-#1871 file dead.
+ *
+ * The entry-shape half (`validClaimEntry` / `identityShapeOk`, the future-date
+ * and 1-of-3 rules, and F1's verified-alive exemption) is in
+ * `test-owner-claim-entry-shape.ts`; what the park MESSAGE says is in
+ * `test-owner-claim-park-message.ts`. All three share
+ * `lib/owner-identity-fixtures.ts` so one fixture cannot drift from the other.
  */
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { selfIdentity } from "../src/process-liveness.ts";
-import type { CycleContext } from "../src/work-driver-context.ts";
+import type { PathClaimEntry } from "../src/work-driver-path-claims-staleness.ts";
 import {
-  checkAndRegisterClaims,
-  setClaimsConflictsForTests,
-} from "../src/work-driver-path-claims-gate.ts";
-import {
-  type PathClaimEntry,
   claimDeletionReason,
   claimStaleReason,
   validClaimEntry,
-  identityShapeOk,
 } from "../src/work-driver-path-claims-staleness.ts";
 import { classifyRunningState, markDispatchStarted } from "../src/work-driver-resume.ts";
 import { decideSweepAction } from "../src/work-driver-sweep-policy.ts";
 import type { SweepTargetResult } from "../src/work-driver-worktree-sweep.ts";
-import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import {
+  ANCIENT,
+  FOREIGN_HOST,
+  NOW,
+  SOMEONE_ELSES_PID,
+  claim,
+  deadPid,
+  makeAssert,
+  noState,
+  runningState,
+} from "./lib/owner-identity-fixtures.ts";
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
-const FOREIGN_HOST = "not-this-container";
+const { assert, status } = makeAssert();
 const SELF_NS = selfIdentity().pidns;
 /** A pid namespace inode that is not this container's. */
 const FOREIGN_NS = SELF_NS === "4026532999" ? "4026532111" : "4026532999";
-const NOW = 1_800_000_000_000;
-/** A pid that is certainly not ours; its fate must not matter, because the
- * identity check runs first and the probe is never reached. */
-const SOMEONE_ELSES_PID = 4242;
-/** Older than CLAIM_STALE_MS (1 h), so the age bound WOULD delete it. */
-const ANCIENT = NOW - 3 * 3_600_000;
-/** A pid that cannot exist: the shape that makes "dead" provable. */
-const deadPid = () => spawnSync("true").pid ?? 999_999;
-
-const claim = (over: Partial<PathClaimEntry> = {}): PathClaimEntry => ({
-  issue: 700,
-  pid: process.pid,
-  paths: ["src/foo.ts"],
-  startedAt: NOW,
-  ...over,
-});
-
-/** Throws: the reader's `stateUnreadable` branch is reached by an exception,
- * not by an absent file (an `undefined` return reads as "verified, no state"). */
-const noState = async (): Promise<WorkState | undefined> => {
-  throw new Error("fixture: no state file");
-};
-/** A readable, non-terminal claimant state: without one the reader's AGE rule
- * (pre-existing, `unverifiable-age`) fires, which is a different question from
- * the liveness verdict these cases pin. */
-const runningState = async () =>
-  ({
-    resumable: true,
-    issue: 700,
-    startedAt: 0,
-    updatedAt: 0,
-    pipelineState: { status: "running", currentStep: "develop", inFlightJobIds: [] },
-    eventLog: [],
-  }) as unknown as WorkState;
 
 // ── the reader: a foreign claim is never stale, at any age ------------------
 {
   const cases: Array<[string, Partial<PathClaimEntry>]> = [
-    ["a foreign host", { host: FOREIGN_HOST, pidns: SELF_NS, startTime: "1", pid: SOMEONE_ELSES_PID }],
+    [
+      "a foreign host",
+      { host: FOREIGN_HOST, pidns: SELF_NS, startTime: "1", pid: SOMEONE_ELSES_PID },
+    ],
     [
       "a foreign pid namespace",
       { host: selfIdentity().host, pidns: FOREIGN_NS, startTime: "1", pid: SOMEONE_ELSES_PID },
@@ -220,73 +186,6 @@ const runningState = async () =>
   );
 }
 
-// ── F2: `identityShapeOk` is the exported predicate the 1-of-3 / 2-of-3 rule -
-// It is exported because the malformed answer an operator sees comes from this
-// one rule, and a source-text assertion would pass with the rule deleted.
-{
-  const full = { host: selfIdentity().host, pidns: SELF_NS, startTime: "1" };
-  assert(identityShapeOk({ ...full }), "identityShapeOk accepts a full identity");
-  assert(identityShapeOk({}), "identityShapeOk accepts NO identity field (a legacy row)");
-  assert(
-    !identityShapeOk({ host: selfIdentity().host }),
-    "identityShapeOk refuses 1-of-3 (host alone) — a half identity is never probed",
-  );
-  assert(
-    !identityShapeOk({ pidns: SELF_NS }),
-    "identityShapeOk refuses 1-of-3 (pidns alone)",
-  );
-  assert(
-    !identityShapeOk({ startTime: "1" }),
-    "identityShapeOk refuses 1-of-3 (startTime alone)",
-  );
-  assert(
-    !identityShapeOk({ host: selfIdentity().host, pidns: SELF_NS }),
-    "identityShapeOk refuses 2-of-3 (host+pidns)",
-  );
-  assert(
-    !identityShapeOk({ host: selfIdentity().host, startTime: "1" }),
-    "identityShapeOk refuses 2-of-3 (host+startTime)",
-  );
-  assert(
-    !identityShapeOk({ pidns: SELF_NS, startTime: "1" }),
-    "identityShapeOk refuses 2-of-3 (pidns+startTime)",
-  );
-}
-
-// ── F2: the shape rules that need the clock --------------------------------
-// Every row below is a claim WITHOUT `now` and malformed WITH it: a rule that
-// only ever runs when the caller forgets to pass the clock judges nothing.
-{
-  const FUTURE = NOW + 10 * 60_000;
-  assert(
-    validClaimEntry(claim({ startedAt: FUTURE })),
-    "a future startedAt is a claim when the caller supplies no clock (the shape checks are pure)",
-  );
-  assert(
-    !validClaimEntry(claim({ startedAt: FUTURE }), NOW),
-    "a startedAt more than 5 min in the future is malformed — it can never age out",
-  );
-  assert(
-    validClaimEntry(claim({ startedAt: NOW + 60_000 }), NOW),
-    "a minute of clock skew between containers is tolerated, not malformed",
-  );
-  assert(
-    !validClaimEntry({ ...claim(), pidns: SELF_NS, startTime: "1" }, NOW),
-    "2 of 3 identity fields are malformed with a clock too (the group rule is not clock-dependent)",
-  );
-  // The staleness predicates pass `now`, so the malformed answer reaches the
-  // reader and the writer rather than sitting in the file forever.
-  const futureEntry = claim({ startedAt: FUTURE });
-  assert(
-    (await claimStaleReason("/repo", futureEntry, NOW, runningState)) === "malformed-entry",
-    "the reader calls a future-dated entry malformed rather than forever fresh",
-  );
-  assert(
-    (await claimDeletionReason("/repo", futureEntry, NOW, noState)) === "malformed-entry",
-    "the writer deletes a future-dated entry as malformed",
-  );
-}
-
 // ── our OWN identity still answers the probe (no rubber stamp) --------------
 {
   const me = { host: selfIdentity().host, pidns: SELF_NS };
@@ -390,54 +289,6 @@ const runningState = async () =>
     legacyOwnAncient === "unreadable-state",
     `a legacy (identity-less) row with our live pid still ages out (got ${String(legacyOwnAncient)})`,
   );
-}
-
-// ── the park message names the holder's identity and the claim file --------
-// Driven through the real gate with the accepted `setClaimsConflictsForTests`
-// seam (the shape `test-work-driver-claims-gate-parks.ts` uses): what an
-// operator READS is the contract, and a renderer no caller reaches is not one.
-{
-  const dir = mkdtempSync(join(tmpdir(), "owner-identity-park-"));
-  mkdirSync(join(dir, ".git"), { recursive: true });
-  const ctx = { repoRoot: dir, issue: 701, emitSink: () => {} } as unknown as CycleContext;
-  const parkOn = async (entry: PathClaimEntry): Promise<string> => {
-    setClaimsConflictsForTests([entry]);
-    try {
-      const outcome = await checkAndRegisterClaims(
-        ctx,
-        initialState(701, 0),
-        { default: { paths: ["src/foo.ts"], outOfScope: [] } },
-        NOW,
-      );
-      assert(outcome.parked, "the overlapping claim parks the cycle at plan");
-      const hits = outcome.state.eventLog.filter(
-        (e): e is Extract<WorkEvent, { kind: "cap-hit" }> => e.kind === "cap-hit",
-      );
-      return hits.at(-1)?.evidence ?? "";
-    } finally {
-      setClaimsConflictsForTests(undefined);
-    }
-  };
-  try {
-    const foreign = await parkOn(
-      claim({ issue: 702, host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1", pid: 4242 }),
-    );
-    assert(
-      foreign.includes(`holder: ${FOREIGN_HOST} ${FOREIGN_NS} 4242 1`),
-      "the park evidence names the foreign holder's full identity",
-    );
-    assert(
-      /claim file: .*path-claims\.json/.test(foreign),
-      "and the claim file an operator has to clear",
-    );
-    const legacy = await parkOn(claim({ issue: 703, pid: 4242 }));
-    assert(
-      /identity unknown/.test(legacy),
-      "a pre-#1871 holder is rendered as identity-unknown, not as a bare pid",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }
 
 // ── the sweep: a foreign owner is not swept; a legacy one behaves as today --
@@ -597,5 +448,5 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
   );
 }
 
-console.log(`\nexit ${exit}`);
-process.exit(exit);
+console.log(`\nexit ${status()}`);
+process.exit(status());

@@ -21,18 +21,15 @@
  * slot whose host matches but whose pid namespace belongs to a sibling container
  * is NOT reaped; a slot naming a LIVE pid whose recorded start time is not its
  * own IS reaped, because that pid was recycled; and an unwritable slot directory
- * is visible as `degraded` in the resource report and warns on every acquisition
+ * is visible as `degraded` in the resource report and warns once per usability
+ * transition (down, and back up)
  * instead of once per process.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  NO_ID_FIELD,
-  formatIdentity,
-  selfIdentity,
-} from "../src/process-liveness.ts";
+import { NO_ID_FIELD, formatIdentity, selfIdentity } from "../src/process-liveness.ts";
 import { hostSpawnDegraded, withHostSpawnSlot } from "../src/host-spawn-slots.ts";
 import { resourceReport } from "../src/resource-budget.ts";
 
@@ -49,8 +46,6 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "host-spawn-slots-"));
 const worker = path.join(import.meta.dir, "lib", "host-spawn-worker.ts");
 
 const dead = spawnSync("true").pid ?? 999_999;
-/** A dead pid stamped with THIS process's full identity: the reap case. */
-const deadHolder = formatIdentity({ ...selfIdentity(), pid: dead });
 /** A pid-namespace inode that is not this container's — a sibling container. */
 const FOREIGN_NS = "4026532999";
 /** Field 22 of a long-gone process: any value that is not the holder's. */
@@ -128,7 +123,10 @@ try {
   );
   // Both processes race to recover the same dead slots: still never above the cap.
   const raced = await peakAcrossTwoProcesses(2, "raced", 2);
-  assert(raced === 2, `both racing recoverers each got a slot off the dead holders (peak ${raced})`);
+  assert(
+    raced === 2,
+    `both racing recoverers each got a slot off the dead holders (peak ${raced})`,
+  );
   const control = await peakAcrossTwoProcesses(0, "control");
   assert(control > 2, `control: with the host bound off they overlap past 2 (peak ${control})`);
 
@@ -346,6 +344,7 @@ try {
           return true;
         }) as typeof process.stderr.write;
         const ranOnce: boolean[] = [];
+        let recoveredRan = false;
         try {
           for (let i = 0; i < 3; i++) {
             await withHostSpawnSlot(async () => {
@@ -353,31 +352,33 @@ try {
               return undefined;
             });
           }
+          // Read the budget WHILE degraded, before the recovery below clears it.
+          const report = resourceReport().limits.hostSpawnCap;
+          assert(
+            report.degraded !== undefined && /unusable/.test(report.degraded.reason),
+            "resourceReport marks hostSpawnCap degraded with the reason",
+          );
+          // #1871 F3 — the recovery line. The directory becomes writable again
+          // INSIDE the capture, so the transition is what we are counting: one
+          // degradation line in, one recovery line out.
+          fs.chmodSync(dir, 0o700);
+          await withHostSpawnSlot(async () => {
+            recoveredRan = true;
+          });
         } finally {
           process.stderr.write = write;
         }
         assert(
-          warns.length === 3 && warns.every((w) => w.includes("unusable")),
-          `an unwritable slot dir warns on every acquisition (got ${warns.length})`,
-        );
-        assert(ranOnce.length === 3, "and the call still runs with no host cap (fail open)");
-        const report = resourceReport().limits.hostSpawnCap;
-        assert(
-          report.degraded !== undefined && /unusable/.test(report.degraded.reason),
-          "resourceReport marks hostSpawnCap degraded with the reason",
-        );
-        fs.chmodSync(dir, 0o700);
-        // Same directory, now writable: the reason must clear rather than
-        // latch, so a transient fault cannot disable the host cap forever.
-        process.env.PI_ENSEMBLE_HOST_SPAWN_DIR = dir;
-        let recoveredRan = false;
-        await withHostSpawnSlot(async () => {
-          recoveredRan = true;
-        });
-        assert(
           recoveredRan && hostSpawnDegraded() === undefined,
           "a directory that becomes writable clears the degraded reason (it is not latched)",
         );
+        const down = warns.filter((w) => w.includes("unusable"));
+        const up = warns.filter((w) => /usable again|back in force/.test(w));
+        assert(
+          down.length === 1 && up.length === 1,
+          `a slot dir warns once per TRANSITION, not per acquisition — 1 down + 1 recovery (got ${down.length} down, ${up.length} up: ${warns.length} lines)`,
+        );
+        assert(ranOnce.length === 3, "and the call still runs with no host cap (fail open)");
       } finally {
         // Restore BOTH the leaf and its parent or the pooled rmSync of the temp
         // root fails for the next test in the file.

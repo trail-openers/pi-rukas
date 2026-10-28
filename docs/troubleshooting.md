@@ -1272,10 +1272,13 @@ pi-rukas --capabilities | jq '.resources.limits.hostSpawnCap'
 While the directory is unusable the entry carries
 `degraded: { "reason": "<dir> is unusable (EACCES: …) — host-wide bound off, per-process cap still applies" }`;
 the cycle-start `traceResourceBudget` line ends
-`… 64 host-wide [DEGRADED: …]`; and the `WARN` line prints on **every**
-acquisition attempt (not once per process, and not once per 250 ms poll of the
-wait loop). The field clears by itself as soon as the directory is writable
-again, so a transient fault cannot disable the cap for the life of the process.
+`… 64 host-wide [DEGRADED: …]`; and the `WARN` line prints when the directory's
+usability **changes** — once when it becomes unusable and once when it becomes
+writable again — not once per process (silence) and not once per acquisition
+either, since the wait loop polls every 250 ms and a wedged host would print
+thousands of identical lines. The field clears by itself as soon as the directory
+is writable again, so a transient fault cannot disable the cap for the life of the
+process.
 `degraded` is an additive optional field: no `CAPABILITIES_VERSION` bump, so a
 host that parses `resources.limits.hostSpawnCap` sees it appear mid-release.
 
@@ -1301,11 +1304,15 @@ claim registry exists to prevent.
 
 **What clears by itself:** a foreign **slot** whose mtime has been silent for the
 10-minute lease (a live holder touches its slots every 60 s, so ten beats of
-silence means the holder stopped). A foreign **claim** is deleted by the next writer
-once it is older than 24 × `PI_ENSEMBLE_CLAIM_STALE_MS`, with reason
-`foreign-expired`. What does **not** clear on a clock: a same-namespace holder
-(judged by pid, however silent), and a pre-#1871 two-field body (its writer never
-heartbeated).
+silence means the holder stopped). A foreign **claim** is ignored by the plan-time
+gate once it is older than the claim stale bound `PI_ENSEMBLE_CLAIM_STALE_MS` (1 h
+by default) — past that it reserves nothing and parks nobody — and the next reader
+may prune it; as a backstop the next writer **deletes** any foreign claim older
+than **24 ×** that bound, with reason `foreign-expired`. What does **not** clear on
+a clock: a same-namespace holder (judged by pid, however silent), a pre-#1871
+two-field body (its writer never heartbeated), and a claim whose full identity
+this process has **verified alive** — the pid-namespace/start-time probe outranks
+the age rules, so a live holder keeps its reservation whatever the timestamp says.
 
 **Fix — a slot:** read the bodies, then remove only the one you have decided is
 orphaned.
@@ -1318,15 +1325,22 @@ rm "${PI_ENSEMBLE_HOST_SPAWN_DIR:?}/slot-3"
 
 Check the body before deleting: if its host and pid namespace are a container that
 is still running, the slot is legitimately held and deleting it double-admits that
-child. `.reap` entries are per-slot recovery locks, not slots. A lock does **not**
-age out on its own: it is cleared by the next reap attempt on that slot once it is
-older than 10 s, and that attempt then proceeds.
+child. A `<slot>.reap` entry is a per-slot recovery lock, not a slot. It does
+**not** age out on its own — nothing polls the directory when nobody is claiming —
+so it is cleared by the next reap attempt on that slot once it is older than 10 s
+(`REAP_LOCK_STALE_MS`), and that attempt then proceeds.
 
 **Fix — a path claim:** the park evidence names the file. Remove the entry whose
 `pid`/`host`/`pidns`/`startTime` match the holder it named, keeping every other entry
 (`releaseClaim`/`pruneClaims` are deliberately conservative and will not do it
-for a foreign holder before the 24 × bound). An entry carrying `identity unknown`
-predates #1871 and is judged by pid alone, so it ages out without help.
+for a foreign holder before the 24 × bound). When that evidence shows a **full**
+identity (`<host> <pidns> <pid> <starttime>`), the holder lives in another pid
+namespace or on another host: checking its pid **here** proves nothing, so do not
+go looking in this machine's pid table. The claim stops counting for a cycle on
+this host past the stale bound and is deleted by the next writer past 24 × it —
+or remove this one entry by hand, now, which is what this section is for. An entry
+carrying `identity unknown` predates #1871 and is judged by pid alone, so it ages
+out without help and its pid **is** on this host.
 
 **Both:** the durable fix is not to share a slot or claim directory across
 containers that can outlive each other. Give each container its own
