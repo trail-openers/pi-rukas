@@ -33,6 +33,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { projectIssue } from "../src/headless/result.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { outcomeEvents } from "../src/work-driver-adversarial-fanout-events.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import type { DriverHost } from "../src/work-driver-host.ts";
@@ -154,7 +155,7 @@ async function markerIdentity(name: string): Promise<void> {
       },
     };
 
-    const after = await runAdversarial(ctx, (await readState(dir, 1863)) as never, Date.now());
+    const after = await runAdversarial(ctx, (await readState(dir, 1863))!, Date.now());
     const reEmitted = markersOf(after.eventLog, "adversarial");
     const expected = [...persisted.values()];
 
@@ -215,6 +216,106 @@ async function markerIdentity(name: string): Promise<void> {
 
 await markerIdentity("N>1 fan-out, approved passes");
 await markerIdentity("N>1 fan-out, second invocation");
+
+// ── #1863 round 3 — `outcomeEvents` reports a malformed marker, it does not
+// abort the cycle.
+//
+// THE BUG. The two invariant checks this function used to carry were `throw`s,
+// and they sit in the MIDDLE of `fanOutAdversarial`'s batch assembly — after
+// every pass has already cleared its marker and while the step is still
+// assembling the events that decide where the cycle goes. So a bookkeeping
+// defect (an outcome that claims a marker without its `at`/`label`, or two
+// dispatch events on one marker) escalated from "one malformed audit record"
+// to "the whole /work cycle dies", which is the failure mode this step exists
+// to remove. The rule now: never fabricate, never abort, always warn.
+//
+// This is the unit layer, and it is driven directly because the shape is not
+// reachable through the fan-out any more (the leaf reads its marker fields
+// after `beginDispatch` returned them). A regression that reinstates a `throw`
+// here fails on the `throws === false` assertion, and one that silently drops
+// the second dispatch event fails on the `dispatch-failed` count.
+{
+  const mkOutcome = (over: Record<string, unknown>) => ({
+    id: "task-a",
+    ok: true,
+    rounds: 1,
+    records: [],
+    infra: false,
+    threw: false,
+    skipped: false,
+    priorInfra: false,
+    ...over,
+  });
+  const at = Date.now();
+  const completion = {
+    kind: "dispatch-completed" as const,
+    step: "adversarial" as const,
+    role: "adversarial-loop",
+    jobId: "job-1",
+    label: "adversarial[task-a]",
+    ok: true,
+    ms: 5,
+    at,
+  };
+  const failure = {
+    kind: "dispatch-failed" as const,
+    step: "adversarial" as const,
+    role: "adversarial-loop",
+    jobId: "job-1",
+    label: "adversarial[task-a]",
+    ms: 5,
+    at,
+    errorTail: "boom",
+  };
+
+  const cases: Array<[string, ReturnType<typeof mkOutcome>, (e: WorkEvent[]) => boolean, string]> = [
+    [
+      "a marker claimed without its at/label",
+      mkOutcome({ clearedJobId: "job-1" }),
+      (e) => e.every((x) => x.kind !== "dispatch-started"),
+      "emits NO re-emitted marker (the persisted record is not reproduced from a guess)",
+    ],
+    [
+      "a marker claimed without its label alone",
+      mkOutcome({ clearedJobId: "job-1", markerAt: at }),
+      (e) => e.every((x) => x.kind !== "dispatch-started"),
+      "emits NO re-emitted marker when only the label is missing",
+    ],
+    [
+      "two dispatch outcome events on one marker",
+      mkOutcome({ clearedJobId: "job-1", markerAt: at, dispatchLabel: "adversarial[task-a]", completionEvent: completion, failureEvent: failure }),
+      (e) => e.filter((x) => x.kind === "dispatch-completed").length === 1 &&
+        e.filter((x) => x.kind === "dispatch-failed").length === 1,
+      "keeps BOTH dispatch events rather than deleting the only record that a dispatch happened",
+    ],
+  ];
+
+  for (const [name, outcome, shape, what] of cases) {
+    let throws = false;
+    let events: WorkEvent[] = [];
+    try {
+      events = outcomeEvents([outcome as never], true);
+    } catch {
+      throws = true;
+    }
+    assert(!throws, `outcomeEvents does not throw for ${name}`);
+    assert(
+      !throws && shape(events),
+      `outcomeEvents with ${name}: ${what} (got ${JSON.stringify(events.map((e) => e.kind))})`,
+    );
+  }
+
+  // A well-formed marker is still re-emitted, so the tolerance above is not a
+  // blanket suppression of the marker.
+  const clean = outcomeEvents(
+    [mkOutcome({ clearedJobId: "job-1", markerAt: at, dispatchLabel: "adversarial[task-a]", completionEvent: completion }) as never],
+    true,
+  );
+  assert(
+    clean.filter((e) => e.kind === "dispatch-started").length === 1,
+    "a well-formed outcome still re-emits its marker (the tolerance is not a blanket suppression)",
+  );
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

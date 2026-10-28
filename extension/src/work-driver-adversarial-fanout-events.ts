@@ -4,8 +4,21 @@
  * (AGENTS.md §12 file-size limit). Pure: outcomes in, WorkEvents out.
  */
 
+import { traceWarn } from "./trace.ts";
 import { type AdversarialOutcome, outcomeOf } from "./work-driver-adversarial-types.ts";
 import type { WorkEvent } from "./workflow-state.ts";
+
+/**
+ * The event kinds that report ONE dispatch's outcome. Explicit, not
+ * `kind.startsWith("dispatch-")`: `dispatch-started` shares the prefix and is
+ * not an outcome, and a prefix test would silently count a future
+ * `dispatch-<something>` that means something else.
+ */
+const DISPATCH_OUTCOME_KINDS = [
+  "dispatch-completed",
+  "dispatch-failed",
+  "dispatch-failed-provider",
+] as const;
 
 /**
  * Append per-workstream events in deterministic order: dispatch-completed
@@ -53,22 +66,33 @@ export function outcomeEvents(
     if (o.clearedJobId && o.markerWritten !== false && !emitted.has(o.clearedJobId)) {
       emitted.add(o.clearedJobId);
       // #1863 round 2 — an outcome that claims it wrote a marker MUST say when
-      // and under what label. A missing `markerAt` used to be papered over with a
-      // `Date.now()` here, which made the re-emitted record differ from the one on
-      // disk; refusing loudly beats inventing a timestamp the headless projection
-      // then turns into a nonsense `durationMs`.
-      if (o.markerAt === undefined || o.dispatchLabel === undefined)
-        throw new Error(
-          `adversarial outcome ${o.id}: marker ${o.clearedJobId} claims a persisted dispatch-started without its at/label — re-emitting it would fabricate the record`,
+      // and under what label: a re-emitted record whose `at` was invented here
+      // differs from the one on disk, and `durationMs` in the headless result
+      // document is derived from event `at`s (one measured cycle reported a
+      // 56-year span for a marker re-stamped `at: 7`).
+      //
+      // #1863 round 3 — the answer to a malformed outcome is NOT to throw. This
+      // function runs in the MIDDLE of the fan-out's batch assembly, after every
+      // pass has already cleared its marker, so a throw here aborted the whole
+      // /work cycle on a bookkeeping defect — the very failure mode the step is
+      // meant to remove. The rule is therefore: never fabricate, never abort,
+      // always say. A missing `at`/`label` emits no re-emitted marker (the record
+      // the pass PERSISTED is still on disk inside the retained region) and warns
+      // with the workstream id.
+      if (o.markerAt === undefined || o.dispatchLabel === undefined) {
+        traceWarn(
+          `work-driver: adversarial outcome ${o.id}: marker ${o.clearedJobId} claims a persisted dispatch-started without its at/label — not re-emitting it (the persisted record stays in the log)`,
         );
-      events.push({
-        kind: "dispatch-started",
-        step: "adversarial",
-        role: "adversarial-loop",
-        label: o.dispatchLabel,
-        jobId: o.clearedJobId,
-        at: o.markerAt,
-      });
+      } else {
+        events.push({
+          kind: "dispatch-started",
+          step: "adversarial",
+          role: "adversarial-loop",
+          label: o.dispatchLabel,
+          jobId: o.clearedJobId,
+          at: o.markerAt,
+        });
+      }
     }
     if (o.completionEvent) events.push(o.completionEvent);
     if (o.failureEvent) events.push(o.failureEvent);
@@ -81,10 +105,12 @@ export function outcomeEvents(
     const dispatchEvents = [
       ...(o.completionEvent ? [o.completionEvent] : []),
       ...(o.failureEvent ? [o.failureEvent] : []),
-    ].filter((e) => e.kind.startsWith("dispatch-"));
+    ].filter((e) => (DISPATCH_OUTCOME_KINDS as readonly string[]).includes(e.kind));
     if (dispatchEvents.length > 1) {
-      throw new Error(
-        `adversarial outcome ${o.id}: ${dispatchEvents.length} dispatch events on one write-ahead marker (${o.clearedJobId ?? "none"}) — the batch would splice without one marker per dispatch`,
+      // All of them are kept: dropping one would delete the only record that a
+      // dispatch happened, which is worse than the ambiguity it reports.
+      traceWarn(
+        `work-driver: adversarial outcome ${o.id}: ${dispatchEvents.length} dispatch outcome events on one write-ahead marker (${o.clearedJobId ?? "none"}) — keeping them all; the batch cannot guarantee one marker per dispatch`,
       );
     }
     const recordsAt = Date.now();

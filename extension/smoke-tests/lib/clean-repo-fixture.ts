@@ -100,7 +100,7 @@ const GATE_ARGV_READS: readonly (GateDiffArgv | GateToplevelArgv)[] = [
   ["diff", "--end-of-options", "<path>"],
 ] as const;
 
-/** The gate's toplevel probe. */ /** The gate's ONE diff argv, typed as the shape `readWorktreeDiff` builds. */
+/** The gate's ONE diff argv, typed as the shape `readWorktreeDiff` builds. */
 export type GateDiffArgv = readonly ["diff", "--end-of-options", string];
 
 /** The gate's toplevel probe. */

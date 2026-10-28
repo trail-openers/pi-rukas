@@ -85,6 +85,22 @@ function markerFields(writeAhead: RunOneArgs["writeAhead"]): {
 }
 
 /**
+ * #1863 round 3 — the marker fields read AT OUTCOME-CONSTRUCTION TIME. The
+ * whole point is that nothing snapshots them at entry: `wa.jobId` is reassigned
+ * from `beginDispatch`'s result in the fan-out AFTER this leaf is called, so a
+ * value taken at entry is the pre-beginDispatch id — a marker naming a dispatch
+ * no event does, and the pass's `finally` clears a different string than the
+ * outcome claims. Holding `writeAhead` BY REFERENCE and reading it lazily is
+ * what makes every exit carry the marker the pass actually cleared. Module-scope
+ * rather than a `const` in the leaf because the leaf's earliest exits (the #1634
+ * diff read, the #286 empty-diff skip) run before any in-function declaration is
+ * reached, and TDZ makes that a runtime ReferenceError.
+ */
+function markerFieldsAt(writeAhead: RunOneArgs["writeAhead"]) {
+  return () => markerFields(writeAhead);
+}
+
+/**
  * One workstream's adversarial pass: read its diff, then run (or skip) the
  * reviewer loop and fold the reply into an outcome. Never approves on an
  * unreadable diff (#1634), and never throws — a loop that throws becomes a
@@ -95,6 +111,9 @@ export async function runAdversarialWorkstream(
   args: RunOneArgs,
 ): Promise<AdversarialOutcome> {
   const { ctx, state, multi, wsMap, priorOutcomes, writeAhead } = args;
+  // #1863 round 3 — declared BEFORE the first exit that needs it (the diff read
+  // below); see `markerFieldsAt` for what lazily reading it buys.
+  const cleared = markerFieldsAt(writeAhead);
   const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
   if (!state.pipelineState.worktrees?.[id])
     trace(`work-driver: adversarial[${id}] — no worktree, reviewing at repoRoot`);
@@ -125,7 +144,15 @@ export async function runAdversarialWorkstream(
     priorOutcomes,
     execFn: ctx.verifyExecFn,
   });
-  if (!read.ok) return read.outcome;
+  // #1863 round 3 — the write-ahead marker was persisted BEFORE this leaf ran,
+  // so every exit must carry its fields: an outcome that names no marker leaves
+  // the persisted `dispatch-started` as the step's tail after the splice, the
+  // exact shape resume reads as "the dispatch never finished". Mutated in place
+  // so every exit of this function is covered by the same rule.
+  if (!read.ok) {
+    Object.assign(read.outcome, cleared());
+    return read.outcome;
+  }
   const diff = read.diff;
 
   // #286 — empty-diff short-circuit (a full reviewer spawn on an empty
@@ -135,6 +162,8 @@ export async function runAdversarialWorkstream(
   if (!emptySkipDisabled && !diff.trim()) {
     trace(`work-driver: adversarial[${id}] skipped — empty diff`);
     return {
+      // #1863 round 3 — the marker fields, as for the diff-read exit.
+      ...cleared(),
       id,
       ok: true,
       rounds: 0,
@@ -162,13 +191,12 @@ export async function runAdversarialWorkstream(
   }
 
   const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
-  /**
-   * #1863 — the write-ahead marker this pass owns, and the two fields the
-   * fan-out's splice needs to RE-EMIT it as the record it already persisted
-   * (`dispatchLabel` / `markerAt` on the outcome). Minted once by
-   * `writeAheadFor`, so nothing here mints a second identity.
-   */
-  const cleared = markerFields(writeAhead);
+  // #1863 — the write-ahead marker this pass owns, and the two fields the
+  // fan-out's splice needs to RE-EMIT it as the record it already persisted
+  // (`dispatchLabel` / `markerAt` on the outcome). Minted once by
+  // `writeAheadFor`, so nothing here mints a second identity. Read lazily above
+  // via `markerFieldsAt`, so every outcome carries the POST-`beginDispatch`
+  // id/label/`at` rather than a snapshot of the values this leaf was handed.
   // The reviewer dispatch's `runId`. When the fan-out wrote a head for this
   // pass, the child's id IS the marker's id, so the write-ahead record, the
   // child's transcript and the completion event name one identity (#1789's
@@ -255,6 +283,7 @@ export async function runAdversarialWorkstream(
         startedAt,
         priorOutcomes,
         reason: err.reason,
+        ...cleared(),
       });
     }
     const errMsg = (err as Error).message?.slice(-200);
@@ -269,7 +298,7 @@ export async function runAdversarialWorkstream(
       priorInfra: priorOutcomes.get(id) === "infra-failure",
       rejectionText: `adversarial loop threw: ${errMsg}`,
       errorTail: errMsg,
-      ...cleared,
+      ...cleared(),
       failureEvent: {
         kind: "dispatch-failed",
         step: "adversarial",
@@ -397,7 +426,7 @@ export async function runAdversarialWorkstream(
     // field and is deliberately untouched: promoting a bound kill into it would
     // also promote it into the cap-kill projection's consumers.
     completionEvent,
-    ...cleared,
+    ...cleared(),
     branchEvent: multi
       ? {
           kind: "branch-completed",
