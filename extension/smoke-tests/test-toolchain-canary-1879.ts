@@ -42,7 +42,7 @@ import {
 import { verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
 import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
 import type { WorkState } from "../src/workflow-state.ts";
-import { assert } from "./lib/toolchain-canary-assert.ts";
+import { assert, exitCode } from "./lib/toolchain-canary-assert.ts";
 import {
   REPO,
   SOUND,
@@ -107,17 +107,6 @@ console.log("1. the canary separates a stub compiler from one that judges");
   assert(
     mode === 0o700 && readdirSync(dir).length === 0,
     `that dir is mode 0700 and emptied after the probe (mode ${mode.toString(8)})`,
-  );
-}
-{
-  // A compiler that rejects with the right diagnostic: pass.
-  const root = fixtureRoot("sound");
-  const pkg = packageWithCompiler(root, SOUND);
-  resetToolchainCanaryCache();
-  const outcome = await toolchainCanary(pkg, realExec);
-  assert(
-    outcome.ok === true,
-    `a compiler that prints TS2322 and exits 2 PASSES (got ${outcome.ok})`,
   );
 }
 {
@@ -452,10 +441,17 @@ console.log("3. the escape hatch skips the canary and SAYS so");
         `hatch value ${JSON.stringify(v)} keeps the canary on (the safe side runs the check)`,
       );
     }
-    delete process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
+    // Whitespace alone is not a value an operator meant as "off": the check
+    // stays on, exactly as for the empty string.
+    process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY = "   \t ";
+    assert(
+      toolchainCanaryEnabled() === true,
+      "an all-whitespace value keeps the canary on (only a real off-word turns it off)",
+    );
+    Reflect.deleteProperty(process.env, "PI_ENSEMBLE_TOOLCHAIN_CANARY");
     assert(toolchainCanaryEnabled() === true, "unset keeps the canary on");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY;
+    if (prev === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_TOOLCHAIN_CANARY");
     else process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY = prev;
   }
 }
@@ -481,8 +477,14 @@ console.log("3. the escape hatch skips the canary and SAYS so");
       "the note is the exact documented wording",
     );
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY = "";
+    if (prev === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_TOOLCHAIN_CANARY");
     else process.env.PI_ENSEMBLE_TOOLCHAIN_CANARY = prev;
     rmTree(root);
   }
 }
+
+const code = exitCode();
+console.log(
+  code === 0 ? "\ntoolchain-canary: all groups passed" : `\ntoolchain-canary: FAILED (${code})`,
+);
+process.exit(code);

@@ -42,9 +42,31 @@ export const rmTree = (dir: string) => rmSync(dir, { recursive: true, force: tru
 
 /** The incident's compiler: exits 0 on any input, judges nothing. */
 export const STUB = "process.exit(0);\n";
-/** The sound control: a real TS2322 line on stderr and exit 2. */
+/**
+ * The sound control: it prints the `error TS2322` line for the LAST argument it
+ * was given, exactly as the real CLI prints `path/to/file.ts(1,7):`, so it names
+ * whatever file the probe happened to write. The canary only trusts a diagnostic
+ * that names the file it compiled, so a control that hard-codes a name is no
+ * control at all — see `soundStubFor` for the case where the name is known.
+ */
 export const SOUND =
-  "process.stderr.write(\"canary.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\\n\");\nprocess.exit(2);\n";
+  "const a=process.argv;\n" +
+  "const f=a[a.length-1];\n" +
+  "process.stderr.write(f+\"(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\\n\");\n" +
+  "process.exit(2);\n";
+
+/**
+ * A stub that reports `error TS2322` for the fixed name `file` and exits 2, the
+ * way the real CLI would. Use it to prove the anchor: a control that names some
+ * OTHER file must not pass, even though it prints the right diagnostic.
+ */
+export function soundStubFor(file: string): string {
+  if (/["'\\\n\r]/.test(file)) {
+    throw new Error(`soundStubFor: refusing to embed ${JSON.stringify(file)} in a JS literal`);
+  }
+  const line = `${file}(1,7): error TS2322: Type 'string' is not assignable to type 'number'.`;
+  return `process.stderr.write(${JSON.stringify(line)} + "\\n");\nprocess.exit(2);\n`;
+}
 
 /**
  * A package directory whose `node_modules/typescript/bin/tsc` is `body`.

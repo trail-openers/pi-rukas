@@ -35,6 +35,7 @@ import {
   packageWithCompiler,
   realExec,
   rmTree,
+  soundStubFor,
 } from "./lib/toolchain-canary-support.ts";
 
 cleanupOnExit();
@@ -173,6 +174,36 @@ console.log("6. mutation control: with the canary hard-wired to PASS, group 1 is
     "the real guard blocks the stub tier (the assertion a hard-wired pass would fail)",
   );
   rmTree(root);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("5. the sound verdict is anchored to the canary file (#1879 fix round)");
+
+{
+  // A compiler that rejects with the right diagnostic ON THE CANARY FILE: pass.
+  // The control echoes the file it was handed - exactly what the real CLI
+  // prints - so it names the per-probe temp file rather than a guess.
+  const root = fixtureRoot("sound");
+  const pkg = packageWithCompiler(root, SOUND);
+  resetToolchainCanaryCache();
+  const passed = await toolchainCanary(pkg, realExec);
+  assert(
+    passed.ok === true,
+    `a compiler that prints TS2322 for the CANARY file and exits 2 PASSES (got ${passed.ok})`,
+  );
+}
+{
+  // #1879 fix round - a stub that exits 2 and prints `error TS2322` about some
+  // OTHER file has not refused the assignment the probe asked about, so it is
+  // not judged, never passed.
+  const root = fixtureRoot("sound-wrong-file");
+  const pkg = packageWithCompiler(root, soundStubFor("some-other-file.ts"));
+  resetToolchainCanaryCache();
+  const outcome = await toolchainCanary(pkg, realExec);
+  assert(
+    outcome.ok === undefined,
+    `a TS2322 about another file does NOT pass the canary (got ${outcome.ok})`,
+  );
 }
 
 resetToolchainCanaryCache();

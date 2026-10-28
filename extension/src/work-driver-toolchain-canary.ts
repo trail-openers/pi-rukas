@@ -194,12 +194,27 @@ async function compilerIdentity(entry: string): Promise<string | undefined> {
 export const CANARY_DIR_PREFIX = "pi-rukas-canary-";
 
 let canaryDir: Promise<string> | undefined;
+/** One removal handler for the whole process, however many probes asked. */
+let canaryDirCleanupArmed = false;
 function canaryDirOnce(): Promise<string> {
   if (canaryDir === undefined) {
     canaryDir = fs
       .mkdtemp(path.join(os.tmpdir(), CANARY_DIR_PREFIX))
       .then(async (dir) => {
         await fs.chmod(dir, 0o700).catch(() => undefined);
+        // The probe deletes each file it writes, but a process killed mid-probe
+        // would leave the directory (and the file in it) in the shared temp dir
+        // for the life of the host. One `exit` handler, armed once, sweeps it.
+        if (!canaryDirCleanupArmed) {
+          canaryDirCleanupArmed = true;
+          process.once("exit", () => {
+            try {
+              fsSync.rmSync(dir, { recursive: true, force: true });
+            } catch {
+              // A temp dir that will not go away is not a reason to fail a run.
+            }
+          });
+        }
         return dir;
       })
       .catch((err) => {
@@ -214,7 +229,16 @@ function canaryDirOnce(): Promise<string> {
 
 /** The canary file, in that private dir: outside every repository it might verify. */
 async function canaryPath(runId: string): Promise<string> {
-  return path.join(await canaryDirOnce(), `${runId}.ts`);
+  // The basename leads with `canary`: the sound verdict requires a diagnostic
+  // line that NAMES this file, and a fixed prefix lets a test's control stub
+  // print the file it was asked about without knowing the unguessable per-probe
+  // suffix. The random part stays, so the name is still not a symlink target.
+  return path.join(await canaryDirOnce(), `canary-${runId}.ts`);
+}
+
+/** Escape a literal for embedding in a RegExp (the canary's file name is generated, not user input). */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** The compiler's own account of a non-zero run, gathered from every field it reports. */
@@ -243,7 +267,7 @@ function rejectionText(err: unknown): string {
  *     accusing a compiler of unsoundness on the strength of a crash it never
  *     completed.
  */
-async function probe(entry: string, cwd: string, run: DriverExecFn): Promise<CanaryOutcome> {
+async function probe(cwd: string, run: DriverExecFn): Promise<CanaryOutcome> {
   const script = LOCAL_TSC_CMD.split(" ").pop() as string;
   const runId = `${process.pid}-${Date.now().toString(36)}`;
   let file: string;
@@ -280,7 +304,7 @@ async function probe(entry: string, cwd: string, run: DriverExecFn): Promise<Can
     };
   } catch (err) {
     const output = rejectionText(err);
-    if (new RegExp(`\\berror ${CANARY_DIAGNOSTIC}\\b`, "i").test(output)) {
+    if (rejectsTheCanary(output, file)) {
       return { ok: true };
     }
     // A non-zero run that never printed the diagnostic judged nothing about
@@ -293,6 +317,24 @@ async function probe(entry: string, cwd: string, run: DriverExecFn): Promise<Can
   } finally {
     await fs.rm(file, { force: true }).catch(() => undefined);
   }
+}
+
+/**
+ * Did the compiler refuse THE canary file? A bare `error TS2322` anywhere in
+ * the output is not enough: a compiler that rejects some unrelated file for an
+ * assignment error while accepting `const x: number = "no"` has still judged
+ * nothing. The diagnostic must name the canary file, so the pass is anchored to
+ * the one question the probe actually asked.
+ */
+function rejectsTheCanary(output: string, file: string): boolean {
+  const diagnostic = new RegExp(`\\berror ${CANARY_DIAGNOSTIC}\\b`, "i");
+  // A compiler prints `path/to/file.ts(1,7):`, so the name is followed by `(`;
+  // `\b` alone would end at the `.` and match `other.ts` as well as the canary.
+  const namesTheCanary = new RegExp(
+    `(^|[\\/:])${escapeRegExp(path.basename(file))}(?![A-Za-z0-9_])`,
+    "i",
+  );
+  return output.split("\n").some((line) => diagnostic.test(line) && namesTheCanary.test(line));
 }
 
 /** The canary's own bound: a real tsc answers a one-file check in seconds. */
@@ -331,7 +373,7 @@ async function ask(
     const hit = cache.get(key);
     if (hit !== undefined && now() - hit.at < CANARY_CACHE_MAX_AGE_MS) return hit.outcome;
   }
-  const outcome = await probe(entry, cwd, run);
+  const outcome = await probe(cwd, run);
   if (key !== undefined) cache.set(key, { at: now(), outcome });
   return outcome;
 }
