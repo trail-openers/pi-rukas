@@ -8,7 +8,21 @@
  * depend on. `work-driver-resume.ts` re-exports it, so existing importers keep
  * working and the resume tests keep naming the module they were written
  * against.
+ *
+ * #1871 added the OWNER IDENTITY to the same leaf: `<hostname> <boot-id>
+ * <pid>`, the body a spawn slot or a path claim is written with. A bare
+ * hostname + pid is not an identity inside a container fleet — containers
+ * started with the same `--hostname` each see their own pid namespace, so
+ * every one of them calls another's live owner a corpse and reaps it. The
+ * boot id (`/proc/sys/kernel/random/boot_id`, distinct per boot and per
+ * container) is what separates "that pid is gone" from "that pid is not
+ * mine to judge".
+ *
+ * The leaf property holds: only node built-ins, no project imports.
  */
+
+import fs from "node:fs";
+import os from "node:os";
 
 /**
  * Is this process still alive?
@@ -31,4 +45,93 @@ export function processAlive(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** Who owns a slot / claim / state file: where it was written, and by whom. */
+export interface OwnerIdentity {
+  host: string;
+  bootId: string;
+  pid: number;
+}
+
+/**
+ * What a pid probe may answer for. `"foreign"` means the probe is NOT
+ * consulted — the holder was written by some other host, or by some other
+ * boot of this one, and a pid from that namespace proves nothing either way.
+ */
+export type OwnerVerdict = "alive" | "dead" | "foreign";
+
+/** A boot id is a hex uuid; anything else is treated as no boot id at all. */
+const BOOT_ID_PATTERN = /^[0-9A-Fa-f-]{8,64}$/;
+/** The sentinel for "this host exposes no usable boot id" (e.g. macOS). */
+export const NO_BOOT_ID = "-";
+
+/** The kernel's boot id, trimmed and shape-validated; "-" when unavailable. */
+function readBootId(): string {
+  try {
+    const raw = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return BOOT_ID_PATTERN.test(raw) ? raw : NO_BOOT_ID;
+  } catch {
+    return NO_BOOT_ID;
+  }
+}
+
+let selfCache: OwnerIdentity | undefined;
+
+/**
+ * This process's owner identity, read once and cached for the process life.
+ *
+ * Lazy rather than at module load, so one process can exercise both a
+ * matching and a non-matching identity in a single run — the tests pass
+ * `self` to `judgeOwner` explicitly and never reset this cache.
+ */
+export function selfIdentity(): OwnerIdentity {
+  if (!selfCache) selfCache = { host: os.hostname(), bootId: readBootId(), pid: process.pid };
+  return selfCache;
+}
+
+/** The wire form: `<host> <boot-id> <pid>`, read back by `parseIdentity`. */
+export function formatIdentity(id: OwnerIdentity): string {
+  return `${id.host} ${id.bootId} ${id.pid}`;
+}
+
+/**
+ * Parse a holder body. A three-field body is the current format; a two-field
+ * body is what pre-#1871 processes wrote and reads back with NO boot id, so
+ * `judgeOwner` calls it foreign and it is never reaped. Anything else — an
+ * empty, one-field or over-long body — parses to undefined, which every
+ * caller also treats as foreign rather than as a corpse.
+ */
+export function parseIdentity(body: string | undefined): OwnerIdentity | undefined {
+  const parts = body?.trim().split(" ");
+  if (!parts || (parts.length !== 2 && parts.length !== 3)) return undefined;
+  const host = parts[0] ?? "";
+  const pid = Number(parts[parts.length - 1]);
+  if (host === "" || !Number.isInteger(pid) || pid <= 0) return undefined;
+  const bootId = parts.length === 3 ? parts[1] : undefined;
+  return bootId === undefined || !BOOT_ID_PATTERN.test(bootId)
+    ? { host, bootId: NO_BOOT_ID, pid }
+    : { host, bootId, pid };
+}
+
+/**
+ * May this process call that holder dead?
+ *
+ * The pid probe answers ONLY when hostname AND boot id both equal `self`'s.
+ * Same host with a different boot id is a process from before a reboot (or a
+ * sibling container); a different host with the same boot id is a machine this
+ * process cannot see into; a body with no boot id is a pre-#1871 writer. All
+ * three are `"foreign"` and are never reaped, deleted or swept — the same safe
+ * direction as today's foreign-host rule. Two `"-"` boot ids on one host DO
+ * count as matching, which keeps the pid probe working on hosts with no
+ * `/proc` (macOS).
+ *
+ * Pure, and takes both identities as arguments: that is the whole test seam.
+ */
+export function judgeOwner(holder: OwnerIdentity | undefined, self: OwnerIdentity): OwnerVerdict {
+  if (!holder) return "foreign";
+  if (holder.host !== self.host || holder.bootId !== self.bootId) return "foreign";
+  if (!Number.isInteger(holder.pid) || holder.pid <= 0) return "dead";
+  if (holder.pid === self.pid) return "alive";
+  return processAlive(holder.pid) ? "alive" : "dead";
 }
