@@ -101,8 +101,7 @@ assert(
   for (const state of HANDLER_STATES) {
     for (const kind of outcomeKindsFor(state)) {
       try {
-        if (next(run(state), { kind }, { from: state }).state === "land")
-          intoLand.push(`${state}+${kind}`);
+        if (next(run(state), { kind }).state === "land") intoLand.push(`${state}+${kind}`);
       } catch {
         /* an unlisted pair cannot reach anything */
       }

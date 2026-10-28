@@ -15,11 +15,11 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { LeanConfigError, defaultConfig, loadWorkConfig } from "../src/lean/config.ts";
 import { execp } from "../src/exec.ts";
+import { LeanConfigError, defaultConfig, loadWorkConfig } from "../src/lean/config.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -35,7 +35,11 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** A repo with one commit containing `.pi/` files, and the sha of that commit. */
-function makeRepo(files: Record<string, string>): { repoRoot: string; baseSha: string; cleanup: () => void } {
+function makeRepo(files: Record<string, string>): {
+  repoRoot: string;
+  baseSha: string;
+  cleanup: () => void;
+} {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-config-"));
   const env = {
     ...process.env,
@@ -46,7 +50,8 @@ function makeRepo(files: Record<string, string>): { repoRoot: string; baseSha: s
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_SYSTEM: "/dev/null",
   };
-  const g = (...args: string[]): string => execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", env }).trim();
+  const g = (...args: string[]): string =>
+    execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", env }).trim();
   g("init", "-q", "-b", "main");
   mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
   for (const [rel, content] of Object.entries(files)) {
@@ -114,7 +119,8 @@ const VALID = JSON.stringify(
   // The fallback reads the file AT THE SHA too: comments and blanks are
   // skipped, and a working-tree edit is invisible.
   const { repoRoot, baseSha, cleanup } = makeRepo({
-    ".pi/verify-cmd": "# the full gate\n\nbash extension/smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts\n# trailing note\n",
+    ".pi/verify-cmd":
+      "# the full gate\n\nbash extension/smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts\n# trailing note\n",
   });
   try {
     writeFileSync(path.join(repoRoot, ".pi", "verify-cmd"), "rm -rf /\n", "utf8");
@@ -135,9 +141,17 @@ const invalidCases: Array<[string, string, string]> = [
   ["not json", "{", "is not valid JSON"],
   ["wrong version", JSON.stringify({ version: 2 }), "version must be 1"],
   ["no version", JSON.stringify({ autoMerge: true }), "version must be 1"],
-  ["bad autoMerge", JSON.stringify({ version: 1, autoMerge: "yes" }), "autoMerge must be a boolean"],
+  [
+    "bad autoMerge",
+    JSON.stringify({ version: 1, autoMerge: "yes" }),
+    "autoMerge must be a boolean",
+  ],
   ["verify not object", JSON.stringify({ version: 1, verify: "x" }), "verify must be an object"],
-  ["bad verify key", JSON.stringify({ version: 1, verify: { fast: 5 } }), "verify.fast must be a string"],
+  [
+    "bad verify key",
+    JSON.stringify({ version: 1, verify: { fast: 5 } }),
+    "verify.fast must be a string",
+  ],
   ["budgets not object", JSON.stringify({ version: 1, budgets: [] }), "budgets must be an object"],
   [
     "negative budget",
@@ -172,10 +186,15 @@ for (const [name, content, expected] of invalidCases) {
 
 // A valid file that merely omits the optional sections is not invalid.
 {
-  const { repoRoot, baseSha, cleanup } = makeRepo({ ".pi/work.json": JSON.stringify({ version: 1 }) });
+  const { repoRoot, baseSha, cleanup } = makeRepo({
+    ".pi/work.json": JSON.stringify({ version: 1 }),
+  });
   try {
     const cfg = await loadWorkConfig(execp, repoRoot, baseSha);
-    assert(cfg.autoMerge === false && Object.keys(cfg.verify).length === 0, "a minimal file loads with defaults filled in");
+    assert(
+      cfg.autoMerge === false && Object.keys(cfg.verify).length === 0,
+      "a minimal file loads with defaults filled in",
+    );
   } finally {
     cleanup();
   }
@@ -184,7 +203,10 @@ for (const [name, content, expected] of invalidCases) {
 // The defaults function is what an absent file produces — pinned directly so
 // the two cannot drift apart silently.
 assert(defaultConfig().autoMerge === false, "defaultConfig() autoMerge false");
-assert(defaultConfig("npm test").verify.full === "npm test", "defaultConfig() carries a supplied full command");
+assert(
+  defaultConfig("npm test").verify.full === "npm test",
+  "defaultConfig() carries a supplied full command",
+);
 assert(defaultConfig().verify.full === undefined, "defaultConfig() without one leaves it absent");
 
 process.exit(exit);

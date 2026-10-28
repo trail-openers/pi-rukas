@@ -106,6 +106,13 @@
     "smoke-tests/test-owner-claim-entry-shape.ts",
     "smoke-tests/test-owner-claim-park-message.ts",
     "smoke-tests/test-host-spawn-lease.ts",
-    "smoke-tests/test-claim-foreign-expiry.ts"
+    "smoke-tests/test-claim-foreign-expiry.ts",
+    "smoke-tests/test-lean-spec.ts",
+    "smoke-tests/test-lean-config.ts",
+    "smoke-tests/lib/lean-engine-fixtures.ts",
+    "smoke-tests/test-lean-machine.ts",
+    "smoke-tests/test-lean-machine-reachability.ts",
+    "smoke-tests/test-lean-engine.ts",
+    "smoke-tests/test-lean-engine-crash.ts"
   ]
 }

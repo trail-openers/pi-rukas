@@ -31,7 +31,7 @@
  * `engine.ts` enforces by keying steps on the entry count.
  */
 
-import { MAX_BUILD_ATTEMPTS, next, outcomeKindsFor } from "../src/lean/machine.ts";
+import { MAX_BUILD_ATTEMPTS, type Transition, next, outcomeKindsFor } from "../src/lean/machine.ts";
 import { INITIAL_COUNTERS, type LeanRun, type LeanState, isTerminal } from "../src/lean/state.ts";
 
 let exit = 0;
@@ -42,6 +42,12 @@ function assert(cond: boolean, msg: string): void {
     exit = 1;
   }
 }
+
+/** The counters a walk step is started from. `RunCounters` has no index
+ * signature, so the walker widens it on the way in and the table narrows it
+ * back on the way out; the fields are the same five, and `next()` is what
+ * guarantees it never invents a sixth. */
+type Counters = Record<string, unknown>;
 
 function run(state: LeanState, over: Partial<LeanRun> = {}): LeanRun {
   return {
@@ -58,7 +64,7 @@ function run(state: LeanState, over: Partial<LeanRun> = {}): LeanRun {
   };
 }
 
-const VERIFY_COUNTERS: Array<Record<string, unknown>> = [];
+const VERIFY_COUNTERS: Counters[] = [];
 for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS]) {
   for (const challengeDone of [false, true]) {
     for (const reviewDone of [false, true]) {
@@ -83,7 +89,7 @@ const reachedLand: string[] = [];
  */
 function walk(
   state: LeanState,
-  counters: Record<string, unknown>,
+  counters: Counters,
   path: string[],
   depth: number,
   entries: Record<string, number>,
@@ -91,7 +97,7 @@ function walk(
   if (isTerminal(state) || depth > 10) return;
   for (const kind of outcomeKindsFor(state)) {
     if ((entries[state] ?? 0) >= 2) return;
-    let moved: { state: LeanState; counters: Record<string, unknown> };
+    let moved: Transition;
     try {
       moved = next(run(state, { counters: counters as never }), { kind });
     } catch {
@@ -105,10 +111,10 @@ function walk(
     // `ci + green` is a pipeline running whatever the repo named; neither
     // clears anything, which is exactly the hole this walk found.
     if (moved.state === "land") {
-      if (moved.counters.draft === true) reachedLand.push([...path, step].join(" → "));
+      if (moved.counters.draft) reachedLand.push([...path, step].join(" → "));
       continue;
     }
-    walk(moved.state, moved.counters, [...path, step], depth + 1, {
+    walk(moved.state, moved.counters as unknown as Counters, [...path, step], depth + 1, {
       ...entries,
       [moved.state]: (entries[moved.state] ?? 0) + 1,
     });
@@ -117,7 +123,7 @@ function walk(
 
 for (const counters of VERIFY_COUNTERS) {
   const after = next(run("verify", { counters: counters as never }), { kind: "red" });
-  walk(after.state, after.counters as never, ["verify+red"], 0, { verify: 1 });
+  walk(after.state, after.counters as unknown as Counters, ["verify+red"], 0, { verify: 1 });
 }
 
 assert(
@@ -141,14 +147,14 @@ assert(
 /** Every (state, kind) pair the table has, following the engine's entry rule. */
 function reachableToLandFrom(
   state: LeanState,
-  counters: Record<string, unknown>,
+  counters: Counters,
   entries: Record<string, number>,
   depth = 0,
 ): boolean {
   if (isTerminal(state) || depth > 10) return false;
   for (const kind of outcomeKindsFor(state)) {
     if ((entries[state] ?? 0) >= 2) return false;
-    let moved: { state: LeanState; counters: Record<string, unknown> };
+    let moved: Transition;
     try {
       moved = next(run(state, { counters: counters as never }), { kind });
     } catch {
@@ -158,7 +164,7 @@ function reachableToLandFrom(
     if (
       reachableToLandFrom(
         moved.state,
-        moved.counters,
+        moved.counters as unknown as Counters,
         {
           ...entries,
           [moved.state]: (entries[moved.state] ?? 0) + 1,
@@ -172,7 +178,7 @@ function reachableToLandFrom(
 }
 
 assert(
-  reachableToLandFrom("verify", { ...INITIAL_COUNTERS }, { verify: 0 }),
+  reachableToLandFrom("verify", { ...INITIAL_COUNTERS } as unknown as Counters, { verify: 0 }),
   "a green-from-the-start verify still reaches land — the walk above is a filter, not a wall",
 );
 

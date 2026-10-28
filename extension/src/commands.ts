@@ -41,6 +41,7 @@ import type {
 import { notifyAgent } from "./agent-message.ts";
 import { backlogReminderSection } from "./backlog-reminder.ts";
 import { execp } from "./exec.ts";
+import { registerWorkLeanCommand } from "./lean/command.ts";
 import { buildMemoryPanel } from "./memory-panel.ts";
 import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
@@ -336,6 +337,10 @@ export function registerCommands(pi: ExtensionAPI) {
   // to open the .pi/work-state/<issue>.json file. Restate-style "no progress
   // in last hour" query semantics scoped to a single session.
   registerWorkStatusCommand(pi);
+
+  // /work-lean — the lean engine, registered beside the driver rather than
+  // inside it (lean/). One line here is the whole integration.
+  registerWorkLeanCommand(pi);
 
   pi.on(
     "before_agent_start",

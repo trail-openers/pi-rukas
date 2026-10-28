@@ -155,14 +155,18 @@ function assertRun(obj: unknown, file: string): LeanRun {
   const r = obj as Record<string, unknown>;
   if (r.schema !== SCHEMA_VERSION)
     bad(`unknown schema ${JSON.stringify(r.schema)}, expected ${SCHEMA_VERSION}`);
-  for (const key of ["issue", "version", "baseSha", "branch", "state"] as const) {
-    if (key === "issue") {
-      if (typeof r.issue !== "number" || !Number.isInteger(r.issue) || r.issue <= 0)
-        bad("issue must be a positive integer");
-      continue;
-    }
-    if (typeof r[key] !== "string" || (r[key] as string).trim() === "")
-      bad(`${key} must be a non-empty string`);
+  if (typeof r.issue !== "number" || !Number.isInteger(r.issue) || r.issue <= 0)
+    bad("issue must be a positive integer");
+  if (typeof r.version !== "string") bad("version must be a string");
+  if (typeof r.state !== "string") bad("state must be a string");
+  // baseSha and branch are required to be STRINGS but may be empty: a phase-1
+  // run is created before its ready handler has resolved the mainline sha or
+  // cut a branch, and a validator that demanded both would refuse the only
+  // shape a first run can legitimately have. Requiring "is a string" still
+  // catches the failure that matters — a field nobody ever filled in because
+  // the code that fills it was renamed.
+  for (const key of ["baseSha", "branch"] as const) {
+    if (typeof r[key] !== "string") bad(`${key} must be a string`);
   }
   if (!isTerminal(r.state as LeanState) && !NON_TERMINAL.includes(r.state as LeanState))
     bad(`unknown state ${JSON.stringify(r.state)}`);

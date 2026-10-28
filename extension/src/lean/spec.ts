@@ -72,7 +72,12 @@ function fencedBlocks(body: string): { info: string; content: string }[] {
     if (open) {
       // A closing fence is the same character, at least as long, and carries
       // no info string of its own.
-      if (run !== undefined && run[0] === open.char && run.length >= open.len && rest.trim() === "") {
+      if (
+        run !== undefined &&
+        run[0] === open.char &&
+        run.length >= open.len &&
+        rest.trim() === ""
+      ) {
         blocks.push({ info: open.info.trim(), content: open.content.join("\n") });
         open = undefined;
         continue;
