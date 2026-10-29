@@ -59,12 +59,13 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig } from "./config.ts";
+import { loadWorkConfig, testLocationOf } from "./config.ts";
+import type { TestLocation } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import type { CaptureResult } from "./specify-capture.ts";
-import { specifyPrompt, testCriteria } from "./specify-prompt.ts";
+import { RED_PROOF_CONTRACT, namingLine, specifyPrompt, testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError } from "./specify-reset.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
@@ -183,13 +184,21 @@ async function assertBaseHealthy(
 /** The dispatch, with a non-OK child turned into the throw it deserves. */
 async function dispatchAdversary(
   deps: SpecifyDeps,
-  opts: { issue: number; spec: PiSpec; wt: string; repoRoot: string; testRunner?: string },
+  opts: {
+    issue: number;
+    spec: PiSpec;
+    wt: string;
+    repoRoot: string;
+    testRunner?: string;
+    testLocation?: TestLocation;
+  },
 ): Promise<unknown[]> {
   await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
   const prompt = specifyPrompt({
     issue: opts.issue,
     spec: opts.spec,
     testRunner: opts.testRunner,
+    ...(opts.testLocation === undefined ? {} : { testLocation: opts.testLocation }),
     worktree: opts.wt,
   });
   const result = await deps.dispatch(
@@ -235,6 +244,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const base = ctx.run.baseSha;
   if (base.trim() === "") throw new SpecifyInfraError("the run carries no base sha");
   const config = await deps.loadConfig(repoRoot, base);
+  const testLocation = testLocationOf(config.verify);
   const branch = specifyBranch(ctx.run.branch, issue);
   const wt = specifyWorktreePath(repoRoot, issue);
   // A base sha and a branch name both reach git command lines in this step.
@@ -302,6 +312,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     wt,
     repoRoot,
     testRunner: runnerTemplate,
+    ...(testLocation === undefined ? {} : { testLocation }),
   });
 
   // 6-13. Extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
@@ -346,6 +357,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
           spec,
           exists: (rel) => existsSync(path.join(wt, rel)),
           fileProblem: (rel) => fileProblem(wt, rel),
+          ...(testLocation === undefined ? {} : { testLocation }),
         }),
       prepare: () =>
         ensureSpecifyWorktreeWithProvision(deps.exec, { repoRoot, issue, fromRef: base, branch }),

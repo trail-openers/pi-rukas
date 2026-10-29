@@ -54,7 +54,8 @@ import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts"
 import type { ChallengeDispatch, ChallengeExec } from "./challenge-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig } from "./config.ts";
+import { loadWorkConfig, testLocationOf } from "./config.ts";
+import type { TestLocation } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
@@ -207,6 +208,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   // could only ever report `none`, which is not a verdict about the code — it is
   // a missing setting wearing one, so the refusal names the setting.
   const runnerTemplate: string | undefined = config.verify.test;
+  const testLocation: TestLocation | undefined = testLocationOf(config.verify);
   if (runnerTemplate === undefined)
     throw new ChallengeInfraError(
       "no test runner configured (.pi/work.json verify.test) for a spec with test criteria",
@@ -220,6 +222,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     wt,
     repoRoot,
     testRunner: runnerTemplate,
+    ...(testLocation === undefined ? {} : { testLocation }),
     ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
   });
 
@@ -249,6 +252,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
           // Checked on the NORMALISED path, so `./tests//AC1-retry.test.sh`
           // cannot slip past as a name the set does not contain.
           frozenPaths: new Set(Object.keys(frozen)),
+          ...(testLocation === undefined ? {} : { testLocation }),
         }),
       // Provisioning is `challenge`'s own call, and the `prepare` the pipeline
       // re-runs after its reset is the same one: one code path builds the

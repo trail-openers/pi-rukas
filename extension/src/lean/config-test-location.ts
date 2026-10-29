@@ -1,0 +1,129 @@
+/**
+ * lean/config-test-location — where the adversary's acceptance tests live.
+ *
+ * Split from `config.ts` for the file-size cap; it is the same `.pi/work.json`
+ * `verify` block, read the same way, validated at the same boundary. The three
+ * questions here are the three a project answers when it wants its OWN CI to
+ * run the tests a lean run freezes:
+ *
+ *   - `validateTestDir`  — is this a repo-relative directory, or something that
+ *     only looks like one (absolute, traversing, hidden, trailing-slash, a
+ *     pattern wearing a directory's name)?
+ *   - `validateTestGlob` — is this a single-`*` BASENAME pattern?
+ *   - `testLocationProblem` — does a submitted test path sit directly inside
+ *     that directory under that name? This is what the boundary in
+ *     `specify-tree.ts` calls, after `pathProblem` has already ruled out
+ *     traversal.
+ *
+ * The pair is configured together or not at all: `loadWorkConfig` refuses a
+ * half-set pair, so the steps never have to guess which half the author meant.
+ */
+
+/** The pair of settings that say where the adversary's tests live. */
+export interface TestLocation {
+  testDir: string;
+  testGlob: string;
+}
+
+/**
+ * Characters a `testDir` or `testGlob` may never contain. Shell metacharacters
+ * and quotes have no business in a name the prompt quotes back to a child, and
+ * a `*` in a directory (or `?` anywhere) says the author meant a pattern —
+ * which is what `testGlob` is for.
+ */
+const TEST_LOCATION_FORBIDDEN = /[;&|`$<>"'\\*?\n\r]/;
+
+/**
+ * Why this `verify.testDir` is not usable, or undefined when it is.
+ *
+ * The shape rule for a repo-relative directory: the same refusals `pathProblem`
+ * applies to a submitted test path (`..` traversal, absolute paths, drive
+ * letters, empty segments) plus the two a directory adds — no trailing slash,
+ * and nothing inside a hidden directory, which is where `pathProblem`'s
+ * forbidden-segment list would otherwise have caught it.
+ */
+export function validateTestDir(dir: string): string | undefined {
+  if (dir.trim() === "") return ".pi/work.json verify.testDir must not be empty";
+  if (TEST_LOCATION_FORBIDDEN.test(dir))
+    return `.pi/work.json verify.testDir must be a plain repo-relative directory: ; & | \` $ < > " ' \\ * ? and newline are not allowed (${dir})`;
+  if (dir.startsWith("/") || dir.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(dir))
+    return `.pi/work.json verify.testDir must be repo-relative, not absolute (${dir})`;
+  if (dir.endsWith("/") || dir.endsWith("\\"))
+    return `.pi/work.json verify.testDir must not end in a slash (${dir})`;
+  const segments = dir.split(/[\\/]+/).filter((s) => s !== "");
+  if (segments.length === 0) return `.pi/work.json verify.testDir must name a directory (${dir})`;
+  if (segments.includes("..")) return `.pi/work.json verify.testDir must not contain ".." (${dir})`;
+  if (segments.some((s) => s.startsWith(".")))
+    return `.pi/work.json verify.testDir must not sit inside a hidden directory (${dir})`;
+  return undefined;
+}
+
+/**
+ * Why this `verify.testGlob` is not usable, or undefined when it is.
+ *
+ * A BASENAME pattern with exactly one `*`: the boundary matches it against the
+ * final path segment, so a slash would mean the author spelled the directory
+ * twice (once in `testDir`, once here) and would silently match nothing.
+ */
+export function validateTestGlob(glob: string): string | undefined {
+  if (glob.trim() === "") return ".pi/work.json verify.testGlob must not be empty";
+  if (glob.includes("/") || glob.includes("\\"))
+    return `.pi/work.json verify.testGlob is a file-name pattern, not a path: no slashes (${glob})`;
+  const stars = glob.split("*").length - 1;
+  if (stars !== 1)
+    return `.pi/work.json verify.testGlob must contain exactly one "*", found ${stars} (${glob})`;
+  if (TEST_LOCATION_FORBIDDEN.test(glob))
+    return `.pi/work.json verify.testGlob must be a plain file-name pattern: ; & | \` $ < > " ' \\ ? and newline are not allowed (${glob})`;
+  return undefined;
+}
+
+/**
+ * The configured test location, or undefined when the project has not chosen
+ * one. Absent-by-default is today's behaviour.
+ *
+ * `loadWorkConfig` validates before it builds, so a half-configured pair cannot
+ * reach this through the loader; a hand-built config (a test, or a future
+ * caller) still gets no location rather than a guess about which half was meant.
+ */
+export function testLocationOf(verify: {
+  testDir?: string;
+  testGlob?: string;
+}): TestLocation | undefined {
+  const { testDir, testGlob } = verify;
+  if (testDir === undefined || testGlob === undefined) return undefined;
+  return { testDir, testGlob };
+}
+
+/**
+ * `pattern` with its single `*` turned into a regex, anchored and escaped.
+ * `test-*.ts` becomes `^test-[^/]*\.ts$` — a basename pattern, which is what
+ * the boundary matches a submitted file's last segment against.
+ */
+function globToRegex(pattern: string): RegExp {
+  const source = pattern
+    .split("*")
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`))
+    .join("[^/]*");
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * Why this worktree-relative test path is not inside the configured test
+ * location, or undefined when it is.
+ *
+ * Two questions, both answered on the NORMALISED path the boundary already
+ * computed: is the file DIRECTLY inside `testDir` (a nested subdirectory is
+ * outside it — the project's CI glob would not reach it), and does its basename
+ * match `testGlob`. Called after `pathProblem`, so the path is already known
+ * traversal-free and slash-clean.
+ */
+export function testLocationProblem(loc: TestLocation, rel: string): string | undefined {
+  const segments = rel.split("/");
+  const base = segments[segments.length - 1] ?? "";
+  const dir = segments.slice(0, -1).join("/");
+  if (dir !== loc.testDir)
+    return `test ${rel} is not directly inside the configured test directory ${loc.testDir}/ (.pi/work.json verify.testDir)`;
+  if (!globToRegex(loc.testGlob).test(base))
+    return `test ${rel} does not match the configured test name pattern ${loc.testGlob} (.pi/work.json verify.testGlob)`;
+  return undefined;
+}

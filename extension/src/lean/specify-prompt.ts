@@ -14,6 +14,7 @@
  */
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import type { TestLocation } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 
 export interface SpecifyPromptOpts {
@@ -21,6 +22,11 @@ export interface SpecifyPromptOpts {
   spec: PiSpec;
   /** The `verify.test` template, e.g. `bun run {file}`. Undefined = none. */
   testRunner?: string;
+  /**
+   * Where the project keeps its tests, when `.pi/work.json` says
+   * (`verify.testDir` + `verify.testGlob`). Undefined = the child chooses.
+   */
+  testLocation?: TestLocation;
   /** Absolute path of the worktree the child works in. */
   worktree: string;
 }
@@ -43,6 +49,39 @@ export function testCriteria(spec: PiSpec) {
  */
 export const RED_PROOF_CONTRACT =
   "**Every test file must print its own file basename when it fails**, e.g. `FAIL AC1-retry.test.ts: expected 3 retries, got 1`, and exit non-zero. The parent counts a file as a real red only when its failure output names that file; a failing file whose output never names it is dropped as unclear and its criterion is left uncovered.";
+
+/**
+ * The one place the test-location sentence is spelled, for BOTH adversary
+ * prompts — same reasoning as {@link RED_PROOF_CONTRACT}: a rewrite to one
+ * prompt must not quietly un-tell the other step's adversary where its files
+ * have to go.
+ *
+ * It is a builder rather than a const because the folder comes from the
+ * project's config. Everything the boundary later refuses is stated here first
+ * (wrong folder, nested folder, wrong name), so a child that obeyed the prompt
+ * never meets a drop it was not warned about.
+ */
+export function testLocationInstruction(loc: TestLocation): string {
+  return `**Write every test file directly inside \`${loc.testDir}/\`, named to match \`${loc.testGlob}\` (for example \`${loc.testDir}/${exampleName(loc)}\`), importing the project's code with paths relative to that folder.** The parent refuses a submitted test anywhere else — a different directory, a subdirectory of it, or a file name that does not match the pattern — and a refused test leaves its criterion uncovered.`;
+}
+
+/**
+ * A sample file name for the prompt: the glob with its `*` filled in. Derived
+ * from the pattern rather than hard-coded, so the example the child copies is
+ * always a name the boundary would actually accept.
+ */
+function exampleName(loc: TestLocation): string {
+  return loc.testGlob.replace("*", "AC1-example");
+}
+
+/** The naming line, with the configured folder in the example when there is one. */
+export function namingLine(testLocation?: TestLocation): string {
+  const example =
+    testLocation === undefined
+      ? "`tests/AC1-<slug>.test.ts`"
+      : `\`${testLocation.testDir}/${exampleName(testLocation)}\``;
+  return `Name each file so its path contains the criterion id it covers (e.g. ${example} for AC1) — the parent matches files to criteria by that id.`;
+}
 
 function criteriaBlock(spec: PiSpec): string {
   return spec.criteria
@@ -94,9 +133,10 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         tests.length === 0
           ? ""
           : "Each file FAILS on the current code **for the behaviour the criterion states** — exercise the real entry point and assert the real expected result. A file that always fails (assert false, an import of a module that does not exist, a syntax error, a skipped or TODO test) is worthless here and will be thrown out: the parent runs every file it is given against the base commit and keeps only those that fail for a real reason.",
-        tests.length === 0
+        tests.length === 0 ? "" : namingLine(opts.testLocation),
+        tests.length === 0 || opts.testLocation === undefined
           ? ""
-          : "Name each file so its path contains the criterion id it covers (e.g. `tests/AC1-<slug>.test.ts` for AC1) — the parent matches files to criteria by that id.",
+          : testLocationInstruction(opts.testLocation),
         "",
         "**Do not edit, create or delete any non-test file.** No source changes, no config, no fixtures outside your test files, no package-manifest edits. The parent reverts anything you touch that you did not submit as a test.",
         "",

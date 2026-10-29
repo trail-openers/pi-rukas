@@ -35,6 +35,8 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
+import type { TestLocation } from "./config.ts";
+import { testLocationProblem } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
@@ -346,6 +348,15 @@ export function validateSubmitRows(
      * measured against. `specify` omits it: nothing is frozen when it runs.
      */
     frozenPaths?: ReadonlySet<string>;
+    /**
+     * Where the project keeps its tests (`verify.testDir` + `verify.testGlob`).
+     * When set, a submitted test that is not DIRECTLY inside that directory, or
+     * whose basename does not match the pattern, is REFUSED with a reason — the
+     * same treatment an invalid path gets. `specify` and `challenge` both pass
+     * it when the project configured one, so the prompt's instruction and the
+     * boundary that enforces it read the same config.
+     */
+    testLocation?: TestLocation;
   },
 ): { kept: SubmitTestsRow[]; dropped: DroppedRow[] } {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
@@ -391,6 +402,17 @@ export function validateSubmitRows(
       // BEFORE the existence check: a frozen path does exist in the worktree, so
       // the order is what makes the reason say "you may not replace a frozen
       // test" rather than the misleading "this file is not a regular file".
+      // Checked on the NORMALISED path, so a test written into a NESTED folder
+      // of the configured directory cannot read as inside it (`tests/sub/x.ts`
+      // is not `tests/`), and so `./tests/x.ts` cannot dodge the name pattern.
+      // After `pathProblem`, so the path is already traversal-free and slash-
+      // clean, which is what `testLocationProblem` compares segments against.
+      const misplaced =
+        opts.testLocation === undefined ? undefined : testLocationProblem(opts.testLocation, rel);
+      if (misplaced !== undefined) {
+        dropped.push({ criterionId: row.criterionId, path: rel, reason: misplaced });
+        continue;
+      }
       if (opts.frozenPaths?.has(rel) === true) {
         dropped.push({
           criterionId: row.criterionId,
