@@ -181,7 +181,13 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     throw new ChallengeInfraError(
       "no test runner configured (.pi/work.json verify.test) for a spec with test criteria",
     );
-  const runnerTemplate = config.verify.test as string;
+  // The guard that makes `runnerTemplate` a string is the refusal above; this
+  // one is the same fact stated where it is used, so no cast can carry an
+  // `undefined` into the runner if the refusal above ever moves. A round whose
+  // files nobody executed could only ever report `none`, which is not a verdict
+  // about the code — it is a missing setting wearing one.
+  if (config.verify.test === undefined) throw new ChallengeInfraError("no test runner configured");
+  const runnerTemplate: string = config.verify.test;
 
   // 3. The adversary.
   const toolUses = await dispatchAdversary(deps.dispatch, {
@@ -204,6 +210,10 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       branch,
       headBefore,
       runnerTemplate,
+      // The round's claim is ONE red edge case, not a red for every criterion:
+      // a finding for AC1 is worth freezing even when AC2 has none. `specify`
+      // passes `"all-criteria"` and keeps its refusal; this step must not.
+      coverage: "any-red",
       wanted: wanted.map((c) => c.id),
       extract: extractSubmitTests,
       validate: (rows) =>
@@ -213,6 +223,8 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
           fileProblem: (rel) => fileProblem(wt, rel),
           // The refusal that keeps the adversary out of the contract: a path the
           // run already froze is not its to replace, whatever the prompt said.
+          // Checked on the NORMALISED path, so `./tests//AC1-retry.test.sh`
+          // cannot slip past as a name the set does not contain.
           frozenPaths: new Set(Object.keys(frozen)),
         }),
       // Provisioning is `challenge`'s own call, and the `prepare` the pipeline
@@ -239,6 +251,15 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       tests: pipeline.tests,
       reason: pipeline.reason,
     };
+  // Every pipeline kind is named here, deliberately: `uncovered` is unreachable
+  // under `"any-red"` (that rule never returns it), and a `switch` that fell
+  // through to `none` would let a future verdict kind the pipeline can return
+  // be reported as "the adversary found nothing". Each kind gets its own line
+  // so adding one is a type error here rather than a silent certification.
+  if (pipeline.kind === "uncovered")
+    throw new ChallengeInfraError(
+      `the challenge pipeline reported an uncovered criterion, which its coverage rule cannot produce: ${pipeline.reason}`,
+    );
   // Nothing was proved red against the head — either no file survived the
   // boundary, or every one of them the builder already handles. Both say the
   // same thing to the machine: the round found no gap, so the run goes to verify
@@ -247,6 +268,8 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   // from a round that was never run.
   return { kind: "none", reason: pipeline.reason };
 }
+
+export { ChallengeInfraError } from "./challenge-dispatch.ts";
 
 /** The infra errors the step's throws are instances of, re-exported for its tests. */
 export { SpecifyInfraError };

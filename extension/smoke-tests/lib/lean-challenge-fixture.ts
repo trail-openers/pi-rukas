@@ -87,11 +87,52 @@ export interface ChallengeBuilt extends Built {
 }
 
 /**
+ * A spec with TWO `verify: "test"` criteria.
+ *
+ * `SPEC_BODY` has one test criterion and one manual one, which is enough to
+ * drive every case except the coverage rule: with a single criterion, "all
+ * criteria covered" and "at least one red" are the same question. This body is
+ * what makes the two rules separate — a run that is red for AC1 and green for
+ * AC2 is a refusal under `specify`'s `"all-criteria"` and a freeze under
+ * `challenge`'s `"any-red"`, and the case below is what pins that.
+ */
+export const TWO_AC_BODY = `\`\`\`pi-spec v1
+${JSON.stringify(
+  {
+    problem: "The retry helper gives up on the first transient failure.",
+    size: "S",
+    criteria: [
+      { id: "AC1", text: "retries a transient failure twice before failing", verify: "test" },
+      { id: "AC2", text: "gives up on a non-transient error without retrying", verify: "test" },
+    ],
+    scope: { paths: ["src/retry.ts"], out: ["docs/"] },
+  },
+  null,
+  2,
+)}
+\`\`\``;
+
+/**
  * A repo at base + frozen-test commit + build commit, with the step log a run
  * carries when the machine routes it into `challenge` after its first build.
+ *
+ * `extraFrozen` is how a case extends the contract with a file that is not the
+ * fixture's own `tests/AC1-retry.test.sh` — the shape the "adversary may not
+ * replace a frozen test" rule needs, since that rule is about a path the run
+ * already froze and hashed. The file is written and committed INTO the build
+ * commit, and its sha256 is unioned into the frozen map the step log records,
+ * so `assertFrozenIntact` reads a real blob and agrees. The caller is
+ * responsible for making the file executable if the runner must run it.
  */
-export function challengeFixture(issue: number): ChallengeBuilt {
-  const built = buildFixture(issue) as ChallengeBuilt;
+export function challengeFixture(
+  issue: number,
+  opts?: { extraFrozen?: Record<string, string>; issueDir?: number },
+): ChallengeBuilt {
+  // A case that wants two runs against ONE repo — one whose child touches a
+  // frozen path, one that leaves it alone — gives the second its own issue
+  // number so it gets its own worktree. `issue` stays the number the step and
+  // its commit subject carry; only the worktree directory is shared.
+  const built = buildFixture(opts?.issueDir ?? issue) as ChallengeBuilt;
   const wt = built.worktree;
   // The builder's work, committed the way the build step commits it: a real
   // commit ON the run's branch, above the frozen test commit. Written in the
@@ -102,6 +143,15 @@ export function challengeFixture(issue: number): ChallengeBuilt {
   // a file that still fails: the builder finished the obvious case, and the
   // round's question is whether it finished the one nobody thought of.
   writeFileSync(path.join(wt, "src/retry.ts"), "export const retry = () => retryTwice();\n");
+  const extra: Record<string, string> = {};
+  for (const [rel, text] of Object.entries(opts?.extraFrozen ?? {})) {
+    // Executable, because a frozen test the runner has to run is executable by
+    // definition — and a case that froze a non-executable file would have the
+    // step throw for the wrong reason (see `assertRan`).
+    writeFileSync(path.join(wt, rel), text, { mode: 0o755 });
+    extra[rel] = sha(text);
+  }
+  const frozen = { ...built.frozen, ...extra };
   git(wt, "add", "-A");
   git(wt, "commit", "-q", "-m", `build: attempt 1 for #${issue}`);
   const buildSha = git(wt, "rev-parse", "HEAD");
@@ -122,7 +172,7 @@ export function challengeFixture(issue: number): ChallengeBuilt {
       startedAt: 2,
       outcome: {
         kind: "ok",
-        frozen: built.frozen,
+        frozen,
         tests: { AC1: ["tests/AC1-retry.test.sh"] },
       },
     },
@@ -138,7 +188,7 @@ export function challengeFixture(issue: number): ChallengeBuilt {
   const ctx: HandlerCtx = {
     repoRoot: built.repoRoot,
     issue,
-    run: { ...built.ctx.run, steps, counters },
+    run: { ...built.ctx.run, issue, steps, counters },
     steps,
     stepKey: `${issue}:challenge:0`,
     now: () => 7,
@@ -189,6 +239,24 @@ export interface RunOpts {
   config?: WorkConfig;
   /** A config with no runner template configured. */
   noRunner?: boolean;
+  /** A config whose runner names an executable that cannot be started. */
+  runner?: string;
+  /** The issue body the step re-reads; defaults to `SPEC_BODY` (one test criterion). */
+  specBody?: string;
+  /**
+   * Extra paths to add to the frozen contract this case is shown, so the step
+   * checks them and refuses a submission that names one. The file is committed
+   * into the fixture's build commit and its sha256 goes in the step log, so the
+   * frozen-intact precondition reads a real blob and agrees.
+   */
+  extraFrozen?: Record<string, string>;
+  /**
+   * Run this case in ANOTHER issue's worktree, keeping its own step log keys
+   * and commit subject. Two runs against one repo fight over the same tree, so
+   * a pair of cases that differ only in what the child did splits on the tree
+   * and not on the issue the step reports.
+   */
+  worktreeIssue?: number;
   /** Per-run runner limits — a short timeout proves a hang is infra. */
   testLimits?: { timeoutMs?: number };
   /** A child whose dispatch did not succeed (the infra case). */
@@ -201,7 +269,12 @@ export interface RunOpts {
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
 export async function runChallenge(opts: RunOpts): Promise<RunResult> {
-  const built = opts.built ?? challengeFixture(opts.issue);
+  const built =
+    opts.built ??
+    challengeFixture(opts.issue, {
+      ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
+      ...(opts.worktreeIssue === undefined ? {} : { worktreeIssue: opts.worktreeIssue }),
+    });
   let ctx = built.ctx;
   if (opts.extraSteps !== undefined) {
     ctx = {
@@ -238,9 +311,10 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
   const deps: ChallengeDeps = {
     exec,
     dispatch,
-    fetchIssueBody: async () => SPEC_BODY,
+    fetchIssueBody: async () => opts.specBody ?? SPEC_BODY,
     loadConfig: async () => {
       if (opts.noRunner === true) return { ...configWith(), verify: { fast: "true" } };
+      if (opts.runner !== undefined) return configWithRunner(opts.runner);
       return opts.config ?? configWith();
     },
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
@@ -272,8 +346,16 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
 }
 
 /** A config carrying the project's test runner template. */
-export function configWith(): WorkConfig {
-  return { ...defaultConfig(), verify: { fast: "true", test: RUNNER } };
+export function configWith(runner: string = RUNNER): WorkConfig {
+  return { ...defaultConfig(), verify: { fast: "true", test: runner } };
+}
+
+/**
+ * The same config under another runner. Named apart from `configWith` so a
+ * case that swaps ONLY the runner does not also have to restate the fast tier.
+ */
+export function configWithRunner(runner: string): WorkConfig {
+  return configWith(runner);
 }
 
 /** `git status --porcelain -uall` for a worktree, "" when clean. */

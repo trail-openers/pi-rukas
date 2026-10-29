@@ -334,6 +334,11 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
       branch,
       headBefore: base,
       runnerTemplate,
+      // `specify`'s claim is that EVERY test criterion is falsifiable, so one
+      // uncovered criterion refuses the run. The rule is passed explicitly now
+      // that `challenge` shares this pipeline under `"any-red"` — a partial
+      // freeze is what that step wants, and would be wrong here.
+      coverage: "all-criteria",
       wanted: wanted.map((c) => c.id),
       extract: extractSubmitTests,
       validate: (rows) =>
@@ -355,10 +360,13 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   if (pipeline.kind === "uncovered")
     return { kind: "no-red-test", failedRules: pipeline.uncovered, reason: pipeline.reason };
   // No kept candidate at all. Every criterion is uncovered, which is the same
-  // refusal this step returned before the split for the same cause.
+  // refusal this step returned before the split for the same cause — and, as
+  // there, the reason LEADS with the rules rather than opening on the drop
+  // notes, so the two fields a caller might render say the same thing first.
+  const rules = wanted.map((c) => `criterion ${c.id} has no red test`);
   return {
     kind: "no-red-test",
-    failedRules: wanted.map((c) => `criterion ${c.id} has no red test`),
-    reason: pipeline.reason,
+    failedRules: rules,
+    reason: [rules.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
   };
 }

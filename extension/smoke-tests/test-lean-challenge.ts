@@ -10,40 +10,38 @@
  * fixture's.
  *
  *   (a) a red edge case          -> new-tests, committed on headBefore, frozen map is the UNION
- *   (b) a test that passes on HEAD -> none, nothing committed, the child's file gone
- *   (c) a submission naming a frozen path -> refused; only the new file is frozen
- *   (d) an adversary whose dispatch died -> THROW, never `none`
- *   (e) a runner that cannot start -> THROW
  *   (f) the child commits on its own -> normalised to ONE driver commit
  *   (g) the frozen map at HEAD matches after the challenge commit
  *   (h) a frozen record that does not match at HEAD -> THROW before the dispatch
  *   (i) the prompt names the frozen tests, asks for new ones, ties them to criteria
  *   (j) no runner configured -> THROW (a round that could only say `none` judged nothing)
  *   (k) the worktree is not ours -> THROW before the dispatch
+ *
+ * The VERDICT rules — when this step may say `new-tests`, when it must say
+ * `none`, and the shapes it must answer with a THROW — are in
+ * `test-lean-challenge-coverage.ts`, which shares this fixture. Every throw
+ * case in both files asserts the error CLASS, not only its message: `none` and
+ * a throw are the two answers this step gives and the machine routes them to
+ * opposite places, so a message match alone would pass if the throw were the
+ * wrong kind — or if a future refactor returned `none` with a scary string.
  */
 
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { phase1Handlers } from "../src/lean/command.ts";
-import type { Step } from "../src/lean/state.ts";
 import {
   ROOTS,
   RUNNER,
-  SPEC_BODY,
   SpecifyInfraError,
   blobSha,
   challengeFixture,
-  childCommitOf,
   commitPaths,
   git,
-  greenEdge,
   put,
-  putOutside,
   redEdge,
   runChallenge,
   sha,
   status,
-  subject,
   subjectsAbove,
   submit,
 } from "./lib/lean-challenge-fixture.ts";

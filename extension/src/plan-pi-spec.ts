@@ -272,16 +272,16 @@ function sectionBullets(body: string, heading: string): string[] {
     .filter((l) => l.startsWith("- ") || l.startsWith("* "))
     .map((l) => l.replace(/^[-*]\s+/, "").trim())
     .filter(
-      (l) =>
-        l !== "" && !l.startsWith("_") && !l.startsWith(AC_FALLBACK_BULLET) && !l.startsWith("..."),
+      (l) => l !== "" && !l.startsWith("_") && !l.startsWith(AC_FALLBACK) && !l.startsWith("..."),
     );
 }
 
-/// The fallback bullet draftSpec renders when no criterion exists; not a criterion:
-/// `AC_FALLBACK` itself — the ONE string `plan-draft.ts` renders for that case and the
-/// one `validateDraft` refuses a plan over. A prefix of our own here would be a third
-/// copy no one keeps in step, and the mapper would then file the placeholder as AC1.
-const AC_FALLBACK_BULLET = AC_FALLBACK;
+// Why `sectionBullets` above drops the `AC_FALLBACK` bullet instead of filing it
+// as a criterion: it is the ONE string `plan-draft.ts` renders when no criterion
+// exists and the one `validateDraft` refuses a plan over, so `plan-validate.ts`
+// is the only spelling that cannot drift. This used to be an
+// `AC_FALLBACK_BULLET = AC_FALLBACK` alias — a third name for one string nobody
+// keeps in step, and the day it drifts the mapper files the placeholder as AC1.
 
 /** S → at most 3 criteria, M → at most 8, L → more. */
 function sizeOf(count: number): PiSpec["size"] {
