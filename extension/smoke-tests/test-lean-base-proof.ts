@@ -23,6 +23,12 @@
  *       git's `Not a valid object name`, 1 with an empty stderr — are refusals,
  *       not faults. The boundary is drawn once, here.
  *
+ * The round-2 half of the suite — a git that never ran, a second opinion that
+ * contradicts the first, the per-call trace baseline, and the added wordings —
+ * is `test-lean-base-proof-faults.ts`, split at AGENTS.md §12's line cap. Both
+ * files exercise the same `probeCommitObject` catch and neither repeats the
+ * other's cases; the inventory below is the half that lives here.
+ *
  * Everything goes through `lib/lean-base-proof-fixtures.ts`'s stand-in git, and
  * every case asserts on the argv that was asked for: a proof that skipped the
  * peel, ran it before the resolution, or left it unbounded is a failure these
@@ -30,7 +36,6 @@
  */
 
 import { proveBaseSha } from "../src/lean/base-proof.ts";
-import { resolveHeadTraceCount } from "../src/review-head-sha.ts";
 import {
   FAULT_STDLERR,
   GIT_TIMEOUT,
@@ -136,7 +141,8 @@ for (const [label, value] of [
 // ── (e) a git that could not answer is a fault, and a fault THROWS.
 //
 // The first queue entry is `{ stdout: "" }`, not a rejection: `resolveHeadSha`
-// counts every git error it swallows (case (i) pins that counter), and a case
+// counts every git error it swallows (case (n) of
+// `test-lean-base-proof-faults.ts` pins that counter), and a case
 // whose own resolution rejected would arm it for every silent-refusal case
 // later in the file. An empty stdout reaches the second opinion the same way
 // with the counter left alone — which is what (f) needs to stay meaningful.
@@ -187,10 +193,11 @@ for (const [label, fault] of [
 // ── (f) the wordings that DO mean "no such object" are refusals, not faults.
 //
 // Each case runs BEFORE any resolution failure has been counted in this
-// process — case (i) is what arms the counter, and it runs last — because an
+// process — the counter is armed only by case (n) of
+// `test-lean-base-proof-faults.ts`, in its own process — because an
 // empty stderr is a refusal only while `resolveHeadSha` stayed silent. That is
 // the documented exception, so a suite that asserted the silent refusals after
-// (i) would be asserting the fault path and calling it a refusal.
+// (n) would be asserting the fault path and calling it a refusal.
 for (const [label, reply] of [
   [
     "exit 1 with git's missing-object wording",
@@ -227,9 +234,8 @@ for (const [label, reply] of [
 // with any stderr" as "not a commit", which is what made an unreadable object
 // store — the case (h) drives with real git — read as a defect in the issue.
 // (g) is a fault for every stderr git did not recognise as "absent", so it does
-// not care whether the counter is armed; it is placed before (i) only so the
-// order of the file reads as refusal → fault → the counter that sharpens the
-// refusal rule.
+// not care whether the counter is armed; it sits after the refusals only so the
+// order of the file reads refusal → fault.
 for (const [label, stderr] of [
   ["an unopenable loose object", FAULT_STDLERR[0]],
   ["an unreadable sha1 file", FAULT_STDLERR[1]],
@@ -322,35 +328,5 @@ for (const [label, stderr] of [
   }
 }
 
-// ── (i) the empty-stderr exception is documented, and pinned: with a traced
-// `resolveHeadSha` failure in the process, silence at a refusing exit is NOT a
-// refusal. The counter is the resolver's own (ungated, unlike the trace write),
-// so the case arms it by making the injected executor reject the resolution the
-// way a real git would.
-{
-  const before = resolveHeadTraceCount();
-  const { exec } = fakeGit([
-    { throw: { code: 1, stderr: "fatal: bad revision" } },
-    { throw: { code: 1, stderr: "" } },
-  ]);
-  let thrown: unknown;
-  let out: Awaited<ReturnType<typeof proveBaseSha>> | undefined;
-  try {
-    out = await proveBaseSha(REPO, OID, exec);
-  } catch (err) {
-    thrown = err;
-  }
-  assert(
-    resolveHeadTraceCount() > before,
-    `a failing resolution is counted (${before} → ${resolveHeadTraceCount()})`,
-  );
-  assert(
-    thrown instanceof Error &&
-      /git refused with no reason while a resolution failure was traced/.test(
-        (thrown as Error)?.message ?? "",
-      ),
-    `an empty stderr after a traced failure is a fault, not a refusal (got ${JSON.stringify(out)} / ${JSON.stringify((thrown as Error)?.message)})`,
-  );
-}
 
 process.exit(failures());

@@ -99,6 +99,15 @@ const { assert, failures } = makeAssert();
       typeof seed.why === "string" && seed.why.length > 0,
       `the failure carries why the probe failed (got ${JSON.stringify(seed.why)})`,
     );
+    // …and it is NOT marked as infrastructure. A clone with no mainline is a
+    // fact about the repository the issue lives in, and `ready` has to be able
+    // to post it; only a git that could not be asked at all marks its seed
+    // `infra` (the handback half is `test-lean-seed-infra.ts`, where a seed
+    // whose proof throws ends the run handed-back rather than not-ready).
+    assert(
+      seed.infra !== true,
+      `an absent mainline is a refusal the issue is told about, not an infra fault (got ${JSON.stringify(seed.infra)})`,
+    );
   } finally {
     repo.dispose();
   }

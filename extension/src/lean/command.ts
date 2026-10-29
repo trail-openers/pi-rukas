@@ -78,69 +78,15 @@ export interface ReadyFacts {
   failedRules: string[];
 }
 
-/** What the run is seeded with: the version stamp and the pinned base. */
-export interface LeanSeed {
-  version: string;
-  baseSha: string;
-  /** Why the probe failed — carried to `ready`'s rule so the comment says what git did. */
-  why?: string;
-}
-
-/**
- * What a brand-new run starts knowing: its version and the mainline sha.
- *
- * The base has to be on the record from the first write. `specify`, `build`,
- * `challenge` and `verify` all read `ctx.run.baseSha`, and before this existed
- * nothing ever wrote it — `ready`'s handler deliberately returns only its
- * verdict — so every fresh run carried `""` and `specify` refused with
- * "the run carries no base sha" before a model was billed.
- *
- * It is probed ONCE here and pinned, because the base is a run-start fact: a
- * resume keeps the recorded sha rather than re-resolving a mainline that may
- * have moved. Never throws: a repo whose mainline cannot be resolved seeds
- * `""`, and `ready` refuses the run with the reason (`why`) it deserves. The
- * value is proven with the same `proveBaseSha` `ready` applies — shape, peel
- * and equality — so the record never carries a value that is shaped like an oid
- * but is not the commit the run was seeded with; an unprovable value seeds `""`
- * with its own `why`, the same channel a probe that found nothing uses.
- */
-export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
-  const version = leanVersion();
-  try {
-    const probed = await mainlineSha(repoRoot);
-    // A sha that is not a full oid, or one the clone holds no commit for, is
-    // refused HERE rather than passed on to be refused by `ready`: the seed is
-    // what gets written to the record, so an abbreviated, mixed-case or absent
-    // value would become the run's base and every later read would be anchored
-    // to a string no equality check can settle. `proveBaseSha` is the same
-    // proof `ready` applies, so the seeder cannot write a base `ready` would go
-    // on to refuse. The cause says so plainly, and the catch below keeps its
-    // own; a git fault lands in that catch, which is the seed's contract — it
-    // runs before the run exists, so it must not take the command down.
-    if (probed.sha !== undefined) {
-      const proof = await proveBaseSha(repoRoot, probed.sha);
-      if (proof.ok) return { version, baseSha: probed.sha };
-      return {
-        version,
-        baseSha: "",
-        why: `origin mainline ${oneLine(probed.sha, 80)}: ${oneLine(proof.rule, 120)}`,
-      };
-    }
-    return {
-      version,
-      baseSha: "",
-      why:
-        probed.why ??
-        `mainline resolved to ${JSON.stringify(probed.sha ?? "")}, not a full commit sha`,
-    };
-  } catch (err) {
-    return {
-      version,
-      baseSha: "",
-      why: oneLine(err instanceof Error ? err.message : String(err), 160),
-    };
-  }
-}
+/** What the run is seeded with, and what the seed learned about the base. */
+export type { LeanSeed } from "./seed.ts";
+// Re-exported rather than imported-and-returned: `leanSeed` is the run-start
+// seam and the suites that pin it (`test-lean-seed-base.ts`,
+// `test-lean-base-infra.ts`, `test-lean-seed-infra.ts`) reach it through the
+// command module, the way the command itself uses it — the definition lives in
+// `lean/seed.ts`, which this line keeps reachable from either name.
+export { leanSeed } from "./seed.ts";
+import { type LeanSeed, leanSeed } from "./seed.ts";
 
 /**
  * The `ready` verdict: fetch, parse, judge readiness, load config at the base.
@@ -169,7 +115,7 @@ export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
-  base: Pick<LeanSeed, "baseSha" | "why">,
+  base: Pick<LeanSeed, "baseSha" | "why" | "infra">,
 ): Promise<{ kind: "ok" | "fail"; facts: ReadyFacts }> {
   let body: string;
   try {
@@ -204,6 +150,16 @@ export async function readyOutcome(
       } catch (err) {
         why = oneLine(err instanceof Error ? err.message : String(err), 160);
       }
+    }
+    // A seed that FAILED rather than found nothing hands back, it does not
+    // refuse — see `LeanSeed.infra`. The run's base could not be established
+    // because git could not be asked, which is a fact about this harness and
+    // not about the issue; the not-ready comment is the wrong surface for it
+    // and the handback (exit 10, no comment) is where an operator looks. This
+    // is deliberately symmetric with the non-empty branch below, which lets
+    // `proveBaseSha` throw for exactly the same class of fault.
+    if (base.infra === true) {
+      throw new Error(`could not seed the run's base: ${why ?? "no reason recorded"}`);
     }
     return {
       kind: "fail",
@@ -313,18 +269,23 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * an interactive one that follows it.
  *
  * `seedWhy` is the seed's reason for having no base, used only to word
- * `ready`'s refusal — see `leanSeed`.
+ * `ready`'s refusal — see `leanSeed`. `seedInfra` says that reason came from a
+ * git INFRASTRUCTURE fault rather than an absent mainline, and with it `ready`
+ * hands the run back instead of posting the not-ready comment — see
+ * `LeanSeed.infra`. Both are read from the seed the run was given, so a resumed
+ * run (which never ran this process's seed) keeps the refusal path.
  */
 export function phase1Handlers(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean; seedWhy?: string } = {},
+  opts: { headless?: boolean; seedWhy?: string; seedInfra?: boolean } = {},
 ): LeanHandlers {
   const headless = opts.headless === true;
   // Why the seed could not resolve a base, carried in a closure so the `ready`
   // rule can name it. A resumed run never ran this process's seed, so it has
   // no cause to report and `readyOutcome` probes for one on the failure path.
   const seedWhy = opts.seedWhy;
+  const seedInfra = opts.seedInfra === true;
   const notBuilt = (state: string) => async (): Promise<Outcome> => {
     throw new Error(`work-lean stage ${state} is not built yet`);
   };
@@ -334,6 +295,7 @@ export function phase1Handlers(
     const { kind, facts } = await readyOutcome(repoRoot, issue, {
       baseSha: ctx.run.baseSha,
       ...(seedWhy ? { why: seedWhy } : {}),
+      ...(seedInfra ? { infra: true } : {}),
     });
     // Only the verdict and the rules go on the record. `spec`, `config` and
     // `baseSha` stay out of it — the step log is the durable record of what a
@@ -410,7 +372,9 @@ export async function runWorkLean(
  * The handler set one run is driven with: the phase-1 handlers plus the seed
  * that run was given. Extracted from `runWorkLean` so the seed → handler thread
  * is testable on its own: `seedWhy` is what lets `ready` quote the git cause
- * for a missing base, and that line is invisible from the outside because
+ * for a missing base, and `seedInfra` is what makes `ready` hand the run back
+ * instead of posting a not-ready comment for a seed that faulted (see
+ * `LeanSeed.infra`). Both lines are invisible from the outside because
  * `runWorkLean` always re-seeds through `leanSeed`.
  */
 export function handlersFor(
@@ -419,7 +383,11 @@ export function handlersFor(
   opts: { headless?: boolean },
   seed: LeanSeed,
 ): LeanHandlers {
-  return phase1Handlers(repoRoot, issue, { ...opts, seedWhy: seed.why });
+  return phase1Handlers(repoRoot, issue, {
+    ...opts,
+    seedWhy: seed.why,
+    seedInfra: seed.infra,
+  });
 }
 
 /**

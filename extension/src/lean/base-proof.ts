@@ -46,22 +46,6 @@ export function unresolvedMainlineRule(why: string | undefined): string {
 }
 
 /**
- * Has a `resolveHeadSha` git failure been swallowed in this process?
- *
- * `resolveHeadSha` answers `undefined` for a non-commit AND for a git that could
- * not answer, tracing the message as it swallows the error; a probe that gets no
- * reason at all can tell those apart only through that trace. The trace WRITE is
- * gated on `PI_ENSEMBLE_DEBUG`, so the probe cannot read stderr for it — the
- * resolver counts its failures ungated and this asks the count. The counter is
- * never reset: erasing another caller's evidence to make the question fresher is
- * the wrong trade, and the conservative direction here is to blame the object
- * store, which refuses less.
- */
-export function resolveHeadTracedFailure(): boolean {
-  return resolveHeadTraceCount() > 0;
-}
-
-/**
  * The suffix for a value that DOES resolve — to something else. The commonest
  * way a hand-edited record is wrong, and the one an operator can act on
  * (`git cat-file -t <that>`) without guessing what the field meant.
@@ -101,6 +85,10 @@ export function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
  * Throws on a git INFRASTRUCTURE fault and only there — see `probeCommitObject`.
  * A caller that wants a refusal rather than a handback must not get one for a
  * repository whose git could not be asked.
+ *
+ * The probe's "was a resolution failure traced" question is answered from a
+ * baseline taken HERE, immediately before the resolution below, so it is a
+ * per-call delta rather than a reading of a process-global counter.
  */
 export async function proveBaseSha(
   repoRoot: string,
@@ -108,11 +96,21 @@ export async function proveBaseSha(
   exec: VerifyExecFn = execp,
 ): Promise<{ ok: true } | { ok: false; rule: string }> {
   if (!isFullCommitSha(baseSha)) return { ok: false, rule: notAnOidRule(baseSha) };
+  // Read the counter immediately before the read it is about to explain, and
+  // hand that baseline to the probe. The resolver's counter is process-global
+  // and never reset, so an ABSOLUTE reading would let any unrelated earlier git
+  // failure anywhere in the process — another run's config read, a ledger write
+  // three steps ago — turn this call's silent refusal into a fault. Per-call is
+  // the honest question: "did THIS resolution fail", which is the only failure
+  // the probe can be evidence about. The counter still never resets (#1910 —
+  // erasing another caller's evidence to freshen the question is the wrong
+  // trade); it is the reading that is scoped, not the counter.
+  const tracedBefore = resolveHeadTraceCount();
   const resolved = await resolveHeadSha(repoRoot, baseSha, exec);
   if (resolved === undefined) {
     // A miss is not yet an answer: `resolveHeadSha` returns `undefined` for a
     // non-commit AND for a git that could not answer. Ask the narrow question.
-    const probe = await probeCommitObject(repoRoot, baseSha, exec);
+    const probe = await probeCommitObject(repoRoot, baseSha, exec, tracedBefore);
     if (probe !== true) {
       throw new Error(`could not verify base sha ${oneLine(baseSha, 80)}: ${oneLine(probe, 160)}`);
     }
@@ -151,6 +149,7 @@ async function probeCommitObject(
   repoRoot: string,
   baseSha: string,
   exec: VerifyExecFn,
+  tracedBefore: number,
 ): Promise<true | string> {
   try {
     const out = await exec("git", {
@@ -161,13 +160,25 @@ async function probeCommitObject(
       // opinion would reinstate the hang the first bound exists to prevent.
       timeout: LOCAL_GIT_TIMEOUT_MS,
     });
-    // exit 0 — the object exists, so the first probe's miss was the fault.
+    // exit 0 — the object exists, so the first probe's miss was the fault. git
+    // resolved `<sha>^{commit}` to a commit here and answered nothing on the
+    // earlier read; the run's base is real and the resolution is what broke, so
+    // this is reported as a fault and never as "not a commit".
     return `git answered the object but not the resolution (stderr ${oneLine(out?.stderr ?? "", 80)})`;
   } catch (err) {
-    const e = err as { code?: unknown; stderr?: unknown; killed?: unknown };
-    const stderr = typeof e.stderr === "string" ? e.stderr : "";
+    const e = execRejection(err);
+    const stderr = typeof e?.stderr === "string" ? e.stderr : "";
     const trimmed = stderr.trim();
-    const exit = e.code;
+    const exit = e?.code;
+    // A git that never RAN, or ran and was killed, is decided BEFORE the exit
+    // code is read at all. It is not a refusal in any spelling: a SIGKILL, a
+    // SIGTERM from a memory-pressure daemon or an ENOENT (no git on PATH, no
+    // directory to run in) carries no exit code, and an implementation that
+    // fell through to the "unrecognised stderr" arm would word a hung or absent
+    // binary as `git object store unreadable` — which sends an operator to
+    // repair an object store that is fine. Classified cause first, per shape.
+    const neverRan = killedGitFault(e, err);
+    if (neverRan !== undefined) return neverRan;
     // The exit code must be a real "git said no" — 1 or 128. A timeout or a
     // signal carries no exit code at all (`null`/`undefined`), which is never a
     // "not a commit".
@@ -193,18 +204,10 @@ async function probeCommitObject(
       // still answers.
       if (OBJECT_STORE_FAULT.test(trimmed))
         return `git object store unreadable (exit ${String(exit)}): ${oneLine(firstLine(trimmed), 120)}`;
-      // git's wordings for "this name has no object": `missing object …` (a
-      // broken ref), `Not a valid object name …` (a well-formed sha that is
-      // simply absent, which is exactly what a stale record carries), and
-      // cat-file's own `could not get object info` for the same class. Matched
-      // anywhere in the line because git prefixes its own `fatal:` to one and not
-      // the other, and a parser pinned to a prefix silently turns a refusal into
-      // a fault the moment the wording shifts.
-      const namesMissingObject =
-        /missing (object|bare object|tree)/i.test(trimmed) ||
-        /not a valid object name/i.test(trimmed) ||
-        /could not get object info/i.test(trimmed);
-      if (namesMissingObject) return true;
+      // git's wordings for "this name has no object" — see NAMES_MISSING_OBJECT
+      // for the set and why it is matched anywhere in the blob rather than at a
+      // prefix.
+      if (NAMES_MISSING_OBJECT.test(trimmed)) return true;
       // Any other non-empty stderr at a refusing exit — text that names neither
       // absence nor a fault line above — is still not a recognised refusal.
       return `git object store unreadable (exit ${String(exit)}): ${oneLine(firstLine(trimmed), 120)}`;
@@ -219,22 +222,28 @@ async function probeCommitObject(
       // down here as the brief required, is that silence stays a refusal while
       // `resolveHeadSha` stayed silent too. That resolver counts every git error
       // it swallows (`resolveHeadTraceCount`, ungated because the trace write is
-      // gated on `PI_ENSEMBLE_DEBUG`), so a non-zero count means a git read
-      // actually failed in this process and the object store is suspect. The
-      // counter is process-global and monotonic, so an unrelated earlier failure
-      // turns a later silent refusal into a fault — conservative, and the right
-      // direction for a check whose failure mode is "refuse less". Under an
-      // INJECTED executor (every fake-git case in the base-proof suite) nothing
-      // reaches the counter, so those cases keep answering "refusal", which is
-      // what they pin; the production shape — real git, real failing rev-parse —
-      // is the one the counter refuses, and `chmod 000` case in
-      // test-lean-base-proof.ts drives it.
-      if (resolveHeadTracedFailure())
+      // gated on `PI_ENSEMBLE_DEBUG`), so a count that MOVED past the baseline
+      // `proveBaseSha` took before its own read means this call's resolution
+      // actually failed and the object store is suspect. The baseline is what
+      // keeps the question per-call: the counter is process-global and monotonic,
+      // so an absolute reading would blame some unrelated git read that failed
+      // earlier in the process for this base's silence. Under an INJECTED
+      // executor (every fake-git case in the base-proof suite) nothing reaches
+      // the counter, so those cases keep answering "refusal", which is what they
+      // pin; the production shape — real git, real failing rev-parse — is the one
+      // the counter refuses, and the `chmod 000` case in test-lean-base-proof.ts
+      // drives it.
+      if (resolveHeadTraceCount() > tracedBefore)
         return `git refused with no reason while a resolution failure was traced (exit ${String(exit)})`;
       return true;
     }
     const cause = trimmed || (err instanceof Error ? err.message : String(err));
-    return `${cause} (exit ${String(exit)}, killed=${String(e.killed === true)})`;
+    // Only reachable with a numeric `code` that is neither 1 nor 128 — the arms
+    // above take every killed/signal/non-numeric shape and both refusing exits,
+    // so `e` is a rejection here by construction. `??` rather than a cast: the
+    // narrowing is the code's, and a future arm that returns early must not
+    // start blaming `undefined` for somebody else's exit.
+    return `${cause} (exit ${String(exit)}, killed=${String(e?.killed === true)})`;
   }
 }
 
@@ -247,12 +256,104 @@ async function probeCommitObject(
  * wording (both measured against a `chmod 000` fanout dir); `Permission denied`
  * and `Too many levels of symbolic links` cover the OS-level causes that reach
  * git verbatim on any object read; `could not open` / `unable to read pack` /
- * `bad object` / `corrupt` cover the pack and index variants of the same fault.
- * Kept deliberately narrow: none of these is a wording git uses for an ABSENT
- * object, which is the answer that must stay a refusal.
+ * `bad object` / `corrupt` cover the pack and index variants of the same fault;
+ * `unable to unpack` and `inflate` are the zlib side of a damaged object (git
+ * prints `error: unable to unpack <sha>`, `inflate() failed`, `zlib: inflate
+ * return = …`) — a pack whose objects will not decompress cannot be read any
+ * more than one it cannot open. Kept deliberately narrow: none of these is a
+ * wording git uses for an ABSENT object, which is the answer that must stay a
+ * refusal.
  */
 const OBJECT_STORE_FAULT =
-  /unable to open|unable to read|could not open|permission denied|too many levels of symbolic links|not a git repository|unable to fork|corrupt|bad object|bad pack/i;
+  /unable to open|unable to read|could not open|permission denied|too many levels of symbolic links|not a git repository|unable to fork|corrupt|bad object|bad pack|unable to unpack|inflate/i;
+
+/**
+ * The stderr wordings that say "this name has no object", git's own text.
+ *
+ * A set rather than inline tests because the same three questions are asked of
+ * a blob's text in one place, and a wording added to one arm and not the other
+ * is how a refusal becomes a fault silently. Matched anywhere in the line
+ * because git prefixes its own `fatal:` to one wording and not the other, and a
+ * parser pinned to a prefix turns a refusal into a fault the moment the wording
+ * shifts.
+ *
+ * `missing object …` (a broken ref), `Not a valid object name …` (a well-formed
+ * sha that is simply absent — what a stale record carries) and cat-file's
+ * `could not get object info` are the originals. `ambiguous argument` and
+ * `unknown revision` are git's rev-parse wordings for a name it cannot turn into
+ * an object; they are added here because rev-parse can print them while cat-file
+ * has already agreed the object is simply absent. The fault arm above still wins
+ * — an unreadable store prints its own lines alongside these — so a broken
+ * repository is never read as an absent commit.
+ */
+const NAMES_MISSING_OBJECT =
+  /missing (object|bare object|tree)|not a valid object name|could not get object info|ambiguous argument|unknown revision/i;
+
+/**
+ * The shape `execp` rejects with, read without a cast.
+ *
+ * `execp` attaches `code`/`signal`/`killed`/`stdout`/`stderr` to the Error it
+ * rejects, but nothing in the type system says so, and an `as` cast is a
+ * prettier lie than a check: it would read `e.code` off a thrown string, or
+ * treat an object whose `code` is a string as a git exit. A value that does not
+ * look like an exec rejection at all is reported with the bare `code?: unknown`
+ * shape — which the caller's arms already treat as "no exit code", i.e. a
+ * fault — so an unexpected throw never reaches the refusal arms.
+ */
+function execRejection(
+  err: unknown,
+): { code?: unknown; stderr?: unknown; killed?: unknown; signal?: unknown } | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const o = err as Record<string, unknown>;
+  // A rejection is recognised by the RESULT SHAPE, never by the shape of its
+  // `code`: a plain `TypeError` carries a `code` that is a STRING (`ERR_…`), and
+  // reading the code itself as the marker would classify our own bugs as git
+  // rejections and word them as a store fault. No result field, no rejection.
+  const shaped = "code" in o || "stderr" in o || "killed" in o || "signal" in o || "stdout" in o;
+  if (!shaped) return undefined;
+  return { code: o.code, stderr: o.stderr, killed: o.killed, signal: o.signal };
+}
+
+/** The rejection's own words, for a cause string git's stderr cannot supply. */
+function rejectionMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  const e = execRejection(err);
+  if (typeof e?.stderr === "string" && e.stderr.trim() !== "") return firstLine(e.stderr);
+  return String(err);
+}
+
+/**
+ * Did git fail to run, rather than run and refuse?
+ *
+ * Decided from the rejection's shape and not its exit code, because none of
+ * these carries one: `killed` (the exec wrapper's own timeout flag), a non-null
+ * `signal` (a git the OS terminated), a `code` that is not a number (a wrapper
+ * error, or a spawn failure whose `code` is a string like `ENOENT`), and an
+ * explicit `ENOENT`/`spawn` error (git missing, or the directory gone). Each
+ * returns a classified CAUSE so the operator reads "git was killed (signal 9)"
+ * rather than "the object store is unreadable".
+ */
+function killedGitFault(
+  e: { code?: unknown; killed?: unknown; signal?: unknown } | undefined,
+  err: unknown,
+): string | undefined {
+  if (e?.killed === true) return "git was killed (timeout or external kill)";
+  if (e?.signal !== undefined && e.signal !== null)
+    return `git was killed (signal ${String(e.signal)})`;
+  if (e === undefined) {
+    // Not an exec rejection at all — a thrown string, a TypeError from our own
+    // code, a wrapper that rejected without a result shape. Nothing git answered,
+    // so nothing about the object can be concluded from it.
+    return `git did not run (${oneLine(rejectionMessage(err), 100)})`;
+  }
+  const code = e.code;
+  if (typeof code === "number") return undefined;
+  const cause = typeof code === "string" && code !== "" ? code : rejectionMessage(err);
+  return /enoent|spawn/i.test(cause)
+    ? `git did not start (${oneLine(cause, 100)})`
+    : `git did not exit normally (${oneLine(cause, 100)})`;
+}
 
 /** The first non-empty line of a stderr blob — the one line worth printing. */
 function firstLine(stderr: string): string {

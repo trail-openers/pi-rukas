@@ -211,6 +211,55 @@ export async function withGitBin<T>(
   return withGh(repo.gitBin, fn);
 }
 
+/**
+ * Run `fn` with the forge turned off AND a `gh` on PATH that answers every call.
+ *
+ * Two knobs one case needs at once. `originRepo` sets `PI_ENSEMBLE_FORGE=none`
+ * when it builds and `dispose` restores the prior value, so a case that builds
+ * one repo to set the env and a SECOND repo to drive (a faulted seed for the
+ * run, a scratch tree for the record) has no forge for the second unless it
+ * turns the env off itself. And with no forge, `fetchIssueBody` falls back to
+ * raw `gh issue view … --json body`, which on a host with the CLI installed
+ * either asks for a login or prints the real issue — so the case has to install
+ * the `cat`-a-file stub `fakeGhDir` writes, exactly as the single-repo cases do.
+ * The env goes back to its exact prior bytes, absent restored as absent: every
+ * reader in the tree compares against `"none"`, so a value left behind would
+ * hand the next case a forge it never asked for.
+ */
+export async function withStubForge<T>(binDir: string, fn: () => Promise<T>): Promise<T> {
+  const before = process.env.PI_ENSEMBLE_FORGE;
+  process.env.PI_ENSEMBLE_FORGE = "none";
+  try {
+    return await withGh(binDir, fn);
+  } finally {
+    if (before === undefined) delete process.env.PI_ENSEMBLE_FORGE;
+    else process.env.PI_ENSEMBLE_FORGE = before;
+  }
+}
+
+/**
+ * Run `fn` with the forge turned off.
+ *
+ * `originRepo` sets `PI_ENSEMBLE_FORGE=none` when it builds and `dispose`
+ * restores the prior value, so a case that builds one repo to set the env and a
+ * SECOND repo to actually drive has no forge for the second unless it turns the
+ * env off itself — which is the shape the seed-fault cases need (a faulted repo
+ * for the seed, a healthy scratch tree for the run). The `gh` stub `withGh`
+ * installs is a `gh`, not a forge: `fetchIssueBody` reaches it only on the
+ * no-forge path, so a case that left a real forge detected would have the
+ * adapter answer instead of the stub and read whatever the host's remote says.
+ */
+export async function withoutForge<T>(fn: () => Promise<T>): Promise<T> {
+  const before = process.env.PI_ENSEMBLE_FORGE;
+  process.env.PI_ENSEMBLE_FORGE = "none";
+  try {
+    return await fn();
+  } finally {
+    if (before === undefined) delete process.env.PI_ENSEMBLE_FORGE;
+    else process.env.PI_ENSEMBLE_FORGE = before;
+  }
+}
+
 /** Run `fn` with `binDir` searched before the host's PATH; restores after. */
 export async function withGh<T>(binDir: string, fn: () => Promise<T>): Promise<T> {
   const before = process.env.PATH;

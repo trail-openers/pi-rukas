@@ -28,7 +28,15 @@ export type FakeExec = VerifyExecFn;
 /** What one stand-in git invocation returns: a result, or a rejection with the exec shape. */
 export type GitReply =
   | { stdout?: string; stderr?: string }
-  | { throw: { code?: number | null; stderr?: string; message?: string; killed?: boolean } };
+  | {
+      throw: {
+        code?: number | null;
+        stderr?: string;
+        message?: string;
+        killed?: boolean;
+        signal?: string | null;
+      };
+    };
 
 /** Every call a fake made, so a case can assert the argv rather than trust a verdict. */
 export interface ExecLog {
@@ -64,9 +72,13 @@ export function gitArgv(argv: string[]): string[] {
 
 function rejected(r: Extract<GitReply, { throw: unknown }>): never {
   const e = r.throw;
+  // The shape `execp` rejects with — a numeric `code` only for a real exit, a
+  // `signal` for a signalled child, `killed` for the wrapper's own kill. The
+  // classifier in `base-proof.ts` reads exactly these fields, so a fixture that
+  // spelled them differently would test the fixture rather than the classifier.
   throw Object.assign(new Error(e.message ?? `Command failed: git\n${e.stderr ?? ""}`), {
     code: e.code === undefined ? null : e.code,
-    signal: null,
+    signal: e.signal === undefined ? null : e.signal,
     killed: e.killed === true,
     stdout: "",
     stderr: e.stderr ?? "",
@@ -149,6 +161,62 @@ export function couldNotGetObjectInfo(): GitReply {
       code: 128,
       stderr: "fatal: could not get object info\n",
       message: "Command failed: git\nfatal: could not get object info",
+    },
+  };
+}
+
+/**
+ * A reply for a git the OS killed: no exit code, a termination signal, the
+ * wrapper's own `killed` flag left off. `execp` stamps `killed: true` together
+ * with `signal: "SIGKILL"` when ITS timeout fires; a signal with no `killed`
+ * flag is the other half — an oom-killer, a `kill -9` from outside — and the
+ * classifier must not read either as "git said no".
+ */
+export function killedGit(signal = "SIGKILL"): GitReply {
+  return { throw: { code: null, signal, stderr: "", message: "Command failed: git" } };
+}
+
+/** A reply for the exec wrapper's own timeout kill (`killed: true`, no exit code). */
+export function killedByTimeout(): GitReply {
+  return {
+    throw: {
+      code: null,
+      signal: "SIGKILL",
+      killed: true,
+      stderr: "",
+      message: "Command failed: git (timed out)",
+    },
+  };
+}
+
+/**
+ * A reply for a git that never started: the spawn `error` path, which rejects
+ * with the plain Node error (`code: "ENOENT"`, a string) and no exit code at
+ * all. Node's `execFile` rejects with `Error` + `code: "ENOENT"` + `syscall`,
+ * and this is the shape that reaches the probe when git is missing from PATH or
+ * the directory is gone.
+ */
+export function enoentGit(): GitReply {
+  return {
+    throw: {
+      code: null,
+      stderr: "",
+      message: "spawn git ENOENT",
+    },
+  };
+}
+
+/**
+ * A reply whose rejection carries a NON-NUMERIC `code` and no signal: the shape
+ * of a wrapper error that is neither a real exit nor a spawn failure (a
+ * `code` the classifier cannot read as "git said no", e.g. `ERR_STREAM_…`).
+ */
+export function oddCodeGit(code = "ERR_STREAM_PREMATURE_CLOSE"): GitReply {
+  return {
+    throw: {
+      code: null,
+      stderr: "",
+      message: `git did not report an exit code (${code})`,
     },
   };
 }
