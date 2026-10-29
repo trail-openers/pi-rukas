@@ -70,10 +70,10 @@ const SRC = path.resolve(import.meta.dirname, "..", "src");
 /** Run the verb with an injected `run`, checking the shared output contract. */
 async function verb(
   argv: string[],
-  run: () => Promise<{ summary: string; result: RunLeanResult }>,
+  run: () => Promise<{ summary: string; result: RunLeanResult } | undefined>,
 ) {
   return runVerb("work-lean", argv, REPO, (_argv, ctx) =>
-    runWorkLeanVerb(argv, ctx, async () => run()),
+    runWorkLeanVerb(argv, ctx, async () => (await run()) as never),
   );
 }
 
@@ -208,6 +208,47 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
     `doc.prUrl is the newest publish URL (got ${r.doc.prUrl})`,
   );
 }
+{
+  // The newest DECIDED publish is the answer, and the walk never reaches past
+  // it: a publish that decided without a URL says this run has no PR, and
+  // reading one off an older publish would hand the host a replaced PR's
+  // address. Same rule as `newestDecided`.
+  const r = await verb(["7"], async () => ({
+    summary: "work-lean #7: handed-back (exit 10)",
+    result: fakeRun({
+      code: 10,
+      state: "handed-back",
+      steps: [
+        step("publish", { kind: "ok", prUrl: "https://example.test/pull/1" }),
+        step("publish", { kind: "ok" }),
+      ],
+    }),
+  }));
+  assert(r.doc.prUrl === undefined, `a newer URL-less publish wins (got ${r.doc.prUrl})`);
+}
+
+// ── (f2) a malformed outcome is a crash, never a rejection. Everything after
+// the run returns — the destructure, the clip, the URL read, the step count —
+// sits inside the guarded region, so each shape below still prints exactly one
+// document at exit 30 with error.code "crash".
+for (const [label, make] of [
+  ["summary undefined", () => ({ summary: undefined, result: fakeRun({ code: 0, state: "landed" }) })],
+  ["summary null", () => ({ summary: null, result: fakeRun({ code: 0, state: "landed" }) })],
+  ["outcome undefined", () => undefined],
+  ["result missing", () => ({ summary: "s" })],
+  ["run missing", () => ({ summary: "s", result: { code: 0, state: "landed" } })],
+  ["steps missing", () => ({ summary: "s", result: { code: 0, state: "landed", run: {} } })],
+  ["code missing", () => ({ summary: "s", result: { state: "landed", run: { steps: [] } } })],
+  ["state missing", () => ({ summary: "s", result: { code: 0, run: { steps: [] } } })],
+] as const) {
+  const r = await verb(["7"], async () => make() as never);
+  assert(r.violations.length === 0, `malformed (${label}): one document (${r.violations.join("; ")})`);
+  assert(r.code === 30, `malformed (${label}) exits 30 (got ${r.code})`);
+  assert(
+    (r.doc.error as { code?: string })?.code === "crash",
+    `malformed (${label}): error.code crash`,
+  );
+}
 
 // ── (g) a headless lean run's children carry the /work-cycle trust stamp.
 {
@@ -266,6 +307,36 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
   );
   holder();
   await rm(repo, { recursive: true, force: true });
+
+  // A schema violation is NOT a lock refusal: it is raised by the same class
+  // (`LeanStateError`) as the lock's refusals, so the verb must tell them apart
+  // by the words lock.ts actually writes, not by the class. "already in
+  // progress" is nowhere in this message.
+  const schema = await verb(["7"], async () => {
+    throw new LeanStateError("/x/.pi/lean-state/7.json: outcome prUrl must be an https URL");
+  });
+  assert(schema.code === 30, `a schema violation is a crash, not a refusal (got ${schema.code})`);
+  assert(
+    (schema.doc.error as { code?: string })?.code === "crash",
+    "a schema violation reports error.code crash",
+  );
+
+  // Every other refusal lock.ts raises, by its own wording — a live holder
+  // that cannot be judged, a link that failed for a reason other than EEXIST,
+  // and a stale lock that could not be moved out of the way — is a refusal.
+  for (const message of [
+    "cannot clear the stale lock /x/.pi/lean-state/7.json.lock: EACCES",
+    "cannot lock /x/.pi/lean-state/7.json.lock: EPERM",
+  ]) {
+    const r = await verb(["7"], async () => {
+      throw new Error(message);
+    });
+    assert(r.code === 40, `"${message.slice(0, 24)}…" exits 40 (got ${r.code})`);
+    assert(
+      (r.doc.error as { code?: string })?.code === "refused",
+      `"${message.slice(0, 24)}…" is reported as refused`,
+    );
+  }
 
   // A non-Error throw must not escape as a rejection either.
   const r = await verb(["7"], async () => {

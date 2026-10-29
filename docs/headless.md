@@ -37,7 +37,7 @@ A headless caller calls `--capabilities` once per image build and once before ea
 - **`research`**: a deep run whose entailment pass could not run carries `"entailment": "unavailable"`.
 - **`agents-md`** documents carry `verb` (`create` / `update` / `check`), `status` (`clean`, `findings`, `gated`, `refused`), `findings[]` and, for `create` / `update`, `wouldWrite`. `root` defaults to the repository root.
 - **`lens-review`** is admitted through the same round budget as `dispatch_lens_review` and writes the review ledger like it. Without `--base` / `--head` it reviews the working tree.
-- **`work-lean`** takes exactly one positional issue number and nothing else. Its document carries `subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`. The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanVerb`.
+- **`work-lean`** takes exactly one positional issue number; `--json` is accepted and changes nothing, as with every other S6 subcommand. Its document carries `subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`. The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanVerb`.
 
 ### Planning sessions
 
@@ -572,7 +572,8 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
     "plan": { "flags": ["--dry-run", "--file", "--type", "--context", "--reviewed-digest", "--json"] },
     "research": { "flags": ["--tier", "--context", "--json"] },
     "agents-md": { "flags": ["--deep", "--json"] },
-    "lens-review": { "flags": ["--base", "--head", "--since", "--full", "--context", "--pr", "--json"] }
+    "lens-review": { "flags": ["--base", "--head", "--since", "--full", "--context", "--pr", "--json"] },
+    "work-lean": { "flags": ["--json"] }
   },
   "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
@@ -622,7 +623,7 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
 | `contracts.ndjson.version` | `NDJSON_VERSION` | Version of the NDJSON progress schema. |
 | `contracts.ndjson.stable` | `NDJSON_STABLE_VERSION`, `NDJSON_STABLE_FIELDS` | The stable kinds and their guaranteed `event` fields (see "The stable subset"). |
 | `verbs.work.flags` | `WORK_FLAGS` array | The flags the `work` verb accepts, in the order the parser accepts them. An unknown flag in a caller's argv means "not supported" and is refused with exit 40. |
-| `verbs.<subcommand>.flags` | `PLAN_FLAGS`, `RESEARCH_FLAGS`, `AGENTS_MD_FLAGS`, `LENS_REVIEW_FLAGS` | The flags each subcommand accepts (#1021). A subcommand absent from `verbs` is not in this build. |
+| `verbs.<subcommand>.flags` | `PLAN_FLAGS`, `RESEARCH_FLAGS`, `AGENTS_MD_FLAGS`, `LENS_REVIEW_FLAGS`, `WORK_LEAN_FLAGS` | The flags each subcommand accepts (#1021, and #1883 for `work-lean`). A subcommand absent from `verbs` is not in this build. |
 | `inputs[].name` | `HEADLESS_INPUTS` (`inputs.ts`) | An environment variable the build reads. A name with `<ROLE>`, `<SEAM>` or `<LENS>` is a family: `<ROLE>` is a role name, `<SEAM>` a decision-seam id and `<LENS>` a code-review lens name, upper-cased with `-` → `_` (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). |
 | `inputs[].members` | The role list (`roles.ts`), the seam registry (`decision-seam-registry.ts`) and the bundled lens roster (`lens-roster.ts`) | Present on every family: the ids its placeholder takes in this build. A name with any other id, such as the typo `PI_ENSEMBLE_MODEL_REVIEWER`, is read by nothing and leaves the default in place. `<ROLE>` lists the spawned roles (the parent session has no per-role variable). `<SEAM>` lists the seams that read env config; the grandfathered policy judge does not. `<LENS>` lists the lenses shipped with the build; a lens added to the installed skills dir is not listed. Independent of `values`: `PI_ENSEMBLE_DECISION_MODE_<SEAM>` has both. |
 | `inputs[].type` | Hardcoded | `boolean` (`1` on, `0` off), `integer`, `number` (see `unit`), `duration-ms`, `string`, `path`, `list` (joined by `separator`) or `enum` (one of `values`). |
