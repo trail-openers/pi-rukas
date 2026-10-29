@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.40](https://github.com/trail-openers/pi-rukas/compare/v0.14.39...v0.14.40) (2026-10-29)
+
+
+### Features
+
+* **work:** work-lean verify and handback steps — executed checks only ([#1893](https://github.com/trail-openers/pi-rukas/issues/1893)) ([8fb98a3](https://github.com/trail-openers/pi-rukas/commit/8fb98a3a81b9ca0d6a1c9399cfbe8e73cb005a59))
+
 ## [0.14.39](https://github.com/trail-openers/pi-rukas/compare/v0.14.38...v0.14.39) (2026-10-29)
 
 
