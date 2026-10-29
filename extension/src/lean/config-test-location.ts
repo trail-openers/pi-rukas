@@ -29,12 +29,22 @@ export interface TestLocation {
  * Characters neither setting may contain. Shell metacharacters and quotes have
  * no business in a name the prompt quotes back to a child.
  *
+ * The second class is INVISIBLE: zero-width and bidi characters, BOM, the
+ * line/paragraph separators and every other C0/C1 control. A value like
+ * `"tests\u200b"` looks exactly like `"tests"` in the config file and in the
+ * prompt, but the boundary compares the string verbatim, so it matches nothing
+ * and every test the adversary writes is refused while the reason blames the
+ * child — the same failure the whitespace rule above refuses, one the eye
+ * cannot see. `\p{Cc}` covers C0 (incl. NUL) and C1 but not U+0085, U+2028/9,
+ * the U+200B–U+2064 formatting group or U+FEFF, which are spelled out.
+ *
  * `*` and `?` are refused in a DIRECTORY only, and checked there separately: a
  * lone `*` IS the `testGlob` pattern, so a shared set that refused it would
  * reject every legal glob (a validator that cannot express the one shape it
  * exists to accept is the bug this split prevents).
  */
-const TEST_LOCATION_FORBIDDEN = /[;&|`$<>"'\\\n\r]/;
+const TEST_LOCATION_FORBIDDEN =
+  /[;&|`$<>"'\\\n\r]|\p{Cc}|\u0085|\u2028|\u2029|[\u200b-\u200f\u2060-\u2064\ufeff]/u;
 
 /** A directory additionally has no wildcard at all — that is what `testGlob` is for. */
 const TEST_DIR_FORBIDDEN = /[?*]/;
@@ -61,7 +71,7 @@ export function validateTestDir(dir: string): string | undefined {
   if (dir !== dir.trim())
     return `.pi/work.json verify.testDir must not have surrounding whitespace — the value is used verbatim, so \`${dir}\` would name a directory that does not exist`;
   if (TEST_LOCATION_FORBIDDEN.test(dir))
-    return `.pi/work.json verify.testDir must be a plain repo-relative directory: ; & | \` $ < > " ' \\ and newline are not allowed (${dir})`;
+    return `.pi/work.json verify.testDir must be a plain repo-relative directory: ; & | \` $ < > " ' \\ and newline are not allowed, and neither is an invisible/control character (${dir})`;
   if (TEST_DIR_FORBIDDEN.test(dir))
     return `.pi/work.json verify.testDir must be a plain repo-relative directory with no wildcard: * and ? are what verify.testGlob is for (${dir})`;
   if (dir.startsWith("/") || dir.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(dir))
@@ -106,7 +116,7 @@ export function validateTestGlob(glob: string): string | undefined {
   if (glob.includes("?"))
     return `.pi/work.json verify.testGlob supports exactly one "*"; "?" is not part of the pattern (${glob})`;
   if (TEST_LOCATION_FORBIDDEN.test(glob))
-    return `.pi/work.json verify.testGlob must be a plain file-name pattern: ; & | \` $ < > " ' \\ and newline are not allowed (${glob})`;
+    return `.pi/work.json verify.testGlob must be a plain file-name pattern: ; & | \` $ < > " ' \\ and newline are not allowed, and neither is an invisible/control character (${glob})`;
   // The four below all say the same thing in git's own words: the pattern names
   // no RUNNABLE TEST FILE. A project whose CI glob cannot name one has a config
   // that every frozen test quietly escapes, so each is refused at the loader.

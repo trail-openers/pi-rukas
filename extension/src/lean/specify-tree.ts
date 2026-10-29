@@ -33,13 +33,13 @@
 
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { gitCatFileSaysAbsent } from "../git-range.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import { type TestLocation, testLocationProblem } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
-import { existsInCommit, fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
+import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
+import { MAX_TEST_FILES_PER_CALL, MAX_TEST_FILES_PER_ROW, baseProbe } from "./submit-tests-cap.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 
 /** The worktree directory name for one issue's specify step. */
@@ -262,21 +262,6 @@ export const NEWNESS_REASON =
   "already exists at the base commit; a new acceptance test must be a new file";
 
 /**
- * How many test files one submitted row may name.
- *
- * The boundary runs its whole rule set — including a git read per path — over
- * every name a row carries, and a row comes from an untrusted child. An
- * unbounded list is an unbounded number of git calls from one tool call, so the
- * row is refused outright rather than processed: a criterion genuinely needs a
- * handful of files, and the cap is not close to that.
- *
- * It counts the files of ONE row (one `submit_tests` call for one criterion),
- * not the files a criterion ends up with: a child that legitimately needs more
- * makes more calls, and each row is judged on its own.
- */
-export const MAX_TEST_FILES_PER_ROW = 8;
-
-/**
  * The boundary every submitted path passes through.
  *
  * A row is dropped, with a reason, when its criterion is not a `verify:
@@ -342,29 +327,10 @@ export async function validateSubmitRows(
 ): Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }> {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
   const keptByCriterion = new Map<string, string[]>();
-  // One git read per distinct path per boundary call, not per mention: two
-  // rows (or one row twice) naming `tests/AC1-x.test.ts` used to ask the base
-  // twice about the same name. The answer is a fact about (base, rel), so one
-  // call's cache is exactly as fresh as the tree it reads.
-  // The boundary runs its whole rule set — including a git read per path — over
-  // every name a row carries, and a row comes from an untrusted child. A row is
-  // one `submit_tests` call naming ONE criterion, so a row that names more files
-  // than this is the child spending unbounded git calls on one tool call: the
-  // row is refused outright rather than processed. A criterion genuinely needs a
-  // handful of files, and the cap is not close to that.
-  const rowCap = MAX_TEST_FILES_PER_ROW;
-  const baseAnswers = new Map<string, Promise<boolean>>();
-  const probeBase = opts.existsAtBase;
-  const existsAtBaseCached =
-    probeBase === undefined
-      ? undefined
-      : (rel: string): Promise<boolean> => {
-          const hit = baseAnswers.get(rel);
-          if (hit !== undefined) return hit;
-          const asked = probeBase(rel);
-          baseAnswers.set(rel, asked);
-          return asked;
-        };
+  // One git read per distinct path per call, and the call is bounded by
+  // `MAX_TEST_FILES_PER_CALL` — see `submit-tests-cap.ts`.
+  const base = baseProbe(opts.existsAtBase);
+  const existsAtBaseCached = base.ask;
   const dropped: DroppedRow[] = [];
   for (const row of rows) {
     if (!testable.has(row.criterionId)) {
@@ -378,10 +344,10 @@ export async function validateSubmitRows(
       continue;
     }
     const files = keptByCriterion.get(row.criterionId) ?? [];
-    if (row.testFiles.length > rowCap) {
+    if (row.testFiles.length > MAX_TEST_FILES_PER_ROW) {
       dropped.push({
         criterionId: row.criterionId,
-        reason: `criterion ${row.criterionId} submitted ${row.testFiles.length} test files; at most ${rowCap} are accepted per criterion`,
+        reason: `criterion ${row.criterionId} submitted ${row.testFiles.length} test files; at most ${MAX_TEST_FILES_PER_ROW} are accepted per submit_tests row`,
       });
       continue;
     }
@@ -447,6 +413,21 @@ export async function validateSubmitRows(
       // AFTER the existence check and before `fileProblem`: a file the child
       // wrote is not in the base commit at all, so this is the rule that tells
       // "the child authored this" apart from "this file was already here".
+      // The memo's size is the number of git reads this call has paid for; the
+      // first name over the cap is refused without probing, so a call carrying
+      // thousands of rows cannot spend thousands of git reads.
+      if (
+        existsAtBaseCached !== undefined &&
+        !base.has(rel) &&
+        base.probed() >= MAX_TEST_FILES_PER_CALL
+      ) {
+        dropped.push({
+          criterionId: row.criterionId,
+          path: rel,
+          reason: `${rel} was not checked against the base commit: at most ${MAX_TEST_FILES_PER_CALL} distinct test files are accepted per submission`,
+        });
+        continue;
+      }
       if ((await existsAtBaseCached?.(rel)) === true) {
         dropped.push({
           criterionId: row.criterionId,

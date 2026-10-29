@@ -404,12 +404,17 @@ import {
     green.outcome?.kind === "none" && (green.outcome.reason ?? "").includes("exited 0 on base"),
     `(challenge) a well-placed GREEN test is dropped for being green, not for its path (got ${green.outcome?.reason})`,
   );
-  // Both steps' infra error classes are in scope deliberately: a misplaced
-  // test is a verdict, and asserting these cases throw NOTHING is only
-  // meaningful if the throw type the assertion would have accepted is imported.
+  // A misplaced test is a VERDICT. Asserting that is only meaningful against the
+  // throw the assertion would have accepted — the infra class — so the check is
+  // on the thrown value itself, not on `typeof Class === "function"`, which is
+  // true whatever the step did.
   assert(
-    typeof SpecifyInfraError === "function" && typeof ChallengeInfraError === "function",
-    "both infra error classes are in scope — a misplaced test threw neither",
+    green.threw === undefined,
+    `(challenge) a misplaced/misjudged round is a VERDICT, not infra (${green.threw?.constructor?.name}: ${green.threw?.message})`,
+  );
+  assert(
+    green.threw === undefined || !(green.threw instanceof ChallengeInfraError),
+    `(challenge) the well-placed round raised no infra error (got ${green.threw?.constructor?.name})`,
   );
 }
 

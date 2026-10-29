@@ -350,6 +350,40 @@ function call(args: unknown): { name: string; arguments: unknown } {
     second.length === 1,
     `(memo) the cache does not outlive the call, so a later boundary call sees the tree as it is now (got ${JSON.stringify(second)})`,
   );
+
+  // The row cap bounds ONE row; the CALL carries any number of rows, so 10 rows
+  // of 8 distinct names would be 80 git reads from one tool call. The call cap
+  // bounds the thing that actually costs — the distinct normalised paths, i.e.
+  // the memo's size. Past it a path is refused WITHOUT a probe: 32 probes and
+  // 48 refusals is the exact arithmetic of 80 submitted names.
+  const tenRows = Array.from({ length: 10 }, (_, r) => ({
+    criterionId: "AC1",
+    testFiles: Array.from({ length: 8 }, (_, i) => `tests/AC1-c${r}-${i}.test.ts`),
+  }));
+  const probes: string[] = [];
+  const capped = await validateSubmitRows(tenRows, {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async (p) => {
+      probes.push(p);
+      return false;
+    },
+  });
+  const overCap = capped.dropped.filter((d) =>
+    (d.reason ?? "").includes("at most 32 distinct test files are accepted per submission"),
+  );
+  assert(
+    probes.length === 32 && new Set(probes).size === 32,
+    `(bound) exactly 32 git probes for 80 submitted names — the surplus never reaches git (got ${probes.length})`,
+  );
+  assert(
+    overCap.length === 48 && new Set(overCap.map((d) => d.path)).size === 48,
+    `(bound) the other 48 paths are refused with a reason naming the per-call cap (got ${overCap.length})`,
+  );
+  assert(
+    capped.kept.length === 1 && capped.kept[0]?.testFiles.length === 32,
+    `(bound) the 32 paths inside the call cap are kept — the bound refuses excess, not the submission (got ${capped.kept[0]?.testFiles.length})`,
+  );
 }
 
 process.exit(exit);

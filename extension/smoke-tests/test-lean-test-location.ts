@@ -146,11 +146,24 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
     ["test-*.ts ", "surrounding whitespace"],
     ["\ttest-*.ts", "surrounding whitespace"],
   ];
+  // Invisible characters: `"tests\u200b"` reads as `tests` in the config file and
+  // in the prompt, but the boundary compares the value VERBATIM against a
+  // submitted path's normalised directory, so it matches nothing and every test
+  // the adversary writes is refused while the reason blames the child. The old
+  // list caught only characters someone might type on purpose.
   for (const [glob, why] of badGlob)
     assert(
       validateTestGlob(glob)?.includes(why) === true,
       `validateTestGlob refuses \`${glob}\` naming "${why}" (got ${validateTestGlob(glob) ?? "accepted"})`,
     );
+  assert(
+    validateTestDir("tests\u200b")?.includes("invisible/control character") === true,
+    `validateTestDir refuses a zero-width space the eye cannot see (got ${validateTestDir("tests\u200b") ?? "accepted"})`,
+  );
+  assert(
+    validateTestGlob("test-*.ts\u0000")?.includes("invisible/control character") === true,
+    `validateTestGlob refuses a trailing NUL the eye cannot see (got ${validateTestGlob("test-*.ts\u0000") ?? "accepted"})`,
+  );
 }
 
 // ──────────────────────────── (1b) testLocationOf: absent means today's behaviour

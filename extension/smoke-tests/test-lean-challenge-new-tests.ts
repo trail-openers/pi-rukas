@@ -32,7 +32,6 @@ import { NEWNESS_REASON } from "../src/lean/specify-tree.ts";
 import { SpecifyInfraError } from "../src/lean/specify.ts";
 import {
   ROOTS,
-  SpecifyInfraError as SpecifyInfraErrorFromFixture,
   challengeFixture,
   commitPaths,
   git,
@@ -218,15 +217,18 @@ function withTrackedAtBase(issue: number, rel: string, content: string) {
     probes.every((a) => (a[a.length - 3] ?? "").startsWith(built.baseSha)),
     `(r4) no probe reads the head or the working tree — every newness question is about the base (got ${JSON.stringify(probes.map((a) => a.slice(-3)))})`,
   );
-  // Both infra classes are in scope on purpose: an unreadable base must throw
-  // the pipeline's infra error rather than arrive as `none`, and this file's
-  // assertions about verdicts are only meaningful if the throw type they would
-  // have accepted is imported and named.
+  // An unreadable base must throw the pipeline's infra error rather than arrive
+  // as `none`; the assertions above are about VERDICTS, so what makes them mean
+  // something is that no infra error was thrown. Checked on the thrown value
+  // itself — `typeof Class === "function"` is true whether or not the step ever
+  // threw, so it asserted the import, not the behaviour.
   assert(
-    typeof SpecifyInfraError === "function" &&
-      typeof ChallengeInfraError === "function" &&
-      typeof SpecifyInfraErrorFromFixture === "function",
-    "the infra error classes are in scope — a refused submission threw none of them",
+    r.threw === undefined,
+    `(r4) a refused submission throws no infra error (${r.threw?.constructor?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    !(r.threw instanceof SpecifyInfraError) && !(r.threw instanceof ChallengeInfraError),
+    `(r4) the throw the assertion would have accepted is the infra class, and it did not occur (got ${r.threw?.constructor?.name})`,
   );
 }
 
