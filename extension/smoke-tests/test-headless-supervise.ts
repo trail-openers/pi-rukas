@@ -10,6 +10,10 @@
  *   - Without `--json`, the summary line and the error line.
  *   - SIGTERM reaches the child, which keeps its own exit code.
  *   - cli.ts routes `work` through the supervisor unless SUPERVISED_ENV is set.
+ *
+ * Which bytes of a text-mode stream the host reads (the prose whitelist and the
+ * byte-exact document line) are `test-headless-supervise-prose.ts`; the last
+ * block below asserts that suite still exists.
  */
 
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -17,12 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { EXIT } from "../src/headless/exit-code.ts";
 import { RESULT_SCHEMA_VERSION } from "../src/headless/result.ts";
-import {
-  SUPERVISED_ENV,
-  parseResultDocument,
-  proseLinesBefore,
-  superviseWork,
-} from "../src/headless/supervise.ts";
+import { SUPERVISED_ENV, parseResultDocument, superviseWork } from "../src/headless/supervise.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 import { writeState } from "../src/workflow-state.ts";
 
@@ -219,50 +218,6 @@ try {
     );
   }
 
-  // ── #1866 follow-up: the same rule in text mode. Prose BEFORE the document is
-  // the documented text-mode output (the summary and error lines), so it is
-  // forwarded; the stray line the child printed in `--json` mode is not, and
-  // neither is prose printed after the document. `proseLinesBefore` is the whole
-  // of that distinction, so it is asserted directly as well as through
-  // `superviseWork` above.
-  {
-    let out = "";
-    const doc = JSON.stringify({ schemaVersion: RESULT_SCHEMA_VERSION, exitCode: 10, issues: [] });
-    const code = await superviseWork({
-      repoRoot,
-      issues: [345],
-      json: true,
-      command: [
-        bun,
-        "-e",
-        "process.stdout.write('pi-rukas-headless: #345 merged (exit 10)' + String.fromCharCode(10) + process.argv[process.argv.length - 1] + String.fromCharCode(10)); process.exit(10)",
-        doc,
-      ],
-      write: (s) => {
-        out += s;
-      },
-    });
-    assert(
-      code === 10 && out === `${doc}\n`,
-      "--json mode forwards the document alone: a text-mode-shaped child does not smuggle prose onto a JSON host's stdout",
-      { code, out },
-    );
-    const head = proseLinesBefore(`prose\n{ not json\n${doc}\nlate prose\n`, doc);
-    assert(
-      head === "prose\n",
-      "only the lines ahead of the document are prose, and a stray brace-line among them is not",
-      head,
-    );
-    assert(
-      proseLinesBefore(`${doc}\nlate prose\n`, doc) === "",
-      "nothing after the document is forwarded",
-    );
-    assert(
-      proseLinesBefore(`{ not json\n${doc}\n`, doc) === "",
-      "a stray brace-line before the document is not prose either",
-    );
-  }
-
   // ── #1863 adversarial round: an exitCode outside the published set is not a
   // result, so the child cannot make the supervisor report a code the CLI never
   // publishes (Infinity, a float, a negative, or an unknown number).
@@ -366,55 +321,6 @@ try {
     );
   }
 
-  // ── #1866 follow-up: text mode keeps the child's prose, and still exactly one
-  // document. `parseResultDocument` is what decides "the child answered"; the
-  // forwarder used to emit only the document LINE, so a text-mode host — which
-  // is promised the `pi-rukas-headless: #N status (exit N)` summary — read a
-  // single JSON blob instead. The non-document lines ahead of the document now
-  // go out first, in order; lines after it still do not.
-  {
-    let out = "";
-    const doc = JSON.stringify({ schemaVersion: RESULT_SCHEMA_VERSION, exitCode: 10, issues: [] });
-    const script = [
-      "process.stdout.write('pi-rukas-headless: #345 merged (exit 10)' + String.fromCharCode(10));",
-      "process.stdout.write('error: cap-hit — stopped at a cap' + String.fromCharCode(10));",
-      "process.stdout.write(process.argv[process.argv.length - 1] + String.fromCharCode(10));",
-      "process.stdout.write('stray bytes after the document' + String.fromCharCode(10));",
-      "process.exit(10);",
-    ].join("");
-    const code = await superviseWork({
-      repoRoot,
-      issues: [345],
-      json: false,
-      command: [bun, "-e", script, doc],
-      write: (s) => {
-        out += s;
-      },
-    });
-    const lines = out.split("\n").filter((l) => l.trim() !== "");
-    assert(
-      code === 10 && lines.length === 3 && lines[0] === "pi-rukas-headless: #345 merged (exit 10)",
-      "text mode forwards the summary and error line, then the document",
-      { code, out },
-    );
-    assert(
-      lines[1] === "error: cap-hit — stopped at a cap",
-      "the error line keeps its place, in the child's own order",
-      out,
-    );
-    assert(lines[2] === doc, "the document LINE is the last thing on the stream, verbatim", out);
-    assert(
-      !out.includes("stray bytes after the document"),
-      "bytes the child printed AFTER its document are still not forwarded",
-      out,
-    );
-    assert(
-      out.split("\n").filter((l) => l.trim().startsWith("{")).length === 1,
-      "exactly one document line on a text-mode stdout",
-      out,
-    );
-  }
-
   // ── SIGTERM is forwarded to the child, which ends with its own code.
   // #1863 — the child now announces itself with a complete result document, so
   // the supervisor forwards those bytes and returns the code the document
@@ -458,6 +364,24 @@ try {
       "cli.ts supervises work unless SUPERVISED_ENV is set",
     );
     assert(SUPERVISED_ENV === "PI_ENSEMBLE_HEADLESS_SUPERVISED", "the documented env name");
+  }
+
+  // ── the text-mode prose rules live in their own suite (#1866 follow-up and
+  // the lens round-1 fixes): this file owns "did the child answer, and with what
+  // code", that one owns WHICH bytes of a text-mode stream the host reads. A
+  // refactor that silently deletes it must fail here as well as there.
+  {
+    const prose = readFileSync(
+      path.join(import.meta.dirname, "test-headless-supervise-prose.ts"),
+      "utf8",
+    );
+    assert(
+      prose.includes("superviseWork(") &&
+        prose.includes("parseResultLine") &&
+        prose.includes("proseLinesBefore") &&
+        prose.includes("resultDocument("),
+      "the prose-forwarding suite exists, exercises the locator and the whitelist, and builds its fixtures with the real resultDocument builder",
+    );
   }
 } finally {
   rmSync(repoRoot, { recursive: true, force: true });

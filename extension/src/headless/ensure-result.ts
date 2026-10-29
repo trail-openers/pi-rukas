@@ -25,13 +25,7 @@ import { resourceReport } from "../resource-budget.ts";
 import { isTerminalState, readState, workStateFile } from "../workflow-state.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
-import {
-  type IssueResult,
-  RESULT_SCHEMA_VERSION,
-  notStartedResult,
-  projectIssue,
-  resultDocument,
-} from "./result.ts";
+import { type IssueResult, notStartedResult, projectIssue, resultDocument } from "./result.ts";
 
 /**
  * How long the runner waits for its own driver before calling it wedged.
@@ -110,23 +104,28 @@ export function formatResultDocument(run: RunOutcome, json: boolean): string {
   const head = `pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`;
   // #1866 — the machine line. The summary and the error line are what a person
   // reads; they are not what the SUPERVISOR reads. `supervise.ts` decides "did
-  // my child answer" with `parseResultDocument`, which accepts only a line that
+  // my child answer" with `parseResultLine`, which accepts only a line that
   // parses as a result document carrying this build's `schemaVersion`, an
   // `issues` array and a published `exitCode`. A text-mode child printed neither,
   // so a runner that ran the cycle and returned honestly was answered for a
   // `crash`/30 projected over its own results — the sibling of Fix A, and the
   // reason text mode reported `crash` long before e8852593. The line is emitted
   // LAST so the human-facing summary stays the first thing on the stream; the
-  // supervisor forwards these prose lines and then the document (text mode is
+  // supervisor forwards only the whitelisted prose lines (`proseLinesBefore`) and
+  // then the document (text mode is
   // promised the summary — #1866 follow-up), and the one-document latch still
   // admits exactly one call per process. The document
   // is built by the same `resultDocument` the `--json` branch uses, so the two
-  // modes cannot drift in schema version or key order (#1863 round 1).
+  // modes cannot drift in schema version or key order (#1863 round 1) — and it
+  // carries the same `resources` report, so the DOCUMENT BYTES a text-mode host
+  // reads are byte-identical to the ones a `--json` host reads. A machine line
+  // that differed between the modes by a field would make `resources` a mode
+  // artefact rather than a property of the run.
   const doc = resultDocument(run, {
     commit: readBuildCommit(),
     version: readBuildVersion(),
   });
-  const machine = `${JSON.stringify(doc)}\n`;
+  const machine = `${JSON.stringify({ ...doc, resources: resourceReport() })}\n`;
   const errorLine = run.error ? `error: ${run.error.code} — ${run.error.message}\n` : "";
   return `${head}${errorLine}${machine}`;
 }
