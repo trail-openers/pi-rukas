@@ -2,139 +2,59 @@
 /**
  * plan-pi-spec — the drafted /plan spec filed as a `pi-spec v1` block (#1883).
  *
- * Five things are pinned, each a distinct way the feature could silently fail:
+ * The design this pins is SMALL and every assertion is one way it could silently
+ * fail:
  *
- *   - the MAPPER: test vs command criteria, the S/M/L thresholds, scope present
- *     or absent, the 1,000-char problem clip. A criterion whose backticked span
- *     merely STARTS with a runner word ("the gov file") must stay a `test`
- *     criterion, or /work-lean would go hunting for a command that is prose.
- *   - the ROUND TRIP through the real parser: a body the driver files must
- *     parse AND pass `readiness`, or the issue is not lean-consumable.
- *   - the EXCLUSIONS: an epic and a spike get no block, and a draft with zero
- *     acceptance criteria gets no block (the fallback bullet is not a criterion).
- *   - the READINESS DISCLOSURE: a spec that fails a rule other than `size L`
- *     still files, with the failed rules on one plain line under the block.
- *   - the BUDGET: the block is reserved like the provenance marker, so a body
- *     the fitter COMPACTED still carries the whole block — compaction cuts
- *     sections, never the block.
- *
- * The last two are driven end-to-end through `runPlanPipeline` with the shared
- * /plan stubs, so they pin the filing path and not just the pure helpers.
+ *   - the MAPPER is the only place a bound exists: `problem` is the TITLE clipped
+ *     to 200 chars (never body prose), at most 12 criteria are embedded at 200
+ *     chars each, `size` counts the ORIGINAL criteria, there is no `scope`, and
+ *     every run of ≥3 backticks/tildes is neutralised in problem, text and
+ *     command. A criterion whose backticked span merely STARTS with a runner word
+ *     ("the gov file") must stay a `test` criterion, or /work-lean would go
+ *     hunting for a command that is prose.
+ *   - the section is BOUNDED BY CONSTRUCTION: the worst-case render (12 × 200-char
+ *     criteria + a 200-char title) is asserted under `PI_SPEC_SECTION_MAX_CHARS`,
+ *     so a widened bound fails here rather than at the forge.
+ *   - PLACEMENT: the section sits at the TOP of the filed body — under the
+ *     provenance italic line, above every drafted section — so prose below cannot
+ *     open a fence that swallows it. The provenance marker stays last.
+ *   - READ-BACK: `parsePiSpec(filedBody)` must be ok and deep-equal the embedded
+ *     spec; a forced failure files WITHOUT the block and WITH one plain
+ *     disclosure line.
+ *   - the READINESS NOTE: a spec failing a rule other than `size L` still files,
+ *     with the rules on one plain line under the block.
+ *   - the EXCLUSIONS: an epic, a spike and a zero-criteria draft get no block AND
+ *     no line — their filed bodies are byte-identical to the pre-#1883 render.
+ * The last two groups are driven end-to-end through `runPlanPipeline` with the
+ * shared /plan stubs; those live in `test-plan-pi-spec-filing.ts` (the file-size
+ * cap split them). Both share `lib/plan-pi-spec-fixture.ts`.
  */
 import { type PiSpec, parsePiSpec, readiness } from "../src/lean/spec.ts";
 import { codeAppendReservation } from "../src/plan-driver-phase3.ts";
-import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { finalDraftBody } from "../src/plan-gap-disclosure.ts";
 import {
+  PI_SPEC_CRITERION_MAX_CHARS,
   PI_SPEC_HEADING,
+  PI_SPEC_MAX_CRITERIA,
+  PI_SPEC_OMISSION_PREFIX,
+  PI_SPEC_PROBLEM_MAX_CHARS,
   PI_SPEC_READINESS_PREFIX,
+  PI_SPEC_SECTION_MAX_CHARS,
   appendPiSpecSection,
+  neutraliseFenceRuns,
   piSpecFromDraft,
   piSpecReservation,
   renderPiSpecSection,
 } from "../src/plan-pi-spec.ts";
 import { BODY_BUDGET } from "../src/plan-validate.ts";
-import {
-  DESC,
-  forgeStub,
-  installForgeStub,
-  installNoPlanCacheStub,
-  installOfflineVipuneStub,
-  installOverflowDispatch,
-  makeDispatchStub,
-} from "./plan-test-stubs.ts";
-
-let exit = 0;
-function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
-/** A drafted body carrying exactly these acceptance-criteria bullets. */
-function draftBody(
-  criteria: string[],
-  opts: { testSurface?: string[]; outOfScope?: string[] } = {},
-): string {
-  const bullets = (items: string[], fallback: string): string =>
-    items.length > 0 ? items.map((s) => `- ${s}`).join("\n") : `- ${fallback}`;
-  return [
-    "## Context & motivation",
-    "",
-    "Descriptor: d",
-    "",
-    "## Acceptance criteria",
-    "",
-    bullets(criteria, "(fallback)"),
-    "",
-    "## References",
-    "",
-    "- references/plan.md",
-    "",
-    "## Test surface",
-    "",
-    bullets(opts.testSurface ?? [], "none reported"),
-    "",
-    "## Edge cases & pitfalls",
-    "",
-    "- none",
-    "",
-    "## Open Questions",
-    "",
-    "- (none)",
-    "",
-    "## Out of scope",
-    "",
-    bullets(opts.outOfScope ?? [], "everything not named in the sections above"),
-    "",
-  ].join("\n");
-}
-
-/** An angle stub whose criteria are long, so the drafted body approaches the budget. */
-function makeBigCriteriaStub(criteria: string[]) {
-  const toolUses = criteria.map((text, i) => ({
-    name: "report_plan_item",
-    arguments: { kind: "acceptance-criterion", text, angle: `a${i}` },
-  }));
-  return ((_pi: unknown, spec: { role: string; prompt: string }) => {
-    if (spec.role === "adversarial-developer") {
-      return Promise.resolve({
-        role: spec.role,
-        ok: true,
-        text: "VERDICT: READY",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      });
-    }
-    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
-      return Promise.resolve({
-        role: "explore",
-        ok: true,
-        text: "DUPLICATE_RISK: none - no overlapping open work",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      });
-    }
-    return Promise.resolve({
-      role: "explore",
-      ok: true,
-      text: "prose",
-      toolUses,
-      ms: 1,
-      exitCode: 0,
-    });
-  }) as never;
-}
+import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
 
 // ------------------------------------------------------------------ the mapper
 
 {
   const spec = piSpecFromDraft({
     type: "feature",
+    title: "  add   a pi-spec   block  ",
     body: draftBody([
       "the parser rejects a malformed token",
       "the suite passes when `bun test extension/smoke-tests` exits 0",
@@ -161,44 +81,130 @@ function makeBigCriteriaStub(criteria: string[]) {
     "mapper: a span that merely starts with runner letters stays a test criterion",
   );
   assert(
-    spec?.scope === undefined,
-    "mapper: no test-surface bullets and only the default out-of-scope bullet declare no scope",
+    spec?.problem === "add a pi-spec block",
+    `mapper: problem is the TITLE, whitespace-collapsed (got ${JSON.stringify(spec?.problem)})`,
+  );
+  assert(spec?.scope === undefined, "mapper: the block carries NO scope at all");
+  assert(!("scope" in (spec ?? {})), "mapper: `scope` is not even a key of the embedded object");
+}
+
+{
+  // The title is the ONLY prose the block may carry, and it is clipped.
+  const spec = piSpecFromDraft({
+    type: "feature",
+    title: "t".repeat(3_000),
+    body: draftBody(["a"]),
+  });
+  assert(
+    (spec?.problem.length ?? 0) === PI_SPEC_PROBLEM_MAX_CHARS,
+    `mapper: problem is the title clipped to ${PI_SPEC_PROBLEM_MAX_CHARS} (got ${spec?.problem.length})`,
+  );
+  assert(
+    !draftBody(["a"])
+      .slice(0, 40)
+      .includes(spec?.problem ?? "\u0000"),
+    "mapper: problem is not the drafted body's opening prose",
+  );
+}
+
+{
+  // At most 12 criteria are embedded, and `size` counts the ORIGINAL set — so a
+  // 13-criterion plan is honestly L while carrying twelve rows.
+  const thirteen = piSpecFromDraft({
+    type: "feature",
+    title: "t",
+    body: draftBody(Array.from({ length: 13 }, (_, i) => `criterion ${i + 1}`)),
+  });
+  assert(
+    (thirteen?.criteria.length ?? 0) === PI_SPEC_MAX_CRITERIA,
+    `mapper: at most ${PI_SPEC_MAX_CRITERIA} criteria are embedded (got ${thirteen?.criteria.length})`,
+  );
+  assert(thirteen?.size === "L", `mapper: 13 original criteria is L (got ${thirteen?.size})`);
+  assert(
+    thirteen?.criteria[11]?.id === "AC12" && thirteen?.criteria[11]?.text === "criterion 12",
+    "mapper: the embedded set is the FIRST twelve, in order, with positional ids",
+  );
+  assert(
+    piSpecFromDraft({ type: "feature", title: "t", body: draftBody(Array(3).fill("c")) })?.size ===
+      "S",
+    "mapper: 3 criteria is S",
+  );
+  assert(
+    piSpecFromDraft({ type: "feature", title: "t", body: draftBody(Array(4).fill("c")) })?.size ===
+      "M",
+    "mapper: 4 criteria is M (S is 3 or fewer)",
+  );
+  assert(
+    piSpecFromDraft({ type: "feature", title: "t", body: draftBody(Array(8).fill("c")) })?.size ===
+      "M",
+    "mapper: 8 criteria is M",
+  );
+  assert(
+    piSpecFromDraft({ type: "feature", title: "t", body: draftBody(Array(9).fill("c")) })?.size ===
+      "L",
+    "mapper: 9 criteria is L",
   );
 }
 
 {
   const spec = piSpecFromDraft({
     type: "feature",
-    body: draftBody(["a", "b", "c"], {
-      testSurface: ["extension/smoke-tests/test-plan-pi-spec.ts"],
-      outOfScope: ["extension/src/lean/spec.ts"],
-    }),
+    title: "t",
+    body: draftBody([`criterion ${"x".repeat(3_000)}`]),
   });
   assert(
-    JSON.stringify(spec?.scope) ===
-      JSON.stringify({
-        paths: ["extension/smoke-tests/test-plan-pi-spec.ts"],
-        out: ["extension/src/lean/spec.ts"],
-      }),
-    "mapper: declared paths become scope.paths and the fence becomes scope.out",
+    (spec?.criteria[0]?.text.length ?? 0) === PI_SPEC_CRITERION_MAX_CHARS,
+    `mapper: criterion text is clipped to ${PI_SPEC_CRITERION_MAX_CHARS} (got ${spec?.criteria[0]?.text.length})`,
   );
-  assert(spec?.size === "S", `mapper: 3 criteria is S (got ${spec?.size})`);
+  // A command past the clip still travels: `command` is read from the RAW bullet,
+  // so the criterion never files as an unverifiable `command` with no command.
+  const late = piSpecFromDraft({
+    type: "feature",
+    title: "t",
+    body: draftBody([`${"y".repeat(400)} then \`bun test extension/smoke-tests\``]),
+  });
   assert(
-    piSpecFromDraft({ type: "feature", body: draftBody(Array(8).fill("c")) })?.size === "M",
-    "mapper: 8 criteria is M",
+    late?.criteria[0]?.verify === "command" &&
+      late?.criteria[0]?.command === "bun test extension/smoke-tests",
+    "mapper: a runner span past the text clip still becomes the criterion's command",
   );
+}
+
+// Fence neutralisation at the run lengths that actually fence: 3, 4 and 8.
+for (const len of [3, 4, 8]) {
+  const run = "`".repeat(len);
+  const neutral = neutraliseFenceRuns(`before ${run}mid${run} after`);
   assert(
-    piSpecFromDraft({ type: "feature", body: draftBody(Array(9).fill("c")) })?.size === "L",
-    "mapper: 9 criteria is L",
+    !/(`{3,}|~{3,})/.test(neutral) && neutral.includes("before") && neutral.includes("mid"),
+    `neutralise: a run of ${len} backticks no longer fences and the text survives`,
+  );
+  const tildes = neutraliseFenceRuns(`a ${"~".repeat(len)} b`);
+  assert(!/(`{3,}|~{3,})/.test(tildes), `neutralise: a run of ${len} tildes no longer fences`);
+  assert(
+    neutraliseFenceRuns("`` keep `single` ``") === "`` keep `single` ``",
+    "neutralise: runs shorter than 3 are left byte-identical (a lone backtick cannot fence)",
+  );
+  const inSpec = piSpecFromDraft({
+    type: "feature",
+    title: `title with ${run}fence${run}`,
+    body: draftBody([`criterion ${"~".repeat(len)} tail`, "ok `bun test` runs"]),
+  });
+  assert(
+    !/(`{3,}|~{3,})/.test(inSpec?.problem ?? "") &&
+      !/(`{3,}|~{3,})/.test(inSpec?.criteria[0]?.text ?? ""),
+    `neutralise: runs of ${len} are neutralised in BOTH problem and criterion text`,
   );
 }
 
 {
-  const long = "x".repeat(3_000);
-  const spec = piSpecFromDraft({ type: "feature", body: draftBody([`criterion ${long}`]) });
+  const withTildeFence = piSpecFromDraft({
+    type: "feature",
+    title: "t",
+    body: draftBody(["~~~ not a fence ~~~"]),
+  });
   assert(
-    (spec?.problem.length ?? 0) === 1_000,
-    `mapper: problem is clipped to 1,000 chars (got ${spec?.problem.length})`,
+    withTildeFence?.criteria[0]?.text === "˜˜˜ not a fence ˜˜˜",
+    `mapper: a tilde-fenced bullet is kept, with its fences turned into look-alikes (got ${JSON.stringify(withTildeFence?.criteria[0]?.text)})`,
   );
 }
 
@@ -206,19 +212,64 @@ function makeBigCriteriaStub(criteria: string[]) {
 // Expected deliverable, so neither gets a block.
 for (const excluded of ["epic", "spike"] as const) {
   assert(
-    piSpecFromDraft({ type: excluded, body: draftBody(["a"]) }) === undefined,
+    piSpecFromDraft({ type: excluded, title: "t", body: draftBody(["a"]) }) === undefined,
     `mapper: a ${excluded} gets no spec`,
   );
+}
+assert(
+  piSpecFromDraft({ type: "feature", title: "t", body: draftBody(["   "]) }) === undefined,
+  "mapper: zero criteria means no spec (an empty bullet is not a criterion)",
+);
+assert(
+  piSpecFromDraft({ type: "feature", title: "t", body: "## Context\n\n- prose only\n" }) ===
+    undefined,
+  "mapper: no Acceptance criteria section means no spec",
+);
+
+// ------------------------------------- the section is bounded by construction
+
+{
+  const worst = piSpecFromDraft({
+    type: "feature",
+    title: "z".repeat(500),
+    body: draftBody(
+      Array.from({ length: 14 }, () => `${"q".repeat(199)} \`bun run smoke-tests/x\``),
+    ),
+  }) as PiSpec;
   assert(
-    piSpecFromDraft({ type: "feature", body: draftBody([]) }) === undefined,
-    "mapper: zero criteria means no spec (the fallback bullet is not a criterion)",
+    worst.criteria.length === PI_SPEC_MAX_CRITERIA && worst.size === "L",
+    "bound: the worst case embeds the cap and reports L",
+  );
+  const section = renderPiSpecSection(worst);
+  assert(
+    section.length < PI_SPEC_SECTION_MAX_CHARS,
+    `bound: the WORST-CASE rendered section fits the asserted ceiling (${section.length} < ${PI_SPEC_SECTION_MAX_CHARS})`,
+  );
+  // The reservation is the section's REAL rendered length plus the separating
+  // blank line: an exact identity on the SAME body and title, so a clamp that
+  // under-counts cannot be reintroduced quietly.
+  const worstBody = draftBody(
+    Array.from({ length: 14 }, () => `${"q".repeat(199)} \`bun run smoke-tests/x\``),
+  );
+  const worstTitle = "z".repeat(500);
+  assert(
+    piSpecReservation("feature", worstBody, worstTitle) === section.length + 2,
+    "bound: the reservation is the REAL rendered length + the separating blank line, with no clamp",
+  );
+  assert(
+    section.length < BODY_BUDGET / 4,
+    `bound: the block can never eat a quarter of the body budget (${section.length})`,
   );
 }
 
-// ------------------------------------------------- render + the readiness line
+// ------------------------------------------------- render + the readiness note
 
 {
-  const spec = piSpecFromDraft({ type: "feature", body: draftBody(["a", "b"]) }) as PiSpec;
+  const spec = piSpecFromDraft({
+    type: "feature",
+    title: "t",
+    body: draftBody(["a", "b"]),
+  }) as PiSpec;
   const section = renderPiSpecSection(spec);
   assert(
     section.startsWith(`${PI_SPEC_HEADING}\n\n\`\`\`pi-spec v1\n`),
@@ -229,14 +280,15 @@ for (const excluded of ["epic", "spike"] as const) {
     "render: a ready spec carries no readiness line",
   );
   // A duplicate id is the rule a DRAFTED spec can really fail: the mapper
-  // numbers ids positionally, so a criterion whose text matches another is the
-  // one fault the filed block can carry, and it must reach the operator.
+  // numbers ids positionally, so a hand-edited issue is the carrier, and the
+  // operator must still be told.
   const broken: PiSpec = {
-    ...spec,
+    problem: "p",
     criteria: [
       { id: "AC2", text: "duplicated id", verify: "test" },
       { id: "AC2", text: "duplicated id again", verify: "test" },
     ],
+    size: "S",
   };
   const withNote = renderPiSpecSection(broken);
   assert(
@@ -244,49 +296,123 @@ for (const excluded of ["epic", "spike"] as const) {
       (withNote.split(PI_SPEC_READINESS_PREFIX)[1]?.trim().length ?? 0) > 0,
     "render: a failed rule is disclosed on one plain line under the block",
   );
+  assert(!withNote.includes("\n## "), "render: the readiness note is a plain line, not a heading");
   const tooBig = piSpecFromDraft({
     type: "feature",
-    body: draftBody(Array(9).fill("c")),
+    title: "t",
+    body: draftBody(Array(14).fill("c")),
   }) as PiSpec;
   assert(
     tooBig.size === "L" && !renderPiSpecSection(tooBig).includes(PI_SPEC_READINESS_PREFIX),
-    "render: size L alone is not reported as a failed rule",
+    "readiness note: size L alone is never reported (that is a split decision, not a body fix)",
   );
 }
 
-// --------------------------------------------------- the appended body round-trips
+// ---------------------------------------- the placed body: top, round-trip, order
 
 {
   const plain = draftBody(["a", "b", "c"]);
-  const body = appendPiSpecSection(plain, "feature");
+  const body = appendPiSpecSection(plain, "feature", "add the block");
   const parsed = parsePiSpec(body);
   assert(parsed.ok === true, "body: the filed body carries a parseable block");
   if (parsed.ok) {
     assert(readiness(parsed.spec).length === 0, "body: the filed spec passes readiness");
     assert(
       JSON.stringify(parsed.spec) ===
-        JSON.stringify(piSpecFromDraft({ type: "feature", body: plain })),
-      "body: what the mapper built is byte-identical to what the parser reads back",
+        JSON.stringify(piSpecFromDraft({ type: "feature", body: plain, title: "add the block" })),
+      "body: what the mapper built is exactly what the parser reads back",
     );
   }
   assert(
-    body.indexOf(PI_SPEC_HEADING) > body.indexOf("## Out of scope"),
-    "body: the block sits at the END of the body, after the last drafted section",
+    body.startsWith(`${PI_SPEC_HEADING}\n`),
+    "placement: the section is the FIRST thing in the body",
   );
   assert(
-    appendPiSpecSection(body, "feature") === body,
-    "body: appending twice produces no second block (two blocks make the parser refuse the issue)",
+    body.indexOf(PI_SPEC_HEADING) < body.indexOf("## Acceptance criteria") &&
+      body.indexOf(PI_SPEC_HEADING) < body.indexOf("## Out of scope"),
+    "placement: the block sits ABOVE every drafted section, so prose below cannot fence it",
   );
-  assert(appendPiSpecSection(plain, "epic") === plain, "body: an epic gets no block");
-  assert(appendPiSpecSection(plain, "spike") === plain, "body: a spike gets no block");
   assert(
-    appendPiSpecSection(draftBody([]), "feature") === draftBody([]),
-    "body: zero criteria gets no block",
+    appendPiSpecSection(body, "feature", "add the block") === body,
+    "body: a second pass adds no second block and no line (two blocks make the parser refuse the issue)",
   );
-  // The filing site itself: the block is inside the wrapped body, before the
-  // provenance marker's last line.
-  const wrapped = finalDraftBody(
+}
+
+{
+  const snippet = ["```", "const x = 1;", "````"].join("\n");
+  const body = appendPiSpecSection(
+    draftBody([`the module prints ${snippet} when run`, "and `bun test` is green"]),
+    "feature",
+    "fenced criterion",
+  );
+  const parsed = parsePiSpec(body);
+  assert(parsed.ok === true, "round-trip: a criterion with a multi-line ``` snippet parses");
+  assert(
+    parsed.ok === true &&
+      parsed.spec.criteria.length === 2 &&
+      parsed.spec.criteria[1]?.command === "bun test",
+    "round-trip: the fenced criterion does not swallow its neighbour",
+  );
+  // A bullet that carries a whole fenced CODE BLOCK (its fences on lines of their
+  // own) collapses to the block's opening line once every line is flattened — so
+  // assert on a criterion that SURVIVES flattening, and on the fenced one's
+  // fences: what matters is that the multi-line snippet can neither break the
+  // block's own fence nor swallow the criterion after it (both asserted above).
+  assert(
+    parsed.ok === true &&
+      parsed.spec.criteria.every((c) => !/(`{3,}|~{3,})/.test(c.text)) &&
+      parsed.spec.criteria.every(
+        (c) => c.command === undefined || !/(`{3,}|~{3,})/.test(c.command),
+      ),
+    "round-trip: no embedded field carries a fence run the reader could reopen",
+  );
+  assert(
+    appendPiSpecSection(draftBody(["prints `const x = 1;` inline"]), "feature", "t").includes(
+      "const x = 1;",
+    ),
+    "round-trip: inline code inside a criterion survives neutralisation verbatim",
+  );
+}
+
+// --------------------------------- epic / spike / zero-criteria bodies unchanged
+
+{
+  const plain = draftBody(["a", "b", "c"]);
+  const before = finalDraftBody(
     plain,
+    [],
+    [],
+    undefined,
+    [],
+    { line: "automated run", marker: { run: "plan" } },
+    { risk: undefined, sourceIssue: undefined },
+  );
+  for (const excluded of ["epic", "spike"] as const) {
+    const filed = finalDraftBody(
+      plain,
+      [],
+      [],
+      undefined,
+      [],
+      { line: "automated run", marker: { run: "plan" } },
+      { risk: undefined, sourceIssue: undefined },
+      excluded,
+      "some title",
+    );
+    assert(filed === before, `exclusions: a ${excluded}'s filed body is byte-identical to main's`);
+    assert(!filed.includes(PI_SPEC_HEADING), `exclusions: a ${excluded} carries no block`);
+    assert(
+      !filed.includes(PI_SPEC_OMISSION_PREFIX),
+      `exclusions: a ${excluded} carries no omission line either`,
+    );
+    assert(
+      piSpecReservation(excluded, plain, "some title") === 0 &&
+        codeAppendReservation(undefined, excluded, plain, "some title") === 0,
+      `exclusions: a ${excluded} reserves nothing, so its body budget is untouched`,
+    );
+  }
+  const noCriteria = finalDraftBody(
+    draftBody(["   "]),
     [],
     [],
     undefined,
@@ -294,13 +420,10 @@ for (const excluded of ["epic", "spike"] as const) {
     { line: "automated run", marker: { run: "plan" } },
     { risk: undefined, sourceIssue: undefined },
     "feature",
+    "some title",
   );
-  assert(
-    wrapped.includes(PI_SPEC_HEADING) && wrapped.indexOf(PI_SPEC_HEADING) < wrapped.length - 40,
-    "filing site: finalDraftBody appends the block before the provenance marker wraps the body",
-  );
-  const noType = finalDraftBody(
-    plain,
+  const noCriteriaBefore = finalDraftBody(
+    draftBody(["   "]),
     [],
     [],
     undefined,
@@ -308,142 +431,56 @@ for (const excluded of ["epic", "spike"] as const) {
     { line: "automated run", marker: { run: "plan" } },
     { risk: undefined, sourceIssue: undefined },
   );
-  const epic = finalDraftBody(
-    plain,
-    [],
-    [],
-    undefined,
-    [],
-    { line: "automated run", marker: { run: "plan" } },
-    { risk: undefined, sourceIssue: undefined },
-    "epic",
+  assert(
+    noCriteria === noCriteriaBefore,
+    "exclusions: a zero-criteria plan's filed body is byte-identical to main's",
   );
   assert(
-    epic === noType && !epic.includes(PI_SPEC_HEADING),
-    "filing site: an epic's filed body is byte-identical to the pre-#1883 body",
+    !noCriteria.includes(PI_SPEC_HEADING) && !noCriteria.includes(PI_SPEC_OMISSION_PREFIX),
+    "exclusions: a zero-criteria plan carries neither a block nor an omission line",
+  );
+  assert(
+    finalDraftBody(
+      plain,
+      [],
+      [],
+      undefined,
+      [],
+      undefined,
+      { risk: undefined, sourceIssue: undefined },
+      "feature",
+      // No title → no block: an unfilled title field must not file a guess.
+      undefined,
+    ) ===
+      finalDraftBody(plain, [], [], undefined, [], undefined, {
+        risk: undefined,
+        sourceIssue: undefined,
+      }),
+    "exclusions: no title means no block, byte-identical",
   );
 }
 
-// --------------------------------------------- the reservation (budget parity with the marker)
+// ----------------------------------------------- the reservation (budget parity)
 
 {
   const withCriteria = draftBody(["a", "b"]);
   assert(
-    piSpecReservation("feature", withCriteria) > 0,
+    piSpecReservation("feature", withCriteria, "t") > 0,
     "budget: a drafted spec reserves its rendered width",
   );
-  assert(
-    piSpecReservation("epic", withCriteria) === 0 &&
-      piSpecReservation("spike", withCriteria) === 0 &&
-      piSpecReservation("feature", draftBody([])) === 0,
-    "budget: an epic, a spike and a criteria-less draft reserve nothing (their bodies stay byte-identical to pre-#1883)",
-  );
-  // The fitter's contract: the drafted body is fitted against BODY_BUDGET minus
-  // the reservation, so the block appended afterwards cannot push the file over
-  // the forge cap.
-  const reserve = codeAppendReservation(undefined, "feature", withCriteria);
+  const reserve = codeAppendReservation(undefined, "feature", withCriteria, "t");
   assert(
     withCriteria.length + reserve < BODY_BUDGET,
     "budget: a fitted body plus the reservation stays under the budget",
   );
+  // The reservation never UNDER-counts, and never over-counts by more than the
+  // separating blank line: it is the rendered section's real length.
+  const spec = piSpecFromDraft({ type: "feature", body: withCriteria, title: "t" }) as PiSpec;
+  assert(
+    reserve === renderPiSpecSection(spec).length + 2,
+    "budget: the reservation equals the real rendered section, so the clamp is gone",
+  );
 }
 
-// ------------------------------------ end-to-end through the pipeline: filing + compaction
-
-installForgeStub();
-installOfflineVipuneStub();
-installNoPlanCacheStub();
-
-{
-  forgeStub.created.length = 0;
-  setPlanDispatch(
-    makeDispatchStub(
-      "GAP: HIGH clarify the boundary — proposed resolution: add a criterion\nVERDICT: READY",
-    ),
-  );
-  const r = await runPlanPipeline(
-    {} as never,
-    { descriptor: "add a pi-spec block to the plan driver in extension/src", type: "feature" },
-    process.cwd(),
-  );
-  const filed = forgeStub.created[0]?.body ?? "";
-  assert(r.filed === true, `pipeline: filed (got filed=${r.filed})`);
-  const parsed = parsePiSpec(filed);
-  assert(parsed.ok === true, "pipeline: the FILED body carries a pi-spec v1 block");
-  if (parsed.ok) assert(readiness(parsed.spec).length === 0, "pipeline: the filed spec is ready");
-  const marker = filed.lastIndexOf("<!-- pi-rukas:provenance v1 -->");
-  assert(
-    marker === -1 || filed.indexOf(PI_SPEC_HEADING) < marker,
-    "pipeline: the block sits before the provenance marker, never after it",
-  );
-  setPlanDispatch(null);
-}
-
-{
-  // Compaction must never cut the block. Same overflow fixture as
-  // test-plan-provenance's survives-compaction case: 100 items per kind at
-  // ~2,950 chars overflow stage 0's 20-per-kind render and fit stage 1's 10. The
-  // block is appended AFTER the fitter, so compaction has no way to reach it and
-  // the reservation is what keeps the total inside the forge cap.
-  const marker = { line: "x".repeat(300), marker: { run: "smoke", actor: "plan" } };
-  forgeStub.created.length = 0;
-  forgeStub.mode = "ok";
-  forgeStub.existing = null;
-  installForgeStub();
-  installOverflowDispatch(`the pi-spec block must survive ${"x".repeat(2950)} end`, 100);
-  const r = await runPlanPipeline(
-    {} as never,
-    { descriptor: DESC, provenance: marker },
-    process.cwd(),
-  );
-  const filed = forgeStub.created[0]?.body ?? "";
-  assert(
-    r.compacted === true,
-    `pipeline: the run reached the compaction stage (compacted=${r.compacted}, filed=${r.filed}, ${filed.length} chars)`,
-  );
-  const parsed = parsePiSpec(filed);
-  // The block survives compaction WHOLE, not merely parseably: its criteria must
-  // be exactly what the mapper derives from the same filed body. `size L` is not
-  // a failure of this assertion — the fixture deliberately carries >8 criteria
-  // (that is what overflows stage 0) and L is the mapper's honest answer, which
-  // the block's own disclosure forgives and `readiness` reports to a reader.
-  // The whole-block guarantee: the JSON inside the fenced block the FILED body
-  // carries is deep-equal to a PiSpec the renderer could have written — so
-  // compaction cut sections, never the contract. Read from the fence itself, not
-  // from a re-mapping of the draft: compaction legitimately clips items, so a
-  // re-mapping of the post-compaction body is a different (and meaningless)
-  // comparison.
-  const fence = /```pi-spec v1\n([\s\S]*?)\n```/.exec(filed)?.[1] ?? "";
-  let embedded: unknown = null;
-  try {
-    embedded = JSON.parse(fence);
-  } catch {
-    embedded = null;
-  }
-  assert(
-    parsed.ok === true &&
-      JSON.stringify(parsed.ok ? parsed.spec : null) === JSON.stringify(embedded),
-    "pipeline: the block in the filed body parses and deep-equals the PiSpec the renderer embedded",
-  );
-  assert(
-    parsed.ok === true && (parsed.ok ? parsed.spec.criteria.length : 0) >= 8,
-    `pipeline: the block carries a full set of criteria after compaction (got ${
-      parsed.ok ? parsed.spec.criteria.length : 0
-    })`,
-  );
-  assert(
-    filed.length <= BODY_BUDGET + 4096,
-    `pipeline: block + compaction appends stay inside the forge budget (${filed.length})`,
-  );
-  assert(
-    !filed.includes(PI_SPEC_READINESS_PREFIX),
-    "pipeline: a filed block reports no failed readiness rule",
-  );
-  assert(
-    filed.indexOf(PI_SPEC_HEADING) < filed.lastIndexOf("<!-- pi-rukas:provenance v1"),
-    "pipeline: the block sits above the provenance marker after compaction",
-  );
-  setPlanDispatch(null);
-}
-
-process.exit(exit);
+console.log(`\n${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec`);
+process.exit(specExit());

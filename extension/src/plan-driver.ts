@@ -29,6 +29,7 @@ import { type PlanBase, withPlanBase } from "./plan-base-tree.ts";
 import { confirmVerbatim, heldForReview, settlePlanCache } from "./plan-confirm.ts";
 import { codeIdentifiersIn, mechanicalInventory } from "./plan-draft.ts";
 import { cancelledResult } from "./plan-driver-cancel.ts";
+import { assembleFinalBody } from "./plan-driver-final-body.ts";
 import { gapGateApplies, runGate } from "./plan-driver-gate.ts";
 import {
   allAnglesFailedHalt,
@@ -56,7 +57,6 @@ import {
   tracePlanRun,
 } from "./plan-dropped-artifact.ts";
 import { reviewedDigestOf } from "./plan-filing-claim.ts";
-import { finalDraftBody } from "./plan-gap-disclosure.ts";
 import { loadPlanImages, planImageLinksSection, withPlanImages } from "./plan-images.ts";
 import {
   type InvestigationResult,
@@ -390,21 +390,21 @@ async function runPipelineOn(
   // #1383: plan-dropped-artifact.ts decides where the omitted items live.
   const dl = await finalizeDroppedDisclosure({ repoRoot, descriptor, type, openPoints });
   if (dl.omitted) body = dl.repoint(body);
-  // The filed/shown body: residual + open-point + base-fallback disclosures, the
-  // #1856 duplicate exclusion, the image links, then the caller's provenance
-  // wrapped around the whole (one home: plan-gap-disclosure.ts).
-  const finalBody = finalDraftBody(
+  // The filed/shown body, assembled at the ONE home for it (plan-gap-disclosure.ts,
+  // with the argument order in plan-driver-final-body.ts — the §12 size seam).
+  const finalBody = assembleFinalBody({
     body,
-    residualForDisclosure,
+    residual: residualForDisclosure,
     openPoints,
-    base.baseFallback,
+    baseFallback: base.baseFallback,
     images,
-    input.provenance,
+    provenance: input.provenance,
     // #1856: the exclusion disclosure renders only when the caller named the
     // issue this plan is for, and only from the verdict the barrier recorded.
-    { risk: duplicateRisk, sourceIssue: input.sourceIssue },
+    duplicate: { risk: duplicateRisk, sourceIssue: input.sourceIssue },
     type,
-  );
+    title,
+  });
 
   const resolvedGaps = gateRan ? gaps : [];
   const held = heldForReview(input, confirmed.missReason, title, finalBody);
