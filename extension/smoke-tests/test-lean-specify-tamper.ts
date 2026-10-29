@@ -1,9 +1,13 @@
 #!/usr/bin/env bun
 /**
- * lean/specify, part 2 of 2 — what a hostile or careless CHILD cannot get
- * away with, against a real temp git repository (fixture:
+ * lean/specify, part 2 — what a hostile or careless CHILD cannot get away
+ * with, against a real temp git repository (fixture:
  * lib/lean-specify-fixture.ts; the verdict cases (a)-(g) are in
- * test-lean-specify.ts).
+ * test-lean-specify.ts; the capture-window cases (p)-(q) are in
+ * test-lean-specify-capture.ts; the runtime hazards (t)-(u) are in
+ * test-lean-specify-runtime.ts; the rewrite-without-links case is in
+ * test-lean-specify-rewrite.ts; the reset/re-provision case is in
+ * test-lean-specify-provision.ts).
  *
  * Every case here is a way the step used to be fooled, reproduced:
  *   (h) a HARD LINK to a file outside the worktree -> dropped, never committed;
@@ -15,12 +19,27 @@
  *   (m) a child that rewrites a test after declaring it -> the captured bytes
  *       are what got committed and hashed;
  *   (n) a foreign directory at the lean worktree path -> THROW, content intact;
- *   (o) shell-shaped or placeholder-less runner templates -> refused by config.
+ *   (o) shell-shaped or placeholder-less runner templates -> refused by config;
+ *   (p) a hard link swapped in AFTER validation -> dropped, never committed;
+ *   (q) a symlink swapped in after validation -> dropped, never committed;
+ *   (r) a parent link that would carry a test's bytes outside the tree -> the
+ *       row is refused and nothing outside the worktree is written by the step;
  */
 
-import { existsSync, linkSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { TEST_RUNNER_PLACEHOLDER, validateTestRunner } from "../src/lean/config.ts";
+import { captureTestBytes } from "../src/lean/specify-capture.ts";
 import { renderTestCommand } from "../src/lean/specify-proof.ts";
 import {
   ROOTS,
@@ -345,6 +364,54 @@ function assert(cond: boolean, msg: string): void {
     TEST_RUNNER_PLACEHOLDER === "{file}",
     "(o) the one placeholder constant carries the string",
   );
+}
+
+// ------------------- (r) a parent link cannot carry a test's bytes outside
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/a.ts": "1\n" });
+  const outside = outsideDir();
+  const elsewhere = path.join(outside, "tests-target");
+  mkdirSync(elsewhere, { recursive: true });
+  // The child submits a path whose PARENT is a link to a directory OUTSIDE the
+  // worktree, with the file living behind it — the shape whose bytes would land
+  // outside while `git status` stayed clean, because that file is not in this
+  // worktree. It is refused twice over: `fileProblem` at validation (its
+  // `realpath` leaves the tree) and `writeCaptured` at the rewrite. What
+  // matters is the outcome — nothing of the step's reaches the outside
+  // directory and no commit is made.
+  const submitted = redScript();
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 17,
+    config: configWith({ test: RUNNER }),
+    writes: (wt) => {
+      symlinkSync(elsewhere, path.join(wt, "linked"));
+      // The fixture's own placement of the file the child "wrote": it lives
+      // behind the link, which is the whole point of the case.
+      writeFileSync(path.join(elsewhere, "AC1-escape.test.sh"), submitted, { mode: 0o755 });
+    },
+    toolUses: [submit("AC1", ["linked/AC1-escape.test.sh"])],
+  });
+  assert(
+    (r.outcome?.reason ?? "").includes("resolves outside the worktree"),
+    `(r) validation refused the row by name (got ${r.outcome?.reason})`,
+  );
+  assert(
+    r.outcome?.frozen === undefined || Object.keys(r.outcome.frozen).length === 0,
+    "(r) nothing from behind the link was frozen",
+  );
+  assert(
+    readFileSync(path.join(elsewhere, "AC1-escape.test.sh"), "utf8") === submitted,
+    "(r) the rewrite wrote nothing to the outside file — it still holds only what the fixture put there",
+  );
+  assert(
+    r.outcome?.kind === "no-red-test" || r.threw !== undefined,
+    `(r) the escape was refused — verdict or throw, never a commit (got ${
+      r.threw === undefined ? `outcome ${r.outcome?.kind}` : "throw"
+    })`,
+  );
+  assert(git(r.worktree, "rev-parse", "HEAD") === baseSha, "(r) nothing was committed");
 }
 
 for (const dir of ROOTS) {

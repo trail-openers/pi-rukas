@@ -14,11 +14,10 @@
  *      before the step believes a file is a test the child wrote (see
  *      submit-tests-extract.ts for the reading half), including the
  *      filesystem check that a kept path is an ordinary file of the worktree.
- *   3. `captureTestBytes` — the ONLY thing that survives from the child: the
- *      bytes of each kept file, read into memory. Everything the child did to
- *      the tree afterwards — its own commits, a rewritten test, a `.gitignore`
- *      that hides a stray file — is irrelevant, because the step resets the
- *      tree and writes those bytes back verbatim.
+ *   3. `captureTestBytes` (in specify-capture.ts) — the ONLY thing that
+ *      survives from the child: the bytes of each kept file, read into memory
+ *      through one descriptor per file, so a link swapped in after validation
+ *      is refused rather than followed.
  *   4. `resetWorktreeToBase` — discard child commits, staged changes,
  *      untracked files and ignore tricks, then PROVE the tree is at base and
  *      clean, or throw. A reset nobody confirmed is a claim, not a fact.
@@ -32,9 +31,9 @@
  * from the run, and neither is allowed to become a word a shell re-parses.
  */
 
-import type { Dirent } from "node:fs";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import type { PiSpec } from "./spec.ts";
 import { resetWorktreeToBase } from "./specify-reset.ts";
@@ -152,11 +151,13 @@ export async function ensureSpecifyWorktreeWithProvision(
       baseSha: opts.fromRef,
       branch: opts.branch,
     });
-    // A leftover tree keeps whatever provisioning gave it the first time, and
-    // its links are re-exempted from the clean by name: re-provisioning an
-    // already-linked tree would try to link over its own symlink.
-    await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch, await linkedDirs(wt));
-    return { wt, linked: [] };
+    // The reset cleans WITHOUT exemptions — `git clean -fdx` takes the
+    // dependency links too — and provisioning then builds them again, which
+    // also re-writes the `info/exclude` entries. One code path for a created
+    // tree and a leftover one, so neither can keep a link the other did not.
+    await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch);
+    const provision = await provisionWorktree(exec, opts.repoRoot, wt);
+    return { wt, linked: provision.linked, ...problemOf(provision) };
   }
   const name = specifyWorktreeName(opts.issue);
   const created = await worktreeCreate(exec, {
@@ -169,49 +170,14 @@ export async function ensureSpecifyWorktreeWithProvision(
   // is pointed at the base rather than left detached at it — the commit that
   // freezes the tests is then a commit ON the run's branch. `resetWorktreeToBase`
   // does the `-B` and the `--hard` together and then proves the tree got there.
-  await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch, created.provision.linked);
-  return {
-    wt: tree,
-    linked: created.provision.linked,
-    ...(created.provision.problem === undefined ? {} : { problem: created.provision.problem }),
-  };
+  await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch);
+  const provision = await provisionWorktree(exec, opts.repoRoot, tree);
+  return { wt: tree, linked: provision.linked, ...problemOf(provision) };
 }
 
-/**
- * The provisioned dependency links of an existing worktree, by name.
- *
- * Provisioning reports repository-relative paths (`node_modules`,
- * `extension/node_modules`); a leftover tree's links are found the same way —
- * by walking the tree for a directory whose entry is a symlink. Missing
- * entries simply cost one more `-e` than needed, which is harmless.
- */
-async function linkedDirs(wt: string): Promise<string[]> {
-  const out: string[] = [];
-  const walk = (dir: string, depth: number): void => {
-    if (depth > 3) return;
-    let entries: Dirent<string>[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (e.name === ".git") continue;
-      const abs = path.join(dir, e.name);
-      if (!e.isDirectory()) continue;
-      try {
-        if (lstatSync(abs).isSymbolicLink()) {
-          out.push(path.relative(wt, abs));
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      walk(abs, depth + 1);
-    }
-  };
-  walk(wt, 0);
-  return out;
+/** The `problem` field of a provisioning result, spread only when present. */
+function problemOf(p: { problem?: string }): { problem?: string } {
+  return p.problem === undefined ? {} : { problem: p.problem };
 }
 
 /** A porcelain `v1 -z` record: the status letters and the path. */
@@ -431,26 +397,4 @@ export function declaredPaths(keptByCriterion: Record<string, string[]>): Declar
     }
   }
   return out;
-}
-
-/**
- * Read the bytes of every kept test file into memory.
- *
- * This is the ONLY thing the child gets to keep. Once the bytes are here,
- * what the child did to the tree — committed, restaged, rewrote the file,
- * added an ignore rule — cannot reach the frozen tests, because the step
- * resets the tree to base and writes these bytes back. Throws when a file
- * cannot be read: a test the step could not capture is not a test it can
- * prove, and pretending otherwise would freeze a name with no content.
- */
-export function captureTestBytes(wt: string, paths: string[]): Map<string, Buffer> {
-  const captured = new Map<string, Buffer>();
-  for (const rel of paths) {
-    try {
-      captured.set(rel, readFileSync(path.join(wt, rel)));
-    } catch (err) {
-      throw new Error(`could not capture ${rel}: ${(err as Error).message}`);
-    }
-  }
-  return captured;
 }

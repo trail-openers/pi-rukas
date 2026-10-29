@@ -16,9 +16,6 @@
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 
-/** How the parent runs one test file — the template from `.pi/work.json`. */
-export const RUNNER_PLACEHOLDER = TEST_RUNNER_PLACEHOLDER;
-
 export interface SpecifyPromptOpts {
   issue: number;
   spec: PiSpec;
@@ -26,7 +23,6 @@ export interface SpecifyPromptOpts {
   testRunner?: string;
   /** Absolute path of the worktree the child works in. */
   worktree: string;
-  /** Every file path the child submitted (and the parent kept), for the wrap-up. */
 }
 
 /** The criteria the child must produce tests for: only `verify: "test"`. */
@@ -58,7 +54,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
   const runner =
     opts.testRunner === undefined
       ? "No project test runner is configured, so run each file directly and report the command you used in `note`."
-      : `The parent runs each file with the project template \`${opts.testRunner}\` — the literal \`${RUNNER_PLACEHOLDER}\` is replaced by the file's path, so the file must be executable by that command alone.`;
+      : `The parent runs each file with the project template \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path, so the file must be executable by that command alone.`;
   return [
     `You are writing the ACCEPTANCE TESTS for issue #${opts.issue}, before anybody implements it.`,
     "",

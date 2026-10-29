@@ -32,7 +32,8 @@ import { execp } from "../../src/exec.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
-import { captureTestBytes, parsePorcelainZ } from "../../src/lean/specify-tree.ts";
+import { type CaptureResult, captureTestBytes } from "../../src/lean/specify-capture.ts";
+import { parsePorcelainZ } from "../../src/lean/specify-tree.ts";
 import { type SpecifyDeps, SpecifyInfraError } from "../../src/lean/specify.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
@@ -160,6 +161,14 @@ export interface RunOpts {
    * the submitted bytes into memory and BEFORE it resets the tree.
    */
   afterCapture?: (wt: string) => void;
+  /**
+   * A capture that runs a write of the case's own BEFORE the real read — the
+   * window between validation and capture, where a link swapped in after the
+   * `lstat` has to be caught by the pinned descriptor.
+   */
+  capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
+  /** Per-run runner limits, e.g. a short timeout to prove a hang is infra. */
+  testLimits?: { timeoutMs?: number };
   dispatchOk?: boolean;
 }
 
@@ -194,11 +203,14 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     // bytes and it resetting the tree — the window a child has to swap a test
     // after the parent already holds it. Nothing downstream re-reads the disk,
     // so what a case commits and hashes must be the captured bytes.
-    capture: (wt, paths) => {
-      const bytes = captureTestBytes(wt, paths);
-      opts.afterCapture?.(wt);
-      return bytes;
-    },
+    capture:
+      opts.capture ??
+      ((wt, paths, owners) => {
+        const got = captureTestBytes(wt, paths, owners);
+        opts.afterCapture?.(wt);
+        return got;
+      }),
+    ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
     fetchIssueBody: async () => BODY,
     loadConfig: async () => opts.config,
     statReporter: async () => ({}),

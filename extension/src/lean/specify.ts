@@ -56,8 +56,9 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { type CaptureResult, captureTestBytes } from "./specify-capture.ts";
 import { specifyPrompt, testCriteria } from "./specify-prompt.ts";
-import { type Proof, runTestFile, sha256 } from "./specify-proof.ts";
+import { type Proof, type TestRunLimits, runTestFile, sha256 } from "./specify-proof.ts";
 import {
   SpecifyCommitError,
   SpecifyResetError,
@@ -67,8 +68,8 @@ import {
   writeCaptured,
 } from "./specify-reset.ts";
 import {
+  type DroppedRow,
   assertSpecifyWorktreeOwned,
-  captureTestBytes,
   declaredPaths,
   ensureSpecifyWorktreeWithProvision,
   fileProblem,
@@ -100,9 +101,14 @@ export interface SpecifyDeps {
    * A seam for the same reason every other filesystem fact here is one: the
    * smoke test proves the step commits the bytes it captured rather than
    * whatever the child leaves on disk afterwards, and that needs a read the
-   * test can place against the child's own last write.
+   * test can place against the child's own last write. The `owners` map tells
+   * the capture which criterion claimed each path so a file it cannot read
+   * through one descriptor drops as that criterion's row, not as an
+   * unattributed line in the reason.
    */
-  capture?: (wt: string, paths: string[]) => Map<string, Buffer>;
+  capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
+  /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
+  testLimits?: TestRunLimits;
 }
 
 /** A base, a tree or a child we cannot trust. The engine turns this into 10. */
@@ -278,14 +284,21 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   }
 
   const wanted = testCriteria(spec);
-  const template = config.verify.test;
+  // Narrowed HERE, at the refusal that proves it: one branch returns the
+  // verdict when there are test criteria and no template, so past that point a
+  // spec with test criteria has one. The call site below reads this narrowed
+  // binding rather than re-casting the config field.
+  const runnerTemplate =
+    wanted.length > 0 && config.verify.test === undefined
+      ? undefined
+      : (config.verify.test as string);
 
   // 2. The preconditions, all of them BEFORE the dispatch. Each one is a fact
   //    the step can establish for itself, and an adversary spends tokens
   //    proving none of them: a run with no runner configured could only ever
   //    return the same verdict, an unhealthy base makes every red meaningless,
   //    and a tree the step does not own is not the step's to reset.
-  if (wanted.length > 0 && template === undefined) {
+  if (wanted.length > 0 && runnerTemplate === undefined) {
     return {
       kind: "no-red-test",
       failedRules: ["no test runner configured (.pi/work.json verify.test)"],
@@ -299,7 +312,8 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     }
   }
 
-  // 3. The worktree: created at the base, or reset to it.
+  // 3. The worktree: created at the base, or reset to it. Both paths clean
+  //    without exemptions and re-provision, so this is the links the tree has.
   let linked: string[] = [];
   let provisioning: { linked: string[]; problem?: string } | undefined;
   try {
@@ -326,7 +340,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     spec,
     wt,
     repoRoot,
-    testRunner: template,
+    testRunner: runnerTemplate,
   });
 
   // 6. Extract and validate at the boundary. A row whose path is not an
@@ -343,24 +357,44 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
   );
 
-  // 7. CAPTURE: the bytes of every kept file, in memory. Nothing else the
-  //    child produced survives what comes next.
+  // 7. CAPTURE: the bytes of every kept file, in memory, each through one
+  //    descriptor. Nothing else the child produced survives what comes next,
+  //    and a file that cannot be read that way — swapped for a hard link or a
+  //    symlink in the window after validation, emptied, truncated — is dropped
+  //    with its reason and never becomes a test.
+  const owners = new Map(candidates.map((c) => [c.path, c.criterionId]));
   let captured: Map<string, Buffer>;
   try {
-    captured = (deps.capture ?? captureTestBytes)(
+    const got = (deps.capture ?? captureTestBytes)(
       wt,
       candidates.map((c) => c.path),
+      owners,
     );
+    captured = got.captured;
+    dropped.push(...got.dropped);
   } catch (err) {
     throw new SpecifyInfraError((err as Error).message);
   }
 
-  // 8. RESET to base — the child's commits, its staging, its untracked files
-  //    and its ignore rules all go, and the reset is confirmed before anything
-  //    is written back.
+  // 8. RESET to base — the child's commits, its staging, its untracked files,
+  //    its ignore rules and its dependency links all go, and the reset is
+  //    confirmed before anything is written back. The links are then rebuilt by
+  //    the step that owns provisioning (`ensureSpecifyWorktreeWithProvision`),
+  //    so the tree the runner executes in is provisioned the same way whether
+  //    it was created here or left behind by a crash.
   try {
-    await resetWorktreeToBase(deps.exec, wt, base, branch, linked);
-    // 9. REWRITE the captured bytes. Plain writes; no links, no renames.
+    await resetWorktreeToBase(deps.exec, wt, base, branch);
+    const prepared = await ensureSpecifyWorktreeWithProvision(deps.exec, {
+      repoRoot,
+      issue,
+      fromRef: base,
+      branch,
+    });
+    linked = prepared.linked;
+    if (prepared.problem !== undefined)
+      provisioning = { linked: prepared.linked, problem: prepared.problem };
+    // 9. REWRITE the captured bytes — never through a link, never into a name
+    //    that already exists (see `writeCaptured`).
     writeCaptured(wt, captured);
   } catch (err) {
     if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
@@ -372,12 +406,16 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // 10. Prove red on exactly these bytes, per file. A green or unclear file is
   //     dropped and DELETED from the tree; only a runner that could not be
   //     started (or was killed) is infrastructure.
+  if (runnerTemplate === undefined)
+    throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
   const red: typeof candidates = [];
   for (const cand of candidates) {
+    if (!captured.has(cand.path)) continue; // dropped at capture — never run
     const proof = await runTestFile(deps.exec, {
       wt,
-      template: template as string,
+      template: runnerTemplate,
       file: cand.path,
+      ...(deps.testLimits === undefined ? {} : { limits: deps.testLimits }),
     });
     if (proof.kind === "red") {
       red.push(cand);
