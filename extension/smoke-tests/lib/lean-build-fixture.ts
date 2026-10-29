@@ -66,6 +66,11 @@ function gitEnv(): Record<string, string> {
   };
 }
 
+/** The identity every git child runs with — exported for the challenge fixture. */
+export function gitEnvFor(): Record<string, string> {
+  return gitEnv();
+}
+
 /** git in `dir`, with an identity in the child's environment. */
 export function git(dir: string, ...args: string[]): string {
   const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
