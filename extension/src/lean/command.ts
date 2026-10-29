@@ -28,6 +28,7 @@ import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import type { Step } from "./state.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -107,6 +108,34 @@ export async function readyOutcome(
 }
 
 /**
+ * The rules the run's own record says it failed.
+ *
+ * The newest DECIDED `ready` or `specify` step whose outcome carries
+ * `failedRules` — read from the step log, which is the durable record, rather
+ * than from a closure that only a live `ready` fills. A run that crashed
+ * between `ready` and `decline` resumes with nothing in the closure, and a
+ * comment that said "ready never ran" on an issue whose spec had been refused
+ * for three named rules would be both wrong and unrecoverable: the step log
+ * already records the outcome that decided the verdict, so the comment posts
+ * exactly those rules whether this process ran `ready` or not.
+ *
+ * `specify` is consulted as well as `ready` because it is the other state that
+ * can refuse a run (`no-red-test`), and `ready` is asked LAST so its rules
+ * shadow an earlier round's — a run whose `ready` passed after an earlier
+ * refusal is not a run that posts the old rules.
+ */
+export function failedRulesFromLog(steps: Step[]): string[] {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step === undefined || step.outcome === undefined) continue;
+    if (step.state !== "ready" && step.state !== "specify") continue;
+    const rules = step.outcome.failedRules;
+    if (Array.isArray(rules) && rules.length > 0) return rules;
+  }
+  return ["no failed rule was recorded on the step log"];
+}
+
+/**
  * The phase-1 handler set.
  *
  * `ready` is real; `decline` posts the comment once; everything else is a
@@ -120,27 +149,23 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
   });
   const handlers: LeanHandlers = {};
   for (const state of HANDLER_STATES) handlers[state] = notBuilt(state);
-  // The rules `ready` judged, kept for the comment the very next step posts.
-  // Closure state rather than a field on the run: the step log records
-  // verdicts an operator reads, and a scratch value only this command writes
-  // is not part of the durable contract.
-  let judged: ReadyFacts = { failedRules: ["ready never ran"] };
   handlers.ready = async () => {
     const { kind, facts } = await readyOutcome(repoRoot, issue);
-    judged = facts;
     // Only the verdict and the rules go on the record. `spec`, `config` and
-    // `baseSha` stay in this closure — the step log is the durable record of
-    // what a run DECIDED, and a parsed document or a loaded config written
-    // into it is a second copy of a file that can change underneath a resume,
-    // plus a reason line a future reader would mistake for part of the
-    // contract. `failedRules` alone is what `decline` posts and what the
-    // summary line joins, so nothing is lost by keeping the rest here.
+    // `baseSha` stay out of it — the step log is the durable record of what a
+    // run DECIDED, and a parsed document or a loaded config written into it is
+    // a second copy of a file that can change underneath a resume, plus a
+    // reason line a future reader would mistake for part of the contract.
+    // `failedRules` alone is what `decline` posts and what the summary line
+    // joins, so nothing is lost by keeping the rest here.
     if (kind === "ok") return { kind };
     return { kind, failedRules: facts.failedRules };
   };
-  handlers.decline = async () => {
+  handlers.decline = async (ctx) => {
+    // From the log, not from a closure: see `failedRulesFromLog`.
+    const rules = failedRulesFromLog(ctx.steps);
     try {
-      await postNotReady(repoRoot, issue, judged.failedRules);
+      await postNotReady(repoRoot, issue, rules);
       return { kind: "done" };
     } catch (err) {
       // NOT `done`: the step log memoizes a completed step forever, so a

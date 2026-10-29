@@ -22,7 +22,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Transition } from "./transitions.ts";
 
 export const SCHEMA_VERSION = 1;
 
@@ -73,6 +72,17 @@ export interface RunCounters {
   reviewDone: boolean;
   ciFixUsed: boolean;
   draft: boolean;
+}
+
+/**
+ * A position in the run: where the walk stands and with what counters. Both
+ * the fold in resume.ts and the snapshot fields on a run are of this shape,
+ * which is what lets a caller compare them field by field rather than by
+ * object identity.
+ */
+export interface Position {
+  state: LeanState;
+  counters: RunCounters;
 }
 
 export interface LeanRun {
@@ -129,17 +139,6 @@ export function stepKey(issue: number, state: LeanState, n: number): string {
 }
 
 /**
- * The trailing `:N` of a step key: how many times this state has been entered
- * before this step. A malformed key reads as attempt 0 rather than throwing,
- * because the engine keys its re-run decision on this number and a corrupt
- * key must not turn into a crash inside the resume path.
- */
-export function attemptOf(key: string): number {
-  const n = Number(key.slice(key.lastIndexOf(":") + 1));
-  return Number.isInteger(n) && n >= 0 ? n : 0;
-}
-
-/**
  * A step's attempt number, or `undefined` when its key has no `:N` suffix.
  *
  * The engine's replay decision has to tell "this is attempt 0" apart from
@@ -154,11 +153,22 @@ export function attemptOfStrict(key: string): number | undefined {
   return /^\d+$/.test(suffix) ? Number(suffix) : undefined;
 }
 
-/** The next attempt number for a state: one past the highest already logged. */
+/**
+ * The next attempt number for a state: the number of entries the log already
+ * holds for it.
+ *
+ * The engine keys a write-ahead with this and the fold in resume.ts derives a
+ * step's identity from the same quantity — the count of earlier entries of
+ * that state — so the two agree by construction rather than by convention.
+ * `attemptOfStrict` is what a key must read back as, and a key that does not
+ * is refused by `loadRun`; a corrupt key therefore never reaches here as a
+ * silently-low count. A max-based count would differ exactly when a key was
+ * edited, which is the case that must not be able to disagree.
+ */
 export function nextAttempt(run: LeanRun, state: LeanState): number {
-  let max = -1;
-  for (const s of run.steps) if (s.state === state) max = Math.max(max, attemptOf(s.key));
-  return max + 1;
+  let n = 0;
+  for (const s of run.steps) if (s.state === state) n++;
+  return n;
 }
 
 export function createRun(
@@ -331,68 +341,6 @@ function assertResult(
     bad("result.code must be an integer");
   if (typeof v.reason !== "string") bad("result.reason must be a string");
   return { code: v.code, reason: v.reason };
-}
-
-/**
- * Where the step log says the run actually is.
- *
- * `state` and `counters` on a run are a CACHE (see the module header): the
- * append-only `steps` log is the record, and the snapshot is only ever
- * supposed to be what replaying the log through `next()` produces. A
- * hand-edited or truncated file can carry a snapshot that disagrees with its
- * own log — and driving from the snapshot then re-applies an older outcome of
- * the current state, which is how a log ending `ci:1 = red` on a snapshot of
- * `ci` replayed a `ci:0 = green` and merged.
- *
- * Returns `undefined` when the log cannot be replayed at all (an outcome the
- * table has no rule for). It never repairs anything: a caller that gets a
- * disagreement is expected to refuse the run, not to rewrite the file.
- *
- * The fold STARTS at the first logged step's own state rather than assuming
- * `ready`: a run whose very first step ended the run (a `ready` that refused,
- * whose report is the `decline` step) has a log that does not begin at
- * `ready`, and a fold that started there would route `decline`'s outcome from
- * the wrong state and call the honest file a forgery. The key names the state
- * the engine was in when it wrote the step, so the log carries its own start.
- */
-export function replay(
-  run: LeanRun,
-  stepOf: (state: LeanState, counters: RunCounters) => Transition | undefined,
-): { state: LeanState; counters: RunCounters } | undefined {
-  const log = [...run.steps];
-  let state: LeanState = log[0]?.state ?? "ready";
-  let counters: RunCounters = { ...INITIAL_COUNTERS };
-  // The fold consumes the log in ARRAY order, deliberately. The engine appends
-  // one step per entry and never reorders, so array order IS the sequence the
-  // run lived through, and it is the only order that keeps a re-entered state
-  // honest: `verify:0` and a later `verify:1` are separate events of the walk,
-  // and sorting by key would pull the second one in front of the states that
-  // only the first one led to. A file whose array was shuffled is therefore
-  // not silently re-derived into some other run — the fold simply cannot
-  // reproduce the snapshot, and the caller refuses it.
-  // One fold per LOG ENTRY, including a step that earned no outcome (the
-  // caller makes that one contribute the identity). Folding every entry is
-  // what makes the derived position the one the engine itself persisted: the
-  // engine writes the file after each step, so its snapshot already counts the
-  // step it had just written ahead. Skipping outcome-less steps would leave
-  // the fold permanently one step behind and refuse every honest crash
-  // recovery as a forgery.
-  for (const _ of log) {
-    void _;
-    try {
-      const moved = stepOf(state, counters);
-      if (moved === undefined) return undefined;
-      state = moved.state;
-      counters = moved.counters;
-    } catch (err) {
-      // The caller's `stepOf` throwing is itself the diagnosis — the fold
-      // must not swallow it into a bare "cannot replay".
-      throw err instanceof LeanStateError
-        ? err
-        : new LeanStateError(`replay: ${String((err as Error)?.message ?? err)}`);
-    }
-  }
-  return { state, counters };
 }
 
 /** Lock file path for a run. One per issue, alongside the state file. */

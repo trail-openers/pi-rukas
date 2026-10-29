@@ -20,7 +20,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { runLean } from "../src/lean/engine.ts";
-import type { LeanRun, Outcome } from "../src/lean/state.ts";
+import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
 import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
 import {
   CLOCK,
@@ -30,6 +30,7 @@ import {
   tempDir,
   ticking,
 } from "./lib/lean-engine-fixtures.ts";
+import { driveRun, writePrefix } from "./lib/lean-real-log-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -257,12 +258,19 @@ function forgedCiRed(dir: string, issue: number): void {
       models: {},
       baseSha: "base",
       branch: "feature/issue-43",
-      state: "ci",
+      state: "verify",
       counters: {
         ...INITIAL_COUNTERS,
-        buildAttempts: 1,
+        // What the table bills on the walk below: the first build, and the CI
+        // fix round that red CI bought. The blank `verify:1` tail is a step the
+        // run was routed INTO by a build that already billed its own round, so
+        // it owes nothing extra — and that is half of what the case pins: the
+        // other half is that a blank tail at a gate state never reads as a red
+        // verdict when the land gate asks the record.
+        buildAttempts: 2,
         challengeDone: true,
         reviewDone: true,
+        ciFixUsed: true,
       },
       steps: [
         STEP(43, "ready", 0, "ok"),
@@ -272,8 +280,9 @@ function forgedCiRed(dir: string, issue: number): void {
         STEP(43, "verify", 0, "green"),
         STEP(43, "publish", 0, "ok"),
         STEP(43, "review", 0, "done"),
-        // A crash mid-second-verify: written ahead, never finished. It says
-        // nothing, so it must not read as "the run's gate never went green".
+        STEP(43, "ci", 0, "red"),
+        STEP(43, "build", 1, "ok"),
+        // A crash mid-second-verify, after the fix build came back.
         { key: "43:verify:1", state: "verify", startedAt: CLOCK },
       ] as LeanRun["steps"],
     };
@@ -371,6 +380,85 @@ function forgedCiRed(dir: string, issue: number): void {
       `a live lock is refused with the owner's pid (got: ${String(thrown)})`,
     );
     assert(Object.keys(calls).length === 0, "a refused drive runs no handler at all");
+  } finally {
+    cleanup();
+  }
+}
+
+// ── every prefix of a finished run is a file a crash really left ──────────
+
+{
+  const { dir, cleanup } = tempDir();
+  try {
+    // One real drive to `landed`, then each of its prefixes written back as a
+    // state file and re-driven. A kill can only ever land on one of these
+    // bytes, so each must resume to the same terminal verdict — and must do it
+    // WITHOUT re-running a step the log already decided. The second half is
+    // the invariant the step log exists for, and it is judged on call counts
+    // rather than on the run's own claim.
+    const issue = 47;
+    // A FRESH queue object per drive. One shared `HAPPY` spread would let the
+    // nine prefix drives below drain the same arrays: the first consumes the
+    // single scripted `ci:green` and every later resume then throws
+    // `no scripted outcome for ci` inside its handler, which the engine logs as
+    // `{kind:"error"}` and ends handed-back. `scripted` copies each queue on
+    // construction, so the literal is the only place a queue is shared.
+    const path = (): Partial<Record<LeanState, Outcome[]>> => ({
+      ready: [{ kind: "ok" }],
+      specify: [{ kind: "ok" }],
+      build: [{ kind: "ok" }, { kind: "ok" }],
+      challenge: [{ kind: "none" }],
+      verify: [{ kind: "green" }],
+      publish: [{ kind: "ok" }],
+      review: [{ kind: "done" }],
+      ci: [{ kind: "green" }],
+      land: [{ kind: "merged" }],
+    });
+    const { run: full } = await driveRun(dir, issue, path());
+    assert(
+      full.steps.length > 0 && full.state === "landed",
+      `the source run landed (${full.state}, ${full.steps.length} steps)`,
+    );
+    for (let k = 1; k <= full.steps.length; k++) {
+      // Only a k that really is the whole log may keep the completed drive's
+      // `result`; every shorter prefix is written WITHOUT it. `writePrefix`
+      // takes the stamp from its SOURCE, which is the record of a finished
+      // run, and a file that carries a result is returned by `runLean` verbatim
+      // — "the file is the answer" — so a stamped prefix never drives a step
+      // and the case would judge the source run's verdict instead of its own.
+      const source = k === full.steps.length ? full : { ...full, result: undefined };
+      // `k < full.steps.length` for the blank tail: blanking the LAST entry of
+      // a finished run erases the merge step itself, and a log that never
+      // recorded `land + merged` cannot claim one. That shape — a whole log
+      // whose snapshot still names `land` — is a forgery, and the land-gate
+      // file pins it as one. A kill between the write-ahead and the outcome is
+      // a prefix that is NOT yet complete, which is what the blank case pins.
+      for (const blank of k < full.steps.length ? [false, true] : [false]) {
+        writePrefix(dir, source, k, { blankLast: blank });
+        const { handlers, calls } = scripted(path());
+        const resumed = await runLean({ repoRoot: dir, issue, handlers, now: ticking().now });
+        const decidedStates = full.steps
+          .slice(0, k)
+          .filter((s) => !blank || s !== full.steps[k - 1])
+          .map((s) => s.state);
+        // `run.state` is the snapshot the engine just persisted, so it reads
+        // `landed` even for a run it stopped at the gate — the verdict has to
+        // come off the durable result and the step log, not off that field.
+        const result = loadRun(dir, issue);
+        const reran = Object.keys(calls).filter((s) => decidedStates.includes(s as never));
+        assert(
+          resumed.state === "landed" &&
+            resumed.code === 0 &&
+            result?.result?.reason === "merged" &&
+            result?.steps.some((s) => s.state === "land" && s.outcome?.kind === "merged") === true,
+          `prefix ${k}${blank ? " (blank tail)" : ""} resumes to landed (got ${resumed.state} exit ${resumed.code}, reason ${result?.result?.reason}, merge steps ${JSON.stringify(result?.steps.filter((s) => s.state === "land").map((s) => `${s.key}=${s.outcome?.kind ?? "pending"}`))})`,
+        );
+        assert(
+          reran.length === 0,
+          `prefix ${k}${blank ? " (blank tail)" : ""} re-runs no decided step (re-ran ${JSON.stringify(reran)})`,
+        );
+      }
+    }
   } finally {
     cleanup();
   }

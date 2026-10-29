@@ -25,15 +25,12 @@ import {
   type LeanState,
   LeanStateError,
   type Outcome,
-  type RunCounters,
   type Step,
-  attemptOfStrict,
   createRun,
   isTerminal,
   leanStateFile,
   loadRun,
   nextAttempt,
-  replay,
   saveRun,
   stepKey,
 } from "./state.ts";
@@ -43,8 +40,21 @@ import type { Transition } from "./transitions.ts";
 export interface HandlerCtx {
   repoRoot: string;
   issue: number;
-  /** The run as of before this step ran. Handlers must not mutate it. */
+  /**
+   * The log as of BEFORE this step ran, so a handler can read what earlier
+   * steps decided. `steps` is the run's append-only record, and the snapshot
+   * fields beside it are a cache — which is why the log is what handlers are
+   * given: it is the thing the resume checks are derived from, and it survives
+   * a crash. Handlers must not mutate it.
+   */
   run: LeanRun;
+  /**
+   * The same array as `run.steps`, named separately because the handlers that
+   * need it need only it. A handler reading a verdict out of the log rather
+   * than out of a closure is the difference between a resumed run that
+   * reproduces what the crashed one decided and one that reports "never ran".
+   */
+  steps: Step[];
   /** The step being executed, already written ahead with its startedAt. */
   stepKey: string;
   /** The injected clock. The only way a handler sees time. */
@@ -150,6 +160,12 @@ function endRun(drive: Drive, run: LeanRun, state: LeanState, reason: string): L
   return done;
 }
 
+/** `endRun` in the shape `runLean` returns, for a gate that stops a resumed run. */
+function ended(drive: Drive, run: LeanRun, state: LeanState, reason: string): RunLeanResult {
+  const done = endRun(drive, run, state, reason);
+  return { run: done, code: done.result?.code ?? exitCodeFor(state), state };
+}
+
 /** Attach an outcome to one step without disturbing any other. */
 function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: number): LeanRun {
   return {
@@ -159,13 +175,12 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
- * The newest step of one state that actually DECIDED something.
+ * The newest DECIDED step of one state, or `undefined`.
  *
  * A step without an outcome is a crash mid-step — the engine is about to
- * re-run it, and it has said nothing. Treating such a step as "the newest"
- * made a legitimately green run look unverified: a trailing outcome-less
- * `verify:1` after a green `verify:0` read as "last verify = none" and
- * refused a land the record had earned.
+ * re-run it, and it has said nothing, so it is never "the newest". Reading
+ * a trailing outcome-less `verify:1` as the state's verdict made a
+ * legitimately green run look unverified.
  */
 function newestDecided(steps: Step[], state: LeanState): Step | undefined {
   const decided = steps.filter((s) => s.state === state && s.outcome !== undefined);
@@ -173,11 +188,17 @@ function newestDecided(steps: Step[], state: LeanState): Step | undefined {
 }
 
 /**
- * A run may merge only on its OWN current green: the newest `verify` AND the
- * newest `ci` both said green. Both halves are asked because `ci`'s green is
- * what the table routes on and `verify`'s is what the run's own gate said —
- * a recorded `ci:green` replayed over a later red verify is the shape that
- * used to walk into the merge.
+ * Has this run earned the merge? Its own record must currently say so: the
+ * newest DECIDED `verify` AND the newest DECIDED `ci` both green, and no
+ * `draft` marker left standing. `ci`'s green is what the table routes on and
+ * `verify`'s is what the run's own gate said — a recorded `ci:green` read
+ * over a later red verify is the shape that used to walk into the merge.
+ *
+ * Two readers call this. `apply()` asks it on the ARRIVAL, which is the
+ * irreversible act; and `runLean` asks it when a resumed run's DERIVED state
+ * is already `land`, because the fold reached that state through `next()` and
+ * never through `apply()` — so without the second call a file that forged the
+ * arrival would run the merge handler on load.
  */
 function landEarned(run: LeanRun): boolean {
   if (run.counters.draft) return false;
@@ -186,6 +207,16 @@ function landEarned(run: LeanRun): boolean {
     newestDecided(run.steps, "ci")?.outcome?.kind === "green"
   );
 }
+
+/** The reason the record gives for refusing the merge, for the handback line. */
+function landRefusal(run: LeanRun): string {
+  const lastVerify = newestDecided(run.steps, "verify");
+  const lastCi = newestDecided(run.steps, "ci");
+  return `land refused: verify not green (draft=${run.counters.draft}, last verify=${
+    lastVerify?.outcome?.kind ?? "none"
+  }, last ci=${lastCi?.outcome?.kind ?? "none"})`;
+}
+
 /**
  * Apply the table, then enforce the two arrival rules a (state, kind) pair
  * cannot express.
@@ -216,21 +247,10 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
         `illegal arrival at land from ${run.state} + ${JSON.stringify(outcome.kind)}`,
       );
     }
-    const lastVerify = newestDecided(run.steps, "verify");
-    const lastCi = newestDecided(run.steps, "ci");
     // `lastCi` is the outcome `next()` just routed on, so it is green by
     // construction here — asking the log anyway is what makes the gate a
     // reading of the record rather than a restatement of the pair.
-    if (!landEarned(run)) {
-      return endRun(
-        drive,
-        run,
-        "handed-back",
-        `land refused: verify not green (draft=${run.counters.draft}, last verify=${
-          lastVerify?.outcome?.kind ?? "none"
-        }, last ci=${lastCi?.outcome?.kind ?? "none"})`,
-      );
-    }
+    if (!landEarned(run)) return endRun(drive, run, "handed-back", landRefusal(run));
   }
   const advanced: LeanRun = { ...run, state: moved.state, counters: moved.counters };
   // Every terminal state, `not-ready` included, is the end of the road and
@@ -266,7 +286,14 @@ async function settle(
   const handler = opts.handlers[state] as LeanHandler;
   let outcome: Outcome;
   try {
-    outcome = await handler({ repoRoot: opts.repoRoot, issue: opts.issue, run, stepKey: key, now });
+    outcome = await handler({
+      repoRoot: opts.repoRoot,
+      issue: opts.issue,
+      run,
+      steps: run.steps,
+      stepKey: key,
+      now,
+    });
   } catch (err) {
     outcome = { kind: "error", message: (err as Error)?.message ?? String(err) };
   }
@@ -317,8 +344,31 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
     if (loaded === undefined) {
       run = newRun(opts);
     } else {
-      verifiedPosition(file, loaded);
-      run = loaded;
+      // Drive from the DERIVED position, never the snapshot. `verifiedPosition`
+      // refuses a file whose log does not fold to its snapshot and returns the
+      // position the log implies; taking `state`/`counters` off `loaded` as
+      // well would drive the run from the cache the check exists to displace.
+      const position = verifiedPosition(file, loaded);
+      run = { ...loaded, state: position.state, counters: position.counters };
+      if (run.result !== undefined) {
+        // The log folds to a terminal state and the record already carries its
+        // result — a second `/work-lean` on a finished issue. Nothing runs and
+        // nothing is written: the file is the answer. (A fold that reached a
+        // terminal state with NO result is the crash-after-the-final-step
+        // shape, and `driveLoop` ends it below, which is what stamps it.)
+        return { run, code: run.result.code, state: run.state };
+      }
+      if (run.state === "land" && !landEarned(run))
+        // The fold reached `land` by applying the log's outcomes through
+        // `next()`, which is the edge check and not the arrival check.
+        return ended(drive, run, "handed-back", landRefusal(run));
+      if (run.state === "landed" && !landEarned(run))
+        // The log's newest step is `land + merged`, so the fold is already
+        // past the arrival and `apply()` never saw this outcome. Both shapes
+        // have to be refused: the one where the merge is still owed, and the
+        // one where a file claims it happened. Without this second branch a
+        // record could assert its own merge by writing the step that says so.
+        return ended(drive, run, "handed-back", landRefusal(run));
     }
     return await driveLoop(drive, opts, run, now, maxSteps);
   } finally {
@@ -361,29 +411,14 @@ async function driveLoop(
       continue;
     }
 
-    // "A step that has an outcome is never re-run" is scoped to the PATH the
-    // run is on, which is the number of times this state has already been
-    // ENTERED — not merely to the state's name. Reusing the first `verify:0`
-    // outcome after a build round came back would re-apply a verdict from a
-    // tree that no longer exists, and would let a run whose second verify was
-    // never actually re-run reach `land` on a green it observed before the
-    // red. Same attempt number means the same step, and only that step is
-    // re-run after a crash.
-    const entries = run.steps.filter((s) => s.state === state).length;
-    // A step whose key cannot be read as an attempt number is refused by
-    // `loadRun`, so it reaches here only from an in-memory run. Treating it
-    // as attempt 0 would let such a key collide with the state's real first
-    // step and replay a verdict the run never earned — so no attempt number
-    // means no replay: the state is entered again instead.
-    const completed = run.steps.find(
-      (s) => s.state === state && s.outcome !== undefined && attemptOfStrict(s.key) === entries - 1,
-    );
-    if (completed?.outcome) {
-      // Completed on this entry: never re-run. Apply the table and move on.
-      run = apply(drive, run, completed.outcome);
-      continue;
-    }
-
+    // There is deliberately no "this entry already decided something, apply it
+    // instead of running" branch here. The position the loop drives from is
+    // DERIVED by folding the log (`verifiedPosition`), and that fold consumes
+    // one entry per visit, so the state the loop stands in is always one whose
+    // entry it has not yet consumed: there is never a decided step of the
+    // current state to re-apply. The branch that used to do this is what made
+    // "log entry missing" a shape a real drive could produce, and with it the
+    // exemptions the fold needed to tolerate that shape.
     const key = stepKey(opts.issue, state, nextAttempt(run, state));
     // Write-ahead BEFORE the handler runs: a process that dies here leaves a
     // step with no outcome, which is exactly the "re-run this one" signal.
