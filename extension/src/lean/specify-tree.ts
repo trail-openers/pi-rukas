@@ -38,14 +38,9 @@ import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import { type TestLocation, testLocationProblem } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
-import { fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
+import { existsInCommit, fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
-
-// The three per-path shape judgements live in `specify-path.ts` for the size
-// cap and are re-exported here unchanged: the boundary, its callers and its
-// smoke tests all keep `specify-tree.ts` as their one import path.
-export { fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
 
 /** The worktree directory name for one issue's specify step. */
 export function specifyWorktreeName(issue: number): string {
@@ -267,6 +262,21 @@ export const NEWNESS_REASON =
   "already exists at the base commit; a new acceptance test must be a new file";
 
 /**
+ * How many test files one submitted row may name.
+ *
+ * The boundary runs its whole rule set — including a git read per path — over
+ * every name a row carries, and a row comes from an untrusted child. An
+ * unbounded list is an unbounded number of git calls from one tool call, so the
+ * row is refused outright rather than processed: a criterion genuinely needs a
+ * handful of files, and the cap is not close to that.
+ *
+ * It counts the files of ONE row (one `submit_tests` call for one criterion),
+ * not the files a criterion ends up with: a child that legitimately needs more
+ * makes more calls, and each row is judged on its own.
+ */
+export const MAX_TEST_FILES_PER_ROW = 8;
+
+/**
  * The boundary every submitted path passes through.
  *
  * A row is dropped, with a reason, when its criterion is not a `verify:
@@ -315,9 +325,9 @@ export async function validateSubmitRows(
      */
     testLocation?: TestLocation;
     /**
-     * A kept path must not exist at the run's BASE COMMIT. `specify` and
-     * `challenge` both pass it (`existsInCommit`), and it is what makes
-     * an acceptance test a test the child WROTE.
+     * A kept path must not exist at the run's BASE COMMIT (`existsInCommit`,
+     * `specify-path.ts`), and it is what makes an acceptance test a test the
+     * child WROTE. `specify` and `challenge` both pass it.
      *
      * `exists` alone does not: it asks about the working tree, and the child
      * works in a checkout of that base — so an existing, green, tracked project
@@ -332,6 +342,29 @@ export async function validateSubmitRows(
 ): Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }> {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
   const keptByCriterion = new Map<string, string[]>();
+  // One git read per distinct path per boundary call, not per mention: two
+  // rows (or one row twice) naming `tests/AC1-x.test.ts` used to ask the base
+  // twice about the same name. The answer is a fact about (base, rel), so one
+  // call's cache is exactly as fresh as the tree it reads.
+  // The boundary runs its whole rule set — including a git read per path — over
+  // every name a row carries, and a row comes from an untrusted child. A row is
+  // one `submit_tests` call naming ONE criterion, so a row that names more files
+  // than this is the child spending unbounded git calls on one tool call: the
+  // row is refused outright rather than processed. A criterion genuinely needs a
+  // handful of files, and the cap is not close to that.
+  const rowCap = MAX_TEST_FILES_PER_ROW;
+  const baseAnswers = new Map<string, Promise<boolean>>();
+  const probeBase = opts.existsAtBase;
+  const existsAtBaseCached =
+    probeBase === undefined
+      ? undefined
+      : (rel: string): Promise<boolean> => {
+          const hit = baseAnswers.get(rel);
+          if (hit !== undefined) return hit;
+          const asked = probeBase(rel);
+          baseAnswers.set(rel, asked);
+          return asked;
+        };
   const dropped: DroppedRow[] = [];
   for (const row of rows) {
     if (!testable.has(row.criterionId)) {
@@ -345,6 +378,13 @@ export async function validateSubmitRows(
       continue;
     }
     const files = keptByCriterion.get(row.criterionId) ?? [];
+    if (row.testFiles.length > rowCap) {
+      dropped.push({
+        criterionId: row.criterionId,
+        reason: `criterion ${row.criterionId} submitted ${row.testFiles.length} test files; at most ${rowCap} are accepted per criterion`,
+      });
+      continue;
+    }
     for (const raw of row.testFiles) {
       // The absolute check runs on the RAW string: `path.isAbsolute` on a
       // normalised `//etc/passwd` would have collapsed it to `etc/passwd` and
@@ -407,7 +447,7 @@ export async function validateSubmitRows(
       // AFTER the existence check and before `fileProblem`: a file the child
       // wrote is not in the base commit at all, so this is the rule that tells
       // "the child authored this" apart from "this file was already here".
-      if ((await opts.existsAtBase?.(rel)) === true) {
+      if ((await existsAtBaseCached?.(rel)) === true) {
         dropped.push({
           criterionId: row.criterionId,
           path: rel,

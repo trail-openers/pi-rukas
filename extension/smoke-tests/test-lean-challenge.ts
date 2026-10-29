@@ -189,10 +189,20 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
 // its reason shows the cap and counts the rest rather than quoting them.
 {
   const TEN = Array.from({ length: 10 }, (_unused, i) => `tests/AC1-green-${i + 1}.test.sh`);
-  // Ten REFUSED rows (a path that is not a file in the tree) sit beside the ten
-  // green submissions: the per-file evidence list and the refused-row list are
-  // two separate note families and BOTH are capped, so each contributes its own
-  // `(+2 more)` once the cap of eight clips it.
+  // The ten green submissions arrive as TWO rows of the same criterion, because
+  // the boundary caps ONE row at `MAX_TEST_FILES_PER_ROW` names — a twenty-name
+  // row is refused outright, and then neither note family below is ever built.
+  // A child declares what it wrote per call, so two calls of ten names each are
+  // what a real over-submission looks like, and both families reach the cap.
+  const rowsFor = (rels: string[]): unknown[] => {
+    const rows: unknown[] = [];
+    for (let i = 0; i < rels.length; i += 5) rows.push(submit("AC1", rels.slice(i, i + 5)));
+    return rows;
+  };
+  // Ten REFUSED rows (a path that is not a file in the tree) sit beside them:
+  // the per-file evidence list and the refused-row list are two separate note
+  // families and BOTH are capped, so each contributes its own `(+2 more)` once
+  // the cap of eight clips it.
   const TEN_ABSENT = Array.from(
     { length: 10 },
     (_unused, i) => `tests/AC1-absent-${i + 1}.test.sh`,
@@ -202,7 +212,7 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     child: (wt) => {
       for (const rel of TEN) put(wt, rel, greenEdge(rel));
     },
-    toolUses: [submit("AC1", TEN.concat(TEN_ABSENT))],
+    toolUses: rowsFor(TEN.concat(TEN_ABSENT)),
   });
   const reason = r.outcome?.reason ?? "";
   assert(r.threw === undefined, `(g) no throw: ${r.threw?.message ?? "clean"}`);

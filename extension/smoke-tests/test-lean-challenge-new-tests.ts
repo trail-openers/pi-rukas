@@ -200,23 +200,23 @@ function withTrackedAtBase(issue: number, rel: string, content: string) {
     toolUses: [submit("AC1", [EDGE, TRACKED])],
   });
   const probes = r.gitArgvs.filter(
-    (a) => a.includes("cat-file") && a.includes("-e") && a.includes("--end-of-options"),
+    (a) => a.includes("ls-tree") && a.includes("--full-tree") && a.includes("--end-of-options"),
   );
   assert(
     probes.length >= 1,
     `(r4) the newness check is a real git probe through the step's exec seam (${probes.length} call(s))`,
   );
   assert(
-    probes.some((a) => a[a.length - 1] === `${built.baseSha}:${TRACKED}`),
-    `(r4) the probe is asked against the run's BASE sha and the normalised path, as one argv word (got ${JSON.stringify(probes.map((a) => a[a.length - 1]))})`,
+    probes.some((a) => a[a.length - 1] === TRACKED && a[a.length - 2] === "--"),
+    `(r4) the probe is asked against the run's BASE sha and the normalised path, as its own argv word after \`--\` (got ${JSON.stringify(probes.map((a) => a.slice(-2)))})`,
   );
   assert(
-    probes.some((a) => a.includes("--literal-pathspecs")),
-    "(r4) and the pathspec is literal, so a submitted glob cannot name a tracked file by pattern",
+    probes.some((a) => a.includes("--literal-pathspecs") && a[a.length - 3] === built.baseSha),
+    "(r4) the ref is the base sha, --end-of-options-closed, and the pathspec is literal, so a submitted glob cannot name a tracked file by pattern",
   );
   assert(
-    probes.every((a) => (a[a.length - 1] ?? "").startsWith(`${built.baseSha}:`)),
-    `(r4) no probe reads the head or the working tree — every newness question is about the base (got ${JSON.stringify(probes.map((a) => a[a.length - 1]))})`,
+    probes.every((a) => (a[a.length - 3] ?? "").startsWith(built.baseSha)),
+    `(r4) no probe reads the head or the working tree — every newness question is about the base (got ${JSON.stringify(probes.map((a) => a.slice(-3)))})`,
   );
   // Both infra classes are in scope on purpose: an unreadable base must throw
   // the pipeline's infra error rather than arrive as `none`, and this file's

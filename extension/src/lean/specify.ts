@@ -64,8 +64,8 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
-import { existsInCommit } from "./specify-absence.ts";
 import type { CaptureResult } from "./specify-capture.ts";
+import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { RED_PROOF_CONTRACT, namingLine, specifyPrompt, testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError } from "./specify-reset.ts";
@@ -74,7 +74,6 @@ import {
   assertSpecifyWorktreeOwned,
   declaredPaths,
   ensureSpecifyWorktreeWithProvision,
-  fileProblem,
   specifyBranch,
   specifyWorktreePath,
   validateSubmitRows,

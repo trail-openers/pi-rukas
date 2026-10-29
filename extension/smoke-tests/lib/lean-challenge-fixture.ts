@@ -401,10 +401,6 @@ export function configWith(runner: string = RUNNER): WorkConfig {
   return { ...defaultConfig(), verify: { fast: "true", test: runner } };
 }
 
-// The ONE `configWithLocation` lives in `lean-test-location-fixture.ts` and is
-// re-exported here, so a specify case and a challenge case build the same config.
-export { configWithLocation } from "./lean-test-location-fixture.ts";
-
 /** `git status --porcelain -uall` for a worktree, "" when clean. */
 export function status(wt: string): string {
   return git(wt, "status", "--porcelain", "-uall");

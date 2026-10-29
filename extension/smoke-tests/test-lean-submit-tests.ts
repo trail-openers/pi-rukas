@@ -281,4 +281,75 @@ function call(args: unknown): { name: string; arguments: unknown } {
   );
 }
 
+// (d) The boundary is bounded, and it does not ask git the same question twice.
+// Both rules cost something the child controls: a row names N files and the
+// newness rule costs one git read per name, so an unbounded row is an unbounded
+// number of git calls from one tool call, and a repeated name was asked twice.
+{
+  const many = Array.from({ length: 9 }, (_, i) => `tests/AC1-x${i}.test.ts`);
+  const over = await validateSubmitRows([{ criterionId: "AC1", testFiles: many }], {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async () => false,
+  });
+  assert(
+    over.kept.length === 0 &&
+      over.dropped.length === 1 &&
+      over.dropped[0]?.reason.includes("9 test files") === true &&
+      over.dropped[0]?.reason.includes("8") === true,
+    `(bound) a row of 9 test files is refused with a reason naming the cap, not processed (got ${JSON.stringify(over.dropped)})`,
+  );
+  const eight = await validateSubmitRows([{ criterionId: "AC1", testFiles: many.slice(0, 8) }], {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async () => false,
+  });
+  assert(
+    eight.kept.length === 1 && eight.kept[0]?.testFiles.length === 8,
+    `(bound) eight files — the cap itself — are kept, so the rule refuses excess and not the row (got ${JSON.stringify(eight.kept)})`,
+  );
+
+  // One probe per distinct path per call: four rows and one duplicated name
+  // used to be five git reads about `tests/AC1-tracked.test.ts`.
+  const asked: string[] = [];
+  await validateSubmitRows(
+    [
+      { criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["./tests/AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["tests//AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["tests/AC1-a.test.ts"] },
+    ],
+    {
+      spec: SPEC,
+      exists: () => true,
+      existsAtBase: async (p) => {
+        asked.push(p);
+        return p === "tests/AC1-tracked.test.ts";
+      },
+    },
+  );
+  assert(
+    asked.length === 2 &&
+      asked.includes("tests/AC1-tracked.test.ts") &&
+      asked.includes("tests/AC1-a.test.ts"),
+    `(memo) the base is asked once per distinct normalised path, not once per mention (got ${JSON.stringify(asked)})`,
+  );
+  // The memo is per CALL: a second call must re-read, because between two calls
+  // the step may have committed, and a stale "new" is the fraud the rule exists
+  // to refuse.
+  const second: string[] = [];
+  await validateSubmitRows([{ criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] }], {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async (p) => {
+      second.push(p);
+      return false;
+    },
+  });
+  assert(
+    second.length === 1,
+    `(memo) the cache does not outlive the call, so a later boundary call sees the tree as it is now (got ${JSON.stringify(second)})`,
+  );
+}
+
 process.exit(exit);

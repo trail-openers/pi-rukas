@@ -42,14 +42,19 @@ import {
 import {
   ROOTS,
   SpecifyInfraError,
-  configWithLocation,
   git,
   makeRepo,
   redScript,
   runSpecify,
   submit,
 } from "./lib/lean-specify-fixture.ts";
-import { assert, LOC, SPEC, testLocationExit } from "./lib/lean-test-location-fixture.ts";
+import {
+  assert,
+  LOC,
+  SPEC,
+  configWithLocation,
+  testLocationExit,
+} from "./lib/lean-test-location-fixture.ts";
 
 // ────────────────────────────────── (3a) the boundary refuses misplaced tests
 
@@ -406,6 +411,14 @@ import { assert, LOC, SPEC, testLocationExit } from "./lib/lean-test-location-fi
     typeof SpecifyInfraError === "function" && typeof ChallengeInfraError === "function",
     "both infra error classes are in scope — a misplaced test threw neither",
   );
+}
+
+for (const dir of ROOTS) {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* best effort */
+  }
 }
 
 console.log(

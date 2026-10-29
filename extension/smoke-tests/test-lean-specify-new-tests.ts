@@ -32,7 +32,6 @@
 import { NEWNESS_REASON } from "../src/lean/specify-tree.ts";
 import {
   ROOTS,
-  configWithLocation,
   git,
   makeRepo,
   put,
@@ -40,7 +39,7 @@ import {
   runSpecify,
   submit,
 } from "./lib/lean-specify-fixture.ts";
-import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
+import { assert, configWithLocation, testLocationExit } from "./lib/lean-test-location-fixture.ts";
 
 // ─────── (n) a submitted test must be NEW: an existing tracked test is refused
 //

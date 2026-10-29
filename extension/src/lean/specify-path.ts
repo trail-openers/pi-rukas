@@ -1,10 +1,8 @@
 /**
  * lean/specify-path — the per-path shape judgements the submit boundary calls.
  *
- * Split from `specify-tree.ts` for the file-size cap; it is the same boundary,
- * and `specify-tree.ts` re-exports every symbol here so its importers (and its
- * smoke tests) never learn about the seam. Three pure functions, each answering
- * one question about ONE path, with no git and no model in the loop:
+ * Split from `specify-tree.ts` for the file-size cap; it is the same boundary.
+ * Four judgements, each answering one question about ONE path:
  *
  *   - `pathProblem`      — is this a worktree-relative path that does not
  *     traverse and avoids the directories a test never lives in;
@@ -12,11 +10,19 @@
  *     one file must collapse to, or the frozen/base checks can be dodged by
  *     punctuation;
  *   - `fileProblem`      — is the thing at that path an ordinary file of THIS
- *     worktree, rather than a link, a fifo, or a hard link to somewhere else.
+ *     worktree, rather than a link, a fifo, or a hard link to somewhere else;
+ *   - `existsInCommit`   — is that name an object in the run's BASE tree, which
+ *     is the only read that tells "the child wrote this" from "it was checked
+ *     out at me".
+ *
+ * The last is the module's one git read. Everything else here is pure.
  */
 
 import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { isFullCommitSha } from "../commit-sha.ts";
+import type { ExecFn } from "../worktree.ts";
+import { NO_HOOKS, SpecifyResetError } from "./specify-reset.ts";
 
 /** A directory segment the step never accepts a test file inside. */
 const FORBIDDEN_SEGMENTS = [".pi", ".git", "node_modules"] as const;
@@ -87,4 +93,77 @@ export function fileProblem(wt: string, rel: string): string | undefined {
   if (realFile !== realTree && !realFile.startsWith(realTree + path.sep))
     return `file ${rel} resolves outside the worktree (${realFile})`;
   return undefined;
+}
+
+/**
+ * Is `rel` an object in the tree of `ref`? Asked of git, not of the working tree.
+ *
+ * The boundary in `validateSubmitRows` needs this to refuse a submitted test the
+ * run's base ALREADY has — a tracked test the child never wrote is not a new
+ * acceptance test, whatever it declares about it — and only a read of the base
+ * tree answers it: a working-tree check cannot tell "the child wrote this" from
+ * "it was checked out at me".
+ *
+ * The read is `git ls-tree -z --full-tree --literal-pathspecs <ref> -- <rel>`,
+ * whose answer is its STDOUT, not its stderr:
+ *
+ *   - exit 0 and empty stdout → **false**: no such object, the file is new;
+ *   - exit 0 and non-empty stdout → **true**, and a TREE counts too — which is
+ *     right, because a directory at that path is not a new file (the boundary's
+ *     `fileProblem` refuses it as a test regardless);
+ *   - any rejection → **throw**. The child's path never enters the judgement.
+ *
+ * The previous shape probed with `cat-file -e` and read git's *stderr* to decide
+ * whether a refusal meant absence. Git interpolates the child-chosen path into
+ * that message, so a file named `does not exist in 'x'.ts` could make any fault
+ * read as absence — and a repository git cannot read would certify that EVERY
+ * submitted test is new, passing the exact fraud the newness rule exists to
+ * refuse while reporting total confidence. There is no wording left to judge:
+ * presence and absence are a byte count on a channel the path cannot write to.
+ *
+ * `ref` is a full lowercase oid or this throws (the shape check
+ * `lean/base-proof.ts` applies to a run's base): a moving name or a revision
+ * chain silently changes which tree newness is judged against.
+ *
+ * `--end-of-options` closes the ref so a path the child spelled cannot be read
+ * as a flag, `--` is the standard separator between rev and pathspec, and
+ * `--literal-pathspecs` (a top-level option, as `commitTestFiles` passes it)
+ * makes `tests/[a]x.test.ts` one file rather than a glob onto someone else's.
+ */
+export async function existsInCommit(
+  exec: ExecFn,
+  cwd: string,
+  ref: string,
+  rel: string,
+): Promise<boolean> {
+  if (!isFullCommitSha(ref))
+    throw new SpecifyResetError(
+      `could not read the base commit to check whether ${rel} is new: \`${ref}\` is not a full commit sha`,
+    );
+  try {
+    const r = await exec("git", {
+      argv: [
+        ...NO_HOOKS,
+        "--literal-pathspecs",
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        "--end-of-options",
+        ref,
+        "--",
+        rel,
+      ],
+      cwd,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return (r.stdout ?? "") !== "";
+  } catch (err) {
+    // git's own message rides along: a handback that says only "could not read
+    // the base commit" sends an operator hunting for a missing file in a
+    // repository whose object store is simply broken.
+    throw new SpecifyResetError(
+      `could not read the base commit ${ref} to check whether ${rel} is new: ${(err as Error).message}`,
+    );
+  }
 }

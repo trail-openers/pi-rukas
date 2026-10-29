@@ -138,10 +138,6 @@ export function configWith(verify: WorkConfig["verify"]): WorkConfig {
   return { ...defaultConfig(), verify };
 }
 
-// The ONE `configWithLocation` lives in `lean-test-location-fixture.ts` and is
-// re-exported here, so a specify case and a challenge case build the same config.
-export { configWithLocation } from "./lean-test-location-fixture.ts";
-
 function ctxFor(repoRoot: string, baseSha: string, issue: number): HandlerCtx {
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch: "" });
   return { repoRoot, issue, run, steps: run.steps, stepKey: `${issue}:specify:0`, now: () => 1 };
