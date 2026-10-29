@@ -8,36 +8,47 @@
  *   1. re-read the spec from the forge — an issue body can change between
  *      `ready` and here, and a test frozen against a spec nobody re-read is
  *      frozen against a fiction;
- *   2. put a clean worktree at the run's base sha (create, or reset a leftover);
- *   3. prove the BASE healthy — the pinned compiler's canary and the project's
- *      fast verify tier. A red test is only evidence when the base builds, so
- *      this runs BEFORE anything is dispatched;
+ *   2. refuse the run on anything the step can settle WITHOUT an adversary: a
+ *      spec with test criteria but no runner configured, an unhealthy base, and
+ *      a directory at the worktree path the step does not own. An adversary is
+ *      expensive and proves none of these;
+ *   3. put a clean worktree at the run's base sha (create, or reset a leftover
+ *      the step owns);
  *   4. dispatch ONE adversary that writes the tests and submits them;
- *   5. validate every submitted row at the boundary and revert everything the
- *      child touched that it did not submit;
- *   6. run each kept file on the base and keep only the ones that fail for the
- *      stated behaviour;
- *   7. every `verify: "test"` criterion must have at least one red file, or the
+ *   5. validate every submitted row at the boundary — criterion, path shape,
+ *      existence, and that the path is an ordinary file of this worktree (not a
+ *      symlink, not a hard link, not a path that resolves outside it);
+ *   6. CAPTURE the bytes of every kept file into memory. That is the only thing
+ *      that survives the child;
+ *   7. RESET the worktree completely to the base — child commits, staged
+ *      changes, untracked files and ignore tricks all go — and prove it;
+ *   8. REWRITE the captured bytes to their paths, so what gets run, hashed and
+ *      committed is exactly what was captured, whatever the child did next;
+ *   9. prove red on exactly those bytes, per file, with the runner template.
+ *      Every `verify: "test"` criterion must have at least one red file, or the
  *      step refuses the run;
- *   8. freeze: hash the kept files, commit exactly those, and return the record
- *      `build` and `verify` read back.
+ *  10. COMMIT the kept files and assert the commit contains exactly them; then
+ *      HASH the committed blobs, so the record later steps check against
+ *      describes the commit rather than a momentary state of the tree.
  *
  * Two kinds of failure, deliberately apart. `no-red-test` is a VERDICT about
  * the work — the spec or the child's tests are not good enough, and the run
  * ends `not-ready` with named rules. A THROW is infrastructure — an unhealthy
- * base, an unreadable worktree, a dispatch that died — and the engine turns it
- * into handed-back exit 10 without blaming the issue.
+ * base, a worktree the step does not own, a dispatch that died, a commit that
+ * did not contain what it was told to — and the engine turns it into
+ * handed-back exit 10 without blaming the issue.
  *
  * Everything outside the pure parts is injected, so the test drives a real
  * temp git repo through the same seams production uses.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
-import { guardCompilerIntegrity } from "../work-driver-toolchain-canary.ts";
+import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
+import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import type { WorkConfig } from "./config.ts";
@@ -46,21 +57,29 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { specifyPrompt, testCriteria } from "./specify-prompt.ts";
-import { hashFile, runTestFile } from "./specify-proof.ts";
+import { type Proof, runTestFile, sha256 } from "./specify-proof.ts";
 import {
-  changedPaths,
+  SpecifyCommitError,
+  SpecifyResetError,
+  commitTestFiles,
+  committedBlob,
+  resetWorktreeToBase,
+  writeCaptured,
+} from "./specify-reset.ts";
+import {
+  assertSpecifyWorktreeOwned,
+  captureTestBytes,
   declaredPaths,
-  ensureSpecifyWorktree,
-  revertUndeclared,
+  ensureSpecifyWorktreeWithProvision,
+  fileProblem,
   specifyBranch,
   specifyWorktreePath,
   validateSubmitRows,
+  worktreeExists,
 } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
-
-export const SUBMIT_TESTS_TOOL = "submit_tests";
 
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
 export type SpecifyDispatch = (
@@ -74,9 +93,16 @@ export interface SpecifyDeps {
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
   /** The config for this run, loaded at the run's base sha. */
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
-  now: () => number;
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
+  /**
+   * Reads the kept test files into memory; `captureTestBytes` in production.
+   * A seam for the same reason every other filesystem fact here is one: the
+   * smoke test proves the step commits the bytes it captured rather than
+   * whatever the child leaves on disk afterwards, and that needs a read the
+   * test can place against the child's own last write.
+   */
+  capture?: (wt: string, paths: string[]) => Map<string, Buffer>;
 }
 
 /** A base, a tree or a child we cannot trust. The engine turns this into 10. */
@@ -91,7 +117,7 @@ function specRules(body: string): { spec?: PiSpec; rules: string[] } {
   return { spec: parsed.spec, rules: readiness(parsed.spec) };
 }
 
-/** One line per dropped row, for the outcome reason. */
+/** One line per dropped row or file, for the outcome reason. */
 function dropNote(dropped: { criterionId: string; path?: string; reason: string }[]): string {
   if (dropped.length === 0) return "";
   const parts = dropped
@@ -101,12 +127,71 @@ function dropNote(dropped: { criterionId: string; path?: string; reason: string 
   return ` dropped ${dropped.length}${more > 0 ? ` (${more} more)` : ""} — ${parts.join("; ")}`;
 }
 
-/** Base health: the compiler canary (when the tier uses it) then the fast tier. */
-async function assertBaseHealthy(exec: ExecFn, wt: string, config: WorkConfig): Promise<void> {
+/** A runner that could not be started, or was killed: a toolchain fault. */
+const INFRA_DETAIL = /could not be started|killed or timed out|nothing to run/;
+
+/**
+ * A non-red run of one captured file, phrased as the step's reason for it.
+ *
+ * The old classifier here also threw on any output mentioning `node_modules`
+ * or `Cannot find module` — which is exactly what the canonical TDD red prints
+ * when a test imports a module nobody has written yet. That arm is gone. An
+ * unrunnable runner is the only thing that still throws, and it is recognised
+ * by the proof's own words rather than by the test's output, so a test that
+ * prints those phrases can never be mistaken for a broken toolchain.
+ */
+function proofNote(cand: { criterionId: string; path: string }, proof: Proof): string {
+  if (proof.kind === "infra" && INFRA_DETAIL.test(proof.detail))
+    throw new SpecifyInfraError(`the test runner could not run ${cand.path}: ${proof.detail}`);
+  return `${cand.criterionId} ${cand.path}: ${proof.detail}`;
+}
+
+/** Remove `rel` from the worktree; returns the reason it is still there, if any. */
+function removeRejected(wt: string, rel: string): string | undefined {
+  if (!existsSync(path.join(wt, rel))) return undefined;
+  try {
+    rmSync(path.join(wt, rel));
+  } catch (err) {
+    return `could not remove the rejected test ${rel}: ${(err as Error).message}`;
+  }
+  if (existsSync(path.join(wt, rel))) return `the rejected test ${rel} could not be removed`;
+  return undefined;
+}
+
+/**
+ * Base health: the compiler canary (when the tier uses it), then the project's
+ * fast verify tier. Both run BEFORE the adversary is dispatched.
+ *
+ * A red test is only evidence when the base builds, and a red is a VERDICT —
+ * so the question "does the toolchain work at all" must be answered somewhere
+ * that cannot be confounded with what a test prints. That place is here, and
+ * it is the only place: a failure throws rather than dropping rows.
+ *
+ * The canary runs in the directory the tier runs the pinned compiler in
+ * (`packageDirFor`, because the tier gets there with `cd extension && …`), and
+ * the tier itself runs with the driver's knobs scrubbed, exactly as every
+ * other verify child does. When provisioning could not give the tree its
+ * dependencies, that is said in the message — a bare worktree failing a
+ * dependency-hungry command is otherwise indistinguishable from a broken base.
+ */
+async function assertBaseHealthy(
+  exec: ExecFn,
+  wt: string,
+  config: WorkConfig,
+  provisioning?: { linked: string[]; problem?: string },
+): Promise<void> {
   const fast = config.verify.fast;
   if (fast === undefined) return;
-  const guard = await guardCompilerIntegrity({ cmd: fast, cwd: wt, where: wt, run: exec });
-  if (guard?.failure !== undefined) throw new SpecifyInfraError(`base unhealthy: ${guard.failure}`);
+  const note =
+    provisioning?.problem === undefined ? "" : ` — provisioning: ${provisioning.problem}`;
+  const guard = await guardCompilerIntegrity({
+    cmd: fast,
+    cwd: packageDirFor(fast, wt),
+    where: wt,
+    run: exec,
+  });
+  if (guard?.failure !== undefined)
+    throw new SpecifyInfraError(`base unhealthy: ${guard.failure}${note}`);
   // The shell form: a verify tier is a shell command line (`cd pkg && node
   // …/tsc --noEmit && bun run test`), not one executable plus argv, and it is
   // the project's own command that says whether this base builds at all.
@@ -114,13 +199,14 @@ async function assertBaseHealthy(exec: ExecFn, wt: string, config: WorkConfig): 
     cwd: wt,
     timeout: 30 * 60_000,
     maxBuffer: 8 * 1024 * 1024,
+    env: verifyChildEnv(),
   }).catch((err: unknown) => ({ __err: err }) as never);
   if ((ran as { __err?: unknown })?.__err !== undefined) {
     const e = (ran as { __err?: { stderr?: string; message?: string } }).__err;
     throw new SpecifyInfraError(
       `base unhealthy: verify.fast failed in ${wt}: ${(e?.stderr ?? e?.message ?? "unknown error")
         .replace(/\s+/g, " ")
-        .slice(0, 400)}`,
+        .slice(0, 400)}${note}`,
     );
   }
 }
@@ -162,74 +248,7 @@ async function dispatchAdversary(
   return result.toolUses ?? [];
 }
 
-/** Prove each kept file red on base; returns the keeps, and the reasons for the rest. */
-async function proveKept(
-  deps: SpecifyDeps,
-  wt: string,
-  template: string,
-  candidates: { criterionId: string; path: string }[],
-): Promise<{ red: { criterionId: string; path: string }[]; notes: string[] }> {
-  const red: { criterionId: string; path: string }[] = [];
-  const notes: string[] = [];
-  for (const cand of candidates) {
-    const proof = await runTestFile(deps.exec, { wt, template, file: cand.path });
-    if (proof.kind === "infra")
-      throw new SpecifyInfraError(
-        `base unhealthy: ${cand.path} could not be run (${proof.detail})`,
-      );
-    if (proof.kind === "red") {
-      red.push(cand);
-      continue;
-    }
-    notes.push(`${cand.criterionId} ${cand.path}: ${proof.detail}`);
-  }
-  return { red, notes };
-}
-
-/** Freeze: hash the kept files, commit exactly those, and record them. */
-async function freeze(
-  deps: SpecifyDeps,
-  wt: string,
-  issue: number,
-  red: { criterionId: string; path: string }[],
-): Promise<{ frozen: Record<string, string>; tests: Record<string, string[]> }> {
-  const frozen: Record<string, string> = {};
-  const tests: Record<string, string[]> = {};
-  for (const { criterionId, path: rel } of red) {
-    const sha = hashFile(path.join(wt, rel));
-    if (sha === undefined) throw new SpecifyInfraError(`could not hash ${rel} in ${wt}`);
-    frozen[rel] = sha;
-    const list = tests[criterionId] ?? [];
-    if (!list.includes(rel)) list.push(rel);
-    tests[criterionId] = list;
-  }
-  const paths = Object.keys(frozen);
-  if (paths.length > 0) {
-    await deps.exec("git", {
-      argv: ["add", "--", ...paths],
-      cwd: wt,
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-    });
-    // The pathspec is on the COMMIT, not just the add. Without it the commit
-    // takes whatever the index holds, and the index also holds whatever the
-    // child staged for itself — so a child that ran `git add` on its own stray
-    // edit shipped that edit in the "acceptance tests" commit and the test
-    // files stayed uncommitted. Naming the frozen paths makes the commit
-    // contain exactly what the step proved red, whatever the child staged.
-    await deps.exec("git", {
-      argv: ["commit", "-m", `test: acceptance tests for #${issue}`, "--", ...paths],
-      cwd: wt,
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-    });
-  }
-  return { frozen, tests };
-}
-
-/**
- * The `specify` step. Returns `ok` | `no-red-test`; THROWS on infrastructure.
- */
+/** The `specify` step. Returns `ok` | `no-red-test`; THROWS on infrastructure. */
 export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   // 1. The spec, re-read — `ready` may have run in another process, minutes
@@ -247,82 +266,166 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const base = ctx.run.baseSha;
   if (base.trim() === "") throw new SpecifyInfraError("the run carries no base sha");
   const config = await deps.loadConfig(repoRoot, base);
-
-  // 2. A clean worktree at the base, created or reset.
   const branch = specifyBranch(ctx.run.branch, issue);
   const wt = specifyWorktreePath(repoRoot, issue);
+  // A base sha and a branch name both reach git command lines in this step.
+  // `assertSafeRef` is what stands between a ref and shell expansion.
   try {
-    await ensureSpecifyWorktree(deps.exec, { repoRoot, issue, fromRef: base, branch });
+    assertSafeRef(base);
+    assertSafeRef(branch);
   } catch (err) {
-    throw new SpecifyInfraError(`could not prepare the worktree ${wt}: ${(err as Error).message}`);
+    throw new SpecifyInfraError((err as Error).message);
   }
 
-  // 3. Base health BEFORE any red is trusted.
-  await assertBaseHealthy(deps.exec, wt, config);
-
-  // 4. The adversary.
-  const toolUses = await dispatchAdversary(deps, {
-    issue,
-    spec,
-    wt,
-    repoRoot,
-    testRunner: config.verify.test,
-  });
-
-  // 5. Extract, validate at the boundary, and revert everything undeclared.
-  const { rows, skipped } = extractSubmitTests(toolUses);
-  const { kept, dropped } = validateSubmitRows(rows, {
-    spec,
-    exists: (rel) => existsSync(path.join(wt, rel)),
-  });
-  const dropNoteText = dropNote(dropped);
-  const candidates = declaredPaths(
-    Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
-  );
-  const reverted = await revertUndeclared(deps.exec, wt, new Set(candidates.map((c) => c.path)));
-
-  // 7. A runner is required whenever the spec asks for tests at all.
   const wanted = testCriteria(spec);
   const template = config.verify.test;
-  if (template === undefined) {
-    if (wanted.length === 0)
-      return { kind: "no-red-test", failedRules: ["no test criteria in the spec"] };
+
+  // 2. The preconditions, all of them BEFORE the dispatch. Each one is a fact
+  //    the step can establish for itself, and an adversary spends tokens
+  //    proving none of them: a run with no runner configured could only ever
+  //    return the same verdict, an unhealthy base makes every red meaningless,
+  //    and a tree the step does not own is not the step's to reset.
+  if (wanted.length > 0 && template === undefined) {
     return {
       kind: "no-red-test",
       failedRules: ["no test runner configured (.pi/work.json verify.test)"],
     };
   }
+  if (worktreeExists(wt)) {
+    try {
+      await assertSpecifyWorktreeOwned(deps.exec, { repoRoot, wt, baseSha: base, branch });
+    } catch (err) {
+      throw new SpecifyInfraError((err as Error).message);
+    }
+  }
 
-  // 6. Prove red on base. An infra result throws; a green or unclear file is
-  //    dropped and named in the reason.
-  const stillThere = candidates.filter((c) => existsSync(path.join(wt, c.path)));
-  const { red, notes } = await proveKept(deps, wt, template, stillThere);
+  // 3. The worktree: created at the base, or reset to it.
+  let linked: string[] = [];
+  let provisioning: { linked: string[]; problem?: string } | undefined;
+  try {
+    const prepared = await ensureSpecifyWorktreeWithProvision(deps.exec, {
+      repoRoot,
+      issue,
+      fromRef: base,
+      branch,
+    });
+    linked = prepared.linked;
+    if (prepared.problem !== undefined)
+      provisioning = { linked: prepared.linked, problem: prepared.problem };
+  } catch (err) {
+    if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
+    throw new SpecifyInfraError(`could not prepare the worktree ${wt}: ${(err as Error).message}`);
+  }
 
-  // 8. Coverage: every test criterion needs at least one red file.
-  const uncovered = wanted.filter((c) => !red.some((r) => r.criterionId === c.id)).map((c) => c.id);
-  if (uncovered.length > 0) {
-    const why = uncovered.map(
-      (id) =>
-        `criterion ${id} has no red test${skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : ""}`,
+  // 4. Base health BEFORE any red is trusted.
+  await assertBaseHealthy(deps.exec, wt, config, provisioning);
+
+  // 5. The adversary.
+  const toolUses = await dispatchAdversary(deps, {
+    issue,
+    spec,
+    wt,
+    repoRoot,
+    testRunner: template,
+  });
+
+  // 6. Extract and validate at the boundary. A row whose path is not an
+  //    ordinary file of THIS worktree is dropped here, before a single byte of
+  //    it is read.
+  const { rows, skipped } = extractSubmitTests(toolUses);
+  const { kept, dropped } = validateSubmitRows(rows, {
+    spec,
+    exists: (rel) => existsSync(path.join(wt, rel)),
+    fileProblem: (rel) => fileProblem(wt, rel),
+  });
+  const notes: string[] = [];
+  const candidates = declaredPaths(
+    Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
+  );
+
+  // 7. CAPTURE: the bytes of every kept file, in memory. Nothing else the
+  //    child produced survives what comes next.
+  let captured: Map<string, Buffer>;
+  try {
+    captured = (deps.capture ?? captureTestBytes)(
+      wt,
+      candidates.map((c) => c.path),
     );
+  } catch (err) {
+    throw new SpecifyInfraError((err as Error).message);
+  }
+
+  // 8. RESET to base — the child's commits, its staging, its untracked files
+  //    and its ignore rules all go, and the reset is confirmed before anything
+  //    is written back.
+  try {
+    await resetWorktreeToBase(deps.exec, wt, base, branch, linked);
+    // 9. REWRITE the captured bytes. Plain writes; no links, no renames.
+    writeCaptured(wt, captured);
+  } catch (err) {
+    if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
+    throw new SpecifyInfraError(
+      `could not rewrite the captured tests in ${wt}: ${(err as Error).message}`,
+    );
+  }
+
+  // 10. Prove red on exactly these bytes, per file. A green or unclear file is
+  //     dropped and DELETED from the tree; only a runner that could not be
+  //     started (or was killed) is infrastructure.
+  const red: typeof candidates = [];
+  for (const cand of candidates) {
+    const proof = await runTestFile(deps.exec, {
+      wt,
+      template: template as string,
+      file: cand.path,
+    });
+    if (proof.kind === "red") {
+      red.push(cand);
+      continue;
+    }
+    notes.push(proofNote(cand, proof));
+    const why = removeRejected(wt, cand.path);
+    if (why !== undefined) notes.push(why);
+  }
+
+  // 11. Coverage: every test criterion needs at least one red file.
+  const uncovered = wanted.filter((c) => !red.some((r) => r.criterionId === c.id)).map((c) => c.id);
+  const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
+  if (uncovered.length > 0) {
+    const why = uncovered.map((id) => `criterion ${id} has no red test${skippedNote}`);
     return {
       kind: "no-red-test",
       failedRules: why,
-      reason: [...why, ...notes].join(";") + dropNoteText,
+      reason: [...why, ...notes].join(";") + dropNote(dropped),
     };
   }
 
-  // 9. Freeze and commit.
-  const { frozen, tests } = await freeze(deps, wt, issue, red);
-  const left = await changedPaths(deps.exec, wt);
+  // 12. COMMIT the kept files, and assert the commit is exactly them.
+  const paths = [...new Set(red.map((r) => r.path))];
+  try {
+    await commitTestFiles(deps.exec, wt, base, paths, `test: acceptance tests for #${issue}`);
+  } catch (err) {
+    if (err instanceof SpecifyCommitError) throw new SpecifyInfraError(err.message);
+    throw new SpecifyInfraError(`could not commit the acceptance tests: ${(err as Error).message}`);
+  }
+
+  // 13. HASH the COMMITTED blobs, not the working files: what the rest of the
+  //     run compares against has to describe the commit, not whatever was on
+  //     disk when the step happened to look.
+  const frozen: Record<string, string> = {};
+  const tests: Record<string, string[]> = {};
+  for (const { criterionId, path: rel } of red) {
+    frozen[rel] = sha256(await committedBlob(deps.exec, wt, rel));
+    const list = tests[criterionId] ?? [];
+    if (!list.includes(rel)) list.push(rel);
+    tests[criterionId] = list;
+  }
+
   const reason = [
     `froze ${Object.keys(frozen).length} red test file(s) for ${Object.keys(tests).length} criterion/criteria`,
-    reverted.length > 0
-      ? `reverted ${reverted.length} undeclared path(s): ${reverted.join(", ")}`
-      : "",
+    skipped > 0 ? `${skipped} submit_tests call(s) skipped or refused as malformed` : "",
     notes.length > 0 ? `dropped ${notes.length} non-red file(s): ${notes.join("; ")}` : "",
-    dropNoteText,
-    left.length > 0 ? `warning: worktree still reports ${left.length} changed path(s)` : "",
+    dropNote(dropped),
   ]
     .filter((s) => s !== "")
     .join("; ");

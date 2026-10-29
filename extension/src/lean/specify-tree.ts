@@ -1,21 +1,27 @@
+#!/usr/bin/env bun
 /**
- * lean/specify-tree — the worktree the specify child works in, and what the
- * step does to it afterwards.
+ * lean/specify-tree — the worktree the specify child works in, and the
+ * CAPTURE / RESET / REWRITE primitives the step drives it with.
  *
- * Three jobs, all deterministic git/file facts with no model in the loop:
+ * Four jobs, all deterministic git/file facts with no model in the loop:
  *
  *   1. `ensureSpecifyWorktree` — a path nobody has to guess (`<repoRoot>/
- *      .worktrees/lean-<issue>`), created detached at the run's base sha, or
- *      RESET to that base when it is left over from a crashed run. A re-run
- *      that inherited a half-written worktree would otherwise prove tests red
- *      against code a dead child had already changed.
- *   2. `validateSubmitRows` / `declaredPaths` — the boundary a `submit_tests`
- *      row has to pass before the step believes a file is a test the child
- *      wrote (see submit-tests-extract.ts for the reading half).
- *   3. `revertUndeclared` — everything in the worktree that the child did not
- *      submit as a test is put back to base, so what the step freezes is only
- *      tests. A child that "helpfully" fixed the bug would otherwise sail
- *      through the rest of the run with its fix baked into the frozen state.
+ *      .worktrees/lean-<issue>`), created at the run's base sha, plus
+ *      `assertSpecifyWorktreeOwned`, which refuses a path at that location
+ *      that the step does not own. A directory someone else made is not the
+ *      step's to `reset --hard`.
+ *   2. `validateSubmitRows` — the boundary a `submit_tests` row has to pass
+ *      before the step believes a file is a test the child wrote (see
+ *      submit-tests-extract.ts for the reading half), including the
+ *      filesystem check that a kept path is an ordinary file of the worktree.
+ *   3. `captureTestBytes` — the ONLY thing that survives from the child: the
+ *      bytes of each kept file, read into memory. Everything the child did to
+ *      the tree afterwards — its own commits, a rewritten test, a `.gitignore`
+ *      that hides a stray file — is irrelevant, because the step resets the
+ *      tree and writes those bytes back verbatim.
+ *   4. `resetWorktreeToBase` — discard child commits, staged changes,
+ *      untracked files and ignore tricks, then PROVE the tree is at base and
+ *      clean, or throw. A reset nobody confirmed is a claim, not a fact.
  *
  * The worktree itself is created through `worktreeCreate` from ../worktree.ts
  * — so it gets the driver's pre-add guards and its dependency provisioning,
@@ -26,10 +32,12 @@
  * from the run, and neither is allowed to become a word a shell re-parses.
  */
 
-import { existsSync } from "node:fs";
+import type { Dirent } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import type { PiSpec } from "./spec.ts";
+import { resetWorktreeToBase } from "./specify-reset.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 
 /** The worktree directory name for one issue's specify step. */
@@ -52,76 +60,158 @@ export function worktreeExists(wt: string): boolean {
   return existsSync(wt);
 }
 
+/** `git worktree list --porcelain` from `repoRoot`: every registered path. */
+async function registeredWorktreePaths(
+  exec: ExecFn,
+  repoRoot: string,
+): Promise<string[] | undefined> {
+  let stdout: string | undefined;
+  try {
+    const r = await exec("git", {
+      argv: ["worktree", "list", "--porcelain"],
+      cwd: repoRoot,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    stdout = r.stdout;
+  } catch {
+    // Unreadable listing is NOT "no worktrees here" — the caller refuses.
+    return undefined;
+  }
+  const out: string[] = [];
+  for (const line of (stdout ?? "").split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    try {
+      out.push(realpathSync(line.slice("worktree ".length).trim()));
+    } catch {
+      // A path that cannot be resolved simply is not the one we are looking for.
+    }
+  }
+  return out;
+}
+
 /**
- * Create the worktree at `fromRef` and check out the run's branch in it.
+ * The precondition for a worktree that is ALREADY there: this step owns it, or
+ * the step does not touch it.
  *
- * `worktreeCreate` always adds DETACHED (that is the always-worktree rule,
- * #287), so the named branch is created afterwards with `checkout -B`: `-B`
- * rather than `-b` because a branch left over from a previous attempt of the
- * same run must move to the base rather than make the step fail.
+ * `.worktrees/lean-<issue>` is a name another tool — or a human — can also
+ * use. `reset --hard` and `clean -fdx` in a tree the step does not own destroys
+ * somebody else's work, so ownership is PROVEN rather than inferred from the
+ * directory existing: the path appears in `git worktree list --porcelain` of
+ * this repo, and its HEAD is either the run's branch or detached at the base
+ * sha. Anything else, including an unreadable listing, throws before a single
+ * mutation, and the foreign tree is left exactly as found.
  */
-async function create(
+export async function assertSpecifyWorktreeOwned(
+  exec: ExecFn,
+  opts: { repoRoot: string; wt: string; baseSha: string; branch: string },
+): Promise<void> {
+  const foreign = `the directory ${opts.wt} is not a worktree of this repository at ${opts.branch} or ${opts.baseSha} — refusing to reset a tree this step does not own`;
+  const registered = await registeredWorktreePaths(exec, opts.repoRoot);
+  if (registered === undefined) throw new Error(foreign);
+  let real: string;
+  try {
+    real = realpathSync(opts.wt);
+  } catch {
+    throw new Error(foreign);
+  }
+  if (!registered.includes(real)) throw new Error(foreign);
+  const head = await exec("git", {
+    argv: ["rev-parse", "HEAD"],
+    cwd: opts.wt,
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  }).catch(() => undefined);
+  if (head === undefined) throw new Error(foreign);
+  if ((head.stdout ?? "").trim() !== opts.baseSha) throw new Error(foreign);
+  const symbolic = await exec("git", {
+    argv: ["symbolic-ref", "--short", "-q", "HEAD"],
+    cwd: opts.wt,
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  }).catch(() => ({ stdout: "" }));
+  const on = (symbolic.stdout ?? "").trim();
+  if (on !== "" && on !== opts.branch) throw new Error(foreign);
+}
+
+/**
+ * Put the specify worktree in a known state at `fromRef`, returning its path
+ * and the provisioning result that says which dependency links the tree has.
+ *
+ * Missing → created. Present → owned-checked, then reset to the base.
+ */
+export async function ensureSpecifyWorktreeWithProvision(
   exec: ExecFn,
   opts: { repoRoot: string; issue: number; fromRef: string; branch: string },
-): Promise<string> {
+): Promise<{ wt: string; linked: string[]; problem?: string }> {
+  const wt = specifyWorktreePath(opts.repoRoot, opts.issue);
+  if (worktreeExists(wt)) {
+    await assertSpecifyWorktreeOwned(exec, {
+      repoRoot: opts.repoRoot,
+      wt,
+      baseSha: opts.fromRef,
+      branch: opts.branch,
+    });
+    // A leftover tree keeps whatever provisioning gave it the first time, and
+    // its links are re-exempted from the clean by name: re-provisioning an
+    // already-linked tree would try to link over its own symlink.
+    await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch, await linkedDirs(wt));
+    return { wt, linked: [] };
+  }
   const name = specifyWorktreeName(opts.issue);
-  const { path: wt } = await worktreeCreate(exec, {
+  const created = await worktreeCreate(exec, {
     repoRoot: opts.repoRoot,
     name,
     fromRef: opts.fromRef,
   });
-  const checkout = await exec("git", {
-    argv: ["checkout", "-B", opts.branch, opts.fromRef],
-    cwd: wt,
-    timeout: 60_000,
-    maxBuffer: 1024 * 1024,
-  });
-  if (checkout.stdout === undefined && checkout.stderr === undefined) {
-    throw new Error(`specify: checkout of ${opts.branch} in ${wt} produced no result`);
-  }
-  return wt;
+  const tree = created.path;
+  // The step owns the tree outright (see `resetWorktreeToBase`), so the branch
+  // is pointed at the base rather than left detached at it — the commit that
+  // freezes the tests is then a commit ON the run's branch. `resetWorktreeToBase`
+  // does the `-B` and the `--hard` together and then proves the tree got there.
+  await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch, created.provision.linked);
+  return {
+    wt: tree,
+    linked: created.provision.linked,
+    ...(created.provision.problem === undefined ? {} : { problem: created.provision.problem }),
+  };
 }
 
 /**
- * Reset an existing worktree to the base commit and clean it.
+ * The provisioned dependency links of an existing worktree, by name.
  *
- * The step owns this worktree, which is what makes `reset --hard` and
- * `clean -fd` the right verbs here: the alternative — trusting whatever a
- * crashed child left in the tree — is the bug this function exists to close.
- * Both are argv form, and both are bounded.
+ * Provisioning reports repository-relative paths (`node_modules`,
+ * `extension/node_modules`); a leftover tree's links are found the same way —
+ * by walking the tree for a directory whose entry is a symlink. Missing
+ * entries simply cost one more `-e` than needed, which is harmless.
  */
-async function resetToBase(
-  exec: ExecFn,
-  wt: string,
-  baseSha: string,
-  branch: string,
-): Promise<void> {
-  for (const argv of [
-    ["reset", "--hard", baseSha],
-    ["clean", "-fd"],
-    ["checkout", "-B", branch, baseSha],
-  ]) {
-    await exec("git", { argv, cwd: wt, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
-  }
-}
-
-/**
- * Put the specify worktree in a known state at `fromRef`, returning its path.
- *
- * Missing → created. Present → reset to the base. The branch is (re)pointed at
- * the base either way, so a re-run cannot inherit a commit the last attempt
- * made.
- */
-export async function ensureSpecifyWorktree(
-  exec: ExecFn,
-  opts: { repoRoot: string; issue: number; fromRef: string; branch: string },
-): Promise<string> {
-  const wt = specifyWorktreePath(opts.repoRoot, opts.issue);
-  if (worktreeExists(wt)) {
-    await resetToBase(exec, wt, opts.fromRef, opts.branch);
-    return wt;
-  }
-  return create(exec, opts);
+async function linkedDirs(wt: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 3) return;
+    let entries: Dirent<string>[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name === ".git") continue;
+      const abs = path.join(dir, e.name);
+      if (!e.isDirectory()) continue;
+      try {
+        if (lstatSync(abs).isSymbolicLink()) {
+          out.push(path.relative(wt, abs));
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      walk(abs, depth + 1);
+    }
+  };
+  walk(wt, 0);
+  return out;
 }
 
 /** A porcelain `v1 -z` record: the status letters and the path. */
@@ -196,6 +286,48 @@ export function normaliseRelPath(p: string): string {
   return out.join("/");
 }
 
+/**
+ * Why this path in `wt` is not a file the step may capture, or undefined when
+ * it is. The path arrives already normalised and known to exist.
+ *
+ * The four checks are what a child cannot get past:
+ *
+ *   - `lstat` (NOT `stat`) so a symlink is a symlink and not the file it
+ *     points at — following one would capture, hash and commit bytes from
+ *     anywhere on the host;
+ *   - a REGULAR file, so a fifo, socket, device or directory is refused;
+ *   - `nlink === 1`, so a HARD LINK cannot impersonate a file of the worktree.
+ *     A hard link is not a symlink — `lstat` sees an ordinary file and
+ *     `realpath` stays inside the tree — so this is the only check that
+ *     catches it, and the one the path checks alone cannot: the bytes it
+ *     shares with an outside file would have been frozen and committed;
+ *   - `realpath` of the file inside `realpath` of the worktree, so no
+ *     component of the path escapes through a linked parent.
+ */
+export function fileProblem(wt: string, rel: string): string | undefined {
+  const abs = path.join(wt, rel);
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(abs);
+  } catch {
+    return `file ${rel} could not be read`;
+  }
+  if (st.isSymbolicLink()) return `file ${rel} is a symlink, which the step never follows`;
+  if (!st.isFile()) return `file ${rel} is not a regular file`;
+  if (st.nlink !== 1) return `file ${rel} has ${st.nlink} hard links — not a file of this worktree`;
+  let realFile: string;
+  let realTree: string;
+  try {
+    realFile = realpathSync(abs);
+    realTree = realpathSync(wt);
+  } catch {
+    return `file ${rel} could not be resolved inside ${wt}`;
+  }
+  if (realFile !== realTree && !realFile.startsWith(realTree + path.sep))
+    return `file ${rel} resolves outside the worktree (${realFile})`;
+  return undefined;
+}
+
 export interface DroppedRow {
   criterionId: string;
   path?: string;
@@ -207,12 +339,17 @@ export interface DroppedRow {
  *
  * A row is dropped, with a reason, when its criterion is not a `verify:
  * "test"` criterion of THIS spec; when a path is absolute, traverses, or sits
- * under a forbidden directory; or when the file is not in the worktree. What
- * survives is a criterion -> kept-paths map the step can prove and freeze.
+ * under a forbidden directory; when the file is not in the worktree; or when
+ * it is not an ordinary file the worktree owns (`fileProblem`). What survives
+ * is a criterion -> kept-paths map the step can capture, prove and commit.
  */
 export function validateSubmitRows(
   rows: SubmitTestsRow[],
-  opts: { spec: PiSpec; exists: (rel: string) => boolean },
+  opts: {
+    spec: PiSpec;
+    exists: (rel: string) => boolean;
+    fileProblem?: (rel: string) => string | undefined;
+  },
 ): { kept: SubmitTestsRow[]; dropped: DroppedRow[] } {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
   const keptByCriterion = new Map<string, string[]>();
@@ -260,6 +397,11 @@ export function validateSubmitRows(
         });
         continue;
       }
+      const notAFile = opts.fileProblem?.(rel);
+      if (notAFile !== undefined) {
+        dropped.push({ criterionId: row.criterionId, path: rel, reason: notAFile });
+        continue;
+      }
       if (!files.includes(rel)) files.push(rel);
     }
     if (files.length > 0) keptByCriterion.set(row.criterionId, files);
@@ -292,36 +434,23 @@ export function declaredPaths(keptByCriterion: Record<string, string[]>): Declar
 }
 
 /**
- * Revert every changed/added/deleted path in `wt` that is not a kept test.
+ * Read the bytes of every kept test file into memory.
  *
- * Tracked paths are restored from the base commit; untracked ones (`??`) are
- * removed from disk. Returns the paths it reverted so the outcome can say what
- * the child touched that the step threw away.
+ * This is the ONLY thing the child gets to keep. Once the bytes are here,
+ * what the child did to the tree — committed, restaged, rewrote the file,
+ * added an ignore rule — cannot reach the frozen tests, because the step
+ * resets the tree to base and writes these bytes back. Throws when a file
+ * cannot be read: a test the step could not capture is not a test it can
+ * prove, and pretending otherwise would freeze a name with no content.
  */
-export async function revertUndeclared(
-  exec: ExecFn,
-  wt: string,
-  keep: Set<string>,
-): Promise<string[]> {
-  const reverted: string[] = [];
-  for (const entry of await changedPaths(exec, wt)) {
-    if (keep.has(entry.path)) continue;
-    if (entry.status === "??") {
-      await exec("git", {
-        argv: ["clean", "-fdx", "--", entry.path],
-        cwd: wt,
-        timeout: 60_000,
-        maxBuffer: 1024 * 1024,
-      });
-    } else {
-      await exec("git", {
-        argv: ["checkout", "HEAD", "--", entry.path],
-        cwd: wt,
-        timeout: 60_000,
-        maxBuffer: 1024 * 1024,
-      });
+export function captureTestBytes(wt: string, paths: string[]): Map<string, Buffer> {
+  const captured = new Map<string, Buffer>();
+  for (const rel of paths) {
+    try {
+      captured.set(rel, readFileSync(path.join(wt, rel)));
+    } catch (err) {
+      throw new Error(`could not capture ${rel}: ${(err as Error).message}`);
     }
-    reverted.push(entry.path);
   }
-  return reverted;
+  return captured;
 }

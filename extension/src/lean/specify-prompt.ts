@@ -13,10 +13,11 @@
  * paraphrase rather than the contract.
  */
 
+import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 
 /** How the parent runs one test file — the template from `.pi/work.json`. */
-export const RUNNER_PLACEHOLDER = "{file}";
+export const RUNNER_PLACEHOLDER = TEST_RUNNER_PLACEHOLDER;
 
 export interface SpecifyPromptOpts {
   issue: number;

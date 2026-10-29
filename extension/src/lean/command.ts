@@ -153,7 +153,6 @@ export function specifyDeps(): SpecifyDeps {
       spawnSpecialist(spec, { writeFence: o.writeFence, extraArgs: o.extraArgs }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
-    now: Date.now,
   };
 }
 
