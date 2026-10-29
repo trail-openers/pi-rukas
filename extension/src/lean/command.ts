@@ -25,7 +25,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { execp } from "../exec.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
-import { fetchIssueBody, mainlineSha, mainlineShaFailure, postNotReady } from "./io.ts";
+import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 
@@ -74,12 +74,12 @@ export async function readyOutcome(
   if (!parsed.ok) return { kind: "fail", facts: { failedRules: [parsed.reason] } };
   const failed = readiness(parsed.spec);
   if (failed.length > 0) return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
-  const baseSha = await mainlineSha(repoRoot);
-  if (!baseSha) {
+  const probed = await mainlineSha(repoRoot);
+  if (!probed.sha) {
     // The refs probed and why each failed — a run whose mainline could not be
     // resolved is not ready, and the operator reading the issue comment has
     // to be able to tell "this clone has no origin/HEAD" from "git broke".
-    const why = mainlineShaFailure();
+    const why = probed.why;
     return {
       kind: "fail",
       facts: {
@@ -89,14 +89,17 @@ export async function readyOutcome(
     };
   }
   try {
-    const config = await loadWorkConfig(execp, repoRoot, baseSha);
-    return { kind: "ok", facts: { spec: parsed.spec, config, baseSha, failedRules: [] } };
+    const config = await loadWorkConfig(execp, repoRoot, probed.sha);
+    return {
+      kind: "ok",
+      facts: { spec: parsed.spec, config, baseSha: probed.sha, failedRules: [] },
+    };
   } catch (err) {
     return {
       kind: "fail",
       facts: {
         spec: parsed.spec,
-        baseSha,
+        baseSha: probed.sha,
         failedRules: [`.pi/work.json is unusable: ${(err as Error).message}`],
       },
     };
@@ -125,7 +128,15 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
   handlers.ready = async () => {
     const { kind, facts } = await readyOutcome(repoRoot, issue);
     judged = facts;
-    return kind === "ok" ? { kind: "ok", ...facts } : { kind: "fail", ...facts };
+    // Only the verdict and the rules go on the record. `spec`, `config` and
+    // `baseSha` stay in this closure — the step log is the durable record of
+    // what a run DECIDED, and a parsed document or a loaded config written
+    // into it is a second copy of a file that can change underneath a resume,
+    // plus a reason line a future reader would mistake for part of the
+    // contract. `failedRules` alone is what `decline` posts and what the
+    // summary line joins, so nothing is lost by keeping the rest here.
+    if (kind === "ok") return { kind };
+    return { kind, failedRules: facts.failedRules };
   };
   handlers.decline = async () => {
     try {

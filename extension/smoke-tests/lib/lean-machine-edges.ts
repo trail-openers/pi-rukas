@@ -16,6 +16,8 @@
 /** The only (state + outcome) pairs that may reach the reporting state. */
 export const DECLINE_SOURCES = new Set(["ready+fail", "specify+no-red-test"]);
 
+import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
+
 /**
  * Every non-terminal state. Listed rather than derived from `OUTCOME_KINDS`
  * on purpose: the test's whole claim is about what the registry declares, so
@@ -44,10 +46,17 @@ export const NON_TERMINAL_STATES = [
  * the interesting cases — a cap that is one comparison off looks correct at
  * the default counters and only misroutes at the cap — so the caller crosses
  * these with every declared pair instead of trusting `INITIAL_COUNTERS`.
+ *
+ * `MAX_BUILD_ATTEMPTS + 1` is in the list on purpose. Every comparison in the
+ * table that matters is `>=` or `<` against the cap, and an off-by-one that
+ * reads `> MAX` instead of `>=` is indistinguishable from the correct rule at
+ * every counter value up to and including the cap: only one attempt PAST it
+ * shows the difference. A variant set that stopped at the cap would test the
+ * cap and miss the bug it exists to prevent.
  */
 export function counterVariants(): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
-  for (const buildAttempts of [0, 1, 2])
+  for (const buildAttempts of [0, 1, 2, MAX_BUILD_ATTEMPTS + 1])
     for (const challengeDone of [false, true])
       for (const reviewDone of [false, true])
         for (const ciFixUsed of [false, true])

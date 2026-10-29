@@ -52,18 +52,29 @@ export async function fetchIssueBody(repoRoot: string, issue: number): Promise<s
 const MAINLINE_REFS = ["origin/HEAD", "origin/main", "main"] as const;
 
 /**
+ * What a mainline probe returned: the sha, or the reason there is none.
+ *
+ * A failure CAUSE travels back with the answer rather than sitting in a
+ * module global. The global version (`mainlineShaFailure`) read the LAST
+ * probe's causes, so a second probe after a failure — a retry, or two issues
+ * checked in one process — reported one run's cause against another's, and
+ * the comment on the issue said something git never did.
+ */
+export interface MainlineSha {
+  sha?: string;
+  why?: string;
+}
+
+/**
  * The mainline sha: `origin/HEAD`, then `origin/main`, then `main`, then the
  * branch `detectMainline` resolves (which falls back to `gh repo view` when
- * `origin/HEAD` is unset). Empty for none.
- *
- * The sha the whole cycle reads its config at is chosen here, so two things
- * are recorded rather than swallowed: which refs were probed, and why each
- * one failed. A `git` failure that is not "this ref does not exist" used to
- * read exactly like an absent ref, and the operator got "could not resolve
- * the mainline sha" with nothing to act on. Note also that these are LOCAL
- * refs: no fetch happens here, so the sha is the tip the clone last saw.
+ * `origin/HEAD` is unset). `{}` for none, with `why` saying what was probed
+ * and why each probe failed — so the sha the whole cycle reads its config at
+ * never comes back as a bare empty string that reads like "no such branch"
+ * when it actually meant "git broke". Note also that these are LOCAL refs: no
+ * fetch happens here, so the sha is the tip the clone last saw.
  */
-export async function mainlineSha(repoRoot: string): Promise<string> {
+export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
   const causes: string[] = [];
   for (const ref of MAINLINE_REFS) {
     try {
@@ -73,7 +84,7 @@ export async function mainlineSha(repoRoot: string): Promise<string> {
         timeout: 15_000,
       });
       const sha = stdout.trim();
-      if (sha) return sha;
+      if (sha) return { sha };
       causes.push(`${ref}: no such ref`);
     } catch (err) {
       causes.push(`${ref}: ${(err as Error)?.message ?? String(err)}`.slice(0, 120));
@@ -84,10 +95,7 @@ export async function mainlineSha(repoRoot: string): Promise<string> {
   // The name it returns is probed bare and as `origin/<name>`, since the
   // detector gives a branch name and the tip usually lives on the remote.
   const detected = await resolveMainlineBranch(repoRoot);
-  if (!detected) {
-    mainlineFailure = `${causes.join("; ")}; detectMainline: unresolved`;
-    return "";
-  }
+  if (!detected) return { why: `${causes.join("; ")}; detectMainline: unresolved` };
   for (const ref of [detected, `origin/${detected}`]) {
     try {
       const { stdout } = await execp("git", {
@@ -96,7 +104,7 @@ export async function mainlineSha(repoRoot: string): Promise<string> {
         timeout: 15_000,
       });
       const sha = stdout.trim();
-      if (sha) return sha;
+      if (sha) return { sha };
       causes.push(`${ref} (detectMainline): no such ref`);
     } catch (err) {
       causes.push(
@@ -104,18 +112,7 @@ export async function mainlineSha(repoRoot: string): Promise<string> {
       );
     }
   }
-  mainlineFailure = causes.join("; ");
-  return "";
-}
-
-/**
- * Why the last `mainlineSha` call returned empty, for the fail rule text.
- * Module state rather than a return channel: the callers that want a sha
- * already have one shape, and only the not-ready comment reads the detail.
- */
-let mainlineFailure = "";
-export function mainlineShaFailure(): string {
-  return mainlineFailure;
+  return { why: causes.join("; ") };
 }
 
 /** The branch name `detectMainline` resolves, or undefined for none. */

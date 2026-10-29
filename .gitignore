@@ -32,6 +32,9 @@ dist/prompts/
 # of `git status` by the per-clone .git/info/exclude entry the harness writes
 # (work-driver-git-exclude.ts).
 .pi/work-state/
+# /work-lean run state: one JSON per issue plus its per-issue run lock
+# (state.ts / lock.ts). Same shape, same reason — durable per-clone state.
+.pi/lean-state/
 
 # Research artefacts from workflow runs — local working material, not shipped.
 outputs/

@@ -96,6 +96,14 @@ for (const state of HANDLER_STATES) {
       threw = true;
     }
     assert(!threw, `${state} + ${kind} does not throw`);
+    // No self-edges. A rule that returns the state it was routed from is not a
+    // transition — it is a loop the driver would run forever, and every
+    // single-transition test in the world passes while it grinds. The engine's
+    // step cap is the net under this, not the fix.
+    assert(
+      moved !== undefined && moved.state !== state,
+      `${state} + ${kind} moves somewhere else (a self-edge is an infinite loop)`,
+    );
     assert(
       moved !== undefined &&
         (isTerminal(moved.state) || Object.keys(OUTCOME_KINDS).includes(moved.state)),
