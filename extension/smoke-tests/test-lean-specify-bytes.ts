@@ -135,12 +135,13 @@ const shaOf = (b: Buffer): string => createHash("sha256").update(b).digest("hex"
 // `no transition for <state> + "done"` instead of naming the stage that was
 // missing — a handler bug by the engine's own definition, reported as a table
 // bug. They throw now, so this asserts the reason reaches the operator.
-// `verify` and `handback` are real steps now (see `test-lean-verify-wiring.ts`),
-// so the stub asserted on is `publish`, which is still unbuilt.
+// `verify`, `handback` and `publish` are real steps now (see
+// `test-lean-verify-wiring.ts` and `test-lean-publish.ts`), so the stub asserted
+// on is `review`, which is still unbuilt.
 {
   const { phase1Handlers } = await import("../src/lean/command.ts");
-  const unbuilt = ["publish", "review", "ci", "land"] as const;
-  const stub = phase1Handlers("/nonexistent", 1).publish as (ctx: unknown) => Promise<unknown>;
+  const unbuilt = ["review", "ci", "land"] as const;
+  const stub = phase1Handlers("/nonexistent", 1).review as (ctx: unknown) => Promise<unknown>;
   let threw = "";
   try {
     const out = await stub({} as never);
@@ -149,7 +150,7 @@ const shaOf = (b: Buffer): string => createHash("sha256").update(b).digest("hex"
     threw = (err as Error).message;
   }
   assert(
-    threw === "work-lean stage publish is not built yet",
+    threw === "work-lean stage review is not built yet",
     `stubs: an unbuilt stage THROWS its reason rather than returning an outcome (${threw})`,
   );
   assert(

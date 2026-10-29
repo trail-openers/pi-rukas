@@ -140,6 +140,8 @@
     "smoke-tests/lib/lean-specify-fixture.ts",
     "smoke-tests/test-lean-build.ts",
     "smoke-tests/lib/lean-build-fixture.ts",
+    "smoke-tests/test-lean-publish.ts",
+    "smoke-tests/lib/lean-publish-fixture.ts",
     "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts"
   ]
 }
