@@ -10,8 +10,9 @@ import { duplicateExclusionSection } from "./plan-duplicate-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import { planImageLinksSection } from "./plan-images.ts";
 import type { DuplicateRisk } from "./plan-investigate.ts";
+import { appendPiSpecSection as appendPiSpec } from "./plan-pi-spec.ts";
 import { withProvenance } from "./plan-provenance.ts";
-import type { PlanDriverInput, PlanGap } from "./plan-types.ts";
+import type { PlanDriverInput, PlanGap, PlanType } from "./plan-types.ts";
 import type { IssueImage } from "./work-driver-issue-images.ts";
 
 /**
@@ -155,15 +156,36 @@ export function finalDraftBody(
   images: IssueImage[],
   provenance: PlanDriverInput["provenance"],
   duplicate: { risk: DuplicateRisk | undefined; sourceIssue: number | undefined },
+  // #1883: the ticket type, so the `pi-spec v1` block is appended at THIS one
+  // site and knows not to write one for an epic or a spike. Absent = no block,
+  // which keeps every pre-#1883 call site byte-identical.
+  type?: PlanType,
 ): string {
   return withProvenance(
-    filedBodyOf(
-      body,
-      residual,
-      openPoints,
-      baseFallback,
-      duplicateExclusionSection(duplicate.risk, duplicate.sourceIssue),
-    ) + planImageLinksSection(images),
+    // #1883: the block is appended HERE — after every disclosure section and
+    // immediately before `withProvenance` wraps the provenance marker — because
+    // this is the ONE home for the filed body: the compaction fitter and every
+    // section renderer run long before it, so nothing can trim the block once
+    // it is here. `codeAppendReservation` (plan-driver-phase3.ts) is what paid
+    // for its width out of the body budget BEFORE drafting ran, the same way it
+    // reserves the marker — that is the whole of the budget story: the block is
+    // invisible to compaction because it is written after compaction, and it is
+    // guaranteed to fit because its width was subtracted from the budget first.
+    appendPiSpecSection(
+      filedBodyOf(
+        body,
+        residual,
+        openPoints,
+        baseFallback,
+        duplicateExclusionSection(duplicate.risk, duplicate.sourceIssue),
+      ) + planImageLinksSection(images),
+      type,
+    ),
     provenance,
   );
+}
+
+/** `appendPiSpecSection` specialised to a filing: an unknown ticket type files no block. */
+function appendPiSpecSection(body: string, type: PlanType | undefined): string {
+  return type === undefined ? body : appendPiSpec(body, type);
 }

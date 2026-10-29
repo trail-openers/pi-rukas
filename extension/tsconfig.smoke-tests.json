@@ -114,6 +114,7 @@
     "smoke-tests/lib/toolchain-canary-support.ts",
     "smoke-tests/lib/toolchain-canary-assert.ts",
     "smoke-tests/test-lean-spec.ts",
+    "smoke-tests/test-plan-pi-spec.ts",
     "smoke-tests/test-lean-config.ts",
     "smoke-tests/lib/lean-engine-fixtures.ts",
     "smoke-tests/test-lean-machine.ts",

@@ -14,11 +14,12 @@ import type { OperatorDirectives } from "./plan-directives.ts";
 import type { AngleFindings } from "./plan-draft.ts";
 import { draftSpec } from "./plan-draft.ts";
 import { haltResult } from "./plan-driver-halt.ts";
+import { appendPiSpecSection, piSpecReservation } from "./plan-pi-spec.ts";
 import { type PlanProvenance, provenanceReservation } from "./plan-provenance.ts";
 import type { PlanPhaseTiming, PlanResult, PlanType } from "./plan-types.ts";
 import { planTitle } from "./plan-types.ts";
-import { FORGE_BODY_MAX, fitDraftToBudget } from "./plan-validate.ts";
 import type { OperatorOmission, RenderBudget } from "./plan-validate.ts";
+import { FORGE_BODY_MAX, RENDER_BUDGETS, fitDraftToBudget } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
 
 /** The Phase-3 inputs: what the drafted body is built from. */
@@ -65,7 +66,69 @@ export type Phase3Outcome = { halt: PlanResult } | ({ halt?: undefined } & Phase
  * compaction note and the `filedBodyOf` sections are budgeted exactly as today
  * (BODY_BUDGET's 4,096-char headroom covers them; `validateFinalSpec`'s existing
  * `body-too-large` halt is their bound).
+ *
+ * #1883: the `## Spec (pi-spec v1)` block is reserved exactly like the marker —
+ * code appends it AFTER the fitter (plan-pi-spec.ts, at `finalDraftBody`) and
+ * compaction never sees it, so nothing can trim it; its rendered width comes out
+ * of the budget up front so the FINAL body still fits the forge cap.
  */
+/**
+ * The most the spec block may consume of the fitter's headroom. The block's own
+ * width scales with the criteria it carries (20 criteria at the 400-char clip is
+ * a ~9 KB block), so an uncapped reservation eats BODY_BUDGET's 4,096-char
+ * headroom and can push an otherwise-stage-1 body past it: the run then halts
+ * `body-too-large` and files nothing. Clamping keeps the block from turning a
+ * fileable plan into a halt, and `fitSpecBlock`'s caller-side budget check is the
+ * other half — a body that grew afterwards files without the block rather than
+ * over the cap.
+ */
+const PI_SPEC_RESERVATION_MAX = 2_048;
+
+/**
+ * #1883 — what the budget fitter holds back for the TWO code appends that land
+ * AFTER it: the caller's provenance lines (plan-provenance.ts) and the
+ * `## Spec (pi-spec v1)` block (plan-pi-spec.ts). Both are appended by code at
+ * the one home for the filed body, `finalDraftBody`, so compaction never sees
+ * either and nothing can trim them; their width is paid for up front rather than
+ * discovered afterwards — that is the whole of the budget story for the block,
+ * and it is the same mechanism #1377 uses for the provenance marker. Exported for
+ * the budget test, which asserts a fitted body plus its reservation stays under
+ * BODY_BUDGET (a reservation nothing checks is a reservation that drifts).
+ */
+export function codeAppendReservation(
+  provenance: PlanProvenance | undefined,
+  type: PlanType,
+  body: string,
+): number {
+  return (
+    provenanceReservation(provenance) +
+    Math.min(PI_SPEC_RESERVATION_MAX, piSpecReservation(type, body))
+  );
+}
+
+/**
+ * The stage-0 render, which the fitter produces anyway and which is never
+ * SHORTER than the stage-1 render it may fall back to (both stages only shrink
+ * the item cap and the item clip). Measuring the block on it means the
+ * reservation never UNDER-counts — an under-count is what lets a post-fit append
+ * blow the forge cap. Costs one extra pure `draftSpec` call per run.
+ */
+function stage0ProbeBody(args: Phase3Args): string {
+  return draftSpec(
+    args.type,
+    args.descriptor,
+    args.findings,
+    args.inventoryContext,
+    [],
+    [],
+    args.depth,
+    args.directives,
+    [],
+    undefined,
+    RENDER_BUDGETS[0] as RenderBudget,
+  ).body;
+}
+
 export function phase3Draft(args: Phase3Args): Phase3Outcome {
   const openQuestions: string[] = [];
   const outOfScope: string[] = [];
@@ -84,9 +147,10 @@ export function phase3Draft(args: Phase3Args): Phase3Outcome {
         undefined,
         b,
       ),
-    // #1377: read at the single call site the fitter reserves it for, so
-    // nothing can forget it.
-    provenanceReservation(args.provenance),
+    // #1377 + #1883: both after-the-fitter appends (the provenance marker and
+    // the spec block) are reserved at the one call site that computes them, so
+    // neither can be forgotten. 0 for an epic, a spike, or a criteria-less draft.
+    codeAppendReservation(args.provenance, args.type, stage0ProbeBody(args)),
   );
   if ("tooLarge" in fitted) {
     trace(`plan-driver: body too large even after compaction (${fitted.size} chars) — halting`);
