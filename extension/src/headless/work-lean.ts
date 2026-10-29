@@ -99,6 +99,46 @@ function clip(text: unknown): string {
 }
 
 /**
+ * Read one property of a thrown value without letting the read throw.
+ *
+ * An `Error` whose `message`, `name` or `stack` is an ACCESSOR that throws is
+ * rare but real (a wrapped host error, a proxy, a deserialized object), and
+ * every read `fail` makes happens outside the verb's own try — the try is what
+ * called `fail`. A throwing getter would therefore reject `runSubcommand`, and
+ * the host would read no document at all: the exact contract `fail` exists to
+ * keep. A field that cannot be read is simply absent, so the caller's own
+ * fallback answers for it.
+ */
+function readable(target: object, key: string): string | undefined {
+  try {
+    const value = (target as Record<string, unknown>)[key];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What the document names a crash by: the message, else the stack, else a
+ * literal.
+ *
+ * A crash whose message is empty or whitespace still has to be nameable — the
+ * stack is the next thing the Error carries, and when neither has content the
+ * host at least reads something it can print.
+ */
+function crashMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return readable(err, "message")?.trim() || readable(err, "stack")?.trim() || "unknown error";
+  }
+  try {
+    // A non-Error goes through `toString`, which is itself a seam that can throw.
+    return String(err) || "unknown error";
+  } catch {
+    return "unknown error";
+  }
+}
+
+/**
  * A multi-line value as ONE line: newlines escaped, so nothing splits a record.
  *
  * NOT `oneLine` from `lean/text-fence.ts` — that helper escapes `|` and
@@ -206,7 +246,7 @@ export async function runWorkLeanVerb(
     // not just \n, has to go for the line to stay one line. The clip stays:
     // the fence clips at its own bound and a 20 KB message is what the clip
     // exists to stop.
-    const message = oneLine(clip(err instanceof Error ? err.message : String(err)), MESSAGE_MAX);
+    const message = oneLine(clip(crashMessage(err)), MESSAGE_MAX);
     const exitCode = refused ? EXIT.refused : EXIT.crash;
     // The full error goes to the trace, not just the clipped line the document
     // carries: a crash whose stack is 20 KB is still diagnosable by whoever
@@ -215,8 +255,8 @@ export async function runWorkLeanVerb(
     // every physical line into its own NDJSON record, so a raw stack would
     // arrive as a frame dump with the error name detached from it.
     if (!refused && err instanceof Error) {
-      const trace = oneline(err.stack ?? err.message).slice(0, TRACE_MAX);
-      traceWarn(`work-lean: #${issue} crashed — ${err.name}: ${trace}`);
+      const trace = oneline(readable(err, "stack") ?? message).slice(0, TRACE_MAX);
+      traceWarn(`work-lean: #${issue} crashed — ${readable(err, "name") ?? "Error"}: ${trace}`);
     }
     say(`work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`);
     return {
