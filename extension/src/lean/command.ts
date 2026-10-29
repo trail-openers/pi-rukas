@@ -35,6 +35,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
+import { isFullCommitSha, resolveHeadSha } from "../review-head-sha.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
@@ -52,6 +53,7 @@ import { publishOutcome } from "./publish.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Outcome, Step } from "./state.ts";
+import { oneLine } from "./text-fence.ts";
 import { verifyDeps, verifyOutcome } from "./verify.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -102,9 +104,27 @@ export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
   const version = leanVersion();
   try {
     const probed = await mainlineSha(repoRoot);
-    return { version, baseSha: probed.sha ?? "", ...(probed.why ? { why: probed.why } : {}) };
-  } catch {
-    return { version, baseSha: "" };
+    // A sha that is not a full oid is refused here rather than passed on to be
+    // refused by `ready`: the seed is what gets written to the record, so an
+    // abbreviated or mixed-case value would become the run's base and every
+    // later read would be anchored to a string no equality check can settle.
+    // The cause says so plainly, and the catch below keeps its own.
+    if (probed.sha !== undefined && isFullCommitSha(probed.sha)) {
+      return { version, baseSha: probed.sha };
+    }
+    return {
+      version,
+      baseSha: "",
+      why:
+        probed.why ??
+        `mainline resolved to ${JSON.stringify(probed.sha ?? "")}, not a full commit sha`,
+    };
+  } catch (err) {
+    return {
+      version,
+      baseSha: "",
+      why: oneLine(err instanceof Error ? err.message : String(err), 160),
+    };
   }
 }
 
@@ -126,14 +146,28 @@ export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
  * to, so "that is not a commit in this clone" is a `ready` failure, not a
  * default config.
  *
+ * The proof is TWO checks, not one, because a resolution that succeeds proves
+ * less than it looks like it proves. `base` must first be a FULL lowercase
+ * 40-hex oid (`isFullCommitSha`), which is what makes the value an immutable
+ * object name rather than a ref: `main`, `HEAD`, `@{0}` and a short prefix all
+ * fail that test, and with it the git argument can never be a moving ref or a
+ * revision chain — an earlier shape of this gate passed `main^{commit}` to git
+ * and was satisfied with any 40-hex answer, so `main^{commit}``touch x``@{0}`
+ * resolved to main's tip and the run anchored to a commit it never named.
+ * Second, the resolution must come BACK EQUAL to the base: a full sha is
+ * content-addressed, so anything that resolves to a different oid was never the
+ * object the run was seeded with (a mixed-case or otherwise mangled value). The
+ * resolution itself goes through the repo's canonical `resolveHeadSha`, which
+ * peels with `^{commit}` (so a non-commit object answers `undefined`) and is
+ * bounded like every other identity git read.
+ *
  * Never throws. Every failure comes back as `fail` with the rules named,
  * because a run that cannot start still has to say why on the issue.
  */
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
-  baseSha: string,
-  seedWhy?: string,
+  base: { baseSha: string; why?: string },
 ): Promise<{ kind: "ok" | "fail"; facts: ReadyFacts }> {
   let body: string;
   try {
@@ -151,70 +185,70 @@ export async function readyOutcome(
   // The base is the run's, resolved once by `leanSeed` and pinned on the run
   // record: re-probing here would let a `ready` that ran after origin/HEAD
   // moved judge the run against a commit the rest of it never saw.
-  if (!baseSha) {
+  if (!base.baseSha) {
     // The refs probed and why each failed are the seed's — see `leanSeed`.
     // A run whose mainline could not be resolved is not ready, and the
     // operator reading the issue comment has to be able to tell "this clone
     // has no origin/HEAD" from "git broke"; when the seed never carried a
     // cause (a resumed run, whose seed this process did not make), ask once.
-    const why = seedWhy ?? (await mainlineSha(repoRoot)).why;
+    // The probe is a git read, so it is guarded: `readyOutcome`'s contract is
+    // that it never throws, and an unguarded throw here would end the run as a
+    // handler error instead of the refusal with a reason it is meant to be.
+    let why = base.why;
+    if (why === undefined) {
+      try {
+        why = (await mainlineSha(repoRoot)).why;
+      } catch (err) {
+        why = oneLine(err instanceof Error ? err.message : String(err), 160);
+      }
+    }
     return {
       kind: "fail",
       facts: {
         spec: parsed.spec,
-        failedRules: [`could not resolve the mainline sha${why ? `: ${why}` : ""}`],
+        failedRules: [`could not resolve the mainline sha${why ? `: ${oneLine(why, 160)}` : ""}`],
       },
     };
   }
-  // Non-empty is not enough: prove the base names a commit before the config
+  // Non-empty is not enough: prove the base IS the commit before the config
   // read, whose blanket catch would otherwise turn "no such object" into
   // "no config file" and hand the run defaults it never earned. See the
-  // jsdoc above and the case in `test-lean-seed-base.ts`. The cause git gave
-  // is appended — it is the difference between "no such object" and "git
-  // broke" — but clipped and on one line: the ref is untrusted text and the
-  // rule ends up in an issue comment.
-  const baseRef = `${baseSha}^{commit}`;
-  let resolved: string;
+  // jsdoc above and the cases in `test-lean-seed-base.ts`.
+  if (!isFullCommitSha(base.baseSha)) return baseRefusal(base.baseSha, "");
+  // The canonical resolution: `^{commit}` peeling (so a blob or tag object is
+  // not a base) and the bound on the git read both live in `resolveHeadSha`.
+  const resolved = await resolveHeadSha(repoRoot, base.baseSha, execp);
+  if (resolved !== base.baseSha) return baseRefusal(base.baseSha, "");
   try {
-    const { stdout } = await execp("git", {
-      argv: ["rev-parse", "--verify", "--quiet", "--end-of-options", baseRef],
-      cwd: repoRoot,
-      timeout: 15_000,
-    });
-    resolved = stdout.trim();
-  } catch (err) {
-    const e = err as { stderr?: string; message?: string };
-    const cause = (e?.stderr || e?.message || String(err)).replace(/\s+/g, " ").trim();
-    return baseRefusal(baseSha, cause === "" ? "" : `: ${cause.slice(0, 160)}`);
-  }
-  if (!/^[0-9a-f]{40}$/.test(resolved)) return baseRefusal(baseSha, "");
-  try {
-    const config = await loadWorkConfig(execp, repoRoot, baseSha);
+    const config = await loadWorkConfig(execp, repoRoot, base.baseSha);
     return {
       kind: "ok",
-      facts: { spec: parsed.spec, config, baseSha, failedRules: [] },
+      facts: { spec: parsed.spec, config, baseSha: base.baseSha, failedRules: [] },
     };
   } catch (err) {
     return {
       kind: "fail",
       facts: {
         spec: parsed.spec,
-        baseSha,
-        failedRules: [`.pi/work.json is unusable: ${(err as Error).message}`],
+        baseSha: base.baseSha,
+        failedRules: [
+          `.pi/work.json is unusable: ${oneLine(err instanceof Error ? err.message : String(err), 160)}`,
+        ],
       },
     };
   }
 }
 
-/** A base the clone has no commit for — the same refusal whether git refused
- * or printed something that is not an object id. Clipped: the sha came from a
- * record this process did not necessarily write. */
+/** A base the clone has no commit for — the same refusal whether the value is
+ * not an oid at all or an oid that resolves to no commit, or to a different
+ * one. Clipped with `oneLine`: the value came from a record this process did
+ * not necessarily write, and the rule ends up in an issue comment. */
 function baseRefusal(baseSha: string, detail: string): { kind: "fail"; facts: ReadyFacts } {
   return {
     kind: "fail",
     facts: {
       baseSha,
-      failedRules: [`base sha ${baseSha.slice(0, 80)} is not a commit in this clone${detail}`],
+      failedRules: [`base sha ${oneLine(baseSha, 80)} is not a commit in this clone${detail}`],
     },
   };
 }
@@ -300,7 +334,10 @@ export function phase1Handlers(
   const handlers: LeanHandlers = {};
   for (const state of HANDLER_STATES) handlers[state] = notBuilt(state);
   handlers.ready = async (ctx) => {
-    const { kind, facts } = await readyOutcome(repoRoot, issue, ctx.run.baseSha, seedWhy);
+    const { kind, facts } = await readyOutcome(repoRoot, issue, {
+      baseSha: ctx.run.baseSha,
+      ...(seedWhy ? { why: seedWhy } : {}),
+    });
     // Only the verdict and the rules go on the record. `spec`, `config` and
     // `baseSha` stay out of it — the step log is the durable record of what a
     // run DECIDED, and a parsed document or a loaded config written into it is

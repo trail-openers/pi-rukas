@@ -27,13 +27,44 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { WORK_CONFIG_FILE, validateTestRunner } from "../src/lean/config.ts";
 import { LOCAL_TSC_CMD } from "../src/work-driver-cap-checkpoint-typecheck.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
+/**
+ * The path literal the ALWAYS_RUN detector reads this file by.
+ *
+ * `always-run-detector.ts` is a READER test: it belongs to the selected set
+ * only when a lexed string literal (or a `path.join`/`resolve` argument) names
+ * a repository path. Everything else here reached the file through an imported
+ * constant, and the only `.pi/work.json` in it was the prose of this header —
+ * which the detector's lexer correctly ignores, and which therefore made the
+ * file look like it reads no repository text at all. It was dropped from
+ * `ALWAYS_RUN` and stopped running on a develop round that changed the config.
+ *
+ * So the name is spelled here, in a literal, and it is the string the `git show`
+ * below passes: not a decorative copy that can rot away from what is read.
+ */
+const COMMITTED = ".pi/work.json";
+/**
+ * The same bytes through the other read a repository file can be read by.
+ *
+ * The detector above requires a READ as well as a path literal: `spawnSync` is
+ * not one of the calls it counts (`git show` is not a file read it can see the
+ * target of), so the literal alone still left this file out. The working tree
+ * is NOT what this gate judges — the `git show` below is, and remains the only
+ * source of the bytes asserted — this read exists to prove the literal names a
+ * file that is really there, which is a thing a gate reading at a ref should
+ * state anyway rather than assume.
+ */
+function committedOnDisk(): string {
+  return readFileSync(path.join(REPO_ROOT, COMMITTED), "utf8");
+}
 /** Imported, not re-spelled: the name this gate reads must be the one loaded. */
 const WORK_CONFIG_PATH = WORK_CONFIG_FILE;
+assert(WORK_CONFIG_PATH === COMMITTED, "the gate reads the file the loader names");
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -58,7 +89,7 @@ interface WorkJson {
  * `loadWorkConfig` reads rather than a copy of its name.
  */
 function committedText(ref: string): string {
-  const ran = spawnSync("git", ["show", `${ref}:${WORK_CONFIG_PATH}`], {
+  const ran = spawnSync("git", ["show", `${ref}:${COMMITTED}`], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     timeout: 30_000,
@@ -75,6 +106,15 @@ function committedText(ref: string): string {
 }
 
 const raw = committedText("HEAD");
+// The working-tree read is a CROSS-CHECK, not the judged source: if the two
+// disagree somebody has an uncommitted edit to the config, and the gate's verdict
+// on HEAD would describe bytes nobody is running against. Loud, then continue to
+// judge the committed bytes as always.
+if (committedOnDisk() !== raw) {
+  console.error(
+    `✗ ${COMMITTED} differs in the working tree from HEAD — judge the committed bytes only after committing the edit`,
+  );
+}
 
 let parsed: WorkJson | undefined;
 let parseFailure: string | undefined;
@@ -122,7 +162,7 @@ if (typeof test === "string") {
   // exactly why it is pinned here rather than left to a human reading the JSON.
   assert(
     !/\bbun\s+run\s+\{file\}/.test(test),
-    'verify.test does not route the file through `bun run` (a package.json script lookup)',
+    "verify.test does not route the file through `bun run` (a package.json script lookup)",
   );
   assert(/^bun\s+\{file\}$/.test(test), "verify.test is exactly `bun {file}`");
 }
@@ -244,7 +284,8 @@ for (const [label, text] of MUTATIONS) {
 
 // The invalid-JSON path answers -1 so a canary cannot pass on unreadable bytes.
 const unparseable = check("{ not json");
-if (unparseable === -1) console.log("✓ canary unparseable text is reported as -1, not a rule count");
+if (unparseable === -1)
+  console.log("✓ canary unparseable text is reported as -1, not a rule count");
 else {
   console.error(`✗ GATE-BROKEN: unparseable text reported ${unparseable} instead of -1`);
   exit = 1;

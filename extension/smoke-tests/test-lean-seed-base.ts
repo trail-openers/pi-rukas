@@ -1,198 +1,27 @@
 #!/usr/bin/env bun
 /**
- * The base sha is a RUN-START fact, and a fresh `work-lean` used to have none.
+ * The `work-lean` base sha: seeded from the mainline, pinned to an immutable
+ * oid, and refused by `ready` when it is neither.
  *
- * Field evidence: headless work-lean 1908 on main exited 10 after two steps.
- * `runWorkLean` seeded the engine with `{ version }` alone and `ready`'s handler
- * deliberately returns only its verdict, so nothing ever wrote `baseSha` — and
- * `specify` (like `build`, `challenge` and `verify`) refuses a run whose record
- * carries no base: "the run carries no base sha", thrown as infrastructure,
- * which is the wrong ending for a run whose issue was perfectly ready.
+ * The cases and what each pins are enumerated in the header of
+ * `lib/lean-seed-fixtures.ts` — the fixtures file is the one place that list is
+ * written, because the two files are one suite split at the fixtures/cases seam
+ * (this one crossed AGENTS.md §12's line cap when the immutable-oid refusals
+ * landed) and a reader of either should see the whole shape.
  *
- * `leanSeed` is the fix, and these cases pin what it guarantees:
- *
- *   (a) the seed resolves the mainline tip the clone last saw (`origin/HEAD`),
- *       so the base is a real commit rather than a guess;
- *   (b) a repo with no mainline seeds `""` and does NOT throw — the seed runs
- *       before the run does, and a seed that threw would take the command down
- *       instead of letting `ready` refuse the issue with a reason;
- *   (c) the seed reaches the record: `runLean` puts it on the new run, and the
- *       `specify` handler sees the same value on `ctx.run.baseSha` — exactly the
- *       read that refused the field run;
- *   (d) the seed is a run-START fact: a resumed run keeps the sha its first
- *       round recorded, so a mainline that moved cannot silently become this
- *       run's base;
- *   (e) `ready` refuses an empty base with the mainline rule (quoting the
- *       seed's cause when it has one) rather than probing for a base of its own;
- *   (f) the wiring end to end: the handler set the command builds, driven by the
- *       engine, gets a green `ready` and a record carrying the base — the shape
- *       the field run could not reach.
- *
- * Everything here is offline: real git in a temp repo (a stubbed probe would
- * test the stub), and `gh` pointed at a script printing the issue body so the
- * forge read succeeds without a network or a token.
+ * Read `lib/lean-seed-fixtures.ts` for why the forge is a `cat` script and not a
+ * `printf`, and why `git remote set-head` is what makes the whole bug class
+ * reachable in a temp repo at all.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 import { handlersFor, leanSeed, phase1Handlers, readyOutcome } from "../src/lean/command.ts";
-import { runLean } from "../src/lean/engine.ts";
-import { HAPPY, scripted, tempDir } from "./lib/lean-engine-fixtures.ts";
-import { gitTestEnv } from "./lib/git-test-env.ts";
+import { type LeanHandler, runLean } from "../src/lean/engine.ts";
+import { leanStateFile } from "../src/lean/state.ts";
+import { HAPPY, makeAssert, scripted, tempDir } from "./lib/lean-engine-fixtures.ts";
+import { BODY, fakeGhDir, originRepo, withGh } from "./lib/lean-seed-fixtures.ts";
 
 const { assert, failures } = makeAssert();
-
-function makeAssert(): { assert: (cond: boolean, msg: string) => void; failures: () => number } {
-  let failed = 0;
-  return {
-    assert: (cond, msg) => {
-      if (cond) console.log(`\u2713 ${msg}`);
-      else {
-        console.error(`\u2717 ${msg}`);
-        failed = 1;
-      }
-    },
-    failures: () => failed,
-  };
-}
-
-/** git in `dir` with the host's config isolated and a fixture-local identity. */
-function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, {
-    cwd: dir,
-    encoding: "utf8",
-    env: {
-      ...gitTestEnv(),
-      GIT_AUTHOR_NAME: "t",
-      GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t",
-      GIT_COMMITTER_EMAIL: "t@t",
-    },
-  });
-  if (r.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
-  return (r.stdout ?? "").trim();
-}
-
-const SPEC = {
-  problem: "The retry helper gives up on the first transient failure.",
-  size: "S",
-  criteria: [{ id: "AC1", text: "retries a transient failure twice", verify: "test" }],
-};
-
-const BODY = `\`\`\`pi-spec v1\n${JSON.stringify(SPEC, null, 2)}\n\`\`\``;
-
-/**
- * A dir whose `gh` answers every call with `{ body }` — the shape both the
- * forge adapter's `gh issue view … --json …` and the raw fallback parse.
- *
- * `command.ts` wires `readyOutcome` to the real forge, so the seam a case has
- * for the issue body is the `gh` those paths shell out to. A PATH entry pointing
- * at a script is the narrowest fake that keeps the production read in place: the
- * JSON parse, the spec parser and the readiness judgement all run on real bytes,
- * and no token or network is needed.
- *
- * The script writes a JSON file and `cat`s it. It must NOT print the body
- * through `printf`: `%s` swallows the backquotes of a pi-spec fence and `%b`
- * eats the escapes that JSON used to spell the body's own newlines (both
- * measured — each produced `{"body":""}` from a well-formed spec), and a fake
- * that quietly deletes the fence tests a run that was refused for a reason the
- * case never intended. `cat` passes the bytes through unchanged.
- */
-function fakeGhDir(body: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "lean-seed-gh-"));
-  const json = JSON.stringify({
-    body,
-    number: 1,
-    title: "t",
-    state: "OPEN",
-    url: "https://forge.invalid/o/r/issues/1",
-    createdAt: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-01-01T00:00:00Z",
-    labels: [],
-    author: { login: "t" },
-  });
-  writeFileSync(path.join(dir, "answer.json"), json, "utf8");
-  writeFileSync(path.join(dir, "gh"), '#!/bin/sh\ncat "$(dirname "$0")/answer.json"\n', {
-    mode: 0o755,
-  });
-  return dir;
-}
-
-/** Run `fn` with `binDir` searched before the host's PATH; restores after. */
-async function withGh<T>(binDir: string, fn: () => Promise<T>): Promise<T> {
-  const before = process.env.PATH;
-  process.env.PATH = `${binDir}${path.delimiter}${before ?? ""}`;
-  try {
-    return await fn();
-  } finally {
-    process.env.PATH = before;
-  }
-}
-
-/**
- * A temp repo whose mainline refs exist or do not, as the case asks.
- *
- * `git remote set-head` is what makes `origin/HEAD` exist at all — a repo
- * `git init`-ed in a temp dir has no such ref, and the whole bug class here is a
- * probe that reads refs. `workJson` commits the config at the base because
- * `ready` loads `.pi/work.json` AT that sha: absent it, `ready` would fall back
- * to defaults, which is a different situation from the one under test.
- *
- * `withLocalMain: false` is the second shape the seed must answer for. `origin`
- * is the last ref `mainlineSha` probes, so with no remote AND no `main` there is
- * nothing left to resolve — and a commit still has to exist for the case to have
- * a repo, so it goes on a throwaway branch and `main` is deleted.
- */
-function originRepo(
-  opts: { withOrigin?: boolean; withLocalMain?: boolean; workJson?: boolean } = {},
-): { repoRoot: string; originHead: string; dispose: () => void } {
-  const withOrigin = opts.withOrigin !== false;
-  const withLocalMain = opts.withLocalMain !== false;
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-seed-"));
-  const originDir = path.join(repoRoot, ".origin.git");
-  git(repoRoot, "init", "-q", "-b", "main");
-  mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
-  writeFileSync(path.join(repoRoot, "README.md"), "# seed fixture\n", "utf8");
-  // `workJson: false` is a real shape, not an unused knob: `ready` loads the
-  // config AT the base and a repo without one is the common case, so a case
-  // has to drive it and see the run go green on the defaults anyway.
-  if (opts.workJson !== false) {
-    writeFileSync(path.join(repoRoot, ".pi", "work.json"), JSON.stringify({ version: 1 }), "utf8");
-  } else {
-    // Keep `.pi/` in the commit so the directory exists and a later case can
-    // tell "no config file" from "no config directory".
-    writeFileSync(path.join(repoRoot, ".pi", "README"), "no config\n", "utf8");
-  }
-  git(repoRoot, "add", "-A");
-  if (withLocalMain) {
-    git(repoRoot, "commit", "-q", "-m", "base");
-  } else {
-    git(repoRoot, "commit", "-q", "-m", "base", "--allow-empty");
-    git(repoRoot, "checkout", "-q", "-b", "side");
-    git(repoRoot, "branch", "-D", "main");
-  }
-  if (withOrigin) {
-    git(repoRoot, "init", "-q", "--bare", originDir);
-    git(repoRoot, "remote", "add", "origin", originDir);
-    git(repoRoot, "push", "-q", "origin", "main");
-    git(repoRoot, "remote", "set-head", "origin", "main");
-  }
-  const originHead = withOrigin && withLocalMain ? git(repoRoot, "rev-parse", "origin/HEAD") : "";
-  const forgeBefore = process.env.PI_ENSEMBLE_FORGE;
-  process.env.PI_ENSEMBLE_FORGE = "none";
-  return {
-    repoRoot,
-    originHead,
-    dispose: () => {
-      if (forgeBefore === undefined) delete process.env.PI_ENSEMBLE_FORGE;
-      else process.env.PI_ENSEMBLE_FORGE = forgeBefore;
-      rmSync(repoRoot, { recursive: true, force: true });
-    },
-  };
-}
 
 // ── (a) the seed resolves origin/HEAD, the ref every later base read goes through.
 {
@@ -249,7 +78,7 @@ function originRepo(
     const seen: string[] = [];
     const handlers = {
       ...scripted(HAPPY).handlers,
-      specify: async (ctx: { run: { baseSha: string } }) => {
+      specify: async (ctx: Parameters<LeanHandler>[0]) => {
         seen.push(ctx.run.baseSha);
         return { kind: "ok" };
       },
@@ -270,9 +99,9 @@ function originRepo(
       result.run.baseSha === BASE,
       `the run record carries the seeded base (got ${JSON.stringify(result.run.baseSha)})`,
     );
-    const onDisk = JSON.parse(
-      readFileSync(path.join(dir.dir, ".pi", "lean-state", "4201.json"), "utf8"),
-    ) as { baseSha?: string };
+    const onDisk = JSON.parse(readFileSync(leanStateFile(dir.dir, 4201), "utf8")) as {
+      baseSha?: string;
+    };
     assert(
       onDisk.baseSha === BASE,
       `the persisted record carries it too (got ${JSON.stringify(onDisk.baseSha)})`,
@@ -286,7 +115,7 @@ function originRepo(
       issue: 4201,
       // The finished record short-circuits before any handler runs, so the
       // assertion is about the base on the record it returns.
-      handlers: {},
+      handlers: {} satisfies Record<string, LeanHandler>,
       seed: { version: "test", baseSha: moved },
       now: () => 2,
     });
@@ -304,7 +133,7 @@ function originRepo(
   const repo = originRepo();
   try {
     const gh = fakeGhDir(BODY);
-    const ready = await withGh(gh, () => readyOutcome(repo.repoRoot, 4202, ""));
+    const ready = await withGh(gh, () => readyOutcome(repo.repoRoot, 4202, { baseSha: "" }));
     assert(
       ready.kind === "fail" &&
         ready.facts.failedRules.some((r) => r.includes("could not resolve the mainline sha")),
@@ -313,7 +142,7 @@ function originRepo(
     // The seed's own cause reaches the comment, which is what separates "this
     // clone has no origin/HEAD" from "git broke" for the operator reading it.
     const withWhy = await withGh(gh, () =>
-      readyOutcome(repo.repoRoot, 4202, "", "origin/HEAD: no such ref"),
+      readyOutcome(repo.repoRoot, 4202, { baseSha: "", why: "origin/HEAD: no such ref" }),
     );
     assert(
       withWhy.facts.failedRules.some((r) => r.includes("origin/HEAD: no such ref")),
@@ -321,7 +150,9 @@ function originRepo(
     );
     // A run seeded with the real base gets a green ready: the refusal above is
     // about the missing base, not about this repo.
-    const seeded = await withGh(gh, () => readyOutcome(repo.repoRoot, 4202, repo.originHead));
+    const seeded = await withGh(gh, () =>
+      readyOutcome(repo.repoRoot, 4202, { baseSha: repo.originHead }),
+    );
     assert(
       seeded.kind === "ok" && seeded.facts.baseSha === repo.originHead,
       `a seeded base makes ready ok at that sha (got ${seeded.kind} ${JSON.stringify(seeded.facts.failedRules)})`,
@@ -385,14 +216,16 @@ function originRepo(
   const repo = originRepo();
   try {
     const gh = fakeGhDir(BODY);
-    const bogus = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, "not-a-ref!!"));
+    const bogus = await withGh(gh, () =>
+      readyOutcome(repo.repoRoot, 4204, { baseSha: "not-a-ref!!" }),
+    );
     assert(
       bogus.kind === "fail" &&
         bogus.facts.failedRules.some((r) => r.includes("is not a commit in this clone")),
       `a base that is not a ref fails ready (got ${bogus.kind} ${JSON.stringify(bogus.facts.failedRules)})`,
     );
     const hex = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-    const fake = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, hex));
+    const fake = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, { baseSha: hex }));
     assert(
       fake.kind === "fail" &&
         fake.facts.failedRules.some(
@@ -400,24 +233,19 @@ function originRepo(
         ),
       `forty hex characters that name no object fail ready (got ${fake.kind} ${JSON.stringify(fake.facts.failedRules)})`,
     );
-    // A real base still passes the new gate, so the refusal above is about the
-    // base and not about this repo.
-    const real = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, repo.originHead));
-    assert(
-      real.kind === "ok" && real.facts.baseSha === repo.originHead,
-      `a real base sha still gives ok (got ${real.kind} ${JSON.stringify(real.facts.failedRules)})`,
-    );
     // A base the caller invented entirely is reported CLIPPED in the part the
     // harness composes: the sha is untrusted text going into an issue comment.
-    // (git's own stderr echoes the ref back verbatim and is clipped separately,
-    // which is why the assertion reads the `base sha …` prefix rather than the
-    // whole rule. The base is `x` + 200 `a`, so its 80-char clip is `x` + 79 `a`.)
+    // (git no longer echoes the ref back at all — the resolution moved into
+    // `resolveHeadSha`, which traces rather than returns a message — so the rule
+    // is exactly `base sha <clip> is not a commit in this clone`, and the
+    // assertion below pins the whole string. The base is `x` + 200 `a`, so its
+    // 80-char clip is `x` + 79 `a`, plus the ellipsis `oneLine` appends.)
     const long = `x${"a".repeat(200)}`;
-    const clipped = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, long));
+    const clipped = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, { baseSha: long }));
     const clipRule = clipped.facts.failedRules.find((r) => r.startsWith("base sha ")) ?? "";
     assert(
       clipped.kind === "fail" &&
-        clipRule.includes(`${"a".repeat(79)} is not a commit`) &&
+        clipRule === `base sha x${"a".repeat(79)}… is not a commit in this clone` &&
         !clipRule.startsWith(`base sha ${long}`),
       `a long bogus base is clipped to 80 chars in the rule (got ${JSON.stringify(clipped.facts.failedRules)})`,
     );
@@ -434,11 +262,81 @@ function originRepo(
   const repo = originRepo({ workJson: false });
   try {
     const seeded = await withGh(fakeGhDir(BODY), () =>
-      readyOutcome(repo.repoRoot, 4205, repo.originHead),
+      readyOutcome(repo.repoRoot, 4205, { baseSha: repo.originHead }),
     );
     assert(
       seeded.kind === "ok" && seeded.facts.config?.version === 1,
       `a base with no .pi/work.json still gives ok on defaults (got ${seeded.kind} ${JSON.stringify(seeded.facts.failedRules)})`,
+    );
+  } finally {
+    repo.dispose();
+  }
+}
+
+// ── (j) the base must be an IMMUTABLE oid, not merely a string git resolves.
+//
+// The first version of this gate ran the caller's string through
+// `rev-parse --verify <base>^{commit}` and accepted ANY 40-hex answer. That
+// proves a resolution happened, not that the base named the object: `main`,
+// `HEAD` and `@{0}` all resolve, a suffix chain such as
+// ``main^{commit}`touch x`@{0}`` resolves to main's tip through the
+// backtick-quoting git's own rev syntax allows, and an 8-hex prefix or a
+// mixed-case full sha resolve to a DIFFERENT spelling than the one the record
+// carries — so every later equality check against the base silently misses.
+// All five are refused by requiring a full lowercase oid that resolves back to
+// itself. The real sha still answers `ok`, which is what makes the refusals
+// about the base and not about this repo.
+{
+  const repo = originRepo();
+  try {
+    const gh = fakeGhDir(BODY);
+    const refusals: Array<[string, string]> = [
+      ["a branch name", "main"],
+      ["HEAD", "HEAD"],
+      ["a suffix chain through backtick quoting", "main^{commit}`touch x`@{0}"],
+      ["an 8-hex prefix of the real tip", repo.tip.slice(0, 8)],
+    ];
+    for (const [label, value] of refusals) {
+      const out = await withGh(gh, () => readyOutcome(repo.repoRoot, 4207, { baseSha: value }));
+      assert(
+        out.kind === "fail" &&
+          out.facts.failedRules.some((r) => r.startsWith(`base sha ${value} is not a commit`)),
+        `${label} (${JSON.stringify(value)}) is refused by ready (got ${out.kind} ${JSON.stringify(out.facts.failedRules)})`,
+      );
+    }
+    // An uppercase full sha names a real commit and is still refused: it is not
+    // the canonical spelling, so a later string equality against it cannot
+    // settle. Probed against a repo with no remote at all, so the value cannot
+    // accidentally be a ref that resolves.
+    const upper = repo.tip.toUpperCase();
+    const noOrigin = originRepo({ withOrigin: false });
+    try {
+      const out = await withGh(fakeGhDir(BODY), () =>
+        readyOutcome(noOrigin.repoRoot, 4208, { baseSha: upper }),
+      );
+      assert(
+        out.kind === "fail" &&
+          out.facts.failedRules.some((r) => r.startsWith("base sha ") && r.includes(upper)),
+        `an uppercase full sha is refused by ready (got ${out.kind} ${JSON.stringify(out.facts.failedRules)})`,
+      );
+      const good = await withGh(fakeGhDir(BODY), () =>
+        readyOutcome(noOrigin.repoRoot, 4208, { baseSha: noOrigin.tip }),
+      );
+      assert(
+        good.kind === "ok" && good.facts.baseSha === noOrigin.tip,
+        `the same commit as a full lowercase sha still gives ok (got ${good.kind} ${JSON.stringify(good.facts.failedRules)})`,
+      );
+    } finally {
+      noOrigin.dispose();
+    }
+    // And in the repo WITH a remote, where `main` is a real resolvable ref: the
+    // refusal above must be about the shape, not about git failing.
+    const real = await withGh(gh, () =>
+      readyOutcome(repo.repoRoot, 4207, { baseSha: repo.originHead }),
+    );
+    assert(
+      real.kind === "ok" && real.facts.baseSha === repo.originHead,
+      `a real full sha still gives ok (got ${real.kind} ${JSON.stringify(real.facts.failedRules)})`,
     );
   } finally {
     repo.dispose();
