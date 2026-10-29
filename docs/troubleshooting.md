@@ -3164,6 +3164,43 @@ A confirm echoed a dry run's `reviewedDigest`, but the reviewed spec could not b
 
 By design (no env knob): chore/spike are low-blast-radius and deterministic validation is their gate. The old `PI_ENSEMBLE_PLAN_GAP_GATE` variable is deleted and inert. Bug/feature/epic always run the gate; its round 2 (fires only on CRITICAL) is a scoped verification of the carried resolutions, not a second full review — multi-round full re-review of the same artifact measurably adds false positives (arXiv:2603.16244).
 
+## A headless run reports `crash` in text mode or the supervised child runs nothing (`#1866`)
+
+**Affected:** v0.14.30 through v0.14.40. Fixed in the next release.
+
+**Symptom (A — both modes):** every headless `work` run exits 30 and the host reads:
+
+```
+error: crash — the runner process exited 0 without a result
+```
+
+with no steps and no per-issue progress, for a run whose state file shows the cycle did
+run. Nothing in the output names a child that died.
+
+**Cause:** the runner's entry guard excluded the process whose environment marks it as
+the supervised child. That child is the process the supervisor re-spawns to OWN the run,
+so it never reached the code that runs a cycle: it exited 0 with an empty stdout, and the
+only thing the supervisor could report was its own crash projection. Fixed by dropping
+that exclusion — the single-document property is held by the stdout latch and by the
+supervise arm's own refusal to re-spawn, not by the guard.
+
+**Symptom (B — without `--json`):** the same `crash` line on a run that was launched in
+text mode, whose child HAD printed its summary.
+
+**Cause:** in text mode the runner wrote only the human summary line, and the supervisor
+decides "did my child answer" by looking for a parseable result document, not for a
+non-empty stdout. A text-mode child therefore never answered and got the supervisor's
+`crash`/30 written over results it had already produced. Fixed by having the text-mode
+projection carry the same result document the `--json` mode writes, after the summary and
+error lines; the supervisor forwards the document and the human lines stay on the stream.
+
+**What it is not:** a run whose child died by a signal or failed to start is still a
+`crash` with its signal, whatever it printed — that contract is unchanged (see the
+`#1863` entry above).
+
+**Tests:** `extension/smoke-tests/test-headless-supervised-child.ts` spawns the real CLI
+as the supervisor's child and through the real two-tier supervisor, in both modes.
+
 ## A headless run exits 30 with no handoff (`#1863`)
 
 ### The symptom

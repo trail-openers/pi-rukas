@@ -25,7 +25,13 @@ import { resourceReport } from "../resource-budget.ts";
 import { isTerminalState, readState, workStateFile } from "../workflow-state.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
-import { type IssueResult, notStartedResult, projectIssue, resultDocument } from "./result.ts";
+import {
+  type IssueResult,
+  RESULT_SCHEMA_VERSION,
+  notStartedResult,
+  projectIssue,
+  resultDocument,
+} from "./result.ts";
 
 /**
  * How long the runner waits for its own driver before calling it wedged.
@@ -102,7 +108,26 @@ export function formatResultDocument(run: RunOutcome, json: boolean): string {
   }
   const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
   const head = `pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`;
-  return run.error ? `${head}error: ${run.error.code} — ${run.error.message}\n` : head;
+  // #1866 — the machine line. The summary and the error line are what a person
+  // reads; they are not what the SUPERVISOR reads. `supervise.ts` decides "did
+  // my child answer" with `parseResultDocument`, which accepts only a line that
+  // parses as a result document carrying this build's `schemaVersion`, an
+  // `issues` array and a published `exitCode`. A text-mode child printed neither,
+  // so a runner that ran the cycle and returned honestly was answered for a
+  // `crash`/30 projected over its own results — the sibling of Fix A, and the
+  // reason text mode reported `crash` long before e8852593. The line is emitted
+  // LAST so the human-facing summary stays the first thing on the stream; the
+  // supervisor forwards the document line and drops the prose around it, and the
+  // one-document latch still admits exactly one call per process. The document
+  // is built by the same `resultDocument` the `--json` branch uses, so the two
+  // modes cannot drift in schema version or key order (#1863 round 1).
+  const doc = resultDocument(run, {
+    commit: readBuildCommit(),
+    version: readBuildVersion(),
+  });
+  const machine = `${JSON.stringify(doc)}\n`;
+  const errorLine = run.error ? `error: ${run.error.code} — ${run.error.message}\n` : "";
+  return `${head}${errorLine}${machine}`;
 }
 
 export interface ResultGuaranteeOpts {
