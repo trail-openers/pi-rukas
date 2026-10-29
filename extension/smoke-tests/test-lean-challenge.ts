@@ -10,24 +10,29 @@
  * fixture's.
  *
  *   (a) a red edge case          -> new-tests, committed on headBefore, frozen map is the UNION
- *   (f) the child commits on its own -> normalised to ONE driver commit
- *   (g) the frozen map at HEAD matches after the challenge commit
- *   (h) a frozen record that does not match at HEAD -> THROW before the dispatch
- *   (i) the prompt names the frozen tests, asks for new ones, ties them to criteria
- *   (j) no runner configured -> THROW (a round that could only say `none` judged nothing)
- *   (k) the worktree is not ours -> THROW before the dispatch
+ *   (f) the child commits on its own -> exactly ONE driver commit, holding only the red test
+ *   (g) ten green submissions    -> `none`, and the per-file note list is CAPPED
+ *   (h) the frozen map at HEAD matches after the challenge commit
+ *   (i) a frozen record that does not match at HEAD -> THROW before the dispatch
+ *   (j) the prompt names the frozen tests, asks for new ones, ties them to criteria
+ *   (k) no runner configured -> THROW (a round that could only say `none` judged nothing)
+ *   (l) the worktree is not ours -> THROW before the dispatch
+ *   (m) phase1Handlers wires the real challenge step
+ *   (n) every other state's stub throws rather than answering
  *
  * The VERDICT rules — when this step may say `new-tests`, when it must say
  * `none`, and the shapes it must answer with a THROW — are in
  * `test-lean-challenge-coverage.ts`, which shares this fixture. Every throw
- * case in both files asserts the error CLASS, not only its message: `none` and
- * a throw are the two answers this step gives and the machine routes them to
- * opposite places, so a message match alone would pass if the throw were the
- * wrong kind — or if a future refactor returned `none` with a scary string.
+ * case in both files asserts the error CLASS with `instanceof`, not only its
+ * message and not its `name`: `none` and a throw are the two answers this step
+ * gives and the machine routes them to opposite places, so a message match
+ * alone would pass if the throw were the wrong kind — or if a future refactor
+ * returned `none` with a scary string.
  */
 
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import {
   ROOTS,
@@ -35,8 +40,10 @@ import {
   SpecifyInfraError,
   blobSha,
   challengeFixture,
+  childCommitOf,
   commitPaths,
   git,
+  greenEdge,
   put,
   redEdge,
   runChallenge,
@@ -46,9 +53,14 @@ import {
   submit,
 } from "./lib/lean-challenge-fixture.ts";
 
-/** Is this throw the infrastructure family? Both steps name their own subclass. */
+/**
+ * Is this throw the infrastructure family? Both steps name their own subclass
+ * and the machine routes this step's two answers — `none` and a throw — to
+ * opposite places, so the CLASS is the assertion: `instanceof` only, never a
+ * `name` sniff that a re-export or a rename would silently unmatch.
+ */
 function isInfra(err: Error | undefined): boolean {
-  return err instanceof SpecifyInfraError || err?.name === "ChallengeInfraError";
+  return err instanceof SpecifyInfraError || err instanceof ChallengeInfraError;
 }
 
 let exit = 0;
@@ -123,6 +135,99 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
   assert(
     r.gitArgvs.some((argv) => argv[0] === "show") === true,
     "(a) the unguarded shape really is exercised — a blob read ran without the guard, so the exemption above is not vacuous",
+  );
+}
+
+// ---------------------- (f) the child commits on its own: still ONE driver commit
+//
+// The adversary is a developer with a shell, and a developer commits. The step
+// resets the tree to `headBefore` before it rewrites anything, so the child's
+// commit must not survive as a second commit above that head and its message
+// must not become the record either: exactly one commit, the step's own subject,
+// holding ONLY the new red test, with the frozen map still intact at HEAD.
+{
+  const built = challengeFixture(202);
+  const r = await runChallenge({
+    issue: 202,
+    built,
+    child: (wt) => {
+      put(wt, EDGE, redEdge(EDGE));
+      // The child stages everything and commits, the way one left to its own
+      // devices does — including the frozen file sitting in its tree.
+      childCommitOf(wt, "test: adversarial round 1");
+    },
+    toolUses: [submit("AC1", [EDGE])],
+  });
+  const wt = r.worktree;
+  assert(r.threw === undefined, `(f) no throw: ${r.threw?.message ?? "clean"}`);
+  assert(r.outcome?.kind === "new-tests", `(f) new-tests, got ${r.outcome?.kind}`);
+  assert(
+    subjectsAbove(wt, r.headBefore).join() === "test: challenge tests for #202",
+    `(f) EXACTLY ONE commit above the head the step found, and it is the step's own — the child's is gone (got ${subjectsAbove(wt, r.headBefore).join(" | ")})`,
+  );
+  assert(
+    git(wt, "rev-parse", "HEAD^") === r.headBefore,
+    "(f) that single commit sits directly on the head the step found",
+  );
+  assert(
+    commitPaths(wt).join() === EDGE,
+    `(f) the commit holds the new red test and nothing else (got ${commitPaths(wt).join(", ")})`,
+  );
+  assert(status(wt) === "", `(f) the worktree is clean after the commit (got ${status(wt)})`);
+}
+
+// --------------------------- (g) ten green submissions: the note list is capped
+//
+// The reason an outcome carries is what an operator reads in a handback, so a
+// round that dropped forty files must not print forty lines of it. Ten files
+// all PASS the runner here, so all ten are refused with a per-file note. Two
+// malformed `submit_tests` calls sit beside them so the reason also carries its
+// malformed count — and nothing is red, so the round's verdict is `none` and
+// its reason shows the cap and counts the rest rather than quoting them.
+{
+  const TEN = Array.from({ length: 10 }, (_unused, i) => `tests/AC1-green-${i + 1}.test.sh`);
+  // Ten REFUSED rows (a path that is not a file in the tree) sit beside the ten
+  // green submissions: the per-file evidence list and the refused-row list are
+  // two separate note families and BOTH are capped, so each contributes its own
+  // `(+2 more)` once the cap of eight clips it.
+  const TEN_ABSENT = Array.from(
+    { length: 10 },
+    (_unused, i) => `tests/AC1-absent-${i + 1}.test.sh`,
+  );
+  const r = await runChallenge({
+    issue: 203,
+    child: (wt) => {
+      for (const rel of TEN) put(wt, rel, greenEdge(rel));
+    },
+    toolUses: [submit("AC1", TEN.concat(TEN_ABSENT))],
+  });
+  const reason = r.outcome?.reason ?? "";
+  assert(r.threw === undefined, `(g) no throw: ${r.threw?.message ?? "clean"}`);
+  assert(
+    r.outcome?.kind === "none",
+    `(g) nothing was red, so the verdict is \`none\` (got ${r.outcome?.kind})`,
+  );
+  assert(
+    reason.includes("2 malformed submit_tests call(s)") === false,
+    "(g) no malformed count here — the two lists are the capped ones, so the reason cannot hide a third clause",
+  );
+  assert(
+    reason.includes("dropped 10") && reason.includes("(+2 more)"),
+    `(g) the per-file note list is capped at eight and the other two counted, not quoted (got ${reason})`,
+  );
+  assert(
+    reason.split("(+2 more)").length - 1 === 2 &&
+      reason.includes("dropped 10:") &&
+      reason.includes("dropped 10 (+2 more) —"),
+    `(g) BOTH note families are capped — the per-file evidence list and the refused-row list each count their own two beyond the cap (got ${reason})`,
+  );
+  assert(
+    reason.length < 4000,
+    `(g) the reason stays bounded for a handback (${reason.length} chars)`,
+  );
+  assert(
+    TEN.every((rel) => !existsSync(path.join(r.worktree, rel))),
+    "(g) every refused green file is deleted from the tree",
   );
 }
 

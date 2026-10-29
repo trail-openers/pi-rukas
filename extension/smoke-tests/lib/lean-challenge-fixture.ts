@@ -32,6 +32,7 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { foldLog } from "../../src/lean/resume.ts";
+import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import {
@@ -86,6 +87,11 @@ export interface ChallengeBuilt extends Built {
   buildSha: string;
 }
 
+/** The worktree path the challenge step computes for a fixture's own issue. */
+function wtOf(built: Built): string {
+  return specifyWorktreePath(built.repoRoot, built.ctx.issue);
+}
+
 /**
  * A spec with TWO `verify: "test"` criteria.
  *
@@ -128,12 +134,35 @@ export function challengeFixture(
   issue: number,
   opts?: { extraFrozen?: Record<string, string>; issueDir?: number },
 ): ChallengeBuilt {
-  // A case that wants two runs against ONE repo — one whose child touches a
-  // frozen path, one that leaves it alone — gives the second its own issue
-  // number so it gets its own worktree. `issue` stays the number the step and
-  // its commit subject carry; only the worktree directory is shared.
-  const built = buildFixture(opts?.issueDir ?? issue) as ChallengeBuilt;
-  const wt = built.worktree;
+  // A second run against ONE repo is a case the step cannot see apart from the
+  // first: `challenge` derives its tree path from `ctx.repoRoot` plus its own
+  // issue, so two runs with the same `repoRoot` share a worktree and the second
+  // judges the first's leftovers — which is exactly how `issueDir` used to be
+  // wired: it handed the OTHER issue to `buildFixture`, so both runs of the (c)
+  // pair landed in ONE tree while the case believed it saw a split. One name,
+  // `issueDir`, one meaning, used identically here and in `runChallenge`: it is
+  // the issue whose REPO the case shares, and the tree is built under this
+  // case's own `issue`, so `specifyWorktreePath(repoRoot, issue)` — what the
+  // step itself computes — puts each run in its own directory. Never a step-log
+  // knob: keys, subject and branch always carry `issue`, because a log keyed
+  // under one issue while `ctx.run.issue` carried another is state `foldLog`
+  // refuses.
+  const dirIssue = opts?.issueDir ?? issue;
+  const built = buildFixture(dirIssue, { worktreeIssue: issue }) as ChallengeBuilt;
+  const repoRoot = built.repoRoot;
+  if (dirIssue !== issue && wtOf(built) === specifyWorktreePath(repoRoot, issue))
+    throw new Error(
+      `fixture: issueDir ${dirIssue} left issue ${issue} in the same worktree — the two runs would judge one tree`,
+    );
+  // The tree the step will compute for itself, derived here rather than borrowed
+  // from the fixture's bookkeeping: if the two ever disagreed, a case that
+  // relies on two runs being apart would be judging one tree while believing it
+  // saw two. `runChallenge` asserts the same equality before it dispatches.
+  const wt = specifyWorktreePath(repoRoot, issue);
+  if (wt !== built.worktree)
+    throw new Error(
+      `fixture: issue ${issue} in repo ${repoRoot} — the step's worktree ${wt} is not the fixture's ${built.worktree}`,
+    );
   // The builder's work, committed the way the build step commits it: a real
   // commit ON the run's branch, above the frozen test commit. Written in the
   // worktree because that is the tree the run's branch is checked out in.
@@ -184,9 +213,9 @@ export function challengeFixture(
   // one a real drive reached by routing `build:ok` -> `challenge:none` ->
   // `build:ok` -> here. A hand-carried counter is a fixture that can drift from
   // the table it is supposed to be standing in.
-  const counters = foldLog({ ...built.ctx.run, steps }).pos.counters;
+  const counters = foldLog({ ...built.ctx.run, issue, branch: built.branch, steps }).pos.counters;
   const ctx: HandlerCtx = {
-    repoRoot: built.repoRoot,
+    repoRoot,
     issue,
     run: { ...built.ctx.run, issue, steps, counters },
     steps,
@@ -251,12 +280,17 @@ export interface RunOpts {
    */
   extraFrozen?: Record<string, string>;
   /**
-   * Run this case in ANOTHER issue's worktree, keeping its own step log keys
-   * and commit subject. Two runs against one repo fight over the same tree, so
-   * a pair of cases that differ only in what the child did splits on the tree
-   * and not on the issue the step reports.
+   * Run this case inside ANOTHER issue's repo, keeping its own step log keys,
+   * commit subject, branch AND worktree. Two runs against one repo fight over
+   * the same tree, so a pair of cases that differ only in what the child did
+   * splits on the tree — and the split has to reach the worktree PATH, which the
+   * step derives from `repoRoot` plus its own issue rather than sharing.
+   *
+   * It is a repo selector, not a worktree selector: a fixture whose log keys
+   * came from one issue while `run.issue` carried another is state `foldLog`
+   * refuses, and the step's tree path would not move either.
    */
-  worktreeIssue?: number;
+  issueDir?: number;
   /** Per-run runner limits — a short timeout proves a hang is infra. */
   testLimits?: { timeoutMs?: number };
   /** A child whose dispatch did not succeed (the infra case). */
@@ -273,8 +307,16 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     opts.built ??
     challengeFixture(opts.issue, {
       ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
-      ...(opts.worktreeIssue === undefined ? {} : { worktreeIssue: opts.worktreeIssue }),
+      ...(opts.issueDir === undefined ? {} : { issueDir: opts.issueDir }),
     });
+  // The tree this case runs in must be the one the STEP computes, from
+  // `repoRoot` plus its own issue: the whole split-two-runs-across-trees
+  // mechanism rests on that derivation, and a fixture that disagreed with the
+  // step would have every case below judge a tree nothing else looks at.
+  if (built.worktree !== specifyWorktreePath(built.repoRoot, opts.issue))
+    throw new Error(
+      `fixture: ${built.worktree} is not the worktree the challenge step computes for issue ${opts.issue} in ${built.repoRoot}`,
+    );
   let ctx = built.ctx;
   if (opts.extraSteps !== undefined) {
     ctx = {
@@ -314,7 +356,7 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     fetchIssueBody: async () => opts.specBody ?? SPEC_BODY,
     loadConfig: async () => {
       if (opts.noRunner === true) return { ...configWith(), verify: { fast: "true" } };
-      if (opts.runner !== undefined) return configWithRunner(opts.runner);
+      if (opts.runner !== undefined) return configWith(opts.runner);
       return opts.config ?? configWith();
     },
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
@@ -348,14 +390,6 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
 /** A config carrying the project's test runner template. */
 export function configWith(runner: string = RUNNER): WorkConfig {
   return { ...defaultConfig(), verify: { fast: "true", test: runner } };
-}
-
-/**
- * The same config under another runner. Named apart from `configWith` so a
- * case that swaps ONLY the runner does not also have to restate the fast tier.
- */
-export function configWithRunner(runner: string): WorkConfig {
-  return configWith(runner);
 }
 
 /** `git status --porcelain -uall` for a worktree, "" when clean. */

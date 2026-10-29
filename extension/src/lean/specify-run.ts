@@ -154,14 +154,18 @@ function noteClause(label: string, notes: string[]): string {
   return `${label} ${notes.length}: ${shown.join("; ")}${more > 0 ? ` (+${more} more)` : ""}`;
 }
 
-/** One line per dropped row or file, for the outcome reason. */
+/**
+ * A `dropped N (…) — a; b; c` clause, with NO leading space: each call site
+ * supplies the separator its own position needs, so the clause does not carry
+ * padding that a caller then has to trim before joining.
+ */
 function dropNote(dropped: { criterionId: string; path?: string; reason: string }[]): string {
   if (dropped.length === 0) return "";
   const parts = dropped
     .slice(0, NOTE_CAP)
     .map((d) => clip(`${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`));
   const more = dropped.length - parts.length;
-  return ` dropped ${dropped.length}${more > 0 ? ` (+${more} more)` : ""} — ${parts.join("; ")}`;
+  return `dropped ${dropped.length}${more > 0 ? ` (+${more} more)` : ""} — ${parts.join("; ")}`;
 }
 
 /** Remove a non-red file the step refused; the reason it is still there, if any. */
@@ -198,16 +202,6 @@ function assertRan(proof: Proof, file: string): void {
 }
 
 /**
- * Every row the pipeline refused, in the order it refused them.
- *
- * Exported for the step module, which re-exports the error class it has always
- * exported: `SpecifyInfraError` names the step that raised it in every message
- * a handback carries, and its smoke fixtures import it from `specify.ts`. The
- * class itself lives here because the pipeline is what raises it, and a step
- * that imports its own error from a module that imports it back is a cycle.
- */
-
-/**
  * Run the pipeline. THROWS `SpecifyInfraError` on anything the step cannot
  * establish about git, the tree or the runner; returns a verdict about the
  * CHILD's work otherwise.
@@ -231,7 +225,7 @@ export async function runTestPipeline(
   if (candidates.length === 0) {
     return {
       kind: "empty",
-      reason: `the child submitted no test file the step could keep${skippedNote}${dropNote(dropped)}`,
+      reason: `the child submitted no test file the step could keep${skippedNote}${dropNote(dropped) === "" ? "" : `; ${dropNote(dropped)}`}`,
     };
   }
 
@@ -302,7 +296,7 @@ export async function runTestPipeline(
   // after the fixed prefix rather than prefixed, and the prefix is exactly the
   // string main wrote, so a diff of the two shapes reads as a no-op.
   const droppedNote = noteClause("dropped", notes);
-  const evidence = [droppedNote, dropNote(dropped).trim()].filter((s) => s !== "").join(" ");
+  const evidence = [droppedNote, dropNote(dropped)].filter((s) => s !== "").join(" ");
   const gapFor = (ids: string[], withEvidence: boolean): string[] =>
     ids.map(
       (id) =>

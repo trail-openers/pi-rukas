@@ -177,17 +177,16 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   });
   const spec = await specOf(deps, repoRoot, issue);
   const wanted = testCriteria(spec);
-  if (wanted.length > 0 && config.verify.test === undefined)
+  // ONE binding, ONE refusal: `runnerTemplate` is the string the runner needs and
+  // `testRunner` is the same string shown to the adversary, so there is exactly
+  // one place that decides it is missing. A round whose files nobody executed
+  // could only ever report `none`, which is not a verdict about the code — it is
+  // a missing setting wearing one, so the refusal names the setting.
+  const runnerTemplate: string | undefined = config.verify.test;
+  if (runnerTemplate === undefined)
     throw new ChallengeInfraError(
       "no test runner configured (.pi/work.json verify.test) for a spec with test criteria",
     );
-  // The guard that makes `runnerTemplate` a string is the refusal above; this
-  // one is the same fact stated where it is used, so no cast can carry an
-  // `undefined` into the runner if the refusal above ever moves. A round whose
-  // files nobody executed could only ever report `none`, which is not a verdict
-  // about the code — it is a missing setting wearing one.
-  if (config.verify.test === undefined) throw new ChallengeInfraError("no test runner configured");
-  const runnerTemplate: string = config.verify.test;
 
   // 3. The adversary.
   const toolUses = await dispatchAdversary(deps.dispatch, {
@@ -196,7 +195,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     frozenPaths: Object.keys(frozen),
     wt,
     repoRoot,
-    ...(config.verify.test === undefined ? {} : { testRunner: config.verify.test }),
+    testRunner: runnerTemplate,
     ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
   });
 

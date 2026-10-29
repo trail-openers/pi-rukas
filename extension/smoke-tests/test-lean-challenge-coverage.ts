@@ -159,7 +159,7 @@ const GREEN_EDGE = "tests/AC2-edge-already-handled.test.sh";
   const built = challengeFixture(222, { extraFrozen: extra });
   // Two runs against one repo would fight over the same worktree, so the run
   // that does NOT touch a frozen path gets its own tree at the same content.
-  const clean = challengeFixture(223, { extraFrozen: extra, worktreeIssue: 2233 });
+  const clean = challengeFixture(223, { extraFrozen: extra, issueDir: 2233 });
   const r = await runChallenge({
     issue: 222,
     built,
@@ -205,6 +205,18 @@ const GREEN_EDGE = "tests/AC2-edge-already-handled.test.sh";
   assert(
     c2.outcome?.kind === "new-tests" && Object.keys(c2.outcome?.frozen ?? {}).join() === EDGE,
     `(c) the same run WITHOUT a frozen submission freezes the new file as before (got ${JSON.stringify(c2.outcome?.frozen)})`,
+  );
+  // The split is load-bearing, and this fixture got it wrong once: two runs in
+  // ONE worktree have the second judge the first's leftovers, and every other
+  // assertion in this case still passes. The paths the two runs ACTUALLY ran in
+  // are the only evidence the split happened.
+  assert(
+    c2.worktree !== r.worktree,
+    `(c) the two runs used DIFFERENT worktrees — ${r.worktree} vs ${c2.worktree} (one path means the fixture shared a tree and the runs fought over it)`,
+  );
+  assert(
+    existsSync(c2.worktree) && existsSync(r.worktree),
+    "(c) and both of those worktrees really exist — the assertion above is not two names for one tree",
   );
 }
 
