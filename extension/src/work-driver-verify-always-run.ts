@@ -135,6 +135,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-lean-lock.ts",
   "smoke-tests/test-lean-specify-rewrite.ts",
   "smoke-tests/test-lean-specify-tamper.ts",
+  "smoke-tests/test-lean-work-config-committed.ts",
   "smoke-tests/test-ledger-isolation.ts",
   "smoke-tests/test-lens-evidence.ts",
   "smoke-tests/test-lens-fix-cwd.ts",
