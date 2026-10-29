@@ -265,6 +265,12 @@ async function main(): Promise<void> {
     // #1879 — the compiler canary runs the project's own compiler, so it takes
     // the same scrubbed env rather than the driver's ambient one.
     ["work-driver-toolchain-canary.ts", "env: verifyChildEnv(),"],
+    // #1908 — the `command` criteria tier runs the project's own test file through
+    // the same runner the frozen tests use, and it is the lean gate's only tier that
+    // executes text from an issue body. It takes the driver's scrubbed env for the
+    // same reason every tier above does: the thing under test is the project's test,
+    // and a headless driver's knobs must not decide what it sees.
+    ["lean/verify.ts", "verifyChildEnv(),"],
   ];
   const inheritedBy = new Set([
     // The one seam that legitimately reads a snapshot of the parent for the

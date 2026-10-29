@@ -49,11 +49,12 @@ import { frozenFromLog } from "./build.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
-import { parsePiSpec } from "./spec.ts";
+import { parsePiSpec, readiness } from "./spec.ts";
 import type { Criterion } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
+import { oneLine } from "./text-fence.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
 import { recheckAfterRuns } from "./verify-recheck.ts";
@@ -324,9 +325,6 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
 
   const failed = firstFailure(tests, ...tierResults, commandsFailedAsExecuted(commands));
   if (failed !== undefined) return { kind: "red", reason: clipReason(failed) };
-  // A command the gate declined to run is not a verdict, but the reason is still
-  // worth carrying on a green: the PR body prints it beside the blank cell, and a
-  // red's reason line is already dominated by the failing check.
 
   // The tiers run as shell commands IN the worktree, and the command tier runs
   // test CODE, so between the checks above and this point a tier may have rewritten
@@ -346,6 +344,28 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   });
   if (recheck.kind === "red") return { kind: "red", reason: clipReason(recheck.reason) };
 
+  // Re-read every licence a SECOND time, after the command criteria. The pass above
+  // certified the tree clean while the criteria had not run, so on its own it cannot
+  // license a green over a preservation run that rewrote a frozen test, dirtied the
+  // tree, committed, or took the worktree off its branch. This pass names the
+  // criteria, because they are the only thing that has touched the tree since.
+  const afterCommands = await recheckAfterRuns({
+    exec: deps.exec,
+    wt,
+    head,
+    branch,
+    baseSha: ctx.run.baseSha,
+    frozen,
+    commands,
+    who: "a command criterion",
+    when: "the command criteria",
+  });
+  if (afterCommands.kind === "red")
+    return { kind: "red", reason: clipReason(afterCommands.reason) };
+
+  // A command the gate declined to run is not a verdict, but the reason is still
+  // worth carrying on a green: the PR body prints it beside the blank cell, and a
+  // red's reason line is already dominated by the failing check.
   const note =
     tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "";
   // Rebuilt from the tier's own record rather than spread-cast: `commandCriteria`
@@ -413,6 +433,17 @@ async function specCriteriaFor(
     trace("lean/verify: no command criteria — the issue carries no pi-spec block");
     return [];
   }
+  // A spec that parses but is not runnable is a spec the gate cannot act on, and the
+  // run must not proceed to a verdict on criteria a well-formed spec would not carry:
+  // two criteria sharing one id, for example, mean the record keys two verdicts on one
+  // slot and one reason silently stands for both. `specify` gates the run on this same
+  // judgement, so re-reading it here is not a new rule — it is the rule applied where
+  // its violation would otherwise be invisible.
+  const unready = readiness(parsed.spec);
+  if (unready.length > 0)
+    throw new VerifyInfraError(
+      `the issue's spec is not ready for the command criteria: ${oneLine(unready.join("; "), 300)}`,
+    );
   return parsed.spec.criteria;
 }
 

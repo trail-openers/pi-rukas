@@ -22,7 +22,6 @@
  * `test-owner-claim-park-message.ts`. All three share
  * `lib/owner-identity-fixtures.ts` so one fixture cannot drift from the other.
  */
-import { spawnSync } from "node:child_process";
 import { selfIdentity } from "../src/process-liveness.ts";
 import type { PathClaimEntry } from "../src/work-driver-path-claims-staleness.ts";
 import {

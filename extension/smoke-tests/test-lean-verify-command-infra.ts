@@ -237,6 +237,32 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     starved.threw !== undefined && /could not be judged/.test(starved.threw.message),
     `(e3) a command run that gets no share of the tier's budget is infrastructure, not a verdict (got ${String(starved.outcome?.kind)}: ${String(starved.threw?.message)})`,
   );
+    // A caller that names no timeout is NOT licence for a run to fall back to the
+    // runner's own default. `TEST_TIMEOUT_MS` (120s) past the point where the tier's
+    // 600s is spent is time the gate never agreed to wait, so every run is bounded by
+    // what the budget still has. A real `sleep` fills the budget first, so the run
+    // that follows it is genuinely late: it must die in well under a second, not the
+    // runner's default two minutes.
+    const { TEST_TIMEOUT_MS } = await import("../src/lean/specify-proof.ts");
+    const lateStarted = Date.now();
+    const late = await runCommandVerify({
+      issue: 419,
+      implement: true,
+      specBody: bodyWith([
+        TEST_CRITERION,
+        { ...COMMAND_CRITERION, command: CMD_FILE },
+        { id: "AC3", text: "the other suite still passes", verify: "command", command: CMD_FILE },
+      ]),
+      baseFiles: { [CMD_FILE]: "#!/bin/sh\nsleep 30\nexit 0\n" },
+      timeoutMs: 1_000,
+    });
+    const lateElapsed = Date.now() - lateStarted;
+    assert(
+      late.threw !== undefined &&
+        /could not be judged/.test(late.threw.message) &&
+        lateElapsed < TEST_TIMEOUT_MS / 4,
+      `(e3) a late run with no caller timeout gets the budget's remaining time, never the runner's default ${TEST_TIMEOUT_MS}ms (threw ${String(late.threw?.message)}, after ${lateElapsed}ms)`,
+    );
 }
 
 // ------------- (f) specify's coverage rule asks for reds of TEST criteria only

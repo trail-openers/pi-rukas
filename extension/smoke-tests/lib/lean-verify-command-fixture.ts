@@ -179,6 +179,13 @@ export const GREEN_FILE = "#!/bin/sh\necho 'ok'\nexit 0\n";
  */
 export const SELF_REWRITER =
   "#!/bin/sh\nif [ -n \"$2\" ]; then printf 'rewritten by the run\\n' > \"$2\"; fi\nexit 0\n";
+/**
+ * A helper that leaves an UNTRACKED file behind while exiting 0 — the shape that
+ * attributes a dirty tree to the command criteria rather than to the project tiers.
+ * The criterion's own file is untouched, so `commandCriteriaTouched` passes it; only
+ * the porcelain re-read after the command tier sees the stray bytes.
+ */
+export const SELF_DIRTY = "#!/bin/sh\nprintf 'stray\\n' > stray-from-command.txt\nexit 0\n";
 /** A shell test that fails and prints its own basename, exit 1. */
 export function redFile(rel: string): string {
   return `#!/bin/sh\necho "FAIL ${path.basename(rel)}: the suite regressed" 1>&2\nexit 1\n`;

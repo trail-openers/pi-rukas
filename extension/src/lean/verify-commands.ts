@@ -52,13 +52,19 @@
  *   5. **The tier is bounded.** At {@link COMMAND_CRITERION_MAX} criteria run per
  *      gate, and the whole tier shares {@link COMMAND_TIER_BUDGET_MS}; each run's
  *      timeout is the time the budget still has, so the tier cannot outlive the
- *      gate that trusts it.
+ *      gate that trusts it. A run that is given no share cannot fall back to the
+ *      runner's own default — it gets one millisecond and dies on it.
+ *   6. **The `command` text is untrusted text.** It comes from the issue body, so
+ *      every reason this module derives from it interpolates the clipped
+ *      {@link oneLine} form: a reason reaches the durable record and then the PR
+ *      body, and a 5 KB `command` must not become a 5 KB reason.
  */
 
 import { trace } from "../trace.ts";
 import type { Criterion } from "./spec.ts";
-import { runTestFile } from "./specify-proof.ts";
+import { TEST_TIMEOUT_MS, runTestFile } from "./specify-proof.ts";
 import { fileProblem, normaliseRelPath, pathProblem } from "./specify-tree.ts";
+import { oneLine } from "./text-fence.ts";
 import {
   entryRefusal,
   entryUnreadable,
@@ -92,6 +98,21 @@ export const COMMAND_CRITERION_MAX = 32;
 
 /** Wall clock the whole command tier gets, shared across every run in it. */
 export const COMMAND_TIER_BUDGET_MS = 600_000;
+
+/**
+ * How much of a `command` a refusal may quote.
+ *
+ * The `command` is untrusted text out of the issue body, and every refusal below
+ * quotes it, so the bound lives here rather than at each interpolation. It is
+ * well under the record's own 300-character cap on a not-runnable reason
+ * (`state-outcome`), which is what makes the clip at the SOURCE rather than at the
+ * printer: a reason that was clipped only on its way to the PR body would still be
+ * refused by the record, and a criterion declined for a reason too long to store
+ * is declined for a reason nobody can read.
+ */
+const COMMAND_QUOTE_MAX = 80;
+/** The `command` as this module may quote it: one line, at most {@link COMMAND_QUOTE_MAX}. */
+const quoted = (command: string): string => oneLine(command, COMMAND_QUOTE_MAX);
 
 export interface CommandCriteriaOutcome {
   /** First failure's reason, for a red; absent when nothing failed. */
@@ -184,13 +205,21 @@ export function commandCriterionProblem(command: string | undefined): string | u
     command.includes("\\") ||
     /^[a-zA-Z]:[\\/]/.test(command)
   )
-    return `command is not a repo-relative path: ${command}`;
+    return `command is not a repo-relative path: ${quoted(command)}`;
   // One word, no shell, no whitespace: a `command` is a FILE, never a command line.
   if (!/^[A-Za-z0-9._/-]+$/.test(command))
-    return `command is not a plain repo-relative file path: ${command}`;
+    return `command is not a plain repo-relative file path: ${quoted(command)}`;
   const rel = normaliseRelPath(command);
-  if (rel !== command) return `command is not in normalised git-relative form: ${command}`;
-  return pathProblem(rel);
+  if (rel !== command) return `command is not in normalised git-relative form: ${quoted(command)}`;
+  // `pathProblem` interpolates the path it refused, and that path is untrusted text
+  // of any length: a `../x…` of a few thousand characters is a valid refusal whose
+  // reason would then be too long for the record that has to store it
+  // (`state-outcome`'s 300), which refuses the whole outcome rather than the one
+  // criterion. The refusal is re-worded around the clipped command rather than
+  // trusting the callee's bound.
+  const shape = pathProblem(rel);
+  if (shape !== undefined) return `command is not a path this gate may execute: ${quoted(command)}`;
+  return undefined;
 }
 
 /**
@@ -270,7 +299,13 @@ export async function commandCriteriaOutcome(
       template,
       file: rel,
       limits: {
-        ...(timeoutMs === undefined ? {} : { timeoutMs: Math.max(1, Math.min(timeoutMs, left)) }),
+        // Always a share of what the tier's budget still has, never the runner's
+        // default: a caller that gave no timeout is not licence for the last run
+        // of a late tier to sit out the full 120s past the 600s the gate agreed to
+        // wait. With no time left the run gets 1ms and dies on the timeout, which
+        // `runTestFile` classifies as infra — the tier says so rather than
+        // silently outliving the gate that trusts it.
+        timeoutMs: Math.max(1, Math.min(timeoutMs ?? TEST_TIMEOUT_MS, left)),
         ...(env === undefined ? {} : { env }),
       },
     });

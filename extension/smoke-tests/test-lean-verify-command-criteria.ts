@@ -149,6 +149,50 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
       commandCriterionProblem("./tests//AC2-preserve.test.sh") !== undefined,
     "(c) the validator accepts a plain repo-relative path and refuses a non-normalised spelling",
   );
+
+  // The `command` is untrusted text out of the issue body and every refusal quotes
+  // it, so the clip happens HERE rather than at the PR body: a reason longer than
+  // the record's own 300-character bound (`state-outcome`) would be refused on its
+  // way in, and a criterion declined for a reason nobody can read is declined for a
+  // reason nobody can fix.
+  //
+  // `~` is the shape that reaches a refusal at all: a plain 5,000-character path is
+  // VALID (`pathProblem` refuses traversal and the forbidden directories, not length)
+  // and goes on to run, and `~$HOME` is also what the shell-shaped arm refuses with
+  // the whole command interpolated.
+  const huge = `~$HOME/${"a".repeat(5_000)}.test.sh`;
+  const hugeReason = commandCriterionProblem(huge) ?? "";
+  assert(
+    hugeReason.length > 0 && hugeReason.length <= 300,
+    `(c) a 5,000-character command yields a reason of at most 300 characters (got ${hugeReason.length})`,
+  );
+  const hugeShell = `sh -c '${"echo ".repeat(1_200)}'`;
+  const hugeShellReason = commandCriterionProblem(hugeShell) ?? "";
+  assert(
+    hugeShellReason.length > 0 && hugeShellReason.length <= 300,
+    `(c) the shell-shaped refusal clips too (got ${hugeShellReason.length})`,
+  );
+  // The fourth arm delegates to `pathProblem`, which interpolates the path it refused
+  // — a `..` traversal of any length. That reason has to fit the record that stores
+  // it, or the whole outcome is unloadable rather than the one criterion declined.
+  const traversal = `../${"x".repeat(5_000)}`;
+  const traversalReason = commandCriterionProblem(traversal) ?? "";
+  assert(
+    traversalReason.length > 0 && traversalReason.length <= 300,
+    `(c) a 5,000-character traversal is refused within the record's 300-character bound (got ${traversalReason.length})`,
+  );
+  const { outcomeProblem } = await import("../src/lean/state-outcome.ts");
+  assert(
+    outcomeProblem(
+      {
+        kind: "ok",
+        verifiedHead: "a".repeat(40),
+        commandNotRunnable: { AC2: traversalReason },
+      },
+      "verify",
+    ) === undefined,
+    `(c) the traversal reason is a reason the durable record can actually load (${traversalReason.slice(0, 60)})`,
+  );
 }
 
 {
@@ -292,6 +336,27 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
 }
 
 {
+  // A spec that parses but is not READY is infrastructure, not silence: two criteria
+  // sharing one id means the record keys two verdicts on one slot, and a gate that
+  // ran the one reason it could store would be reporting a check it half made.
+  const duplicated = await runCommandVerify({
+    issue: 421,
+    implement: true,
+    specBody: bodyWith([
+      TEST_CRITERION,
+      { ...COMMAND_CRITERION, command: CMD_FILE },
+      { id: "AC2", text: "the other suite still passes", verify: "command", command: CMD_FILE },
+    ]),
+    baseFiles: { [CMD_FILE]: GREEN_FILE },
+  });
+  assert(
+    duplicated.threw !== undefined &&
+      /not ready for the command criteria/.test(duplicated.threw.message),
+    `(e2) a spec that parses but fails readiness (a duplicate id) THROWS instead of judging one of the two (${String(duplicated.outcome?.kind)}: ${String(duplicated.threw?.message)})`,
+  );
+}
+
+{
   // The reasons the GATE produced, read back off the record — the same values
   // `publish` forwards to the body. A gate that traced them without recording them
   // would leave every blank cell silent.
@@ -324,7 +389,8 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     ]),
   );
   assert(parsed.ok === true, "(f) the three-kind spec parses");
-  const wanted = testCriteria((parsed as { spec: { criteria: unknown[] } }).spec);
+  if (!parsed.ok) throw new Error(`(f) the three-kind spec must parse: ${parsed.reason}`);
+  const wanted = testCriteria(parsed.spec);
   assert(
     wanted.length === 1 && wanted[0]?.id === "AC1" && wanted.every((c) => c.verify === "test"),
     `(f) a red test is required of the verify:"test" criteria alone — never of a command or manual one (got ${wanted.map((c) => `${c.id}/${c.verify}`).join(", ")})`,

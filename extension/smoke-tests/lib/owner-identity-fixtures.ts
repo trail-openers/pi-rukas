@@ -11,9 +11,11 @@
  * A helper no test calls still shows up in `test-seams-wired.ts`'s `lib/` scan,
  * which is why they live here rather than being duplicated.
  */
-import { spawnSync } from "node:child_process";
 import type { PathClaimEntry } from "../../src/work-driver-path-claims-staleness.ts";
 import type { WorkState } from "../../src/workflow-state.ts";
+// Re-exported rather than restated: `deadPid()` already lives in
+// `lib/worktree-sweep-fixture.ts` and the two copies were byte-identical.
+export { deadPid } from "./worktree-sweep-fixture.ts";
 
 /** A host no identity on this machine can belong to. */
 export const FOREIGN_HOST = "not-this-container";
@@ -28,16 +30,12 @@ export const ANCIENT_2X = NOW - 2 * 3_600_000;
 export const SOMEONE_ELSES_PID = 4242;
 
 /**
- * A pid no process can hold, for "this cycle's owner died" fixtures.
- *
- * Above the `pid_max` any current Linux box runs with (the 4 194 304 ceiling is
- * the documented maximum; `0x7ffffffe` is far beyond it), and not a signal-0
- * special case — `processAlive()` answers false without racing a real pid. A
- * fixture that reaches for a small pid like 999 is a flake with a schedule: on a
- * CI runner with a low `pid_max`, 999 is an ordinary live process, and "this owner
- * is certainly dead" silently becomes "that owner is alive".
+ * A pid no process can hold, for "this cycle's owner died" fixtures, comes from
+ * `deadPid()` in `lib/worktree-sweep-fixture.ts` (imported above) rather than a
+ * second copy here: the two helpers were byte-identical, and a duplicated "this pid
+ * is certainly dead" is how one drifts into a flake the other does not have — a
+ * small pid is an ordinary live process on a runner with a low `pid_max`.
  */
-export const deadPid = (): number => 0x7ffffffe;
 
 /** A claim entry with this issue's defaults, overridden per case. */
 export function claim(over: Partial<PathClaimEntry> = {}): PathClaimEntry {

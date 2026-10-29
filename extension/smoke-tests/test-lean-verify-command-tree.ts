@@ -26,6 +26,7 @@ import path from "node:path";
 import {
   GREEN_FILE,
   ROOTS,
+  SELF_DIRTY,
   SELF_REWRITER,
   bodyWith,
   cleanupRoots,
@@ -117,6 +118,45 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
   assert(
     r.outcome?.commandCriteria?.AC2 === undefined,
     `(c4) a run the post-tier re-check refused records no command criterion as passed (${JSON.stringify(r.outcome?.commandCriteria)})`,
+  );
+  // The attribution the first pass can honestly give. The pass that runs after the
+  // project tiers is the one that sees this — a preservation script rewrites the
+  // frozen test during the command tier, which has not finished when that pass reads
+  // the tree — and the project tiers are genuinely the only suspects so far, so the
+  // message names them. `commandCriteriaTouched` could not see it either: the file
+  // the run rewrote is not the file the criterion was named for.
+  assert(
+    (r.outcome?.reason ?? "").includes("a verify tier altered frozen tests"),
+    `(c4) the reason names the party the first re-check pass can honestly suspect (${(r.outcome?.reason ?? "").slice(0, 140)})`,
+  );
+}
+
+{
+  // The porcelain after the command criteria. A criterion that dirties the tree
+  // during its own run is caught by whichever pass reads it first — by then the bytes
+  // are there, whoever wrote them — so what this case pins is the invariant that has
+  // to survive BOTH passes: bytes a preservation run left in the tree are never
+  // certified green, and the throw names the read that saw them. Before the second
+  // pass existed this run reached the criteria, wrote, and was read only against the
+  // criterion's own file — which the script left alone — so nothing re-read the tree.
+  const r = await runCommandVerify({
+    issue: 420,
+    implement: true,
+    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
+    baseFiles: { [CMD_FILE]: GREEN_FILE, "self-dirty.sh": SELF_DIRTY },
+    testTemplate: "sh self-dirty.sh {file}",
+  });
+  assert(
+    r.threw !== undefined && /left the worktree dirty/.test(r.threw.message),
+    `(g) bytes a criterion left in the tree after a clean project tier are never certified green (${JSON.stringify({ kind: r.outcome?.kind, threw: r.threw?.message })})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("left the worktree dirty"),
+    `(g) the throw names the read that saw the bytes (${String(r.threw?.message)})`,
+  );
+  assert(
+    r.outcome?.commandCriteria?.AC2 === undefined,
+    `(g) a run the post-criteria re-check refused records no command criterion as passed (${JSON.stringify(r.outcome?.commandCriteria)})`,
   );
 }
 
