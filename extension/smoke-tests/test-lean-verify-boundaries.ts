@@ -16,13 +16,23 @@
  *     production reader wraps its own failure \342\200\224 a `VerifyInfraError"'s own words
  *     pass through, anything else is reported as a read that could not answer,
  *     so a test cannot observe a different failure class from the real read.
+ *   - (u) a tier that detaches HEAD is a THROW. The sha is unchanged, so the
+ *     moved-HEAD re-check is blind to it, and everything downstream of this step
+ *     pushes and compares the run's BRANCH — a green on a detached tree is a
+ *     claim about a branch the tree no longer holds.
  */
 
 import { execp } from "../src/exec.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
 import { type VerifyDeps, verifyOutcome } from "../src/lean/verify.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
-import { PASS_TIER, ROOTS, buildFixtureForWiring, runVerify } from "./lib/lean-verify-fixture.ts";
+import {
+  DETACH_TIER,
+  PASS_TIER,
+  ROOTS,
+  buildFixtureForWiring,
+  runVerify,
+} from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -151,6 +161,37 @@ for (const [label, rejection, expect] of [
     (thrown?.message ?? "").includes(expect),
     `(t) the ${label} keeps the wording it should (got ${thrown?.message})`,
   );
+}
+
+// ------------- (u) a tier that detaches HEAD is infra, not a green on the branch
+for (const [label, opts] of [
+  ["for real", { implement: true, config: { fast: PASS_TIER }, full: DETACH_TIER }],
+  [
+    "through the seam",
+    { implement: true, config: { fast: PASS_TIER }, recheckBranchDetached: true },
+  ],
+] as const) {
+  // The tiers run as shell commands IN the worktree, so a tier can put HEAD on
+  // no branch while leaving the commit alone: `git checkout --detach` keeps the
+  // sha the pre-tier read recorded, so the moved-HEAD re-check sees nothing and
+  // the frozen/dirty re-checks pass. The steps after this one push and compare
+  // `run.branch`, so a green stamped on a detached tree is a verdict about a
+  // branch nobody holds.
+  //
+  // The second case answers git's exit 1 for `symbolic-ref -q` with an empty
+  // stdout instead of running a real checkout: silence IS git's answer to "what
+  // branch", and a step that read it as a machine that could not reply would
+  // blame the tier for a question git did answer. Both must accuse the tier.
+  const r = await runVerify({ issue: 217, ...opts });
+  assert(
+    r.threw instanceof VerifyInfraError,
+    `(u) a tier that detaches HEAD (${label}) throws VerifyInfraError (got ${r.threw?.name ?? r.outcome?.kind}: ${r.threw?.message ?? r.outcome?.reason})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("a verify tier detached HEAD from the run's branch"),
+    `(u) the throw names the detached branch (${label}: ${r.threw?.message ?? `green: ${r.outcome?.reason}`})`,
+  );
+  assert(r.outcome === undefined, `(u) a detached tree records no green (${label})`);
 }
 
 for (const dir of ROOTS) {

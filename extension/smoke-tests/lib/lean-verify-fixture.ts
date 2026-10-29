@@ -90,6 +90,16 @@ export function writeTier(rel: string, text: string, commit = false): string {
   return `sh -c "printf %s ${quoted} > '${rel}';${add} exit 0"`;
 }
 
+/**
+ * A tier that leaves HEAD on the same commit but on NO branch.
+ *
+ * `git rev-parse HEAD` still answers the sha the step recorded, so the moved-HEAD
+ * re-check cannot see it; only a branch read can. The tier itself runs `git
+ * checkout`, which a test fixture's tier script may do — the step's own shell
+ * never does.
+ */
+export const DETACH_TIER = 'sh -c "git checkout -q --detach; exit 0"';
+
 function gitEnv(): Record<string, string> {
   return {
     ...gitTestEnv(),
@@ -151,6 +161,15 @@ export interface VerifyOpts {
    * tier moving it — it has failed to read the tree, which is infrastructure.
    */
   recheckHeadFails?: boolean;
+  /**
+   * Reject the post-tier BRANCH read (`symbolic-ref --short -q HEAD`) while
+   * every earlier git call still goes to the real git — the shape a detached
+   * HEAD gives, since `-q` exits 1 without printing anything. A read that
+   * REJECTS rather than exiting 1 is covered by `recheckHeadFails` for the HEAD
+   * read; this one proves the branch read treats git's "detached" exit as an
+   * answer and not as a machine that could not reply.
+   */
+  recheckBranchDetached?: boolean;
   /** Log lines to add after the fixture's own. */
   extraSteps?: Step[];
 }
@@ -282,6 +301,16 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     "HEAD",
   ];
   let tierRan = false;
+  const BRANCH_ARGV = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "symbolic-ref",
+    "--short",
+    "-q",
+    "HEAD",
+  ];
   if (opts.silentTestRunner === true) {
     // Committed before `head` is read: the step refuses a dirty tree before it
     // ever runs a test, so a helper left untracked would trip that first, and
@@ -307,6 +336,13 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       tierRan
     )
       return Promise.reject(new Error("git: fatal: unable to read HEAD"));
+    if (
+      opts.recheckBranchDetached === true &&
+      cmd === "git" &&
+      String(o?.argv ?? []) === String(BRANCH_ARGV) &&
+      tierRan
+    )
+      return Promise.resolve({ stdout: "", stderr: "" });
     return execp(cmd, { ...o, env: o?.env ?? gitTestEnv(), cwd: o?.cwd ?? wt });
   };
 
@@ -390,10 +426,17 @@ export function decided(state: Step["state"], outcome: Outcome, n = 0): Step {
  * A publish step that recorded its PR the only sanctioned way: `prUrl`.
  * `url`/`htmlUrl` are the fields the old guess list read, and a step that
  * reaches for one of them is refused by `state.ts` on load.
+ *
+ * `issue` names the branch the step belongs to, so a hand-built log can carry a
+ * publish step whose `prUrl` the handback under test would print for that run.
  */
-export function publishStep(url: string, field: "prUrl" | "url" | "htmlUrl" = "prUrl"): Step {
+export function publishStep(
+  url: string,
+  field: "prUrl" | "url" | "htmlUrl" = "prUrl",
+  issue?: number,
+): Step {
   const outcome = { kind: "ok", ...(field === "prUrl" ? { prUrl: url } : { [field]: url }) };
-  return decided("publish", outcome as Outcome);
+  return decided("publish", outcome as Outcome, issue ?? 7);
 }
 
 /** The log a run carries when it reaches handback after its gate said red. */

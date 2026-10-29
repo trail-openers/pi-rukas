@@ -240,6 +240,70 @@ function assert(cond: boolean, msg: string): void {
   );
 }
 
+// ------------- (k2) handback RE-CHECKS the prUrl it reads, it does not trust it
+{
+  // `state.ts` refuses to LOAD a `prUrl` that is not https text, but the step log
+  // a handler sees is a `Step[]`, and the loader is not the only thing that hands
+  // one over — a log built in memory reaches this step with whatever it carries.
+  // A newline inside the "URL" ends the `PR:` line and starts a line of the
+  // writer's choosing, so the comment would carry a heading nobody posted. The
+  // answer for a value that breaks the load-time shape is the same as for no
+  // publish step at all: the comment says "no PR yet" and prints none of it.
+  const posts: string[] = [];
+  const ctx = handbackCtx(16, redLog("https://x.test/pr/1\n### FAKE"), "/tmp/lean-repo-16");
+  await handbackOutcome(ctx, async (_r, _i, body) => {
+    posts.push(body);
+  });
+  assert(
+    (posts[0] ?? "").includes("no PR yet"),
+    `(k2) a multi-line prUrl is not printed (${(posts[0] ?? "").slice(-40)})`,
+  );
+  assert(!(posts[0] ?? "").includes("FAKE"), "(k2) none of the injected line reaches the comment");
+
+  // A blob is the same fault in the other direction: it is not a link anyone
+  // reads, and the load-time validator bounds the field at PR_URL_MAX_CHARS.
+  const long: string[] = [];
+  const ctx2 = handbackCtx(17, redLog(`https://x.test/${"p".repeat(20000)}`), "/tmp/lean-repo-17");
+  await handbackOutcome(ctx2, async (_r, _i, body) => {
+    long.push(body);
+  });
+  assert(
+    (long[0] ?? "").includes("no PR yet"),
+    `(k2) a 20000-char prUrl is not printed (${(long[0] ?? "").length} chars posted)`,
+  );
+  assert(!(long[0] ?? "").includes("FAKE"), "(k2) the long case posts no link either");
+
+  // A frozen path with a control character in it is the same injection through
+  // the other list the comment prints, so it is dropped rather than clipped —
+  // clipping keeps the newline, which is the whole problem.
+  const injected: string[] = [];
+  const ctx3 = handbackCtx(18, redLog(), "/tmp/lean-repo-18");
+  ctx3.steps = [
+    ...ctx3.steps,
+    decided("specify", { kind: "ok", frozen: { "ok.test.sh\n### FAKE": "a".repeat(64) } }, 9),
+  ];
+  await handbackOutcome(ctx3, async (_r, _i, body) => {
+    injected.push(body);
+  });
+  assert(!(injected[0] ?? "").includes("FAKE"), "(k2) a path with a newline is dropped");
+  assert(
+    (injected[0] ?? "").includes("tests/AC1-retry.test.sh"),
+    "(k2) and the clean path from the same record is still listed",
+  );
+
+  // A URL that satisfies the rule is still printed, so the guard above is a
+  // shape check and not the field being ignored.
+  const kept: string[] = [];
+  const ctx4 = handbackCtx(19, redLog("https://x.test/pr/19"), "/tmp/lean-repo-19");
+  await handbackOutcome(ctx4, async (_r, _i, body) => {
+    kept.push(body);
+  });
+  assert(
+    (kept[0] ?? "").includes("https://x.test/pr/19"),
+    "(k2) a well-formed prUrl is still printed",
+  );
+}
+
 // --------------------- (l) the gate's own red outranks a later round's ci red
 {
   const posts: string[] = [];

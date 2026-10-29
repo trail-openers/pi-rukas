@@ -307,6 +307,32 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     });
   if ((headAfter?.stdout ?? "").trim() !== head)
     throw new VerifyInfraError("a verify tier moved HEAD");
+  // A tier may move HEAD without moving a commit: `git checkout --detach` leaves
+  // the same sha sitting on no branch, which the read above cannot see. The run
+  // owns a branch, not a sha, and everything after this step — publish, the land
+  // gate — pushes and compares `ctx.run.branch`, so a detached tree is a tier
+  // that took the run off its own branch.
+  //
+  // `symbolic-ref -q` EXITs 1 when HEAD is detached and execFile rejects on a
+  // non-zero exit, so exit 1 is git's ANSWER ("no branch") and is read as an
+  // empty stdout; anything else — a signal, a timeout, a broken repo — is a
+  // machine that could not reply, and is never blamed on the tier.
+  const symbolic = await deps
+    .exec("git", {
+      argv: [...NO_HOOKS, "symbolic-ref", "--short", "-q", "HEAD"],
+      cwd: wt,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    })
+    .catch((err: unknown) => {
+      if ((err as { code?: unknown })?.code === 1) return { stdout: "", stderr: "" };
+      throw new VerifyInfraError(
+        `could not re-check the branch after the tiers: ${(err as Error)?.message ?? String(err)}`,
+      );
+    });
+  const onBranch = (symbolic?.stdout ?? "").trim();
+  if (onBranch !== ctx.run.branch)
+    throw new VerifyInfraError("a verify tier detached HEAD from the run's branch");
 
   const note =
     tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "";

@@ -28,6 +28,7 @@
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { postHandback } from "./io.ts";
+import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
 import { newestRedVerifyReason } from "./verify.ts";
 
@@ -97,9 +98,31 @@ export function neededFromLog(steps: Step[]): string {
   return reason.length > REASON_CLIP ? `${reason.slice(0, REASON_CLIP)}…` : reason;
 }
 
-/** The frozen acceptance tests, from the same log `build` and `verify` read. */
+/**
+ * A path holding a control character is not a path anyone skims — and it is not
+ * a line the comment may print. The class is ASSEMBLED from code points rather
+ * than written as a regex literal with the bytes in it, the shape
+ * `work-driver-verify-report-file.ts` uses: the set is identical either way, the
+ * literal is what biome's `noControlCharactersInRegex` flags, and suppressing a
+ * rule that exists to catch a mistyped control byte is the bypass AGENTS.md
+ * forbids.
+ */
+const CONTROL_CHARS = new RegExp(
+  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+);
+
+/**
+ * The frozen acceptance tests, from the same log `build` and `verify` read.
+ *
+ * A key with a control character in it is dropped rather than clipped: the
+ * comment is markdown, so a `\n` inside a path ends the bullet and starts a new
+ * line of the poster's choosing — a heading, a second "Frozen acceptance tests:"
+ * section, anything. The load-time validator checks the digests, not the keys,
+ * and this list is the last place a key is looked at before a human reads it.
+ */
 function frozenList(steps: Step[]): string[] {
   return Object.keys(frozenFromLog(steps))
+    .filter((f) => !CONTROL_CHARS.test(f))
     .sort()
     .map((f) => (f.length > FROZEN_PATH_CAP ? `${f.slice(0, FROZEN_PATH_CAP)}…` : f));
 }
@@ -114,7 +137,14 @@ function prUrlFromLog(steps: Step[]): string | undefined {
     // is scraped out of a reason line: a comment that quotes a URL nobody
     // recorded is a link to a PR that may not exist.
     const url = step.outcome?.prUrl;
-    if (typeof url === "string" && url !== "") return url;
+    // Re-checked here with the load-time rule rather than trusted: the log this
+    // reads is a `Step[]`, and the loader is not the only thing that hands one
+    // over. A value that broke the shape would be a line of markdown, not a
+    // link, so the answer is the same as "no publish step recorded one".
+    if (typeof url !== "string" || url === "") continue;
+    if (url.length > PR_URL_MAX_CHARS) continue;
+    if (!PR_URL.test(url)) continue;
+    return url;
   }
   return undefined;
 }

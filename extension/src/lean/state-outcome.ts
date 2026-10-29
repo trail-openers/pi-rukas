@@ -22,9 +22,18 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** A full commit sha, the form `verify` records as the tree it judged. */
 const SHA1_HEX = /^[0-9a-f]{40}$/;
 
-/** A publish step's PR URL: https text, no whitespace, bounded in length. */
-const PR_URL = /^https:\/\/\S+$/;
-const PR_URL_MAX_CHARS = 500;
+/**
+ * A publish step's PR URL: https text, no whitespace, bounded in length.
+ *
+ * Exported because `handback` applies the SAME rule when it reads the field
+ * back. `state.ts` refuses to LOAD an outcome that breaks it, but the step log
+ * a handler sees is only one of the ways a `Step[]` arrives — an in-memory log
+ * reaches `handbackOutcome` without ever passing through the loader — so a
+ * multi-line blob stuffed into `prUrl` would otherwise be printed into a
+ * comment verbatim, heading and all.
+ */
+export const PR_URL = /^https:\/\/\S+$/;
+export const PR_URL_MAX_CHARS = 500;
 
 /**
  * Which state is allowed to record which evidence-bearing field.
