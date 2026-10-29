@@ -111,6 +111,31 @@ const SPEC = {
 
 const BODY = `\`\`\`pi-spec v1\n${JSON.stringify(SPEC, null, 2)}\n\`\`\``;
 
+/**
+ * A spec with TWO `verify: "test"` criteria.
+ *
+ * `SPEC` has one test criterion and one manual one, so with it "every criterion
+ * is covered" and "at least one file is red" are the same question — which is
+ * exactly why the per-caller coverage rule went unnoticed. This body is what
+ * separates them: a run that is red for AC1 and green for AC2 is a refusal
+ * under `specify`'s `"all-criteria"` and a freeze under `challenge`'s `"any-red"`.
+ */
+export const TWO_AC_BODY = `\`\`\`pi-spec v1
+${JSON.stringify(
+  {
+    problem: "The retry helper gives up on the first transient failure.",
+    size: "S",
+    criteria: [
+      { id: "AC1", text: "retries a transient failure twice before failing", verify: "test" },
+      { id: "AC2", text: "gives up on a non-transient error without retrying", verify: "test" },
+    ],
+    scope: { paths: ["src/retry.ts"], out: ["docs/"] },
+  },
+  null,
+  2,
+)}
+\`\`\``;
+
 export function configWith(verify: WorkConfig["verify"]): WorkConfig {
   return { ...defaultConfig(), verify };
 }
@@ -169,6 +194,8 @@ export interface RunOpts {
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits, e.g. a short timeout to prove a hang is infra. */
   testLimits?: { timeoutMs?: number };
+  /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
+  specBody?: string;
   dispatchOk?: boolean;
 }
 
@@ -211,7 +238,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
         return got;
       }),
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
-    fetchIssueBody: async () => BODY,
+    fetchIssueBody: async () => opts.specBody ?? BODY,
     loadConfig: async () => opts.config,
     statReporter: async () => ({}),
   };
@@ -244,6 +271,11 @@ export function redScript(): string {
     "exit 1",
     "",
   ].join("\n");
+}
+
+/** A test the runner reports as PASSING — the file a coverage gap is made of. */
+export function greenScript(): string {
+  return ["#!/bin/sh", 'echo "ok - $(basename "$0")"', "exit 0", ""].join("\n");
 }
 
 /** The sha256 of a string's bytes, the way the freeze records them. */

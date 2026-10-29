@@ -37,6 +37,7 @@ import {
   PI_SPEC_HEADING,
   PI_SPEC_MAX_CRITERIA,
   PI_SPEC_OMISSION_LINE_MAX_CHARS,
+  PI_SPEC_OMISSION_PREFIX,
   PI_SPEC_PROBLEM_MAX_CHARS,
   PI_SPEC_READINESS_PREFIX,
   PI_SPEC_SECTION_MAX_CHARS,
@@ -46,7 +47,7 @@ import {
   placePiSpecSection,
   renderPiSpecSection,
 } from "../src/plan-pi-spec.ts";
-import { BODY_BUDGET } from "../src/plan-validate.ts";
+import { AC_FALLBACK, BODY_BUDGET } from "../src/plan-validate.ts";
 import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixture.ts";
 
 // ------------------------------------------------------------------ the mapper
@@ -402,5 +403,40 @@ assert(
     `body: re-filing a body that already carries a block leaves exactly one OPENING fence — ours (${openingFences})`,
   );
 }
+// ------------------------------------------- the drafter's AC placeholder is not a criterion
+//
+// `plan-draft.ts` renders `- <AC_FALLBACK>` into `## Acceptance criteria` when
+// NO source (operator directive, operator outcome heading, angle items) produced
+// an outcome, and `validateDraft` halts such a plan over the same string. The
+// mapper is the third reader of that one line, and until it read `AC_FALLBACK`
+// itself it filtered on a hand-written `"(fallback"` prefix that the drafter
+// never renders: the placeholder would have become `AC1`, the spec would have
+// mapped, and the issue would have filed with a machine contract whose only
+// criterion instructs somebody to go and find the criteria.
+{
+  const placeholderBody = draftBody([AC_FALLBACK]);
+  assert(
+    placeholderBody.includes(`## Acceptance criteria
+
+- ${AC_FALLBACK}`),
+    "placeholder: the fixture body really carries the drafter's fallback bullet",
+  );
+  assert(
+    piSpecFromDraft({ type: "feature", body: placeholderBody, title: "the feature" }) === undefined,
+    "placeholder: a plan whose only AC bullet is the fallback maps to NO spec",
+  );
+  const placed = placePiSpecSection(placeholderBody, "feature", "the feature");
+  assert(
+    placed.spec === undefined && placed.omitted !== undefined && placed.body === placeholderBody,
+    `placeholder: so the body files with NO block, NO disclosure line and a traced reason (got ${JSON.stringify(
+      placed.omitted,
+    )})`,
+  );
+  assert(
+    !placed.body.includes(PI_SPEC_OMISSION_PREFIX),
+    "placeholder: an expected exclusion is not a failure, so no disclosure line is appended",
+  );
+}
+
 console.log(`${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec`);
 process.exit(specExit());
