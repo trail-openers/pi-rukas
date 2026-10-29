@@ -8,7 +8,7 @@
  * bytes back. That claim is only true if the bytes here are the bytes of the
  * file the step validated, which is what this module is for.
  *
- * The validation in `specify-tree.ts`'s `fileProblem` is a fact about a NAME,
+ * The validation in `specify-path.ts`'s `fileProblem` is a fact about a NAME,
  * and a name can be swapped between that check and this read: the child writes
  * the file and submits its path from its own side of the step, so it has a
  * window. So nothing here re-resolves a path:

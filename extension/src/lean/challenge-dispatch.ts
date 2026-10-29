@@ -19,6 +19,7 @@ import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";
 import { challengePrompt } from "./challenge-prompt.ts";
 import type { ChallengeDispatch } from "./challenge-types.ts";
+import type { TestLocation } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 
@@ -37,6 +38,8 @@ export interface ChallengeDispatchOpts {
   repoRoot: string;
   /** The project's `verify.test` runner template, if configured. */
   testRunner?: string;
+  /** The project's `verify.testDir` + `verify.testGlob`, if configured. */
+  testLocation?: TestLocation;
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
 }
@@ -53,6 +56,7 @@ export async function dispatchAdversary(
     frozenPaths: opts.frozenPaths,
     worktree: opts.wt,
     ...(opts.testRunner === undefined ? {} : { testRunner: opts.testRunner }),
+    ...(opts.testLocation === undefined ? {} : { testLocation: opts.testLocation }),
   });
   const result = await dispatch(
     { role: "developer", prompt, cwd: opts.wt },

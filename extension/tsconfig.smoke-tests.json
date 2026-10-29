@@ -154,6 +154,12 @@
     "smoke-tests/test-lean-base-proof.ts",
     "smoke-tests/test-lean-base-infra.ts",
     "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts",
-    "smoke-tests/lib/lean-verify-command-fixture.ts"
+    "smoke-tests/lib/lean-verify-command-fixture.ts",
+    "smoke-tests/test-lean-test-location.ts",
+    "smoke-tests/test-lean-test-location-steps.ts",
+    "smoke-tests/lib/lean-test-location-fixture.ts",
+    "smoke-tests/test-lean-exists-in-commit.ts",
+    "smoke-tests/test-lean-specify-new-tests.ts",
+    "smoke-tests/test-lean-challenge-new-tests.ts"
   ]
 }

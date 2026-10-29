@@ -22,7 +22,7 @@
  *
  *   1. **A `command` is a FILE, never a command line.** It is accepted only as a
  *      plain repo-relative path, checked by the frozen tests' own path rule
- *      (`specify-tree`'s `normaliseRelPath` + `pathProblem`) plus a
+ *      (`specify-path`'s `normaliseRelPath` + `pathProblem`) plus a
  *      no-whitespace/no-shell-metacharacter test, and it is then handed to the
  *      project's `verify.test` template through `runTestFile` in **argv form** —
  *      so no shell ever parses it, and a traversal, an absolute path, `.git`,
@@ -67,8 +67,8 @@
 
 import { trace } from "../trace.ts";
 import type { Criterion } from "./spec.ts";
+import { fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { TEST_TIMEOUT_MS, runTestFile } from "./specify-proof.ts";
-import { fileProblem, normaliseRelPath, pathProblem } from "./specify-tree.ts";
 import { oneLine } from "./text-fence.ts";
 import {
   entryRefusal,

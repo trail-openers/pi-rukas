@@ -75,7 +75,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
 
 {
   const present = new Set(["tests/AC1-a.test.ts", "tests/AC2.test.ts"]);
-  const { kept, dropped } = validateSubmitRows(
+  const { kept, dropped } = await validateSubmitRows(
     [
       { criterionId: "AC1", testFiles: ["tests/AC1-a.test.ts"] },
       // Unknown criterion — not in the spec at all.
@@ -130,7 +130,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
 // instead of the truth.
 {
   const present = new Set(["tests/AC1-a.test.ts", "tests/AC1-frozen.test.ts"]);
-  const { kept, dropped } = validateSubmitRows(
+  const { kept, dropped } = await validateSubmitRows(
     [
       // The same frozen file, spelled four ways. All four must refuse.
       { criterionId: "AC1", testFiles: ["tests/AC1-frozen.test.ts"] },
@@ -164,6 +164,225 @@ function call(args: unknown): { name: string; arguments: unknown } {
     present.has("tests/AC1-frozen.test.ts") &&
       frozenReasons.every((d) => d.reason.includes("may not replace")),
     "the reason says the adversary may not replace it — the file EXISTS, so this is not the existence check firing",
+  );
+}
+
+// ---------------------------------------------- the base-commit newness boundary
+//
+// A `submit_tests` row claims "I wrote this test". `exists` cannot tell that
+// claim from "this file was checked out at me", so a boundary that stops there
+// accepts both reproductions of the same fraud: (a) the child names an existing,
+// green, TRACKED project test it never opened — the runner never executes it
+// (it is red by absence of evidence, which is a red the proof accepts) and the
+// step freezes it as the run's contract; (b) the child overwrites a tracked test
+// and submits it. Both are refused by `existsAtBase`, a git read of the run's
+// base commit, which nothing the child did to the working tree can move.
+// Five things are pinned here:
+//
+//   - untouched and overwritten both refuse, with the SAME reason — the step
+//     never sees the child's bytes for either, so nothing distinguishes them
+//     and nothing needs to;
+//   - the refusal fires on the NORMALISED path, so a `./` or `\` spelling of a
+//     tracked file is not a dodge;
+//   - a genuinely new file survives, and survives in the same call as the
+//     refusals — the rule is not "submit nothing";
+//   - a file that is in neither place reports EXISTENCE, not newness: the two
+//     remedies differ (write it vs. pick a new name);
+//   - no `existsAtBase` at all falls back to today's behaviour, and FROZEN still
+//     outranks NEW so an inherited test keeps the reason that says leave it be.
+{
+  // The worktree: both files are present. Only ONE of them is in the base.
+  const present = new Set(["tests/AC1-a.test.ts", "tests/AC1-tracked.test.ts"]);
+  const tracked = new Set(["tests/AC1-tracked.test.ts"]);
+  const asked: string[] = [];
+  const { kept, dropped } = await validateSubmitRows(
+    [
+      // (a) the child left a tracked test exactly as it found it.
+      { criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] },
+      // ... and the same file by every punctuation spelling it can invent.
+      { criterionId: "AC1", testFiles: ["./tests/AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["tests\\AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["./tests//AC1-tracked.test.ts"] },
+      // (b) the child OVERWROTE a tracked test: same path, different bytes. The
+      // boundary cannot see the bytes and must not need to — the path is the
+      // evidence. (c) is the file the child actually created, in the same call.
+      { criterionId: "AC1", testFiles: ["tests/AC1-a.test.ts"] },
+    ],
+    {
+      spec: SPEC,
+      exists: (p) => present.has(p),
+      existsAtBase: async (p) => {
+        asked.push(p);
+        return tracked.has(p);
+      },
+    },
+  );
+  const newness = dropped.filter((d) => d.reason.includes("already exists at the base commit"));
+  assert(
+    kept.length === 1 && kept[0]?.testFiles.join() === "tests/AC1-a.test.ts",
+    `the one genuinely new file is kept and no tracked file is (got ${JSON.stringify(kept)})`,
+  );
+  assert(
+    newness.length === 4,
+    `every spelling of the tracked path is refused, untouched or overwritten alike (got ${newness.length}, want 4)`,
+  );
+  assert(
+    newness.every((d) => d.path === "tests/AC1-tracked.test.ts"),
+    `each refusal is recorded under the NORMALISED path (got ${JSON.stringify(newness.map((d) => d.path))})`,
+  );
+  assert(
+    newness.every(
+      (d) =>
+        d.reason.includes("a new acceptance test must be a new file") &&
+        d.reason.includes("tests/AC1-tracked.test.ts"),
+    ),
+    `the reason names the file and states the rule the child broke (got ${newness[0]?.reason})`,
+  );
+  assert(
+    asked.length > 0 && asked.every((p) => !p.startsWith("./") && !p.includes("\\")),
+    `the base probe is asked about normalised paths only, so punctuation cannot dodge it (got ${JSON.stringify(asked)})`,
+  );
+  // A file the child never wrote is refused for EXISTENCE, not newness.
+  const missing = await validateSubmitRows(
+    [{ criterionId: "AC1", testFiles: ["tests/AC1-never-written.test.ts"] }],
+    { spec: SPEC, exists: () => false, existsAtBase: async () => false },
+  );
+  assert(
+    missing.dropped.length === 1 &&
+      missing.dropped[0]?.reason.includes("does not exist in the worktree") === true &&
+      missing.dropped[0]?.reason.includes("base commit") === false,
+    `an absent file reports EXISTENCE and never the base rule (got ${missing.dropped[0]?.reason})`,
+  );
+  // A caller with no base to ask about gets today's verdicts, not a refusal of
+  // everything: the rule is opt-in per call, never a default that breaks a step.
+  const unprobed = await validateSubmitRows(
+    [{ criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] }],
+    { spec: SPEC, exists: (p) => present.has(p) },
+  );
+  assert(
+    unprobed.kept.length === 1 && unprobed.dropped.length === 0,
+    `no existsAtBase → the boundary judges only the pre-existing rules (kept ${unprobed.kept.length}, dropped ${unprobed.dropped.length})`,
+  );
+  // FROZEN still outranks NEW.
+  const both = await validateSubmitRows(
+    [{ criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] }],
+    {
+      spec: SPEC,
+      exists: (p) => present.has(p),
+      existsAtBase: async () => true,
+      frozenPaths: new Set(["tests/AC1-tracked.test.ts"]),
+    },
+  );
+  assert(
+    both.dropped.length === 1 &&
+      both.dropped[0]?.reason.includes("frozen acceptance test") === true &&
+      both.dropped[0]?.reason.includes("base commit") === false,
+    `a frozen path is refused as FROZEN, never as merely old (got ${both.dropped[0]?.reason})`,
+  );
+}
+
+// (d) The boundary is bounded, and it does not ask git the same question twice.
+// Both rules cost something the child controls: a row names N files and the
+// newness rule costs one git read per name, so an unbounded row is an unbounded
+// number of git calls from one tool call, and a repeated name was asked twice.
+{
+  const many = Array.from({ length: 9 }, (_, i) => `tests/AC1-x${i}.test.ts`);
+  const over = await validateSubmitRows([{ criterionId: "AC1", testFiles: many }], {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async () => false,
+  });
+  assert(
+    over.kept.length === 0 &&
+      over.dropped.length === 1 &&
+      over.dropped[0]?.reason.includes("9 test files") === true &&
+      over.dropped[0]?.reason.includes("8") === true,
+    `(bound) a row of 9 test files is refused with a reason naming the cap, not processed (got ${JSON.stringify(over.dropped)})`,
+  );
+  const eight = await validateSubmitRows([{ criterionId: "AC1", testFiles: many.slice(0, 8) }], {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async () => false,
+  });
+  assert(
+    eight.kept.length === 1 && eight.kept[0]?.testFiles.length === 8,
+    `(bound) eight files — the cap itself — are kept, so the rule refuses excess and not the row (got ${JSON.stringify(eight.kept)})`,
+  );
+
+  // One probe per distinct path per call: four rows and one duplicated name
+  // used to be five git reads about `tests/AC1-tracked.test.ts`.
+  const asked: string[] = [];
+  await validateSubmitRows(
+    [
+      { criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["./tests/AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["tests//AC1-tracked.test.ts"] },
+      { criterionId: "AC1", testFiles: ["tests/AC1-a.test.ts"] },
+    ],
+    {
+      spec: SPEC,
+      exists: () => true,
+      existsAtBase: async (p) => {
+        asked.push(p);
+        return p === "tests/AC1-tracked.test.ts";
+      },
+    },
+  );
+  assert(
+    asked.length === 2 &&
+      asked.includes("tests/AC1-tracked.test.ts") &&
+      asked.includes("tests/AC1-a.test.ts"),
+    `(memo) the base is asked once per distinct normalised path, not once per mention (got ${JSON.stringify(asked)})`,
+  );
+  // The memo is per CALL: a second call must re-read, because between two calls
+  // the step may have committed, and a stale "new" is the fraud the rule exists
+  // to refuse.
+  const second: string[] = [];
+  await validateSubmitRows([{ criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] }], {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async (p) => {
+      second.push(p);
+      return false;
+    },
+  });
+  assert(
+    second.length === 1,
+    `(memo) the cache does not outlive the call, so a later boundary call sees the tree as it is now (got ${JSON.stringify(second)})`,
+  );
+
+  // The row cap bounds ONE row; the CALL carries any number of rows, so 10 rows
+  // of 8 distinct names would be 80 git reads from one tool call. The call cap
+  // bounds the thing that actually costs — the distinct normalised paths, i.e.
+  // the memo's size. Past it a path is refused WITHOUT a probe: 32 probes and
+  // 48 refusals is the exact arithmetic of 80 submitted names.
+  const tenRows = Array.from({ length: 10 }, (_, r) => ({
+    criterionId: "AC1",
+    testFiles: Array.from({ length: 8 }, (_, i) => `tests/AC1-c${r}-${i}.test.ts`),
+  }));
+  const probes: string[] = [];
+  const capped = await validateSubmitRows(tenRows, {
+    spec: SPEC,
+    exists: () => true,
+    existsAtBase: async (p) => {
+      probes.push(p);
+      return false;
+    },
+  });
+  const overCap = capped.dropped.filter((d) =>
+    (d.reason ?? "").includes("at most 32 distinct test files are accepted per submission"),
+  );
+  assert(
+    probes.length === 32 && new Set(probes).size === 32,
+    `(bound) exactly 32 git probes for 80 submitted names — the surplus never reaches git (got ${probes.length})`,
+  );
+  assert(
+    overCap.length === 48 && new Set(overCap.map((d) => d.path)).size === 48,
+    `(bound) the other 48 paths are refused with a reason naming the per-call cap (got ${overCap.length})`,
+  );
+  assert(
+    capped.kept.length === 1 && capped.kept[0]?.testFiles.length === 32,
+    `(bound) the 32 paths inside the call cap are kept — the bound refuses excess, not the submission (got ${capped.kept[0]?.testFiles.length})`,
   );
 }
 

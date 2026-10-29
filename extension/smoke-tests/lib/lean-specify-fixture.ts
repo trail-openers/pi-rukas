@@ -25,7 +25,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
@@ -39,6 +39,8 @@ import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+export { put } from "./lean-build-fixture.ts";
+import { put } from "./lean-build-fixture.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -79,11 +81,7 @@ export function makeRepo(files: Record<string, string>): {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-specify-"));
   ROOTS.push(repoRoot);
   git(repoRoot, "init", "-q", "-b", "main");
-  for (const [rel, content] of Object.entries(files)) {
-    const target = path.join(repoRoot, rel);
-    mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, content, "utf8");
-  }
+  for (const [rel, content] of Object.entries(files)) put(repoRoot, rel, content);
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
   return { repoRoot, baseSha: git(repoRoot, "rev-parse", "HEAD") };
@@ -196,6 +194,13 @@ export interface RunOpts {
   testLimits?: { timeoutMs?: number };
   /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
   specBody?: string;
+  /**
+   * Where the fake child records the kickoff prompt the STEP built. The prompt
+   * is production text, so this is the only way a case asserts what the
+   * adversary was actually told (e.g. that its tests must go in the folder
+   * `.pi/work.json` names).
+   */
+  prompts?: string[];
   dispatchOk?: boolean;
 }
 
@@ -212,6 +217,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   };
   const dispatch: SpecifyDeps["dispatch"] = async (spec: DispatchSpec) => {
     dispatched++;
+    opts.prompts?.push(spec.prompt);
     const wt = spec.cwd as string;
     opts.writes(wt);
     // The child's worktree state at the moment its `submit_tests` calls are

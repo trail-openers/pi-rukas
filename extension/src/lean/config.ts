@@ -17,6 +17,7 @@
  */
 
 import type { execp } from "../exec.ts";
+import { validateTestDir, validateTestGlob } from "./config-test-location.ts";
 
 export interface Budget {
   turns: number;
@@ -35,8 +36,22 @@ export interface WorkConfig {
    * The template is executed as an executable plus argv, never through a
    * shell, so `validateTestRunner` refuses the shell-shaped strings that
    * would only mean something if it were.
+   *
+   * `testDir` is a repo-relative DIRECTORY (`extension/smoke-tests`) and
+   * `testGlob` is a basename pattern with exactly one `*` (`test-*.ts`): where
+   * the adversary's acceptance tests live and what they are called. Both
+   * absent — the default — means today's behaviour: the child may write its
+   * tests anywhere in the worktree. When both are set the prompts name the
+   * folder and the boundary refuses a submitted test outside it, so a project's
+   * own CI is the thing that runs the frozen tests.
    */
-  verify: { fast?: string; full?: string; test?: string };
+  verify: {
+    fast?: string;
+    full?: string;
+    test?: string;
+    testDir?: string;
+    testGlob?: string;
+  };
   budgets: Partial<Record<string, Budget>>;
 }
 
@@ -201,9 +216,25 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.verify !== "object" || o.verify === null || Array.isArray(o.verify))
       return ".pi/work.json verify must be an object";
     const v = o.verify as Record<string, unknown>;
-    for (const key of ["fast", "full", "test"] as const) {
+    for (const key of ["fast", "full", "test", "testDir", "testGlob"] as const) {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
+    }
+    // The test location is a PAIR: prompts name both the folder and the naming
+    // pattern, and the boundary refuses on both. One without the other is a
+    // config that says half of what it means, so it is refused here rather than
+    // left for a step to guess which half the author meant.
+    if (v.testDir !== undefined && v.testGlob === undefined)
+      return ".pi/work.json verify.testDir requires verify.testGlob (the file-name pattern, e.g. test-*.ts)";
+    if (v.testGlob !== undefined && v.testDir === undefined)
+      return ".pi/work.json verify.testGlob requires verify.testDir (the directory the tests live in)";
+    if (typeof v.testDir === "string") {
+      const reason = validateTestDir(v.testDir);
+      if (reason !== undefined) return reason;
+    }
+    if (typeof v.testGlob === "string") {
+      const reason = validateTestGlob(v.testGlob);
+      if (reason !== undefined) return reason;
     }
     // The runner template is a template: without exactly one whole-word
     // placeholder the step cannot name the file it is running, and would run

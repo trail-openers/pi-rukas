@@ -30,7 +30,13 @@
  */
 
 import { challengePrompt } from "../src/lean/challenge-prompt.ts";
-import { RED_PROOF_CONTRACT, specifyPrompt, testCriteria } from "../src/lean/specify-prompt.ts";
+import { BUILD_SCOPE_CONTRACT } from "../src/lean/build-prompt.ts";
+import {
+  RED_PROOF_CONTRACT,
+  TEST_SCOPE_CONTRACT,
+  specifyPrompt,
+  testCriteria,
+} from "../src/lean/specify-prompt.ts";
 import { runTestFile } from "../src/lean/specify-proof.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 
@@ -101,6 +107,38 @@ assert(
 assert(
   RED_PROOF_CONTRACT.includes("basename") && RED_PROOF_CONTRACT.includes("unclear"),
   "the const names both halves of the rule: what to print, and what happens if you do not",
+);
+
+// --------------------------- (b2) the scope contracts: builder + adversary
+assert(
+  specify.includes(TEST_SCOPE_CONTRACT) && challenge.includes(TEST_SCOPE_CONTRACT),
+  "both adversary prompts interpolate the SAME TEST_SCOPE_CONTRACT const, so neither can be told a different sizing rule",
+);
+for (const [name, prompt] of [
+  ["specify", specify],
+  ["challenge", challenge],
+] as const) {
+  assert(
+    prompt.includes("smallest test that proves the criterion"),
+    `${name}: the prompt asks for the smallest test that proves the criterion`,
+  );
+  assert(
+    prompt.includes("observable behaviour") && prompt.includes("implementation details"),
+    `${name}: the prompt fences the adversary out of hypothetical misuse and implementation details`,
+  );
+  assert(
+    prompt.includes("one focused file per criterion"),
+    `${name}: the prompt prefers one focused file per criterion`,
+  );
+  assert(
+    !/\d+\s*(lines|LOC)\b/.test(prompt),
+    `${name}: no hard line count — the bound is the property, not a number to game`,
+  );
+}
+assert(
+  BUILD_SCOPE_CONTRACT.includes("full test suite") &&
+    BUILD_SCOPE_CONTRACT.includes("cannot occur"),
+  "the builder's contract names both first-trial failures: the full suite and guards for impossible states",
 );
 
 // ------------------------------- (c) the proof rule itself is UNCHANGED by this

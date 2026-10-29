@@ -121,7 +121,7 @@ export interface RunTestsArgs {
   /** toolUses -> the rows the child declared, plus how many calls were malformed. */
   extract: (toolUses: unknown[]) => { rows: SubmitTestsRow[]; skipped: number };
   /** The boundary every declared path passes through; `validateSubmitRows` in both callers. */
-  validate: (rows: SubmitTestsRow[]) => { kept: SubmitTestsRow[]; dropped: DroppedRow[] };
+  validate: (rows: SubmitTestsRow[]) => Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }>;
   /** Create-or-reset-and-provision; `ensureSpecifyWorktreeWithProvision` in both callers. */
   prepare: () => Promise<{ wt: string; linked: string[]; problem?: string }>;
   /** The subject of the commit the pipeline makes. */
@@ -216,7 +216,21 @@ export async function runTestPipeline(
   //    ordinary file of THIS worktree is dropped here, before a single byte of
   //    it is read.
   const { rows, skipped } = args.extract(input.toolUses);
-  const { kept, dropped } = args.validate(rows);
+  // The boundary reads git (`existsAtBase`), so an unreadable base commit
+  // arrives as a rejection from inside it — and that is infrastructure, not a
+  // verdict. A git failure that fell through as "nothing was submitted" would
+  // report a broken repository as an adversary that found nothing.
+  let kept: SubmitTestsRow[];
+  let dropped: DroppedRow[];
+  try {
+    ({ kept, dropped } = await args.validate(rows));
+  } catch (err) {
+    if (err instanceof SpecifyInfraError) throw err;
+    if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
+    throw new SpecifyInfraError(
+      `could not validate the submitted tests: ${(err as Error).message}`,
+    );
+  }
   const notes: string[] = [];
   const candidates = declaredPaths(
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),

@@ -30,6 +30,22 @@
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 
+/**
+ * The builder's scope contract, stated in one paragraph and pinned by
+ * `test-lean-build-wiring.ts`.
+ *
+ * The first lean trial's builder produced a correct PR that was not minimal:
+ * it added a defensive guard for a caller that does not exist, wrapped in a
+ * comment narrating the change's history, and then spent 15+ minutes running
+ * the project's whole offline suite even though the `verify` step runs the
+ * tiers. Each of those is a sentence here, and the last two bound what the
+ * child may execute. It lives in the prompt rather than in a gate because the
+ * cost is the child's own time and the reviewer's attention, neither of which
+ * a step can measure afterwards.
+ */
+export const BUILD_SCOPE_CONTRACT =
+  "**Make the smallest change that makes the frozen tests pass and satisfies the issue.** Change nothing the issue does not ask for: no guards, validation or handling for callers, inputs or states that cannot occur (if you think one exists, say so in your reply instead of coding for it). Comments say why the code is the way it is, in a line or two — never the history of the change. To check your own work, run only the frozen tests and the project's fast typecheck and lint. **Do not run the project's full test suite** — the verify step runs it, and a long suite here is time the run pays twice.";
+
 export interface BuildPromptOpts {
   issue: number;
   spec: PiSpec;
@@ -120,6 +136,8 @@ export function buildPrompt(opts: BuildPromptOpts): string {
         "## What you write",
         "",
         "The implementation. Source files, fixtures and new tests you need for your own work are fine.",
+        "",
+        BUILD_SCOPE_CONTRACT,
         "",
         "**Do not touch `.pi/`, `.github/`, `.gitmodules` or `CODEOWNERS`** — those decide what the run's verification means, and the parent reverts them. **Do not commit**: leave your changes in the working tree, staged or not, and the parent makes the commit.",
         "",

@@ -15,7 +15,7 @@
  */
 
 import { CRITERION_ID } from "./spec.ts";
-import { normaliseRelPath, pathProblem } from "./specify-tree.ts";
+import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** A sha256 in the hex form the `specify` step freezes into its outcome. */
@@ -33,7 +33,7 @@ const CONTROL_CHARS = /\p{Cc}/u;
  * evidence and compares unequal forever, and no reader can tell a forged path
  * from a test somebody edited. A control character is refused because the key
  * is printed into a report verbatim — a `\n### heading` inside it is an
- * injection into the comment. The rules are `specify-tree`'s own — one
+ * injection into the comment. The rules are `specify-path`'s own — one
  * definition of "is this a git-relative path" for the whole pipeline — plus
  * the absolute and non-normalised forms that module's callers reject earlier.
  */

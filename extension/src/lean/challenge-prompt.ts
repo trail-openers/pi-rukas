@@ -26,9 +26,15 @@
  * a child optimising for "submitted something" produces exactly those two shapes.
  */
 
+import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
-import { RED_PROOF_CONTRACT } from "./specify-prompt.ts";
+import {
+  RED_PROOF_CONTRACT,
+  TEST_SCOPE_CONTRACT,
+  namingLine,
+  testLocationInstruction,
+} from "./specify-prompt.ts";
 
 export interface ChallengePromptOpts {
   issue: number;
@@ -39,6 +45,11 @@ export interface ChallengePromptOpts {
   worktree: string;
   /** The project's `verify.test` runner template (e.g. `bun run {file}`), if configured. */
   testRunner?: string;
+  /**
+   * Where the project keeps its tests, when `.pi/work.json` says. The frozen
+   * files already live there, and a new file the child writes must too.
+   */
+  testLocation?: TestLocation;
 }
 
 function criteriaBlock(spec: PiSpec): string {
@@ -84,7 +95,15 @@ export function challengePrompt(opts: ChallengePromptOpts): string {
     "",
     "Each new file MUST FAIL against the code as it stands right now, for the behaviour the criterion states — exercise the real entry point and assert the real expected result. The parent runs every file it is given against the current head and keeps only those that fail there: **a test that passes is thrown out**, and so is one that always fails (assert false, an import of a module that does not exist, a syntax error, a skipped or TODO test). If you cannot find a case that fails, say so in your reply and submit nothing — that is a real answer, and it is better than a test that proves nothing.",
     "",
-    "Name each new file so its path contains the criterion id it covers (e.g. `tests/AC1-edge-timeout.test.ts` for AC1) — the parent matches files to criteria by that id — and name it something the frozen files above do not already use.",
+    namingLine(opts.testLocation),
+    // Same rule `specify` states: the worktree is a checkout of the head, so a
+    // tracked test that is already there is reachable and looks like a file to
+    // submit. The frozen list above names only the run's OWN contract; every
+    // OTHER pre-existing file is refused by the base-commit check too.
+    "Every file you submit must be one YOU CREATE. The parent refuses any path that already exists in the run's base commit — whether you left it untouched or rewrote it — so do not submit a tracked test you found in the tree.",
+    opts.testLocation === undefined ? "" : testLocationInstruction(opts.testLocation),
+    "",
+    TEST_SCOPE_CONTRACT,
     "",
     "**Do not edit, create or delete any non-test file.** No source changes, no config, no fixture edits outside your new test files, no package-manifest edits. The parent reverts anything you touch that you did not submit as a test. **Do not commit**: leave your files in the working tree and the parent makes the commit.",
     "",

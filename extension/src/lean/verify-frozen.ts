@@ -21,7 +21,7 @@
  *     deleted from the tree or replaced by an untracked file cannot pass.
  *
  * The shape half of the on-disk check reuses `fileProblem` from
- * `specify-tree.ts`, the module that already refuses a symlink, a non-regular
+ * `specify-path.ts`, the module that already refuses a symlink, a non-regular
  * file, an `nlink > 1` hard link and a realpath escape. Rewriting those here
  * would be a second definition of "a file of this worktree" for a child to
  * drive a wedge between.
@@ -34,8 +34,9 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { frozenTamperedAtHead } from "./build-git.ts";
+import { fileProblem } from "./specify-path.ts";
 import { sha256 } from "./specify-proof.ts";
-import { changedPaths, fileProblem } from "./specify-tree.ts";
+import { changedPaths } from "./specify-tree.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
 /**

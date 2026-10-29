@@ -27,9 +27,10 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { WORK_CONFIG_FILE, validateTestRunner } from "../src/lean/config.ts";
+import { validateTestDir, validateTestGlob } from "../src/lean/config-test-location.ts";
+import { LeanConfigError, WORK_CONFIG_FILE, validateTestRunner } from "../src/lean/config.ts";
 import { LOCAL_TSC_CMD } from "../src/work-driver-cap-checkpoint-typecheck.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -80,7 +81,6 @@ interface WorkJson {
   autoMerge?: unknown;
   verify?: Record<string, unknown>;
 }
-
 /**
  * The committed bytes, the way the loader reads them: `git show <ref>:<path>`
  * with cwd at the repo root, argv form, no shell. A working-tree read would
@@ -167,6 +167,52 @@ if (typeof test === "string") {
   assert(/^bun\s+\{file\}$/.test(test), "verify.test is exactly `bun {file}`");
 }
 
+// ------------------------------- verify.testDir / verify.testGlob: the CI-visible pair
+//
+// #1883: the acceptance tests a lean run freezes are tests OF THE PROJECT, so
+// they have to land where the project's own CI already looks. This repo's CI
+// runs `extension/smoke-tests/test-*.ts`, and that is what these two fields now
+// say. The pair is asserted exactly, not "some directory": a config that points
+// the adversary at a folder nothing runs would freeze tests no CI ever executes
+// — a gate that silently stops being a gate, the same shape `verify.test` had
+// when it said `bun run {file}`.
+const TEST_DIR_EXACT = "extension/smoke-tests";
+const TEST_GLOB_EXACT = "test-*.ts";
+const testDir: string | undefined = verify.testDir as string | undefined;
+const testGlob: string | undefined = verify.testGlob as string | undefined;
+
+assert(
+  testDir === TEST_DIR_EXACT,
+  `verify.testDir is exactly \`${TEST_DIR_EXACT}\` — the folder this project's CI runs (got: ${testDir === undefined ? "absent" : testDir})`,
+);
+assert(
+  testGlob === TEST_GLOB_EXACT,
+  `verify.testGlob is exactly \`${TEST_GLOB_EXACT}\` — the naming convention this project's tests follow (got: ${testGlob === undefined ? "absent" : testGlob})`,
+);
+// Imported, not re-spelled: if the loader's own validator rejects the committed
+// pair, every prompt and every boundary check downstream is dead config.
+assert(
+  validateTestDir(TEST_DIR_EXACT) === undefined && validateTestGlob(TEST_GLOB_EXACT) === undefined,
+  "the committed pair is one the loader itself accepts",
+);
+// The runner still resolves the frozen path: `verify.test` is `bun {file}` and
+// the frozen path is repo-relative, so the file the adversary wrote in the
+// configured folder is executable from the worktree root by that command alone.
+assert(
+  typeof test === "string" &&
+    testDir !== undefined &&
+    test.includes("{file}") &&
+    /^bun\s+\{file\}$/.test(test),
+  "verify.test still names the file, so a frozen test in testDir runs by repo-relative path",
+);
+// A frozen test in the configured folder must be a name the project's CI picks
+// up — otherwise the pair is configured and the gate still never runs.
+assert(
+  typeof testDir === "string" &&
+    typeof testGlob === "string" &&
+    existsSync(path.join(REPO_ROOT, testDir, testGlob.replace("*", "lean-spec"))) === true,
+  `an example test named by the pair (${testDir}/${testGlob?.replace("*", "lean-spec")}) exists in this repo`,
+);
 // ------------------------------------------- verify.fast: the whole of the local gate
 
 /**
@@ -218,6 +264,8 @@ function check(text: string): number {
   const v = obj.verify ?? {};
   const f = v.fast;
   const t = v.test;
+  const td = v.testDir;
+  const tg = v.testGlob;
   let n = 0;
   if (obj.version !== 1) n++;
   if (obj.autoMerge !== false) n++;
@@ -225,6 +273,10 @@ function check(text: string): number {
   else if (f !== FAST_EXACT) n++;
   if (typeof t !== "string" || t.length === 0) n++;
   else if (/\bbun\s+run\s+\{file\}/.test(t) || validateTestRunner(t) !== undefined) n++;
+  // #1883 — the pair the adversary is aimed at. Absent, or pointing at a folder
+  // outside the project's own test convention, is a rule no CI enforces.
+  if (typeof td !== "string" || td !== TEST_DIR_EXACT) n++;
+  if (typeof tg !== "string" || tg !== TEST_GLOB_EXACT) n++;
   return n;
 }
 
@@ -234,6 +286,8 @@ const GOOD = JSON.stringify({
   verify: {
     fast: FAST_EXACT,
     test: "bun {file}",
+    testDir: TEST_DIR_EXACT,
+    testGlob: TEST_GLOB_EXACT,
   },
 });
 
@@ -253,6 +307,19 @@ const MUTATIONS: Array<[string, string]> = [
   ["version bumped to 2", GOOD.replace('"version":1', '"version":2')],
   ["autoMerge flipped to true", GOOD.replace('"autoMerge":false', '"autoMerge":true')],
   ["verify.fast with biome moved first", SWAPPED],
+  // #1883: the adversary writes wherever the config says, so a config that lost
+  // the pair (or points at a folder this project's CI never runs) freezes tests
+  // nothing executes — invisible rot, exactly the class this file exists for.
+  ["verify.testDir removed", GOOD.replace(',"testDir":"extension/smoke-tests"', "")],
+  ["verify.testGlob removed", GOOD.replace(',"testGlob":"test-*.ts"', "")],
+  [
+    "verify.testDir pointed outside the project's test folder",
+    GOOD.replace('"testDir":"extension/smoke-tests"', '"testDir":"tests"'),
+  ],
+  [
+    "verify.testGlob a name CI would skip",
+    GOOD.replace('"testGlob":"test-*.ts"', '"testGlob":"spec-*.ts"'),
+  ],
 ];
 
 if (check(GOOD) !== 0) {
