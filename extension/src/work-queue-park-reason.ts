@@ -113,7 +113,14 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
         ? cap.cap.slice("step-failed:".length)
         : cap.cap === "deferred-creation:develop"
           ? deferredLeftoverStep()
-          : undefined
+          : // #1882 — the reposition gate runs before the lens-fix dispatch,
+            // which is the only place the step appends its `step-started`, so
+            // `lastCompletedStep`/`currentStep` name `lens-review` (or
+            // `handoff`, which the park itself stamps). The gate is part of
+            // lens-fix; map it the same way `headless/caps.ts::capStep` does.
+            cap.cap === "lens-fix-reposition"
+            ? "lens-fix"
+            : undefined
       : undefined;
   const step = capStep ?? state.pipelineState.lastCompletedStep ?? state.pipelineState.currentStep;
   if (cap?.kind === "cap-hit") {

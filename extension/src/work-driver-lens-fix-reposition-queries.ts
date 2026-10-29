@@ -169,6 +169,25 @@ export async function cherryLines(
 }
 
 /**
+ * #1882 — the tip of `branchName` as the REMOTE holds it, or undefined when the
+ * read failed. The gate compares its `git cherry` result against BOTH branch
+ * refs: the local `refs/heads/<branch>` lags `refs/remotes/origin/<branch>`
+ * whenever the driver pushed its own lens-fix commit and did not leave that
+ * ref checked out (`integrate()` pushes and advances only the applied
+ * worktrees; `rewindFastForward` deliberately puts an unpushed fast-forward
+ * back). A round-2 gate that read the local ref alone counted the cycle's own
+ * pushed fix as "commits the branch does not" and parked
+ * `lens-fix-reposition` — the top stop reason measured in the field.
+ */
+export async function remoteBranchTip(
+  execFn: ExecFn,
+  tree: string,
+  branchName: string,
+): Promise<string | undefined> {
+  return revToSha(execFn, tree, `refs/remotes/origin/${branchName}`);
+}
+
+/**
  * #981 — `true` when EVERY commit in the `tipSha..treeSha` range is a
  * non-empty patch (its tree differs from its parent's tree). `git cherry`
  * marks commits by PATCH-EQUIVALENCE via patch-id, and its contract only
