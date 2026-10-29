@@ -88,10 +88,14 @@ export async function moveToTip(
     // Refuse before the backup ref or the checkout: a non-commit id reaching
     // here means a caller passed prose or a truncated capture, and git would
     // resolve it against a working tree we do not own.
-    traceWarn(
-      `${TRACE_PREFIX}: refused to move the tree — ${tipSha.slice(0, 12)} is not a commit id`,
-    );
-    return { kind: "git-failed", detail: `${tipSha} is not a commit id` };
+    //
+    // `tipSha` is typed `string`, but a stale caller left over from before
+    // #1908 still passes the dropped flag positionally, which shifts a
+    // boolean into this slot. The refusal must be a park, never a crash, so
+    // the value is rendered with String() rather than a string method.
+    const offending = String(tipSha).slice(0, 12);
+    traceWarn(`${TRACE_PREFIX}: refused to move the tree — ${offending} is not a commit id`);
+    return { kind: "git-failed", detail: `${offending} is not a commit id` };
   }
   const backup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
   const backupRef = backup.ref;
