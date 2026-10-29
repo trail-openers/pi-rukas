@@ -30,21 +30,29 @@
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
-import { LeanConfigError, defaultConfig, loadWorkConfig } from "../src/lean/config.ts";
+import { challengePrompt } from "../src/lean/challenge-prompt.ts";
+import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import {
   testLocationOf,
   testLocationProblem,
   validateTestDir,
   validateTestGlob,
 } from "../src/lean/config-test-location.ts";
-import { challengePrompt } from "../src/lean/challenge-prompt.ts";
+import { LeanConfigError, defaultConfig, loadWorkConfig } from "../src/lean/config.ts";
+import type { PiSpec } from "../src/lean/spec.ts";
 import {
   RED_PROOF_CONTRACT,
   specifyPrompt,
   testLocationInstruction,
 } from "../src/lean/specify-prompt.ts";
-import type { PiSpec } from "../src/lean/spec.ts";
 import { validateSubmitRows } from "../src/lean/specify-tree.ts";
+import {
+  challengeFixture,
+  greenEdge,
+  put,
+  redEdge,
+  runChallenge,
+} from "./lib/lean-challenge-fixture.ts";
 import {
   ROOTS,
   SpecifyInfraError,
@@ -55,16 +63,6 @@ import {
   runSpecify,
   submit,
 } from "./lib/lean-specify-fixture.ts";
-import { ChallengeInfraError } from "../src/lean/challenge.ts";
-import {
-  SpecifyInfraError,
-  challengeFixture,
-  configWithLocation,
-  greenEdge,
-  put,
-  redEdge,
-  runChallenge,
-} from "./lib/lean-challenge-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -381,8 +379,7 @@ function executable(wt: string, rel: string, content: string): void {
       (d) =>
         d.path === "extension/smoke-tests/unit/test-nested.ts" &&
         d.reason.includes("not directly inside"),
-    ) &&
-      reasons.some((r) => r.startsWith("tests/test-wrong-dir.ts|")),
+    ) && reasons.some((r) => r.startsWith("tests/test-wrong-dir.ts|")),
     "a nested folder is refused with a reason naming the folder rule",
   );
   assert(
@@ -482,7 +479,8 @@ function executable(wt: string, rel: string, content: string): void {
   });
   assert(r.threw === undefined, `(specify) correctly placed test: no throw (${r.threw?.message})`);
   assert(
-    r.outcome?.kind === "ok" && Object.keys(r.outcome.frozen).join() === "extension/smoke-tests/test-ac1-retry.ts",
+    r.outcome?.kind === "ok" &&
+      Object.keys(r.outcome.frozen ?? {}).join() === "extension/smoke-tests/test-ac1-retry.ts",
     `(specify) the test in the configured folder freezes (got ${JSON.stringify(r.outcome)})`,
   );
 
@@ -511,7 +509,7 @@ function executable(wt: string, rel: string, content: string): void {
   );
   assert(
     refused.outcome?.kind === "no-red-test" &&
-      refused.outcome.failedRules[0]?.startsWith("criterion AC1 has no red test") === true,
+      refused.outcome.failedRules?.[0]?.startsWith("criterion AC1 has no red test") === true,
     `(specify) the rule still leads with the uncovered criterion (got ${JSON.stringify(refused.outcome?.failedRules)})`,
   );
   assert(
@@ -562,10 +560,7 @@ function executable(wt: string, rel: string, content: string): void {
       prompts[0]?.includes("directly inside `extension/smoke-tests/`") === true,
     "(specify) the dispatched prompt carried the configured folder",
   );
-  assert(
-    ROOTS.length > 0,
-    "the temp repos this case created are registered for cleanup",
-  );
+  assert(ROOTS.length > 0, "the temp repos this case created are registered for cleanup");
 }
 
 // ─────────────────────────── (3c) challenge end-to-end: the same boundary holds
@@ -581,7 +576,7 @@ function executable(wt: string, rel: string, content: string): void {
   });
   assert(r.threw === undefined, `(challenge) no throw: ${r.threw?.message ?? "clean"}`);
   assert(
-    r.outcome?.kind === "new-tests" && Object.keys(r.outcome.frozen).join() === EDGE,
+    r.outcome?.kind === "new-tests" && Object.keys(r.outcome.frozen ?? {}).join() === EDGE,
     `(challenge) an edge case in the configured folder freezes (got ${JSON.stringify(r.outcome?.frozen)})`,
   );
   assert(
@@ -598,7 +593,10 @@ function executable(wt: string, rel: string, content: string): void {
     child: (wt) => executable(wt, "tests/test-ac1-edge.ts", redEdge("tests/test-ac1-edge.ts")),
     toolUses: [submit("AC1", ["tests/test-ac1-edge.ts"])],
   });
-  assert(off.threw === undefined, `(challenge) misplaced edge case is a verdict (${off.threw?.message})`);
+  assert(
+    off.threw === undefined,
+    `(challenge) misplaced edge case is a verdict (${off.threw?.message})`,
+  );
   assert(
     off.outcome?.kind === "none",
     `(challenge) a misplaced edge case freezes nothing → none (got ${off.outcome?.kind})`,
@@ -630,7 +628,7 @@ function executable(wt: string, rel: string, content: string): void {
   });
   assert(
     legacy.outcome?.kind === "new-tests" &&
-      Object.keys(legacy.outcome.frozen).join() === EDGE,
+      Object.keys(legacy.outcome.frozen ?? {}).join() === EDGE,
     `(challenge) a pre-existing frozen test outside the folder does not break the round (got ${JSON.stringify(legacy.outcome?.frozen)})`,
   );
   // The two refusals each carry their OWN reason: the frozen path is refused
@@ -666,12 +664,12 @@ function executable(wt: string, rel: string, content: string): void {
   const green = await runChallenge({
     issue: 204,
     config: configWithLocation(EDGE_DIR, "test-*.ts"),
-    child: (wt) => executable(wt, `${EDGE_DIR}/test-ac1-green.ts`, greenEdge(`${EDGE_DIR}/test-ac1-green.ts`)),
+    child: (wt) =>
+      executable(wt, `${EDGE_DIR}/test-ac1-green.ts`, greenEdge(`${EDGE_DIR}/test-ac1-green.ts`)),
     toolUses: [submit("AC1", [`${EDGE_DIR}/test-ac1-green.ts`])],
   });
   assert(
-    green.outcome?.kind === "none" &&
-      (green.outcome.reason ?? "").includes("exited 0 on base"),
+    green.outcome?.kind === "none" && (green.outcome.reason ?? "").includes("exited 0 on base"),
     `(challenge) a well-placed GREEN test is dropped for being green, not for its path (got ${green.outcome?.reason})`,
   );
   // Both steps' infra error classes are in scope deliberately: a misplaced

@@ -182,8 +182,8 @@ if (typeof test === "string") {
 // when it said `bun run {file}`.
 const TEST_DIR_EXACT = "extension/smoke-tests";
 const TEST_GLOB_EXACT = "test-*.ts";
-const testDir = verify.testDir;
-const testGlob = verify.testGlob;
+const testDir: string | undefined = verify.testDir as string | undefined;
+const testGlob: string | undefined = verify.testGlob as string | undefined;
 
 assert(
   testDir === TEST_DIR_EXACT,
@@ -215,7 +215,7 @@ assert(
   typeof testDir === "string" &&
     typeof testGlob === "string" &&
     existsSync(path.join(REPO_ROOT, testDir, testGlob.replace("*", "lean-spec"))) === true,
-  `an example test named by the pair (${testDir}/${testGlob.replace("*", "lean-spec")}) exists in this repo`,
+  `an example test named by the pair (${testDir}/${testGlob?.replace("*", "lean-spec")}) exists in this repo`,
 );
 // ------------------------------------------- verify.fast: the whole of the local gate
 
