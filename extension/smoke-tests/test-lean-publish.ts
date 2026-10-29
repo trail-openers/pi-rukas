@@ -23,6 +23,8 @@
  *   (j) handback: a reason with a heading stays fenced, and an unsafe branch
  *       prints no Branch line at all
  *   (k) wiring: phase1Handlers.publish is the step, not the notBuilt stub
+ *   (l) a state file whose branch is `main`, or `refs/heads/lean/x` -> throw
+ *       BEFORE the push; origin's main unchanged, no prCreate
  */
 
 import { handbackOutcome } from "../src/lean/handback.ts";
@@ -287,6 +289,47 @@ function unfenced(ls: string[], heading: string): boolean {
     !(posts2[0] ?? "").includes("Branch:"),
     "(j) a branch that is not a safe ref prints no Branch line at all",
   );
+}
+
+// --------------------------- (l) a state file naming the mainline is refused
+//
+// `run.branch` is persisted state, not a name this cycle chose, so a run whose
+// state says `main` must never reach the push. Rule 1 (the `lean/` prefix) is
+// what refuses both shapes here; the second case shows a `refs/heads/` prefix
+// cannot smuggle a branch past it either.
+for (const [issue, branch] of [
+  [413, "main"],
+  [414, "refs/heads/lean/x"],
+] as const) {
+  // The tree is checked out on a real lean ref, so the only thing that makes
+  // this run dangerous is the branch its state file names — which is exactly
+  // the field under test. `leanRef` is the branch a legitimate run would have
+  // pushed, and stays empty for both cases: origin holds only the base commit
+  // on `main` (the fixture pushes it), so nothing else on origin moved.
+  const leanRef = `lean/issue-${issue}`;
+  const r = await runPublish({
+    issue,
+    verify: { kind: "green" },
+    branch,
+    worktreeBranch: leanRef,
+  });
+  assert(
+    r.threw instanceof PublishInfraError,
+    `(l) a run on ${JSON.stringify(branch)} throws PublishInfraError (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    /work-lean pushes only lean\/ branches/.test(r.threw?.message ?? ""),
+    `(l) ${JSON.stringify(branch)} is refused by the lean/ rule (${r.threw?.message})`,
+  );
+  assert(
+    originHead(r.origin, "main") !== "" && originHead(r.origin, "main") !== r.head,
+    `(l) origin's main still holds the base commit — nothing was pushed to it (${originHead(r.origin, "main")})`,
+  );
+  assert(
+    originHead(r.origin, leanRef) === "",
+    `(l) nothing was pushed to ${JSON.stringify(branch)} (${originHead(r.origin, leanRef)})`,
+  );
+  assert(r.forge.prCreateCalls.length === 0, `(l) ${JSON.stringify(branch)} opens no PR`);
 }
 
 // ----------------------------------------------------------- (k) the wiring is real

@@ -137,6 +137,9 @@ export interface PublishOpts {
   listThrows?: boolean;
   /** A branch name to force onto the run (an unsafe ref, for the handback case). */
   branch?: string;
+  /** Check out a worktree whose branch differs from the run's (a state file that
+   *  names the mainline while the tree sits on its own lean ref). */
+  worktreeBranch?: string;
   /** The verify step to log; omit for a run that never reached a verdict. */
   verify?: { kind: "green" | "red"; head?: string; reason?: string } | undefined;
   /** Extra steps appended to the log. */
@@ -208,8 +211,9 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   git(repoRoot, "push", "-q", "origin", "main");
 
   const branch = o.branch ?? `lean/issue-${issue}`;
+  const checkout = o.worktreeBranch ?? branch;
   const wt = specifyWorktreePath(repoRoot, issue);
-  git(repoRoot, "worktree", "add", "-q", "-B", branch, wt, baseSha);
+  git(repoRoot, "worktree", "add", "-q", "-B", checkout, wt, baseSha);
 
   // The implementation + frozen tests, committed in the worktree: this is the
   // head the green verify is a claim about, and the head publish pushes.

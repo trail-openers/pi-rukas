@@ -24,13 +24,17 @@
  * The recorded outcome carries `prUrl` and nothing else: `state-outcome.ts`
  * refuses that field on any other step, so it stays the run's only evidence
  * that a PR exists at an address.
+ *
+ * The step's own preconditions read the run's persisted state, so the push
+ * target is data rather than a decision — `assertPublishableBranch` in
+ * `publish-deps.ts` is what refuses a branch that is not the run's to push.
  */
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
-import { assertSafeRef } from "../worktree-loss.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { publishBody } from "./publish-body.ts";
-import { type PublishDeps, type PublishForge, PublishInfraError } from "./publish-deps.ts";
+import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
+import type { PublishForge } from "./publish-deps.ts";
 import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -180,11 +184,11 @@ function oneLineTitle(problem: string): string {
 export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   const branch = specifyBranch(ctx.run.branch, issue);
-  try {
-    assertSafeRef(branch);
-  } catch (err) {
-    throw new PublishInfraError((err as Error).message);
-  }
+  // Before a single git read, let alone a push: the branch is state-file data,
+  // and `assertSafeRef` inside the guard only says it is a legal ref — `main`
+  // is. The guard lives in publish-deps so the step's decisions stay separate
+  // from what it asks the outside world.
+  await assertPublishableBranch(repoRoot, branch);
   const wt = specifyWorktreePath(repoRoot, issue);
   if (!existsSync(wt)) throw new PublishInfraError(`the worktree ${wt} does not exist`);
 

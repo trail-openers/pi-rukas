@@ -16,6 +16,8 @@
 
 import { execp } from "../exec.ts";
 import type { Forge } from "../forge-types.ts";
+import { resolveMainline } from "../mainline.ts";
+import { assertSafeRef } from "../worktree-loss.ts";
 import { fetchIssueBody } from "./io.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
@@ -42,6 +44,43 @@ export interface PublishDeps {
   exec: PublishExec;
   fetchBody: (repoRoot: string, issue: number) => Promise<string>;
   forge: (repoRoot: string) => PromiseLike<PublishForge | undefined>;
+}
+
+/**
+ * The push target must be a lean branch, and never the mainline.
+ *
+ * `branch` arrives from the run's persisted state file, so it is data a stale or
+ * edited file supplies rather than a name this cycle chose. Pushing it raw is
+ * how a run whose state named `main` writes unreviewed work onto the mainline:
+ * `assertSafeRef` says the string is a legal ref, which `main` is.
+ *
+ * Rule 1 is the load-bearing one — a lean run's branch is `lean/…` by
+ * construction (`specifyBranch`), so requiring that prefix also rejects a
+ * `refs/heads/` or `origin/` prefix that would otherwise reach
+ * `refs/heads/refs/heads/…`. Rule 2 catches a mainline that does not spell
+ * `main` (`trunk`, a fork's default); when it cannot be read we fall back to
+ * rule 1 alone rather than refusing every push, because a clone with no
+ * `origin/HEAD` and no `gh` is ordinary and its lean pushes are legitimate.
+ *
+ * Throws `PublishInfraError`, which the engine turns into a handed-back run.
+ */
+export async function assertPublishableBranch(repoRoot: string, branch: string): Promise<void> {
+  // The ref's own charset first — every other lean git call site validates its
+  // ref before it reaches a command line, and this one is no exception; the
+  // error is re-wrapped so the engine sees a PublishInfraError rather than a
+  // bare Error.
+  try {
+    assertSafeRef(branch);
+  } catch (err) {
+    throw new PublishInfraError((err as Error).message);
+  }
+  if (!branch.startsWith("lean/"))
+    throw new PublishInfraError(
+      `refusing to publish to ${branch}: work-lean pushes only lean/ branches`,
+    );
+  const mainline = await resolveMainline(repoRoot, execp).catch(() => undefined);
+  if (mainline?.ok === true && mainline.branch === branch)
+    throw new PublishInfraError(`refusing to push to the mainline ${mainline.branch}`);
 }
 
 /** Production dependencies: the real executor, the real issue read, the real forge. */
