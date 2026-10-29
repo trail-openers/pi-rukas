@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.34](https://github.com/trail-openers/pi-rukas/compare/v0.14.33...v0.14.34) (2026-10-29)
+
+
+### Features
+
+* **work:** work-lean core — spec, state machine and engine ([#1884](https://github.com/trail-openers/pi-rukas/issues/1884)) ([108d41c](https://github.com/trail-openers/pi-rukas/commit/108d41c21bcf4ff07cbf7249056c7b11f42a6164))
+
 ## [0.14.33](https://github.com/trail-openers/pi-rukas/compare/v0.14.32...v0.14.33) (2026-10-28)
 
 
