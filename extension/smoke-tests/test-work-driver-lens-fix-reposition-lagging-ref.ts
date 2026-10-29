@@ -34,7 +34,6 @@ import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
 import { integrate } from "../src/work-driver-integrate.ts";
 import { repositionLensFixWorktree } from "../src/work-driver-lens-fix-reposition-gate.ts";
 import { parkReason } from "../src/work-queue-park-reason.ts";
-import type { PipelineState } from "../src/workflow-state-schema.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
@@ -94,8 +93,6 @@ async function mkRepo(tag: string, issue: number) {
   const { root, repo, scratch, setup, wt } = await mkRepo("pushed", 1882);
   try {
     const branch = setup.branchName;
-    const ctx = { repoRoot: repo, issue: 1882 };
-    const ps = { branchName: branch, baseSha: setup.baseSha, reviewRound: 1 } as PipelineState;
 
     // commit-pr: the feature lands on the branch and is pushed.
     writeFileSync(path.join(wt, "meter.js"), "one\ndrawMeter(meter)\nthree\n");
@@ -204,7 +201,6 @@ async function mkRepo(tag: string, issue: number) {
     // unchanged (no pre-gate step-started), which is exactly why a mapping
     // is needed: lens-fix appends its step-started only inside the dispatch
     // that the gate precedes.
-    const parked = { kind: "diverged", detail: "x" } as const;
     const state: WorkState = {
       ...initialState(1882),
       pipelineState: {

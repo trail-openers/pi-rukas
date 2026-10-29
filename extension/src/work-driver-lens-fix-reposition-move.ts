@@ -17,7 +17,7 @@
  * Split from work-driver-lens-fix-reposition-gate.ts for the AGENTS.md §12
  * 500-line gate. All git commands run through the `ExecFn` argv form.
  */
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import { backupLensFixTree } from "./work-driver-lens-fix-reposition-backup.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
 import {
@@ -28,6 +28,9 @@ import {
 import type { ExecFn } from "./worktree.ts";
 
 const TRACE_PREFIX = "lens-fix-reposition";
+
+/** A commit id, as `work-driver-lens-fix-bound-land.ts::isSha` reads one. */
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 /**
  * #1882 — read the tree against the REMOTE tip. `landed` is every tree commit
@@ -74,9 +77,29 @@ export async function moveToTip(
   issues: number[],
   issueTitle: string | undefined,
   treeSha: string,
+  /** Where the tree should land. The fast-forward arm passes the tip; the
+   *  remote-accept arm passes the REMOTE tip, which is the commit the move
+   *  was justified against — moving it to the local tip would re-create the
+   *  park the arm exists to close. */
   tipSha: string,
   why: string,
+  /**
+   * True when the accept rests on `git cherry` patch-equivalence (both cherry
+   * arms); false when the tree is simply moving onto the remote tip it is a
+   * strict ancestor of. Carried on the result so a caller can tell a verified
+   * patch move from a plain fast-forward.
+   */
+  byPatchEquivalence: boolean,
 ): Promise<RepositionResult> {
+  if (!SHA_RE.test(tipSha)) {
+    // Refuse before the backup ref or the checkout: a non-commit id reaching
+    // here means a caller passed prose or a truncated capture, and git would
+    // resolve it against a working tree we do not own.
+    traceWarn(
+      `${TRACE_PREFIX}: refused to move the tree — ${tipSha.slice(0, 12)} is not a commit id`,
+    );
+    return { kind: "git-failed", detail: `${tipSha} is not a commit id` };
+  }
   const backup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
   const backupRef = backup.ref;
   if (backupRef === undefined) {
@@ -107,14 +130,14 @@ export async function moveToTip(
       trace(`${TRACE_PREFIX}: ${detail}`);
       return { kind: "git-failed", detail, backupRef };
     }
-    trace(
-      `${TRACE_PREFIX}: repositioned (movedByPatchEquivalence) ${treeSha.slice(0, 12)} -> ${movedSha.slice(0, 12)} (backed up to ${backupRef}) — ${why}`,
+    traceWarn(
+      `${TRACE_PREFIX}: repositioned ${treeSha.slice(0, 12)} -> ${movedSha.slice(0, 12)} (backed up to ${backupRef}, ${byPatchEquivalence ? "patch-equivalence" : "fast-forward to the remote tip"}) — ${why}`,
     );
     return {
       kind: "repositioned",
       fromSha: treeSha,
       tipSha,
-      movedByPatchEquivalence: true,
+      movedByPatchEquivalence: byPatchEquivalence,
       backupRef,
     };
   } catch (e) {

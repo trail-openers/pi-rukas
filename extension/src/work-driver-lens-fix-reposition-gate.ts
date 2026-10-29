@@ -26,7 +26,7 @@
  * All git commands run through the `ExecFn` argv form (no shell re-parse).
  * Split from work-driver-lens-fix-commit.ts for the 500-line gate.
  */
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { ExecFn as DevelopExecFn } from "./work-develop-git.ts";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
 import {
@@ -247,13 +247,15 @@ export async function repositionLensFixWorktree(
   }
 
   // #1882 — the remote tip as a SECOND landed reference, read only once the
-  // tree is proven clean and is not already at the tip. The tip above may be
-  // the LOCAL `refs/heads/<branch>`, which lags `refs/remotes/origin/<branch>`
-  // whenever the driver pushed its own commit and left that ref behind (see
+  // tree is proven clean, is not already at the tip, and is NOT a strict
+  // ancestor of the tip (that shape took the fast-forward arm above, which
+  // already consults the remote). The tip above may be the LOCAL
+  // `refs/heads/<branch>`, which lags `refs/remotes/origin/<branch>` whenever
+  // the driver pushed its own commit and left that ref behind (see
   // `remoteBranchTip`). Commits that are on the remote are the cycle's own
   // pushed work, not un-landed work: `readAgainstRemote` is the same `git
-  // cherry` read against the remote tip, and the park below fires only for a
-  // commit NEITHER ref accounts for.
+  // cherry` read against the remote tip with the same non-empty proof, and the
+  // park below fires only for a commit NEITHER ref accounts for.
   const remoteTipSha = await remoteBranchTip(execFn, tree, branchName);
   const remote =
     remoteTipSha !== undefined && remoteTipSha !== tipSha
@@ -296,8 +298,38 @@ export async function repositionLensFixWorktree(
       const newSha = hp2.stdout.trim();
       if (newSha !== tipSha) {
         const detail = `fast-forward did not land on the tip (expected ${tipSha.slice(0, 12)}, got ${newSha.slice(0, 12)})`;
-        trace(`${TRACE_PREFIX}: ${detail}`);
+        traceWarn(`${TRACE_PREFIX}: ${detail}`);
         return { kind: "git-failed", detail };
+      }
+      // #1882 — the local ref may LAG the fetched remote ref: a tree that is
+      // a strict ancestor of `origin/<branch>` is the cycle's own pushed work,
+      // not un-landed work, and it belongs at the remote tip rather than at a
+      // `--ff-only` onto a ref nobody advanced. Accepting here (with the backup
+      // ref `moveToTip` always takes) is the positive shape of the remote arm:
+      // proven by ancestry, so no `git cherry` read is needed and the tree is
+      // not judged by patch-equivalence.
+      const remoteTip = await remoteBranchTip(execFn, tree, branchName);
+      if (remoteTip !== undefined && remoteTip !== tipSha) {
+        const tipIsAncestorOfRemote = await isAncestor(execFn, tree, newSha, remoteTip);
+        if ("error" in tipIsAncestorOfRemote) {
+          trace(
+            `${TRACE_PREFIX}: git-failed (remote ancestry probe): ${tipIsAncestorOfRemote.error}`,
+          );
+          return { kind: "git-failed", detail: tipIsAncestorOfRemote.error };
+        }
+        if (tipIsAncestorOfRemote.isAncestor) {
+          return moveToTip(
+            execFn,
+            tree,
+            branchName,
+            issues,
+            issueTitle,
+            treeSha,
+            remoteTip,
+            "the local branch ref lags origin, which the tree is a strict ancestor of",
+            false,
+          );
+        }
       }
       trace(`${TRACE_PREFIX}: repositioned ${treeSha.slice(0, 12)} -> ${newSha.slice(0, 12)}`);
       return { kind: "repositioned", fromSha: treeSha, tipSha };
@@ -351,6 +383,7 @@ export async function repositionLensFixWorktree(
           treeSha,
           tipSha,
           `${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
+          true,
         );
       }
       // all-`-` but the range contains an empty commit (or the emptiness
@@ -366,10 +399,14 @@ export async function repositionLensFixWorktree(
     // Genuinely un-landed work (`+` lines), or an unverifiable all-`-`
     // range (empty commit). Before the park, #1882 asks the REMOTE the same
     // question: a commit the LOCAL tip does not hold but the freshly-fetched
-    // `refs/remotes/origin/<branch>` does (or holds patch-equivalently) is the
-    // cycle's OWN pushed commit, not un-landed work — the shape that parked
-    // 6 of 26 factory runs. Only a commit NEITHER ref accounts for parks.
-    const unlandedPlusShas = plusShas.filter((sha) => !remote?.landed.has(sha));
+    // `refs/remotes/origin/<branch>` does is the cycle's OWN pushed commit,
+    // not un-landed work — the shape that parked 6 of 26 factory runs. The
+    // accept requires the SAME proof the tip arm requires: `git cherry` all
+    // `-` against the remote AND every commit in the remote..tree range
+    // non-empty (`remote.allLanded`, computed by `readAgainstRemote`). A `+`
+    // the remote happens to name by identity is NOT evidence — `git cherry`
+    // marks it `+` precisely because it found no patch-equivalent — so such a
+    // tree parks.
     if (remote?.allLanded === true) {
       return moveToTip(
         execFn,
@@ -378,24 +415,9 @@ export async function repositionLensFixWorktree(
         issues,
         issueTitle,
         treeSha,
-        tipSha,
-        `the local branch ref lags origin, which already holds every worktree commit: ${minusShas.join(", ") || "(none beyond the tip)"}`,
-      );
-    }
-    if (remote !== undefined && plusShas.length > 0 && unlandedPlusShas.length === 0) {
-      // Every `+` against the tip is patch-equivalent to a commit the remote
-      // holds — the field shape. Not VERIFIED as landed (the range's emptiness
-      // read is what brought us here), but nothing is missing from the branch
-      // either, so this is not a reposition park.
-      return moveToTip(
-        execFn,
-        tree,
-        branchName,
-        issues,
-        issueTitle,
-        treeSha,
-        tipSha,
-        `every commit the local ref lacked is on the remote tip: ${plusShas.join(", ")}`,
+        remoteTipSha as string,
+        "the local branch ref lags origin, which holds every worktree commit by patch-equivalence",
+        true,
       );
     }
     const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
@@ -406,9 +428,7 @@ export async function repositionLensFixWorktree(
     const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
     const backupRefName = backupRef.ref;
     const aheadShas =
-      unlandedPlusShas.length > 0
-        ? unlandedPlusShas
-        : await enumerateUnlanded(execFn, tree, tipSha);
+      plusShas.length > 0 ? plusShas : await enumerateUnlanded(execFn, tree, tipSha);
     const kind: "unlanded" | "diverged" = tipIsAncestorOfTree.isAncestor ? "unlanded" : "diverged";
     const detail =
       kind === "unlanded"

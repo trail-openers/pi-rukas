@@ -1,9 +1,10 @@
-import { ownerIsGone, selfIdentity } from "./process-liveness.ts";
 /**
  * Why a queued group parked, read from its state file. Moved out of
  * work-queue.ts (#1093) to make room for the once-per-invocation start-ref
  * capture; the logic is unchanged.
  */
+import { capStep as capToStep } from "./headless/caps.ts";
+import { ownerIsGone, selfIdentity } from "./process-liveness.ts";
 import { isHostExhaustionFailure } from "./work-driver-exec-error.ts";
 import { deferredLeftoverPath, deferredLeftoverStep } from "./work-queue-parks.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -113,14 +114,13 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
         ? cap.cap.slice("step-failed:".length)
         : cap.cap === "deferred-creation:develop"
           ? deferredLeftoverStep()
-          : // #1882 — the reposition gate runs before the lens-fix dispatch,
-            // which is the only place the step appends its `step-started`, so
-            // `lastCompletedStep`/`currentStep` name `lens-review` (or
-            // `handoff`, which the park itself stamps). The gate is part of
-            // lens-fix; map it the same way `headless/caps.ts::capStep` does.
-            cap.cap === "lens-fix-reposition"
-            ? "lens-fix"
-            : undefined
+          : // #1882 — a cap that names its step without a colon (`lens-fix-reposition`
+            // runs before the lens-fix dispatch, the only place that step appends
+            // its `step-started`, so `lastCompletedStep`/`currentStep` name
+            // `lens-review` or the `handoff` the park itself stamps). The mapping
+            // lives in `headless/caps.ts::capStep` — ONE table for cap→step — so
+            // this reader cannot drift from it.
+            capToStep(cap.cap)
       : undefined;
   const step = capStep ?? state.pipelineState.lastCompletedStep ?? state.pipelineState.currentStep;
   if (cap?.kind === "cap-hit") {
