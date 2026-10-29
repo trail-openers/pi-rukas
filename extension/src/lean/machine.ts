@@ -36,26 +36,24 @@ export const OUTCOME_KINDS = {
   ci: ["green", "red"],
   land: ["merged", "refused"],
   handback: ["done"],
-  // The reporting step. It is listed here because the engine ends a run for
-  // "no handler" on any state missing from this registry, and `not-ready` does
-  // have a handler (it posts the comment naming the failed rules). What its
-  // handler may return is narrower than the list suggests: only `done`, which
-  // confirms the run ended at the verdict `ready + fail` already reached. A
-  // posting failure is NOT a kind in this table — see `REPORT_FAILED` in
-  // `engine.ts`, which is an outcome the engine intercepts rather than routes,
-  // because there is no arrow out of a terminal state that could carry it.
-  "not-ready": ["done"],
+  // The report of a refusal. It is a step, not a verdict: `ready + fail` and
+  // `specify + no-red-test` are what decide the run is not buildable, and this
+  // state only says so on the issue. Both kinds land on the terminal
+  // `not-ready` (exit 11); the difference is not in the table but in what the
+  // step log records — `done` means the comment went out, `report-failed` says
+  // the forge never took it. It is listed here rather than intercepted by the
+  // engine because a terminal state cannot carry an outcome: only a
+  // non-terminal one has an arrow to put it on.
+  decline: ["done", "report-failed"],
 } as const satisfies Partial<Record<LeanState, readonly string[]>>;
 
 export type OutcomeKind<S extends keyof typeof OUTCOME_KINDS> = (typeof OUTCOME_KINDS)[S][number];
 
-/** Non-terminal states: the ones a handler is written for. */
 /**
- * The states a run can be driven through: the ones whose outcome the table
- * routes forward, plus `not-ready`, which has a handler (it posts the comment
- * naming the rules that failed) even though its own outcome no longer routes
- * anywhere. A missing entry here ends the run for "no handler", so the
- * reporting step must be listed.
+ * The states a run can be driven through: exactly the keys of the registry
+ * above, which are exactly the states with a handler. A terminal state —
+ * `landed`, `handed-back`, `not-ready` — is absent from both, so the engine
+ * ends a run for "no handler" the moment it arrives at one.
  */
 export const HANDLER_STATES = Object.keys(OUTCOME_KINDS) as (keyof typeof OUTCOME_KINDS)[];
 
@@ -76,6 +74,9 @@ export function exitCodeFor(state: LeanState): number {
 /** How many build rounds a run gets before it ships a draft instead. */
 export const MAX_BUILD_ATTEMPTS = 2;
 
+/** The `decline` kind that says the comment did not reach the forge. */
+export const REPORT_FAILED_KIND = "report-failed";
+
 /**
  * Is this pair in the table? `next()` throws on a pair it does not have, so
  * callers that must not throw (the engine, the table test) ask first.
@@ -94,7 +95,9 @@ export function outcomeKindsFor(state: LeanState): readonly string[] {
  * The table. One branch per state; one case per legal outcome kind.
  *
  * `run` is read, never mutated — the caller owns the object and applies the
- * returned counters alongside the appended step.
+ * returned counters alongside the appended step. A terminal state has no case
+ * at all: its handler set is empty, so no outcome ever reaches the table with
+ * its name on it, and `next()` refusing one is a bug in a caller.
  */
 export function next(run: LeanRun, outcome: Outcome): Transition {
   const c = run.counters;
@@ -104,7 +107,8 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
         case "ok":
           return to(run, "specify");
         case "fail":
-          return to(run, "not-ready");
+          // The verdict is `not-ready`; `decline` is how the run says it.
+          return to(run, "decline");
       }
       break;
 
@@ -114,8 +118,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           return to(run, "build");
         case "no-red-test":
           // A spec with no falsifiable test is not buildable from: it reads
-          // fine and verifies nothing. Same exit as an unreadable spec.
-          return to(run, "not-ready");
+          // fine and verifies nothing. Same refusal and same exit as an
+          // unreadable spec.
+          return to(run, "decline");
       }
       break;
 
@@ -246,21 +251,19 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
       if (outcome.kind === "done") return to(run, "handed-back");
       break;
 
-    case "not-ready":
-      // The reporting step confirms the verdict `ready + fail` already put the
-      // run in; it does not choose it. There is deliberately no second kind
-      // here: a posting failure is not a routing question, and giving the
-      // vocabulary one would invite a future reader to send a spec refusal
-      // (exit 11) to `handback` (exit 10), which reports a refusal to build as
-      // though the harness itself were broken. See `REPORT_FAILED`.
-      if (outcome.kind === "done") return to(run, "not-ready");
+    case "decline":
+      // Both kinds land on the same terminal verdict. The reporting step never
+      // chooses the exit code, so neither may route to `handback`: that would
+      // relabel a refusal to build (11) as a driver fault (10).
+      if (outcome.kind === "done" || outcome.kind === REPORT_FAILED_KIND)
+        return to(run, "not-ready");
       break;
 
     // Terminal: the run has ended, so nothing routes on its outcome. `not-ready`
-    // is NOT in this group — it is terminal as an ANSWER but still runs its
-    // reporting handler, which is the case immediately above.
+    // is one of these and nothing more — the step that reports it is `decline`.
     case "landed":
     case "handed-back":
+    case "not-ready":
       break;
   }
   throw new UnlistedOutcome(run.state, outcome.kind);

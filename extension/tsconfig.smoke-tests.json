@@ -112,6 +112,8 @@
     "smoke-tests/lib/lean-engine-fixtures.ts",
     "smoke-tests/test-lean-machine.ts",
     "smoke-tests/test-lean-machine-reachability.ts",
+    "smoke-tests/test-lean-machine-refusal.ts",
+    "smoke-tests/lib/lean-machine-edges.ts",
     "smoke-tests/test-lean-engine.ts",
     "smoke-tests/test-lean-engine-crash.ts"
   ]

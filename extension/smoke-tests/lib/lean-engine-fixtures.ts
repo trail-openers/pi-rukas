@@ -63,6 +63,7 @@ export function scripted(plan: Partial<Record<LeanState, Outcome[]>>): {
     "ci",
     "land",
     "handback",
+    "decline",
   ];
   for (const state of states) {
     handlers[state] = async () => {
@@ -139,4 +140,5 @@ export const HAPPY: Partial<Record<LeanState, Outcome[]>> = {
   ci: [{ kind: "green" }],
   land: [{ kind: "merged" }],
   handback: [{ kind: "done" }],
+  decline: [{ kind: "done" }],
 };

@@ -17,6 +17,11 @@
  */
 
 import {
+  DECLINE_SOURCES,
+  NON_TERMINAL_STATES,
+  counterVariants,
+} from "./lib/lean-machine-edges.ts";
+import {
   EXIT_CODES,
   MAX_BUILD_ATTEMPTS,
   OUTCOME_KINDS,
@@ -60,11 +65,11 @@ function run(state: LeanState, over: Partial<LeanRun> = {}): LeanRun {
 }
 
 /**
- * The states whose outcome the table routes FORWARD. `not-ready` declares its
- * own kinds (it has a handler that posts a comment) but is not one of these:
- * it is the run's verdict, and its outcome decides only whether the step
- * memoizes, never where the run goes. Enumerating it with the rest would ask
- * a terminal state for an exit code it legitimately has.
+ * The states the table routes FORWARD. After the `decline` split this is
+ * exactly the registry's keys — no terminal state declares outcome kinds, so
+ * the filter is now a tautology. It is deliberately kept: a future edit that
+ * gave a terminal state a kind would fall out of the enumeration below and ship
+ * a handler with no test, which is the failure this filter exists to catch.
  */
 const HANDLER_STATES = (Object.keys(OUTCOME_KINDS) as LeanState[]).filter(
   (state) => !isTerminal(state),
@@ -103,46 +108,48 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 17,
+  pairs === 19,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
-// ── `not-ready` reports, it does not route ──────────────────────────
+// ── `decline` is the report; `not-ready` is only its verdict ───────────────
 
-// The two kinds the reporting step may return, and what each one means. Both
-// land the run at the same terminal state with the same exit code; the
-// difference is not in the table but in the step log, and the engine test
-// (`test-lean-engine-not-ready-retry.ts`) is what pins it. Asserting it here
-// too, because a table edit that sent `fail` to `handback` would silently turn
-// a refusal-to-build (11) into a driver fault (10).
-{
-  // Both reporting kinds are legal pairs, and neither may move the run: the
-  // engine's arrival check reads the state they return, and a `fail` routed to
-  // `handback` would silently relabel a refusal-to-build (11) as a driver
-  // fault (10).
-  for (const kind of ["done", "fail"] as const) {
-    let moved: { state: LeanState } | undefined;
-    let threw = false;
-    try {
-      moved = next(run("not-ready"), { kind });
-    } catch {
-      threw = true;
-    }
-    assert(!threw, `not-ready + ${kind} is a legal pair`);
-    assert(
-      moved?.state === "not-ready" && exitCodeFor(moved.state) === 11,
-      `not-ready + ${kind} ends at the not-ready verdict (exit 11), never a handback`,
-    );
-  }
-  let unlisted: unknown;
+// The two kinds the reporting step may return. Both land on the same terminal
+// state with the same exit code, because the report never chooses the verdict:
+// `ready + fail` and `specify + no-red-test` did that two steps earlier. The
+// difference lives in the step log, and the engine test pins which reason each
+// one leaves behind. Asserted here too, because a table edit that sent
+// `report-failed` to `handback` would silently relabel a refusal to build (11)
+// as a driver fault (10).
+for (const kind of ["done", "report-failed"] as const) {
+  const moved = next(run("decline"), { kind });
+  assert(
+    moved.state === "not-ready" && exitCodeFor(moved.state) === 11,
+    `decline + ${kind} ends at the not-ready verdict (exit 11), never a handback`,
+  );
+}
+for (const kind of ["ok", "green", "red"] as const) {
+  let err: unknown;
   try {
-    next(run("not-ready"), { kind: "green" });
+    next(run("decline"), { kind });
   } catch (e) {
-    unlisted = e;
+    err = e;
   }
   assert(
-    unlisted instanceof UnlistedOutcome,
-    "the reporting step accepts only the two kinds it declares",
+    err instanceof UnlistedOutcome,
+    `decline + ${kind} is refused — the report declares only its two kinds`,
+  );
+}
+for (const kind of ["done", "report-failed", "ok"] as const) {
+  let err: unknown;
+  try {
+    next(run("not-ready"), { kind });
+  } catch (e) {
+    err = e;
+  }
+  assert(
+    err instanceof UnlistedOutcome,
+    `not-ready + ${kind} throws: it is an ordinary terminal state with no handler and nothing that routes`,
   );
 }
 
@@ -209,6 +216,7 @@ const refused: Array<[LeanState, string]> = [
   ["ci", "done"],
   ["land", "ok"],
   ["handback", "ok"],
+  ["decline", "green"],
   ["landed", "merged"],
   ["not-ready", "ok"],
   ["handed-back", "done"],
@@ -230,11 +238,11 @@ for (const [state, kind] of refused) {
 // ── the named transitions, one assertion per edge in the spec ──────────────
 
 assert(next(run("ready"), { kind: "ok" }).state === "specify", "ready ok → specify");
-assert(next(run("ready"), { kind: "fail" }).state === "not-ready", "ready fail → not-ready");
+assert(next(run("ready"), { kind: "fail" }).state === "decline", "ready fail → decline");
 assert(next(run("specify"), { kind: "ok" }).state === "build", "specify ok → build");
 assert(
-  next(run("specify"), { kind: "no-red-test" }).state === "not-ready",
-  "specify no-red-test → not-ready",
+  next(run("specify"), { kind: "no-red-test" }).state === "decline",
+  "specify no-red-test → decline",
 );
 assert(
   next(run("build"), { kind: "ok" }).state === "challenge",
@@ -450,6 +458,14 @@ const ciFixDraft = next(run("ci", { counters: { ...INITIAL_COUNTERS, draft: true
 assert(ciFixDraft.counters.draft === true, "a draft stays a draft through the CI fix round");
 const ciFixPlain = next(run("ci"), { kind: "red" });
 assert(ciFixPlain.counters.draft === false, "a non-draft is not turned into one by a CI fix round");
+
+// ── who may reach the refusal, and who may not ────────────────────
+//
+// That claim is a graph property, so it lives in its own walker:
+// `test-lean-machine-refusal.ts`. This file pins single transitions; that one
+// enumerates every declared pair across every counter combination and asserts
+// the source set of `decline` and the absence of any direct edge into
+// `not-ready`. Split for the 500-line gate (AGENTS.md §12).
 
 // `next` never mutates the run it was given.
 const pristine = run("build", { counters: { ...INITIAL_COUNTERS } });

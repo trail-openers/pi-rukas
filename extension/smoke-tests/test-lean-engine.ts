@@ -3,9 +3,9 @@
  * lean/engine — the runner, against a real state file.
  *
  * Split from `test-lean-engine-crash.ts` for the 500-line gate (AGENTS.md
- * §12). This half drives a run END TO END: the happy path, the not-ready
- * path, the seed, and the two ways a run is refused rather than started (no
- * handler, a corrupt state file). The crash/resume half — the invariant the
+ * §12). This half drives a run END TO END: the happy path, the refusal path
+ * (posted and unposted), the seed, and the two ways a run is refused rather
+ * than started (no handler, a corrupt state file). The crash/resume half — the invariant the
  * step log exists for — is its own file.
  *
  * Every case drives `runLean` through a temp directory and asserts on the
@@ -75,7 +75,7 @@ const { assert, failures } = makeAssert();
 {
   const { dir, cleanup } = tempDir();
   try {
-    const { handlers } = scripted({
+    const { handlers, calls } = scripted({
       ...HAPPY,
       ready: [{ kind: "fail", failedRules: ["no pi-spec v1 block", "size L — split it"] }],
     });
@@ -87,8 +87,61 @@ const { assert, failures } = makeAssert();
       result.run.result?.reason === "no pi-spec v1 block; size L — split it",
       "the failed rules are the reason, joined for the summary line",
     );
+    assert(calls.decline === 1, "the refusal was reported once");
+    assert(
+      loadRun(dir, 7)?.steps.some((s) => s.state === "decline" && s.outcome?.kind === "done") ===
+        true,
+      "the reporting step carries the outcome that says the comment went out",
+    );
     const reloaded = loadRun(dir, 7);
     assert(reloaded?.state === "not-ready", "the terminal state survives a reload");
+
+    // Resuming a finished refusal does nothing at all: no handler, no second
+    // comment. This is the property the terminal/ handler split bought — the
+    // engine needs no "not-ready is special" rule to get it.
+    const again = await runLean({ repoRoot: dir, issue: 7, handlers, now: clock.now });
+    assert(again.state === "not-ready" && again.code === 11, "a re-drive reads the verdict back");
+    assert(calls.decline === 1, "and a re-drive posts nothing new");
+    assert(calls.ready === 1, "nor does it re-judge a verdict it already earned");
+  } finally {
+    cleanup();
+  }
+}
+
+// ── a comment that never posted is still a refusal, and is not retried ────
+
+{
+  const { dir, cleanup } = tempDir();
+  try {
+    const { handlers, calls } = scripted({
+      ...HAPPY,
+      ready: [{ kind: "fail", failedRules: ["no pi-spec v1 block"] }],
+      decline: [{ kind: "report-failed", reason: "comment not posted: connection reset" }],
+    });
+    const clock = ticking();
+    const result = await runLean({ repoRoot: dir, issue: 8, handlers, now: clock.now });
+    assert(calls.decline === 1, "the failed post is attempted once and not retried");
+    assert(result.state === "not-ready", "a failed post does not change the verdict");
+    assert(
+      result.code === 11,
+      `nor the exit code — the run WAS refused, comment or not (got ${result.code})`,
+    );
+    assert(
+      (result.run.result?.reason ?? "").includes("comment not posted: connection reset"),
+      `the reason says the comment never posted (got: ${result.run.result?.reason})`,
+    );
+    const stored = loadRun(dir, 8);
+    assert(
+      stored?.steps.some((s) => s.state === "decline" && s.outcome?.kind === "report-failed") ===
+        true,
+      "the step log records the attempt it made rather than a post that never happened",
+    );
+
+    // And the record is durable: a later drive sees a finished run and asks
+    // the forge nothing, because a failed post is history, not a debt.
+    const again = await runLean({ repoRoot: dir, issue: 8, handlers, now: clock.now });
+    assert(again.code === 11, "resuming a finished not-ready run is a free read");
+    assert(calls.decline === 1, "and the failed post is not retried on resume");
   } finally {
     cleanup();
   }

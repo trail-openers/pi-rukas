@@ -1,7 +1,7 @@
 /**
  * lean/command — `/work-lean <issue>`, the phase-1 entry point.
  *
- * Phase 1 is honest about what it cannot do: only `ready` and `not-ready` have
+ * Phase 1 is honest about what it cannot do: only `ready` and `decline` have
  * real handlers, and every other state hands back with "work-lean stage
  * <state> is not built yet". That is the point of the shape. The machine, the
  * step log and the config are real now, and a later phase plugs a handler in
@@ -12,9 +12,10 @@
  *   1. fetch the issue body (the forge adapter, falling back to raw `gh`);
  *   2. `parsePiSpec`, then `readiness` on the result;
  *   3. resolve the mainline sha and load `.pi/work.json` AT that sha.
- * A failure at any of the three is a `fail` outcome, and `not-ready` posts one
- * issue comment naming the rules that failed. One comment per run, because the
- * step log guarantees the step that posted it never runs twice.
+ * A failure at any of the three is a `fail` outcome, and the `decline` step
+ * posts one issue comment naming the rules that failed before the run ends
+ * `not-ready`. One comment per run, because the step log guarantees the step
+ * that posted it never runs twice.
  */
 
 import fs from "node:fs";
@@ -23,9 +24,9 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
-import { type LeanHandlers, REPORT_FAILED, type RunLeanResult, runLean } from "./engine.ts";
+import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { fetchIssueBody, mainlineSha, mainlineShaFailure, postNotReady } from "./io.ts";
-import { HANDLER_STATES } from "./machine.ts";
+import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -105,7 +106,7 @@ export async function readyOutcome(
 /**
  * The phase-1 handler set.
  *
- * `ready` is real; `not-ready` posts the comment once; everything else is a
+ * `ready` is real; `decline` posts the comment once; everything else is a
  * placeholder that ends the run honestly. A stub that pretended to build would
  * be worse than a run that says which stage is missing.
  */
@@ -126,18 +127,19 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
     judged = facts;
     return kind === "ok" ? { kind: "ok", ...facts } : { kind: "fail", ...facts };
   };
-  handlers["not-ready"] = async () => {
+  handlers.decline = async () => {
     try {
       await postNotReady(repoRoot, issue, judged.failedRules);
       return { kind: "done" };
     } catch (err) {
       // NOT `done`: the step log memoizes a completed step forever, so a
-      // swallowed throw here used to mean "the comment was posted" when it
-      // meant "the network dropped". `fail` is the vocabulary that says the
-      // run's verdict stands (still 11) and the step keeps no outcome, so the
-      // next `/work-lean` on this issue re-posts it and exit 10 is free to
-      // mean a run that could not report itself at all.
-      return { kind: REPORT_FAILED, reason: `comment not posted: ${(err as Error).message}` };
+      // swallowed throw here would read as "the comment was posted" when it
+      // meant "the network dropped". `report-failed` is the kind that records
+      // the attempt honestly: the run still ends `not-ready` at exit 11 — the
+      // spec refused it whether or not the forge took the comment — and the
+      // reason on the record says the comment never went out. It is NOT
+      // retried on resume: the step log and the reason are the record.
+      return { kind: REPORT_FAILED_KIND, reason: `comment not posted: ${(err as Error).message}` };
     }
   };
   return handlers;
