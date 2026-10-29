@@ -89,8 +89,11 @@ export async function runWorkLeanVerb(
   }
   ctx.host.sendUserMessage(`work-lean: #${issue} starting`, { deliverAs: "steer" });
   // #1883 — a headless lean run's children need the /work-cycle trust stamp,
-  // or the headless permission path hard-denies their tool calls. Marked here,
-  // read by every lean dispatch site (lean/child-opts.ts).
+  // or the headless permission path hard-denies their tool calls. Marked once
+  // for the whole process here, because this module is the only entry point
+  // that runs the engine without a UI; the interactive `/work-lean` command
+  // never calls it, so those children stay unstamped as they were. Read by the
+  // three dispatch sites (lean/child-opts.ts).
   markLeanHeadless();
   let outcome: LeanRunOutcome;
   try {

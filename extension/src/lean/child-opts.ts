@@ -11,8 +11,11 @@
  * The answer is the same stamp the headless /work driver's children carry
  * (#1666), decided by the same function — `cycleChildOpts`, which reads a
  * `headless` flag and nothing else. `leanChildOpts` is the lean run's call site
- * of it: the process is headless exactly when the headless CLI is what started
- * it, so the verb marks the process once and every dispatch reads that.
+ * of it. The headless CLI marks this process before the engine runs and nothing
+ * else does: an interactive `/work-lean` in a Pi session never calls
+ * `markLeanHeadless`, so its children stay unstamped exactly as they were
+ * before, and an inherited marker in a caller's environment cannot make an
+ * interactive run claim a trust it did not get.
  *
  * `PI_ENSEMBLE_STRICT_PERMISSIONS=1` is honoured by the same predicate the
  * driver honours it through: `workCycleTrustEnabled()` in
@@ -23,9 +26,9 @@
 import { cycleChildOpts } from "../work-cycle-trust.ts";
 
 /**
- * Set once, by the headless `work-lean` verb, before the engine runs. A
- * `/work-lean` command in an interactive Pi session never sets it, so those
- * children stay exactly as they were.
+ * Set once, by the headless `work-lean` verb, before the engine runs. Only the
+ * verb calls it — not an env var, so a caller cannot make an interactive
+ * `/work-lean` claim the trust stamp a headless run gets.
  */
 let headlessProcess = false;
 
