@@ -15,9 +15,14 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RESULT_SCHEMA_VERSION } from "../src/headless/result.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
-import { SUPERVISED_ENV, parseResultDocument, superviseWork } from "../src/headless/supervise.ts";
+import { RESULT_SCHEMA_VERSION } from "../src/headless/result.ts";
+import {
+  SUPERVISED_ENV,
+  parseResultDocument,
+  proseLinesBefore,
+  superviseWork,
+} from "../src/headless/supervise.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 import { writeState } from "../src/workflow-state.ts";
 
@@ -32,6 +37,9 @@ function assert(cond: boolean, msg: string, actual?: unknown) {
 
 const repoRoot = mkdtempSync(path.join(os.tmpdir(), "headless-supervise-"));
 const bun = process.execPath;
+/** The result-document lines on a stream — the host's JSON contract. */
+const docs = (out: string): string[] =>
+  out.split("\n").filter((l) => l.trim().startsWith("{") && l.includes('"schemaVersion"'));
 try {
   await writeState(repoRoot, initialState(345));
 
@@ -206,8 +214,52 @@ try {
     const lines = out.trim().split("\n");
     assert(
       code === 10 && lines.length === 1 && lines[0] === JSON.stringify(JSON.parse(doc)),
-      "stray bytes ahead of the document are not forwarded — stdout carries one document",
+      "in --json mode stray bytes ahead of the document are not forwarded — stdout carries one document",
       { code, out },
+    );
+  }
+
+  // ── #1866 follow-up: the same rule in text mode. Prose BEFORE the document is
+  // the documented text-mode output (the summary and error lines), so it is
+  // forwarded; the stray line the child printed in `--json` mode is not, and
+  // neither is prose printed after the document. `proseLinesBefore` is the whole
+  // of that distinction, so it is asserted directly as well as through
+  // `superviseWork` above.
+  {
+    let out = "";
+    const doc = JSON.stringify({ schemaVersion: RESULT_SCHEMA_VERSION, exitCode: 10, issues: [] });
+    const code = await superviseWork({
+      repoRoot,
+      issues: [345],
+      json: true,
+      command: [
+        bun,
+        "-e",
+        "process.stdout.write('pi-rukas-headless: #345 merged (exit 10)' + String.fromCharCode(10) + process.argv[process.argv.length - 1] + String.fromCharCode(10)); process.exit(10)",
+        doc,
+      ],
+      write: (s) => {
+        out += s;
+      },
+    });
+    assert(
+      code === 10 && out === `${doc}\n`,
+      "--json mode forwards the document alone: a text-mode-shaped child does not smuggle prose onto a JSON host's stdout",
+      { code, out },
+    );
+    const head = proseLinesBefore(`prose\n{ not json\n${doc}\nlate prose\n`, doc);
+    assert(
+      head === "prose\n",
+      "only the lines ahead of the document are prose, and a stray brace-line among them is not",
+      head,
+    );
+    assert(
+      proseLinesBefore(`${doc}\nlate prose\n`, doc) === "",
+      "nothing after the document is forwarded",
+    );
+    assert(
+      proseLinesBefore(`{ not json\n${doc}\n`, doc) === "",
+      "a stray brace-line before the document is not prose either",
     );
   }
 
@@ -215,9 +267,7 @@ try {
   // result, so the child cannot make the supervisor report a code the CLI never
   // publishes (Infinity, a float, a negative, or an unknown number).
   {
-    const stray = [7, -1, 1.5, 999, "0"].map((v) =>
-      JSON.stringify(v),
-    );
+    const stray = [7, -1, 1.5, 999, "0"].map((v) => JSON.stringify(v));
     for (const raw of stray) {
       let out = "";
       const code = await superviseWork({
@@ -308,8 +358,59 @@ try {
       },
     });
     assert(
-      out.includes("#345 running (exit 30)") && out.includes("exited 3 without a result"),
-      "the plain summary names each issue and how the runner ended",
+      out.startsWith("pi-rukas-headless: #345 running (exit 30)") &&
+        out.includes("exited 3 without a result") &&
+        docs(out).length === 0,
+      "the plain summary names each issue and how the runner ended, with no document on a crash",
+      out,
+    );
+  }
+
+  // ── #1866 follow-up: text mode keeps the child's prose, and still exactly one
+  // document. `parseResultDocument` is what decides "the child answered"; the
+  // forwarder used to emit only the document LINE, so a text-mode host — which
+  // is promised the `pi-rukas-headless: #N status (exit N)` summary — read a
+  // single JSON blob instead. The non-document lines ahead of the document now
+  // go out first, in order; lines after it still do not.
+  {
+    let out = "";
+    const doc = JSON.stringify({ schemaVersion: RESULT_SCHEMA_VERSION, exitCode: 10, issues: [] });
+    const script = [
+      "process.stdout.write('pi-rukas-headless: #345 merged (exit 10)' + String.fromCharCode(10));",
+      "process.stdout.write('error: cap-hit — stopped at a cap' + String.fromCharCode(10));",
+      "process.stdout.write(process.argv[process.argv.length - 1] + String.fromCharCode(10));",
+      "process.stdout.write('stray bytes after the document' + String.fromCharCode(10));",
+      "process.exit(10);",
+    ].join("");
+    const code = await superviseWork({
+      repoRoot,
+      issues: [345],
+      json: false,
+      command: [bun, "-e", script, doc],
+      write: (s) => {
+        out += s;
+      },
+    });
+    const lines = out.split("\n").filter((l) => l.trim() !== "");
+    assert(
+      code === 10 && lines.length === 3 && lines[0] === "pi-rukas-headless: #345 merged (exit 10)",
+      "text mode forwards the summary and error line, then the document",
+      { code, out },
+    );
+    assert(
+      lines[1] === "error: cap-hit — stopped at a cap",
+      "the error line keeps its place, in the child's own order",
+      out,
+    );
+    assert(lines[2] === doc, "the document LINE is the last thing on the stream, verbatim", out);
+    assert(
+      !out.includes("stray bytes after the document"),
+      "bytes the child printed AFTER its document are still not forwarded",
+      out,
+    );
+    assert(
+      out.split("\n").filter((l) => l.trim().startsWith("{")).length === 1,
+      "exactly one document line on a text-mode stdout",
       out,
     );
   }

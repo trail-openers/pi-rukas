@@ -42,8 +42,16 @@
  * passes through, because `withResultGuarantee` prints its document and then
  * RETURNS an exit code — that child exits normally.
  *
- * Only the document LINE is forwarded, never the whole buffer, so stdout carries
- * exactly one JSON document even when the child printed stray bytes first.
+ * Only ONE JSON document ever reaches the host, and it is the child's. In
+ * `--json` mode the child prints that line and nothing else, so the forwarder
+ * emits the document line alone and stray bytes printed before it stay out.
+ * In text mode the child ALSO prints the human summary (`pi-rukas-headless: #N
+ * status (exit N)`) and an optional `error:` line ahead of it (#1866), and those
+ * lines are the documented text-mode output — a forwarder that kept only the
+ * document turned every text-mode host into a JSON host. So text mode forwards
+ * the child's non-document lines first, then the document line. A stray line is
+ * still not a summary: only the head of the stream up to the document counts
+ * (see `proseLinesBefore`), so bytes a child vomited after its result stay out.
  *
  * SIGTERM / SIGINT / SIGHUP are forwarded to the child, so the interrupt
  * contract (run.ts) is unchanged. Setting `PI_ENSEMBLE_HEADLESS_SUPERVISED=1`
@@ -134,6 +142,26 @@ function isPublishedExitCode(code: unknown): code is number {
   return Object.values(EXIT).includes(code as (typeof EXIT)[keyof typeof EXIT]);
 }
 
+/**
+ * The child's prose ahead of its result document: the summary and error lines a
+ * text-mode host reads (`formatResultDocument` emits them before the machine
+ * line). Everything after the document is not forwarded — a child that printed
+ * garbage once its result was out must not put that garbage on the host's
+ * stream, which is the stray-bytes rule the document-only forwarder exists for.
+ * Returns `""` for a stream with no prose (the `--json` shape), so the caller's
+ * output is byte-identical to the document-only forward in that case.
+ */
+export function proseLinesBefore(out: string, document: string): string {
+  const lines = out.split("\n");
+  const at = lines.findIndex((l) => l.trim() === document);
+  // `head.length`, not the filtered lines': a head of only brace-lines returns
+  // "" as well as an empty head does, and a newline after nothing is a blank
+  // line on the host's stream.
+  const head = at === -1 ? lines : lines.slice(0, at);
+  const prose = head.filter((l) => l.trim() !== "" && !l.trim().startsWith("{")).join("\n");
+  return prose === "" ? "" : `${prose}\n`;
+}
+
 /** Each issue as its state file shows it; a non-terminal state exits 30. */
 async function projectFromState(repoRoot: string, issues: number[]): Promise<IssueResult[]> {
   const out: IssueResult[] = [];
@@ -195,7 +223,11 @@ export async function superviseWork(opts: SuperviseOptions): Promise<number> {
     // document, whichever arm produced it), and in a process whose latch had
     // already been armed it silently DROPPED the child's document: the host read
     // nothing while the process exited with the code of a document nobody saw.
-    write(`${JSON.stringify(answered)}\n`);
+    const document = JSON.stringify(answered);
+    // Text mode: the child's human lines go out before its document, because
+    // they are the output the text-mode host was promised. JSON mode prints no
+    // prose, so `proseLinesBefore` returns "" and this is the document alone.
+    write(opts.json ? `${document}\n` : `${proseLinesBefore(out, document)}${document}\n`);
     return answered.exitCode;
   }
   const how = exit.error

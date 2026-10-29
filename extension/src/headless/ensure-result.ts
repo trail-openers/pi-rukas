@@ -117,8 +117,9 @@ export function formatResultDocument(run: RunOutcome, json: boolean): string {
   // `crash`/30 projected over its own results — the sibling of Fix A, and the
   // reason text mode reported `crash` long before e8852593. The line is emitted
   // LAST so the human-facing summary stays the first thing on the stream; the
-  // supervisor forwards the document line and drops the prose around it, and the
-  // one-document latch still admits exactly one call per process. The document
+  // supervisor forwards these prose lines and then the document (text mode is
+  // promised the summary — #1866 follow-up), and the one-document latch still
+  // admits exactly one call per process. The document
   // is built by the same `resultDocument` the `--json` branch uses, so the two
   // modes cannot drift in schema version or key order (#1863 round 1).
   const doc = resultDocument(run, {

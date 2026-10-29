@@ -3192,7 +3192,10 @@ decides "did my child answer" by looking for a parseable result document, not fo
 non-empty stdout. A text-mode child therefore never answered and got the supervisor's
 `crash`/30 written over results it had already produced. Fixed by having the text-mode
 projection carry the same result document the `--json` mode writes, after the summary and
-error lines; the supervisor forwards the document and the human lines stay on the stream.
+error lines. The supervisor reads that document to decide the child answered, and forwards
+to the host the child's non-document lines first and the document line last — so a text-mode
+host still sees `pi-rukas-headless: #1863 merged (exit 10)` ahead of the machine line, while
+`--json` output stays the document alone and stdout still carries exactly one document.
 
 **What it is not:** a run whose child died by a signal or failed to start is still a
 `crash` with its signal, whatever it printed — that contract is unchanged (see the

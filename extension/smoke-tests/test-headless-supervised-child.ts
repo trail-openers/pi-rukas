@@ -176,16 +176,32 @@ try {
     });
   }
 
-  // ── 4. TEXT MODE (no --json): the supervisor must accept the child's output.
+  // ── 4. TEXT MODE (no --json): the supervisor must accept the child's output,
+  // and must give the text-mode host the human lines with it.
   // Before Fix B the child printed a summary line and no document, so
   // `parseResultDocument` saw nothing and the supervisor wrote `crash`/30 over
-  // results the runner had already produced.
+  // results the runner had already produced. The fix that followed forwarded the
+  // document LINE only, which made every text-mode host read a JSON blob and
+  // lose the `pi-rukas-headless: #N status (exit N)` summary the docs promise:
+  // the supervisor now forwards the child's non-document lines first, then the
+  // one document line.
   {
     const out = await run(["work", "1903"], repo);
     const lines = docs(out.stdout);
     assert(
       lines.length === 1,
       `a text-mode run still carries exactly one result document for its supervisor (got ${lines.length})`,
+      { stdout: out.stdout.slice(0, 200) },
+    );
+    const summary = out.stdout.split("\n").findIndex((l) => l.startsWith("pi-rukas-headless: #"));
+    assert(
+      summary !== -1,
+      "the text-mode host still reads the human summary line, not only a JSON blob",
+      { stdout: out.stdout.slice(0, 200) },
+    );
+    assert(
+      summary !== -1 && summary < out.stdout.split("\n").findIndex((l) => docs(l).length === 1),
+      "the summary line comes BEFORE the document line",
       { stdout: out.stdout.slice(0, 200) },
     );
     if (lines.length === 1) {
@@ -199,10 +215,10 @@ try {
         doc.exitCode === out.code,
         `the text-mode process exits with the code its document declares (doc ${doc.exitCode}, process ${out.code})`,
       );
-      // NOT "the summary line is still there": the supervisor forwards the
-      // document LINE and drops the prose around it (the #1863 stray-bytes rule),
-      // so the host of a supervised text-mode run reads only the document. What
-      // the runner itself must still print is asserted at the child tier, below.
+      // The prose is NOT dropped any more — the assertion above is the host-facing
+      // half of it. What the supervisor must still not forward is anything the
+      // child printed AFTER its document, which is what the stray-bytes rule in
+      // `test-headless-supervise.ts` covers at the unit tier.
       assert(
         doc.exitCode === EXIT.crash || doc.error === undefined,
         `a text-mode run reports either its own outcome or a named reason (error=${JSON.stringify(doc.error)}, exit ${doc.exitCode})`,
