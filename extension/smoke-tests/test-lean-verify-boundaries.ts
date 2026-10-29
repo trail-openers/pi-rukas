@@ -64,7 +64,7 @@ async function headOf(wt: string): Promise<string> {
   const r = await runVerify({
     issue: 214,
     config: { fast: PASS_TIER },
-    brokenRunner: "silent",
+    silentRunner: true,
   });
   assert(
     r.outcome?.kind === "red",
@@ -193,37 +193,6 @@ for (const [label, opts] of [
     `(u) the throw names the detached branch (${label}: ${r.threw?.message ?? `green: ${r.outcome?.reason}`})`,
   );
   assert(r.outcome === undefined, `(u) a detached tree records no green (${label})`);
-}
-
-// ------ (v) a frozen test runner the shell cannot run is infra, not a red
-{
-  // `/nonexistent-runner-xyz {file}` never becomes a process: the shell exits
-  // 127 ("not found") and prints nothing about the file, so `runTestFile`
-  // classifies it `unclear` — the same kind a genuinely failing test arrives in.
-  // The exit status is numeric, so `neverStarted` cannot see it either. Reading
-  // it as a red sends a developer to fix code nothing ever executed.
-  const r = await runVerify({
-    issue: 218,
-    config: { fast: PASS_TIER },
-    brokenRunner: "missing-binary",
-  });
-  assert(
-    r.threw instanceof VerifyInfraError,
-    `(v) a frozen runner that could not run throws VerifyInfraError (got ${r.threw?.name ?? r.outcome?.kind}: ${r.threw?.message ?? r.outcome?.reason})`,
-  );
-  assert(
-    (r.threw?.message ?? "").includes("the frozen test runner could not run"),
-    `(v) the throw says the runner could not run (${r.threw?.message})`,
-  );
-  assert(
-    (r.threw?.message ?? "").includes("tests/AC1-retry.test.sh"),
-    `(v) the throw names the file it never ran (${r.threw?.message})`,
-  );
-  assert(
-    /exit 12[67]/.test(r.threw?.message ?? ""),
-    `(v) the throw carries the shell's exit status (${r.threw?.message})`,
-  );
-  assert(r.outcome === undefined, "(v) an unrunnable runner records no verdict");
 }
 
 // ---- (w) a noisy exit 1 on the branch re-check is infra, not "detached"

@@ -34,12 +34,6 @@ import { type Outcome, type Step, createRun } from "../../src/lean/state.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import type { VerifyDeps } from "../../src/lean/verify.ts";
 import { gitTestEnv } from "./git-test-env.ts";
-import {
-  BROKEN_RUNNER_FILE,
-  BROKEN_RUNNER_SCRIPT,
-  BROKEN_RUNNER_TEMPLATE,
-  type BrokenRunner,
-} from "./lean-verify-runner.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -73,12 +67,21 @@ export function failTier(marker: string): string {
 /** A tier that outlives any bound a test can wait for. */
 export const HANG_TIER = "sleep 60";
 
+/** The committed name of the helper script the silent-runner case writes. */
+const SILENT_RUNNER_FILE = "silent-runner.sh";
 /**
- * The two shapes of "the runner could not judge this file", re-exported from
- * `lean-verify-runner.ts` where they are defined, so a verify case asks for one
- * by name alongside every other fixture knob.
+ * The helper for the one case that needs a runner of its own: a frozen test
+ * whose failure is not attributable to itself.
+ *
+ * The fixture's own `sh {file}` template cannot produce that shape — its test
+ * echoes its own path when it fails — so the case that asks what an
+ * unattributable failure becomes needs a runner that stays quiet and exits
+ * non-zero. The file was proven red-and-named at freeze time, so that is the
+ * same failure continuing: a RED.
  */
-export type { BrokenRunner } from "./lean-verify-runner.ts";
+const SILENT_RUNNER_SCRIPT = "exit 1\n";
+/** The template that case configures; `validateTestRunner` wants `{file}` whole. */
+const SILENT_RUNNER_TEMPLATE = "sh silent-runner.sh {file}";
 
 /**
  * A tier that writes `rel` in the worktree, COMMITTING it when `commit` is set.
@@ -153,12 +156,11 @@ export interface VerifyOpts {
    */
   full?: string;
   /**
-   * Run the frozen tests through a runner that cannot judge them — see
-   * {@link BrokenRunner}: `"silent"` exits non-zero without naming the file, and
-   * `"missing-binary"` exits 127 without running anything. Both arrive as an
-   * `unclear` proof; what differs is what the step is allowed to make of it.
+   * Run the frozen tests through the silent helper runner instead of `sh {file}`:
+   * it exits non-zero without naming the file, so the proof arrives `unclear`.
+   * What the step is allowed to make of an unclear proof is what the case asks.
    */
-  brokenRunner?: BrokenRunner;
+  silentRunner?: boolean;
   /**
    * Reject the post-tier BRANCH read with exit 1 AND a message on stderr. git's
    * own detached answer is exit 1 with NOTHING printed, so a noisy exit 1 is a
@@ -322,14 +324,12 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     "-q",
     "HEAD",
   ];
-  if (opts.brokenRunner !== undefined) {
+  if (opts.silentRunner === true) {
     // Committed before `head` is read: the step refuses a dirty tree before it
     // ever runs a test, so a helper left untracked would trip that first, and the
     // frozen file itself is untouched, so no tamper is mistaken for this.
-    writeFileSync(path.join(wt, BROKEN_RUNNER_FILE), BROKEN_RUNNER_SCRIPT[opts.brokenRunner], {
-      mode: 0o755,
-    });
-    commitHere(wt, `chore: fixture runner that cannot judge (${opts.brokenRunner})`);
+    writeFileSync(path.join(wt, SILENT_RUNNER_FILE), SILENT_RUNNER_SCRIPT, { mode: 0o755 });
+    commitHere(wt, "chore: fixture runner that stays silent");
   }
   // The log's frozen record is the bytes the FREEZE committed. A case that
   // rewrote the file on disk or at HEAD afterwards faces a record that no
@@ -378,8 +378,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     loadConfig: async () => ({
       verify: {
         ...configured,
-        test:
-          opts.brokenRunner === undefined ? "sh {file}" : BROKEN_RUNNER_TEMPLATE[opts.brokenRunner],
+        test: opts.silentRunner === true ? SILENT_RUNNER_TEMPLATE : "sh {file}",
       },
     }),
     readVerifyCmd: async () => undefined,

@@ -49,21 +49,16 @@ export const TIER_TAIL_LINES = 40;
  * without echoing its own path is a `fail` (it was proven red at freeze time,
  * so a later non-zero exit is that failure continuing), while a runner that was
  * killed, timed out or never started is `infra` — that one never ran. The 126
- * and 127 the shell reports for "not executable" and "not found" belong with
- * the latter: the shell answered, but nothing that could judge the code ever
- * existed, so accusing the work of it sends a developer to fix code nobody ran.
+ * and 127 the shell reports for "not executable" and "not found" are NOT a
+ * third shape: a real test can exit 127 after printing its own failure, and an
+ * exit status alone says nothing about whether the code was ever judged, so
+ * routing those two on the number alone hid genuine reds. They are reds like
+ * any other non-zero exit whose output did not name the file.
  */
 export type Executed =
   | { kind: "pass" }
   | { kind: "fail"; reason: string }
   | { kind: "infra"; reason: string };
-
-/**
- * The shell's "I could not run this" exit statuses: 126 is not executable,
- * 127 is not found. Both mean the command line named something that never
- * became a process, so neither carries a verdict about the code under test.
- */
-const UNRUNNABLE_EXIT: ReadonlySet<number | undefined> = new Set([126, 127]);
 
 /** An exit status for a reason string; a kill or kill-before-exec has none. */
 function exitLabel(code: number | undefined): string {
@@ -150,21 +145,16 @@ export async function frozenTestFailure(
     });
     if (proof.kind === "infra")
       throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${proof.detail}`);
-    // 126/127 are the SHELL's own refusal to run anything: "not executable" and
-    // "not found". The exit status is real, so `neverStarted` (which asks for a
-    // non-numeric code) cannot see it, and the runner never existed to judge the
-    // code. That is the machine, not a verdict: throwing hands the run back, a
-    // red would send a developer to fix code nothing ever executed.
-    if (proof.kind === "unclear" && UNRUNNABLE_EXIT.has(proof.code))
-      throw new VerifyInfraError(
-        `the frozen test runner could not run ${file} (${exitLabel(proof.code)}): ${proof.detail}`,
-      );
     // A non-zero exit whose output never named this file is a RED, not
-    // infrastructure (the PM's call, reversing the earlier reading). The file
-    // was proven red-and-named at freeze time, so it was a real failing test on
-    // the base commit; a later non-zero exit is that test still failing, and the
-    // only thing missing is the runner's own echo of the path. Treating it as
-    // infra handed the run back for a test failure the developer can act on.
+    // infrastructure (the PM's call, reversing the earlier reading — and its
+    // 126/127 carve-out too, which is gone). The file was proven red-and-named
+    // at freeze time, so it was a real failing test on the base commit; a later
+    // non-zero exit is that test still failing, and the only thing missing is
+    // the runner's own echo of the path. The shell's 126/127 are NOT an
+    // exception: a real test can exit 127 after printing its own failure, so
+    // the number alone cannot tell a broken runner from a genuine red, and
+    // trusting it hid reds. Treating an unclear exit as infra handed the run
+    // back for a test failure the developer can act on.
     // Only the shapes where nobody ran anything — killed, timed out, never
     // started — stay throws, because those observed nothing.
     if (proof.kind === "unclear")
