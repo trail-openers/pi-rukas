@@ -32,7 +32,7 @@ import {
   leanStateFile,
   loadRun,
 } from "../../src/lean/state.ts";
-import { CLOCK, HAPPY, scripted } from "./lean-engine-fixtures.ts";
+import { CLOCK, FIXTURE_BASE_SHA, HAPPY, scripted } from "./lean-engine-fixtures.ts";
 
 /** The run's log, plus the run it came from (for its issue, branch and seed). */
 export interface DrivenRun {
@@ -66,7 +66,7 @@ export async function driveRun(
       issue,
       version: "test",
       models: {},
-      baseSha: "base",
+      baseSha: FIXTURE_BASE_SHA,
       branch: `feature/issue-${issue}`,
     }),
     result: undefined,
@@ -77,7 +77,11 @@ export async function driveRun(
     handlers,
     now: () => CLOCK,
     maxSteps: extra.maxSteps,
-    seed: { version: "test", baseSha: "base", branch: `feature/issue-${issue}` },
+    seed: {
+      version: "test",
+      baseSha: FIXTURE_BASE_SHA,
+      branch: `feature/issue-${issue}`,
+    },
   });
   const run = loadRun(dir, issue);
   if (run === undefined) throw new Error(`driveRun: no state file for issue ${issue}`);

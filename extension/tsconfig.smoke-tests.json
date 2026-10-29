@@ -122,6 +122,7 @@
     "smoke-tests/lib/plan-pi-spec-fixture.ts",
     "smoke-tests/test-lean-config.ts",
     "smoke-tests/lib/lean-engine-fixtures.ts",
+    "smoke-tests/lib/lean-seed-fixtures.ts",
     "smoke-tests/test-lean-machine.ts",
     "smoke-tests/test-lean-machine-reachability.ts",
     "smoke-tests/test-lean-machine-refusal.ts",
@@ -148,6 +149,10 @@
     "smoke-tests/test-headless-work-lean-lock.ts",
     "smoke-tests/test-lean-work-config-committed.ts",
     "smoke-tests/lib/work-lean-verb-fixture.ts",
+    "smoke-tests/test-lean-seed-base.ts",
+    "smoke-tests/lib/lean-base-proof-fixtures.ts",
+    "smoke-tests/test-lean-base-proof.ts",
+    "smoke-tests/test-lean-base-infra.ts",
     "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts"
   ]
 }

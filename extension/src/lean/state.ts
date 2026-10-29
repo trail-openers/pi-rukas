@@ -22,6 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { isFullCommitSha } from "../commit-sha.ts";
 import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
 
 export const SCHEMA_VERSION = 1;
@@ -265,15 +266,23 @@ function assertRun(obj: unknown, file: string): LeanRun {
     bad("issue must be a positive integer");
   if (typeof r.version !== "string") bad("version must be a string");
   if (typeof r.state !== "string") bad("state must be a string");
-  // baseSha and branch are required to be STRINGS but may be empty: a phase-1
-  // run is created before its ready handler has resolved the mainline sha or
-  // cut a branch, and a validator that demanded both would refuse the only
-  // shape a first run can legitimately have. Requiring "is a string" still
-  // catches the failure that matters — a field nobody ever filled in because
-  // the code that fills it was renamed.
+  // baseSha and branch are required to be STRINGS; branch may be empty (a
+  // phase-1 run is created before a branch is cut) and so may baseSha (a seed
+  // whose probe failed, which `ready` then refuses with a reason).
   for (const key of ["baseSha", "branch"] as const) {
     if (typeof r[key] !== "string") bad(`${key} must be a string`);
   }
+  // A NON-empty base is held to the same rule `ready` applies: a full
+  // lowercase oid, and nothing else. The base is the ref every later read of
+  // the run is anchored to — the config load, the diff, the verify verdict —
+  // and a record carrying `main` or `HEAD` in that field anchors the whole run
+  // to a moving ref, so an operator's hand-edit cannot make a run mean "the
+  // mainline, whatever it is now". Empty is the one value that is not a base
+  // at all, and `ready` refuses that path with the reason the probe gave.
+  if (typeof r.baseSha === "string" && r.baseSha !== "" && !isFullCommitSha(r.baseSha))
+    bad(
+      `baseSha must be empty or a full commit sha (got ${JSON.stringify(r.baseSha.slice(0, 80))})`,
+    );
   if (!isTerminal(r.state as LeanState) && !NON_TERMINAL.includes(r.state as LeanState))
     bad(`unknown state ${JSON.stringify(r.state)}`);
   if (typeof r.counters !== "object" || r.counters === null || Array.isArray(r.counters))

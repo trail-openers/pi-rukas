@@ -17,6 +17,7 @@
  * a step's outcome is what its log line claims actually happened.
  */
 
+import { isFullCommitSha } from "../commit-sha.ts";
 import { acquireLock } from "./lock.ts";
 import { REPORT_FAILED_KIND, exitCodeFor, hasTransition, next } from "./machine.ts";
 import { verifiedPosition } from "./resume.ts";
@@ -72,7 +73,12 @@ export interface RunLeanOpts {
   handlers: LeanHandlers;
   /** Injected clock. Default `Date.now`, and the engine's only clock. */
   now?: () => number;
-  /** Fields a brand-new run starts with. Ignored when a state file exists. */
+  /**
+   * Fields a brand-new run starts with. Ignored when a state file exists, so
+   * the seed is where a run-start fact belongs: a resumed run keeps what its
+   * first round recorded (a base sha re-resolved on resume would be a
+   * different commit than the one the run was cut against).
+   */
   seed?: Partial<Pick<LeanRun, "version" | "models" | "baseSha" | "branch">>;
   /** Safety net for a table that loops on a bug of its own. Never a feature. */
   maxSteps?: number;
@@ -134,15 +140,29 @@ function reasonFor(state: LeanState, outcome: Outcome | undefined, steps: Step[]
  * successfully then refuses to load. `assertRun` already refuses exactly that
  * shape on the read path; this is the same rule on the write path, so a caller
  * cannot bypass its own validator simply by starting a run.
+ *
+ * The seed's base is validated on the same principle: `createRun` does not
+ * consult `assertRun` for a run it just built, so the ONLY place a hand-built
+ * seed is judged is here. A caller that passed `"main"` — or a typo'd oid —
+ * would otherwise write a record that loads green, because `assertRun` accepts
+ * `""` (a seed that found no mainline is legitimate) and would have accepted
+ * anything else too. `""` is therefore the one value that passes without the
+ * shape check; any other value must be a full lowercase oid, which is the same
+ * rule the loader enforces on the read path.
  */
 function newRun(opts: RunLeanOpts): LeanRun {
   if (!Number.isInteger(opts.issue) || opts.issue <= 0)
     throw new LeanStateError(`runLean: issue ${String(opts.issue)} must be a positive integer`);
+  const baseSha = opts.seed?.baseSha ?? "";
+  if (baseSha !== "" && !isFullCommitSha(baseSha))
+    throw new LeanStateError(
+      `runLean: seed baseSha must be empty or a full commit sha (got ${JSON.stringify(baseSha.slice(0, 80))})`,
+    );
   return createRun({
     issue: opts.issue,
     version: opts.seed?.version ?? "unknown",
     models: { ...(opts.seed?.models ?? {}) },
-    baseSha: opts.seed?.baseSha ?? "",
+    baseSha,
     branch: opts.seed?.branch ?? "",
   });
 }
