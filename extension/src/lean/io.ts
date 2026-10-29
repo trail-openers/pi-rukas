@@ -148,3 +148,18 @@ export async function postNotReady(
   if (!forge) throw new Error("no forge adapter: cannot post the not-ready comment");
   await forge.issueComment(issue, body);
 }
+
+/**
+ * Post the handback comment: what the run still needs.
+ *
+ * The same adapter and the same public-text check `postNotReady` goes through —
+ * `forge.issueComment` runs the body past the public-hygiene gate and returns
+ * the bytes it judged, so what is checked and what is posted are one string.
+ * It throws so the caller can record that nobody was told; `handback` is the
+ * caller, and it never lets that throw end the run.
+ */
+export async function postHandback(repoRoot: string, issue: number, body: string): Promise<void> {
+  const forge = await forgeFor(repoRoot);
+  if (!forge) throw new Error("no forge adapter: cannot post the handback comment");
+  await forge.issueComment(issue, body);
+}

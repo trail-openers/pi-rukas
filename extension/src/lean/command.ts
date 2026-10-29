@@ -29,11 +29,14 @@ import type { WriteFence } from "../write-fence-contract.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
+import { handbackOutcome } from "./handback.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
+import { postHandback } from "./io.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Step } from "./state.ts";
+import { verifyDeps, verifyOutcome } from "./verify.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -185,6 +188,8 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps());
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps());
+  handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
+  handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
   handlers.decline = async (ctx) => {
     // From the log, not from a closure: see `failedRulesFromLog`.
     const rules = failedRulesFromLog(ctx.steps);
