@@ -14,7 +14,7 @@ import type { OperatorDirectives } from "./plan-directives.ts";
 import type { AngleFindings } from "./plan-draft.ts";
 import { draftSpec } from "./plan-draft.ts";
 import { haltResult } from "./plan-driver-halt.ts";
-import { appendPiSpecSection, piSpecReservation } from "./plan-pi-spec.ts";
+import { piSpecReservation } from "./plan-pi-spec.ts";
 import { type PlanProvenance, provenanceReservation } from "./plan-provenance.ts";
 import type { PlanPhaseTiming, PlanResult, PlanType } from "./plan-types.ts";
 import { planTitle } from "./plan-types.ts";
@@ -83,43 +83,17 @@ export type Phase3Outcome = { halt: PlanResult } | ({ halt?: undefined } & Phase
  * the budget test, which asserts a fitted body plus its reservation stays under
  * BODY_BUDGET (a reservation nothing checks is a reservation that drifts).
  *
- * The block's reservation is its REAL rendered length, with no clamp: every
- * field is bounded in `piSpecFromDraft` (200-char title, at most 12 criteria at
- * 200 chars each), so the section has a hard ceiling far below the headroom a
- * body needs. The earlier clamp existed for an unbounded mapper and was itself
- * the failure — a clamp UNDER-counts, and an under-counted reservation is a
- * post-fit append that blows the forge cap.
+ * The block's reservation is a CONSTANT derived from the bounds in `piSpecFromDraft`
+ * (200-char title, at most 12 criteria at 200 chars each) plus the width of the
+ * omission line, so it can never under-count whatever the draft says. The earlier
+ * version measured a rendered section, which meant a third `draftSpec` call per run
+ * and a reservation computed on a render the fitter had thrown away (#1383).
  */
 export function codeAppendReservation(
   provenance: PlanProvenance | undefined,
   type: PlanType,
-  body: string,
-  title: string,
 ): number {
-  return provenanceReservation(provenance) + piSpecReservation(type, body, title);
-}
-
-/**
- * The stage-0 render, which the fitter produces anyway and which is never
- * SHORTER than the stage-1 render it may fall back to (both stages only shrink
- * the item cap and the item clip). Measuring the block on it means the
- * reservation never UNDER-counts — an under-count is what lets a post-fit append
- * blow the forge cap. Costs one extra pure `draftSpec` call per run.
- */
-function stage0Probe(args: Phase3Args): { body: string; title: string } {
-  return draftSpec(
-    args.type,
-    args.descriptor,
-    args.findings,
-    args.inventoryContext,
-    [],
-    [],
-    args.depth,
-    args.directives,
-    [],
-    undefined,
-    RENDER_BUDGETS[0] as RenderBudget,
-  );
+  return provenanceReservation(provenance) + piSpecReservation(type);
 }
 
 export function phase3Draft(args: Phase3Args): Phase3Outcome {
@@ -141,15 +115,10 @@ export function phase3Draft(args: Phase3Args): Phase3Outcome {
         b,
       ),
     // #1377 + #1883: both after-the-fitter appends (the provenance marker and
-    // the spec block) are reserved at the one call site that computes them, so
-    // neither can be forgotten. 0 for an epic, a spike, or a criteria-less draft.
-    // Measured on ONE stage-0 probe (title + body), which is never SHORTER than
-    // the stage-1 render the fitter may fall back to — so the reservation never
-    // under-counts.
-    (() => {
-      const probe = stage0Probe(args);
-      return codeAppendReservation(args.provenance, args.type, probe.body, probe.title);
-    })(),
+    // the spec block) are reserved before drafting runs. The block's reservation
+    // is a constant per plan type — 0 for an epic or a spike — so it needs no
+    // render to measure, and an under-count is structurally impossible.
+    codeAppendReservation(args.provenance, args.type),
   );
   if ("tooLarge" in fitted) {
     trace(`plan-driver: body too large even after compaction (${fitted.size} chars) — halting`);

@@ -402,8 +402,7 @@ async function runPipelineOn(
     // #1856: the exclusion disclosure renders only when the caller named the
     // issue this plan is for, and only from the verdict the barrier recorded.
     duplicate: { risk: duplicateRisk, sourceIssue: input.sourceIssue },
-    type,
-    title,
+    piSpec: { type, title },
   });
 
   const resolvedGaps = gateRan ? gaps : [];

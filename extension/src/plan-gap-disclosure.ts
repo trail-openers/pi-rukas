@@ -156,15 +156,14 @@ export function finalDraftBody(
   images: IssueImage[],
   provenance: PlanDriverInput["provenance"],
   duplicate: { risk: DuplicateRisk | undefined; sourceIssue: number | undefined },
-  // #1883: the ticket type, so the `pi-spec v1` block is placed at THIS one
-  // site and knows not to write one for an epic or a spike. Absent = no block,
-  // which keeps every pre-#1883 call site byte-identical.
-  type?: PlanType,
-  // #1883: the filed TITLE, which is the block's `problem` field. Optional, and
-  // absent means no block — a call site that has not been updated cannot file a
-  // spec whose problem field is a guess, and an epic, a spike or a criteria-less
-  // draft files a body byte-identical to the pre-#1883 render.
-  title?: string,
+  // #1883: everything the `pi-spec v1` block is derived from — the ticket TYPE
+  // (so the placer knows not to write one for an epic or a spike) and the filed
+  // TITLE (the block's `problem` field). ONE optional object rather than two
+  // optional trailing positionals: two optionals in a row are two flags a call
+  // site can pass in the wrong combination, and "type but no title" is a block
+  // whose problem is a guess. Absent = no block, which keeps every pre-#1883 call
+  // site byte-identical.
+  piSpec?: { type: PlanType; title: string },
 ): string {
   // #1883: the block is placed HERE — after every drafted section, every
   // disclosure and the image links, and immediately before `withProvenance`
@@ -194,12 +193,13 @@ export function finalDraftBody(
   // `trimStart` would eat the copy it prepends — leaving it doubled — unless the
   // placer is told the line is coming. Handed in, the placer emits it once and the
   // wrapper leaves it. Either way the line is FIRST and the HTML marker LAST.
-  if (type === undefined || title === undefined) {
-    // An absent type or title is a call site that has not been updated: the pre-
-    // #1883 shape, so the wrapper runs exactly as it always did — no block, no
-    // line, body byte-identical.
+  if (piSpec === undefined) {
+    // An absent piSpec is a call site that has not been updated: the pre-#1883
+    // shape, so the wrapper runs exactly as it always did — no block, no line,
+    // body byte-identical.
     return withProvenance(assembled, provenance);
   }
+  const { type, title } = piSpec;
   const placed = provenance
     ? placePiSpecSection(assembled, type, title, provenanceLineOf(provenance))
     : placePiSpecSection(assembled, type, title);
@@ -215,17 +215,12 @@ export function finalDraftBody(
     if (!provenance) return placed.body;
     return withProvenance(placed.body.slice(provenanceLineOf(provenance).length + 2), provenance);
   }
-  if (placed.spec !== undefined) {
-    // The body ALREADY carried a block: it is kept and nothing is added — no
-    // second block (two make `parsePiSpec` refuse the issue) and no line, because
-    // there is no omission. `spec` being set alongside `omitted` is that case.
-    return withProvenance(assembled, provenance);
-  }
-  // Nothing to contract (an epic, a spike, no criteria) or a failed read-back. The
-  // placer returned the body unchanged in the first case and with the disclosure
-  // line already on it in the second, so the wrapper only adds the two lines —
-  // except that an EMPTY title (present but blank) is a real failure to contract
-  // and must be disclosed, as a spec whose `problem` is empty would not parse.
+  // Nothing to contract (an epic, a spike, no criteria), a block over its ceiling,
+  // or a failed read-back. The placer returned the body unchanged in the first two
+  // cases and with the disclosure line already on it in the last, so the wrapper
+  // only adds the two lines — except that an EMPTY title (present but blank) is a
+  // real failure to contract and must be disclosed, as a spec whose `problem` is
+  // empty would not parse.
   const disclosed =
     title.trim() === "" && !placed.body.includes(PI_SPEC_OMISSION_PREFIX)
       ? `${placed.body.trimEnd()}\n\n${PI_SPEC_OMISSION_PREFIX} no issue title to state the problem\n`

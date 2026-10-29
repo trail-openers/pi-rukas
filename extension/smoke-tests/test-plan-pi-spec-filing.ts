@@ -23,12 +23,14 @@ import { parsePiSpec, readiness } from "../src/lean/spec.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { finalDraftBody } from "../src/plan-gap-disclosure.ts";
 import {
+  PI_SPEC_EXAMPLE_INFO,
   PI_SPEC_HEADING,
   PI_SPEC_MAX_CRITERIA,
   PI_SPEC_OMISSION_PREFIX,
   PI_SPEC_PROBLEM_MAX_CHARS,
   PI_SPEC_READINESS_PREFIX,
-  appendPiSpecSection,
+  piSpecFromDraft,
+  placePiSpecSection,
 } from "../src/plan-pi-spec.ts";
 import { BODY_BUDGET } from "../src/plan-validate.ts";
 import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
@@ -41,12 +43,6 @@ import {
   installOverflowDispatch,
   makeDispatchStub,
 } from "./plan-test-stubs.ts";
-
-// ------------------------------------ end-to-end through the pipeline: filing
-
-installForgeStub();
-installOfflineVipuneStub();
-installNoPlanCacheStub();
 
 // ------------------------------------ end-to-end through the pipeline: filing
 
@@ -102,8 +98,7 @@ installNoPlanCacheStub();
     [],
     { line: "automated run", marker: { run: "plan" } },
     { risk: undefined, sourceIssue: undefined },
-    "feature",
-    "a title",
+    { type: "feature", title: "a title" },
   );
   assert(
     wrapped.startsWith("_automated run_\n\n") &&
@@ -179,8 +174,8 @@ installNoPlanCacheStub();
     `pipeline: block + compaction appends stay inside the forge budget (${filed.length})`,
   );
   assert(
-    !filed.includes(PI_SPEC_READINESS_PREFIX),
-    "pipeline: a filed block reports no failed readiness rule",
+    filed.includes(PI_SPEC_READINESS_PREFIX) && filed.includes("split it"),
+    "pipeline: an L plan's filed block carries the readiness note, so the operator sees 'split it'",
   );
   assert(
     filed.indexOf(PI_SPEC_HEADING) > 0 &&
@@ -190,15 +185,13 @@ installNoPlanCacheStub();
   setPlanDispatch(null);
 }
 
-// --------------------------------- a forced read-back failure files without it
+// ------------------- a drafted block is an example, never the contract
 
 {
-  // The forced failure, shaped the way the parser actually refuses: a body that
-  // already carries a `pi-spec v1` block whose `problem` is NOT what our mapper
-  // would derive from it. That is what a corrective re-draft or a hand-edited
-  // issue produces, and at the TOP placement it is reachable: our block and the
-  // body's block both sit in the file, and `parsePiSpec` refuses two. So ours is
-  // left out, the body's own contract is what files, and one plain line says why.
+  // The shape a corrective re-draft, a hand-edited issue, or an angle item that
+  // QUOTES the block format produces. The old code called this "the body already
+  // carries a block" and filed the example as the contract; the rule now is that
+  // a drafted `pi-spec v1` fence is an EXAMPLE and ours is always the block.
   const stale = [
     "## Acceptance criteria",
     "",
@@ -220,21 +213,52 @@ installNoPlanCacheStub();
     [],
     { line: "automated run", marker: { run: "plan" } },
     { risk: undefined, sourceIssue: undefined },
-    "feature",
-    "a title",
+    { type: "feature", title: "a title" },
   );
+  const filedOpenings = filed
+    .split("\n")
+    .filter((l) => /^ {0,3}(`{3,}|~{3,})\s*pi-spec v1\s*$/.test(l)).length;
+  const filedBack = parsePiSpec(filed);
   assert(
-    (filed.match(/## Spec \(pi-spec v1\)/g) ?? []).length === 1,
-    "read-back: only ever ONE spec heading in a filed body",
+    filedOpenings === 1 && filedBack.ok === true && filedBack.spec.problem === "a title",
+    `example: exactly one OPENING pi-spec fence in a filed body, and it parses as ours (${filedOpenings})`,
   );
   const back = parsePiSpec(filed);
   assert(
-    back.ok === true && back.spec.problem === "an older spec someone pasted in",
-    "read-back: the body's own block wins — the read-back defers, it never clobbers or deletes",
+    back.ok === true && back.spec.problem === "a title" && back.spec.criteria.length === 2,
+    "example: OUR spec is what parses — the drafted example never becomes the contract",
+  );
+  assert(
+    filed.includes(`${PI_SPEC_EXAMPLE_INFO}`) &&
+      !filed.includes("an older spec someone pasted in") === false,
+    "example: the pasted JSON is still in the body as prose, just not as a contract",
   );
   assert(
     filed.trimEnd().endsWith("-->") && filed.startsWith("_automated run_\n\n"),
-    "read-back: provenance line first and marker last, block or no block",
+    "example: provenance line first and marker last, block or no block",
+  );
+
+  // A tilde example is the case that used to win silently: same rename, same file.
+  const tildeBody = draftBody(["the suite is green", "`bun test` exits 0"]);
+  const tildeSpec = piSpecFromDraft({ type: "feature", body: tildeBody, title: "our title" });
+  const tilde = placePiSpecSection(
+    `${tildeBody}\n\n~~~pi-spec v1\n{ "problem": "quoted", "criteria": [], "size": "S" }\n~~~\n`,
+    "feature",
+    "our title",
+  );
+  const tildeBack = parsePiSpec(tilde.body);
+  assert(
+    tilde.omitted === undefined &&
+      tildeBack.ok === true &&
+      JSON.stringify(tildeBack.spec) === JSON.stringify(tildeSpec),
+    "example: a tilde pi-spec v1 example files OUR block and the read-back equals the mapped spec",
+  );
+  const tildeOpenings = tilde.body
+    .split("\n")
+    .filter((l) => /^ {0,3}(`{3,}|~{3,})\s*pi-spec v1\s*$/.test(l)).length;
+  assert(
+    tilde.body.includes(PI_SPEC_EXAMPLE_INFO) && tildeOpenings === 1,
+    `example: the tilde example's info string is renamed before ours is placed (${tildeOpenings})`,
   );
 
   // The omission line itself: a body the mapper cannot contract at all (an empty
@@ -247,8 +271,7 @@ installNoPlanCacheStub();
     [],
     { line: "automated run", marker: { run: "plan" } },
     { risk: undefined, sourceIssue: undefined },
-    "feature",
-    "   ",
+    { type: "feature", title: "   " },
   );
   assert(
     !noTitle.includes(PI_SPEC_HEADING),
@@ -267,10 +290,16 @@ installNoPlanCacheStub();
     noTitle.trimEnd().endsWith("-->") && noTitle.startsWith("_automated run_\n\n"),
     "read-back: the provenance lines bracket an omitted filing exactly as they bracket a normal one",
   );
-  const noTitlePlain = appendPiSpecSection(draftBody(["a", "b"]), "feature", "  ");
+  // The placer only returns the body with the disclosure line on it when the read-
+  // back FAILED; "nothing to contract" is the byte-identical case. The no-provenance
+  // disclosure of an empty title is `finalDraftBody`'s job (asserted above on
+  // `noTitle`), which is why this asserts the placer's own contract instead.
+  const noTitlePlain = placePiSpecSection(draftBody(["a", "b"]), "feature", "  ");
   assert(
-    !noTitlePlain.includes(PI_SPEC_HEADING) && noTitlePlain.includes(PI_SPEC_OMISSION_PREFIX),
-    "read-back: the no-provenance shape discloses the same omission",
+    noTitlePlain.spec === undefined &&
+      noTitlePlain.omitted === "no issue title to state the problem" &&
+      !noTitlePlain.body.includes(PI_SPEC_HEADING),
+    "read-back: the no-provenance placer reports the omission it could not contract",
   );
 }
 

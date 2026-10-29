@@ -18,8 +18,7 @@ export function assembleFinalBody(args: {
   images: IssueImage[];
   provenance: PlanDriverInput["provenance"];
   duplicate: { risk: DuplicateRisk | undefined; sourceIssue: number | undefined };
-  type: PlanType;
-  title: string;
+  piSpec: { type: PlanType; title: string };
 }): string {
   return finalDraftBody(
     args.body,
@@ -29,7 +28,6 @@ export function assembleFinalBody(args: {
     args.images,
     args.provenance,
     args.duplicate,
-    args.type,
-    args.title,
+    args.piSpec,
   );
 }
