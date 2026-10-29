@@ -43,6 +43,7 @@ import type { PiSpec } from "./lean/spec.ts";
 import { SPEC_INFO, parsePiSpec, readiness, renderPiSpec } from "./lean/spec.ts";
 import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
 import type { PlanType } from "./plan-types.ts";
+import { AC_FALLBACK } from "./plan-validate.ts";
 import { trace, traceWarn } from "./trace.ts";
 
 /** The section heading the block renders under. */
@@ -156,9 +157,6 @@ export const PI_SPEC_OMISSION_LINE_MAX_CHARS =
 /** The size bands the contract's `size` field reports. */
 const SIZE_SMALL_MAX = 3;
 const SIZE_MEDIUM_MAX = 8;
-
-/** The fallback bullet draftSpec renders when no criterion exists; not a criterion. */
-const AC_FALLBACK_BULLET = "(fallback";
 
 /**
  * `## <heading>` ... content up to the next `## ` (or end of body).
@@ -278,6 +276,12 @@ function sectionBullets(body: string, heading: string): string[] {
         l !== "" && !l.startsWith("_") && !l.startsWith(AC_FALLBACK_BULLET) && !l.startsWith("..."),
     );
 }
+
+/// The fallback bullet draftSpec renders when no criterion exists; not a criterion:
+/// `AC_FALLBACK` itself — the ONE string `plan-draft.ts` renders for that case and the
+/// one `validateDraft` refuses a plan over. A prefix of our own here would be a third
+/// copy no one keeps in step, and the mapper would then file the placeholder as AC1.
+const AC_FALLBACK_BULLET = AC_FALLBACK;
 
 /** S → at most 3 criteria, M → at most 8, L → more. */
 function sizeOf(count: number): PiSpec["size"] {
