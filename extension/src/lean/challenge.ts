@@ -61,6 +61,7 @@ import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
+import { existsInCommit } from "./specify-reset.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,
@@ -252,6 +253,12 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
           // Checked on the NORMALISED path, so `./tests//AC1-retry.test.sh`
           // cannot slip past as a name the set does not contain.
           frozenPaths: new Set(Object.keys(frozen)),
+          // The same newness rule as `specify`, judged against the same BASE:
+          // an edge case the adversary did not write is not an edge case, and
+          // the base is where a file that predates the run can be seen for
+          // what it is. At the head every test of the run is present, so the
+          // head cannot answer this question.
+          existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       // Provisioning is `challenge`'s own call, and the `prepare` the pipeline

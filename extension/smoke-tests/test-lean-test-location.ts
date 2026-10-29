@@ -81,8 +81,26 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
       validateTestDir(dir)?.includes(why) === true,
       `validateTestDir refuses \`${dir}\` naming "${why}" (got ${validateTestDir(dir) ?? "accepted"})`,
     );
+  // A padded value is used VERBATIM when the boundary compares a submitted
+  // path's directory against it, so `" tests"` matches nothing and every test
+  // the adversary writes is refused while the reason blames the child.
+  for (const padded of [" tests", "tests ", "\textension/smoke-tests", "tests\n"])
+    assert(
+      validateTestDir(padded)?.includes("surrounding whitespace") === true,
+      `validateTestDir refuses the padded \`${JSON.stringify(padded)}\` (got ${validateTestDir(padded) ?? "accepted"})`,
+    );
 
-  for (const good of ["test-*.ts", "*.test.ts", "spec-*.bats", "test_*"])
+  for (const good of [
+    "test-*.ts",
+    "*.test.ts",
+    "spec-*.bats",
+    // A trailing wildcard with NO extension is refused (see `badGlob`); a
+    // LEADING wildcard that still ends in an extension is not — `*.test.ts`
+    // names a runnable file.
+    "*.spec.ts",
+    // Neither the extension nor the position of the star is fixed.
+    "test_*.bats",
+  ])
     assert(
       validateTestGlob(good) === undefined,
       `validateTestGlob accepts \`${good}\` (got ${validateTestGlob(good) ?? "accepted"})`,
@@ -97,6 +115,19 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
     ["tests\\test-*.ts", "not a path"],
     ['test-*.t"s', "not allowed"],
     ["test-*.ts;rm", "not allowed"],
+    // The four that all mean "this pattern names no RUNNABLE TEST FILE". Each
+    // passes every shape rule above and matches real files in the folder, so a
+    // project could ship one, freeze tests its own CI never runs, and see
+    // nothing wrong.
+    ["*", 'must not be "*"'],
+    ["test-*", "name a file extension"],
+    // A dot INSIDE the pattern is the extension separator, so the text after
+    // the `*` has to contain one: `test-*` could match `test-README`.
+    ["test-*AC1", "name a file extension"],
+    [".test-*.ts", 'must not start with "."'],
+    [" test-*.ts", "surrounding whitespace"],
+    ["test-*.ts ", "surrounding whitespace"],
+    ["\ttest-*.ts", "surrounding whitespace"],
   ];
   for (const [glob, why] of badGlob)
     assert(

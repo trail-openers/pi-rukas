@@ -96,6 +96,11 @@ export function challengePrompt(opts: ChallengePromptOpts): string {
     "Each new file MUST FAIL against the code as it stands right now, for the behaviour the criterion states — exercise the real entry point and assert the real expected result. The parent runs every file it is given against the current head and keeps only those that fail there: **a test that passes is thrown out**, and so is one that always fails (assert false, an import of a module that does not exist, a syntax error, a skipped or TODO test). If you cannot find a case that fails, say so in your reply and submit nothing — that is a real answer, and it is better than a test that proves nothing.",
     "",
     namingLine(opts.testLocation),
+    // Same rule `specify` states: the worktree is a checkout of the head, so a
+    // tracked test that is already there is reachable and looks like a file to
+    // submit. The frozen list above names only the run's OWN contract; every
+    // OTHER pre-existing file is refused by the base-commit check too.
+    "Every file you submit must be one YOU CREATE. The parent refuses any path that already exists in the run's base commit — whether you left it untouched or rewrote it — so do not submit a tracked test you found in the tree.",
     opts.testLocation === undefined ? "" : testLocationInstruction(opts.testLocation),
     "",
     TEST_SCOPE_CONTRACT,

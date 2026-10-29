@@ -31,15 +31,22 @@
  * from the run, and neither is allowed to become a word a shell re-parses.
  */
 
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { gitCatFileSaysAbsent } from "../git-range.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import type { TestLocation } from "./config.ts";
 import { testLocationProblem } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
+import { fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
+
+// The three per-path shape judgements live in `specify-path.ts` for the size
+// cap and are re-exported here unchanged: the boundary, its callers and its
+// smoke tests all keep `specify-tree.ts` as their one import path.
+export { fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
 
 /** The worktree directory name for one issue's specify step. */
 export function specifyWorktreeName(issue: number): string {
@@ -246,77 +253,6 @@ export async function changedPaths(exec: ExecFn, wt: string): Promise<PorcelainE
   return parsePorcelainZ(stdout ?? "");
 }
 
-/** A directory segment the step never accepts a test file inside. */
-const FORBIDDEN_SEGMENTS = [".pi", ".git", "node_modules"] as const;
-
-/**
- * Why a NORMALISED relative path is not an acceptable test file, or undefined
- * when it is. Absolute paths are caught by the caller before normalisation
- * (normalising `/etc/passwd` would erase the fact that it is absolute); this
- * refuses traversal and the directories a test never legitimately lives in.
- */
-export function pathProblem(p: string): string | undefined {
-  const segments = p.split(/[\\/]+/);
-  if (segments.includes("..")) return `path contains ".." : ${p}`;
-  for (const seg of segments) {
-    for (const bad of FORBIDDEN_SEGMENTS) if (seg === bad) return `path under ${bad}/: ${p}`;
-  }
-  if (segments.some((s) => s === "")) return `empty path segment in ${p}`;
-  return undefined;
-}
-
-/** Collapse `./x`, `x/./y` and a trailing slash to the git-relative form. */
-export function normaliseRelPath(p: string): string {
-  const out: string[] = [];
-  for (const seg of p.split(/[\\/]+/)) {
-    if (seg === "" || seg === ".") continue;
-    out.push(seg);
-  }
-  return out.join("/");
-}
-
-/**
- * Why this path in `wt` is not a file the step may capture, or undefined when
- * it is. The path arrives already normalised and known to exist.
- *
- * The four checks are what a child cannot get past:
- *
- *   - `lstat` (NOT `stat`) so a symlink is a symlink and not the file it
- *     points at — following one would capture, hash and commit bytes from
- *     anywhere on the host;
- *   - a REGULAR file, so a fifo, socket, device or directory is refused;
- *   - `nlink === 1`, so a HARD LINK cannot impersonate a file of the worktree.
- *     A hard link is not a symlink — `lstat` sees an ordinary file and
- *     `realpath` stays inside the tree — so this is the only check that
- *     catches it, and the one the path checks alone cannot: the bytes it
- *     shares with an outside file would have been frozen and committed;
- *   - `realpath` of the file inside `realpath` of the worktree, so no
- *     component of the path escapes through a linked parent.
- */
-export function fileProblem(wt: string, rel: string): string | undefined {
-  const abs = path.join(wt, rel);
-  let st: ReturnType<typeof lstatSync>;
-  try {
-    st = lstatSync(abs);
-  } catch {
-    return `file ${rel} could not be read`;
-  }
-  if (st.isSymbolicLink()) return `file ${rel} is a symlink, which the step never follows`;
-  if (!st.isFile()) return `file ${rel} is not a regular file`;
-  if (st.nlink !== 1) return `file ${rel} has ${st.nlink} hard links — not a file of this worktree`;
-  let realFile: string;
-  let realTree: string;
-  try {
-    realFile = realpathSync(abs);
-    realTree = realpathSync(wt);
-  } catch {
-    return `file ${rel} could not be resolved inside ${wt}`;
-  }
-  if (realFile !== realTree && !realFile.startsWith(realTree + path.sep))
-    return `file ${rel} resolves outside the worktree (${realFile})`;
-  return undefined;
-}
-
 export interface DroppedRow {
   criterionId: string;
   path?: string;
@@ -330,15 +266,27 @@ export interface DroppedRow {
  * "test"` criterion of THIS spec; when its path is already FROZEN (`frozenPaths`
  * — only `challenge` passes that set, and the child may not replace a test the
  * run already committed); when a path is absolute, traverses, or sits under a
- * forbidden directory; when the file is not in the worktree; or when it is not an
- * ordinary file the worktree owns (`fileProblem`). What survives is a criterion ->
- * kept-paths map the step can capture, prove and commit.
+ * forbidden directory; when the file is not in the worktree; when it already
+ * exists AT THE BASE COMMIT (`existsAtBase` — a test the child did not write is
+ * not a new acceptance test); or when it is not an ordinary file the worktree
+ * owns (`fileProblem`). What survives is a criterion -> kept-paths map the step
+ * can capture, prove and commit.
+ *
+ * The rules answer in a fixed order and the reason an operator reads is the
+ * first that fires: path shape, FROZEN, location, existence, base newness,
+ * file shape. FROZEN comes before the location rule so an inherited contract
+ * outside the configured folder is reported as the contract it is, not as a
+ * file to move.
+ *
+ * `exists` and `existsAtBase` are async because the second is a git read, and
+ * both go through here rather than the callers: a rule the boundary can skip is
+ * a rule that gets skipped.
  */
-export function validateSubmitRows(
+export async function validateSubmitRows(
   rows: SubmitTestsRow[],
   opts: {
     spec: PiSpec;
-    exists: (rel: string) => boolean;
+    exists: (rel: string) => boolean | Promise<boolean>;
     fileProblem?: (rel: string) => string | undefined;
     /**
      * Paths already frozen. `challenge` passes the run's frozen map here: a
@@ -357,8 +305,22 @@ export function validateSubmitRows(
      * boundary that enforces it read the same config.
      */
     testLocation?: TestLocation;
+    /**
+     * A kept path must not exist at the run's BASE COMMIT. `specify` and
+     * `challenge` both pass it (see `baseCommitExistsAt`), and it is what makes
+     * an acceptance test a test the child WROTE.
+     *
+     * `exists` alone does not: it asks about the working tree, and the child
+     * works in a checkout of that base — so an existing, green, tracked project
+     * test the child never opened passes `exists`, gets proved red against a
+     * source file it does not exercise (never run: red by absence of evidence,
+     * which is the red the proof accepts), and is frozen as the run's contract.
+     * The mirrored act — overwriting a tracked test and submitting it — was
+     * reproduced too. Both are refused here, before a byte is captured.
+     */
+    existsAtBase?: (rel: string) => Promise<boolean>;
   },
-): { kept: SubmitTestsRow[]; dropped: DroppedRow[] } {
+): Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }> {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
   const keptByCriterion = new Map<string, string[]>();
   const dropped: DroppedRow[] = [];
@@ -407,12 +369,10 @@ export function validateSubmitRows(
       // is not `tests/`), and so `./tests/x.ts` cannot dodge the name pattern.
       // After `pathProblem`, so the path is already traversal-free and slash-
       // clean, which is what `testLocationProblem` compares segments against.
-      const misplaced =
-        opts.testLocation === undefined ? undefined : testLocationProblem(opts.testLocation, rel);
-      if (misplaced !== undefined) {
-        dropped.push({ criterionId: row.criterionId, path: rel, reason: misplaced });
-        continue;
-      }
+      // FROZEN first, and deliberately before the location rule: a contract the
+      // run inherited before `verify.testDir` existed sits OUTSIDE the configured
+      // folder, and telling an operator to move a file the run must not touch is
+      // a wrong instruction. What the child must DO about a frozen path is nothing.
       if (opts.frozenPaths?.has(rel) === true) {
         dropped.push({
           criterionId: row.criterionId,
@@ -421,11 +381,28 @@ export function validateSubmitRows(
         });
         continue;
       }
-      if (!opts.exists(rel)) {
+      const misplaced =
+        opts.testLocation === undefined ? undefined : testLocationProblem(opts.testLocation, rel);
+      if (misplaced !== undefined) {
+        dropped.push({ criterionId: row.criterionId, path: rel, reason: misplaced });
+        continue;
+      }
+      if (!(await opts.exists(rel))) {
         dropped.push({
           criterionId: row.criterionId,
           path: rel,
           reason: `file ${rel} does not exist in the worktree`,
+        });
+        continue;
+      }
+      // AFTER the existence check and before `fileProblem`: a file the child
+      // wrote is not in the base commit at all, so this is the rule that tells
+      // "the child authored this" apart from "this file was already here".
+      if ((await opts.existsAtBase?.(rel)) === true) {
+        dropped.push({
+          criterionId: row.criterionId,
+          path: rel,
+          reason: `${rel} already exists at the base commit; a new acceptance test must be a new file`,
         });
         continue;
       }

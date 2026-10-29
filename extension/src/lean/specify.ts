@@ -67,7 +67,7 @@ import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import type { CaptureResult } from "./specify-capture.ts";
 import { RED_PROOF_CONTRACT, namingLine, specifyPrompt, testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
-import { SpecifyResetError } from "./specify-reset.ts";
+import { SpecifyResetError, existsInCommit } from "./specify-reset.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,
@@ -357,6 +357,12 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
           spec,
           exists: (rel) => existsSync(path.join(wt, rel)),
           fileProblem: (rel) => fileProblem(wt, rel),
+          // A test the child did not write is not an acceptance test: an
+          // existing tracked project test freezes as "red" without ever being
+          // run, and a child that overwrote one rewrites the contract. Both are
+          // refused against the run's BASE, which is the commit this step's
+          // whole claim is made on.
+          existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       prepare: () =>

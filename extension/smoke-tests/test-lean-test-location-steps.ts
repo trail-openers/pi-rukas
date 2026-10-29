@@ -65,7 +65,7 @@ import {
     "tests/test-wrong-dir.ts",
     "extension/smoke-tests/spec-wrong-name.ts",
   ]);
-  const { kept, dropped } = validateSubmitRows(
+  const { kept, dropped } = await validateSubmitRows(
     [
       { criterionId: "AC1", testFiles: ["extension/smoke-tests/test-ac1.ts"] },
       { criterionId: "AC1", testFiles: ["extension/smoke-tests/unit/test-nested.ts"] },
@@ -108,7 +108,7 @@ import {
   );
   // Without the config, all four paths are judged only by the pre-existing rules
   // — the feature must not fire when unset.
-  const unconfigured = validateSubmitRows(
+  const unconfigured = await validateSubmitRows(
     [
       { criterionId: "AC1", testFiles: ["tests/test-wrong-dir.ts"] },
       { criterionId: "AC1", testFiles: ["extension/smoke-tests/spec-wrong-name.ts"] },
@@ -123,19 +123,20 @@ import {
 
 /**
  * Which boundary rule answers first, pinned directly. `validateSubmitRows` asks
- * in a fixed order — path shape, then the configured location, then "already
- * frozen", then existence — and the reason an operator reads is whichever rule
- * fired. Two arms, because an E2E run only ever reports the one that fired:
+ * in a fixed order — path shape, then "already frozen", then the configured
+ * location, then existence — and the reason an operator reads is whichever rule
+ * fired. Three arms, because an E2E run only ever reports the one that fired:
  *
- *   - a path that is BOTH misplaced and frozen reports the LOCATION: the child
- *     has two problems and the frozen one is not at stake (it never wrote the
- *     file, so it replaced nothing);
- *   - a path that is well placed but already frozen reports FROZEN, and never
- *     "misplaced" — that reading would tell an operator to move a file the run
- *     must not touch.
+ *   - a path that is BOTH misplaced and frozen reports FROZEN, and never
+ *     "misplaced": that reading would tell an operator to MOVE a file the run
+ *     must not touch, and the inherited contract of a project that adopted
+ *     `verify.testDir` after its first freeze is exactly this shape;
+ *   - a path that is well placed but already frozen reports FROZEN too;
+ *   - a path that is well placed, not frozen, and never written reports
+ *     EXISTENCE — the location rule did not swallow it.
  */
 {
-  const ordered = validateSubmitRows(
+  const ordered = await validateSubmitRows(
     [
       { criterionId: "AC1", testFiles: ["tests/AC1-retry.test.sh"] },
       { criterionId: "AC1", testFiles: ["extension/smoke-tests/test-ac1.ts"] },
@@ -155,8 +156,9 @@ import {
     `nothing survives when every path is frozen or unwritten (got ${JSON.stringify(ordered.kept)})`,
   );
   assert(
-    reasonFor("tests/AC1-retry.test.sh").includes("not directly inside"),
-    `a misplaced path reports the LOCATION rule even though the path is also frozen (got ${reasonFor("tests/AC1-retry.test.sh")})`,
+    reasonFor("tests/AC1-retry.test.sh").includes("frozen acceptance test") &&
+      reasonFor("tests/AC1-retry.test.sh").includes("not directly inside") === false,
+    `a MISPLACED path that the run already froze reports FROZEN, never the location rule that would tell the operator to move it (got ${reasonFor("tests/AC1-retry.test.sh")})`,
   );
   assert(
     reasonFor("extension/smoke-tests/test-ac1.ts").includes("frozen acceptance test") &&
@@ -351,7 +353,7 @@ import {
       (legacy.outcome.reason ?? "").includes("test-ac1-misplaced.ts"),
     `(challenge) one round reports a not-written refusal and the inherited contract stays intact (got ${legacy.outcome?.reason})`,
   );
-  const frozenInPlace = validateSubmitRows(
+  const frozenInPlace = await validateSubmitRows(
     [{ criterionId: "AC1", testFiles: ["extension/smoke-tests/test-ac1.ts"] }],
     {
       spec: SPEC,
@@ -366,6 +368,27 @@ import {
       frozenInPlace.dropped[0]?.reason.includes("misplaced") === false &&
       frozenInPlace.dropped[0]?.reason.includes("not directly inside") === false,
     `a frozen path that sits INSIDE the configured folder is refused as frozen, never as misplaced (got ${frozenInPlace.dropped[0]?.reason})`,
+  );
+
+  // A frozen path must outrank the BASE-NEWNESS rule too, and this is the one
+  // shape where the two are not the same answer: an inherited frozen test is
+  // present at the base AND in the frozen set, so a swapped order would report
+  // it as "not a new file" — which tells the adversary to pick another name for
+  // a file the run forbids it to touch at all.
+  const frozenAtBase = await validateSubmitRows(
+    [{ criterionId: "AC1", testFiles: ["tests/AC1-retry.test.sh"] }],
+    {
+      spec: SPEC,
+      exists: () => true,
+      existsAtBase: async () => true,
+      frozenPaths: new Set(["tests/AC1-retry.test.sh"]),
+    },
+  );
+  assert(
+    frozenAtBase.kept.length === 0 &&
+      frozenAtBase.dropped[0]?.reason.includes("frozen acceptance test") === true &&
+      frozenAtBase.dropped[0]?.reason.includes("base commit") === false,
+    `an inherited frozen test keeps the FROZEN reason and never gets the newness one (got ${frozenAtBase.dropped[0]?.reason})`,
   );
 
   // A green edge case in the RIGHT place is still dropped for being green —

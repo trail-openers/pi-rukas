@@ -32,6 +32,7 @@
 
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { errorText, gitCatFileSaysAbsent } from "../git-range.ts";
 import type { ExecFn } from "../worktree.ts";
 import { changedPaths } from "./specify-tree.ts";
 
@@ -230,6 +231,92 @@ export async function resetWorktreeToBase(
         .map((e) => `${e.status} ${e.path}`)
         .join(", ")}${dirty.length > 8 ? ` (+${dirty.length - 8} more)` : ""}`,
     );
+}
+
+/**
+ * Is `rel` a file in the tree of `ref`? Asked of git, not of the working tree.
+ *
+ * The boundary in `validateSubmitRows` needs this to refuse a submitted test
+ * that the run's base ALREADY has — a tracked test the child never wrote is not
+ * a new acceptance test, whatever it declares about it — and `git cat-file -e
+ * <ref>:<rel>` is the only read that answers it, because a working-tree check
+ * cannot tell "the child wrote this" from "it was checked out at me".
+ *
+ * Two answers, and the difference between them is everything:
+ *
+ *   - git ran and said the path is not in that commit
+ *     (`fatal: path '…' does not exist in '…'`) → **false**: the file is new;
+ *   - anything else — the clone is unreadable, the ref did not resolve, the
+ *     probe was killed or timed out, its output blew its buffer → **throw**.
+ *
+ * The throw arm is the one that matters. Reading every failure as "not there"
+ * would make a broken repository certify that every submitted test is new, and
+ * the newness rule would pass the exact shape it exists to refuse while
+ * reporting the loudest possible confidence. It is the same rule every other
+ * git read in this module applies: absence is a fact git has to state.
+ *
+ * `--end-of-options` closes the ref so a path the child spelled cannot be read
+ * as a flag, and `--literal-pathspecs` (a top-level option, as `commitTestFiles`
+ * passes it) makes `tests/[a]x.test.sh` one file rather than a glob.
+ */
+export async function existsInCommit(
+  exec: ExecFn,
+  cwd: string,
+  ref: string,
+  rel: string,
+): Promise<boolean> {
+  try {
+    await exec("git", {
+      argv: [
+        ...NO_HOOKS,
+        "--literal-pathspecs",
+        "cat-file",
+        "-e",
+        "--end-of-options",
+        `${ref}:${rel}`,
+      ],
+      cwd,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return true;
+  } catch (err) {
+    if (gitCatFileSaysAbsent(err)) return false;
+    if (existsInCommitProblem(err) === undefined) return false;
+    throw new SpecifyResetError(
+      `could not read the base commit ${ref} to check whether ${rel} is new: ${existsInCommitProblem(err)}`,
+    );
+  }
+}
+
+/**
+ * The one wording `gitCatFileSaysAbsent` does not cover, and must not.
+ *
+ * `git cat-file -e <base>:<rel>` for a file that sits in the WORKING TREE but
+ * not in `<base>` answers `fatal: path '…' exists on disk, but not in '<base>'`
+ * — and that wording carries no "does not exist", so the shared tree-probe rule
+ * reads it as a store fault. For the other caller of that rule (`lens-evidence.ts`,
+ * which asks whether a branch HOLDS a prose file) a fault is the safe answer:
+ * an ungrounded claim is merely unhelpful. Here a fault is the UNSAFE one: an
+ * unclassified failure would throw on the one shape the rule exists to catch —
+ * the child wrote the file into its own tree, which is exactly what a file that
+ * "exists on disk, but not in the base" IS.
+ *
+ * So this wording is recognised HERE, at the caller that can say what it means,
+ * and deliberately not pushed into the shared rule, where it would widen
+ * `lens-evidence`'s absence set for a reason that has nothing to do with it.
+ */
+function pathExistsOnDiskOnly(err: unknown): boolean {
+  const e = err as { code?: unknown; stderr?: unknown } | null;
+  if (e?.code !== 1 && e?.code !== 128) return false;
+  return typeof e.stderr === "string" && /exists on disk, but not in/i.test(e.stderr);
+}
+
+/** The cause to report, or undefined when git answered the question either way. */
+function existsInCommitProblem(err: unknown): string | undefined {
+  if (pathExistsOnDiskOnly(err)) return undefined;
+  if (gitCatFileSaysAbsent(err)) return undefined;
+  return errorText(err);
 }
 
 /**

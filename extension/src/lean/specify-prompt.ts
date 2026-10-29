@@ -150,6 +150,12 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
           ? ""
           : "Each file FAILS on the current code **for the behaviour the criterion states** — exercise the real entry point and assert the real expected result. A file that always fails (assert false, an import of a module that does not exist, a syntax error, a skipped or TODO test) is worthless here and will be thrown out: the parent runs every file it is given against the base commit and keeps only those that fail for a real reason.",
         tests.length === 0 ? "" : namingLine(opts.testLocation),
+        // The newness rule, in the child's own instructions, before the boundary
+        // enforces it: the worktree is a checkout of the base, so a tracked test
+        // that is already there is reachable and looks like something to submit.
+        tests.length === 0
+          ? ""
+          : "Each file must be a file YOU CREATE: the parent refuses any path that already exists in the base commit, whether you left it untouched or overwrote it — an existing test is not evidence about code nobody wrote yet, and overwriting one rewrites the contract the builder is measured against.",
         tests.length === 0 || opts.testLocation === undefined
           ? ""
           : testLocationInstruction(opts.testLocation),

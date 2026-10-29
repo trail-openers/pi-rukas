@@ -50,6 +50,8 @@ const TEST_DIR_FORBIDDEN = /[?*]/;
  */
 export function validateTestDir(dir: string): string | undefined {
   if (dir.trim() === "") return ".pi/work.json verify.testDir must not be empty";
+  if (dir !== dir.trim())
+    return `.pi/work.json verify.testDir must not have surrounding whitespace — the value is used verbatim, so \`${dir}\` would name a directory that does not exist`;
   if (TEST_LOCATION_FORBIDDEN.test(dir))
     return `.pi/work.json verify.testDir must be a plain repo-relative directory: ; & | \` $ < > " ' \\ and newline are not allowed (${dir})`;
   if (TEST_DIR_FORBIDDEN.test(dir))
@@ -75,6 +77,8 @@ export function validateTestDir(dir: string): string | undefined {
  */
 export function validateTestGlob(glob: string): string | undefined {
   if (glob.trim() === "") return ".pi/work.json verify.testGlob must not be empty";
+  if (glob !== glob.trim())
+    return `.pi/work.json verify.testGlob must not have surrounding whitespace — the value is matched verbatim against a file name, so \`${glob}\` would match nothing`;
   if (glob.includes("/") || glob.includes("\\"))
     return `.pi/work.json verify.testGlob is a file-name pattern, not a path: no slashes (${glob})`;
   const stars = glob.split("*").length - 1;
@@ -84,6 +88,19 @@ export function validateTestGlob(glob: string): string | undefined {
     return `.pi/work.json verify.testGlob supports exactly one "*"; "?" is not part of the pattern (${glob})`;
   if (TEST_LOCATION_FORBIDDEN.test(glob))
     return `.pi/work.json verify.testGlob must be a plain file-name pattern: ; & | \` $ < > " ' \\ and newline are not allowed (${glob})`;
+  // The four below all say the same thing in git's own words: the pattern names
+  // no RUNNABLE TEST FILE. A project whose CI glob cannot name one has a config
+  // that every frozen test quietly escapes, so each is refused at the loader.
+  if (glob === "*")
+    return `.pi/work.json verify.testGlob must not be "*": that matches every file in the directory, so the run could freeze anything as an acceptance test (${glob})`;
+  if (glob.startsWith("."))
+    return `.pi/work.json verify.testGlob must not start with ".": a leading dot is a hidden file, which is not a test file the project's CI runs (${glob})`;
+  // `*` opens the wildcard and the extension is what follows it — so a pattern
+  // whose `*` is the last character names no file type at all (`test-` matches
+  // no runnable file). Checked after the `*`-count rule, which already rejects
+  // the zero-star and multi-star shapes this would otherwise be read against.
+  if (!glob.slice(glob.indexOf("*") + 1).includes("."))
+    return `.pi/work.json verify.testGlob must name a file extension after the "*" — a pattern like \`test-*\` matches files with no extension, which no test runner executes (${glob})`;
   return undefined;
 }
 
