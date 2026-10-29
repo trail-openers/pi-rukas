@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { codeAppendReservation } from "../src/plan-driver-phase3.ts";
 /**
  * plan-pi-spec — the EXCLUSIONS (#1883): an epic, a spike and a criteria-less draft
  * get no block AND no omission line, and their filed bodies are byte-identical to
@@ -10,6 +9,7 @@ import { codeAppendReservation } from "../src/plan-driver-phase3.ts";
  *
  * Split from `test-plan-pi-spec.ts` by the AGENTS.md 12 file-size cap.
  */
+import { codeAppendReservation } from "../src/plan-driver-phase3.ts";
 import { finalDraftBody } from "../src/plan-gap-disclosure.ts";
 import {
   PI_SPEC_HEADING,
@@ -98,9 +98,6 @@ import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
     "exclusions: no piSpec means no block, byte-identical",
   );
 }
-
-console.log(`${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec-exclusions`);
-process.exit(specExit());
 
 console.log(`${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec-exclusions`);
 process.exit(specExit());

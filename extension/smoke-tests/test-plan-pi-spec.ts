@@ -8,10 +8,10 @@
  *   - the MAPPER is the only place a bound exists: `problem` is the TITLE clipped
  *     to 200 chars (never body prose), at most 12 criteria are embedded at 200
  *     chars each, `size` counts the ORIGINAL criteria, there is no `scope`, and
- *     every run of ≥3 backticks/tildes is neutralised in problem, text and
- *     command. A criterion whose backticked span merely STARTS with a runner word
- *     ("the gov file") must stay a `test` criterion, or /work-lean would go
- *     hunting for a command that is prose.
+ *     every run of ≥3 backticks/tildes is neutralised in problem and text. Every
+ *     criterion is `verify: "test"` with no command, whatever its backticked span
+ *     says: a command in drafted prose is text for a reviewer, never a check the
+ *     executor runs.
  *   - the section is BOUNDED BY CONSTRUCTION: the worst-case render (12 × 200-char
  *     criteria + a 200-char title) is asserted under `PI_SPEC_SECTION_MAX_CHARS`,
  *     so a widened bound fails here rather than at the forge.
@@ -30,7 +30,6 @@
  * cap split them). Both share `lib/plan-pi-spec-fixture.ts`.
  */
 import { type PiSpec, parsePiSpec, readiness } from "../src/lean/spec.ts";
-import { codeAppendReservation } from "../src/plan-driver-phase3.ts";
 import { finalDraftBody } from "../src/plan-gap-disclosure.ts";
 import {
   PI_SPEC_CRITERION_MAX_CHARS,
@@ -38,11 +37,9 @@ import {
   PI_SPEC_HEADING,
   PI_SPEC_MAX_CRITERIA,
   PI_SPEC_OMISSION_LINE_MAX_CHARS,
-  PI_SPEC_OMISSION_PREFIX,
   PI_SPEC_PROBLEM_MAX_CHARS,
   PI_SPEC_READINESS_PREFIX,
   PI_SPEC_SECTION_MAX_CHARS,
-  neutraliseDraftedPiSpecFences,
   neutraliseFenceRuns,
   piSpecFromDraft,
   piSpecReservation,
@@ -50,7 +47,7 @@ import {
   renderPiSpecSection,
 } from "../src/plan-pi-spec.ts";
 import { BODY_BUDGET } from "../src/plan-validate.ts";
-import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
+import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixture.ts";
 
 // ------------------------------------------------------------------ the mapper
 
@@ -68,20 +65,19 @@ import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
   assert(!!spec && spec.criteria.length === 4, "mapper: one criterion per bullet, in order");
   assert(
     spec?.criteria[0]?.verify === "test" && spec?.criteria[0]?.id === "AC1",
-    "mapper: ids are positional AC1.. and the default verify is test",
+    "mapper: ids are positional AC1.. and every criterion is verify test",
   );
   assert(
-    spec?.criteria[1]?.verify === "command" &&
-      spec?.criteria[1]?.command === "bun test extension/smoke-tests",
-    "mapper: a backticked runner command becomes a command criterion",
+    spec?.criteria[1]?.verify === "test" && spec?.criteria[1]?.command === undefined,
+    "mapper: a backticked runner command is prose, not a command criterion",
   );
   assert(
-    spec?.criteria[2]?.verify === "command" && spec?.criteria[2]?.command === "./scripts/verify.sh",
-    "mapper: ./scripts/… counts as a runner",
+    spec?.criteria[2]?.verify === "test" && spec?.criteria[2]?.command === undefined,
+    "mapper: a ./scripts/ span is prose too, not a command criterion",
   );
   assert(
     spec?.criteria[3]?.verify === "test" && spec?.criteria[3]?.command === undefined,
-    "mapper: a span that merely starts with runner letters stays a test criterion",
+    "mapper: a span that merely starts with runner letters is not a command",
   );
   assert(
     spec?.problem === "add a pi-spec block",
@@ -159,17 +155,15 @@ import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
     (spec?.criteria[0]?.text.length ?? 0) === PI_SPEC_CRITERION_MAX_CHARS,
     `mapper: criterion text is clipped to ${PI_SPEC_CRITERION_MAX_CHARS} (got ${spec?.criteria[0]?.text.length})`,
   );
-  // A command past the clip still travels: `command` is read from the RAW bullet,
-  // so the criterion never files as an unverifiable `command` with no command.
+  // The clip never decides what a criterion is: a span past it is prose as well.
   const late = piSpecFromDraft({
     type: "feature",
     title: "t",
     body: draftBody([`${"y".repeat(400)} then \`bun test extension/smoke-tests\``]),
   });
   assert(
-    late?.criteria[0]?.verify === "command" &&
-      late?.criteria[0]?.command === "bun test extension/smoke-tests",
-    "mapper: a runner span past the text clip still becomes the criterion's command",
+    late?.criteria[0]?.verify === "test" && late?.criteria[0]?.command === undefined,
+    "mapper: a runner span past the text clip is prose too, never a command",
   );
 }
 
@@ -232,13 +226,16 @@ assert(
 // ------------------------------------- the section is bounded by construction
 
 {
-  const worst = piSpecFromDraft({
-    type: "feature",
-    title: "z".repeat(500),
-    body: draftBody(
-      Array.from({ length: 14 }, () => `${"q".repeat(199)} \`bun run smoke-tests/x\``),
-    ),
-  }) as PiSpec;
+  const worst = mustSpec(
+    piSpecFromDraft({
+      type: "feature",
+      title: "z".repeat(500),
+      body: draftBody(
+        Array.from({ length: 14 }, () => `${"q".repeat(199)} \`bun run smoke-tests/x\``),
+      ),
+    }),
+    "bound: worst",
+  );
   assert(
     worst.criteria.length === PI_SPEC_MAX_CRITERIA && worst.size === "L",
     "bound: the worst case embeds the cap and reports L",
@@ -273,11 +270,14 @@ assert(
 // ------------------------------------------------- render + the readiness note
 
 {
-  const spec = piSpecFromDraft({
-    type: "feature",
-    title: "t",
-    body: draftBody(["a", "b"]),
-  }) as PiSpec;
+  const spec = mustSpec(
+    piSpecFromDraft({
+      type: "feature",
+      title: "t",
+      body: draftBody(["a", "b"]),
+    }),
+    "render: two criteria",
+  );
   const section = renderPiSpecSection(spec);
   assert(
     section.startsWith(`${PI_SPEC_HEADING}\n\n\`\`\`pi-spec v1\n`),
@@ -305,11 +305,14 @@ assert(
     "render: a failed rule is disclosed on one plain line under the block",
   );
   assert(!withNote.includes("\n## "), "render: the readiness note is a plain line, not a heading");
-  const tooBig = piSpecFromDraft({
-    type: "feature",
-    title: "t",
-    body: draftBody(Array(14).fill("c")),
-  }) as PiSpec;
+  const tooBig = mustSpec(
+    piSpecFromDraft({
+      type: "feature",
+      title: "t",
+      body: draftBody(Array(14).fill("c")),
+    }),
+    "readiness: fourteen criteria",
+  );
   // `size L` IS in the note: the operator is the one who decides to split, and
   // silence on the one rule that says "this is too big for one run" hid the fix.
   const tooBigNote = renderPiSpecSection(tooBig);

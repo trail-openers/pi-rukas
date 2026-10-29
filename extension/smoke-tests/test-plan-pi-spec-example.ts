@@ -17,7 +17,6 @@ import {
   PI_SPEC_EXAMPLE_INFO,
   PI_SPEC_HEADING,
   neutraliseDraftedPiSpecFences,
-  piSpecFromDraft,
   placePiSpecSection,
 } from "../src/plan-pi-spec.ts";
 import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
@@ -100,7 +99,7 @@ import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
   assert(
     parsed.ok === true &&
       parsed.spec.criteria.length === 2 &&
-      parsed.spec.criteria[1]?.command === "bun test",
+      parsed.spec.criteria[1]?.text === "and `bun test` is green",
     "round-trip: the fenced criterion does not swallow its neighbour",
   );
   // A bullet that carries a whole fenced CODE BLOCK (its fences on lines of their
@@ -111,10 +110,8 @@ import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
   assert(
     parsed.ok === true &&
       parsed.spec.criteria.every((c) => !/(`{3,}|~{3,})/.test(c.text)) &&
-      parsed.spec.criteria.every(
-        (c) => c.command === undefined || !/(`{3,}|~{3,})/.test(c.command),
-      ),
-    "round-trip: no embedded field carries a fence run the reader could reopen",
+      parsed.spec.criteria.every((c) => c.command === undefined),
+    "round-trip: no embedded field carries a fence run the reader could reopen, and none is a command",
   );
   assert(
     placePiSpecSection(draftBody(["prints `const x = 1;` inline"]), "feature", "t").body.includes(
@@ -124,7 +121,5 @@ import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
   );
 }
 
-console.log(`${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec`);
-process.exit(specExit());
 console.log(`${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec-example`);
 process.exit(specExit());

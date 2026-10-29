@@ -7,7 +7,8 @@
  *
  *   - `piSpecFromDraft` bounds every field it emits — `problem` is the issued
  *     TITLE clipped to 200 UTF-16 units (never body prose), at most 12 criteria
- *     at 200 units each, no `scope` at all.
+ *     at 200 units each, no `scope` at all. Every criterion is `verify: "test"`
+ *     with no command: the drafter never makes a criterion executable.
  *   - `placePiSpecSection` puts `## Spec (pi-spec v1)` at the TOP of the body
  *     (under the provenance italic line when the caller has one), above every
  *     drafted and disclosed section. Then it READS THE BLOCK BACK through the
@@ -42,7 +43,7 @@ import type { PiSpec } from "./lean/spec.ts";
 import { SPEC_INFO, parsePiSpec, readiness, renderPiSpec } from "./lean/spec.ts";
 import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
 import type { PlanType } from "./plan-types.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 /** The section heading the block renders under. */
 export const PI_SPEC_HEADING = "## Spec (pi-spec v1)";
@@ -72,61 +73,85 @@ export const PI_SPEC_PROBLEM_MAX_CHARS = 200;
 /** The most criteria the block embeds; the size band still counts the original. */
 export const PI_SPEC_MAX_CRITERIA = 12;
 
-/** One criterion's text, and one criterion's command, never render longer. */
+/** One criterion's text never renders longer. */
 export const PI_SPEC_CRITERION_MAX_CHARS = 200;
 
-/**
- * The ceiling the rendered section stays under — and so the most the reservation
- * can ever cost the fitter. DERIVED from the bounds above, not hand-tuned.
- *
- * The per-field allowance is FOUR times the field bound, not two, and that factor
- * is the whole of the astral story: `renderPiSpec` emits `JSON.stringify` at
- * indent 2, which escapes one astral character (a surrogate pair) as
- * `\uD83D\uDE80` — sixteen UTF-16 units for what `.slice` clipped to one. A bound
- * of 2× a field therefore measured a render that astral text (emoji, CJK
- * extension B) over-ran by half. 4× is the exact worst case — both fields astral,
- * both fully escaped — plus the id, keys, quotes and indentation
- * (`CRITERION_JSON_OVERHEAD`), and the heading, fence lines, problem line and
- * readiness note are the leading 160.
- *
- * The sibling smoke tests render BOTH worst cases (ASCII and astral) and assert
- * each sits under this number, so widening a bound fails a test instead of quietly
- * widening the reservation — and `placePiSpecSection` still MEASURES the render
- * and refuses it when it is over, so a mis-derived ceiling cannot file an
- * over-budget body.
- */
-const CRITERION_JSON_OVERHEAD = 16;
-const JSON_ESCAPE_FACTOR = 4;
-export const PI_SPEC_SECTION_MAX_CHARS =
-  160 +
-  JSON_ESCAPE_FACTOR * PI_SPEC_PROBLEM_MAX_CHARS +
-  PI_SPEC_MAX_CRITERIA *
-    (JSON_ESCAPE_FACTOR * PI_SPEC_CRITERION_MAX_CHARS + CRITERION_JSON_OVERHEAD);
+/** An omission reason is clipped to this, like every other field the disclosure carries. */
+export const PI_SPEC_OMISSION_REASON_MAX_CHARS = 200;
 
 /** The most failed rules the readiness note prints, and how long one may be. */
 const READINESS_NOTE_MAX_RULES = 3;
 const READINESS_RULE_MAX_CHARS = 120;
 
-/** The width of the omission line: its prefix, a reason clipped to 200, and the join. */
-export const PI_SPEC_OMISSION_LINE_MAX_CHARS = PI_SPEC_OMISSION_PREFIX.length + 1 + 200 + 2;
+/**
+ * `renderPiSpec` is `JSON.stringify` at indent 2: one UTF-16 unit is one character,
+ * except a quote or a backslash (two). The units that would take six (a control
+ * character, a lone surrogate) are replaced by `oneLine` before any clip, and a valid
+ * surrogate pair is written raw, so two is the worst a clipped unit can cost.
+ */
+const JSON_ESCAPE_FACTOR = 2;
 
-/** A criterion is machine-checkable by a command when its span names one of these runners. */
-const RUNNER_WORDS = [
-  "bun",
-  "npm",
-  "npx",
-  "pnpm",
-  "yarn",
-  "cargo",
-  "go",
-  "pytest",
-  "python",
-  "make",
-  "./",
-];
+/** `AC` and the digits of the largest embedded index: the widest id a block carries. */
+const CRITERION_ID_MAX_CHARS = 2 + String(PI_SPEC_MAX_CRITERIA).length;
 
-/** One backticked span, non-greedy, never crossing a line break. */
-const BACKTICK_SPAN = /`([^`\n]+)`/;
+/**
+ * One criterion's JSON at indent 2, with its id at its widest and its text empty:
+ * the `{` line (6), `"id"` (13 + id + 3), `"text"` (15 + 3), `"verify": "test"` (23),
+ * and the `},` close (7). Quotes and separators are counted; the text is not.
+ */
+const CRITERION_JSON_OVERHEAD = 70 + CRITERION_ID_MAX_CHARS;
+
+/**
+ * The block's JSON with the problem and every text empty: the opening brace (2),
+ * the `"problem"` line (17), the `"criteria": [` line (16), the array close (5),
+ * the `"size"` line (14) and the closing brace (1).
+ */
+const JSON_FIXED_CHARS = 55;
+
+/**
+ * The readiness note at its widest: `\n\n` and the prefix and a space, the three
+ * rules of `READINESS_RULE_MAX_CHARS` joined by `; `, and the closing newline. The
+ * note is the one part of the section a failed rule can widen, so it is bounded
+ * here rather than assumed to be one line.
+ */
+const READINESS_NOTE_MAX_CHARS =
+  2 +
+  PI_SPEC_READINESS_PREFIX.length +
+  1 +
+  READINESS_NOTE_MAX_RULES * READINESS_RULE_MAX_CHARS +
+  (READINESS_NOTE_MAX_RULES - 1) * 2 +
+  1;
+
+/**
+ * The ceiling the rendered section stays under — and so the most the reservation
+ * can ever cost the fitter. Counted in UTF-16 units, the units `.length` counts.
+ *
+ * Each term is one piece of the section as it is written: the heading and the
+ * blank line under it, the fence open (`` ```pi-spec v1\n ``), the JSON structure,
+ * the fence close, the newline before the note, the note, then the two clipped
+ * fields at `JSON_ESCAPE_FACTOR`, and every criterion's structure and text.
+ *
+ * The sibling smoke tests render the worst case (every unit a quote or a backslash,
+ * the two that JSON doubles) and assert it sits under this number, so widening a bound
+ * fails a test instead of quietly widening the reservation. `placePiSpecSection`
+ * still MEASURES the render and refuses it when it is over, so a mis-derived
+ * ceiling cannot file an over-budget body.
+ */
+export const PI_SPEC_SECTION_MAX_CHARS =
+  PI_SPEC_HEADING.length +
+  2 +
+  (3 + SPEC_INFO.length + 1) +
+  JSON_FIXED_CHARS +
+  4 +
+  1 +
+  READINESS_NOTE_MAX_CHARS +
+  JSON_ESCAPE_FACTOR * PI_SPEC_PROBLEM_MAX_CHARS +
+  PI_SPEC_MAX_CRITERIA *
+    (CRITERION_JSON_OVERHEAD + JSON_ESCAPE_FACTOR * PI_SPEC_CRITERION_MAX_CHARS);
+
+/** The width of the omission line: its prefix, a reason clipped to the reason bound, and the join. */
+export const PI_SPEC_OMISSION_LINE_MAX_CHARS =
+  PI_SPEC_OMISSION_PREFIX.length + 1 + PI_SPEC_OMISSION_REASON_MAX_CHARS + 2;
 
 /** The size bands the contract's `size` field reports. */
 const SIZE_SMALL_MAX = 3;
@@ -201,7 +226,7 @@ export function neutraliseFenceRuns(s: string): string {
     }
     let j = i;
     while (j < s.length && s[j] === c) j++;
-    out += j - i >= 3 ? (c === "`" ? "\u02cb" : "\u02dc").repeat(j - i) : c.repeat(j - i);
+    out += j - i >= 3 ? (c === "`" ? "ˋ" : "˜").repeat(j - i) : c.repeat(j - i);
     i = j;
   }
   return out;
@@ -224,9 +249,19 @@ function clip(s: string, max: number): string {
   return out;
 }
 
-/** Collapse every run of whitespace to one space, so a field stays one line's worth. */
+/**
+ * One printable line: control characters become spaces, a lone surrogate becomes
+ * U+FFFD, and whitespace runs collapse. Iterated by code point, so a valid surrogate
+ * pair (an emoji) arrives whole; only an unpaired surrogate is in the surrogate range.
+ */
 function oneLine(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
+  const printable = Array.from(s, (ch) => {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0xd800 && cp <= 0xdfff) return "�";
+    if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return " ";
+    return ch;
+  });
+  return printable.join("").replace(/\s+/g, " ").trim();
 }
 
 /** The bullets of one `## <heading>` section, in order, status-only bullets dropped. */
@@ -244,27 +279,6 @@ function sectionBullets(body: string, heading: string): string[] {
     );
 }
 
-/**
- * True when a backticked span IS a shell command: it starts with a bare runner
- * word (`bun test`, `./verify.sh`) rather than merely beginning with those
- * letters. `go test -run X` is a command; `the gov file` is not, and matching on
- * a prefix alone would call it one.
- */
-function isRunnerCommand(cand: string): boolean {
-  return RUNNER_WORDS.some((w) =>
-    w === "./" ? cand.startsWith("./") : cand === w || cand.startsWith(`${w} `),
-  );
-}
-
-/** The first backticked span in a criterion that states a runnable command. */
-function commandIn(text: string): string | undefined {
-  for (const m of text.matchAll(new RegExp(BACKTICK_SPAN.source, "g"))) {
-    const cand = (m[1] ?? "").trim();
-    if (isRunnerCommand(cand)) return cand;
-  }
-  return undefined;
-}
-
 /** S → at most 3 criteria, M → at most 8, L → more. */
 function sizeOf(count: number): PiSpec["size"] {
   if (count <= SIZE_SMALL_MAX) return "S";
@@ -275,15 +289,12 @@ function sizeOf(count: number): PiSpec["size"] {
 /**
  * The drafted body + title → the contract, bounded by construction. Criteria are
  * the draft's own `## Acceptance criteria` bullets, in order, with positional ids
- * `AC1...`; one that states a runnable command becomes a `command` criterion (the
- * command is the rule, and the criterion's text stays beside it). At most
- * `PI_SPEC_MAX_CRITERIA` are embedded, but `size` counts the ORIGINAL set - a
- * thirteen-criterion plan is honestly `L` even though twelve ride in the block.
- * `problem` is the title; there is no `scope`.
- *
- * `command` is read from the RAW bullet and `text` from the clipped one, so a
- * criterion whose command sits past the 200-char clip keeps its command rather
- * than filing an unverifiable `command` criterion with none.
+ * `AC1...`, and every one is `verify: "test"` with no command. A backticked command
+ * in the prose is text a reviewer reads, never something the executor runs: only a
+ * human writing the block by hand can make a criterion a command, which is why the
+ * drafter does not get to. At most `PI_SPEC_MAX_CRITERIA` are embedded, but `size`
+ * counts the ORIGINAL set - a thirteen-criterion plan is honestly `L` even though
+ * twelve ride in the block. `problem` is the title; there is no `scope`.
  *
  * Returns undefined when there is nothing to contract: an epic, a spike, zero
  * criteria, or a title so empty there is no `problem` to state (a spec with an
@@ -291,28 +302,19 @@ function sizeOf(count: number): PiSpec["size"] {
  */
 export function piSpecFromDraft(draft: PiSpecDraft): PiSpec | undefined {
   if (draft.type === "spike" || draft.type === "epic") return undefined;
-  const title = typeof draft.title === "string" ? draft.title : "";
-  if (title.trim() === "") return undefined;
+  if (draft.title.trim() === "") return undefined;
   const all = sectionBullets(draft.body, "Acceptance criteria");
   if (all.length === 0) return undefined;
-  const criteria = all.slice(0, PI_SPEC_MAX_CRITERIA).map((raw, i) => {
+  const criteria = all.slice(0, PI_SPEC_MAX_CRITERIA).map((bullet, i) => ({
+    id: `AC${i + 1}`,
     // Neutralise FIRST, then clip: the 1:1 look-alikes keep the width honest (they
     // are BMP code points, so a neutralised field never carries a surrogate pair),
     // and a bullet whose fences collapse cannot lose its tail to the clip.
-    const text = clip(neutraliseFenceRuns(oneLine(raw)), PI_SPEC_CRITERION_MAX_CHARS);
-    const command = commandIn(raw);
-    return command === undefined
-      ? { id: `AC${i + 1}`, text, verify: "test" as const }
-      : {
-          id: `AC${i + 1}`,
-          text,
-          verify: "command" as const,
-          command: clip(neutraliseFenceRuns(oneLine(command)), PI_SPEC_CRITERION_MAX_CHARS),
-        };
-  });
-
+    text: clip(neutraliseFenceRuns(oneLine(bullet)), PI_SPEC_CRITERION_MAX_CHARS),
+    verify: "test" as const,
+  }));
   return {
-    problem: clip(neutraliseFenceRuns(oneLine(title)), PI_SPEC_PROBLEM_MAX_CHARS),
+    problem: clip(neutraliseFenceRuns(oneLine(draft.title)), PI_SPEC_PROBLEM_MAX_CHARS),
     criteria,
     size: sizeOf(all.length),
   };
@@ -332,19 +334,19 @@ export function renderPiSpecSection(spec: PiSpec): string {
 }
 
 /**
- * Rename EVERY drafted `pi-spec v1` fence to `pi-spec-example v1`.
+ * Rename EVERY line that opens a `pi-spec v1` fence to `pi-spec-example v1`.
  *
  * Without this the drafted prose can supply the contract: an angle item that
  * QUOTES the block format puts a real `pi-spec v1` fence in the body, and the
  * example — written to illustrate, not to promise — becomes what the executor runs
- * against. So the info string of every such fence is renamed BEFORE ours is
- * placed, unconditionally, and our block is always the only one.
+ * against. So the info string of every such line is renamed BEFORE ours is placed,
+ * and our block is always the only one.
  *
- * A plain line-by-line loop, with the fence grammar itself in
- * `plan-pi-spec-fences.ts`: the line is only an opening fence when no fence is
- * already open above it, so a `pi-spec v1` that appears as another fence's
- * CONTENT is left alone, and a closing fence (which carries no info string) is
- * never rewritten.
+ * Stateless, and deliberately so: the renamer does not track which fence is open,
+ * so a `pi-spec v1` line that sits inside another fence's content is renamed too.
+ * That costs nothing — the quoted text stays prose either way — and it keeps the
+ * whole pass one line-by-line map with no fence grammar to get wrong. A closing
+ * fence carries no info string, so it is never rewritten.
  */
 export function neutraliseDraftedPiSpecFences(body: string): string {
   return body
@@ -378,8 +380,6 @@ export interface PiSpecPlacement {
   body: string;
   /** The spec that was embedded (undefined when no block was written). */
   spec: PiSpec | undefined;
-  /** True when this placement wrote the block. */
-  placed?: boolean;
   /** Why there is no block: nothing to contract, over the ceiling, or a failed read-back. */
   omitted: string | undefined;
 }
@@ -420,42 +420,57 @@ export function placePiSpecSection(
   // to promise that is to measure what was actually produced and refuse it when it
   // is over.
   if (section.length > PI_SPEC_SECTION_MAX_CHARS) {
-    return omit(body, type, title, "pi-spec block over its size ceiling");
+    return omit(body, type, title, "pi-spec block over its size ceiling", true);
   }
   const candidate = placeSection(neutraliseDraftedPiSpecFences(body), section, provenanceLine);
   const back = parsePiSpec(candidate);
-  if (!back.ok) {
-    return omit(body, type, title, back.reason, true);
-  }
+  if (!back.ok) return omit(body, type, title, back.reason, true, true);
   if (JSON.stringify(back.spec) !== JSON.stringify(spec)) {
-    return omit(body, type, title, "the block read back different from the one embedded", true);
+    return omit(
+      body,
+      type,
+      title,
+      "the block read back different from the one embedded",
+      true,
+      true,
+    );
   }
-  return { body: candidate, spec, placed: true, omitted: undefined };
+  return { body: candidate, spec, omitted: undefined };
 }
 
-/** Every omission goes through here, so none of them is silent. */
+/**
+ * Every omission goes through here, so none of them is silent. A real failure —
+ * over the ceiling, or a read-back that did not match — is a WARNING, because the
+ * drafter expected a block and the operator needs to know it was not filed. An
+ * expected exclusion (an epic, a spike, zero criteria, no title) is plain trace.
+ * `disclosure` adds the plain line to the body; only a read-back failure carries
+ * one, and the ceiling case files without it, as it always has.
+ */
 function omit(
   body: string,
   type: PlanType,
   title: string,
   reason: string,
+  failed = false,
   disclosure = false,
 ): PiSpecPlacement {
-  trace(`plan-pi-spec: block omitted — reason=${reason} type=${type} titleLength=${title.length}`);
+  const shown = clip(oneLine(reason), PI_SPEC_OMISSION_REASON_MAX_CHARS);
+  const msg = `plan-pi-spec: block omitted — reason=${shown} type=${type} titleLength=${title.length}`;
+  if (failed) traceWarn(msg);
+  else trace(msg);
   return {
     // The disclosure is appended to `body`, not to a candidate, so nothing of the
     // candidate's rewritten shape leaks into a filing that has no block in it.
-    body: disclosure ? `${body.trimEnd()}\n\n${PI_SPEC_OMISSION_PREFIX} ${reason}\n` : body,
+    body: disclosure ? `${body.trimEnd()}\n\n${PI_SPEC_OMISSION_PREFIX} ${shown}\n` : body,
     spec: undefined,
-    omitted: reason,
+    omitted: shown,
   };
 }
 
 /** Why there is no block when the mapper produced no spec. */
 function reasonWithoutSpec(type: PlanType, title: string): string {
   if (type === "epic" || type === "spike") return `a ${type} has no runnable acceptance criteria`;
-  if (typeof title !== "string" || title.trim() === "")
-    return "no issue title to state the problem";
+  if (title.trim() === "") return "no issue title to state the problem";
   return "the drafted body has no acceptance criteria";
 }
 
