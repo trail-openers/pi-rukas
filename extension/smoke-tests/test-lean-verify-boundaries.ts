@@ -23,6 +23,7 @@
  */
 
 import { execp } from "../src/exec.ts";
+import type { VerifyExec } from "../src/lean/verify-types.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
 import { type VerifyDeps, verifyOutcome } from "../src/lean/verify.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
@@ -63,7 +64,7 @@ async function headOf(wt: string): Promise<string> {
   const r = await runVerify({
     issue: 214,
     config: { fast: PASS_TIER },
-    silentTestRunner: true,
+    brokenRunner: "silent",
   });
   assert(
     r.outcome?.kind === "red",
@@ -192,6 +193,102 @@ for (const [label, opts] of [
     `(u) the throw names the detached branch (${label}: ${r.threw?.message ?? `green: ${r.outcome?.reason}`})`,
   );
   assert(r.outcome === undefined, `(u) a detached tree records no green (${label})`);
+}
+
+// ------ (v) a frozen test runner the shell cannot run is infra, not a red
+{
+  // `/nonexistent-runner-xyz {file}` never becomes a process: the shell exits
+  // 127 ("not found") and prints nothing about the file, so `runTestFile`
+  // classifies it `unclear` — the same kind a genuinely failing test arrives in.
+  // The exit status is numeric, so `neverStarted` cannot see it either. Reading
+  // it as a red sends a developer to fix code nothing ever executed.
+  const r = await runVerify({
+    issue: 218,
+    config: { fast: PASS_TIER },
+    brokenRunner: "missing-binary",
+  });
+  assert(
+    r.threw instanceof VerifyInfraError,
+    `(v) a frozen runner that could not run throws VerifyInfraError (got ${r.threw?.name ?? r.outcome?.kind}: ${r.threw?.message ?? r.outcome?.reason})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("the frozen test runner could not run"),
+    `(v) the throw says the runner could not run (${r.threw?.message})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("tests/AC1-retry.test.sh"),
+    `(v) the throw names the file it never ran (${r.threw?.message})`,
+  );
+  assert(
+    /exit 12[67]/.test(r.threw?.message ?? ""),
+    `(v) the throw carries the shell's exit status (${r.threw?.message})`,
+  );
+  assert(r.outcome === undefined, "(v) an unrunnable runner records no verdict");
+}
+
+// ---- (w) a noisy exit 1 on the branch re-check is infra, not "detached"
+{
+  // git's detached answer is exit 1 with NOTHING printed. An exit 1 that wrote
+  // to stderr is a git that could not answer, and reading it as "detached" would
+  // blame the tier for a question git never answered — the same distinction (s)
+  // makes for the HEAD re-check.
+  const r = await runVerify({
+    issue: 219,
+    implement: true,
+    config: { fast: PASS_TIER },
+    recheckBranchNoisyExit1: true,
+  });
+  assert(
+    r.threw instanceof VerifyInfraError,
+    `(w) a noisy exit-1 branch read throws VerifyInfraError (got ${r.threw?.name ?? r.outcome?.kind}: ${r.threw?.message ?? r.outcome?.reason})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("could not re-check the branch after the tiers"),
+    `(w) the throw names the branch re-check (${r.threw?.message})`,
+  );
+  assert(
+    !(r.threw?.message ?? "").includes("detached"),
+    `(w) the tier is not accused of detaching (${r.threw?.message})`,
+  );
+  assert(r.outcome === undefined, "(w) a branch read that could not answer records no green");
+}
+
+// ---- (x) a HEAD read that rejects is infra, not "not a sha"
+{
+  // The first HEAD read used to swallow its rejection and fall through to the
+  // "got <nothing>" message, which reads like a corrupt repo and hides the
+  // reason git gave. It is the machine either way, but the reason is the point.
+  const f = buildFixtureForWiring(220);
+  const deps: VerifyDeps = {
+    exec: ((cmd: string, o?: { argv?: string[] }) =>
+      cmd === "git" && String(o?.argv ?? []).includes("rev-parse")
+        ? Promise.reject(new Error("git: fatal: unable to read tree"))
+        : execp(cmd, { ...(o ?? {}), env: gitTestEnv(), cwd: f.wt })) as VerifyDeps["exec"],
+    loadConfig: async () => ({ verify: { test: "sh {file}", fast: PASS_TIER } }),
+    readVerifyCmd: async () => undefined,
+  };
+  let threw: unknown;
+  let outcome: unknown;
+  await verifyOutcome(f.ctx, deps).then(
+    (o) => {
+      outcome = o;
+    },
+    (err: unknown) => {
+      threw = err;
+    },
+  );
+  assert(
+    threw instanceof VerifyInfraError,
+    `(x) a rejecting first HEAD read throws VerifyInfraError (got ${threw instanceof Error ? `${threw.name}: ${threw.message}` : JSON.stringify(outcome)})`,
+  );
+  assert(
+    (threw as Error)?.message.includes(`could not read HEAD in ${f.wt}`),
+    `(x) the throw names the HEAD read and the worktree (${(threw as Error)?.message})`,
+  );
+  assert(
+    (threw as Error)?.message.includes("unable to read tree"),
+    `(x) the throw carries git's reason (${(threw as Error)?.message})`,
+  );
 }
 
 for (const dir of ROOTS) {

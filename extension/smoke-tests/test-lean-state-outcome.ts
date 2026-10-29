@@ -83,6 +83,35 @@ for (const [label, issue, step, expect] of [
     },
     /verifiedHead/,
   ],
+  [
+    // A `frozen` key is looked up by exact string against the bytes at HEAD, so
+    // one that traverses outside the tree can never match a blob: the record
+    // reads as tamper evidence and compares unequal forever.
+    "frozen key that escapes the worktree",
+    50,
+    {
+      key: "50:specify:0",
+      state: "specify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "ok", frozen: { "../outside": "a".repeat(64) } },
+    },
+    /frozen key/,
+  ],
+  [
+    // `next()` calls `.join` on `failedRules` when it routes a refusal, so a
+    // number in that array is a crash waiting in the report path.
+    "failedRules carrying a number",
+    51,
+    {
+      key: "51:build:0",
+      state: "build",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "blocked", failedRules: [1] },
+    },
+    /failedRules/,
+  ],
 ] as const) {
   const { dir, cleanup } = tempDir();
   try {

@@ -48,12 +48,27 @@ export const TIER_TAIL_LINES = 40;
  * `frozenTestFailure` is where the line sits: a frozen test that exits non-zero
  * without echoing its own path is a `fail` (it was proven red at freeze time,
  * so a later non-zero exit is that failure continuing), while a runner that was
- * killed, timed out or never started is `infra` — that one never ran.
+ * killed, timed out or never started is `infra` — that one never ran. The 126
+ * and 127 the shell reports for "not executable" and "not found" belong with
+ * the latter: the shell answered, but nothing that could judge the code ever
+ * existed, so accusing the work of it sends a developer to fix code nobody ran.
  */
 export type Executed =
   | { kind: "pass" }
   | { kind: "fail"; reason: string }
   | { kind: "infra"; reason: string };
+
+/**
+ * The shell's "I could not run this" exit statuses: 126 is not executable,
+ * 127 is not found. Both mean the command line named something that never
+ * became a process, so neither carries a verdict about the code under test.
+ */
+const UNRUNNABLE_EXIT: ReadonlySet<number | undefined> = new Set([126, 127]);
+
+/** An exit status for a reason string; a kill or kill-before-exec has none. */
+function exitLabel(code: number | undefined): string {
+  return code === undefined ? "no exit status" : `exit ${code}`;
+}
 
 /** Join whatever a command printed into one block for a tail. */
 function outputOf(parts: Array<string | undefined>): string {
@@ -135,6 +150,15 @@ export async function frozenTestFailure(
     });
     if (proof.kind === "infra")
       throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${proof.detail}`);
+    // 126/127 are the SHELL's own refusal to run anything: "not executable" and
+    // "not found". The exit status is real, so `neverStarted` (which asks for a
+    // non-numeric code) cannot see it, and the runner never existed to judge the
+    // code. That is the machine, not a verdict: throwing hands the run back, a
+    // red would send a developer to fix code nothing ever executed.
+    if (proof.kind === "unclear" && UNRUNNABLE_EXIT.has(proof.code))
+      throw new VerifyInfraError(
+        `the frozen test runner could not run ${file} (${exitLabel(proof.code)}): ${proof.detail}`,
+      );
     // A non-zero exit whose output never named this file is a RED, not
     // infrastructure (the PM's call, reversing the earlier reading). The file
     // was proven red-and-named at freeze time, so it was a real failing test on
@@ -146,7 +170,7 @@ export async function frozenTestFailure(
     if (proof.kind === "unclear")
       return {
         kind: "fail",
-        reason: `frozen test ${file} failed (exit ${String(proof.code)}; output did not name it)`,
+        reason: `frozen test ${file} failed (${exitLabel(proof.code)}; output did not name it)`,
       };
     if (proof.kind !== "green") failures.push(`${file} (${proof.detail})`);
   }

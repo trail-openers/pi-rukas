@@ -34,6 +34,12 @@ import { type Outcome, type Step, createRun } from "../../src/lean/state.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import type { VerifyDeps } from "../../src/lean/verify.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import {
+  BROKEN_RUNNER_FILE,
+  BROKEN_RUNNER_SCRIPT,
+  BROKEN_RUNNER_TEMPLATE,
+  type BrokenRunner,
+} from "./lean-verify-runner.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -68,12 +74,11 @@ export function failTier(marker: string): string {
 export const HANG_TIER = "sleep 60";
 
 /**
- * A `verify.test` template whose runner exits non-zero WITHOUT naming the file:
- * the shape `runTestFile` classifies as `unclear`. `sh {file}` cannot produce it
- * (the fixture's test echoes its own path when it fails), so a case that wants
- * to see what an unattributable failure becomes needs this runner instead.
+ * The two shapes of "the runner could not judge this file", re-exported from
+ * `lean-verify-runner.ts` where they are defined, so a verify case asks for one
+ * by name alongside every other fixture knob.
  */
-export const SILENT_TEST_RUNNER = "sh silent-runner.sh {file}";
+export type { BrokenRunner } from "./lean-verify-runner.ts";
 
 /**
  * A tier that writes `rel` in the worktree, COMMITTING it when `commit` is set.
@@ -148,12 +153,18 @@ export interface VerifyOpts {
    */
   full?: string;
   /**
-   * A `verify.test` template whose runner says nothing about the file it was
-   * asked to run. The fixture's own `sh {file}` names its path on failure;
-   * this is the stand-in for a runner that does not, so a case can observe what
-   * an `unclear` proof (silent non-zero exit) becomes.
+   * Run the frozen tests through a runner that cannot judge them — see
+   * {@link BrokenRunner}: `"silent"` exits non-zero without naming the file, and
+   * `"missing-binary"` exits 127 without running anything. Both arrive as an
+   * `unclear` proof; what differs is what the step is allowed to make of it.
    */
-  silentTestRunner?: boolean;
+  brokenRunner?: BrokenRunner;
+  /**
+   * Reject the post-tier BRANCH read with exit 1 AND a message on stderr. git's
+   * own detached answer is exit 1 with NOTHING printed, so a noisy exit 1 is a
+   * git that could not reply and must not be read as "detached".
+   */
+  recheckBranchNoisyExit1?: boolean;
   /**
    * Make the HEAD read that happens AFTER the tiers reject, while every earlier
    * git call still goes to the real git. That read is the post-tier re-check: a
@@ -311,12 +322,14 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     "-q",
     "HEAD",
   ];
-  if (opts.silentTestRunner === true) {
+  if (opts.brokenRunner !== undefined) {
     // Committed before `head` is read: the step refuses a dirty tree before it
-    // ever runs a test, so a helper left untracked would trip that first, and
-    // the frozen file itself is untouched, so no tamper is mistaken for this.
-    writeFileSync(path.join(wt, "silent-runner.sh"), "exit 1\n");
-    commitHere(wt, "chore: fixture runner that never names the file it ran");
+    // ever runs a test, so a helper left untracked would trip that first, and the
+    // frozen file itself is untouched, so no tamper is mistaken for this.
+    writeFileSync(path.join(wt, BROKEN_RUNNER_FILE), BROKEN_RUNNER_SCRIPT[opts.brokenRunner], {
+      mode: 0o755,
+    });
+    commitHere(wt, `chore: fixture runner that cannot judge (${opts.brokenRunner})`);
   }
   // The log's frozen record is the bytes the FREEZE committed. A case that
   // rewrote the file on disk or at HEAD afterwards faces a record that no
@@ -343,6 +356,18 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       tierRan
     )
       return Promise.resolve({ stdout: "", stderr: "" });
+    if (
+      opts.recheckBranchNoisyExit1 === true &&
+      cmd === "git" &&
+      String(o?.argv ?? []) === String(BRANCH_ARGV) &&
+      tierRan
+    )
+      return Promise.reject(
+        Object.assign(new Error("git symbolic-ref: fatal: could not read HEAD"), {
+          code: 1,
+          stderr: "fatal: unable to resolve HEAD\n",
+        }),
+      );
     return execp(cmd, { ...o, env: o?.env ?? gitTestEnv(), cwd: o?.cwd ?? wt });
   };
 
@@ -352,8 +377,9 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     exec,
     loadConfig: async () => ({
       verify: {
-        test: opts.silentTestRunner === true ? SILENT_TEST_RUNNER : "sh {file}",
         ...configured,
+        test:
+          opts.brokenRunner === undefined ? "sh {file}" : BROKEN_RUNNER_TEMPLATE[opts.brokenRunner],
       },
     }),
     readVerifyCmd: async () => undefined,

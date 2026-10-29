@@ -179,7 +179,14 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     })
-    .catch(() => undefined);
+    .catch((err: unknown) => {
+      // A git that will not answer about its own HEAD is the machine, not a
+      // verdict: swallowing the rejection here collapsed it into the same
+      // message as "HEAD holds something that is not a sha" and lost the reason.
+      throw new VerifyInfraError(
+        `could not read HEAD in ${wt}: ${(err as Error)?.message ?? String(err)}`,
+      );
+    });
   const head = (headRan?.stdout ?? "").trim();
   // A sha is a sha: `assertSafeRef` below refuses a ref that could be an
   // argument, and `verifiedHead` is later matched against the PR head, so a
@@ -313,10 +320,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // gate — pushes and compares `ctx.run.branch`, so a detached tree is a tier
   // that took the run off its own branch.
   //
-  // `symbolic-ref -q` EXITs 1 when HEAD is detached and execFile rejects on a
-  // non-zero exit, so exit 1 is git's ANSWER ("no branch") and is read as an
-  // empty stdout; anything else — a signal, a timeout, a broken repo — is a
-  // machine that could not reply, and is never blamed on the tier.
+  // `symbolic-ref -q` EXITs 1 when HEAD is detached, and its answer is silence:
+  // an empty stdout/stderr on that status is git saying "no branch". Any OTHER
+  // exit-1 failure — git wrote something on its way out — is a machine that
+  // could not reply, and is never blamed on the tier.
   const symbolic = await deps
     .exec("git", {
       argv: [...NO_HOOKS, "symbolic-ref", "--short", "-q", "HEAD"],
@@ -325,13 +332,17 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       maxBuffer: 1024 * 1024,
     })
     .catch((err: unknown) => {
-      if ((err as { code?: unknown })?.code === 1) return { stdout: "", stderr: "" };
+      const e = err as { code?: unknown; stderr?: unknown };
+      if (e?.code === 1 && String(e.stderr ?? "").trim() === "") return { stdout: "" };
       throw new VerifyInfraError(
         `could not re-check the branch after the tiers: ${(err as Error)?.message ?? String(err)}`,
       );
     });
   const onBranch = (symbolic?.stdout ?? "").trim();
-  if (onBranch !== ctx.run.branch)
+  // Compared against the branch THIS step owns — the same value handed to the
+  // ownership probe above — because that is the ref the worktree was created on
+  // and the one everything after this step pushes.
+  if (onBranch !== branch)
     throw new VerifyInfraError("a verify tier detached HEAD from the run's branch");
 
   const note =

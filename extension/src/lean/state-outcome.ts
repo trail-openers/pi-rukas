@@ -14,10 +14,36 @@
  * does not exist.
  */
 
+import { normaliseRelPath, pathProblem } from "./specify-tree.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** A sha256 in the hex form the `specify` step freezes into its outcome. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** A path is data here, not prose: refuse a key that would print as a heading. */
+const CONTROL_CHARS = /\p{Cc}/u;
+
+/**
+ * Why a `frozen` key is not a path this run may hold tamper evidence for.
+ *
+ * A frozen key is looked up by exact string against the bytes at HEAD, so one
+ * that is absolute, traverses, or differs from its normalised form (`./x`, a
+ * doubled or trailing slash) can never match a real blob: the record reads as
+ * evidence and compares unequal forever, and no reader can tell a forged path
+ * from a test somebody edited. A control character is refused because the key
+ * is printed into a report verbatim — a `\n### heading` inside it is an
+ * injection into the comment. The rules are `specify-tree`'s own — one
+ * definition of "is this a git-relative path" for the whole pipeline — plus
+ * the absolute and non-normalised forms that module's callers reject earlier.
+ */
+function frozenKeyProblem(key: string): string | undefined {
+  if (key === "") return "empty path";
+  if (CONTROL_CHARS.test(key)) return "path contains a control character";
+  if (key.startsWith("/") || key.startsWith("\\") || /^[a-zA-Z]:[\\/]/.test(key))
+    return "path is absolute";
+  if (normaliseRelPath(key) !== key) return "path is not in normalised git-relative form";
+  return pathProblem(key);
+}
 
 /** A full commit sha, the form `verify` records as the tree it judged. */
 const SHA1_HEX = /^[0-9a-f]{40}$/;
@@ -84,6 +110,9 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (typeof oc.frozen !== "object" || oc.frozen === null || Array.isArray(oc.frozen))
       return "outcome frozen must be an object";
     for (const [file, sha] of Object.entries(oc.frozen as Record<string, unknown>)) {
+      const keyProblem = frozenKeyProblem(file);
+      if (keyProblem !== undefined)
+        return `outcome frozen key ${JSON.stringify(file)} is not a valid test path: ${keyProblem}`;
       if (typeof sha !== "string" || !SHA256_HEX.test(sha))
         return `outcome frozen[${JSON.stringify(file)}] must be a 64-hex sha256`;
     }
