@@ -30,14 +30,12 @@
  * that posted it never runs twice.
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
 import { challengeDeps, challengeOutcome } from "./challenge.ts";
 import { leanChildOpts } from "./child-opts.ts";
@@ -52,21 +50,15 @@ import { publishOutcome } from "./publish.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Outcome, Step } from "./state.ts";
+import { oneLine } from "./text-fence.ts";
 import { verifyDeps, verifyOutcome } from "./verify.ts";
+import { leanVersion } from "./version.ts";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-/** The extension version, stamped on every run so a state file reads years later. */
-export function leanVersion(): string {
-  try {
-    const pkg = JSON.parse(
-      fs.readFileSync(path.join(HERE, "..", "..", "package.json"), "utf8"),
-    ) as { version?: string };
-    return pkg.version ?? "unknown";
-  } catch {
-    return "unknown";
-  }
-}
+// The version stamp lives in `lean/version.ts`, its own leaf: the seed needs it
+// too, and importing it from here made the seed depend on this whole handler
+// table while this table depends on the seed. Re-exported because a caller that
+// wants the stamp reaches for it where it reaches for the command.
+export { leanVersion } from "./version.ts";
 
 /** What `ready` learned: kept for the run's seed and for the not-ready comment. */
 export interface ReadyFacts {
@@ -76,15 +68,44 @@ export interface ReadyFacts {
   failedRules: string[];
 }
 
+/** What the run is seeded with, and what the seed learned about the base. */
+export type { LeanSeed } from "./seed.ts";
+// Re-exported rather than imported-and-returned: `leanSeed` is the run-start
+// seam and the suites that pin it (`test-lean-seed-base.ts`,
+// `test-lean-base-infra.ts`, `test-lean-seed-infra.ts`) reach it through the
+// command module, the way the command itself uses it — the definition lives in
+// `lean/seed.ts`, which this line keeps reachable from either name.
+export { leanSeed } from "./seed.ts";
+import { type LeanSeed, leanSeed } from "./seed.ts";
+
 /**
- * The `ready` verdict: fetch, parse, judge readiness, load config at the sha.
+ * The `ready` verdict: fetch, parse, judge readiness, load config at the base.
  *
- * Never throws. Every failure comes back as `fail` with the rules named,
- * because a run that cannot start still has to say why on the issue.
+ * `baseSha` is the run's own — the seed's answer, read back off the record
+ * (`ctx.run.baseSha`), not a fresh probe — and `seedWhy` is what the seed
+ * reports when that answer is empty. The base is pinned when the run starts so
+ * a config read, a diff and a verify all mean the same commit.
+ *
+ * A non-empty base is PROVEN to be a commit before anything reads it — see
+ * `lean/base-proof.ts`, which owns both rules and the `cat-file -e` second
+ * opinion. The config loader cannot make that distinction: `gitType`/`gitShow`
+ * catch every git failure and report "absent", which for a loader means "no
+ * config, use the defaults" — so a base that names no object at all (a stale or
+ * hand-edited resumed record, a seeder that passed a literal) used to read as a
+ * perfectly ordinary repo with no `.pi/work.json` and go green.
+ *
+ * Throws on a git INFRASTRUCTURE fault, and only there. A spec that is not
+ * ready, an empty base and a base that names no commit all come back as `fail`
+ * with the rules named, because a run that cannot start still has to say why on
+ * the issue — but a run whose git could not be asked is not an unready issue,
+ * and posting "your base is not a commit" on an issue whose clone merely had a
+ * locked index would tell the operator to fix something that is not broken.
+ * The throw is what the engine turns into a handler-error handback.
  */
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
+  base: Pick<LeanSeed, "baseSha" | "why" | "infra">,
 ): Promise<{ kind: "ok" | "fail"; facts: ReadyFacts }> {
   let body: string;
   try {
@@ -99,33 +120,84 @@ export async function readyOutcome(
   if (!parsed.ok) return { kind: "fail", facts: { failedRules: [parsed.reason] } };
   const failed = readiness(parsed.spec);
   if (failed.length > 0) return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
-  const probed = await mainlineSha(repoRoot);
-  if (!probed.sha) {
-    // The refs probed and why each failed — a run whose mainline could not be
-    // resolved is not ready, and the operator reading the issue comment has
-    // to be able to tell "this clone has no origin/HEAD" from "git broke".
-    const why = probed.why;
+  // The base is the run's, resolved once by `leanSeed` and pinned on the run
+  // record: re-probing here would let a `ready` that ran after origin/HEAD
+  // moved judge the run against a commit the rest of it never saw.
+  if (!base.baseSha) {
+    // The refs probed and why each failed are the seed's — see `leanSeed`.
+    // A run whose mainline could not be resolved is not ready, and the
+    // operator reading the issue comment has to be able to tell "this clone
+    // has no origin/HEAD" from "git broke"; when the seed never carried a
+    // cause (a resumed run, whose seed this process did not make, or one that
+    // carried `""`), ask once. The probe is a git read, so it is guarded: an
+    // unguarded throw on THIS path would turn a refusal-with-a-reason into a
+    // handler error, and there is no git fact left to verify — the base is
+    // already empty whatever the probe says.
+    let why = base.why;
+    if (!why) {
+      try {
+        why = (await mainlineSha(repoRoot)).why;
+      } catch (err) {
+        why = oneLine(err instanceof Error ? err.message : String(err), 160);
+      }
+    }
+    // A seed that FAILED rather than found nothing hands back, it does not
+    // refuse — see `LeanSeed.infra`. The run's base could not be established
+    // because git could not be asked, which is a fact about this harness and
+    // not about the issue; the not-ready comment is the wrong surface for it
+    // and the handback (exit 10, no comment) is where an operator looks. This
+    // is deliberately symmetric with the non-empty branch below, which lets
+    // `proveBaseSha` throw for exactly the same class of fault.
+    if (base.infra === true) {
+      // CLIPPED because `why` is git's text — a first stderr line, an exec
+      // message — being put into a thrown message an operator (and a log
+      // renderer) sees verbatim, exactly as `unresolvedMainlineRule` clips the
+      // same string on the refusal path. An unbounded `why` here is a second
+      // renderer that has to remember the rule the first one states.
+      throw new Error(
+        `could not seed the run's base: ${oneLine(why ?? "no reason recorded", 160)}`,
+      );
+    }
     return {
       kind: "fail",
       facts: {
         spec: parsed.spec,
-        failedRules: [`could not resolve the mainline sha${why ? `: ${why}` : ""}`],
+        // Never an empty tail: with no seed cause and no probe cause the rule
+        // still names the refs the probe asked for (`NO_MAINLINE_WHY`).
+        failedRules: [unresolvedMainlineRule(why)],
       },
     };
   }
+  // Non-empty is not enough: prove the base IS the commit before the config
+  // read, whose blanket catch would otherwise turn "no such object" into
+  // "no config file" and hand the run defaults it never earned. The proof — its
+  // two rules, its peel, and the `cat-file -e` second opinion that separates a
+  // missing object from a broken git — lives in `lean/base-proof.ts`; it throws
+  // on a git fault, which is what this handler's caller turns into a handback.
+  // See the cases in `test-lean-seed-base.ts`.
+  const proof = await proveBaseSha(repoRoot, base.baseSha);
+  if (!proof.ok) {
+    // The refused value is deliberately absent from the facts: it is untrusted
+    // text from a record this process did not write, it is already inside the
+    // rule where it is clipped, and a second copy in the facts is a second
+    // place a later renderer has to remember to clip.
+    return { kind: "fail", facts: { spec: parsed.spec, failedRules: [proof.rule] } };
+  }
   try {
-    const config = await loadWorkConfig(execp, repoRoot, probed.sha);
+    const config = await loadWorkConfig(execp, repoRoot, base.baseSha);
     return {
       kind: "ok",
-      facts: { spec: parsed.spec, config, baseSha: probed.sha, failedRules: [] },
+      facts: { spec: parsed.spec, config, baseSha: base.baseSha, failedRules: [] },
     };
   } catch (err) {
     return {
       kind: "fail",
       facts: {
         spec: parsed.spec,
-        baseSha: probed.sha,
-        failedRules: [`.pi/work.json is unusable: ${(err as Error).message}`],
+        baseSha: base.baseSha,
+        failedRules: [
+          `.pi/work.json is unusable: ${oneLine(err instanceof Error ? err.message : String(err), 160)}`,
+        ],
       },
     };
   }
@@ -192,20 +264,36 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * dispatching deps builders. It is NOT remembered anywhere: two lean runs in one
  * process each carry their own, so a headless run cannot lend its trust stamp to
  * an interactive one that follows it.
+ *
+ * `seedWhy` is the seed's reason for having no base, used only to word
+ * `ready`'s refusal — see `leanSeed`. `seedInfra` says that reason came from a
+ * git INFRASTRUCTURE fault rather than an absent mainline, and with it `ready`
+ * hands the run back instead of posting the not-ready comment — see
+ * `LeanSeed.infra`. Both are read from the seed the run was given, so a resumed
+ * run (which never ran this process's seed) keeps the refusal path.
  */
 export function phase1Handlers(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean } = {},
+  opts: { headless?: boolean; seedWhy?: string; seedInfra?: boolean } = {},
 ): LeanHandlers {
   const headless = opts.headless === true;
+  // Why the seed could not resolve a base, carried in a closure so the `ready`
+  // rule can name it. A resumed run never ran this process's seed, so it has
+  // no cause to report and `readyOutcome` probes for one on the failure path.
+  const seedWhy = opts.seedWhy;
+  const seedInfra = opts.seedInfra === true;
   const notBuilt = (state: string) => async (): Promise<Outcome> => {
     throw new Error(`work-lean stage ${state} is not built yet`);
   };
   const handlers: LeanHandlers = {};
   for (const state of HANDLER_STATES) handlers[state] = notBuilt(state);
-  handlers.ready = async () => {
-    const { kind, facts } = await readyOutcome(repoRoot, issue);
+  handlers.ready = async (ctx) => {
+    const { kind, facts } = await readyOutcome(repoRoot, issue, {
+      baseSha: ctx.run.baseSha,
+      ...(seedWhy ? { why: seedWhy } : {}),
+      ...(seedInfra ? { infra: true } : {}),
+    });
     // Only the verdict and the rules go on the record. `spec`, `config` and
     // `baseSha` stay out of it — the step log is the durable record of what a
     // run DECIDED, and a parsed document or a loaded config written into it is
@@ -256,19 +344,47 @@ export function summarize(result: RunLeanResult, issue: number): string {
  * its children carry the /work-cycle trust stamp that the headless permission
  * path would otherwise deny every tool call on. The interactive command passes
  * nothing — its parent session is already in trust mode and needs no stamp.
+ *
+ * The run is seeded with the mainline sha (`leanSeed`) so the steps that read
+ * `ctx.run.baseSha` have a base. The seed lands only on a NEW run: `runLean`
+ * ignores it when a state file exists, which is what keeps a resume on the
+ * commit its first round pinned.
  */
 export async function runWorkLean(
   repoRoot: string,
   issue: number,
   opts: { headless?: boolean } = {},
 ): Promise<{ summary: string; result: RunLeanResult }> {
+  const seed = await leanSeed(repoRoot);
   const result = await runLean({
     repoRoot,
     issue,
-    handlers: phase1Handlers(repoRoot, issue, opts),
-    seed: { version: leanVersion() },
+    handlers: handlersFor(repoRoot, issue, opts, seed),
+    seed: { version: seed.version, baseSha: seed.baseSha },
   });
   return { summary: summarize(result, issue), result };
+}
+
+/**
+ * The handler set one run is driven with: the phase-1 handlers plus the seed
+ * that run was given. Extracted from `runWorkLean` so the seed → handler thread
+ * is testable on its own: `seedWhy` is what lets `ready` quote the git cause
+ * for a missing base, and `seedInfra` is what makes `ready` hand the run back
+ * instead of posting a not-ready comment for a seed that faulted (see
+ * `LeanSeed.infra`). Both lines are invisible from the outside because
+ * `runWorkLean` always re-seeds through `leanSeed`.
+ */
+export function handlersFor(
+  repoRoot: string,
+  issue: number,
+  opts: { headless?: boolean },
+  seed: LeanSeed,
+): LeanHandlers {
+  return phase1Handlers(repoRoot, issue, {
+    ...opts,
+    seedWhy: seed.why,
+    seedInfra: seed.infra,
+  });
 }
 
 /**

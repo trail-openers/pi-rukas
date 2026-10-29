@@ -25,6 +25,7 @@ import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
 import { formatIdentity, selfIdentity } from "../src/process-liveness.ts";
 import {
   CLOCK,
+  FIXTURE_BASE_SHA,
   HAPPY,
   makeAssert,
   scripted,
@@ -79,7 +80,7 @@ function forgedCiRed(dir: string, issue: number): void {
     issue,
     version: "test",
     models: {},
-    baseSha: "base",
+    baseSha: FIXTURE_BASE_SHA,
     branch: `feature/issue-${issue}`,
     // The snapshot claims the run still sits at `ci`, and its newest `ci`
     // step — index 8 — says RED. Replaying the older `ci:0 = green` is what
@@ -235,7 +236,7 @@ function forgedCiRed(dir: string, issue: number): void {
       issue: 42,
       version: "test",
       models: {},
-      baseSha: "base",
+      baseSha: FIXTURE_BASE_SHA,
       branch: "feature/issue-42",
       state: "ci",
       counters: {
@@ -285,7 +286,7 @@ function forgedCiRed(dir: string, issue: number): void {
       issue: 43,
       version: "test",
       models: {},
-      baseSha: "base",
+      baseSha: FIXTURE_BASE_SHA,
       branch: "feature/issue-43",
       state: "verify",
       counters: {

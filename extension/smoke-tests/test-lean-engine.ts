@@ -20,6 +20,7 @@ import type { LeanRun } from "../src/lean/state.ts";
 import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
 import {
   CLOCK,
+  FIXTURE_BASE_SHA,
   HAPPY,
   makeAssert,
   scripted,
@@ -248,7 +249,7 @@ const { assert, failures } = makeAssert();
       seed: {
         version: "9.9.9",
         models: { build: "model-a" },
-        baseSha: "abc",
+        baseSha: FIXTURE_BASE_SHA,
         branch: "feature/issue-19",
       },
     });
@@ -258,7 +259,7 @@ const { assert, failures } = makeAssert();
       "the seed lands on a new run",
     );
     assert(
-      stored?.baseSha === "abc" && stored.branch === "feature/issue-19",
+      stored?.baseSha === FIXTURE_BASE_SHA && stored.branch === "feature/issue-19",
       "baseSha and branch come from the seed",
     );
     const second = await runLean({
@@ -266,10 +267,10 @@ const { assert, failures } = makeAssert();
       issue: 19,
       handlers,
       now: clock.now,
-      seed: { version: "other", baseSha: "other", branch: "other" },
+      seed: { version: "other", baseSha: "ffffffffffffffffffffffffffffffffffffffff", branch: "other" },
     });
     assert(
-      second.run.version === "9.9.9" && second.run.baseSha === "abc",
+      second.run.version === "9.9.9" && second.run.baseSha === FIXTURE_BASE_SHA,
       "a seed never overwrites an existing run",
     );
   } finally {
@@ -313,7 +314,7 @@ const { assert, failures } = makeAssert();
           issue: 25,
           version: "test",
           models: {},
-          baseSha: "base",
+          baseSha: FIXTURE_BASE_SHA,
           branch: "b",
           state: "build",
           counters: { ...INITIAL_COUNTERS },
@@ -355,7 +356,7 @@ const { assert, failures } = makeAssert();
           issue: 25,
           version: "test",
           models: {},
-          baseSha: "base",
+          baseSha: FIXTURE_BASE_SHA,
           branch: "b",
           state: "build",
           counters: { ...INITIAL_COUNTERS },
