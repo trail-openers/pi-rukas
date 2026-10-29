@@ -42,6 +42,7 @@ import { porcelain } from "./build-git.ts";
 import { frozenFromLog } from "./build.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
@@ -74,25 +75,50 @@ export interface VerifyDeps {
 /** The step log's newest red reason is pasted into a prompt; that bounds it. */
 export const RED_REASON_CLIP = 4096;
 
+/**
+ * Is a failed `git show <ref>:<path>` git's own "this commit has no such file"?
+ *
+ * Two wordings are git's absence answers, and one of them is the reason a
+ * path is not readable rather than absent (a file that exists in the tree but
+ * never in the commit). Anything else — a timeout, an overflow, a corrupt
+ * object — is a git that could not answer, which is never "the project
+ * configured nothing".
+ */
+const ABSENT_IN_COMMIT = /does not exist|exists on disk, but not in/i;
+
+/**
+ * Why a failed read of `.pi/verify-cmd` means "there is none", or `undefined`
+ * when the read failed for a reason that is not an answer.
+ */
+function absentVerifyCmd(err: unknown): boolean {
+  const e = err as { code?: unknown; stderr?: string; message?: string };
+  const text = `${e?.stderr ?? ""}\n${e?.message ?? ""}`;
+  // Exit 128 is git's "hard" refusal — for this command it only ever means the
+  // path is not in the commit; a bad rev or a broken repo would have refused
+  // every other git call in the step too. The wording is what decides.
+  return e?.code === 128 && ABSENT_IN_COMMIT.test(text);
+}
+
 /** The committed `.pi/verify-cmd` at HEAD, or `undefined` when there is none. */
 async function verifyCmdAtHead(
   exec: VerifyExec,
   wt: string,
   head: string,
 ): Promise<string | undefined> {
+  // An ABSENT file is "the project configured nothing"; a read that failed for
+  // any other reason is infrastructure and throws, because defaulting a git
+  // that would not answer to "no tiers" turns a broken machine into a green.
   const ran = await exec("git", {
-    argv: [
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-c",
-      "core.fsmonitor=false",
-      "show",
-      `${head}:.pi/verify-cmd`,
-    ],
+    argv: [...NO_HOOKS, "show", `${head}:.pi/verify-cmd`],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
-  }).catch(() => undefined);
+  }).catch((err: unknown) => {
+    if (absentVerifyCmd(err)) return undefined;
+    throw new VerifyInfraError(
+      `could not read .pi/verify-cmd at ${head}: ${(err as Error)?.message ?? String(err)}`,
+    );
+  });
   if (ran === undefined) return undefined;
   return (ran.stdout ?? "")
     .split(/\r?\n/)
@@ -100,9 +126,12 @@ async function verifyCmdAtHead(
     .find((l) => l !== "" && !l.startsWith("#"));
 }
 
-/** The first failure among the executed checks, or `undefined` when all passed. */
+/** The first failure among the executed checks; an unobservable one THROWS. */
 function firstFailure(...ran: Executed[]): string | undefined {
-  for (const one of ran) if (one.kind === "fail") return one.reason;
+  for (const one of ran) {
+    if (one.kind === "infra") throw new VerifyInfraError(one.reason);
+    if (one.kind === "fail") return one.reason;
+  }
   return undefined;
 }
 
@@ -134,7 +163,12 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     })
     .catch(() => undefined);
   const head = (headRan?.stdout ?? "").trim();
-  if (head === "") throw new VerifyInfraError(`could not read HEAD in ${wt}`);
+  // A sha is a sha: `assertSafeRef` below refuses a ref that could be an
+  // argument, and `verifiedHead` is later matched against the PR head, so a
+  // 7-hex abbreviation or a stray word must not be carried as the commit this
+  // step judged.
+  if (!/^[0-9a-f]{40}$/.test(head))
+    throw new VerifyInfraError(`could not read HEAD in ${wt} (got ${head.slice(0, 40)})`);
 
   // 1. The tree is ours; nothing in it is uncommitted.
   const branch = specifyBranch(ctx.run.branch, issue);
@@ -199,12 +233,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   );
   if (unsound !== undefined) throw new VerifyInfraError(unsound);
 
-  // 4. The frozen tests, every one of them. With no frozen files there is no
-  // contract to run, and the tiers below are all the gate has.
-  const tests =
-    Object.keys(frozen).length === 0
-      ? ({ kind: "pass" } as Executed)
-      : await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
+  // 4. The frozen tests, every one of them.
+  const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
   // 5. The project's own tiers, fast before full, first failure wins.
   const tierResults: Executed[] = [];
@@ -216,6 +246,40 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
 
   const failed = firstFailure(tests, ...tierResults);
   if (failed !== undefined) return { kind: "red", reason: clipReason(failed) };
+
+  // The tiers run as shell commands IN the worktree, so between the checks
+  // above and this point a tier may have rewritten a frozen test, left bytes
+  // uncommitted, or committed and moved the head. A green that was decided
+  // about the tree at `head` while the tree is now somewhere else is a verdict
+  // about bytes no commit holds, so every check that licensed this run is read
+  // again — and each one failing here is the tier's fault, never a verdict a
+  // developer is sent to "fix".
+  const tamperedAfter = await frozenTamperReason(deps.exec, wt, head, frozen);
+  if (tamperedAfter !== undefined)
+    return {
+      kind: "red",
+      reason: clipReason(`a verify tier altered frozen tests: ${tamperedAfter}`),
+    };
+  const dirtyAfter = await porcelain(deps.exec, wt).catch((err: unknown) => {
+    throw new VerifyInfraError(
+      `could not re-check the tree after the tiers: ${(err as Error).message}`,
+    );
+  });
+  if (dirtyAfter !== "")
+    throw new VerifyInfraError(
+      `a verify tier left the worktree dirty: ${dirtyAfter.slice(0, 500)}`,
+    );
+  const headAfter = await deps
+    .exec("git", {
+      argv: [...NO_HOOKS, "rev-parse", "HEAD"],
+      cwd: wt,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    })
+    .catch(() => undefined);
+  if ((headAfter?.stdout ?? "").trim() !== head)
+    throw new VerifyInfraError("a verify tier moved HEAD");
+
   const note =
     tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "";
   return {

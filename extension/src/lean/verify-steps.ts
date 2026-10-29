@@ -26,7 +26,7 @@
 
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
-import { runTestFile } from "./specify-proof.ts";
+import { neverStarted, runTestFile, wasKilled } from "./specify-proof.ts";
 import { type VerifyExec, VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
 
 /** A tier gets half an hour; a suite that needs longer is a project bug. */
@@ -35,8 +35,19 @@ export const TIER_TIMEOUT_MS = 30 * 60_000;
 /** The last lines of a tier's output — the part that says what actually broke. */
 export const TIER_TAIL_LINES = 40;
 
-/** What one executed thing said about the work. `red` carries the evidence. */
-export type Executed = { kind: "pass" } | { kind: "fail"; reason: string };
+/**
+ * What one executed thing said about the work.
+ *
+ * `fail` is a VERDICT — something observed the code and the code did not hold.
+ * `infra` is not a verdict at all: nothing was observed, and the caller turns
+ * it into a throw so the engine hands the run back rather than routing a build
+ * round on a result nobody saw. Keeping the two apart in the type is what stops
+ * a "could not tell" from being read as an `undefined` and then as a green.
+ */
+export type Executed =
+  | { kind: "pass" }
+  | { kind: "fail"; reason: string }
+  | { kind: "infra"; reason: string };
 
 /** Join whatever a command printed into one block for a tail. */
 function outputOf(parts: Array<string | undefined>): string {
@@ -118,6 +129,15 @@ export async function frozenTestFailure(
     });
     if (proof.kind === "infra")
       throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${proof.detail}`);
+    // A non-zero exit whose output never named this file is NOT a verdict on
+    // this test: something else failed and the runner said nothing about the
+    // frozen path. Reading it as a red would tell a developer their contract
+    // broke when the only thing that broke was whatever printed.
+    if (proof.kind === "unclear")
+      return {
+        kind: "infra",
+        reason: `the frozen test ${file} could not be attributed: ${proof.detail}`,
+      };
     if (proof.kind !== "green") failures.push(`${file} (${proof.detail})`);
   }
   if (failures.length === 0) return { kind: "pass" };
@@ -150,23 +170,32 @@ export async function runTier(
   const err = (ran as { __err?: unknown })?.__err;
   if (err === undefined) return { kind: "pass" };
   const e = err as {
-    killed?: boolean;
-    signal?: string | null;
-    timedOutKill?: boolean;
     code?: unknown;
     stdout?: string;
     stderr?: string;
     message?: string;
+    overflow?: string;
   };
   const out = outputOf([e.stdout, e.stderr, e.message]);
-  // A kill, a timeout or a command that never started are all the same thing
-  // to this step: nobody observed the work, so no verdict may be recorded.
-  const killed = e.killed === true || e.timedOutKill === true || (e.signal ?? null) !== null;
-  if (killed)
+  // A kill or a timeout means nobody observed the work, so no verdict may be
+  // recorded. Both classifiers below are specify-proof's, imported rather than
+  // re-derived here: two definitions of "was it killed" in one pipeline is how
+  // the halves start disagreeing about a tier that exited 1.
+  if (wasKilled(err))
     throw new VerifyInfraError(
       `the verify.${name} tier was killed or timed out at ${timeoutMs}ms: ${cmd}`,
     );
-  if (typeof e.code !== "number")
+  // #1414 — `execp` stamps `overflow` on the maxBuffer path and deliberately
+  // does NOT stamp `timedOutKill`, so a chatty tier is not mistaken for a hung
+  // one. Nor is it a verdict: the output was truncated, so the evidence the
+  // tier would have given is not in hand.
+  if (e.overflow !== undefined)
+    throw new VerifyInfraError(
+      `the verify.${name} tier exceeded its output bound on ${e.overflow}: ${cmd}`,
+    );
+  // A command that never started (ENOENT, EACCES) rejects with a string code
+  // and no exit status; a command that ran and failed always carries a number.
+  if (neverStarted(err))
     throw new VerifyInfraError(
       `the verify.${name} tier could not be started: ${cmd}: ${out.slice(0, 300)}`,
     );

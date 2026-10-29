@@ -33,7 +33,7 @@
 
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { frozenMatches } from "./build-git.ts";
+import { frozenTamperedAtHead } from "./build-git.ts";
 import { sha256 } from "./specify-proof.ts";
 import { changedPaths, fileProblem } from "./specify-tree.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
@@ -102,9 +102,16 @@ export async function frozenTamperReason(
   if (names.length === 0) return undefined;
   const parts: string[] = [];
 
-  // The committed half: git's answer about HEAD's tree, not the tree's.
-  const atHead = await frozenMatches(exec, wt, head, frozen);
-  if (atHead.length > 0) parts.push(`frozen tests altered: ${atHead.join(", ")}`);
+  // The committed half: git's answer about HEAD's tree, not the tree's. A git
+  // that could not read a blob is infrastructure — an unreadable blob is not
+  // evidence that anyone edited a test, and reporting it as one would spend a
+  // build round on a machine problem.
+  const atHead = await frozenTamperedAtHead(exec, wt, head, frozen);
+  if (atHead.unreadable !== undefined)
+    throw new VerifyInfraError(
+      `could not read frozen blob ${atHead.unreadable} at ${head} in ${wt}`,
+    );
+  if (atHead.tampered.length > 0) parts.push(`frozen tests altered: ${atHead.tampered.join(", ")}`);
 
   // The tree half, per file: a frozen path git says changed, one that is simply
   // gone, one that is a link rather than a file, and one whose bytes are not the

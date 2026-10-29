@@ -18,10 +18,15 @@
  *   (h) nothing configured                         -> the frozen tests decide, and
  *                                                     the reason says there was no command
  *
- * And for handback: one comment built from the record (i-k), carrying the red
+ * And for handback: one comment built from the record (i-m), carrying the red
  * reason, the frozen tests and the PR URL (or "no PR yet") — and a forge that
  * refuses the post still ends the run `done` (j), because the run was already
  * over and a lost comment is not a reason to change the verdict.
+ *
+ * The tiers run as shell commands in the worktree AFTER the tree was read clean,
+ * so (n-q) re-check the frozen files, the tree and HEAD once they have run: a
+ * tier that rewrites the contract is a red, and one that dirties the tree or
+ * moves HEAD is infrastructure — never a verdict nobody observed.
  */
 
 import { handbackOutcome } from "../src/lean/handback.ts";
@@ -35,6 +40,7 @@ import {
   handbackCtx,
   redLog,
   runVerify,
+  writeTier,
 } from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;
@@ -265,17 +271,104 @@ function assert(cond: boolean, msg: string): void {
   );
 }
 
-// ---------------------------------- (m) no verdict at all: the terminal cause
+// ------------------------ (m) no red verdict: the newest error step is the cause
 {
+  // The cause comes from the log, not from `run.result`: the engine stamps the
+  // step itself with `{kind: "error", message}` and only afterwards writes a
+  // summary into the run, so the step is the closer account of what broke.
   const posts: string[] = [];
-  const ctx = handbackCtx(11, []);
-  ctx.run = { ...ctx.run, result: { code: 10, reason: "handler error at build: the child died" } };
+  const ctx = handbackCtx(11, [
+    decided("ready", { kind: "ok" }),
+    decided("build", { kind: "error", message: "the child died" }),
+  ]);
+  ctx.run = { ...ctx.run, result: { code: 10, reason: "a stale summary" } };
   await handbackOutcome(ctx, async (_r, _i, body) => {
     posts.push(body);
   });
   assert(
     (posts[0] ?? "").includes("the child died"),
-    "(m) with no red verdict the terminal cause is reported",
+    `(m) with no red verdict the newest error step is reported (${(posts[0] ?? "").slice(0, 120)})`,
+  );
+  assert(
+    !(posts[0] ?? "").includes("a stale summary"),
+    "(m) the run's summary does not override what the step said",
+  );
+}
+
+// ----------------- (n) a tier that rewrites the frozen test after the tiers -> red
+{
+  // The tiers run as shell commands IN the worktree, so a tier is exactly as
+  // able to tamper with the contract as the developer was. The pre-tier checks
+  // all pass here; only the re-check after them can see this.
+  const r = await runVerify({
+    issue: 210,
+    implement: true,
+    config: { fast: PASS_TIER },
+    full: writeTier("tests/AC1-retry.test.sh", "#!/bin/sh\nexit 0\n# rewritten\n"),
+  });
+  assert(
+    r.outcome?.kind === "red",
+    `(n) a tier that rewrites the frozen test is red, not green (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+  assert(
+    (r.outcome?.reason ?? "").includes("a verify tier altered frozen tests"),
+    `(n) the reason says the TIER did it (${(r.outcome?.reason ?? "").slice(0, 160)})`,
+  );
+  assert(r.outcome?.verifiedHead === undefined, "(n) a red records no verified head");
+}
+
+// ------------------- (o) a tier that dirties the tree -> THROW, never a verdict
+{
+  // Uncommitted bytes are not a verdict about any commit, and they are not the
+  // developer's code failing either: the tier broke the invariant, so the run
+  // is handed back rather than sent through a build round.
+  const r = await runVerify({
+    issue: 211,
+    implement: true,
+    config: { fast: PASS_TIER },
+    full: writeTier("stray-from-tier.txt", "dirt\n"),
+  });
+  assert(
+    r.threw !== undefined,
+    `(o) a tier that leaves the tree dirty throws (got ${r.outcome?.kind})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("left the worktree dirty"),
+    `(o) the throw names the tier as the author (${r.threw?.message})`,
+  );
+}
+
+// ------------------------- (p) a tier that commits -> THROW (HEAD moved)
+{
+  // The green this step records is a claim about `head`; a tier that committed
+  // has made the tree something the frozen tests were never run against.
+  const r = await runVerify({
+    issue: 212,
+    implement: true,
+    config: { fast: PASS_TIER },
+    full: writeTier("tier-file.txt", "committed by a tier\n", true),
+  });
+  assert(r.threw !== undefined, `(p) a tier that commits throws (got ${r.outcome?.kind})`);
+  assert(
+    (r.threw?.message ?? "").includes("moved HEAD"),
+    `(p) the throw says HEAD moved (${r.threw?.message})`,
+  );
+}
+
+// --------------- (q) the re-check does not disturb a run that really is green
+{
+  const r = await runVerify({
+    issue: 213,
+    implement: true,
+    config: { fast: PASS_TIER, full: PASS_TIER },
+  });
+  assert(
+    r.outcome?.kind === "green",
+    `(q) passing tiers still green after the re-check (got ${r.outcome?.kind ?? r.threw?.message})`,
+  );
+  assert(
+    r.outcome?.verifiedHead === r.head && /^[0-9a-f]{40}$/.test(r.outcome?.verifiedHead ?? ""),
+    `(q) the green still carries verifiedHead === HEAD (${r.outcome?.verifiedHead} vs ${r.head})`,
   );
 }
 

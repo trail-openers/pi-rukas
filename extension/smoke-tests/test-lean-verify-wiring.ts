@@ -13,15 +13,23 @@
  *   (o) phase1Handlers.handback is the real step, not the stub
  *   (p) a green outcome round-trips verifiedHead through the durable record
  *   (q) a `verifiedHead` that is not 40-hex is refused on load
+ *   (r) handback reads ONLY the declared `prUrl`, and a malformed one is refused
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { phase1Handlers } from "../src/lean/command.ts";
+import { handbackOutcome } from "../src/lean/handback.ts";
 import { type LeanRun, type Outcome, leanStateFile, loadRun, saveRun } from "../src/lean/state.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
-import { ROOTS, buildFixtureForWiring } from "./lib/lean-verify-fixture.ts";
+import {
+  ROOTS,
+  buildFixtureForWiring,
+  decided,
+  handbackCtx,
+  publishStep,
+} from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -153,6 +161,86 @@ function assert(cond: boolean, msg: string): void {
       refused = (err as Error).message;
     }
     assert(refused.includes("verifiedHead"), `(q) ${bad.slice(0, 6)}… is refused (${refused})`);
+  }
+}
+
+// --------------------- (r) handback reads ONLY Outcome.prUrl for the PR link
+{
+  // The old shape guessed at `url`/`htmlUrl` and scraped a URL out of the
+  // reason line, so a comment quoting a URL that merely APPEARED in a reason
+  // linked a PR nobody recorded. Only the declared field is read now.
+  const scrape: string[] = [];
+  const ctx = handbackCtx(13, [
+    decided("publish", { kind: "ok", reason: "see https://evil.test/9 for the discussion" }),
+  ]);
+  await handbackOutcome(ctx, async (_r, _i, body) => {
+    scrape.push(body);
+  });
+  assert(
+    (scrape[0] ?? "").includes("no PR yet"),
+    `(r) a URL in a reason line is not a PR link (${(scrape[0] ?? "").slice(-30)})`,
+  );
+
+  const guess: string[] = [];
+  const ctx2 = handbackCtx(14, [publishStep("https://example.test/pr/14", "url")]);
+  await handbackOutcome(ctx2, async (_r, _i, body) => {
+    guess.push(body);
+  });
+  assert(
+    (guess[0] ?? "").includes("no PR yet"),
+    `(r) an undeclared url field is not read either (${(guess[0] ?? "").slice(-30)})`,
+  );
+
+  const declared: string[] = [];
+  const ctx3 = handbackCtx(15, [publishStep("https://example.test/pr/15")]);
+  await handbackOutcome(ctx3, async (_r, _i, body) => {
+    declared.push(body);
+  });
+  assert(
+    (declared[0] ?? "").includes("https://example.test/pr/15"),
+    "(r) the declared prUrl is what the comment carries",
+  );
+
+  // And the record refuses a `prUrl` that is not https text, so the comment can
+  // never be handed a fake link.
+  const dir = mkdtempSync(path.join(tmpdir(), "lean-prurl-"));
+  ROOTS.push(dir);
+  for (const bad of ["not a url", "http://insecure.test/pr/1", "x".repeat(501)]) {
+    const run: LeanRun = {
+      schema: 1,
+      issue: 305,
+      version: "test",
+      models: {},
+      baseSha: "a".repeat(40),
+      branch: "lean/issue-305",
+      state: "publish",
+      counters: {
+        buildAttempts: 1,
+        challengeDone: false,
+        reviewDone: false,
+        ciFixUsed: false,
+        draft: false,
+      },
+      steps: [
+        {
+          key: "305:publish:0",
+          state: "publish",
+          startedAt: 1,
+          outcome: { kind: "ok", prUrl: bad } as Outcome,
+        },
+      ],
+    };
+    saveRun(dir, run);
+    let refused = "";
+    try {
+      loadRun(dir, 305);
+    } catch (err) {
+      refused = (err as Error).message;
+    }
+    assert(
+      refused.includes("prUrl"),
+      `(r) prUrl ${bad.slice(0, 12)}… is refused on load (${refused.slice(0, 90)})`,
+    );
   }
 }
 

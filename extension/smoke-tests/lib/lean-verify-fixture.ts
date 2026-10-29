@@ -67,6 +67,21 @@ export function failTier(marker: string): string {
 /** A tier that outlives any bound a test can wait for. */
 export const HANG_TIER = "sleep 60";
 
+/**
+ * A tier that writes `rel` in the worktree, COMMITTING it when `commit` is set.
+ *
+ * The re-check cases need a tier that disturbs the tree *after* the step has
+ * already read it clean: the pre-tier checks pass, the tier runs, and only the
+ * post-tier re-check can see what it did.
+ */
+export function writeTier(rel: string, text: string, commit = false): string {
+  const quoted = `'${text.replace(/'/g, "'\\''")}'`;
+  const add = commit
+    ? " git add -A >/dev/null; git -c user.name=t -c user.email=t@t commit -q -m tier;"
+    : "";
+  return `sh -c "printf %s ${quoted} > '${rel}';${add} exit 0"`;
+}
+
 function gitEnv(): Record<string, string> {
   return {
     ...gitTestEnv(),
@@ -108,6 +123,12 @@ export interface VerifyOpts {
   editAtHead?: string;
   /** Commit the implementation, so the frozen test's own red goes away. */
   implement?: boolean;
+  /**
+   * A second tier, run after `fast`: the re-check cases use it to rewrite a
+   * frozen file, drop an untracked file, or commit, once the tree has already
+   * been read clean. The command runs through a shell in the worktree.
+   */
+  full?: string;
   /** Log lines to add after the fixture's own. */
   extraSteps?: Step[];
 }
@@ -241,6 +262,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     execp(cmd, { ...o, env: o?.env ?? gitTestEnv(), cwd: o?.cwd ?? wt });
 
   const configured = opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
+  if (opts.full !== undefined) configured.full = opts.full;
   const deps: VerifyDeps = {
     exec,
     loadConfig: async () => ({ verify: { test: "sh {file}", ...configured } }),
@@ -308,6 +330,16 @@ export function buildFixtureForWiring(issue: number): {
 /** A decided step for the handback cases. */
 export function decided(state: Step["state"], outcome: Outcome, n = 0): Step {
   return { key: `7:${state}:${n}`, state, startedAt: 1, endedAt: 2, outcome };
+}
+
+/**
+ * A publish step that recorded its PR the only sanctioned way: `prUrl`.
+ * `url`/`htmlUrl` are the fields the old guess list read, and a step that
+ * reaches for one of them is refused by `state.ts` on load.
+ */
+export function publishStep(url: string, field: "prUrl" | "url" | "htmlUrl" = "prUrl"): Step {
+  const outcome = { kind: "ok", ...(field === "prUrl" ? { prUrl: url } : { [field]: url }) };
+  return decided("publish", outcome as Outcome);
 }
 
 /** The log a run carries when it reaches handback after its gate said red. */
