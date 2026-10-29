@@ -38,6 +38,9 @@ const SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
 /** A base sha is printed only when it really is a full commit id. */
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
+/** How much of the gate's reason the PR body quotes — see its use site. */
+const VERIFY_REASON_CLIP = 2000;
+
 export interface PublishBodyInput {
   issue: number;
   spec: PiSpec;
@@ -98,7 +101,12 @@ function resultCell(
 ): string {
   if (c.verify === "manual") return "manual — needs a human";
   if (c.verify === "command") {
-    if (passedCommands.has(c.id)) return "passed (command)";
+    // The wording names the residual rather than implying isolation: the FILE was
+    // pinned to the base commit, but the code it loads is HEAD's, because a
+    // preservation criterion that ran the base's own source would say nothing
+    // about this run. A reader must not take `passed (command)` for a sandboxed
+    // replay of the base.
+    if (passedCommands.has(c.id)) return "passed (command; test file unchanged since base)";
     const why = (notRunnable?.[c.id] ?? "").trim();
     // Two truths the reader must not confuse: the gate refused the command (the
     // spec's or the tree's own defect, and publish keeps a draft), versus a
@@ -157,7 +165,12 @@ export function publishBody(o: PublishBodyInput): string {
     `- head: ${o.verifiedHead === undefined ? "not verified (draft)" : `\`${o.verifiedHead}\``}`,
   );
   if (o.verifyReason !== undefined && o.verifyReason !== "") {
-    lines.push("- last verify:", fenceText(o.verifyReason, 2000));
+    // Deliberately SHORTER than the record's own bound (`RED_REASON_CLIP` in
+    // `verify.ts`, 4096): the record keeps the tail `build`'s re-entry prompt
+    // needs, while the PR is read by a person, and a 4 KB log tail in a comment is
+    // a wall nobody scrolls. The two bounds are different claims — what a machine
+    // may re-read versus what a reviewer can read — so they are not kept equal.
+    lines.push("- last verify:", fenceText(o.verifyReason, VERIFY_REASON_CLIP));
   }
   lines.push("", "## Run");
   lines.push(`- pi-rukas ${oneLine(o.version, 40)}`);

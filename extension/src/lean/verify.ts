@@ -22,7 +22,11 @@
  *      pinned compiler is proven to still reject a known type error;
  *   4. **the frozen tests**, every one of them, with the project's runner;
  *   5. **the project tiers** — `verify.fast`, then `verify.full` when set,
- *      falling back to the repo's committed `.pi/verify-cmd`.
+ *      falling back to the repo's committed `.pi/verify-cmd`;
+ *   6. **the spec's `command` criteria**, LAST among the runs: a preservation
+ *      criterion asks whether the code the project tiers just exercised still
+ *      holds an old contract, so it is judged on the tree the tiers left behind
+ *      rather than the one they started from.
  *
  * Three answers, and the third is the one the engine cares about: `green` and
  * `red` are verdicts about the work, and the machine. A **throw** is
@@ -38,6 +42,7 @@
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { trace } from "../trace.ts";
+import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { porcelain } from "./build-git.ts";
 import { frozenFromLog } from "./build.ts";
@@ -51,6 +56,7 @@ import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "
 import type { Outcome, Step } from "./state.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
+import { recheckAfterRuns } from "./verify-recheck.ts";
 import {
   type Executed,
   canaryFailure,
@@ -76,13 +82,15 @@ export interface VerifyDeps {
   /** Bounds every tier and frozen-test run; a test shortens it to observe a hang. */
   timeoutMs?: number;
   /**
-   * The issue body the run's contract lives in, read by the test seam. When it
-   * is absent the block is read from the forge with `fetchIssueBody`. A spec
-   * that cannot be read yields no `command` criteria rather than a verdict:
-   * a criterion nobody could see was never executed, and the PR body then says
-   * so instead of the gate claiming a check it did not make.
+   * The issue body the run's contract lives in. `verifyDeps()` supplies the
+   * forge read (`io.ts`'s `fetchIssueBody`); a test injects the text its case
+   * needs. An unreadable body is INFRASTRUCTURE, never a verdict: the gate
+   * cannot tell which `command` criteria the spec asked for, and reporting a
+   * green over criteria it never saw would be the gate claiming a check it did
+   * not make. Returning no criteria is correct only when the body parsed and
+   * simply holds none.
    */
-  fetchSpecBody?: (repoRoot: string, issue: number) => Promise<string>;
+  fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
 }
 
 /** The step log's newest red reason is pasted into a prompt; that bounds it. */
@@ -276,20 +284,33 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // 4. The frozen tests, every one of them.
   const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
-  // 4b. The spec's `command` criteria — preservation checks the frozen tests do
+  // 5. The project's own tiers, fast before full, first failure wins. These run
+  // BEFORE the command criteria on purpose: a preservation criterion states that
+  // behaviour held before this run and holds after it, and the "after" the gate
+  // certifies is the tree the project tiers produced, not the one they started on.
+  const tierResults: Executed[] = [];
+  for (const [name, cmd] of tiers) {
+    const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
+    tierResults.push(one);
+    if (one.kind === "fail") break;
+  }
+
+  // 6. The spec's `command` criteria — preservation checks the frozen tests do
   // not make. A `command` criterion states behaviour that already held BEFORE
   // this run began, so the only file that can evidence it is one the run's base
   // commit already held, byte for byte: `commandCriteriaOutcome` reads the entry
   // at both `baseSha` and HEAD with `git ls-tree` (regular-file modes only, never
-  // a symlink, never a tree, equal blob oids), then applies the frozen tier's own
-  // on-disk `fileProblem` before anything is spawned. Each runnable one is then
-  // executed through the same `verify.test` runner a frozen test uses, at HEAD,
-  // in the run's own worktree, in argv form (never a shell).
+  // a symlink, never a submodule, never a tree, equal blob oids), hashes the
+  // WORKING file against the base blob — an index trick like `--assume-unchanged`
+  // keeps the porcelain quiet about a rewritten file — and then applies the frozen
+  // tier's own on-disk `fileProblem` before anything is spawned. Each runnable one
+  // is then executed through the same `verify.test` runner a frozen test uses, at
+  // HEAD, in the run's own worktree, in argv form (never a shell), with the
+  // driver's scrubbed env, inside a bounded budget.
   //
-  // An unreadable spec is not a verdict about the work, so it is not allowed to
-  // change one: the criteria simply do not run, and publish-body reports each
-  // unexecuted `command` row honestly (as `not executed (command): <reason>`,
-  // never as passed).
+  // A spec the gate cannot read is infrastructure and THROWS: silently running no
+  // criteria would let a broken forge read produce a ready PR over unchecked
+  // criteria. Only a body that parsed and holds no `command` criterion is "none".
   const specCriteria = await specCriteriaFor(deps, repoRoot, issue);
   const commands = await commandCriteriaOutcome(
     specCriteria,
@@ -298,15 +319,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     ctx.run.baseSha,
     deps.exec,
     deps.timeoutMs,
+    verifyChildEnv(),
   );
-
-  // 5. The project's own tiers, fast before full, first failure wins.
-  const tierResults: Executed[] = [];
-  for (const [name, cmd] of tiers) {
-    const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
-    tierResults.push(one);
-    if (one.kind === "fail") break;
-  }
 
   const failed = firstFailure(tests, ...tierResults, commandsFailedAsExecuted(commands));
   if (failed !== undefined) return { kind: "red", reason: clipReason(failed) };
@@ -314,128 +328,92 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // worth carrying on a green: the PR body prints it beside the blank cell, and a
   // red's reason line is already dominated by the failing check.
 
-  // The tiers run as shell commands IN the worktree, so between the checks
-  // above and this point a tier may have rewritten a frozen test, left bytes
-  // uncommitted, or committed and moved the head. A green that was decided
-  // about the tree at `head` while the tree is now somewhere else is a verdict
-  // about bytes no commit holds, so every check that licensed this run is read
-  // again — and each one failing here is the tier's fault, never a verdict a
-  // developer is sent to "fix".
-  const tamperedAfter = await frozenTamperReason(deps.exec, wt, head, frozen);
-  if (tamperedAfter !== undefined)
-    return {
-      kind: "red",
-      reason: clipReason(`a verify tier altered frozen tests: ${tamperedAfter}`),
-    };
-  const dirtyAfter = await porcelain(deps.exec, wt).catch((err: unknown) => {
-    throw new VerifyInfraError(
-      `could not re-check the tree after the tiers: ${(err as Error).message}`,
-    );
+  // The tiers run as shell commands IN the worktree, and the command tier runs
+  // test CODE, so between the checks above and this point a tier may have rewritten
+  // a frozen test, left bytes uncommitted, rewritten the file it was judged on,
+  // committed and moved the head, or taken the tree off its branch. Every licence
+  // that licensed this run is read again — and each failure there is the tier's
+  // fault, never a verdict a developer is sent to "fix".
+  const recheck = await recheckAfterRuns({
+    exec: deps.exec,
+    wt,
+    head,
+    branch,
+    baseSha: ctx.run.baseSha,
+    frozen,
+    commands,
+    who: "a verify tier",
   });
-  if (dirtyAfter !== "")
-    throw new VerifyInfraError(
-      `a verify tier left the worktree dirty: ${dirtyAfter.slice(0, 500)}`,
-    );
-  // A read that could not ANSWER is not evidence that a tier moved the head:
-  // the same distinction the porcelain re-check above makes, and for the same
-  // reason — blaming a tier for git refusing to reply accuses the wrong party
-  // and hands the run back with a verdict nobody observed.
-  const headAfter = await deps
-    .exec("git", {
-      argv: [...NO_HOOKS, "rev-parse", "HEAD"],
-      cwd: wt,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    })
-    .catch((err: unknown) => {
-      throw new VerifyInfraError(
-        `could not re-check HEAD after the tiers: ${(err as Error)?.message ?? String(err)}`,
-      );
-    });
-  if ((headAfter?.stdout ?? "").trim() !== head)
-    throw new VerifyInfraError("a verify tier moved HEAD");
-  // A tier may move HEAD without moving a commit: `git checkout --detach` leaves
-  // the same sha sitting on no branch, which the read above cannot see. The run
-  // owns a branch, not a sha, and everything after this step — publish, the land
-  // gate — pushes and compares `ctx.run.branch`, so a detached tree is a tier
-  // that took the run off its own branch.
-  //
-  // `symbolic-ref -q` EXITs 1 when HEAD is detached, and its answer is silence:
-  // an empty stdout/stderr on that status is git saying "no branch". Any OTHER
-  // exit-1 failure — git wrote something on its way out — is a machine that
-  // could not reply, and is never blamed on the tier.
-  const symbolic = await deps
-    .exec("git", {
-      argv: [...NO_HOOKS, "symbolic-ref", "--short", "-q", "HEAD"],
-      cwd: wt,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    })
-    .catch((err: unknown) => {
-      const e = err as { code?: unknown; stderr?: unknown };
-      if (e?.code === 1 && String(e.stderr ?? "").trim() === "") return { stdout: "" };
-      throw new VerifyInfraError(
-        `could not re-check the branch after the tiers: ${(err as Error)?.message ?? String(err)}`,
-      );
-    });
-  const onBranch = (symbolic?.stdout ?? "").trim();
-  // Compared against the branch THIS step owns — the same value handed to the
-  // ownership probe above — because that is the ref the worktree was created on
-  // and the one everything after this step pushes.
-  if (onBranch !== branch)
-    throw new VerifyInfraError("a verify tier detached HEAD from the run's branch");
+  if (recheck.kind === "red") return { kind: "red", reason: clipReason(recheck.reason) };
 
   const note =
     tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "";
+  // Rebuilt from the tier's own record rather than spread-cast: `commandCriteria`
+  // is what licenses `passed (command)` in the PR body and what `publish` reads to
+  // decide a draft, so each entry is written from the value this module computed,
+  // not from an object handed back by a call whose result type was asserted.
+  const executed = Object.entries(commands.executed);
+  const notRunnable = Object.entries(commands.notRunnable);
   return {
     kind: "green",
     reason: `frozen tests and project tiers passed at ${head}${note}`,
     verifiedHead: head,
-    ...(Object.keys(commands.executed).length === 0
+    ...(executed.length === 0
       ? {}
       : {
           commandCriteria: Object.fromEntries(
-            Object.keys(commands.executed).map((id) => [id, "passed"]),
-          ) as Record<string, string>,
+            executed.map(([id]) => [id, COMMAND_CRITERION_PASSED]),
+          ),
         }),
-    ...(Object.keys(commands.notRunnable).length === 0
-      ? {}
-      : { commandNotRunnable: { ...commands.notRunnable } }),
+    ...(notRunnable.length === 0 ? {} : { commandNotRunnable: Object.fromEntries(notRunnable) }),
   };
 }
+
+/** The one word a recorded `command` criterion carries — `state-outcome` checks it. */
+const COMMAND_CRITERION_PASSED = "passed";
 
 /** `verify`'s dependencies in production form: the real executor and config read. */
 export function verifyDeps(): VerifyDeps {
   return {
     exec: (cmd, opts) => execp(cmd, opts ?? {}),
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
+    fetchIssueBody,
   };
 }
 
 /**
- * The spec's criteria, for the `command` tier. A spec that cannot be fetched or
- * parsed yields `[]` — the absence of a check, never a verdict — and a parse
- * failure is traced rather than swallowed silently.
+ * The spec's criteria, for the `command` tier.
+ *
+ * A body the gate could not fetch, or one that carries a `pi-spec` block it
+ * cannot parse, THROWS: the run does not know which `command` criteria were asked
+ * for, and a gate that cannot say that must not report a verdict. What stays
+ * non-fatal is the one case that is genuinely "the spec asked for nothing" — a
+ * block that parsed and holds no `command` criterion — because a run whose spec
+ * has no command criteria is an ordinary run, not a broken machine. A body with
+ * NO `pi-spec` block at all is the same ordinary case: `publish` is the step that
+ * refuses a contractless issue, and the verify gate has no business inventing a
+ * failure the next step already reports in its own words.
  */
 async function specCriteriaFor(
   deps: VerifyDeps,
   repoRoot: string,
   issue: number,
 ): Promise<Criterion[]> {
-  try {
-    const body = await (deps.fetchSpecBody ?? fetchIssueBody)(repoRoot, issue);
-    const parsed = parsePiSpec(body);
-    if (!parsed.ok) {
-      trace(`lean/verify: no command criteria — the issue's spec is unusable: ${parsed.reason}`);
-      return [];
-    }
-    return parsed.spec.criteria;
-  } catch (err) {
-    trace(
-      `lean/verify: no command criteria — could not read the issue: ${(err as Error)?.message ?? String(err)}`,
+  const body = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
+    throw new VerifyInfraError(
+      `could not read the issue's spec for the command criteria: ${(err as Error)?.message ?? String(err)}`,
     );
+  });
+  const parsed = parsePiSpec(body);
+  if (!parsed.ok) {
+    if (parsed.reason !== "no pi-spec v1 block")
+      throw new VerifyInfraError(
+        `the issue's spec could not be read for the command criteria: ${parsed.reason}`,
+      );
+    trace("lean/verify: no command criteria — the issue carries no pi-spec block");
     return [];
   }
+  return parsed.spec.criteria;
 }
 
 /**

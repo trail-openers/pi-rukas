@@ -20,8 +20,12 @@ const { assert, failures } = makeAssert();
 {
   const body = commandBody({ commandCriteria: ["AC2"] });
   assert(
-    body.includes("| passed (command) |"),
-    "(e) a command the gate ran reads passed (command)",
+    body.includes("| passed (command; test file unchanged since base) |"),
+    "(e) a command the gate ran reads passed, with the residual the wording owes the reader",
+  );
+  assert(
+    resultCellOf(body, "AC2") === "passed (command; test file unchanged since base)",
+    `(e) the passed cell names what was pinned — the test FILE, unchanged since base — and not the code it loaded (${resultCellOf(body, "AC2")})`,
   );
   assert(
     body.includes("| not executed (command) |"),
@@ -47,7 +51,7 @@ const { assert, failures } = makeAssert();
     `(e) the shell-shaped criterion explains itself on its own row, separately (${resultCellOf(explained, "AC4")})`,
   );
   assert(
-    resultCellOf(explained, "AC2") === "passed (command)",
+    resultCellOf(explained, "AC2").startsWith("passed (command"),
     "(e) declined commands do not silence the record of the one that ran",
   );
   assert(
@@ -63,7 +67,7 @@ const { assert, failures } = makeAssert();
     "(e) a command row never borrows the gate's overall verdict",
   );
   assert(
-    !commandBody({ draft: true }).includes("passed (command)"),
+    !commandBody({ draft: true }).includes("passed (command;"),
     "(e) with no verify record at all, no command row claims it passed",
   );
   // The map is addressed by criterion id all the way through: a renderer that

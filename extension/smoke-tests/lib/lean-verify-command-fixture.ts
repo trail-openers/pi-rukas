@@ -99,6 +99,20 @@ export interface CommandVerifyOpts {
    * command file written by a runner that must not have run.
    */
   mutate?: (wt: string) => void;
+  /**
+   * Make one git call settle early, or reject it — the seam for "the machine
+   * could not answer" and for a read that must not reach the real git.
+   * Return `undefined` to let the call through.
+   */
+  execOver?: (
+    cmd: string,
+    opts: Parameters<VerifyExec>[1],
+  ) => Promise<{ stdout: string; stderr?: string } | undefined>;
+  /**
+   * Reject the issue-body read, so the case can ask what an unreadable spec does
+   * to a verdict (it is infrastructure, and it throws — see (e2)).
+   */
+  specFetchThrows?: boolean;
 }
 
 export interface CommandVerifyRun {
@@ -154,6 +168,17 @@ export function commitDelete(dir: string, rel: string): void {
 
 /** A shell test that exits 0. */
 export const GREEN_FILE = "#!/bin/sh\necho 'ok'\nexit 0\n";
+
+/**
+ * The runner the self-rewriting case configures, as `sh self-rewrite.sh <test> <test>`.
+ *
+ * It runs the test (so the criterion really executed) and then overwrites the file
+ * with different bytes while exiting 0 — the shape only a post-run re-read can
+ * catch. A `verify.test` template may carry no shell metacharacter, so the
+ * redirection lives in a committed helper rather than in the template itself.
+ */
+export const SELF_REWRITER =
+  "#!/bin/sh\nif [ -n \"$2\" ]; then printf 'rewritten by the run\\n' > \"$2\"; fi\nexit 0\n";
 /** A shell test that fails and prints its own basename, exit 1. */
 export function redFile(rel: string): string {
   return `#!/bin/sh\necho "FAIL ${path.basename(rel)}: the suite regressed" 1>&2\nexit 1\n`;
@@ -238,8 +263,7 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
   for (const [rel, text] of Object.entries(o.files ?? {})) commitFile(wt, rel, text);
   for (const [rel, target] of Object.entries(o.links ?? {})) commitSymlink(wt, rel, target);
   for (const message of o.commits ?? []) git(wt, "commit", "-q", "--allow-empty", "-m", message);
-  const replaced = o.mutate?.(wt);
-  void replaced;
+  o.mutate?.(wt);
   const head = git(wt, "rev-parse", "HEAD");
 
   const steps: Step[] = [
@@ -268,8 +292,14 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
     now: () => 4,
   };
 
-  const exec: VerifyExec = (cmd, opts) =>
-    execp(cmd, { ...opts, env: opts?.env ?? gitTestEnv(), cwd: opts?.cwd ?? wt });
+  const exec: VerifyExec = (cmd, opts) => {
+    const over = o.execOver?.(cmd, opts);
+    if (over !== undefined)
+      return over.then(
+        (r) => r ?? execp(cmd, { ...opts, env: opts?.env ?? gitTestEnv(), cwd: opts?.cwd ?? wt }),
+      );
+    return execp(cmd, { ...opts, env: opts?.env ?? gitTestEnv(), cwd: opts?.cwd ?? wt });
+  };
   const deps: VerifyDeps = {
     exec,
     loadConfig: async () => ({
@@ -279,7 +309,10 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
       },
     }),
     readVerifyCmd: async () => undefined,
-    fetchSpecBody: async () => o.specBody,
+    fetchIssueBody: async () => {
+      if (o.specFetchThrows === true) throw new Error("gh: could not reach the host");
+      return o.specBody;
+    },
     ...(o.timeoutMs === undefined ? {} : { timeoutMs: o.timeoutMs }),
   };
   try {

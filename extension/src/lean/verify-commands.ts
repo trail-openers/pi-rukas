@@ -9,7 +9,16 @@
  * a red test only of `verify: "test"` criteria; this module is where the
  * preservation criteria are actually checked.
  *
- * Four rules make that safe enough to run text that came out of an issue body:
+ * **A residual the reader must not misread as isolation.** The test FILE is
+ * pinned to the base commit — same tree entry, same mode, same blob oid, same
+ * bytes on disk — but the CODE it loads is HEAD's, by design. A preservation
+ * criterion exists to ask "does the new code still hold the old contract?", and
+ * answering that with the base's own source would prove nothing about this run.
+ * So the file is frozen and the product is not; `verify.ts` re-checks the tree
+ * after this tier precisely because the code under test may have been rewritten
+ * underneath it.
+ *
+ * Five rules make running text out of an issue body safe enough to try:
  *
  *   1. **A `command` is a FILE, never a command line.** It is accepted only as a
  *      plain repo-relative path, checked by the frozen tests' own path rule
@@ -18,19 +27,19 @@
  *      project's `verify.test` template through `runTestFile` in **argv form** —
  *      so no shell ever parses it, and a traversal, an absolute path, `.git`,
  *      `.pi` or `node_modules` is refused before anything is spawned.
- *   2. **A `command` names an EXISTING test that has not changed since the base.**
- *      The criterion claims behaviour that already held before this run began, so
- *      the only file that can evidence it is one the base commit already held,
- *      byte for byte. `git ls-tree` answers that for both trees — base and HEAD —
- *      and a criterion whose entry is missing at base, whose mode is not a
- *      regular-file mode (100644/100755 — never a 120000 symlink, never a tree),
- *      or whose blob oid differs between the two, is not a test the base had.
- *      Checking the working tree instead (a plain `existsSync`) FOLLOWS symlinks,
+ *   2. **A `command` names an EXISTING test that has not changed since the base —
+ *      in the commit AND on disk.** The criterion claims behaviour that already
+ *      held before this run began, so the only file that can evidence it is one
+ *      the base commit already held, byte for byte. `git ls-tree` answers that for
+ *      both trees, and `git hash-object` answers it for the working file: a blob
+ *      that differs from the base's is not the test the base had, whatever the
+ *      index says (`--assume-unchanged` keeps `git status` quiet about exactly
+ *      that). Checking the working tree with a plain `existsSync` FOLLOWS symlinks,
  *      so a committed mode-120000 entry pointing outside the worktree was
  *      porcelain-clean and got executed; checking HEAD alone let a developer
  *      author `src/wipe.sh`, exit 0, and have it recorded as a preservation
  *      criterion on a ready PR.
- *   3. **Not-runnable is not a verdict.** A criterion refused by either rule above
+ *   3. **Not-runnable is not a verdict.** A criterion refused by any rule above
  *      is absent from the record — no throw, no red — with its own reason in
  *      `notRunnable[id]`: the criterion is treated like `manual`, `publish` keeps
  *      the PR a draft, and the body prints that reason on the criterion's own row.
@@ -38,21 +47,51 @@
  *      reading it as passed would be the lie this module exists to prevent.
  *   4. **An unrunnable runner is infrastructure.** A killed, timed-out or
  *      un-startable run THROWS, exactly as `frozenTestFailure` does — a verdict
- *      nobody observed is not evidence that the code is wrong.
+ *      nobody observed is not evidence that the code is wrong. So is a tier that
+ *      cannot finish inside its budget.
+ *   5. **The tier is bounded.** At {@link COMMAND_CRITERION_MAX} criteria run per
+ *      gate, and the whole tier shares {@link COMMAND_TIER_BUDGET_MS}; each run's
+ *      timeout is the time the budget still has, so the tier cannot outlive the
+ *      gate that trusts it.
  */
 
 import { trace } from "../trace.ts";
 import type { Criterion } from "./spec.ts";
 import { runTestFile } from "./specify-proof.ts";
-import { NO_HOOKS } from "./specify-reset.ts";
 import { fileProblem, normaliseRelPath, pathProblem } from "./specify-tree.ts";
+import {
+  entryRefusal,
+  entryUnreadable,
+  parseTreeLine,
+  treeEntry,
+  unreadableEntry,
+  workingOid,
+} from "./verify-tree.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
 /** The outcome of one executed `command` criterion, kept for the record. */
 export interface CommandCriterionRecord {
   /** `passed` — the criterion ran through the gate's own runner and exited 0. */
   kind: "passed";
+  /**
+   * The base blob the pre-run check accepted, kept so the post-run re-check has an
+   * expectation of its own. Read from the tree again afterwards, an oid would agree
+   * with itself whatever the tier did to it — so a criterion that rewrote its own
+   * file, or the tree that held it, would still be recorded as preservation.
+   */
+  oid: string;
+  /**
+   * The repo-relative path this criterion named, so the post-run re-check can find
+   * the file again by more than its criterion id.
+   */
+  rel: string;
 }
+
+/** How many `command` criteria one gate run may execute. */
+export const COMMAND_CRITERION_MAX = 32;
+
+/** Wall clock the whole command tier gets, shared across every run in it. */
+export const COMMAND_TIER_BUDGET_MS = 600_000;
 
 export interface CommandCriteriaOutcome {
   /** First failure's reason, for a red; absent when nothing failed. */
@@ -71,105 +110,51 @@ export interface CommandCriteriaOutcome {
   notRunnable: Record<string, string>;
 }
 
-/** A git blob oid, the only form whose equality means anything. */
-const BLOB_OID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
-
-/**
- * One `git ls-tree <ref> -- <rel>` in argv form, with the same hook and fsmonitor
- * guard every other lean git read carries.
- *
- * `-- <rel>` is what makes this a path question rather than a revision question:
- * without the separator a `rel` that also names a ref would answer a different
- * query. `undefined` means git refused, `""` means git answered "this tree holds
- * no such entry" — the two are NOT the same fact, and collapsing them would let a
- * broken git read look like an absent test.
- */
-async function treeEntry(
-  exec: VerifyExec,
-  wt: string,
-  ref: string,
-  rel: string,
-): Promise<string | undefined> {
-  const r = await exec("git", {
-    argv: [...NO_HOOKS, "ls-tree", ref, "--", rel],
-    cwd: wt,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-  }).catch(() => undefined);
-  if (r === undefined) return undefined;
-  return (r.stdout ?? "").trim();
-}
-
-/**
- * Why a tree entry is not a regular file this gate may run, or `undefined`.
- *
- * The `{mode} blob <oid> <path>` form is what `ls-tree` prints for a file; anything
- * else is a fact this gate must not run past. A SYMLINK is mode 120000 — whose
- * target lives anywhere on the host, and the exact shape that used to reach the
- * runner because an existence probe follows links — and a directory is mode 040000
- * with type `tree`. The MODE is what decides: git prints `blob` for a symlink too,
- * so reading the type alone would let one through. A line whose path is not the one
- * asked for is refused too, because the query was for one exact entry.
- */
-function entryProblem(line: string, rel: string): string | undefined {
-  const parts = line.split(/\s+/);
-  const mode = parts[0];
-  if (mode === "tree" || mode === "040000") return `${rel} is a directory`;
-  // Every mode that is not one of the two regular-file modes is refused, so a git
-  // that reported some other object type under a file mode is declined, not run.
-  if (mode !== "100644" && mode !== "100755") return `${rel} is a symlink`;
-  if (parts[1] !== "blob" || !BLOB_OID.test(parts[2] ?? "")) return `${rel} is a symlink`;
-  if (parts[3] !== rel) return `${rel} is not an exact path in the tree`;
-  return undefined;
-}
-
-/** Does this line pass `entryProblem`'s shape rules on its own? */
-function regularEntry(line: string): boolean {
-  const parts = line.split(/\s+/);
-  return (
-    (parts[0] === "100644" || parts[0] === "100755") &&
-    parts[1] === "blob" &&
-    BLOB_OID.test(parts[2] ?? "")
-  );
-}
-
-/** The blob oid of a tree entry already known to describe a regular file. */
-function oidAt(line: string): string {
-  return line.split(/\s+/)[2] ?? "";
-}
-
 /**
  * Why this `command` criterion's file is not an unchanged regular test of the base,
- * or `undefined` when it is.
+ * or `undefined` when it is. A `VerifyInfraError` instead whenever a read could not
+ * answer — "could not tell" must never read as "the test is not there", because the
+ * first is a machine to re-run and the second is an issue to fix.
  *
- * `undefined` from a git read is infrastructure — "could not tell" must never read
- * as "the test is not there", because the first is a machine to re-run and the
- * second is an issue to fix.
+ * Three reads, because there are three places the bytes can differ: the base
+ * commit, HEAD, and the working file. The third is what an index trick hides —
+ * `git update-index --assume-unchanged` keeps `git status` silent about a file
+ * somebody rewrote on disk, so a tier that trusted the porcelain would run it. The
+ * hash covers the bytes the runner is about to load, and they must equal the base's.
  */
 async function unchangedFileProblem(
   exec: VerifyExec,
   wt: string,
   baseSha: string,
   rel: string,
+  accepted: { oid: string },
 ): Promise<string | undefined> {
+  accepted.oid = "";
   const base = await treeEntry(exec, wt, baseSha, rel);
   const head = await treeEntry(exec, wt, "HEAD", rel);
-  if (base === undefined || head === undefined)
-    throw new VerifyInfraError(`could not read the tree entry for ${rel} in ${wt}`);
   if (base === "") return `${rel} does not exist at base`;
   if (head === "") return `${rel} changed since base`;
-  const atBase = entryProblem(base, rel);
-  if (atBase !== undefined) return atBase;
-  if (!regularEntry(base))
-    throw new VerifyInfraError(`could not read the tree entry for ${rel} in ${wt}`);
-  const atHead = entryProblem(head, rel);
-  if (atHead !== undefined) return atHead;
-  if (!regularEntry(head))
-    throw new VerifyInfraError(`could not read the tree entry for ${rel} in ${wt}`);
+  const atBase = parseTreeLine(base, rel);
+  if (atBase.kind !== "file") {
+    if (entryUnreadable(atBase)) throw unreadableEntry(rel, wt);
+    return entryRefusal(atBase);
+  }
+  const atHead = parseTreeLine(head, rel);
+  if (atHead.kind !== "file") {
+    if (entryUnreadable(atHead)) throw unreadableEntry(rel, wt);
+    return entryRefusal(atHead);
+  }
   // Same mode, same oid: the bytes the base commit held are the bytes HEAD holds,
   // which is the whole claim a preservation criterion makes. A differing oid is a
   // test somebody edited during this run — no longer evidence of what already held.
-  if (oidAt(base) !== oidAt(head)) return `${rel} changed since base`;
+  if (atBase.oid !== atHead.oid) return `${rel} changed since base`;
+  // git vouched for the COMMITTED entry; nothing above the commit is vouched for.
+  if ((await workingOid(exec, wt, rel)) !== atBase.oid)
+    return `${rel} differs on disk from the base commit`;
+  // The file is the base's, byte for byte, on disk: remember which blob that was,
+  // so the re-check after the runner compares against this observation rather than
+  // a fresh read of whatever the tree now says.
+  accepted.oid = atBase.oid;
   return undefined;
 }
 
@@ -216,6 +201,16 @@ export function commandCriterionProblem(command: string | undefined): string | u
  * criterion (the reasoning `frozenTestFailure` gives for running every frozen
  * file). Each must exit **0**: green is the pass condition for a preservation
  * criterion, and a non-zero exit is the regression it exists to catch.
+ *
+ * The tier is bounded twice over. At `COMMAND_CRITERION_MAX` criteria run — more
+ * than that in one spec is a spec nobody can review, and the count is named rather
+ * than silently truncated. And the whole tier shares `COMMAND_TIER_BUDGET_MS`:
+ * each run's timeout is the time the budget still has, so thirty slow files cannot
+ * add up to an hour the gate never agreed to wait.
+ *
+ * The runner gets the driver's SCRUBBED env (`verifyChildEnv()`) exactly as the
+ * project tiers do: the thing under test is the project's own test file, and a
+ * headless driver's knobs must not decide what it sees.
  */
 export async function commandCriteriaOutcome(
   criteria: Criterion[],
@@ -224,17 +219,25 @@ export async function commandCriteriaOutcome(
   baseSha: string,
   exec: VerifyExec,
   timeoutMs?: number,
+  env?: NodeJS.ProcessEnv,
 ): Promise<CommandCriteriaOutcome> {
   const wanted = criteria.filter((c) => c.verify === "command");
   if (wanted.length === 0) return { executed: {}, notRunnable: {} };
+  if (wanted.length > COMMAND_CRITERION_MAX)
+    throw new VerifyInfraError(
+      `the spec carries ${wanted.length} command criteria, more than the ${COMMAND_CRITERION_MAX} this gate will run`,
+    );
   if (template === undefined)
     throw new VerifyInfraError(
       "no verify.test runner template is configured for the spec's command criteria",
     );
+  const started = Date.now();
   const executed: Record<string, CommandCriterionRecord> = {};
   const notRunnable: Record<string, string> = {};
   let failed: string | undefined;
   for (const c of wanted) {
+    const left = COMMAND_TIER_BUDGET_MS - (Date.now() - started);
+    if (left <= 0) throw new VerifyInfraError("command criteria exceeded 600s");
     const problem = commandCriterionProblem(c.command);
     // A string that is not a path at all is the spec's own defect: never
     // executed, never a verdict, and carried to the PR body so the omission is
@@ -246,14 +249,14 @@ export async function commandCriteriaOutcome(
     }
     // The text rule passed, so `command` is a normalised repo-relative path.
     const rel = normaliseRelPath(c.command as string);
-    const treeProblem = await unchangedFileProblem(exec, wt, baseSha, rel);
+    const accepted = { oid: "" };
+    const treeProblem = await unchangedFileProblem(exec, wt, baseSha, rel, accepted);
     if (treeProblem !== undefined) {
       notRunnable[c.id] = treeProblem;
       trace(`lean/verify: command criterion ${c.id} not run — ${treeProblem}`);
       continue;
     }
-    // git vouched for the COMMITTED entry; nothing above the commit is vouched
-    // for. The on-disk check is the frozen tier's own — a symlink, a hard link or
+    // The on-disk check is the frozen tier's own — a symlink, a hard link or
     // a path whose realpath leaves the worktree is refused before a byte of it
     // reaches the runner.
     const diskProblem = fileProblem(wt, rel);
@@ -266,14 +269,17 @@ export async function commandCriteriaOutcome(
       wt,
       template,
       file: rel,
-      ...(timeoutMs === undefined ? {} : { limits: { timeoutMs } }),
+      limits: {
+        ...(timeoutMs === undefined ? {} : { timeoutMs: Math.max(1, Math.min(timeoutMs, left)) }),
+        ...(env === undefined ? {} : { env }),
+      },
     });
     if (proof.kind === "infra")
       throw new VerifyInfraError(
         `the command criterion ${c.id} could not be judged: ${proof.detail}`,
       );
     if (proof.kind === "green") {
-      executed[c.id] = { kind: "passed" };
+      executed[c.id] = { kind: "passed", oid: accepted.oid, rel };
       continue;
     }
     // `red` and `unclear` both mean the file did not exit 0. Unlike a frozen
@@ -287,4 +293,42 @@ export async function commandCriteriaOutcome(
     notRunnable,
     executed,
   };
+}
+
+/**
+ * Re-read the checks that licensed a run, after the runner has had the tree.
+ *
+ * A test file is code, and code may write: a criterion whose own `sh` script
+ * rewrote the file it was named for, or chmod'd it, would otherwise leave the gate
+ * recording a preservation criterion about bytes it never observed. The same reads
+ * as before the run — the on-disk shape, the base tree entry, the working hash —
+ * and any difference is a RED: the tier disturbed what it was meant to leave alone.
+ * An entry that has become unreadable is infrastructure, as it was before.
+ */
+export async function commandCriteriaTouched(
+  executed: Record<string, CommandCriterionRecord>,
+  wt: string,
+  baseSha: string,
+  exec: VerifyExec,
+): Promise<string | undefined> {
+  for (const record of Object.values(executed)) {
+    const rel = record.rel;
+    const diskProblem = fileProblem(wt, rel);
+    if (diskProblem !== undefined) return `command criteria changed the tree: ${diskProblem}`;
+    const base = await treeEntry(exec, wt, baseSha, rel);
+    if (base === "") return `command criteria changed the tree: ${rel} does not exist at base`;
+    const entry = parseTreeLine(base, rel);
+    if (entry.kind !== "file") {
+      if (entryUnreadable(entry)) throw unreadableEntry(rel, wt);
+      return `command criteria changed the tree: ${entryRefusal(entry)}`;
+    }
+    // Compared against the oid the PRE-run check accepted, not a freshly-read one:
+    // a tier that rewrote the base tree itself must not have its own change serve as
+    // the expectation the file is judged against.
+    if (entry.oid !== record.oid)
+      return `command criteria changed the tree: ${rel} changed since base`;
+    if ((await workingOid(exec, wt, rel)) !== record.oid)
+      return `command criteria changed the tree: ${rel} differs on disk from the base commit`;
+  }
+  return undefined;
 }

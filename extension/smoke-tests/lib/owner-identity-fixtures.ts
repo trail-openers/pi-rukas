@@ -27,8 +27,17 @@ export const ANCIENT_2X = NOW - 2 * 3_600_000;
  * identity check runs first and the probe is never reached. */
 export const SOMEONE_ELSES_PID = 4242;
 
-/** A pid that cannot exist: the shape that makes "dead" provable. */
-export const deadPid = (): number => spawnSync("true").pid ?? 999_999;
+/**
+ * A pid no process can hold, for "this cycle's owner died" fixtures.
+ *
+ * Above the `pid_max` any current Linux box runs with (the 4 194 304 ceiling is
+ * the documented maximum; `0x7ffffffe` is far beyond it), and not a signal-0
+ * special case — `processAlive()` answers false without racing a real pid. A
+ * fixture that reaches for a small pid like 999 is a flake with a schedule: on a
+ * CI runner with a low `pid_max`, 999 is an ordinary live process, and "this owner
+ * is certainly dead" silently becomes "that owner is alive".
+ */
+export const deadPid = (): number => 0x7ffffffe;
 
 /** A claim entry with this issue's defaults, overridden per case. */
 export function claim(over: Partial<PathClaimEntry> = {}): PathClaimEntry {

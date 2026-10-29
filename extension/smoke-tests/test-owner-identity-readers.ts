@@ -22,6 +22,7 @@
  * `test-owner-claim-park-message.ts`. All three share
  * `lib/owner-identity-fixtures.ts` so one fixture cannot drift from the other.
  */
+import { spawnSync } from "node:child_process";
 import { selfIdentity } from "../src/process-liveness.ts";
 import type { PathClaimEntry } from "../src/work-driver-path-claims-staleness.ts";
 import {
@@ -325,39 +326,43 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
 }
 
 {
+  // D4 — a HALF identity is never routed to the pid probe: it is foreign, and
+  // foreign is alive. The pid below is one this process can certainly call dead,
+  // so a judge that probed would sweep the worktree and this line would go red.
+  // It must be a pid that CANNOT exist, not merely one that usually does not: a
+  // CI runner with a low `pid_max` routinely holds pid 999 alive, and a live 999
+  // makes every case below "live-owner" for the wrong reason.
+  const dead = deadPid();
   const foreignHost = await decideWith({
-    pid: 999,
+    pid: dead,
     at: 0,
     host: FOREIGN_HOST,
     pidns: SELF_NS,
     startTime: "1",
   });
   assert(
-    /^live-owner pid=999$/.test(foreignHost),
+    foreignHost === `live-owner pid=${dead}`,
     `a state owner on another host is not swept (got ${foreignHost})`,
   );
   const foreignNs = await decideWith({
-    pid: 999,
+    pid: dead,
     at: 0,
     host: selfIdentity().host,
     pidns: FOREIGN_NS,
     startTime: "1",
   });
   assert(
-    /^live-owner pid=999$/.test(foreignNs),
+    foreignNs === `live-owner pid=${dead}`,
     `a state owner in another pid namespace is not swept (got ${foreignNs})`,
   );
-  // D4 — a HALF identity is never routed to the pid probe: it is foreign, and
-  // foreign is alive. Pid 999 is one this process can certainly call dead, so
-  // a judge that probed would sweep the worktree and this line would go red.
-  const half = await decideWith({ pid: 999, at: 0, host: selfIdentity().host });
+  const half = await decideWith({ pid: dead, at: 0, host: selfIdentity().host });
   assert(
-    /^live-owner pid=999$/.test(half),
+    half === `live-owner pid=${dead}`,
     `a HALF identity (host only) is foreign, never probed, so it is not swept (got ${half})`,
   );
-  const legacyDead = await decideWith({ pid: 999, at: 0 });
+  const legacyDead = await decideWith({ pid: dead, at: 0 });
   assert(
-    legacyDead !== "live-owner pid=999" && !/^live-owner/.test(legacyDead),
+    legacyDead !== `live-owner pid=${dead}` && !/^live-owner/.test(legacyDead),
     `a legacy {pid, at} owner with an impossible pid is still judged by pid (got ${legacyDead})`,
   );
   const oursLive = await decideWith({ pid: process.pid, at: 0 });
@@ -379,6 +384,9 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
 
 // ── resume: a foreign owner refuses with a named owner; legacy unchanged ----
 {
+  // Same rule as above: the pid whose fate must not matter is one that cannot
+  // exist, never a low number a CI runner may have handed to a real process.
+  const dead = deadPid();
   const inFlight = (owner: WorkState["owner"]): WorkState =>
     ({
       resumable: true,
@@ -400,15 +408,15 @@ async function decideWith(owner: WorkState["owner"]): Promise<string> {
     }) as unknown as WorkState;
 
   const foreign = classifyRunningState(
-    inFlight({ pid: 999, at: 0, host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1" }),
+    inFlight({ pid: dead, at: 0, host: FOREIGN_HOST, pidns: FOREIGN_NS, startTime: "1" }),
     999_999,
   );
   assert(
-    foreign.action === "refuse" && foreign.ownerPid === 999,
+    foreign.action === "refuse" && foreign.ownerPid === dead,
     "a foreign owner is REFUSED: resume will not join a driver it cannot verify",
   );
   const half = classifyRunningState(
-    inFlight({ pid: 999, at: 0, host: selfIdentity().host }),
+    inFlight({ pid: dead, at: 0, host: selfIdentity().host }),
     999_999,
   );
   assert(

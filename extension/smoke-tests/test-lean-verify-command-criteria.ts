@@ -40,8 +40,17 @@
  *   (f) `specify`'s coverage rule asks for red tests of `verify: "test"` criteria
  *       ONLY — a command criterion never earns a `has no red test`.
  *
- * The PR-body half — which cell prints what, and whether reasons can trade rows —
- * is `test-lean-verify-command-body.ts`.
+ * Three rules about what a `command` may NOT be, plus the coverage rule, are all
+ * this file holds. The rest of the tier's contract is split along its own seams,
+ * each with the fixture it needs:
+ *
+ *   - `test-lean-verify-command-tree.ts` — the tree and the working file: an
+ *     on-disk rewrite the index hides, and a run that disturbs the tree;
+ *   - `test-lean-verify-command-infra.ts` — what is INFRASTRUCTURE rather than a
+ *     verdict: a runner nobody observed, a spec nobody could read, a tier that
+ *     blew its bounds;
+ *   - `test-lean-verify-command-body.ts` — which cell prints what, and whether
+ *     reasons can trade rows.
  */
 
 import { existsSync, writeFileSync } from "node:fs";
@@ -54,7 +63,6 @@ import {
   cleanupRoots,
   commitDelete,
   commitEdit,
-  killedFile,
   redFile,
   runCommandVerify,
 } from "./lib/lean-verify-command-fixture.ts";
@@ -89,8 +97,7 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     `(a) a green command criterion leaves verify green (got ${String(r.outcome?.kind)}: ${String(r.outcome?.reason ?? r.threw?.message)})`,
   );
   assert(
-    r.outcome?.commandCriteria?.AC2 === "passed" &&
-      r.outcome?.commandNotRunnable === undefined,
+    r.outcome?.commandCriteria?.AC2 === "passed" && r.outcome?.commandNotRunnable === undefined,
     "(a) the green record names AC2 as executed, and records no not-runnable reason",
   );
 }
@@ -268,7 +275,12 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     specBody: bodyWith([
       TEST_CRITERION,
       { ...COMMAND_CRITERION, command: "src/wipe.sh" },
-      { id: "AC3", text: "the other suite still passes", verify: "command", command: "tests/nope.test.sh" },
+      {
+        id: "AC3",
+        text: "the other suite still passes",
+        verify: "command",
+        command: "tests/nope.test.sh",
+      },
     ]),
     files: { "src/wipe.sh": "#!/bin/sh\nexit 0\n" },
   });
@@ -294,109 +306,13 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     baseLinks: { "tests/doc-link.test.sh": "/bin/true" },
   });
   assert(
-    declined.outcome?.commandNotRunnable?.AC2 ===
-      "tests/absent.test.sh does not exist at base" &&
+    declined.outcome?.commandNotRunnable?.AC2 === "tests/absent.test.sh does not exist at base" &&
       declined.outcome?.commandNotRunnable?.AC3 === "tests/doc-link.test.sh is a symlink" &&
       declined.outcome?.commandCriteria === undefined,
     `(c2) the gate records one reason per declined criterion, and neither as executed (${JSON.stringify(declined.outcome?.commandNotRunnable)})`,
   );
 }
 
-// -------------------------------------- (d) an infra proof throws, as frozen tests do
-{
-  // THE command tier's own infra path, with no frozen test to blame. The frozen
-  // test runs through `sh {file}` and exits 0; the command criterion's file kills
-  // itself, so its runner dies on a SIGNAL with no exit status — the one shape
-  // `runTestFile` returns as `kind: "infra"` (a plain non-zero exit is a verdict, a
-  // kill is not). The throw can only have come from the command tier, so the
-  // message must name the COMMAND criterion and not the frozen test that ran first.
-  const r = await runCommandVerify({
-    issue: 405,
-    implement: true,
-    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
-    baseFiles: { [CMD_FILE]: killedFile(CMD_FILE) },
-    testTemplate: "sh {file}",
-  });
-  assert(
-    r.threw !== undefined,
-    `(d) a command criterion whose runner was killed THROWS (got outcome ${String(r.outcome?.kind)})`,
-  );
-  assert(
-    r.threw?.message.includes("could not be judged") === true &&
-      r.threw?.message.includes("AC2") === true &&
-      r.threw?.message.includes("AC1-retry") === false,
-    `(d) the throw names the COMMAND criterion, not the frozen test (${JSON.stringify(r.threw?.message)})`,
-  );
-}
-
-{
-  // Two more ways the tier's own machinery can fail, both infrastructure: no
-  // runner template at all (`frozenTestFailure` would refuse first through the
-  // step, so the tier is driven directly), and a `git ls-tree` that cannot answer.
-  // "Could not tell" must never read as "the test is not there" — the first is a
-  // machine to re-run, the second an issue to fix.
-  const { commandCriteriaOutcome } = await import("../src/lean/verify-commands.ts");
-  const criterion = [{ id: "AC9", text: "preserved", verify: "command", command: CMD_FILE }];
-  const silent = async () => ({ stdout: "", stderr: "" });
-  const refusing = (async () => {
-    throw new Error("git refused");
-  }) as never;
-  let noTemplate: Error | undefined;
-  let unreadable: Error | undefined;
-  try {
-    await commandCriteriaOutcome(criterion, undefined, "/nonexistent-wt", "b".repeat(40), silent as never);
-  } catch (err) {
-    noTemplate = err as Error;
-  }
-  try {
-    await commandCriteriaOutcome(criterion, "sh {file}", "/nonexistent-wt", "b".repeat(40), refusing);
-  } catch (err) {
-    unreadable = err as Error;
-  }
-  assert(
-    noTemplate?.message.includes("command criteria") === true,
-    `(d) the tier's own no-template throw names the command criteria (${JSON.stringify(noTemplate?.message)})`,
-  );
-  assert(
-    unreadable?.message.includes("could not read the tree entry") === true,
-    `(d) an unreadable tree entry THROWS instead of reporting the test absent (${JSON.stringify(unreadable?.message)})`,
-  );
-}
-
-{
-  // The safety-critical direction of the not-runnable rule: a `command` whose text
-  // IS a shell one-liner that would fail if it were ever run. The gate must leave
-  // the run green — neither executing arbitrary text out of an issue body nor
-  // red-lining the developer for a check it refused to make.
-  const r = await runCommandVerify({
-    issue: 407,
-    implement: true,
-    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: "false" }]),
-  });
-  assert(
-    r.outcome?.kind === "green" &&
-      r.threw === undefined &&
-      r.outcome?.commandCriteria === undefined,
-    `(d) an unrunnable command never turns a green run red, never throws, records nothing (${JSON.stringify({ kind: r.outcome?.kind, threw: r.threw?.message })})`,
-  );
-}
-
-// ------------------------------------- (e) an unreadable spec changes no verdict
-{
-  const r = await runCommandVerify({
-    issue: 406,
-    implement: true,
-    specBody: "there is no pi-spec block here at all",
-  });
-  assert(
-    r.outcome?.kind === "green" &&
-      r.threw === undefined &&
-      r.outcome?.commandCriteria === undefined,
-    `(e) an unusable spec yields no command criteria, no record, and no changed verdict (got ${String(r.outcome?.kind)})`,
-  );
-}
-
-// ------------- (f) specify's coverage rule asks for reds of TEST criteria only
 {
   const { testCriteria } = await import("../src/lean/specify-prompt.ts");
   const { parsePiSpec } = await import("../src/lean/spec.ts");

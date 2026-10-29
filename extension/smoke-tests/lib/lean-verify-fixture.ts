@@ -183,6 +183,12 @@ export interface VerifyOpts {
    * answer and not as a machine that could not reply.
    */
   recheckBranchDetached?: boolean;
+  /**
+   * The issue body the verify gate reads for its `command` criteria. Absent means
+   * an issue with no `pi-spec` block, which is the "the spec asked for no command
+   * criteria" shape — the ordinary case these cases are not about.
+   */
+  specBody?: string;
   /** Log lines to add after the fixture's own. */
   extraSteps?: Step[];
 }
@@ -274,6 +280,7 @@ export function sha(text: string | Buffer): string {
 /** Run `verify` against a fixture repo; a throw comes back as `threw`. */
 export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const f = fixture(opts.issue);
+
   const wt = f.wt;
 
   if (opts.implement === true && opts.editDisk === undefined) {
@@ -382,6 +389,11 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       },
     }),
     readVerifyCmd: async () => undefined,
+    // The lean contract lives in the issue body, and the verify gate now reads it
+    // through this seam for its `command` criteria. A fixture case whose body
+    // carries no `pi-spec` block is the ordinary "the spec asked for nothing"
+    // shape, so the tier runs no criteria and the case judges only what it asked.
+    fetchIssueBody: async () => opts.specBody ?? "",
     ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
   };
   try {

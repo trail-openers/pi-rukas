@@ -187,6 +187,65 @@ for (const [label, issue, step, expect] of [
     },
     /commandNotRunnable must be an object/,
   ],
+  [
+    // `commandCriteria` is what licenses `passed (command)` in the PR body, so it
+    // belongs to the gate and nowhere else — and `buildOutcome` rebuilds the map
+    // from entries it actually validated, so an object value (or any word but
+    // `passed`) is refused at load rather than spread through a cast and printed as
+    // evidence for a check the gate never made.
+    "commandCriteria whose value is an object rather than the word passed",
+    56,
+    {
+      key: "56:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "green",
+        verifiedHead: "b".repeat(40),
+        commandCriteria: { AC1: { kind: "passed" } },
+      },
+    },
+    /commandCriteria\["AC1"\] must be "passed"/,
+  ],
+  [
+    // Any other string is the same forgery in a different costume: `passed-ish`
+    // reads as evidence and never matched anything the gate recorded.
+    "commandCriteria whose value is a string that is not `passed`",
+    57,
+    {
+      key: "57:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "green",
+        verifiedHead: "b".repeat(40),
+        commandCriteria: { AC1: "probably-passed" },
+      },
+    },
+    /commandCriteria\["AC1"\] must be "passed"/,
+  ],
+  [
+    // The map carries one entry per criterion the gate can execute, and no more:
+    // a record with more was not written by the gate.
+    "commandCriteria holding more criteria than the gate can run",
+    58,
+    {
+      key: "58:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "green",
+        verifiedHead: "b".repeat(40),
+        commandCriteria: Object.fromEntries(
+          Array.from({ length: 33 }, (_, i) => [`AC${i + 1}`, "passed"]),
+        ),
+      },
+    },
+    /commandCriteria must hold at most 32/,
+  ],
 ] as const) {
   const { dir, cleanup } = tempDir();
   try {
