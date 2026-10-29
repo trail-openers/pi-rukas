@@ -46,6 +46,8 @@ import { handbackOutcome } from "./handback.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
 import { postHandback } from "./io.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
+import { publishDeps } from "./publish-deps.ts";
+import { publishOutcome } from "./publish.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Outcome, Step } from "./state.ts";
@@ -203,6 +205,7 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps());
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps());
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
+  handlers.publish = (ctx) => publishOutcome(ctx, publishDeps());
   handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
   handlers.decline = async (ctx) => {
     // From the log, not from a closure: see `failedRulesFromLog`.

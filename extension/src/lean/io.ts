@@ -18,8 +18,14 @@ import { detectForge } from "../forge-detect.ts";
 import { type Forge, type ForgeDetection, createForge } from "../forge.ts";
 import { detectMainline } from "../mainline.ts";
 
-/** The forge adapter for this repo, or undefined when it cannot be resolved. */
-async function forgeFor(repoRoot: string): Promise<Forge | undefined> {
+/**
+ * The forge adapter for this repo, or undefined when it cannot be resolved.
+ *
+ * Exported because `publish` asks for the same adapter in a narrower shape
+ * (`PublishForge` is a `Pick` of `Forge`), and a second lookup here would be
+ * a second detection path with its own failure modes.
+ */
+export async function forgeFor(repoRoot: string): Promise<Forge | undefined> {
   if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
   try {
     const det: ForgeDetection = await detectForge(repoRoot, {});

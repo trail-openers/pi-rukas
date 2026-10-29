@@ -66,6 +66,24 @@ export interface Step {
   outcome?: Outcome;
 }
 
+/**
+ * The newest DECIDED step of one state, or `undefined`.
+ *
+ * A step without an outcome is a crash mid-step — the engine is about to
+ * re-run it, and it has said nothing, so it is never "the newest". Reading
+ * a trailing outcome-less `verify:1` as the state's verdict made a
+ * legitimately green run look unverified.
+ *
+ * Lives next to `Step` rather than in `engine.ts` because the rule is a
+ * property of the log, not of the runner: the engine's land gate and the
+ * publish step's green-check are two readers of one record and must not
+ * diverge.
+ */
+export function newestDecided(steps: Step[], state: LeanState): Step | undefined {
+  const decided = steps.filter((s) => s.state === state && s.outcome !== undefined);
+  return decided[decided.length - 1];
+}
+
 export interface RunCounters {
   buildAttempts: number;
   challengeDone: boolean;

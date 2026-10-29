@@ -25,15 +25,35 @@
  * report-failed` without moving the exit code.
  */
 
+import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { postHandback } from "./io.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
+import { fenceText } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
 const REASON_CLIP = 2000;
+
+/**
+ * The `Branch:` line, or nothing when the branch is not a printable ref.
+ *
+ * `run.branch` is a string the run was seeded with, and a ref carrying a
+ * newline is not a branch name — it is a line of the comment's markdown written
+ * by whoever set the field. `assertSafeRef` is the same rule the git call sites
+ * apply before a ref reaches a command line; here it decides whether the line
+ * is printed at all rather than whether a command runs.
+ */
+function branchLine(branch: string): string[] {
+  try {
+    assertSafeRef(branch);
+  } catch {
+    return [];
+  }
+  return [`Branch: \`${branch}\``];
+}
 
 /**
  * How much of the frozen contract a comment lists. The full set lives in the
@@ -166,12 +186,12 @@ export function handbackBody(
   return [
     `work-lean: issue #${issue} is handed back — this is still needed:`,
     "",
-    opts.needed,
+    fenceText(opts.needed, REASON_CLIP),
     "",
     "Frozen acceptance tests:",
     tests,
     "",
-    `Branch: \`${opts.branch}\``,
+    ...branchLine(opts.branch),
     `PR: ${opts.prUrl ?? "no PR yet"}`,
   ].join("\n");
 }
