@@ -192,7 +192,9 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     `${report.files.length} file(s) changed`,
     report.restored.length > 0 ? `restored: ${report.restored.join(", ")}` : "",
     report.reverted.length > 0 ? `reverted: ${report.reverted.join(", ")}` : "",
-    report.removed.length > 0 ? `removed: ${report.removed.join(", ")}` : "",
+    report.removed.length > 0
+      ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
+      : "",
     report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
   ].filter((s) => s !== "");
   return { kind: "ok", reason: notes.join("; ") };

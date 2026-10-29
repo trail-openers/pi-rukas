@@ -24,7 +24,8 @@
  *   (l) a worktree that is not ours        -> THROW before the dispatch
  *   (m) child edits agents.json + .gitmodules -> both reverted, the tracked one restored
  *
- * The wiring and config cases live in test-lean-build-wiring.ts.
+ * The wiring and config cases live in test-lean-build-wiring.ts; the link and
+ * kind-change cases live in test-lean-build-tree.ts.
  *
  * Every git call the step makes carries the hook and fsmonitor guard (case a).
  */
@@ -253,6 +254,7 @@ function assert(cond: boolean, msg: string): void {
     allRemoved
       .split(", ")
       .filter((p) => p !== "")
+      .map((p) => p.replace(/ \(.*$/, ""))
       .sort()
       .join() === "src/hard.ts,src/linked.ts",
     `(e) the reason accounts for both dropped links (got ${r.outcome?.reason})`,

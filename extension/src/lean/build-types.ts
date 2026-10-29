@@ -32,8 +32,12 @@ export interface NormaliseReport {
   restored: string[];
   /** Protected paths the child changed, which the reset reverted. */
   reverted: string[];
-  /** Paths dropped because a capture refused them (link, device, swapped inode). */
-  removed: string[];
+  /**
+   * Paths the step did not keep, each with why: a link, a device or a directory
+   * the child left, a path behind one, a capture the reader refused, or a path
+   * whose kind changed under the reset so it cannot be written.
+   */
+  removed: Array<{ path: string; why: string }>;
   /** Paths with no regular file behind them, deleted by the child. */
   deleted: string[];
 }

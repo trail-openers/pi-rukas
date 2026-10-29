@@ -115,7 +115,12 @@ async function blobAt(
   return Buffer.from(r.stdout ?? "", "utf8");
 }
 
-/** Do `frozen`'s committed blobs at `ref` still hash to their records? */
+/**
+ * Do `frozen`'s committed blobs at `ref` still hash to their records?
+ *
+ * A zero-byte blob is never a frozen test, whatever its record says: a record of
+ * the empty hash would otherwise vouch for a test that tests nothing.
+ */
 export async function frozenMatches(
   exec: BuildExec,
   wt: string,
@@ -125,7 +130,7 @@ export async function frozenMatches(
   const bad: string[] = [];
   for (const [rel, want] of Object.entries(frozen)) {
     const bytes = await blobAt(exec, wt, ref, rel);
-    if (bytes === undefined || sha256(bytes) !== want) bad.push(rel);
+    if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== want) bad.push(rel);
   }
   return bad;
 }

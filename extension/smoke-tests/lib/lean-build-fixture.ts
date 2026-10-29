@@ -115,8 +115,10 @@ export interface Built {
  */
 export function buildFixture(
   issue: number,
-  opts?: { frozenSha?: string; childOwnsBranch?: boolean },
+  opts?: { frozenSha?: string; frozenText?: string; childOwnsBranch?: boolean },
 ): Built {
+  const frozenText = opts?.frozenText ?? TEST;
+  const frozenSha = opts?.frozenSha ?? sha(frozenText);
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-build-"));
   ROOTS.push(repoRoot);
   git(repoRoot, "init", "-q", "-b", "main");
@@ -133,7 +135,7 @@ export function buildFixture(
   mkdirSync(dir(".github/workflows"), { recursive: true });
   writeFileSync(dir("src/retry.ts"), SRC);
   writeFileSync(dir("agents.json"), AGENTS_JSON);
-  writeFileSync(dir("tests/AC1-retry.test.sh"), TEST, { mode: 0o755 });
+  writeFileSync(dir("tests/AC1-retry.test.sh"), frozenText, { mode: 0o755 });
   chmodSync(dir("tests/AC1-retry.test.sh"), 0o755);
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
@@ -179,7 +181,7 @@ export function buildFixture(
       startedAt: 2,
       outcome: {
         kind: "ok",
-        frozen: { "tests/AC1-retry.test.sh": opts?.frozenSha ?? sha(TEST) },
+        frozen: { "tests/AC1-retry.test.sh": frozenSha },
         tests: { AC1: ["tests/AC1-retry.test.sh"] },
       },
     },
@@ -209,7 +211,7 @@ export function buildFixture(
     headBefore,
     branch,
     worktree: wt,
-    frozen: { "tests/AC1-retry.test.sh": opts?.frozenSha ?? sha(TEST) },
+    frozen: { "tests/AC1-retry.test.sh": frozenSha },
     ctx,
   };
 }
@@ -272,6 +274,8 @@ export interface RunOpts {
   config?: WorkConfig;
   /** A build fixture whose frozen record is deliberately wrong (case (g)). */
   frozenSha?: string;
+  /** The frozen test's committed bytes, when a case needs something other than TEST. */
+  frozenText?: string;
   /** Skip the fixture's own worktree setup to test the "no worktree" throw. */
   built?: Built;
   /** Leave the run's branch to the worktree so a case can dismantle that tree. */
@@ -286,6 +290,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     opts.built ??
     buildFixture(opts.issue, {
       ...(opts.frozenSha === undefined ? {} : { frozenSha: opts.frozenSha }),
+      ...(opts.frozenText === undefined ? {} : { frozenText: opts.frozenText }),
       ...(opts.childOwnsBranch === undefined ? {} : { childOwnsBranch: opts.childOwnsBranch }),
     });
   if (opts.extraSteps !== undefined) {

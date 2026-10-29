@@ -30,7 +30,7 @@
  * `wx` temp write plus a rename, so an existing name is never written through.
  */
 
-import { existsSync, lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
 import { changedPaths } from "./specify-tree.ts";
@@ -159,8 +159,8 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
     } catch (err) {
       try {
         // Never leave the temp file behind for the clean-tree assertion to
-        // trip on.
-        if (existsSync(tmp)) renameSync(tmp, `${tmp}.discarded`);
+        // trip on — and a renamed-aside copy is still residue, so delete it.
+        rmSync(tmp, { force: true });
       } catch {
         /* nothing else to do */
       }

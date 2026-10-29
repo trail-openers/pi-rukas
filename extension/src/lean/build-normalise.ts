@@ -17,10 +17,13 @@
  *      and the child's own commits, plus untracked files.
  *   3. Each path is classified. A frozen or protected path in that set is
  *      IGNORED — stage 4 is what undoes it — and only recorded, so the handback
- *      can say what was put back. Anything else is a DELETION (not a regular
- *      file in the tree) or is CAPTURED through `readOneDescriptor`, the same
- *      single-descriptor read `specify` uses; a refusal (link, device, swapped
- *      inode, over the size ceiling) DROPS the path rather than committing it.
+ *      can say what was put back. Anything else is looked at with `lstat` at
+ *      every step (`entryAt`): only a name with nothing at it, nothing in its
+ *      way, is a DELETION. A link, a device, a directory, or a name behind one
+ *      is REMOVED with its reason and never followed. A regular file is CAPTURED
+ *      through `readOneDescriptor`, the same single-descriptor read `specify`
+ *      uses; a refusal (hard link, swapped inode, over the size ceiling) also
+ *      removes the path rather than committing it.
  *   4. `resetWorktreeToBase` puts the tree back to `headBefore` — commits,
  *      index, untracked files, ignore tricks and dependency links all go — and
  *      provisioning rebuilds the links. Frozen and protected files are now
@@ -47,7 +50,7 @@ import { chmodSync, rmSync } from "node:fs";
 import path from "node:path";
 import { isProtectedPath as canonicalProtectedPath } from "../work-driver-doctrine.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
-import { isRealFile } from "./build-capture.ts";
+import { entryAt } from "./build-capture.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import {
   changedSet,
@@ -80,7 +83,7 @@ interface Classified {
 }
 
 /**
- * Sort the child's changed paths into kept, restored, reverted, dropped, deleted.
+ * Sort the child's changed paths into kept, restored, reverted, removed, deleted.
  *
  * Frozen and protected paths are NOT restored here — the reset is what undoes
  * them — they are only recorded. That is the whole reason the classification
@@ -105,16 +108,20 @@ function classify(wt: string, changed: string[], frozen: Record<string, string>)
       report.reverted.push(rel);
       continue;
     }
-    if (!isRealFile(wt, rel)) {
-      // Absent, or a name holding nothing but a link or device: the reset leaves
-      // nothing behind either way, so the path is simply gone — a deletion the
-      // commit must carry, never a capture the step refused.
+    const entry = entryAt(wt, rel);
+    if (entry.kind === "absent") {
+      // Genuinely absent: the reset leaves nothing here either way, so the path
+      // is simply gone — a deletion the commit must carry.
       report.deleted.push(rel);
+      continue;
+    }
+    if (entry.kind === "other") {
+      report.removed.push({ path: rel, why: entry.why });
       continue;
     }
     const one = readOneDescriptor(path.join(wt, rel));
     if ("why" in one) {
-      report.removed.push(rel);
+      report.removed.push({ path: rel, why: one.why });
       continue;
     }
     captured.set(rel, one);
@@ -166,10 +173,20 @@ export async function normaliseBuild(opts: {
   }
 
   // 5. REWRITE the kept bytes, then delete what the child deleted. Both happen
-  //    after the reset, so `writeCaptured` never meets a name that exists and
-  //    `rmSync` never wonders whether it is removing the child's file or a link.
+  //    after the reset, and each path is looked at again first: the reset gave
+  //    back the base tree, so a name the child turned into a directory (or put a
+  //    file under) is a kind change to refuse with its reason, not a write that
+  //    throws. Nothing is written or removed through a link.
   const payload = new Map<string, Buffer>();
-  for (const [rel, one] of captured) payload.set(rel, one.bytes);
+  for (const [rel, one] of captured) {
+    const now = entryAt(wt, rel);
+    if (now.kind === "other") {
+      report.removed.push({ path: rel, why: now.why });
+      captured.delete(rel);
+      continue;
+    }
+    payload.set(rel, one.bytes);
+  }
   try {
     writeCaptured(wt, payload);
   } catch (err) {
@@ -178,7 +195,13 @@ export async function normaliseBuild(opts: {
   for (const [rel, one] of captured) {
     if (one.exec) chmodSync(path.join(wt, rel), 0o755);
   }
+  const applied: string[] = [];
   for (const rel of report.deleted) {
+    const now = entryAt(wt, rel);
+    if (now.kind === "other") {
+      report.removed.push({ path: rel, why: now.why });
+      continue;
+    }
     try {
       rmSync(path.join(wt, rel), { force: true });
     } catch (err) {
@@ -186,7 +209,9 @@ export async function normaliseBuild(opts: {
         `could not apply the deletion of ${rel}: ${(err as Error).message}`,
       );
     }
+    applied.push(rel);
   }
+  report.deleted = applied;
 
   // The deletions the commit must carry are the ones git knows: a tracked file
   // the child removed. A link the child left is a deletion of nothing in HEAD,
