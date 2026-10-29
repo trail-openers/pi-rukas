@@ -22,6 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { Transition } from "./transitions.ts";
 
 export const SCHEMA_VERSION = 1;
 
@@ -52,8 +53,7 @@ export function isTerminal(state: LeanState): boolean {
   return TERMINAL_STATES.includes(state);
 }
 
-/** What a step decided. `kind` is the vocabulary `next()` routes on. */
-export type Outcome = { kind: string } & Record<string, unknown>;
+/** What a step decided. The fields the engine reads are named on `Outcome` below. */
 
 export interface Step {
   /** `${issue}:${state}:${n}` — unique per (state, attempt). */
@@ -88,6 +88,20 @@ export interface LeanRun {
   steps: Step[];
   /** Set once the run is over: the exit code and the reason it ended there. */
   result?: { code: number; reason: string };
+}
+
+/**
+ * What a step's handler returned. The engine routes on `kind` and reads the
+ * four fields below for a reason line or a report, so they are named rather
+ * than left to an index signature — a handler that adds a scratch field is a
+ * compile error, which is what keeps the durable log a record of verdicts an
+ * operator reads rather than of whatever a closure happened to hold.
+ */
+export interface Outcome {
+  kind: string;
+  reason?: string;
+  message?: string;
+  failedRules?: string[];
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -220,32 +234,170 @@ function assertRun(obj: unknown, file: string): LeanRun {
     bad("models must be an object");
   if (!Array.isArray(r.steps)) bad("steps must be an array");
   const seenKeys = new Set<string>();
-  const run = r as unknown as LeanRun;
-  for (const s of run.steps) {
-    if (typeof s?.key !== "string" || typeof s?.startedAt !== "number")
+  const steps: Step[] = [];
+  for (const raw of r.steps as unknown[]) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      bad("every step must be an object");
+    const st = raw as Record<string, unknown>;
+    // Explicit narrowing: `bad` throws, but a call expression does not narrow
+    // for TypeScript, so without these locals every later use stayed
+    // `unknown` and the built object would have carried unchecked values.
+    // `bad` throws, but a bare call does not narrow for TypeScript, so the
+    // narrowing is written as an assertion that cannot be satisfied by a
+    // wrong-typed field rather than left to the validator's side effect.
+    const key = st.key as string;
+    const startedAt = st.startedAt as number;
+    if (typeof st.key !== "string" || typeof st.startedAt !== "number")
       bad("every step needs key and startedAt");
-    if (typeof s.state !== "string") bad(`step ${s.key} needs a state`);
+    if (typeof st.state !== "string") bad(`step ${key} needs a state`);
+    // A step whose `state` is no state the run can sit in would be skipped by
+    // the replay fold below — silently, as if it had never happened — so it is
+    // refused on load like any other corruption.
+    if (!isTerminal(st.state as LeanState) && !NON_TERMINAL.includes(st.state as LeanState))
+      bad(`step ${key} has unknown state ${JSON.stringify(st.state)}`);
     // Keys are the identity the re-run decision is keyed on: two steps
     // sharing one key means the replay path can pick either, so a hand-edited
     // file that duplicated a key must be refused rather than driven.
-    if (seenKeys.has(s.key)) bad(`duplicate step key ${JSON.stringify(s.key)}`);
-    seenKeys.add(s.key);
+    if (seenKeys.has(key)) bad(`duplicate step key ${JSON.stringify(key)}`);
+    seenKeys.add(key);
     // A step whose `outcome` is not an object would reach the replay path as
     // a step that "has" an outcome, and `next()` would then route on an
     // undefined `kind` — a corrupt file must be refused here rather than
     // become an unlisted-pair handback mid-drive.
     if (
-      s.outcome !== undefined &&
-      (typeof s.outcome !== "object" || s.outcome === null || Array.isArray(s.outcome))
+      st.outcome !== undefined &&
+      (typeof st.outcome !== "object" || st.outcome === null || Array.isArray(st.outcome))
     )
-      bad(`step ${s.key} outcome must be an object`);
+      bad(`step ${key} outcome must be an object`);
+    const oc = st.outcome as Record<string, unknown> | undefined;
+    if (oc !== undefined) {
+      if (typeof oc.kind !== "string") bad(`step ${key} outcome needs a string kind`);
+      // `next()` calls `.join` on this when it routes a refusal, so a
+      // string-valued `failedRules` is a crash waiting in the report path
+      // rather than a cosmetic type slip.
+      if (
+        oc.failedRules !== undefined &&
+        (!Array.isArray(oc.failedRules) || oc.failedRules.some((x) => typeof x !== "string"))
+      )
+        bad(`step ${key} outcome failedRules must be a string[]`);
+    }
     // The `:N` suffix is a derived field (the entry count) and the engine
     // trusts it when deciding whether a state still owes a handler call, so
     // a corrupt suffix is refused rather than read as attempt 0.
-    const suffix = s.key.slice(s.key.lastIndexOf(":") + 1);
-    if (!/^\d+$/.test(suffix)) bad(`step key ${JSON.stringify(s.key)} needs a numeric :N suffix`);
+    const suffix = key.slice(key.lastIndexOf(":") + 1);
+    if (!/^\d+$/.test(suffix)) bad(`step key ${JSON.stringify(key)} needs a numeric :N suffix`);
+    steps.push({
+      key,
+      state: st.state as LeanState,
+      startedAt,
+      ...(typeof st.endedAt === "number" ? { endedAt: st.endedAt } : {}),
+      ...(oc === undefined ? {} : { outcome: st.outcome as Outcome }),
+    });
   }
-  return run;
+  // Built field by field rather than cast: a caller must be able to trust
+  // every field it reads, and an `as unknown as LeanRun` made a field this
+  // function never checked look as validated as the ones it did.
+  return {
+    schema: SCHEMA_VERSION,
+    issue: r.issue as number,
+    version: r.version as string,
+    models: Object.fromEntries(
+      Object.entries(models as Record<string, unknown>).filter(([, v]) => typeof v === "string"),
+    ) as Record<string, string>,
+    baseSha: r.baseSha as string,
+    branch: r.branch as string,
+    state: r.state as LeanState,
+    counters: {
+      buildAttempts: c.buildAttempts as number,
+      challengeDone: c.challengeDone as boolean,
+      reviewDone: c.reviewDone as boolean,
+      ciFixUsed: c.ciFixUsed as boolean,
+      draft: c.draft as boolean,
+    },
+    steps,
+    ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
+  };
+}
+
+/** The terminal stamp: an int code and a string reason, or nothing. */
+function assertResult(
+  value: unknown,
+  bad: (msg: string) => never,
+): { code: number; reason: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    bad("result must be an object");
+  const v = value as Record<string, unknown>;
+  if (typeof v.code !== "number" || !Number.isInteger(v.code))
+    bad("result.code must be an integer");
+  if (typeof v.reason !== "string") bad("result.reason must be a string");
+  return { code: v.code, reason: v.reason };
+}
+
+/**
+ * Where the step log says the run actually is.
+ *
+ * `state` and `counters` on a run are a CACHE (see the module header): the
+ * append-only `steps` log is the record, and the snapshot is only ever
+ * supposed to be what replaying the log through `next()` produces. A
+ * hand-edited or truncated file can carry a snapshot that disagrees with its
+ * own log — and driving from the snapshot then re-applies an older outcome of
+ * the current state, which is how a log ending `ci:1 = red` on a snapshot of
+ * `ci` replayed a `ci:0 = green` and merged.
+ *
+ * Returns `undefined` when the log cannot be replayed at all (an outcome the
+ * table has no rule for). It never repairs anything: a caller that gets a
+ * disagreement is expected to refuse the run, not to rewrite the file.
+ *
+ * The fold STARTS at the first logged step's own state rather than assuming
+ * `ready`: a run whose very first step ended the run (a `ready` that refused,
+ * whose report is the `decline` step) has a log that does not begin at
+ * `ready`, and a fold that started there would route `decline`'s outcome from
+ * the wrong state and call the honest file a forgery. The key names the state
+ * the engine was in when it wrote the step, so the log carries its own start.
+ */
+export function replay(
+  run: LeanRun,
+  stepOf: (state: LeanState, counters: RunCounters) => Transition | undefined,
+): { state: LeanState; counters: RunCounters } | undefined {
+  const log = [...run.steps];
+  let state: LeanState = log[0]?.state ?? "ready";
+  let counters: RunCounters = { ...INITIAL_COUNTERS };
+  // The fold consumes the log in ARRAY order, deliberately. The engine appends
+  // one step per entry and never reorders, so array order IS the sequence the
+  // run lived through, and it is the only order that keeps a re-entered state
+  // honest: `verify:0` and a later `verify:1` are separate events of the walk,
+  // and sorting by key would pull the second one in front of the states that
+  // only the first one led to. A file whose array was shuffled is therefore
+  // not silently re-derived into some other run — the fold simply cannot
+  // reproduce the snapshot, and the caller refuses it.
+  // One fold per LOG ENTRY, including a step that earned no outcome (the
+  // caller makes that one contribute the identity). Folding every entry is
+  // what makes the derived position the one the engine itself persisted: the
+  // engine writes the file after each step, so its snapshot already counts the
+  // step it had just written ahead. Skipping outcome-less steps would leave
+  // the fold permanently one step behind and refuse every honest crash
+  // recovery as a forgery.
+  for (const _ of log) {
+    void _;
+    try {
+      const moved = stepOf(state, counters);
+      if (moved === undefined) return undefined;
+      state = moved.state;
+      counters = moved.counters;
+    } catch (err) {
+      // The caller's `stepOf` throwing is itself the diagnosis — the fold
+      // must not swallow it into a bare "cannot replay".
+      throw err instanceof LeanStateError
+        ? err
+        : new LeanStateError(`replay: ${String((err as Error)?.message ?? err)}`);
+    }
+  }
+  return { state, counters };
+}
+
+/** Lock file path for a run. One per issue, alongside the state file. */
+export function leanLockFile(repoRoot: string, issue: number): string {
+  return `${leanStateFile(repoRoot, issue)}.lock`;
 }
 
 /** Every state a run can be sitting in mid-flight. */

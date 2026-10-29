@@ -17,21 +17,27 @@
  * a step's outcome is what its log line claims actually happened.
  */
 
+import { acquireLock } from "./lock.ts";
 import { REPORT_FAILED_KIND, exitCodeFor, hasTransition, next } from "./machine.ts";
+import { verifiedPosition } from "./resume.ts";
 import {
   type LeanRun,
   type LeanState,
   LeanStateError,
   type Outcome,
+  type RunCounters,
   type Step,
   attemptOfStrict,
   createRun,
   isTerminal,
+  leanStateFile,
   loadRun,
   nextAttempt,
+  replay,
   saveRun,
   stepKey,
 } from "./state.ts";
+import type { Transition } from "./transitions.ts";
 
 /** Everything a handler may look at. Nothing more — handlers take their args from here. */
 export interface HandlerCtx {
@@ -153,19 +159,48 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
+ * The newest step of one state that actually DECIDED something.
+ *
+ * A step without an outcome is a crash mid-step — the engine is about to
+ * re-run it, and it has said nothing. Treating such a step as "the newest"
+ * made a legitimately green run look unverified: a trailing outcome-less
+ * `verify:1` after a green `verify:0` read as "last verify = none" and
+ * refused a land the record had earned.
+ */
+function newestDecided(steps: Step[], state: LeanState): Step | undefined {
+  const decided = steps.filter((s) => s.state === state && s.outcome !== undefined);
+  return decided[decided.length - 1];
+}
+
+/**
+ * A run may merge only on its OWN current green: the newest `verify` AND the
+ * newest `ci` both said green. Both halves are asked because `ci`'s green is
+ * what the table routes on and `verify`'s is what the run's own gate said —
+ * a recorded `ci:green` replayed over a later red verify is the shape that
+ * used to walk into the merge.
+ */
+function landEarned(run: LeanRun): boolean {
+  if (run.counters.draft) return false;
+  return (
+    newestDecided(run.steps, "verify")?.outcome?.kind === "green" &&
+    newestDecided(run.steps, "ci")?.outcome?.kind === "green"
+  );
+}
+/**
  * Apply the table, then enforce the two arrival rules a (state, kind) pair
  * cannot express.
  *
  * 1. `land` is entered by `ci` + `green` and nothing else — fires only on a
  *    future edit that opens a second edge.
- * 2. `land` is entered only by a run whose OWN gate currently says green.
+ * 2. `land` is entered only by a run whose OWN record currently says green.
  *    The pair check cannot say this: `ci` + `green` is a legal arrival for a
  *    run whose last `verify` said red, because the outcomes arrive through
  *    the step log, and the replay path re-applies a recorded `ci:green`
  *    without asking what the log before it recorded. The merge is the
  *    irreversible act, so the gate sits on the arrival rather than on the
- *    edge: the newest `verify` step must carry a green outcome and the run
- *    must not still carry the draft marker its gate raised.
+ *    edge: the newest DECIDED `verify` step and the newest DECIDED `ci`
+ *    step must both carry green, and the run must not still carry the draft
+ *    marker its gate raised.
  *
  * The exhaustive pair enumeration and the reachability walk in
  * `test-lean-machine.ts` are the offline halves of the same guarantee.
@@ -181,15 +216,19 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
         `illegal arrival at land from ${run.state} + ${JSON.stringify(outcome.kind)}`,
       );
     }
-    const lastVerify = [...run.steps].reverse().find((s) => s.state === "verify");
-    if (run.counters.draft || lastVerify?.outcome?.kind !== "green") {
+    const lastVerify = newestDecided(run.steps, "verify");
+    const lastCi = newestDecided(run.steps, "ci");
+    // `lastCi` is the outcome `next()` just routed on, so it is green by
+    // construction here — asking the log anyway is what makes the gate a
+    // reading of the record rather than a restatement of the pair.
+    if (!landEarned(run)) {
       return endRun(
         drive,
         run,
         "handed-back",
         `land refused: verify not green (draft=${run.counters.draft}, last verify=${
           lastVerify?.outcome?.kind ?? "none"
-        })`,
+        }, last ci=${lastCi?.outcome?.kind ?? "none"})`,
       );
     }
   }
@@ -270,8 +309,34 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
   const drive: Drive = { repoRoot: opts.repoRoot, save: (run) => saveRun(opts.repoRoot, run) };
   const now = opts.now ?? Date.now;
   const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
-  let run = loadRun(opts.repoRoot, opts.issue) ?? newRun(opts);
+  const release = acquireLock(opts.repoRoot, opts.issue);
+  try {
+    const file = leanStateFile(opts.repoRoot, opts.issue);
+    const loaded = loadRun(opts.repoRoot, opts.issue);
+    let run: LeanRun;
+    if (loaded === undefined) {
+      run = newRun(opts);
+    } else {
+      verifiedPosition(file, loaded);
+      run = loaded;
+    }
+    return await driveLoop(drive, opts, run, now, maxSteps);
+  } finally {
+    release();
+  }
+}
+
+async function driveLoop(
+  drive: Drive,
+  opts: RunLeanOpts,
+  initial: LeanRun,
+  now: () => number,
+  maxSteps: number,
+): Promise<RunLeanResult> {
   let iterations = 0;
+  // The loop's current position, not the parameter: biome's noParameterAssign
+  // forbids reassigning `initial`, and each step below returns a whole new run.
+  let run = initial;
 
   while (run.result === undefined) {
     if (++iterations > maxSteps) {

@@ -32,8 +32,8 @@
  */
 
 import { MAX_BUILD_ATTEMPTS, next, outcomeKindsFor } from "../src/lean/machine.ts";
-import type { Transition } from "../src/lean/transitions.ts";
 import { INITIAL_COUNTERS, type LeanRun, type LeanState, isTerminal } from "../src/lean/state.ts";
+import type { Transition } from "../src/lean/transitions.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

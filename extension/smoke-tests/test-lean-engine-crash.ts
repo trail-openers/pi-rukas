@@ -24,10 +24,17 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { runLean, type LeanHandlers } from "../src/lean/engine.ts";
+import { type LeanHandlers, runLean } from "../src/lean/engine.ts";
 import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
 import { leanStateFile, loadRun } from "../src/lean/state.ts";
-import { CLOCK, HAPPY, makeAssert, scripted, tempDir, ticking } from "./lib/lean-engine-fixtures.ts";
+import {
+  CLOCK,
+  HAPPY,
+  makeAssert,
+  scripted,
+  tempDir,
+  ticking,
+} from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 

@@ -17,11 +17,6 @@
  */
 
 import {
-  DECLINE_SOURCES,
-  NON_TERMINAL_STATES,
-  counterVariants,
-} from "./lib/lean-machine-edges.ts";
-import {
   EXIT_CODES,
   MAX_BUILD_ATTEMPTS,
   OUTCOME_KINDS,
@@ -39,6 +34,7 @@ import {
   TERMINAL_STATES,
   isTerminal,
 } from "../src/lean/state.ts";
+import { DECLINE_SOURCES, NON_TERMINAL_STATES, counterVariants } from "./lib/lean-machine-edges.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -387,7 +383,9 @@ assert(
 // advisory. Asserted on both branches of `ok` (challenge owed / already done).
 for (const challengeDone of [false, true]) {
   const atCap = next(
-    run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS, challengeDone } }),
+    run("build", {
+      counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS, challengeDone },
+    }),
     { kind: "ok" },
   );
   assert(

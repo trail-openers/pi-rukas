@@ -14,18 +14,27 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LeanHandlers } from "../../src/lean/engine.ts";
-import { INITIAL_COUNTERS, type LeanRun, type LeanState, type Outcome } from "../../src/lean/state.ts";
+import { next } from "../../src/lean/machine.ts";
+import {
+  INITIAL_COUNTERS,
+  type LeanRun,
+  type LeanState,
+  type Outcome,
+} from "../../src/lean/state.ts";
 import { leanStateFile } from "../../src/lean/state.ts";
 
 /** The one clock every case uses, so a timestamp in the log is a number we chose. */
 export const CLOCK = 1_700_000_000_000;
 
 export function ticking(): { now: () => number; elapsed: () => number } {
-  let ms = CLOCK;
+  const ms = CLOCK;
   return { now: () => ms, elapsed: () => ms - CLOCK };
 }
 
-export function makeAssert(): { assert: (cond: boolean, msg: string) => void; failures: () => number } {
+export function makeAssert(): {
+  assert: (cond: boolean, msg: string) => void;
+  failures: () => number;
+} {
   let failed = 0;
   return {
     assert: (cond, msg) => {
@@ -88,7 +97,17 @@ export function tempDir(): { dir: string; cleanup: () => void } {
  * memoization the case is about.
  */
 export function seedUpTo(dir: string, issue: number, at: LeanState): void {
-  const order: LeanState[] = ["ready", "specify", "build", "challenge", "verify", "publish", "review", "ci", "land"];
+  const order: LeanState[] = [
+    "ready",
+    "specify",
+    "build",
+    "challenge",
+    "verify",
+    "publish",
+    "review",
+    "ci",
+    "land",
+  ];
   const firstOutcome: Partial<Record<LeanState, Outcome>> = {
     ready: { kind: "ok" },
     specify: { kind: "ok" },
@@ -107,11 +126,29 @@ export function seedUpTo(dir: string, issue: number, at: LeanState): void {
     endedAt: CLOCK,
     outcome: firstOutcome[s] as Outcome,
   }));
+  const seed0: LeanRun = {
+    schema: 1,
+    issue,
+    version: "test",
+    models: {},
+    baseSha: "base",
+    branch: `feature/issue-${issue}`,
+    state: "ready",
+    counters: { ...INITIAL_COUNTERS },
+    steps,
+  };
   const counters = { ...INITIAL_COUNTERS };
+  // Counters are replayed through the REAL table rather than guessed at: the
+  // fold in `runLean` derives the same numbers from the same log and refuses
+  // the file when they disagree, so a fixture that invented its own counter
+  // arithmetic would fail the very test that is about resuming.
   for (const s of steps) {
-    if (s.state === "build" || s.state === "verify") counters.buildAttempts += 1;
-    if (s.state === "challenge") counters.challengeDone = true;
-    if (s.state === "review") counters.reviewDone = true;
+    const moved = next({ ...seed0, state: s.state, counters }, s.outcome as Outcome);
+    counters.buildAttempts = moved.counters.buildAttempts;
+    counters.challengeDone = moved.counters.challengeDone;
+    counters.reviewDone = moved.counters.reviewDone;
+    counters.ciFixUsed = moved.counters.ciFixUsed;
+    counters.draft = moved.counters.draft;
   }
   const seed: LeanRun = {
     schema: 1,
