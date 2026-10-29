@@ -9,32 +9,52 @@
  * #1908 run: `/plan` gave the criterion `verify: "command"`, lean never executes
  * `command` criteria, and the run declined.
  *
- * The rules this pins, all against the real `verifyOutcome` with real git and
- * real processes (`lib/lean-verify-command-fixture.ts`):
+ * What a `command` may name is narrower than "a file": it states behaviour that
+ * already held BEFORE this run, so the only file that can evidence it is one the
+ * run's base commit already held, byte for byte, as a regular file. Two adversarial
+ * shapes this pins, both reproduced against the shipped gate:
  *
- *   (a) a `command` criterion whose `command` is an existing repo-relative test
- *       path runs at HEAD through the same `verify.test` runner a frozen test
- *       uses, and exit 0 is its pass condition;
+ *   - a COMMITTED SYMLINK (mode 120000) pointing outside the worktree is
+ *     porcelain-clean, and an `existsSync` probe follows it — so it was executed
+ *     and recorded `passed`;
+ *   - ANY file added at HEAD, so a developer-authored `src/wipe.sh` that deletes
+ *     product code and exits 0 was recorded as a passing preservation criterion on
+ *     a ready PR.
+ *
+ * The rules, all against the real `verifyOutcome` with real git and real processes
+ * (`lib/lean-verify-command-fixture.ts`):
+ *
+ *   (a) an existing repo-relative test path — present at base, unchanged at HEAD —
+ *       runs at HEAD through the same `verify.test` runner a frozen test uses, and
+ *       exit 0 is its pass condition;
  *   (b) a non-zero exit is a RED whose reason is
  *       `criterion <id> (command <path>) failed: <detail>`;
- *   (c) a `command` that is not an existing repo test path (absolute, traversal,
- *       `node_modules/`, a shell string, a missing file) is NEVER executed and is
- *       NEVER a verdict — no throw, no red, nothing recorded;
- *   (d) an infra proof (a runner that cannot start) THROWS as a frozen test's
- *       does, and a spec with command criteria but no configured runner throws
- *       too — an unobserved run is not evidence the code is wrong;
- *   (e) the green record names the criteria it ran, which is the only thing that
- *       lets publish-body print `passed (command)`;
- *   (f) an unreadable spec yields no command criteria and changes no verdict;
- *   (g) `specify`'s coverage rule still asks for red tests for `verify: "test"`
- *       criteria ONLY — a command criterion never earns a `has no red test`.
+ *   (c) a `command` that is not a repo test path (absolute, traversal,
+ *       `node_modules/`, a shell string, a missing file, PADDED whitespace) is
+ *       NEVER executed and is NEVER a verdict — no throw, no red, nothing recorded;
+ *   (c2) a path-shaped command whose committed entry is a symlink, absent at base,
+ *       or changed since base is NOT RUNNABLE, with its OWN reason;
+ *   (d) an infra proof THROWS and names the command criterion, with no frozen test
+ *       in front of it to blame;
+ *   (e) an unreadable spec yields no command criteria and changes no verdict;
+ *   (f) `specify`'s coverage rule asks for red tests of `verify: "test"` criteria
+ *       ONLY — a command criterion never earns a `has no red test`.
+ *
+ * The PR-body half — which cell prints what, and whether reasons can trade rows —
+ * is `test-lean-verify-command-body.ts`.
  */
 
+import { existsSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { commandCriterionProblem } from "../src/lean/verify-commands.ts";
 import {
   GREEN_FILE,
   ROOTS,
   bodyWith,
+  cleanupRoots,
+  commitDelete,
+  commitEdit,
+  killedFile,
   redFile,
   runCommandVerify,
 } from "./lib/lean-verify-command-fixture.ts";
@@ -56,21 +76,22 @@ const COMMAND_CRITERION = {
 };
 const CMD_FILE = "tests/AC2-preserve.test.sh";
 
-// ------------------------------------- (a) a runnable command criterion runs, green
+// ----------------- (a) an unchanged existing test of the base runs, and is green
 {
   const r = await runCommandVerify({
     issue: 401,
     implement: true,
     specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
-    files: { [CMD_FILE]: GREEN_FILE },
+    baseFiles: { [CMD_FILE]: GREEN_FILE },
   });
   assert(
     r.outcome?.kind === "green",
     `(a) a green command criterion leaves verify green (got ${String(r.outcome?.kind)}: ${String(r.outcome?.reason ?? r.threw?.message)})`,
   );
   assert(
-    r.outcome?.commandCriteria?.AC2 === "passed",
-    "(a) the green record names AC2 as a command criterion the gate executed",
+    r.outcome?.commandCriteria?.AC2 === "passed" &&
+      r.outcome?.commandNotRunnable === undefined,
+    "(a) the green record names AC2 as executed, and records no not-runnable reason",
   );
 }
 
@@ -80,20 +101,14 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     issue: 402,
     implement: true,
     specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
-    files: { [CMD_FILE]: redFile(CMD_FILE) },
+    baseFiles: { [CMD_FILE]: redFile(CMD_FILE) },
   });
   const reason = r.outcome?.reason ?? "";
   assert(
-    r.outcome?.kind === "red",
-    `(b) a command criterion that exits non-zero makes verify red (got ${String(r.outcome?.kind)})`,
-  );
-  assert(
-    reason.includes(`criterion AC2 (command ${CMD_FILE}) failed:`),
-    `(b) the red reason is the promised shape (${JSON.stringify(reason.slice(0, 160))})`,
-  );
-  assert(
-    r.outcome?.commandCriteria?.AC2 === undefined,
-    "(b) a criterion that failed is NOT recorded as passed",
+    r.outcome?.kind === "red" &&
+      reason.includes(`criterion AC2 (command ${CMD_FILE}) failed:`) &&
+      r.outcome?.commandCriteria?.AC2 === undefined,
+    `(b) a non-zero exit is a red in the promised shape, and is not recorded as passed (${JSON.stringify(reason.slice(0, 160))})`,
   );
 }
 
@@ -109,6 +124,11 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     ["a pipeline", "true | false"],
     ["flags, not a path", "bun test --timeout=0"],
     ["empty", "   "],
+    // A padded command is a string someone meant to be run as something other than
+    // a path: it is refused on the RAW form, never quietly trimmed into a valid one.
+    ["a padded absolute path", " /etc/passwd"],
+    ["a padded path-shaped command", ` ${CMD_FILE} `],
+    ["a newline-padded command", "\nfalse\n"],
   ];
   for (const [label, cmd] of notPaths) {
     const problem = commandCriterionProblem(cmd);
@@ -118,203 +138,250 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     );
   }
   assert(
-    commandCriterionProblem(CMD_FILE) === undefined,
-    "(c) the validator accepts a plain repo-relative test path",
-  );
-  assert(
-    commandCriterionProblem("./tests//AC2-preserve.test.sh") !== undefined,
-    "(c) the validator refuses a non-normalised spelling of an otherwise good path",
+    commandCriterionProblem(CMD_FILE) === undefined &&
+      commandCriterionProblem("./tests//AC2-preserve.test.sh") !== undefined,
+    "(c) the validator accepts a plain repo-relative path and refuses a non-normalised spelling",
   );
 }
 
 {
   // The gate's own behaviour on a shell-shaped command: no run, no verdict, no
-  // throw. An executed `sh -c 'exit 1'` out of an issue body would be the
-  // injection this rule exists to stop; a red would blame the developer.
+  // throw. An executed `sh -c 'exit 1'` out of an issue body would be the injection
+  // this rule exists to stop; a red would blame the developer for the spec.
   const r = await runCommandVerify({
     issue: 403,
     implement: true,
     specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: "sh -c 'exit 1'" }]),
   });
   assert(
-    r.outcome?.kind === "green" && r.threw === undefined,
-    `(c) a shell-shaped command is never executed: verify stays green, not red, not thrown (got ${String(r.outcome?.kind)})`,
-  );
-  assert(
-    r.outcome?.commandCriteria?.AC2 === undefined,
-    "(c) an unexecuted command criterion is absent from the record, so the body cannot print passed (command)",
+    r.outcome?.kind === "green" &&
+      r.threw === undefined &&
+      r.outcome?.commandCriteria?.AC2 === undefined,
+    `(c) a shell-shaped command is never executed, never a verdict, never recorded (${String(r.outcome?.kind)})`,
   );
 }
 
 {
-  // A path-shaped command naming a file HEAD does not hold: also never executed.
+  // A path-shaped command naming a file neither tree holds: also never executed,
+  // and the reason says the base commit does not hold it.
   const r = await runCommandVerify({
     issue: 404,
     implement: true,
     specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: "tests/absent.test.sh" }]),
   });
   assert(
-    r.outcome?.kind === "green" && r.outcome?.commandCriteria?.AC2 === undefined,
-    "(c) a command naming a file that does not exist is treated like manual, never executed",
+    r.outcome?.kind === "green" &&
+      r.outcome?.commandCriteria?.AC2 === undefined &&
+      r.outcome?.commandNotRunnable?.AC2 === "tests/absent.test.sh does not exist at base",
+    `(c) a command naming a missing file is treated like manual, with its reason (${JSON.stringify(r.outcome?.commandNotRunnable)})`,
+  );
+}
+
+// ---------------- (c2) the three tree shapes: symlink / added at HEAD / edited
+{
+  // THE reproduction: a committed mode-120000 symlink to a script outside the
+  // worktree. `existsSync` follows it, so the shipped gate ran it and recorded
+  // `passed`. The target creates a marker file, so "never executed" is observable
+  // rather than inferred from the verdict.
+  const root = ROOTS[ROOTS.length - 1] ?? "/tmp";
+  const marker = path.join(root, "symlink-was-executed");
+  const outside = path.join(root, "outside-wipe.sh");
+  writeFileSync(outside, `#!/bin/sh\ntouch ${marker}\nexit 0\n`, { mode: 0o755 });
+  const r = await runCommandVerify({
+    issue: 410,
+    implement: true,
+    specBody: bodyWith([
+      TEST_CRITERION,
+      { ...COMMAND_CRITERION, command: "tests/AC2-link.test.sh" },
+    ]),
+    baseLinks: { "tests/AC2-link.test.sh": outside },
+  });
+  assert(
+    r.outcome?.kind === "green" && r.threw === undefined,
+    `(c2) a committed symlink is never executed: the run stays green, not red, not thrown (${JSON.stringify({ kind: r.outcome?.kind, threw: r.threw?.message })})`,
+  );
+  assert(
+    existsSync(marker) === false,
+    "(c2) the symlink's target never ran — the marker file it would have created is absent",
+  );
+  assert(
+    r.outcome?.commandCriteria?.AC2 === undefined &&
+      r.outcome?.commandNotRunnable?.AC2 === "tests/AC2-link.test.sh is a symlink",
+    `(c2) a symlinked command is not recorded, and the reason names the symlink (${JSON.stringify(r.outcome?.commandNotRunnable)})`,
+  );
+}
+
+{
+  // A file that exists at HEAD and NOT at base: the `src/wipe.sh` shape. Whatever
+  // it does, it is not evidence of behaviour that held before the run.
+  const r = await runCommandVerify({
+    issue: 411,
+    implement: true,
+    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: "src/wipe.sh" }]),
+    files: { "src/wipe.sh": "#!/bin/sh\nrm -rf src/*\nexit 0\n" },
+  });
+  assert(
+    r.outcome?.kind === "green" &&
+      r.outcome?.commandCriteria?.AC2 === undefined &&
+      r.outcome?.commandNotRunnable?.AC2 === "src/wipe.sh does not exist at base",
+    `(c2) a file added at HEAD is never executed, and the reason says it is absent at base (${JSON.stringify({ kind: r.outcome?.kind, why: r.outcome?.commandNotRunnable })})`,
+  );
+}
+
+{
+  // A file the base held and HEAD changed is no longer the test that already
+  // passed; a deletion is the same fact — HEAD's tree simply has no entry for it.
+  const edited = await runCommandVerify({
+    issue: 412,
+    implement: true,
+    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
+    baseFiles: { [CMD_FILE]: GREEN_FILE },
+    mutate: (wt) => commitEdit(wt, CMD_FILE, "#!/bin/sh\nexit 0\n"),
+  });
+  assert(
+    edited.outcome?.kind === "green" &&
+      edited.outcome?.commandCriteria?.AC2 === undefined &&
+      edited.outcome?.commandNotRunnable?.AC2 === `${CMD_FILE} changed since base`,
+    `(c2) a test modified since base is not runnable, with its own reason (${JSON.stringify({ kind: edited.outcome?.kind, why: edited.outcome?.commandNotRunnable })})`,
+  );
+  const deleted = await runCommandVerify({
+    issue: 413,
+    implement: true,
+    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
+    baseFiles: { [CMD_FILE]: GREEN_FILE },
+    mutate: (wt) => commitDelete(wt, CMD_FILE),
+  });
+  assert(
+    deleted.outcome?.commandCriteria?.AC2 === undefined &&
+      deleted.outcome?.commandNotRunnable?.AC2 === `${CMD_FILE} changed since base`,
+    `(c2) a test deleted at HEAD is not runnable, with the same reason (${JSON.stringify(deleted.outcome?.commandNotRunnable)})`,
+  );
+}
+
+{
+  // Two declined criteria of different kinds each keep their own reason — the
+  // single-slot record could print only one, and the operator then fixed one of
+  // two problems.
+  const r = await runCommandVerify({
+    issue: 414,
+    implement: true,
+    specBody: bodyWith([
+      TEST_CRITERION,
+      { ...COMMAND_CRITERION, command: "src/wipe.sh" },
+      { id: "AC3", text: "the other suite still passes", verify: "command", command: "tests/nope.test.sh" },
+    ]),
+    files: { "src/wipe.sh": "#!/bin/sh\nexit 0\n" },
+  });
+  assert(
+    r.outcome?.commandNotRunnable?.AC2 === "src/wipe.sh does not exist at base" &&
+      r.outcome?.commandNotRunnable?.AC3 === "tests/nope.test.sh does not exist at base",
+    `(c2) each declined criterion carries its own reason (${JSON.stringify(r.outcome?.commandNotRunnable)})`,
+  );
+}
+
+{
+  // The reasons the GATE produced, read back off the record — the same values
+  // `publish` forwards to the body. A gate that traced them without recording them
+  // would leave every blank cell silent.
+  const declined = await runCommandVerify({
+    issue: 408,
+    implement: true,
+    specBody: bodyWith([
+      TEST_CRITERION,
+      { ...COMMAND_CRITERION, command: "tests/absent.test.sh" },
+      { id: "AC3", text: "the docs build", verify: "command", command: "tests/doc-link.test.sh" },
+    ]),
+    baseLinks: { "tests/doc-link.test.sh": "/bin/true" },
+  });
+  assert(
+    declined.outcome?.commandNotRunnable?.AC2 ===
+      "tests/absent.test.sh does not exist at base" &&
+      declined.outcome?.commandNotRunnable?.AC3 === "tests/doc-link.test.sh is a symlink" &&
+      declined.outcome?.commandCriteria === undefined,
+    `(c2) the gate records one reason per declined criterion, and neither as executed (${JSON.stringify(declined.outcome?.commandNotRunnable)})`,
   );
 }
 
 // -------------------------------------- (d) an infra proof throws, as frozen tests do
 {
-  // A template whose EXECUTABLE does not exist: `execFile` rejects with a string
-  // ENOENT code and no exit status — the shape `neverStarted` calls infra. Nobody
-  // ran anything, so no verdict may be recorded about the work.
+  // THE command tier's own infra path, with no frozen test to blame. The frozen
+  // test runs through `sh {file}` and exits 0; the command criterion's file kills
+  // itself, so its runner dies on a SIGNAL with no exit status — the one shape
+  // `runTestFile` returns as `kind: "infra"` (a plain non-zero exit is a verdict, a
+  // kill is not). The throw can only have come from the command tier, so the
+  // message must name the COMMAND criterion and not the frozen test that ran first.
   const r = await runCommandVerify({
     issue: 405,
     implement: true,
     specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
-    files: { [CMD_FILE]: GREEN_FILE },
-    testTemplate: "definitely-not-a-real-binary-405 {file}",
+    baseFiles: { [CMD_FILE]: killedFile(CMD_FILE) },
+    testTemplate: "sh {file}",
   });
   assert(
     r.threw !== undefined,
-    `(d) a command criterion whose runner cannot start THROWS (got outcome ${String(r.outcome?.kind)})`,
+    `(d) a command criterion whose runner was killed THROWS (got outcome ${String(r.outcome?.kind)})`,
   );
   assert(
-    r.threw?.message.includes("could not be judged") === true,
-    `(d) the throw names the criterion it could not judge (${JSON.stringify(r.threw?.message)})`,
+    r.threw?.message.includes("could not be judged") === true &&
+      r.threw?.message.includes("AC2") === true &&
+      r.threw?.message.includes("AC1-retry") === false,
+    `(d) the throw names the COMMAND criterion, not the frozen test (${JSON.stringify(r.threw?.message)})`,
   );
 }
 
 {
-  // The safety-critical direction of the not-runnable rule: a `command` whose
-  // text IS a shell one-liner that would fail if it were ever run. The gate must
-  // leave the run green — neither executing it (arbitrary text out of an issue
-  // body) nor red-lining the developer for a check it refused to make.
+  // Two more ways the tier's own machinery can fail, both infrastructure: no
+  // runner template at all (`frozenTestFailure` would refuse first through the
+  // step, so the tier is driven directly), and a `git ls-tree` that cannot answer.
+  // "Could not tell" must never read as "the test is not there" — the first is a
+  // machine to re-run, the second an issue to fix.
+  const { commandCriteriaOutcome } = await import("../src/lean/verify-commands.ts");
+  const criterion = [{ id: "AC9", text: "preserved", verify: "command", command: CMD_FILE }];
+  const silent = async () => ({ stdout: "", stderr: "" });
+  const refusing = (async () => {
+    throw new Error("git refused");
+  }) as never;
+  let noTemplate: Error | undefined;
+  let unreadable: Error | undefined;
+  try {
+    await commandCriteriaOutcome(criterion, undefined, "/nonexistent-wt", "b".repeat(40), silent as never);
+  } catch (err) {
+    noTemplate = err as Error;
+  }
+  try {
+    await commandCriteriaOutcome(criterion, "sh {file}", "/nonexistent-wt", "b".repeat(40), refusing);
+  } catch (err) {
+    unreadable = err as Error;
+  }
+  assert(
+    noTemplate?.message.includes("command criteria") === true,
+    `(d) the tier's own no-template throw names the command criteria (${JSON.stringify(noTemplate?.message)})`,
+  );
+  assert(
+    unreadable?.message.includes("could not read the tree entry") === true,
+    `(d) an unreadable tree entry THROWS instead of reporting the test absent (${JSON.stringify(unreadable?.message)})`,
+  );
+}
+
+{
+  // The safety-critical direction of the not-runnable rule: a `command` whose text
+  // IS a shell one-liner that would fail if it were ever run. The gate must leave
+  // the run green — neither executing arbitrary text out of an issue body nor
+  // red-lining the developer for a check it refused to make.
   const r = await runCommandVerify({
     issue: 407,
     implement: true,
     specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: "false" }]),
   });
   assert(
-    r.outcome?.kind === "green" && r.threw === undefined,
-    `(d) an unrunnable command never turns a green run red, and never throws (${JSON.stringify({ kind: r.outcome?.kind, threw: r.threw?.message })})`,
-  );
-  assert(
-    r.outcome?.commandCriteria === undefined,
-    "(d) and nothing is recorded as executed, so the body cannot print passed (command)",
+    r.outcome?.kind === "green" &&
+      r.threw === undefined &&
+      r.outcome?.commandCriteria === undefined,
+    `(d) an unrunnable command never turns a green run red, never throws, records nothing (${JSON.stringify({ kind: r.outcome?.kind, threw: r.threw?.message })})`,
   );
 }
 
-// --------------------------- (e) only the gate's own record licenses "passed"
-{
-  const { publishBody } = await import("../src/lean/publish-body.ts");
-  const spec = {
-    problem: "p",
-    size: "S" as const,
-    criteria: [
-      { id: "AC1", text: "retried", verify: "test" as const },
-      { id: "AC2", text: "preserved", verify: "command" as const, command: CMD_FILE },
-      { id: "AC3", text: "unrunnable", verify: "command" as const, command: "rm -rf /" },
-    ],
-  };
-  const base = {
-    issue: 1908,
-    spec,
-    tests: { AC1: ["tests/AC1.test.sh"] },
-    verifyKind: "green" as const,
-    verifiedHead: "a".repeat(40),
-    version: "1.2.3",
-    models: {},
-    baseSha: "b".repeat(40),
-  };
-  const body = publishBody({ ...base, commandCriteria: ["AC2"], draft: false });
-  assert(body.includes("| passed (command) |"), "(e) a command the gate ran reads passed (command)");
-  assert(
-    body.includes("| not executed (command) |"),
-    "(e) a command the gate refused to run says it was not executed",
-  );
-  // The reason is the difference between fixing the issue and re-running the step,
-  // so the gate's own words must reach the row rather than staying in a trace log.
-  const explained = publishBody({
-    ...base,
-    commandCriteria: ["AC2"],
-    commandNotRunnable: "tests/absent.test.sh is not a test file at HEAD",
-    draft: true,
-  });
-  assert(
-    explained.includes("| not executed (command): tests/absent.test.sh is not a test file at HEAD |"),
-    "(e) a command the gate declined explains why, so the operator fixes the right thing",
-  );
-  assert(
-    explained.includes("| passed (command) |"),
-    "(e) one declined command does not silence the record of one that ran",
-  );
-  assert(
-    !body.includes("| command | `tests/AC2-preserve.test.sh` | green |"),
-    "(e) a command row never borrows the gate's overall verdict",
-  );
-  const noRecord = publishBody({ ...base, draft: true });
-  assert(
-    !noRecord.includes("passed (command)"),
-    "(e) with no verify record at all, no command row claims it passed",
-  );
-}
-
-// --------------------- (e2) the reason the GATE gave travels to the body, verbatim
-//
-// The string above is typed by the test. This one is produced by `verifyOutcome`
-// and read back off the record by `publish`, so a gate that traced the reason but
-// never recorded it — or a publish that read the record but dropped it — fails here
-// rather than shipping a table that says "not executed" and nothing more.
-{
-  const missing = await runCommandVerify({
-    issue: 408,
-    implement: true,
-    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: "tests/absent.test.sh" }]),
-  });
-  assert(
-    missing.outcome?.commandNotRunnable === "tests/absent.test.sh is not a test file at HEAD",
-    `(e2) the gate records why it declined a command criterion (${JSON.stringify(missing.outcome?.commandNotRunnable)})`,
-  );
-  const { publishBody } = await import("../src/lean/publish-body.ts");
-  const rendered = publishBody({
-    issue: 1908,
-    spec: {
-      problem: "p",
-      size: "S",
-      criteria: [
-        TEST_CRITERION,
-        { ...COMMAND_CRITERION, command: "tests/absent.test.sh" },
-      ] as never,
-    },
-    tests: {},
-    verifyKind: "green",
-    verifiedHead: missing.head,
-    version: "1.2.3",
-    models: {},
-    baseSha: "b".repeat(40),
-    draft: true,
-    ...(missing.outcome?.commandNotRunnable === undefined
-      ? {}
-      : { commandNotRunnable: missing.outcome.commandNotRunnable }),
-  });
-  assert(
-    rendered.includes("| not executed (command): tests/absent.test.sh is not a test file at HEAD |"),
-    "(e2) the body prints the gate's own reason, so a blank cell says what to fix",
-  );
-
-  // And a green whose commands all ran records no reason at all — the absence is
-  // itself evidence, and a stale reason on a clean run would be a false claim.
-  const clean = await runCommandVerify({
-    issue: 409,
-    implement: true,
-    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
-    files: { [CMD_FILE]: GREEN_FILE },
-  });
-  assert(
-    clean.outcome?.commandNotRunnable === undefined &&
-      clean.outcome?.commandCriteria?.AC2 === "passed",
-    "(e2) a run that executed every command criterion records no not-runnable reason",
-  );
-}
-
-// ------------------------------------- (f) an unreadable spec changes no verdict
+// ------------------------------------- (e) an unreadable spec changes no verdict
 {
   const r = await runCommandVerify({
     issue: 406,
@@ -322,16 +389,14 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     specBody: "there is no pi-spec block here at all",
   });
   assert(
-    r.outcome?.kind === "green" && r.threw === undefined,
-    `(f) an unusable spec yields no command criteria and does not change the verdict (got ${String(r.outcome?.kind)})`,
-  );
-  assert(
-    r.outcome?.commandCriteria === undefined,
-    "(f) nothing is recorded as executed when no spec could be read",
+    r.outcome?.kind === "green" &&
+      r.threw === undefined &&
+      r.outcome?.commandCriteria === undefined,
+    `(e) an unusable spec yields no command criteria, no record, and no changed verdict (got ${String(r.outcome?.kind)})`,
   );
 }
 
-// ------------- (g) specify's coverage rule asks for reds of TEST criteria only
+// ------------- (f) specify's coverage rule asks for reds of TEST criteria only
 {
   const { testCriteria } = await import("../src/lean/specify-prompt.ts");
   const { parsePiSpec } = await import("../src/lean/spec.ts");
@@ -342,25 +407,15 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
       { id: "AC3", text: "the docs name the flag", verify: "manual" },
     ]),
   );
-  assert(parsed.ok === true, "(g) the three-kind spec parses");
+  assert(parsed.ok === true, "(f) the three-kind spec parses");
   const wanted = testCriteria((parsed as { spec: { criteria: unknown[] } }).spec);
   assert(
-    wanted.length === 1 && wanted[0]?.id === "AC1",
-    `(g) the criteria a red test is required of are the verify:"test" ones alone (got ${wanted.map((c) => `${c.id}/${c.verify}`).join(", ")})`,
-  );
-  assert(
-    wanted.every((c) => c.verify === "test"),
-    "(g) no command or manual criterion can ever be demanded as a red test",
+    wanted.length === 1 && wanted[0]?.id === "AC1" && wanted.every((c) => c.verify === "test"),
+    `(f) a red test is required of the verify:"test" criteria alone — never of a command or manual one (got ${wanted.map((c) => `${c.id}/${c.verify}`).join(", ")})`,
   );
 }
 
-for (const dir of ROOTS) {
-  try {
-    // Best effort: the OS reaps the temp root; a leak here is noise, not a failure.
-    void dir;
-  } catch {
-    /* ignore */
-  }
-}
+cleanupRoots();
+assert(ROOTS.length === 0, "the fixture removed its temp roots");
 
 process.exit(exit);

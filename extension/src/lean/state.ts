@@ -160,12 +160,15 @@ export interface Outcome {
    */
   commandCriteria?: Record<string, string>;
   /**
-   * `verify` only: why the gate did NOT run a `command` criterion, verbatim from
-   * the gate's own path check, and bounded. Carried so the PR body explains the
-   * blank instead of leaving the operator to guess whether the command was
-   * refused as unsafe or pointed at a file that is not there.
+   * `verify` only: why the gate did NOT run each `command` criterion, keyed by
+   * criterion id — verbatim from the gate's own tree and on-disk checks, and each
+   * bounded. Per criterion rather than one slot because the reasons differ and so
+   * do the fixes: `x does not exist at base` is an issue to rewrite, `x is a
+   * symlink` is a tree to repair and `x changed since base` means the criterion
+   * stopped describing preservation. Carried so the PR body explains each blank
+   * instead of leaving the operator to guess.
    */
-  commandNotRunnable?: string;
+  commandNotRunnable?: Record<string, string>;
   /**
    * `publish` only: the PR's https URL, as the forge returned it. Publish-only
    * by contract — no other step writes it, and `handback` reads no other field

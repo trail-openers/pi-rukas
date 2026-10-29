@@ -15,6 +15,12 @@
  * through `loadRun`, the entry point the engine actually drives from, so a file
  * this shape can never be driven even by a hand-edited record.
  *
+ * The `commandCriteria` / `commandNotRunnable` cases belong to the same rule: they
+ * are the evidence the PR body prints, they belong to the `verify` step alone, and
+ * the reason is now a MAP keyed by criterion id so each declined criterion carries
+ * its own explanation. A bare string, a key that is not `AC<n>`, or a reason past
+ * the bound is refused at load.
+ *
  * Split out of `test-lean-engine-resume.ts`, whose subject is the replay fold:
  * these cases never reach a replay, because the record is refused before any
  * handler is dispatched.
@@ -111,6 +117,75 @@ for (const [label, issue, step, expect] of [
       outcome: { kind: "blocked", failedRules: [1] },
     },
     /failedRules/,
+  ],
+  [
+    // `commandCriteria` is what licenses `passed (command)` in the PR body, so it
+    // belongs to the gate and nowhere else — and a `commandNotRunnable` map whose
+    // value is a number would reach the table renderer as something with no length.
+    "commandCriteria on a publish step",
+    52,
+    {
+      key: "52:publish:0",
+      state: "publish",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "ok", commandCriteria: { AC1: "passed" } },
+    },
+    /commandCriteria/,
+  ],
+  [
+    // Each declined command criterion explains itself, keyed by criterion id: a
+    // key that is not AC<n> is a record no row can be matched to.
+    "commandNotRunnable keyed by something that is not a criterion id",
+    53,
+    {
+      key: "53:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "green",
+        verifiedHead: "b".repeat(40),
+        commandNotRunnable: { "not-an-id": "tests/x.test.sh is a symlink" },
+      },
+    },
+    /commandNotRunnable key/,
+  ],
+  [
+    // The reason is prose out of a tree check and reaches the PR table, so it is
+    // bounded like every other piece of prose in the record.
+    "commandNotRunnable carrying a 400-character reason",
+    54,
+    {
+      key: "54:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "green",
+        verifiedHead: "b".repeat(40),
+        commandNotRunnable: { AC1: "x".repeat(400) },
+      },
+    },
+    /commandNotRunnable\["AC1"\] must be at most/,
+  ],
+  [
+    // A map, not a bare string: the single-slot record could explain one declined
+    // criterion and silently drop the rest.
+    "commandNotRunnable as a string",
+    55,
+    {
+      key: "55:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "green",
+        verifiedHead: "b".repeat(40),
+        commandNotRunnable: "tests/x.test.sh is a symlink",
+      },
+    },
+    /commandNotRunnable must be an object/,
   ],
 ] as const) {
   const { dir, cleanup } = tempDir();

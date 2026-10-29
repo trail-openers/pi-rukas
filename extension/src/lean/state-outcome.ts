@@ -98,8 +98,11 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState>> = {
 /** The one value a recorded `command` criterion may carry: it held. */
 const COMMAND_CRITERION_KIND = "passed";
 
-/** Why-a-command-was-not-run is prose; the record must not grow without bound. */
+/** One why-a-command-was-not-run is prose; the record must not grow without bound. */
 const COMMAND_NOT_RUNNABLE_MAX_CHARS = 300;
+
+/** How many declined criteria one verify record may explain. */
+const COMMAND_NOT_RUNNABLE_MAX_ENTRIES = 32;
 
 /**
  * Why a `commandCriteria` map is not evidence this run may print, or undefined.
@@ -182,14 +185,26 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = commandCriteriaProblem(oc.commandCriteria);
     if (problem !== undefined) return problem;
   }
-  // The not-runnable reason reaches the PR body, so it is a string of bounded
-  // length or nothing — the same rule the reason field itself follows, since
-  // prose out of a path check has no business widening a durable record.
+  // Each not-runnable reason reaches its own row of the PR body, so every key is
+  // a criterion id and every value a bounded string — the same rules the
+  // `commandCriteria` map and the reason field follow, since prose out of a tree
+  // check has no business widening a durable record. Per-criterion rather than a
+  // single slot because a spec's command criteria each fail for their own reason,
+  // and a reader who is told only the first cannot fix the other two.
   if (oc.commandNotRunnable !== undefined) {
-    if (typeof oc.commandNotRunnable !== "string")
-      return "outcome commandNotRunnable must be a string";
-    if (oc.commandNotRunnable.length > COMMAND_NOT_RUNNABLE_MAX_CHARS)
-      return `outcome commandNotRunnable must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
+    if (typeof oc.commandNotRunnable !== "object" || oc.commandNotRunnable === null)
+      return "outcome commandNotRunnable must be an object";
+    const entries = Object.entries(oc.commandNotRunnable as Record<string, unknown>);
+    if (entries.length > COMMAND_NOT_RUNNABLE_MAX_ENTRIES)
+      return `outcome commandNotRunnable must hold at most ${COMMAND_NOT_RUNNABLE_MAX_ENTRIES} criteria`;
+    for (const [id, why] of entries) {
+      if (!CRITERION_ID.test(id))
+        return `outcome commandNotRunnable key ${JSON.stringify(id)} is not AC<n>`;
+      if (typeof why !== "string")
+        return `outcome commandNotRunnable[${JSON.stringify(id)}] must be a string`;
+      if (why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS)
+        return `outcome commandNotRunnable[${JSON.stringify(id)}] must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
+    }
   }
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
@@ -229,9 +244,9 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(oc.commandCriteria === undefined
       ? {}
       : { commandCriteria: { ...(oc.commandCriteria as Record<string, string>) } }),
-    ...(typeof oc.commandNotRunnable === "string"
-      ? { commandNotRunnable: oc.commandNotRunnable }
-      : {}),
+    ...(oc.commandNotRunnable === undefined
+      ? {}
+      : { commandNotRunnable: { ...(oc.commandNotRunnable as Record<string, string>) } }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
   };
 }

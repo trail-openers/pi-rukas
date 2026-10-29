@@ -277,20 +277,25 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
   // 4b. The spec's `command` criteria — preservation checks the frozen tests do
-  // not make. A `command` criterion states behaviour that already holds, so it
-  // can never be red on the base and belongs at the GATE, not at the freeze:
-  // `specify`'s coverage rule asks for a red test only of `verify: "test"`. Each
-  // runnable one is executed through the same `verify.test` runner a frozen test
-  // uses, at HEAD, in the run's own worktree, in argv form (never a shell).
+  // not make. A `command` criterion states behaviour that already held BEFORE
+  // this run began, so the only file that can evidence it is one the run's base
+  // commit already held, byte for byte: `commandCriteriaOutcome` reads the entry
+  // at both `baseSha` and HEAD with `git ls-tree` (regular-file modes only, never
+  // a symlink, never a tree, equal blob oids), then applies the frozen tier's own
+  // on-disk `fileProblem` before anything is spawned. Each runnable one is then
+  // executed through the same `verify.test` runner a frozen test uses, at HEAD,
+  // in the run's own worktree, in argv form (never a shell).
   //
   // An unreadable spec is not a verdict about the work, so it is not allowed to
   // change one: the criteria simply do not run, and publish-body reports each
-  // unexecuted `command` row honestly (as `not runnable`, not as passed).
+  // unexecuted `command` row honestly (as `not executed (command): <reason>`,
+  // never as passed).
   const specCriteria = await specCriteriaFor(deps, repoRoot, issue);
   const commands = await commandCriteriaOutcome(
     specCriteria,
     config.verify.test,
     wt,
+    ctx.run.baseSha,
     deps.exec,
     deps.timeoutMs,
   );
@@ -393,7 +398,9 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
             Object.keys(commands.executed).map((id) => [id, "passed"]),
           ) as Record<string, string>,
         }),
-    ...(commands.notRunnable === undefined ? {} : { commandNotRunnable: commands.notRunnable }),
+    ...(Object.keys(commands.notRunnable).length === 0
+      ? {}
+      : { commandNotRunnable: { ...commands.notRunnable } }),
   };
 }
 

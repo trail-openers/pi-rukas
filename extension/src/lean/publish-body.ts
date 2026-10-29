@@ -57,12 +57,12 @@ export interface PublishBodyInput {
    */
   commandCriteria?: string[];
   /**
-   * Why the gate did not execute a `command` criterion — e.g. the path it names
-   * is absent at HEAD. When absent the cell says only `not executed (command)`;
-   * when present it says why, which is the difference between an issue to fix and
-   * a step to re-run.
+   * Why the gate did not execute each `command` criterion, keyed by criterion id —
+   * e.g. the path it names is absent at base. When a row's id is absent the cell
+   * says only `not executed (command)`; when present it says why, which is the
+   * difference between an issue to fix and a step to re-run.
    */
-  commandNotRunnable?: string;
+  commandNotRunnable?: Record<string, string>;
   draft: boolean;
   version: string;
   models: Record<string, string>;
@@ -83,25 +83,26 @@ function rowCells(kind: "green" | "red" | undefined): string {
  * tests and the project's configured tiers, and a criterion's own `command` is a
  * third thing, executed separately and recorded separately. So the cell reads the
  * gate's `commandCriteria` record — `passed (command)` for one the gate ran and
- * that exited 0, `not runnable (command is not a repo test path)` for one it did
- * not (a `command` that is not an existing repo-relative test path, which the
- * gate refuses to execute and treats like `manual`, so publish opens a draft).
- * Printing the overall verdict here would be the body claiming an execution that
- * never happened.
+ * that exited 0, `not executed (command): <reason>` for one it declined (the
+ * gate's own per-criterion reason: the file is absent at base, is a symlink, or
+ * changed since base), and `not executed (command)` for one it declined without
+ * recording a reason. A declined criterion is treated like `manual`, so publish
+ * opens a draft. Printing the overall verdict here would be the body claiming an
+ * execution that never happened.
  */
 function resultCell(
   c: PiSpec["criteria"][number],
   kind: "green" | "red" | undefined,
   passedCommands: ReadonlySet<string>,
-  notRunnable?: string,
+  notRunnable?: Record<string, string>,
 ): string {
   if (c.verify === "manual") return "manual — needs a human";
   if (c.verify === "command") {
     if (passedCommands.has(c.id)) return "passed (command)";
-    const why = (notRunnable ?? "").trim();
-    // Two truths the reader must not confuse: the gate refused a command that is
-    // not a repo test path (the spec's own defect, and publish keeps a draft),
-    // versus a path-shaped command whose file the worktree does not hold. Both
+    const why = (notRunnable?.[c.id] ?? "").trim();
+    // Two truths the reader must not confuse: the gate refused the command (the
+    // spec's or the tree's own defect, and publish keeps a draft), versus a
+    // criterion nobody declined but that never reached the runner either. Both
     // are "not executed"; only the reason differs, and the reason is what tells
     // the operator whether to fix the issue or re-run the step.
     return why === ""

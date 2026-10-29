@@ -18,7 +18,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
@@ -63,12 +63,42 @@ export interface CommandVerifyOpts {
   implement?: boolean;
   /** Files to commit at HEAD before the step judges the tree. */
   files?: Record<string, string>;
+  /**
+   * Files to commit into the BASE commit, before the worktree branches from it.
+   * A `command` criterion names a test the base already held, so this is where a
+   * runnable one's file has to be written.
+   */
+  baseFiles?: Record<string, string>;
+  /**
+   * Committed SYMLINKS at HEAD: `rel -> target`. Mode 120000, which is exactly
+   * the shape the base check must refuse — a plain existence probe follows the
+   * link and finds a file, so the gate used to execute it.
+   */
+  links?: Record<string, string>;
+  /**
+   * The same, in the BASE commit. A symlink whose base entry is a symlink is
+   * caught by the very first check the tier makes, which is the reproduction of
+   * the shipped bug: the file "existed" at both ends and got executed.
+   */
+  baseLinks?: Record<string, string>;
+  /** Extra `git commit` messages, in order, to add at HEAD after `files`. */
+  commits?: string[];
   /** The `verify.test` template; defaults to `sh {file}`. */
   testTemplate?: string | undefined;
-  /** The `verify.fast` tier; defaults to a passing one. */
+  /**
+   * The `verify.fast` tier; defaults to a passing one. The compiler canary is
+   * attached to the tiers, so a case that wants the tier to run an unusual command
+   * must know whether that command looks like a pinned compiler.
+   */
   fastTier?: string;
   /** Bounds every run, so a hang is observable in seconds. */
   timeoutMs?: number;
+  /**
+   * Runs AFTER the fixture's own commits, against the worktree. Used to build a
+   * shape no commit option expresses — a test edited or deleted at HEAD, or the
+   * command file written by a runner that must not have run.
+   */
+  mutate?: (wt: string) => void;
 }
 
 export interface CommandVerifyRun {
@@ -76,6 +106,8 @@ export interface CommandVerifyRun {
   threw?: Error;
   worktree: string;
   head: string;
+  /** The run's base commit — the tree a command criterion's file must sit in. */
+  baseSha: string;
 }
 
 /** Commit `rel` with `text` in `dir`, as the fixture's identity. */
@@ -87,11 +119,69 @@ export function commitFile(dir: string, rel: string, text: string): void {
   git(dir, "commit", "-q", "-m", `chore: fixture ${rel}`);
 }
 
+/**
+ * Commit `rel` as a symlink to `target` (mode 120000), and make sure git records
+ * it as a link rather than the target's bytes.
+ *
+ * `core.symlinks=false` would check the link out as a plain text file holding the
+ * target, which is a different test than the one being pinned; the assert below
+ * refuses to let the fixture quietly degrade into that.
+ */
+export function commitSymlink(dir: string, rel: string, target: string): void {
+  const abs = path.join(dir, rel);
+  mkdirSync(path.dirname(abs), { recursive: true });
+  rmSync(abs, { force: true });
+  symlinkSync(target, abs);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", `chore: fixture link ${rel}`);
+  if (!git(dir, "ls-tree", "HEAD", "--", rel).startsWith("120000 "))
+    throw new Error(`fixture could not commit ${rel} as a symlink (mode 120000)`);
+}
+
+/** Overwrite `rel` in `dir` and commit the change — the 'edited since base' shape. */
+export function commitEdit(dir: string, rel: string, text: string): void {
+  writeFileSync(path.join(dir, rel), text, { mode: 0o755 });
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", `chore: fixture edit ${rel}`);
+}
+
+/** Remove `rel` from the worktree and the index, committing the deletion. */
+export function commitDelete(dir: string, rel: string): void {
+  rmSync(path.join(dir, rel), { force: true });
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", `chore: fixture delete ${rel}`);
+}
+
 /** A shell test that exits 0. */
 export const GREEN_FILE = "#!/bin/sh\necho 'ok'\nexit 0\n";
 /** A shell test that fails and prints its own basename, exit 1. */
 export function redFile(rel: string): string {
   return `#!/bin/sh\necho "FAIL ${path.basename(rel)}: the suite regressed" 1>&2\nexit 1\n`;
+}
+
+/**
+ * A shell test that kills itself. The runner exits on a SIGNAL with no status, and
+ * `runTestFile` classifies that as `kind: "infra"` — nobody observed the test, so
+ * the gate must throw rather than record a verdict about it.
+ *
+ * `path` is in the output because a non-zero exit whose output never named the file
+ * is a red; the killed path throws regardless, and the name keeps the two cases
+ * distinguishable in the failure message.
+ */
+export function killedFile(rel: string): string {
+  return `#!/bin/sh\necho "runner died on ${path.basename(rel)}" 1>&2\nkill $$\n`;
+}
+
+/** Remove every temp repo this module made. Called by the suite that uses it. */
+export function cleanupRoots(): void {
+  for (const dir of ROOTS) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+    } catch {
+      // Best effort: the OS reaps the temp root; a leak here is noise, not a failure.
+    }
+  }
+  ROOTS.length = 0;
 }
 
 /** The `pi-spec v1` block for the given criteria. */
@@ -119,6 +209,20 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
   const dir = (rel: string) => path.join(repoRoot, rel);
   mkdirSync(dir("src"), { recursive: true });
   writeFileSync(dir("src/retry.ts"), SRC);
+  // Base-commit files first: `baseSha` is read after this commit, so a command
+  // criterion's test can be made to exist at base without any later commit moving
+  // the base out from under the run's record.
+  for (const [rel, text] of Object.entries(o.baseFiles ?? {})) {
+    const target = dir(rel);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, text, { mode: 0o755 });
+  }
+  for (const [rel, target] of Object.entries(o.baseLinks ?? {})) {
+    const abs = dir(rel);
+    mkdirSync(path.dirname(abs), { recursive: true });
+    rmSync(abs, { force: true });
+    symlinkSync(target, abs);
+  }
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
   const baseSha = git(repoRoot, "rev-parse", "HEAD");
@@ -132,6 +236,10 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
     commitFile(wt, "src/DONE", "done\n");
   }
   for (const [rel, text] of Object.entries(o.files ?? {})) commitFile(wt, rel, text);
+  for (const [rel, target] of Object.entries(o.links ?? {})) commitSymlink(wt, rel, target);
+  for (const message of o.commits ?? []) git(wt, "commit", "-q", "--allow-empty", "-m", message);
+  const replaced = o.mutate?.(wt);
+  void replaced;
   const head = git(wt, "rev-parse", "HEAD");
 
   const steps: Step[] = [
@@ -147,7 +255,10 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
       },
     },
   ];
-  const run = { ...createRun({ issue: o.issue, version: "test", models: {}, baseSha, branch }), steps };
+  const run = {
+    ...createRun({ issue: o.issue, version: "test", models: {}, baseSha, branch }),
+    steps,
+  };
   const ctx: HandlerCtx = {
     repoRoot,
     issue: o.issue,
@@ -173,9 +284,9 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
   };
   try {
     const { verifyOutcome } = await import("../../src/lean/verify.ts");
-    return { outcome: await verifyOutcome(ctx, deps), worktree: wt, head };
+    return { outcome: await verifyOutcome(ctx, deps), worktree: wt, head, baseSha };
   } catch (err) {
-    return { threw: err as Error, worktree: wt, head };
+    return { threw: err as Error, worktree: wt, head, baseSha };
   }
 }
 
