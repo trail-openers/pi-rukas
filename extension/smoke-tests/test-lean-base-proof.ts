@@ -30,8 +30,11 @@
  */
 
 import { proveBaseSha } from "../src/lean/base-proof.ts";
+import { resolveHeadTraceCount } from "../src/review-head-sha.ts";
 import {
+  FAULT_STDLERR,
   GIT_TIMEOUT,
+  couldNotGetObjectInfo,
   fakeGit,
   gitFault,
   isCatFileProbe,
@@ -39,6 +42,7 @@ import {
   missingObject,
 } from "./lib/lean-base-proof-fixtures.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { realGitFaultRepo } from "./lib/lean-seed-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -67,7 +71,7 @@ for (const [label, value] of [
 
 // ── (b) an oid the clone does not hold: both reads, both bounded.
 {
-  const { exec, calls } = fakeGit([missingObject(OID), missingObject(OID)]);
+  const { exec, calls } = fakeGit([{ stdout: "" }, missingObject(OID)]);
   const out = await proveBaseSha(REPO, OID, exec);
   assert(
     out.ok === false && out.rule === `base sha ${OID} is not a commit in this clone`,
@@ -130,6 +134,12 @@ for (const [label, value] of [
 }
 
 // ── (e) a git that could not answer is a fault, and a fault THROWS.
+//
+// The first queue entry is `{ stdout: "" }`, not a rejection: `resolveHeadSha`
+// counts every git error it swallows (case (i) pins that counter), and a case
+// whose own resolution rejected would arm it for every silent-refusal case
+// later in the file. An empty stdout reaches the second opinion the same way
+// with the counter left alone — which is what (f) needs to stay meaningful.
 for (const [label, fault] of [
   ["a repo git could not read at all", gitFault()],
   [
@@ -141,7 +151,7 @@ for (const [label, fault] of [
     { throw: { code: null, stderr: "", message: "Command failed: git", killed: true } },
   ],
 ] as const) {
-  const { exec, calls } = fakeGit([missingObject(OID), fault]);
+  const { exec, calls } = fakeGit([{ stdout: "" }, fault]);
   let thrown: unknown;
   let out: Awaited<ReturnType<typeof proveBaseSha>> | undefined;
   try {
@@ -175,6 +185,12 @@ for (const [label, fault] of [
 }
 
 // ── (f) the wordings that DO mean "no such object" are refusals, not faults.
+//
+// Each case runs BEFORE any resolution failure has been counted in this
+// process — case (i) is what arms the counter, and it runs last — because an
+// empty stderr is a refusal only while `resolveHeadSha` stayed silent. That is
+// the documented exception, so a suite that asserted the silent refusals after
+// (i) would be asserting the fault path and calling it a refusal.
 for (const [label, reply] of [
   [
     "exit 1 with git's missing-object wording",
@@ -185,14 +201,155 @@ for (const [label, reply] of [
       },
     },
   ],
+  [
+    "exit 128 with git's invalid-object-name wording",
+    {
+      throw: {
+        code: 128,
+        stderr: `fatal: Not a valid object name ${OID}^{commit}\n`,
+      },
+    },
+  ],
+  ["exit 1 with cat-file's own could-not-get-object-info", couldNotGetObjectInfo()],
   ["exit 1 with an empty stderr", { throw: { code: 1, stderr: "" } }],
   ["exit 128 with an empty stderr", { throw: { code: 128, stderr: "" } }],
 ] as const) {
-  const { exec } = fakeGit([missingObject(OID), reply]);
+  const { exec } = fakeGit([{ stdout: "" }, reply]);
   const out = await proveBaseSha(REPO, OID, exec);
   assert(
     out.ok === false && out.rule === `base sha ${OID} is not a commit in this clone`,
     `${label} is a refusal, not a fault (got ${JSON.stringify(out)})`,
+  );
+}
+
+// ── (g) the INVERSION: any other non-empty stderr at a refusing exit is an
+// INFRASTRUCTURE fault and throws. The classifier used to accept "exit 1/128
+// with any stderr" as "not a commit", which is what made an unreadable object
+// store — the case (h) drives with real git — read as a defect in the issue.
+// (g) is a fault for every stderr git did not recognise as "absent", so it does
+// not care whether the counter is armed; it is placed before (i) only so the
+// order of the file reads as refusal → fault → the counter that sharpens the
+// refusal rule.
+for (const [label, stderr] of [
+  ["an unopenable loose object", FAULT_STDLERR[0]],
+  ["an unreadable sha1 file", FAULT_STDLERR[1]],
+  ["a symlink loop", FAULT_STDLERR[2]],
+] as const) {
+  for (const code of [1, 128] as const) {
+    const { exec, calls } = fakeGit([{ stdout: "" }, { throw: { code, stderr } }]);
+    let thrown: unknown;
+    let out: Awaited<ReturnType<typeof proveBaseSha>> | undefined;
+    try {
+      out = await proveBaseSha(REPO, OID, exec);
+    } catch (err) {
+      thrown = err;
+    }
+    assert(
+      thrown instanceof Error,
+      `${label} at exit ${code} throws rather than refusing (got ${JSON.stringify(out)})`,
+    );
+    const msg = (thrown as Error)?.message ?? "";
+    assert(
+      msg.startsWith(
+        `could not verify base sha ${OID}: git object store unreadable (exit ${code}): `,
+      ),
+      `the fault is classified, not raw stderr (got ${JSON.stringify(msg)})`,
+    );
+    assert(
+      msg.includes("Permission denied") || msg.includes("symbolic links"),
+      `the fault keeps git's first line so an operator can act (got ${JSON.stringify(msg)})`,
+    );
+    assert(
+      !msg.includes("\n") && msg.length <= "could not verify base sha ".length + 81 + 2 + 161,
+      `the fault is one clipped line (len ${msg.length})`,
+    );
+    assert(
+      calls.length === 2 && isCatFileProbe(calls[1]?.argv ?? []),
+      `the second opinion ran before the throw for ${label} at exit ${code}`,
+    );
+  }
+}
+
+// ── (h) the same fault with the REAL git doing the reading: a fanout directory
+// whose mode is `000`. This is the shape the whole inversion exists for —
+// measured, `rev-parse --verify --quiet <sha>^{commit}` prints
+// `unable to open loose object …: Permission denied` and exits 1 with EMPTY
+// stdout (so `resolveHeadSha` misses), and `cat-file -e` exits 128 with the
+// permission error followed by git's OWN `Not a valid object name`. Under the
+// old classifier that last line was matched as "no such object" and the run
+// refused the issue; the permission line comes first and is not a refusal, so
+// the proof must throw. Skipped when the process cannot make the dir unreadable
+// (running as root ignores the mode bits).
+{
+  const skipped = process.getuid !== undefined && process.getuid() === 0;
+  if (skipped) {
+    console.log("- skipped (h): running as root, chmod 000 does not deny reads");
+  } else {
+    const repo = realGitFaultRepo();
+    if (repo === undefined) {
+      console.log("- skipped (h): no readable commit could be built in a temp repo");
+    } else {
+      try {
+        const { exec, calls } = fakeGit([
+          { stdout: "" },
+          repo.unreadableProbeFailure(),
+        ]);
+        let thrown: unknown;
+        let out: Awaited<ReturnType<typeof proveBaseSha>> | undefined;
+        try {
+          out = await proveBaseSha(repo.repoRoot, repo.sha, exec);
+        } catch (err) {
+          thrown = err;
+        }
+        assert(
+          thrown instanceof Error,
+          `a chmod-000 object store throws rather than refusing (got ${JSON.stringify(out)})`,
+        );
+        assert(
+          /^could not verify base sha [0-9a-f]{40}: git object store unreadable \(exit (1|128)\): /u.test(
+            (thrown as Error)?.message ?? "",
+          ),
+          `the real-git fault is classified (got ${JSON.stringify((thrown as Error)?.message)})`,
+        );
+        assert(
+          calls.length === 2 && isCatFileProbe(calls[1]?.argv ?? []),
+          "the real-git fault ran both bounded reads before throwing",
+        );
+      } finally {
+        repo.dispose();
+      }
+    }
+  }
+}
+
+// ── (i) the empty-stderr exception is documented, and pinned: with a traced
+// `resolveHeadSha` failure in the process, silence at a refusing exit is NOT a
+// refusal. The counter is the resolver's own (ungated, unlike the trace write),
+// so the case arms it by making the injected executor reject the resolution the
+// way a real git would.
+{
+  const before = resolveHeadTraceCount();
+  const { exec } = fakeGit([
+    { throw: { code: 1, stderr: "fatal: bad revision" } },
+    { throw: { code: 1, stderr: "" } },
+  ]);
+  let thrown: unknown;
+  let out: Awaited<ReturnType<typeof proveBaseSha>> | undefined;
+  try {
+    out = await proveBaseSha(REPO, OID, exec);
+  } catch (err) {
+    thrown = err;
+  }
+  assert(
+    resolveHeadTraceCount() > before,
+    `a failing resolution is counted (${before} → ${resolveHeadTraceCount()})`,
+  );
+  assert(
+    thrown instanceof Error &&
+      /git refused with no reason while a resolution failure was traced/.test(
+        (thrown as Error)?.message ?? "",
+      ),
+    `an empty stderr after a traced failure is a fault, not a refusal (got ${JSON.stringify(out)} / ${JSON.stringify((thrown as Error)?.message)})`,
   );
 }
 

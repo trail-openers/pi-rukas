@@ -17,6 +17,7 @@ import { execp } from "../exec.ts";
 import { detectForge } from "../forge-detect.ts";
 import { type Forge, type ForgeDetection, createForge } from "../forge.ts";
 import { detectMainline } from "../mainline.ts";
+import { oneLine } from "./text-fence.ts";
 
 /**
  * The forge adapter for this repo, or undefined when it cannot be resolved.
@@ -58,6 +59,19 @@ export async function fetchIssueBody(repoRoot: string, issue: number): Promise<s
 const MAINLINE_REFS = ["origin/HEAD", "origin/main", "main"] as const;
 
 /**
+ * The fixed tail for a mainline that resolved to nothing and gave no cause.
+ *
+ * Lives beside the probe list it names, because the two must move together:
+ * `lean/base-proof.ts` renders the empty-base rule and needs a tail that is
+ * never empty, and a clause that quotes refs this function never asked is
+ * worse than no clause at all. `detectMainline` (the fallback probe below) adds
+ * `origin/<name>` for whatever branch it resolves — which on a GitHub clone is
+ * usually `master` — so the clause names the three deterministic refs plus that
+ * remote spelling and says plainly that no ref resolved.
+ */
+export const NO_MAINLINE_WHY = "no mainline ref resolved (origin/HEAD, origin/main, origin/master)";
+
+/**
  * What a mainline probe returned: the sha, or the reason there is none.
  *
  * A failure CAUSE travels back with the answer rather than sitting in a
@@ -91,9 +105,9 @@ export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
       });
       const sha = stdout.trim();
       if (sha) return { sha };
-      causes.push(`${ref}: no such ref`);
+      causes.push(`${ref}: ${oneLine(noSuchRef(sha), 60)}`);
     } catch (err) {
-      causes.push(`${ref}: ${(err as Error)?.message ?? String(err)}`.slice(0, 120));
+      causes.push(`${ref}: ${oneLine((err as Error)?.message ?? String(err), 60)}`);
     }
   }
   // No local ref resolved: ask the same detector the old driver asks, whose
@@ -101,7 +115,8 @@ export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
   // The name it returns is probed bare and as `origin/<name>`, since the
   // detector gives a branch name and the tip usually lives on the remote.
   const detected = await resolveMainlineBranch(repoRoot);
-  if (!detected) return { why: `${causes.join("; ")}; detectMainline: unresolved` };
+  if (!detected)
+    return { why: `${causes.join("; ")}${causes.length > 0 ? "; " : ""}${NO_MAINLINE_WHY}` };
   for (const ref of [detected, `origin/${detected}`]) {
     try {
       const { stdout } = await execp("git", {
@@ -111,14 +126,25 @@ export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
       });
       const sha = stdout.trim();
       if (sha) return { sha };
-      causes.push(`${ref} (detectMainline): no such ref`);
+      causes.push(`${oneLine(ref, 60)} (detectMainline): ${oneLine(noSuchRef(sha), 60)}`);
     } catch (err) {
       causes.push(
-        `${ref} (detectMainline): ${(err as Error)?.message ?? String(err)}`.slice(0, 120),
+        `${oneLine(ref, 60)} (detectMainline): ${oneLine((err as Error)?.message ?? String(err), 60)}`,
       );
     }
   }
-  return { why: causes.join("; ") };
+  // The tail is the one thing this answer always has, even when every probe
+  // answered so quietly it left no cause behind — see `NO_MAINLINE_WHY`.
+  const causesText = causes.length > 0 ? `${causes.join("; ")}; ` : "";
+  return { why: `${causesText}${NO_MAINLINE_WHY}` };
+}
+
+/**
+ * What a ref probe printed when it printed nothing.
+ * "" → the ref simply does not exist; anything else is git's own noise.
+ */
+function noSuchRef(printed: string): string {
+  return printed === "" ? "no such ref" : `unexpected output ${JSON.stringify(printed)}`;
 }
 
 /** The branch name `detectMainline` resolves, or undefined for none. */

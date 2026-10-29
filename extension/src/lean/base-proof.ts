@@ -19,15 +19,47 @@
  * a second unclipped copy is a second renderer that has to remember.
  */
 
+import { isFullCommitSha } from "../commit-sha.ts";
 import { execp } from "../exec.ts";
-import { isFullCommitSha, resolveHeadSha } from "../review-head-sha.ts";
+import { resolveHeadSha, resolveHeadTraceCount } from "../review-head-sha.ts";
 import { LOCAL_GIT_TIMEOUT_MS } from "../review-patch-identity.ts";
 import type { VerifyExecFn } from "../work-driver-git.ts";
+import { NO_MAINLINE_WHY } from "./io.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The two refusals a base can earn, worded so an operator sees WHICH half failed. */
 export const NOT_AN_OID = " is not a full commit sha";
 export const NOT_A_COMMIT = " is not a commit in this clone";
+
+/**
+ * The rule for an empty base, with a tail that is never empty.
+ *
+ * `readyOutcome` owns the wording; this owns the guarantee that the clause
+ * always says something — the seed's cause when it has one, the probe's cause
+ * when it re-ran, and `NO_MAINLINE_WHY` (owned by `lean/io.ts`, beside the
+ * probe list it quotes) when neither produced a reason. Clipped because the
+ * cause is git's text, not ours.
+ */
+export function unresolvedMainlineRule(why: string | undefined): string {
+  const reason = why === undefined || why.trim() === "" ? NO_MAINLINE_WHY : oneLine(why, 160);
+  return `could not resolve the mainline sha: ${reason}`;
+}
+
+/**
+ * Has a `resolveHeadSha` git failure been swallowed in this process?
+ *
+ * `resolveHeadSha` answers `undefined` for a non-commit AND for a git that could
+ * not answer, tracing the message as it swallows the error; a probe that gets no
+ * reason at all can tell those apart only through that trace. The trace WRITE is
+ * gated on `PI_ENSEMBLE_DEBUG`, so the probe cannot read stderr for it — the
+ * resolver counts its failures ungated and this asks the count. The counter is
+ * never reset: erasing another caller's evidence to make the question fresher is
+ * the wrong trade, and the conservative direction here is to blame the object
+ * store, which refuses less.
+ */
+export function resolveHeadTracedFailure(): boolean {
+  return resolveHeadTraceCount() > 0;
+}
 
 /**
  * The suffix for a value that DOES resolve — to something else. The commonest
@@ -99,13 +131,21 @@ export async function proveBaseSha(
  * narrowest question that answers it: exit 0 for an object, 1 for a missing
  * object, and whatever git exits with when the repository itself is broken.
  *
- * Returns `true` only for a clean "no such object": exit 1 or 128 whose stderr
- * names a missing object (git's wording for a well-formed sha that is simply
- * absent is `fatal: Not a valid object name …`, the same class of answer as
- * `missing object …` for a ref), or whose stderr is empty. Anything else comes
+ * The classification is INVERTED from the obvious shape: "not a commit" is the
+ * narrow, positively-recognised answer and everything else is a fault. The
+ * earlier spelling — refuse when the exit is 1/128 and the stderr is *anything*
+ * — read "empty stderr at exit 1" as a refusal, and git prints a reason for
+ * every object it truly cannot find: measured against a fanout directory whose
+ * mode is `000`, `cat-file -e <sha>^{commit}` answers exit 128 with
+ * `unable to open loose object …: Permission denied` followed by
+ * `Not a valid object name …`, and `rev-parse --verify --quiet <sha>^{commit}`
+ * prints the same permission error with exit 1 and EMPTY stdout. A store git
+ * cannot read therefore looks exactly like an absent object unless a non-empty
+ * stderr is read as the fault it is. Everything else — "unable to open loose
+ * object", "Permission denied", "Too many levels of symbolic links" — comes
  * back as a one-line CAUSE string for the caller to throw with, so a locked
- * index, a corrupt object store or a hung git is reported as what it is — an
- * infrastructure fault — rather than as a defect in somebody's issue.
+ * index, an unreadable object store or a hung git is reported as an
+ * infrastructure fault rather than as a defect in somebody's issue.
  */
 async function probeCommitObject(
   repoRoot: string,
@@ -127,19 +167,95 @@ async function probeCommitObject(
     const e = err as { code?: unknown; stderr?: unknown; killed?: unknown };
     const stderr = typeof e.stderr === "string" ? e.stderr : "";
     const trimmed = stderr.trim();
+    const exit = e.code;
+    // The exit code must be a real "git said no" — 1 or 128. A timeout or a
+    // signal carries no exit code at all (`null`/`undefined`), which is never a
+    // "not a commit".
+    const refusedExit = exit === 1 || exit === 128;
+    if (refusedExit && trimmed !== "") {
+      // An INFRASTRUCTURE fault is decided FIRST and takes precedence over every
+      // missing-object wording, because git prints both at once. Measured against
+      // a `chmod 000` fanout dir, `cat-file -e <sha>^{commit}` answers exit 128
+      // with:
+      //
+      //   error: unable to open loose object <sha>: Permission denied
+      //   error: unable to open loose object <sha>: Permission denied
+      //   fatal: Not a valid object name <sha>^{commit}
+      //
+      // The last line is git's OWN "no such object" wording, so a classifier that
+      // asked "does this name a missing object?" first would read an unreadable
+      // object store as a base that simply is not there and post "your base is
+      // not a commit" on an issue whose clone cannot be read. The fault lines are
+      // the positive evidence and the refusal wording here is a lie about it —
+      // which is why the rule is inverted and the fault is checked first. A
+      // genuine absence prints only `fatal: Not a valid object name …` (measured,
+      // exit 128 with nothing else), so no fault line is present and the refusal
+      // still answers.
+      if (OBJECT_STORE_FAULT.test(trimmed))
+        return `git object store unreadable (exit ${String(exit)}): ${oneLine(firstLine(trimmed), 120)}`;
+      // git's wordings for "this name has no object": `missing object …` (a
+      // broken ref), `Not a valid object name …` (a well-formed sha that is
+      // simply absent, which is exactly what a stale record carries), and
+      // cat-file's own `could not get object info` for the same class. Matched
+      // anywhere in the line because git prefixes its own `fatal:` to one and not
+      // the other, and a parser pinned to a prefix silently turns a refusal into
+      // a fault the moment the wording shifts.
+      const namesMissingObject =
+        /missing (object|bare object|tree)/i.test(trimmed) ||
+        /not a valid object name/i.test(trimmed) ||
+        /could not get object info/i.test(trimmed);
+      if (namesMissingObject) return true;
+      // Any other non-empty stderr at a refusing exit — text that names neither
+      // absence nor a fault line above — is still not a recognised refusal.
+      return `git object store unreadable (exit ${String(exit)}): ${oneLine(firstLine(trimmed), 120)}`;
+    }
+    if (refusedExit) {
+      // Empty stderr at a refusing exit. git prints a reason for every object it
+      // genuinely cannot find (measured: the three wordings above, each with a
+      // non-empty stderr), so silence is not evidence of absence — but it is not
+      // evidence of a broken store either, and nothing downstream can tell the
+      // two apart. The rule this module documents is that a refusal must be
+      // POSITIVELY recognised, and silence is not that; the exception, written
+      // down here as the brief required, is that silence stays a refusal while
+      // `resolveHeadSha` stayed silent too. That resolver counts every git error
+      // it swallows (`resolveHeadTraceCount`, ungated because the trace write is
+      // gated on `PI_ENSEMBLE_DEBUG`), so a non-zero count means a git read
+      // actually failed in this process and the object store is suspect. The
+      // counter is process-global and monotonic, so an unrelated earlier failure
+      // turns a later silent refusal into a fault — conservative, and the right
+      // direction for a check whose failure mode is "refuse less". Under an
+      // INJECTED executor (every fake-git case in the base-proof suite) nothing
+      // reaches the counter, so those cases keep answering "refusal", which is
+      // what they pin; the production shape — real git, real failing rev-parse —
+      // is the one the counter refuses, and `chmod 000` case in
+      // test-lean-base-proof.ts drives it.
+      if (resolveHeadTracedFailure())
+        return `git refused with no reason while a resolution failure was traced (exit ${String(exit)})`;
+      return true;
+    }
     const cause = trimmed || (err instanceof Error ? err.message : String(err));
-    // git's two wordings for "this name has no object": `missing object …` (a
-    // broken ref) and `Not a valid object name …` (a well-formed sha that is
-    // simply absent, which is exactly what a stale record carries). Matched
-    // anywhere in the line because git prefixes its own `fatal:` to one and not
-    // the other, and a parser pinned to a prefix silently turns a refusal into
-    // a fault the moment the wording shifts.
-    const namesMissingObject =
-      /missing (object|bare object|tree)/i.test(trimmed) ||
-      /not a valid object name/i.test(trimmed);
-    if ((e.code === 1 || e.code === 128) && (trimmed === "" || namesMissingObject)) return true;
-    // A timeout or a signal carries no exit code at all — it is a fault, never
-    // a "not a commit".
-    return `${cause} (exit ${String(e.code)}, killed=${String(e.killed === true)})`;
+    return `${cause} (exit ${String(exit)}, killed=${String(e.killed === true)})`;
   }
+}
+
+/**
+ * The stderr lines that say the object store could not be READ, not that an
+ * object is absent. Matched anywhere in the blob, because git interleaves its
+ * `error:` lines with the `fatal:` refusal described above.
+ *
+ * `unable to open loose object` / `unable to read sha1 file` are git's own
+ * wording (both measured against a `chmod 000` fanout dir); `Permission denied`
+ * and `Too many levels of symbolic links` cover the OS-level causes that reach
+ * git verbatim on any object read; `could not open` / `unable to read pack` /
+ * `bad object` / `corrupt` cover the pack and index variants of the same fault.
+ * Kept deliberately narrow: none of these is a wording git uses for an ABSENT
+ * object, which is the answer that must stay a refusal.
+ */
+const OBJECT_STORE_FAULT =
+  /unable to open|unable to read|could not open|permission denied|too many levels of symbolic links|not a git repository|unable to fork|corrupt|bad object|bad pack/i;
+
+/** The first non-empty line of a stderr blob — the one line worth printing. */
+function firstLine(stderr: string): string {
+  for (const line of stderr.split("\n")) if (line.trim() !== "") return line.trim();
+  return stderr;
 }

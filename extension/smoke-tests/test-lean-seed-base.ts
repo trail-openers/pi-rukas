@@ -43,17 +43,10 @@
 //   (m) a base that resolves to a DIFFERENT oid is refused and the rule says what
 //       it resolved to; a refused base is never echoed in the facts
 //
-// (l) and (m) drive the git seam through `originRepo`'s `gitRunner` and assert
-// on the argv the code asked for, so a skipped peel or a skipped equality check
-// fails a case instead of passing one.
-//   (l) the seeder PEELS: a mainline that is oid-shaped but not a commit seeds
-//       "" with a reason, and never a base the clone cannot show
-//   (m) a base that resolves to a DIFFERENT oid is refused, and the rule says
-//       what it resolved to — and nothing is echoed in the facts
-//
-// Both (l) and (m) drive the git seam through `originRepo`'s `gitRunner` and
-// assert on `gitCalls`/the argv it was handed, so a skipped peel or a skipped
-// equality check fails a case instead of passing one.
+// (k)–(m) are the git-behaviour half of the suite and live in
+// `test-lean-base-infra.ts`; they drive the git seam through `originRepo`'s
+// `fakeGit` and assert on the argv the code asked for, so a skipped peel or a
+// skipped equality check fails a case instead of passing one.
 
 import { readFileSync } from "node:fs";
 import { handlersFor, leanSeed, phase1Handlers, readyOutcome } from "../src/lean/command.ts";

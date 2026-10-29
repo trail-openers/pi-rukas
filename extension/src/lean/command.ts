@@ -38,7 +38,7 @@ import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
-import { proveBaseSha } from "./base-proof.ts";
+import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
 import { challengeDeps, challengeOutcome } from "./challenge.ts";
 import { leanChildOpts } from "./child-opts.ts";
@@ -209,7 +209,9 @@ export async function readyOutcome(
       kind: "fail",
       facts: {
         spec: parsed.spec,
-        failedRules: [`could not resolve the mainline sha${why ? `: ${oneLine(why, 160)}` : ""}`],
+        // Never an empty tail: with no seed cause and no probe cause the rule
+        // still names the refs the probe asked for (`NO_MAINLINE_WHY`).
+        failedRules: [unresolvedMainlineRule(why)],
       },
     };
   }

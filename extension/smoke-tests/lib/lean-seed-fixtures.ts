@@ -45,7 +45,22 @@
  *   (j) the base is pinned to an IMMUTABLE oid, not merely to something git
  *       will resolve: `main`, `HEAD`, a ``main^{commit}`touch x`@{0}`` suffix
  *       chain, an 8-hex prefix and an uppercase full sha are all refused, and a
- *       real full sha still gives `ok`.
+ *       real full sha still gives `ok`;
+ *   (k) a git INFRASTRUCTURE fault is not a refusal: the second probe's answer
+ *       decides, and a fault THROWS so the run hands back rather than posting
+ *       "not a commit" on an issue whose clone merely could not be asked
+ *       (`test-lean-base-infra.ts`);
+ *   (l) the seeder PROVES what it probed — an oid-shaped mainline the clone
+ *       cannot show seeds `""` with a reason naming the value, never a base
+ *       `ready` would go on to refuse (`test-lean-base-infra.ts`);
+ *   (m) a refused base is reported ONCE, in the rule, and never echoed in the
+ *       facts (`test-lean-base-infra.ts`; the resolves-to-a-different-oid half
+ *       is pinned with an injected executor in `test-lean-base-proof.ts`).
+ *
+ * (k)–(m) live in `test-lean-base-infra.ts` — the git-behaviour half of the same
+ * suite — and are listed here as well as there so one file remains the whole
+ * inventory; the two files share these fixtures and neither repeats the list a
+ * second time inside itself.
  *
  * Everything is offline: real git in a temp repo (a stubbed probe would test the
  * stub), and `gh` pointed at a script printing the issue body so the forge read
@@ -57,10 +72,10 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { gitTestEnv } from "./git-test-env.ts";
+import type { GitReply as ProofGitReply } from "./lean-base-proof-fixtures.ts";
+import { gitTestEnv, trackedTempDir } from "./git-test-env.ts";
 
 /** The pi-spec every base case feeds the forge, so the spec parse goes green. */
 export const SPEC = {
@@ -70,11 +85,6 @@ export const SPEC = {
 };
 
 export const BODY = `\`\`\`pi-spec v1\n${JSON.stringify(SPEC, null, 2)}\n\`\`\``;
-
-/** git in `dir` with the host's config isolated and a fixture-local identity. */
-export function git(dir: string, ...args: string[]): string {
-  return runGit(dir, args);
-}
 
 function runGit(
   dir: string,
@@ -118,7 +128,7 @@ function runGit(
  * case never intended. `cat` passes the bytes through unchanged.
  */
 export function fakeGhDir(body: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "lean-seed-gh-"));
+  const dir = trackedTempDir("lean-seed-gh-");
   const json = JSON.stringify({
     body,
     number: 1,
@@ -153,7 +163,7 @@ export function fakeGhDir(body: string): string {
  * means "the ref does not resolve") or `<any>` (no ref resolves at all).
  */
 function fakeGitDir(spec: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "lean-seed-git-"));
+  const dir = trackedTempDir("lean-seed-git-");
   const found = spawnSync("which", ["git"], { encoding: "utf8" });
   const real = (found.stdout ?? "").trim() || "/usr/bin/git";
   let rule = "  *) :;;";
@@ -213,6 +223,72 @@ export async function withGh<T>(binDir: string, fn: () => Promise<T>): Promise<T
 }
 
 /**
+ * A real repo whose object store git cannot fully read: one loose object's
+ * fanout directory at mode `000`.
+ *
+ * The `chmod 000` case in `test-lean-base-proof.ts` needs the fault to come
+ * from git itself — a fixture that merely said "permission denied" would test
+ * the fixture. Built here because this file already owns the fixture-local git
+ * identity and the temp-dir tracking. Returns `undefined` when no commit could
+ * be built or git read the object anyway (the caller skips rather than asserts
+ * nothing).
+ *
+ * The reply is captured from the REAL `cat-file -e` while the fanout is still
+ * unreadable, so the case asserts on how production classifies git's actual
+ * bytes rather than on a string this file invented.
+ */
+export function realGitFaultRepo():
+  | {
+      repoRoot: string;
+      sha: string;
+      /** The exec reply real git gave for `cat-file -e <sha>^{commit}`. */
+      unreadableProbeFailure: () => ProofGitReply;
+      dispose: () => void;
+    }
+  | undefined {
+  const repoRoot = trackedTempDir("lean-seed-fault-");
+  const setup = (args: string[]): string => runGit(repoRoot, args);
+  try {
+    setup(["init", "-q", "-b", "main"]);
+    mkdirSync(path.join(repoRoot, "f"), { recursive: true });
+    writeFileSync(path.join(repoRoot, "f", "a.txt"), "a\n", "utf8");
+    setup(["add", "-A"]);
+    setup(["commit", "-q", "-m", "base"]);
+    const sha = setup(["rev-parse", "HEAD"]);
+    const fanout = path.join(repoRoot, ".git", "objects", sha.slice(0, 2));
+    chmodSync(fanout, 0o000);
+    // Ask the real git while the directory is still unreadable, and record what
+    // it said: the case asserts on the CLASSIFICATION of that answer, and an
+    // answer captured here fails loudly (via `undefined` below) if the
+    // environment made the read succeed after all.
+    const probe = spawnSync("git", ["cat-file", "-e", "--end-of-options", `${sha}^{commit}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: gitTestEnv(),
+    });
+    if (probe.status === 0) return undefined;
+    const reply: ProofGitReply = {
+      throw: {
+        code: typeof probe.status === "number" ? probe.status : null,
+        stderr: probe.stderr ?? "",
+        message: `Command failed: git cat-file -e ${sha}^{commit}`,
+      },
+    };
+    return {
+      repoRoot,
+      sha,
+      unreadableProbeFailure: () => reply,
+      dispose: () => {
+        chmodSync(fanout, 0o755);
+        rmSync(repoRoot, { recursive: true, force: true });
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * A temp repo whose mainline refs exist or do not, as the case asks.
  *
  * `git remote set-head` is what makes `origin/HEAD` exist at all — a repo
@@ -252,27 +328,14 @@ export function originRepo(
   repoRoot: string;
   originHead: string;
   tip: string;
-  gitCalls: string[];
   gitBin: string | undefined;
   dispose: () => void;
 } {
   const withOrigin = opts.withOrigin !== false;
   const withLocalMain = opts.withLocalMain !== false;
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-seed-"));
-  const gitCalls: string[] = [];
+  const repoRoot = trackedTempDir("lean-seed-");
   /** One chokepoint for every git the fixture itself runs (never redirected). */
   const setup = (args: string[]): string => runGit(repoRoot, args);
-  /**
-   * The one chokepoint for every git a case TRIGGERS: it records the argv (so a
-   * case can assert what the code asked), and answers `rev-parse` with
-   * `printForRevParse` when the case needs the probe's answer to disagree with
-   * what the object store holds. The real binary still does the work — only the
-   * printed name is the case's.
-   */
-  const run = (args: string[]): string => {
-    gitCalls.push(args.join(" "));
-    return runGit(repoRoot, args);
-  };
   const originDir = path.join(repoRoot, ".origin.git");
   setup(["init", "-q", "-b", "main"]);
   mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
@@ -326,7 +389,6 @@ export function originRepo(
     repoRoot,
     originHead,
     tip,
-    gitCalls,
     gitBin,
     dispose: () => {
       if (gitBin !== undefined) rmSync(gitBin, { recursive: true, force: true });

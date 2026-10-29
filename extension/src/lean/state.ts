@@ -22,7 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isFullCommitSha } from "../review-head-sha.ts";
+import { isFullCommitSha } from "../commit-sha.ts";
 import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
 
 export const SCHEMA_VERSION = 1;

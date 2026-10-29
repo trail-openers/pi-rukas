@@ -87,12 +87,22 @@ function rejected(r: Extract<GitReply, { throw: unknown }>): never {
  * production change that starts asking a new git question must arrive with a
  * case that meant to ask it.
  */
+// `execp` resolves for a REJECTION whose exit code is 0 (the exec wrapper
+// rejects whenever stderr is non-empty, and git prints its refusal on stderr),
+// so a fake that only ever rejects would let a "refused" run through the
+// `probeCommitObject` success arm and report a refusal for the wrong reason.
+// `{ stdout: "" }` is the queue entry for a resolution that printed nothing:
+// same miss, no rejection, and — unlike a rejection — it does not arm the
+// swallowed-failure counter case (i) pins.
 export function fakeGit(replies: GitReply[]): { exec: FakeExec; calls: ExecLog[] } {
   const calls: ExecLog[] = [];
   const queue = [...replies];
   const exec: FakeExec = async (cmd, opts) => {
-    const argv = opts.argv ?? [];
-    calls.push({ cmd, argv, cwd: opts.cwd, timeout: opts.timeout });
+    // `opts` is optional in `VerifyExecFn`, so the optionals are read off a
+    // local: `VerifyExecFn`'s own contract allows a caller with no options at
+    // all, and a fake that threw there would blame the case for a signature.
+    const argv = opts?.argv ?? [];
+    calls.push({ cmd, argv, cwd: opts?.cwd, timeout: opts?.timeout });
     const reply = queue.shift();
     if (reply === undefined)
       throw new Error(`fake git: no queued reply for \`${cmd} ${argv.join(" ")}\``);
@@ -116,4 +126,29 @@ export function missingObject(sha: string): GitReply {
 /** A reply for a repository git could not read at all: no exit code, no verdict. */
 export function gitFault(cause = "fatal: not a git repository"): GitReply {
   return { throw: { code: null, stderr: "", message: `${cause}: index.lock exists` } };
+}
+
+/**
+ * A reply for a refusal exit whose stderr says something OTHER than "absent" —
+ * what git actually prints when the object store cannot be opened. The three
+ * strings are real git output (measured against a `chmod 000` fanout dir, and
+ * against a `ulimit -n 0` run for the symlink-loop wording), not invented text:
+ * each is the shape the old classifier read as "not a commit" and posted on an
+ * issue whose clone was merely unreadable.
+ */
+export const FAULT_STDLERR = [
+  "error: unable to open loose object 3e9d1e8b338e23aca0d9d08e080267ec8c7bc883: Permission denied\n",
+  "error: unable to read sha1 file of 3e9d1e8b338e23aca0d9d08e080267ec8c7bc883 (Permission denied)\n",
+  "fatal: Too many levels of symbolic links\n",
+] as const;
+
+/** A reply for git's own cat-file wording for an object it cannot resolve. */
+export function couldNotGetObjectInfo(): GitReply {
+  return {
+    throw: {
+      code: 128,
+      stderr: "fatal: could not get object info\n",
+      message: "Command failed: git\nfatal: could not get object info",
+    },
+  };
 }

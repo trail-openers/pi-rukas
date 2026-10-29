@@ -10,7 +10,11 @@
  *   - `isFullCommitSha` — the shape check a stored `headSha` must pass
  *     before it can be matched by string equality against a PR head OID
  *     (a branch name or abbreviated OID is treated as UNKNOWN, never
- *     matched);
+ *     matched). The implementation lives in `commit-sha.ts`, a dependency-free
+ *     leaf so the lean state validator and base proof can reach the regex
+ *     without importing this module's executor/trace seam; this file RE-EXPORTS
+ *     it so every importer here keeps working, and new callers that want only
+ *     the shape should import the leaf.
  *   - `resolveHeadSha` — resolving a caller-named ref (or `HEAD`) to the
  *     full 40-char SHA the ledger stores.
  *
@@ -26,14 +30,9 @@ import { LOCAL_GIT_TIMEOUT_MS } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 
-/**
- * #1039 — true when the value is a full 40-char lowercase-hex commit SHA.
- * A branch name or abbreviated OID (pre-#1039 legacy entry) is treated as
- * UNKNOWN — never matched by string equality against a PR head OID.
- */
-export function isFullCommitSha(value: string): boolean {
-  return /^[0-9a-f]{40}$/.test(value);
-}
+// The shape predicate is a dependency-free leaf (see commit-sha.ts); re-exported
+// so the ~15 existing importers of this module are untouched by the split.
+export { isFullCommitSha } from "./commit-sha.ts";
 
 /**
  * Resolve a ref to its full 40-char commit SHA, or `undefined` when it is
@@ -65,6 +64,12 @@ export async function resolveHeadSha(
     });
     return stdout.trim() || undefined;
   } catch (err) {
+    // #1910: the lean base proof tells a missing object from a git it could not
+    // ask, and for the one case it cannot see for itself — a refusing exit with
+    // an EMPTY stderr — this trace is the only evidence that a git read failed.
+    // It is counted here rather than scraped off stderr so the reader does not
+    // depend on `PI_ENSEMBLE_DEBUG` (the trace write itself is gated on it).
+    resolveHeadTraceFailures++;
     trace(
       `review-head-sha: resolution failed for ${JSON.stringify(ref.slice(0, 64))}: ${
         err instanceof Error ? err.message : String(err)
@@ -72,4 +77,19 @@ export async function resolveHeadSha(
     );
     return undefined;
   }
+}
+
+/**
+ * How many `resolveHeadSha` git failures this process has swallowed.
+ *
+ * Monotonically increasing and never reset: the consumer asks "has any
+ * resolution failed", and erasing another caller's evidence to make a question
+ * fresher is the wrong trade. Read by `lean/base-proof.ts` (which decides
+ * whether a silent refusal is a refusal) through `resolveHeadTraceCount`.
+ */
+let resolveHeadTraceFailures = 0;
+
+/** The counter above — see `resolveHeadTraceFailures` for why it never resets. */
+export function resolveHeadTraceCount(): number {
+  return resolveHeadTraceFailures;
 }
