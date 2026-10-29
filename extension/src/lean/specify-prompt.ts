@@ -30,6 +30,20 @@ export function testCriteria(spec: PiSpec) {
   return spec.criteria.filter((c) => c.verify === "test");
 }
 
+/**
+ * The red-proof contract, stated in both adversary prompts.
+ * `specify-proof.ts` classifies a run red only when it exited non-zero **and**
+ * its output named the file (the path or the basename); anything else is
+ * `unclear` and the file is dropped. A project's own runner is not required to
+ * echo the path — this repo's smoke tests print `✗ <message>` and exit 1, and
+ * every one of their reds would have read as unclear — so the child is told to
+ * print it itself. The proof rule is NOT relaxed for this: the sentence tells
+ * the child how to satisfy the rule, it does not change what the rule accepts.
+ * One const, so the two prompts cannot drift in the wording a test pins.
+ */
+export const RED_PROOF_CONTRACT =
+  "**Every test file must print its own file basename when it fails**, e.g. `FAIL AC1-retry.test.ts: expected 3 retries, got 1`, and exit non-zero. The parent counts a file as a real red only when its failure output names that file; a failing file whose output never names it is dropped as unclear and its criterion is left uncovered.";
+
 function criteriaBlock(spec: PiSpec): string {
   return spec.criteria
     .map((c) => {
@@ -89,6 +103,8 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         "## How the parent runs your tests",
         "",
         runner,
+        "",
+        RED_PROOF_CONTRACT,
         "",
         "## What you report",
         "",
