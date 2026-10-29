@@ -56,6 +56,13 @@ export interface PublishBodyInput {
    * the gate's overall verdict, which is about the frozen tests and the tiers.
    */
   commandCriteria?: string[];
+  /**
+   * Why the gate did not execute a `command` criterion — e.g. the path it names
+   * is absent at HEAD. When absent the cell says only `not executed (command)`;
+   * when present it says why, which is the difference between an issue to fix and
+   * a step to re-run.
+   */
+  commandNotRunnable?: string;
   draft: boolean;
   version: string;
   models: Record<string, string>;
@@ -86,14 +93,26 @@ function resultCell(
   c: PiSpec["criteria"][number],
   kind: "green" | "red" | undefined,
   passedCommands: ReadonlySet<string>,
+  notRunnable?: string,
 ): string {
   if (c.verify === "manual") return "manual — needs a human";
-  if (c.verify === "command")
-    return passedCommands.has(c.id)
-      ? "passed (command)"
-      : "not runnable (command is not a repo test path)";
+  if (c.verify === "command") {
+    if (passedCommands.has(c.id)) return "passed (command)";
+    const why = (notRunnable ?? "").trim();
+    // Two truths the reader must not confuse: the gate refused a command that is
+    // not a repo test path (the spec's own defect, and publish keeps a draft),
+    // versus a path-shaped command whose file the worktree does not hold. Both
+    // are "not executed"; only the reason differs, and the reason is what tells
+    // the operator whether to fix the issue or re-run the step.
+    return why === ""
+      ? "not executed (command)"
+      : `not executed (command): ${oneLine(why, COMMAND_NOT_RUNNABLE_MAX_CHARS)}`;
+  }
   return rowCells(kind);
 }
+
+/** The why-not-run is prose out of a path check; it must not widen the row freely. */
+const COMMAND_NOT_RUNNABLE_MAX_CHARS = 90;
 
 /** The test paths a criterion claims, filtered to printable ones. */
 function testsCell(paths: string[] | undefined): string {
@@ -129,7 +148,7 @@ export function publishBody(o: PublishBodyInput): string {
   const passedCommands = new Set(o.commandCriteria ?? []);
   for (const c of o.spec.criteria) {
     lines.push(
-      `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind, passedCommands)} |`,
+      `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind, passedCommands, o.commandNotRunnable)} |`,
     );
   }
   lines.push("", "## Verification");

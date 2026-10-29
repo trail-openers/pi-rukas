@@ -53,6 +53,15 @@ export interface CommandCriteriaOutcome {
   failed?: string;
   /** Every criterion the gate actually ran and that held, keyed by id. */
   executed: Record<string, CommandCriterionRecord>;
+  /**
+   * Why the gate did NOT run the FIRST command criterion it declined, or absent
+   * when it ran them all. One reason, not a map: the record is a durable record of
+   * verdicts, and the distinction a reader needs — "the command is not a repo test
+   * path" versus "the file is not there" — is the same for every criterion drafted
+   * the same way. Criteria are checked in spec order, so the first is the one the
+   * operator sees at the top of the table.
+   */
+  notRunnable?: string;
 }
 
 /**
@@ -119,17 +128,20 @@ export async function commandCriteriaOutcome(
     );
   const executed: Record<string, CommandCriterionRecord> = {};
   let failed: string | undefined;
+  let notRunnable: string | undefined;
   for (const c of wanted) {
     const problem = commandCriterionProblem(c.command);
     // A string that is not a path at all is the spec's own defect: never
-    // executed, never a verdict, and traced so the omission has a record behind
-    // the body line.
+    // executed, never a verdict, and carried to the PR body so the omission is
+    // legible to the operator without a trace log.
     if (problem !== undefined) {
+      notRunnable ??= problem;
       trace(`lean/verify: command criterion ${c.id} not run — ${problem}`);
       continue;
     }
     const rel = normaliseRelPath((c.command as string).trim());
     if (!isFileIn(wt, rel)) {
+      notRunnable ??= `${rel} is not a test file at HEAD`;
       trace(`lean/verify: command criterion ${c.id} not run — ${rel} is not a file at HEAD`);
       continue;
     }
@@ -153,5 +165,9 @@ export async function commandCriteriaOutcome(
     // states against, whether or not the output named the path.
     failed ??= `criterion ${c.id} (command ${rel}) failed: ${proof.detail}`;
   }
-  return { ...(failed === undefined ? {} : { failed }), executed };
+  return {
+    ...(failed === undefined ? {} : { failed }),
+    ...(notRunnable === undefined ? {} : { notRunnable }),
+    executed,
+  };
 }

@@ -17,7 +17,7 @@
  *   (c) column order, and the honest result cell for each `verify` kind — a
  *       `command` criterion is NEVER the gate's verdict — it prints `passed
  *       (command)` only for a criterion the gate recorded as executed, and
- *       `not runnable (…)` for one it did not
+ *       `not executed (command)` for one it did not
  *   (d) `verifiedHead` is a green verdict's claim: a red body prints its reason
  *       and says "not verified", never a head
  *   (e) a criterion id is untrusted text and goes through `oneLine` like the
@@ -139,7 +139,7 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
   const row = lines(body)[6] ?? "";
   assert(
     row.startsWith("| AC1 | t | command | `ok/test-1.sh`") &&
-      row.endsWith("| not runnable (command is not a repo test path) |"),
+      row.endsWith("| not executed (command) |"),
     `publishBody renders the row in the promised column order, and never calls an unrun command criterion green (${JSON.stringify(row)})`,
   );
   assert(

@@ -320,6 +320,9 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       ...(v?.outcome?.commandCriteria === undefined
         ? {}
         : { commandCriteria: Object.keys(v.outcome.commandCriteria) }),
+      ...(v?.outcome?.commandNotRunnable === undefined
+        ? {}
+        : { commandNotRunnable: v.outcome.commandNotRunnable }),
       draft,
       version: ctx.run.version,
       models: ctx.run.models,

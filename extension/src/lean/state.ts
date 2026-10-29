@@ -160,6 +160,13 @@ export interface Outcome {
    */
   commandCriteria?: Record<string, string>;
   /**
+   * `verify` only: why the gate did NOT run a `command` criterion, verbatim from
+   * the gate's own path check, and bounded. Carried so the PR body explains the
+   * blank instead of leaving the operator to guess whether the command was
+   * refused as unsafe or pointed at a file that is not there.
+   */
+  commandNotRunnable?: string;
+  /**
    * `publish` only: the PR's https URL, as the forge returned it. Publish-only
    * by contract — no other step writes it, and `handback` reads no other field
    * for a URL — so "there is a PR at this address" is a recorded fact rather

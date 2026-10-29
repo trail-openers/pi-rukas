@@ -305,6 +305,9 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
 
   const failed = firstFailure(tests, ...tierResults, commandsFailedAsExecuted(commands));
   if (failed !== undefined) return { kind: "red", reason: clipReason(failed) };
+  // A command the gate declined to run is not a verdict, but the reason is still
+  // worth carrying on a green: the PR body prints it beside the blank cell, and a
+  // red's reason line is already dominated by the failing check.
 
   // The tiers run as shell commands IN the worktree, so between the checks
   // above and this point a tier may have rewritten a frozen test, left bytes
@@ -390,6 +393,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
             Object.keys(commands.executed).map((id) => [id, "passed"]),
           ) as Record<string, string>,
         }),
+    ...(commands.notRunnable === undefined ? {} : { commandNotRunnable: commands.notRunnable }),
   };
 }
 

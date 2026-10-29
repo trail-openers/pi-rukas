@@ -226,8 +226,24 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
   const body = publishBody({ ...base, commandCriteria: ["AC2"], draft: false });
   assert(body.includes("| passed (command) |"), "(e) a command the gate ran reads passed (command)");
   assert(
-    body.includes("| not runnable (command is not a repo test path) |"),
-    "(e) a command the gate refused to run says it was not runnable",
+    body.includes("| not executed (command) |"),
+    "(e) a command the gate refused to run says it was not executed",
+  );
+  // The reason is the difference between fixing the issue and re-running the step,
+  // so the gate's own words must reach the row rather than staying in a trace log.
+  const explained = publishBody({
+    ...base,
+    commandCriteria: ["AC2"],
+    commandNotRunnable: "tests/absent.test.sh is not a test file at HEAD",
+    draft: true,
+  });
+  assert(
+    explained.includes("| not executed (command): tests/absent.test.sh is not a test file at HEAD |"),
+    "(e) a command the gate declined explains why, so the operator fixes the right thing",
+  );
+  assert(
+    explained.includes("| passed (command) |"),
+    "(e) one declined command does not silence the record of one that ran",
   );
   assert(
     !body.includes("| command | `tests/AC2-preserve.test.sh` | green |"),
@@ -237,6 +253,64 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
   assert(
     !noRecord.includes("passed (command)"),
     "(e) with no verify record at all, no command row claims it passed",
+  );
+}
+
+// --------------------- (e2) the reason the GATE gave travels to the body, verbatim
+//
+// The string above is typed by the test. This one is produced by `verifyOutcome`
+// and read back off the record by `publish`, so a gate that traced the reason but
+// never recorded it — or a publish that read the record but dropped it — fails here
+// rather than shipping a table that says "not executed" and nothing more.
+{
+  const missing = await runCommandVerify({
+    issue: 408,
+    implement: true,
+    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: "tests/absent.test.sh" }]),
+  });
+  assert(
+    missing.outcome?.commandNotRunnable === "tests/absent.test.sh is not a test file at HEAD",
+    `(e2) the gate records why it declined a command criterion (${JSON.stringify(missing.outcome?.commandNotRunnable)})`,
+  );
+  const { publishBody } = await import("../src/lean/publish-body.ts");
+  const rendered = publishBody({
+    issue: 1908,
+    spec: {
+      problem: "p",
+      size: "S",
+      criteria: [
+        TEST_CRITERION,
+        { ...COMMAND_CRITERION, command: "tests/absent.test.sh" },
+      ] as never,
+    },
+    tests: {},
+    verifyKind: "green",
+    verifiedHead: missing.head,
+    version: "1.2.3",
+    models: {},
+    baseSha: "b".repeat(40),
+    draft: true,
+    ...(missing.outcome?.commandNotRunnable === undefined
+      ? {}
+      : { commandNotRunnable: missing.outcome.commandNotRunnable }),
+  });
+  assert(
+    rendered.includes("| not executed (command): tests/absent.test.sh is not a test file at HEAD |"),
+    "(e2) the body prints the gate's own reason, so a blank cell says what to fix",
+  );
+
+  // And a green whose commands all ran records no reason at all — the absence is
+  // itself evidence, and a stale reason on a clean run would be a false claim.
+  const clean = await runCommandVerify({
+    issue: 409,
+    implement: true,
+    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: CMD_FILE }]),
+    files: { [CMD_FILE]: GREEN_FILE },
+  });
+  assert(
+    clean.outcome?.commandNotRunnable === undefined &&
+      clean.outcome?.commandCriteria?.AC2 === "passed",
+    "(e2) a run that executed every command criterion records no not-runnable reason",
   );
 }
 

@@ -92,10 +92,14 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState>> = {
   prUrl: "publish",
   verifiedHead: "verify",
   commandCriteria: "verify",
+  commandNotRunnable: "verify",
 };
 
 /** The one value a recorded `command` criterion may carry: it held. */
 const COMMAND_CRITERION_KIND = "passed";
+
+/** Why-a-command-was-not-run is prose; the record must not grow without bound. */
+const COMMAND_NOT_RUNNABLE_MAX_CHARS = 300;
 
 /**
  * Why a `commandCriteria` map is not evidence this run may print, or undefined.
@@ -178,6 +182,15 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = commandCriteriaProblem(oc.commandCriteria);
     if (problem !== undefined) return problem;
   }
+  // The not-runnable reason reaches the PR body, so it is a string of bounded
+  // length or nothing — the same rule the reason field itself follows, since
+  // prose out of a path check has no business widening a durable record.
+  if (oc.commandNotRunnable !== undefined) {
+    if (typeof oc.commandNotRunnable !== "string")
+      return "outcome commandNotRunnable must be a string";
+    if (oc.commandNotRunnable.length > COMMAND_NOT_RUNNABLE_MAX_CHARS)
+      return `outcome commandNotRunnable must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
   // length bound keeps a blob a handler stuffed in here out of the record.
@@ -216,6 +229,9 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(oc.commandCriteria === undefined
       ? {}
       : { commandCriteria: { ...(oc.commandCriteria as Record<string, string>) } }),
+    ...(typeof oc.commandNotRunnable === "string"
+      ? { commandNotRunnable: oc.commandNotRunnable }
+      : {}),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
   };
 }
