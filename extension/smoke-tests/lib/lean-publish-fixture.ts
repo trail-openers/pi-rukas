@@ -25,7 +25,7 @@ import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import type { NormalizedPullRequest } from "../../src/forge-types.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
-import type { PublishDeps } from "../../src/lean/publish.ts";
+import type { PublishDeps } from "../../src/lean/publish-deps.ts";
 import { renderPiSpec } from "../../src/lean/spec.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";

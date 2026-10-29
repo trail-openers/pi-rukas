@@ -27,7 +27,7 @@
 
 import { handbackOutcome } from "../src/lean/handback.ts";
 import { publishBody } from "../src/lean/publish-body.ts";
-import { PublishInfraError } from "../src/lean/publish.ts";
+import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { fenceText, oneLine } from "../src/lean/text-fence.ts";
 import { ROOTS, defaultSpec, fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";

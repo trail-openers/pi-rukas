@@ -26,73 +26,17 @@
  * that a PR exists at an address.
  */
 import { existsSync } from "node:fs";
-import { execp } from "../exec.ts";
-import type { Forge, NormalizedPullRequest } from "../forge-types.ts";
+import type { NormalizedPullRequest } from "../forge-types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { fetchIssueBody } from "./io.ts";
 import { publishBody } from "./publish-body.ts";
+import { type PublishDeps, type PublishForge, PublishInfraError } from "./publish-deps.ts";
 import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
-import type { VerifyExec } from "./verify-types.ts";
-
-/** Infrastructure: the step could not observe what it needed, so it did not act. */
-export class PublishInfraError extends Error {
-  override readonly name = "PublishInfraError";
-}
-
-/**
- * The executor this step needs: `ExecFn`'s argv form plus `execp`'s `killGroup`,
- * which the push carries so a hung `git push` cannot leave an ssh grandchild
- * holding the pipe open. Same intersection `verify-types.ts` documents.
- */
-export type PublishExec = VerifyExec;
-
-/** What the step reaches outside itself. */
-export interface PublishDeps {
-  exec: PublishExec;
-  fetchBody: (repoRoot: string, issue: number) => Promise<string>;
-  forge: (repoRoot: string) => PromiseLike<
-    | {
-        prList: Forge["prList"];
-        prCreate: Forge["prCreate"];
-      }
-    | undefined
-  >;
-}
-
-/** Production dependencies: the real executor, the real issue read, the real forge. */
-export function publishDeps(): PublishDeps {
-  return {
-    // One executor for both shapes: `execp`'s own opts type declares every field
-    // this step passes (`argv`, `cwd`, `timeout`, `maxBuffer`, `stdoutEncoding`,
-    // `killGroup`), so the production seam is that executor rather than the
-    // narrower `ExecFn` the worktree helpers declare (which has no `killGroup`).
-    exec: (cmd, o) => execp(cmd, o ?? {}),
-    fetchBody: fetchIssueBody,
-    forge: forgeForPublish,
-  };
-}
-
-/** The forge adapter in the publish shape, or undefined when there is none. */
-async function forgeForPublish(
-  repoRoot: string,
-): Promise<{ prList: Forge["prList"]; prCreate: Forge["prCreate"] } | undefined> {
-  const { detectForge } = await import("../forge-detect.ts");
-  const { createForge } = await import("../forge.ts");
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
-}
 
 /** The newest DECIDED step of one state — engine.ts's rule, copied for one reader. */
 function newestDecided(steps: Step[], state: Step["state"]): Step | undefined {
@@ -202,7 +146,7 @@ async function pushHead(
 
 /** Reuse an open PR on the branch, or create one. Never both. */
 async function openPr(
-  f: { prList: Forge["prList"]; prCreate: Forge["prCreate"] },
+  f: PublishForge,
   branch: string,
   issue: number,
   problem: string,
