@@ -30,7 +30,7 @@
  * `wx` temp write plus a rename, so an existing name is never written through.
  */
 
-import { existsSync, lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
 import { changedPaths } from "./specify-tree.ts";
@@ -44,6 +44,15 @@ export class SpecifyResetError extends Error {
 export class SpecifyCommitError extends Error {
   override readonly name = "SpecifyCommitError";
 }
+
+/**
+ * The git flags every lean step's git calls carry. The hooks a repository has
+ * are somebody else's policy, and a repo-supplied fsmonitor is a program git
+ * runs on every status: either could write into a commit the step never
+ * captured. The only git in this family without it is a read the step does
+ * not need to trust.
+ */
+export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
 
 /** Counter for temp names, so two files of one capture never share one. */
 let writeSeq = 0;
@@ -150,8 +159,8 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
     } catch (err) {
       try {
         // Never leave the temp file behind for the clean-tree assertion to
-        // trip on.
-        if (existsSync(tmp)) renameSync(tmp, `${tmp}.discarded`);
+        // trip on — and a renamed-aside copy is still residue, so delete it.
+        rmSync(tmp, { force: true });
       } catch {
         /* nothing else to do */
       }
@@ -189,9 +198,9 @@ export async function resetWorktreeToBase(
   // branch from a previous attempt of the same run must move to the base
   // rather than keep its commits.
   const steps: string[][] = [
-    ["checkout", "-B", branch, baseSha],
-    ["reset", "--hard", baseSha],
-    ["clean", "-fdx"],
+    [...NO_HOOKS, "checkout", "-B", branch, baseSha],
+    [...NO_HOOKS, "reset", "--hard", baseSha],
+    [...NO_HOOKS, "clean", "-fdx"],
   ];
   for (const argv of steps) {
     try {
@@ -203,7 +212,7 @@ export async function resetWorktreeToBase(
     }
   }
   const head = await exec("git", {
-    argv: ["rev-parse", "HEAD"],
+    argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -245,7 +254,6 @@ export async function commitTestFiles(
   message: string,
 ): Promise<void> {
   if (paths.length === 0) throw new SpecifyCommitError("no test files to commit");
-  const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
   const run = async (argv: string[]): Promise<void> => {
     try {
       await exec("git", { argv, cwd: wt, timeout: 60_000, maxBuffer: 1024 * 1024 });
@@ -259,7 +267,7 @@ export async function commitTestFiles(
   await run([...NO_HOOKS, "commit", "-m", message, "--", ...paths]);
 
   const head = await exec("git", {
-    argv: ["rev-parse", "HEAD"],
+    argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -269,18 +277,19 @@ export async function commitTestFiles(
     throw new SpecifyCommitError(
       `HEAD did not move from the base ${baseSha} — the acceptance-test commit was never made`,
     );
+  // `-z` gives the raw paths NUL-separated: without it git C-quotes any name
+  // with non-ASCII bytes, and a test named `AC1-café` would never equal itself.
+  // `core.quotePath=off` is set too, so the quoting rule cannot return if `-z`
+  // is ever dropped from this call.
   const diff = await exec("git", {
-    argv: ["diff", "--name-only", baseSha, headSha],
+    argv: [...NO_HOOKS, "-c", "core.quotePath=off", "diff", "--name-only", "-z", baseSha, headSha],
     cwd: wt,
     timeout: 60_000,
     maxBuffer: 4 * 1024 * 1024,
   }).catch(() => undefined);
   if (diff === undefined)
     throw new SpecifyCommitError(`could not read the commit's diff against ${baseSha}`);
-  const changed = (diff.stdout ?? "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l !== "");
+  const changed = (diff.stdout ?? "").split("\0").filter((p) => p !== "");
   const expected = [...paths].sort();
   if (JSON.stringify(changed.slice().sort()) !== JSON.stringify(expected))
     throw new SpecifyCommitError(
@@ -303,14 +312,17 @@ export async function commitTestFiles(
  * tree looked like a moment earlier.
  */
 export async function committedBlob(exec: ExecFn, wt: string, rel: string): Promise<Buffer> {
+  // `latin1` keeps every byte (see ExecOpts.stdoutEncoding): the hash is over the
+  // committed bytes, and a utf8 round trip would change any invalid sequence.
   const r = await exec("git", {
     argv: ["show", `HEAD:${rel}`],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 8 * 1024 * 1024,
+    stdoutEncoding: "latin1",
   }).catch(() => undefined);
   if (r === undefined) throw new SpecifyCommitError(`could not read the committed blob ${rel}`);
-  const bytes = Buffer.from(r.stdout ?? "", "utf8");
+  const bytes = Buffer.from(r.stdout ?? "", "latin1");
   // An empty blob is not a test. `git show` of a path that is not in the tree
   // fails rather than returning "", so an empty read here means the commit
   // holds an empty file — and a hash of nothing would let a zero-byte file

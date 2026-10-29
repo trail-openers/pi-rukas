@@ -36,7 +36,7 @@ import path from "node:path";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import type { PiSpec } from "./spec.ts";
-import { resetWorktreeToBase } from "./specify-reset.ts";
+import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 
 /** The worktree directory name for one issue's specify step. */
@@ -67,7 +67,7 @@ async function registeredWorktreePaths(
   let stdout: string | undefined;
   try {
     const r = await exec("git", {
-      argv: ["worktree", "list", "--porcelain"],
+      argv: [...NO_HOOKS, "worktree", "list", "--porcelain"],
       cwd: repoRoot,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
@@ -100,10 +100,24 @@ async function registeredWorktreePaths(
  * this repo, and its HEAD is either the run's branch or detached at the base
  * sha. Anything else, including an unreadable listing, throws before a single
  * mutation, and the foreign tree is left exactly as found.
+ *
+ * `headMustBe` is what a step other than `specify` asks the tree to be sitting
+ * at. `specify` requires the base, because its whole claim is that it froze the
+ * tests ON the base; `build` runs after that commit exists and would refuse
+ * every legitimate run if it demanded the base too, so it passes the head the
+ * step log's frozen records were hashed at. The registration check and the
+ * branch check are unchanged either way — only the commit HEAD must equal moves.
  */
 export async function assertSpecifyWorktreeOwned(
   exec: ExecFn,
-  opts: { repoRoot: string; wt: string; baseSha: string; branch: string },
+  opts: {
+    repoRoot: string;
+    wt: string;
+    baseSha: string;
+    branch: string;
+    /** Default `baseSha` — what `specify` has always required. */
+    headMustBe?: string;
+  },
 ): Promise<void> {
   const foreign = `the directory ${opts.wt} is not a worktree of this repository at ${opts.branch} or ${opts.baseSha} — refusing to reset a tree this step does not own`;
   const registered = await registeredWorktreePaths(exec, opts.repoRoot);
@@ -116,15 +130,22 @@ export async function assertSpecifyWorktreeOwned(
   }
   if (!registered.includes(real)) throw new Error(foreign);
   const head = await exec("git", {
-    argv: ["rev-parse", "HEAD"],
+    argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: opts.wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
   }).catch(() => undefined);
-  if (head === undefined) throw new Error(foreign);
-  if ((head.stdout ?? "").trim() !== opts.baseSha) throw new Error(foreign);
+  const actual = (head?.stdout ?? "").trim();
+  const want = opts.headMustBe ?? opts.baseSha;
+  // The two failure messages name what was actually found: "detached at the
+  // base" and "on the run's branch but two commits ahead of it" are different
+  // diagnoses for whoever reads the handback, and both were the same lie before.
+  if (actual !== want)
+    throw new Error(
+      `${foreign} (its HEAD is ${actual === "" ? "unreadable" : actual}, expected ${want})`,
+    );
   const symbolic = await exec("git", {
-    argv: ["symbolic-ref", "--short", "-q", "HEAD"],
+    argv: [...NO_HOOKS, "symbolic-ref", "--short", "-q", "HEAD"],
     cwd: opts.wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -215,7 +236,7 @@ export function parsePorcelainZ(out: string): PorcelainEntry[] {
 /** Paths git reports as changed, added or deleted in `wt` (base-relative). */
 export async function changedPaths(exec: ExecFn, wt: string): Promise<PorcelainEntry[]> {
   const { stdout } = await exec("git", {
-    argv: ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    argv: [...NO_HOOKS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
     cwd: wt,
     timeout: 60_000,
     maxBuffer: 8 * 1024 * 1024,

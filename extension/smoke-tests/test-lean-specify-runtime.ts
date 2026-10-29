@@ -15,6 +15,9 @@
  *       runs `git add` and `git commit` with `core.hooksPath=/dev/null` and
  *       `core.fsmonitor=false`, so the commit holds exactly the captured bytes
  *       and the hash describes them.
+ *   (v) a frozen test whose NAME is not ASCII -> freezes and commits. git
+ *       C-quotes such a name in a plain `diff --name-only`, so the commit check
+ *       must read the raw paths (`-z`) or it refuses a commit it made correctly.
  *
  * The fixture is lib/lean-specify-fixture.ts; the verdict cases (a)-(g) are in
  * test-lean-specify.ts and the child-tamper cases (h)-(s) in
@@ -137,6 +140,37 @@ function assert(cond: boolean, msg: string): void {
     "(u) the file the hook staged is not in the tree or the commit",
   );
 }
+// ------------------- (v) a frozen test with a non-ASCII name still commits
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/a.ts": "1\n" });
+  // é is two bytes, the CJK character three, the emoji four: every class of
+  // byte git would quote if the commit check did not read the raw paths.
+  const name = "tests/AC1-café-測試-🚀.test.sh";
+  const body = redScript();
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 21,
+    config: configWith({ test: RUNNER }),
+    writes: (wt) => {
+      mkdirSync(path.join(wt, "tests"), { recursive: true });
+      writeFileSync(path.join(wt, name), body, { mode: 0o755 });
+    },
+    toolUses: [submit("AC1", [name])],
+  });
+  assert(r.threw === undefined, `(v) no throw: ${r.threw?.message ?? "clean"}`);
+  assert(r.outcome?.kind === "ok", `(v) ok, got ${r.outcome?.kind}`);
+  assert(
+    r.outcome?.frozen?.[name] === sha(body),
+    `(v) the frozen record names the non-ASCII file with its hash (got ${JSON.stringify(r.outcome?.frozen)})`,
+  );
+  assert(
+    git(r.worktree, "-c", "core.quotePath=off", "show", "--name-only", "--format=", "HEAD") ===
+      name,
+    "(v) the commit holds exactly that file, under its raw name",
+  );
+}
+
 for (const dir of ROOTS) {
   try {
     rmSync(dir, { recursive: true, force: true });

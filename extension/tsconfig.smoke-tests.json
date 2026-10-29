@@ -137,6 +137,8 @@
     "smoke-tests/test-lean-submit-tests.ts",
     "smoke-tests/test-lean-specify.ts",
     "smoke-tests/test-lean-specify-tamper.ts",
-    "smoke-tests/lib/lean-specify-fixture.ts"
+    "smoke-tests/lib/lean-specify-fixture.ts",
+    "smoke-tests/test-lean-build.ts",
+    "smoke-tests/lib/lean-build-fixture.ts"
   ]
 }
