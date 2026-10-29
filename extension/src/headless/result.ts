@@ -41,6 +41,20 @@ import { recordedPrUrl } from "./pr-url.ts";
  */
 export const RESULT_SCHEMA_VERSION = 5 as const;
 
+/**
+ * The only two prose line shapes a text-mode child is allowed onto the host's
+ * stdout. `formatResultDocument` (ensure-result.ts) emits exactly these, the
+ * summary first and the optional error line second, and `proseLinesBefore`
+ * (supervise.ts) forwards only lines that carry one of them — so the producer
+ * and the consumer read the SAME two constants. A literal in either module
+ * would let one side rename a prefix and silently turn every text-mode run
+ * into a document-only stream. They live here, next to `RESULT_SCHEMA_VERSION`,
+ * because both the producer and the consumer already import this module, and
+ * neither imports the other.
+ */
+export const SUMMARY_PREFIX = "pi-rukas-headless:";
+export const ERROR_PREFIX = "error:";
+
 /** Token and cost totals over a set of dispatches, and how many there were. */
 export type UsageTotals = DispatchUsage & { dispatches: number };
 

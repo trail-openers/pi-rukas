@@ -42,8 +42,26 @@
  * passes through, because `withResultGuarantee` prints its document and then
  * RETURNS an exit code — that child exits normally.
  *
- * Only the document LINE is forwarded, never the whole buffer, so stdout carries
- * exactly one JSON document even when the child printed stray bytes first.
+ * Only ONE JSON document ever reaches the host, and it is the child's. In
+ * `--json` mode the child prints that line and nothing else, so the forwarder
+ * emits the document line alone and stray bytes printed before it stay out.
+ * In text mode the child ALSO prints the human summary (`pi-rukas-headless: #N
+ * status (exit N)`) and an optional `error:` line ahead of it (#1866), and those
+ * lines are the documented text-mode output — a forwarder that kept only the
+ * document turned every text-mode host into a JSON host. So text mode forwards
+ * those two documented line shapes first, in the child's own order, and the
+ * document line after them. Everything else is dropped: a line is prose only if
+ * it carries the published prefix, never merely because it is not the document
+ * (see `proseLinesBefore`), so bytes a child vomited before OR after its result
+ * stay off the host's stream.
+ *
+ * The line the supervisor echoes is the LINE IT FOUND, byte for byte, and the
+ * index comes from the same backward scan that parsed it (`parseResultLine`).
+ * Re-locating the document by comparing each line against `JSON.stringify` of
+ * the parsed object would match nothing whenever the child's bytes are valid
+ * JSON with different whitespace or key order, and a head that never cuts is a
+ * head that forwards the whole buffer — the second document on the host's
+ * stream, which is the one property this file exists to keep.
  *
  * SIGTERM / SIGINT / SIGHUP are forwarded to the child, so the interrupt
  * contract (run.ts) is unchanged. Setting `PI_ENSEMBLE_HEADLESS_SUPERVISED=1`
@@ -56,9 +74,11 @@ import { isTerminalState, readState, workStateFile } from "../workflow-state.ts"
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
 import {
+  ERROR_PREFIX,
   type IssueResult,
   RESULT_SCHEMA_VERSION,
   type ResultDocument,
+  SUMMARY_PREFIX,
   notStartedResult,
   projectIssue,
   resultDocument,
@@ -68,6 +88,17 @@ import { workPathStdout } from "./work-path-stdout.ts";
 export const SUPERVISED_ENV = "PI_ENSEMBLE_HEADLESS_SUPERVISED";
 
 const FORWARDED = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+
+/**
+ * The only two prose line shapes a text-mode child is allowed onto the host's
+ * stdout. `formatResultDocument` emits exactly these (`SUMMARY_PREFIX` first,
+ * then the optional `ERROR_PREFIX` line, then the document), so anything else
+ * the child printed is its own business. Re-exported so the offline test builds
+ * a conforming fixture rather than guessing at the prefixes; the constants are
+ * declared in `result.ts` so the producer in `ensure-result.ts` and this
+ * consumer cannot drift apart.
+ */
+export { ERROR_PREFIX, SUMMARY_PREFIX } from "./result.ts";
 
 export interface SuperviseOptions {
   repoRoot: string;
@@ -93,14 +124,18 @@ export interface SuperviseOptions {
  * contract never published is not a result but garbage, and garbage is what the
  * `crash` projection is for.
  *
- * The return type says exactly that much: `exitCode` was verified against the
- * published set and `raw` is the text that verified, which is the only thing
- * the caller echoes. Everything else in the parsed line — per-issue results,
- * `error`, `resources` — is carried through unchecked, so it is typed
- * `ResultDocument` (the caller re-emits the object it read, not a projection of
- * it) rather than narrowed to fields this function never inspected.
+ * The return type says exactly what was verified: `exitCode` was checked against
+ * the published set, `doc` is the parsed line, and `index` is the stdout line it
+ * came from — which is the only place the caller can find the bytes it must
+ * echo, since a re-parse of the document is not byte-identical to what the child
+ * wrote (`JSON.stringify` normalises whitespace and keeps key order, so a child
+ * whose line carries extra spaces or reordered keys has no line equal to the
+ * stringify of its own parse). Everything else in the parsed line — per-issue
+ * results, `error`, `resources` — is carried through unchecked, so `doc` is
+ * typed `ResultDocument` (the caller re-emits the object it read, not a
+ * projection of it) rather than narrowed to fields this function never inspected.
  */
-export function parseResultDocument(out: string): ResultDocument | undefined {
+export function parseResultLine(out: string): { doc: ResultDocument; index: number } | undefined {
   const lines = out.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = (lines[i] ?? "").trim();
@@ -118,10 +153,22 @@ export function parseResultDocument(out: string): ResultDocument | undefined {
       Array.isArray(doc.issues) &&
       isPublishedExitCode(doc.exitCode)
     ) {
-      return parsed as ResultDocument;
+      return { doc: parsed as ResultDocument, index: i };
     }
   }
   return undefined;
+}
+
+/**
+ * The last complete result document on a child's stdout, or undefined.
+ *
+ * The locator form of `parseResultLine` for callers that only need the document
+ * (the published-code acceptance loop in the offline test). A caller that will
+ * echo bytes wants `parseResultLine` instead — the index is what makes the
+ * forwarded line the child's own.
+ */
+export function parseResultDocument(out: string): ResultDocument | undefined {
+  return parseResultLine(out)?.doc;
 }
 
 /**
@@ -132,6 +179,40 @@ export function parseResultDocument(out: string): ResultDocument | undefined {
 function isPublishedExitCode(code: unknown): code is number {
   if (typeof code !== "number" || !Number.isSafeInteger(code)) return false;
   return Object.values(EXIT).includes(code as (typeof EXIT)[keyof typeof EXIT]);
+}
+
+/**
+ * The document line a child wrote, byte for byte, or `undefined` when `index`
+ * names no line at all (a caller that hand-built an index — never the case on
+ * the live path, always the safe answer for one).
+ */
+function documentLineAt(lines: string[], index: number): string | undefined {
+  const line = lines[index];
+  return line === undefined ? undefined : line.trim();
+}
+
+/**
+ * The child's prose ahead of its result document, in the child's own order:
+ * only the lines a text-mode host is PROMISED — the `pi-rukas-headless: ` summary
+ * and the `error:` reason `formatResultDocument` emits before the machine line.
+ * The whitelist is the point: "not the document" is not a property that makes a
+ * line prose, so any line the child printed for its own reasons (a library's
+ * warning, a stray `console.log`, a second half-written document) is dropped
+ * rather than copied onto the host's stream. The head is cut at the index the
+ * parser reported, so nothing after the document is ever considered — the
+ * stray-bytes rule the document-only forwarder exists for.
+ *
+ * `lines`/`index` come from `parseResultLine`, so the cut and the parse cannot
+ * disagree about where the document is. Returns `""` for a stream with no
+ * whitelisted prose (the `--json` shape), so the caller's output is byte-identical
+ * to the document-only forward in that case.
+ */
+export function proseLinesBefore(lines: string[], index: number): string {
+  const head = lines.slice(0, index < 0 ? 0 : index);
+  const prose = head.filter(
+    (l) => l.startsWith(`${SUMMARY_PREFIX} `) || l.startsWith(`${ERROR_PREFIX} `),
+  );
+  return prose.length === 0 ? "" : `${prose.join("\n")}\n`;
 }
 
 /** Each issue as its state file shows it; a non-terminal state exits 30. */
@@ -186,7 +267,7 @@ export async function superviseWork(opts: SuperviseOptions): Promise<number> {
   // own result does, because ensure-result.ts writes it to the same stdout.
   // A child that died by a signal, or never started, has no say: its bytes are
   // not a result. Everything else with a complete document on stdout is.
-  const answered = exit.signal || exit.error ? undefined : parseResultDocument(out);
+  const answered = exit.signal || exit.error ? undefined : parseResultLine(out);
   if (answered !== undefined) {
     // The document LINE, not the buffer: stray bytes ahead of it are not part
     // of the host's contract. NOTE `write` — the injectable sink the caller may
@@ -195,8 +276,17 @@ export async function superviseWork(opts: SuperviseOptions): Promise<number> {
     // document, whichever arm produced it), and in a process whose latch had
     // already been armed it silently DROPPED the child's document: the host read
     // nothing while the process exited with the code of a document nobody saw.
-    write(`${JSON.stringify(answered)}\n`);
-    return answered.exitCode;
+    // The bytes are the child's own line at the parsed index — never the
+    // re-stringify of the parse, which is what made a whitespace-different but
+    // valid document unlocatable and forwarded the whole buffer as "prose".
+    const lines = out.split("\n");
+    const document = documentLineAt(lines, answered.index) ?? JSON.stringify(answered.doc);
+    // Text mode: the child's whitelisted human lines go out before its document,
+    // because they are the output the text-mode host was promised. JSON mode
+    // prints no prose, so `proseLinesBefore` returns "" and this is the document
+    // alone.
+    write(opts.json ? `${document}\n` : `${proseLinesBefore(lines, answered.index)}${document}\n`);
+    return answered.doc.exitCode;
   }
   const how = exit.error
     ? `could not start: ${exit.error.message}`

@@ -34,12 +34,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXIT } from "../src/headless/exit-code.ts";
 import {
   formatResultDocument,
   wedgedRun,
   withResultGuarantee,
 } from "../src/headless/ensure-result.ts";
+import { EXIT } from "../src/headless/exit-code.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -57,7 +57,6 @@ const cliPath = join(here, "..", "src", "headless", "cli.ts");
 // stdout-ownership case spawns this instead of the CLI (see its header).
 const latchFixture = join(here, "lib", "headless-stdout-latch-fixture.ts");
 const tmpRoot = await mkdtemp(join(tmpdir(), "pi-1863-runner-"));
-
 
 /** Run the real CLI and collect stdout/stderr/exit without a shell. */
 async function runCli(
@@ -94,7 +93,11 @@ async function runCli(
   });
 }
 
-const docs = (s: string) => s.trim().split("\n").filter((l) => l.trim().length > 0);
+const docs = (s: string) =>
+  s
+    .trim()
+    .split("\n")
+    .filter((l) => l.trim().length > 0);
 
 try {
   // ── 1. STRUCTURE: a driver that never settles still writes exactly one
@@ -184,10 +187,7 @@ try {
       missing?.status === "not-started" && missing.exitCode === EXIT.crash,
       `an issue with NO state file is reported not-started at exit 30 — a wedge never claims success (status=${missing?.status} exit=${missing?.exitCode})`,
     );
-    assert(
-      run.exitCode === EXIT.crash,
-      `the wedge run's overall code is 30 (got ${run.exitCode})`,
-    );
+    assert(run.exitCode === EXIT.crash, `the wedge run's overall code is 30 (got ${run.exitCode})`);
     assert(
       formatResultDocument(run, false).includes("driver-wedged"),
       "the non-json form names the wedge too — hosts read both",
@@ -208,7 +208,7 @@ try {
       `the real runner printed its result document (got ${lines.length} line(s))`,
     );
     if (lines.length >= 1) {
-      let parsed: { exitCode?: number; issues?: unknown[] } | undefined;
+      let parsed: { exitCode?: number; issues?: unknown[]; error?: { code?: string } } | undefined;
       try {
         parsed = JSON.parse(lines[0] as string);
       } catch {
@@ -221,6 +221,18 @@ try {
       assert(
         parsed?.exitCode === out.code,
         `the real process exits with the code its document declares (doc ${parsed?.exitCode} vs process ${out.code})`,
+      );
+      // #1866 — "a document exists" was never enough: the SUPERVISOR writes a
+      // document too, so the whole crash projection satisfied this gate while the
+      // runner underneath printed nothing. A crash projection is now a FAILURE,
+      // not a pass — this is the assertion that would have caught the regression.
+      assert(
+        parsed?.error?.code !== "crash",
+        `the real runner's document is its OWN result, not the supervisor's crash projection (error=${JSON.stringify(parsed?.error)})`,
+      );
+      assert(
+        out.code !== 0 || parsed?.error === undefined,
+        `a real run that exits 0 does not also report an error (error=${JSON.stringify(parsed?.error)})`,
       );
     }
   }
@@ -240,12 +252,7 @@ try {
       docs(alone.stdout).length === 1,
       `the harness's own run prints one stdout line (got ${docs(alone.stdout).length}) — the control for the latch case`,
     );
-    const out = await runCli(
-      ["work", "1863", "--json", "--extra-stdout"],
-      {},
-      repo,
-      latchFixture,
-    );
+    const out = await runCli(["work", "1863", "--json", "--extra-stdout"], {}, repo, latchFixture);
     const lines = docs(out.stdout);
     assert(
       lines.length === 1,

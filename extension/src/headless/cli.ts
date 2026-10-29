@@ -246,14 +246,16 @@ export async function main(argv: readonly string[]): Promise<number> {
 }
 
 // Run only when executed directly (bun cli.ts ...), never when imported by a
-// test — and never in the SUPERVISED child. The child's argv[1] is inherited
-// from whoever started the run (superviseWork re-spawns `process.argv[1]`), so
-// for a run launched through `bun src/headless/cli.ts` the child's argv[1] ALSO
-// ends in `cli.ts`, and an argv-only test here makes the child execute this
-// block on top of `main`: the run's own document, then a second one from the
-// entry path — precisely the double-document this latch exists to refuse.
-const invokedDirectly =
-  process.argv[1]?.endsWith("cli.ts") === true && process.env[SUPERVISED_ENV] !== "1";
+// test. The argv test alone is the whole guard: the SUPERVISED child is NOT
+// excluded here, because the supervisor re-spawns THIS file with
+// SUPERVISED_ENV=1 as the process that owns the run, and skipping `main()` in
+// that child leaves stdout empty — the supervisor can then only project
+// `crash — the runner process exited 0 without a result` (#1866 regression).
+// Excluding it is not what keeps a run to one document either way: `main()`'s
+// supervise arm refuses to re-spawn a child when SUPERVISED_ENV=1, so this
+// block calls `main()` exactly once per process, and the process-scoped latch
+// in `work-path-stdout.ts` refuses any second document outright.
+const invokedDirectly = process.argv[1]?.endsWith("cli.ts") === true;
 if (invokedDirectly) {
   // The wedge bound is NOT a flag. It is a reporting backstop, and a caller
   // that could pass it could make a merely slow cycle report `driver-wedged`;
