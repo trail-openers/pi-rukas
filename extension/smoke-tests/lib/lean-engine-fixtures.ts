@@ -27,6 +27,17 @@ import { leanStateFile } from "../../src/lean/state.ts";
 /** The one clock every case uses, so a timestamp in the log is a number we chose. */
 export const CLOCK = 1_700_000_000_000;
 
+/**
+ * A full lowercase oid every base case uses as "a real base".
+ *
+ * `lean/state.ts` refuses a record whose `baseSha` is neither `""` nor a full
+ * commit sha, so a fixture that wrote the literal `"base"` would be refused at
+ * load and every case that resumes one would be testing the refusal instead of
+ * what it means to test. Exported so a case can compare against the same value
+ * the fixture wrote rather than repeating the literal.
+ */
+export const FIXTURE_BASE_SHA = "0123456789abcdef0123456789abcdef01234567";
+
 export function ticking(): { now: () => number; elapsed: () => number } {
   const ms = CLOCK;
   return { now: () => ms, elapsed: () => ms - CLOCK };
@@ -97,7 +108,12 @@ export function tempDir(): { dir: string; cleanup: () => void } {
  * Hand-written rather than driven: driving there would exercise the very
  * memoization the case is about.
  */
-export function seedUpTo(dir: string, issue: number, at: LeanState): void {
+export function seedUpTo(
+  dir: string,
+  issue: number,
+  at: LeanState,
+  base: Partial<Pick<LeanRun, "baseSha" | "branch">> = {},
+): void {
   const order: LeanState[] = [
     "ready",
     "specify",
@@ -132,8 +148,8 @@ export function seedUpTo(dir: string, issue: number, at: LeanState): void {
     issue,
     version: "test",
     models: {},
-    baseSha: "base",
-    branch: `feature/issue-${issue}`,
+    baseSha: base.baseSha ?? FIXTURE_BASE_SHA,
+    branch: base.branch ?? `feature/issue-${issue}`,
     state: "ready",
     counters: { ...INITIAL_COUNTERS },
     steps,
@@ -156,8 +172,8 @@ export function seedUpTo(dir: string, issue: number, at: LeanState): void {
     issue,
     version: "test",
     models: {},
-    baseSha: "base",
-    branch: `feature/issue-${issue}`,
+    baseSha: base.baseSha ?? FIXTURE_BASE_SHA,
+    branch: base.branch ?? `feature/issue-${issue}`,
     state: at,
     counters,
     steps,
@@ -187,7 +203,6 @@ export function seedWalk(
 ): LeanRun {
   return writeSeed(dir, issue, walkToSteps(walk), deriveSeedPosition(walk), base);
 }
-
 /** The array form of a `seedWalk` walk, shared with `writeVerifiedSeed`. */
 function walkToSteps(walk: [LeanState, number, string?, boolean?][]): LeanRun["steps"] {
   return walk.map(([state, n, kind, pending]) => ({
@@ -235,7 +250,7 @@ function writeSeed(
     issue,
     version: "test",
     models: {},
-    baseSha: base.baseSha ?? "base",
+    baseSha: base.baseSha ?? FIXTURE_BASE_SHA,
     branch: base.branch ?? `feature/issue-${issue}`,
     state: position.state,
     counters: position.counters,

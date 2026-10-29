@@ -14,12 +14,53 @@
  * reachable in a temp repo at all.
  */
 
+// ── (a)–(k): the whole inventory these cases and `lib/lean-seed-fixtures.ts`
+// share, kept at the TOP of the file because a reader deciding what is covered
+// should not have to reach the bottom of either file for it. The fixtures file
+// repeats the same list from the other side of the seam; the words live there.
+//
+//   (a) the seed resolves origin/HEAD, the ref every later base read goes through
+//   (b) no mainline at all: seeds "" and does NOT throw
+//   (c) the seed lands on the record, and specify's own read sees it
+//   (d) a resume keeps the base its first round recorded — a NON-terminal record
+//       driven with a differing seed, so the assertion is about the base and not
+//       about a short-circuit
+//   (e) an empty base is a `ready` refusal naming the mainline rule, not a throw
+//   (f) the wiring: command handlers, real engine, real repo — green `ready`,
+//       record carrying the base
+//   (g) a non-empty base that names no object is a refusal, not a default config,
+//       and the refused value is clipped in the rule
+//   (h) a base whose commit carries no `.pi/work.json` is still `ok`
+//   (i) the seed's cause reaches the rule through `handlersFor`
+//   (j) the base is pinned to an IMMUTABLE oid, not merely to something git will
+//       resolve (`main`, `HEAD`, a suffix chain, an 8-hex prefix, an uppercase
+//       full sha all refused; a real full sha still `ok`)
+//   (k) a git INFRASTRUCTURE fault is not a refusal: the second probe's answer
+//       decides, and a fault THROWS so the run hands back rather than posting
+//       "not a commit" on an issue whose clone merely could not be asked
+//   (l) the seeder PEELS too: an oid-shaped mainline that is not a commit seeds
+//       "" with a reason naming the value, never a base the clone cannot show
+//   (m) a base that resolves to a DIFFERENT oid is refused and the rule says what
+//       it resolved to; a refused base is never echoed in the facts
+//
+// (l) and (m) drive the git seam through `originRepo`'s `gitRunner` and assert
+// on the argv the code asked for, so a skipped peel or a skipped equality check
+// fails a case instead of passing one.
+//   (l) the seeder PEELS: a mainline that is oid-shaped but not a commit seeds
+//       "" with a reason, and never a base the clone cannot show
+//   (m) a base that resolves to a DIFFERENT oid is refused, and the rule says
+//       what it resolved to — and nothing is echoed in the facts
+//
+// Both (l) and (m) drive the git seam through `originRepo`'s `gitRunner` and
+// assert on `gitCalls`/the argv it was handed, so a skipped peel or a skipped
+// equality check fails a case instead of passing one.
+
 import { readFileSync } from "node:fs";
 import { handlersFor, leanSeed, phase1Handlers, readyOutcome } from "../src/lean/command.ts";
 import { type LeanHandler, runLean } from "../src/lean/engine.ts";
 import { leanStateFile } from "../src/lean/state.ts";
-import { HAPPY, makeAssert, scripted, tempDir } from "./lib/lean-engine-fixtures.ts";
-import { BODY, fakeGhDir, originRepo, withGh } from "./lib/lean-seed-fixtures.ts";
+import { HAPPY, makeAssert, scripted, seedUpTo, tempDir } from "./lib/lean-engine-fixtures.ts";
+import { BODY, fakeGhDir, originRepo, withGh, withGitBin } from "./lib/lean-seed-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -108,20 +149,30 @@ const { assert, failures } = makeAssert();
     );
 
     // (d) A resume keeps the recorded base: the seed is for a NEW run only, so
-    // a mainline that moved cannot become this run's base mid-flight.
+    // a mainline that moved cannot become this run's base mid-flight. The
+    // record is NON-terminal (mid-walk at `review`) and is built by the same
+    // fixture a real drive goes through, so this asserts the resume path rather
+    // than the short-circuit a finished record takes — and the base it must
+    // keep is a real oid that DIFFERS from the seed below, which is the only
+    // shape that distinguishes "kept the record" from "took whatever came in".
     const moved = "ffffffffffffffffffffffffffffffffffffffff";
+    seedUpTo(dir.dir, 4201, "review", { baseSha: BASE });
     const resumed = await runLean({
       repoRoot: dir.dir,
       issue: 4201,
-      // The finished record short-circuits before any handler runs, so the
-      // assertion is about the base on the record it returns.
-      handlers: {} satisfies Record<string, LeanHandler>,
+      // The states before `review` are already in the log, so only `review`
+      // onward runs; the seed is what must NOT be adopted.
+      handlers: scripted(HAPPY).handlers,
       seed: { version: "test", baseSha: moved },
       now: () => 2,
     });
     assert(
       resumed.run.baseSha === BASE,
       `a resumed run keeps its recorded base, not the seed (got ${JSON.stringify(resumed.run.baseSha)})`,
+    );
+    assert(
+      resumed.run.baseSha !== moved,
+      "the differing seed is not what the record ended up carrying",
     );
   } finally {
     dir.cleanup();
@@ -221,8 +272,8 @@ const { assert, failures } = makeAssert();
     );
     assert(
       bogus.kind === "fail" &&
-        bogus.facts.failedRules.some((r) => r.includes("is not a commit in this clone")),
-      `a base that is not a ref fails ready (got ${bogus.kind} ${JSON.stringify(bogus.facts.failedRules)})`,
+        bogus.facts.failedRules.some((r) => r.includes("is not a full commit sha")),
+      `a base that is not an oid fails ready with the SHAPE rule (got ${bogus.kind} ${JSON.stringify(bogus.facts.failedRules)})`,
     );
     const hex = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
     const fake = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, { baseSha: hex }));
@@ -237,7 +288,8 @@ const { assert, failures } = makeAssert();
     // harness composes: the sha is untrusted text going into an issue comment.
     // (git no longer echoes the ref back at all — the resolution moved into
     // `resolveHeadSha`, which traces rather than returns a message — so the rule
-    // is exactly `base sha <clip> is not a commit in this clone`, and the
+    // is exactly `base sha <clip> is not a full commit sha` (this value is not
+    // even oid-shaped, so it is the shape rule that refuses it), and the
     // assertion below pins the whole string. The base is `x` + 200 `a`, so its
     // 80-char clip is `x` + 79 `a`, plus the ellipsis `oneLine` appends.)
     const long = `x${"a".repeat(200)}`;
@@ -245,9 +297,16 @@ const { assert, failures } = makeAssert();
     const clipRule = clipped.facts.failedRules.find((r) => r.startsWith("base sha ")) ?? "";
     assert(
       clipped.kind === "fail" &&
-        clipRule === `base sha x${"a".repeat(79)}… is not a commit in this clone` &&
+        clipRule === `base sha x${"a".repeat(79)}… is not a full commit sha` &&
         !clipRule.startsWith(`base sha ${long}`),
       `a long bogus base is clipped to 80 chars in the rule (got ${JSON.stringify(clipped.facts.failedRules)})`,
+    );
+    // Neither refusal echoes the value in the FACTS: the rule carries it once,
+    // clipped, and a second unclipped copy in the facts is a second renderer a
+    // later reader has to remember.
+    assert(
+      (clipped.facts as { baseSha?: string }).baseSha === undefined,
+      `a refused base is not echoed in the facts (got ${JSON.stringify((clipped.facts as { baseSha?: string }).baseSha)})`,
     );
   } finally {
     repo.dispose();
@@ -290,17 +349,21 @@ const { assert, failures } = makeAssert();
   const repo = originRepo();
   try {
     const gh = fakeGhDir(BODY);
-    const refusals: Array<[string, string]> = [
-      ["a branch name", "main"],
-      ["HEAD", "HEAD"],
-      ["a suffix chain through backtick quoting", "main^{commit}`touch x`@{0}"],
-      ["an 8-hex prefix of the real tip", repo.tip.slice(0, 8)],
+    const refusals: Array<[string, string, string]> = [
+      ["a branch name", "main", "is not a full commit sha"],
+      ["HEAD", "HEAD", "is not a full commit sha"],
+      [
+        "a suffix chain through backtick quoting",
+        "main^{commit}`touch x`@{0}",
+        "is not a full commit sha",
+      ],
+      ["an 8-hex prefix of the real tip", repo.tip.slice(0, 8), "is not a full commit sha"],
     ];
-    for (const [label, value] of refusals) {
+    for (const [label, value, rule] of refusals) {
       const out = await withGh(gh, () => readyOutcome(repo.repoRoot, 4207, { baseSha: value }));
       assert(
         out.kind === "fail" &&
-          out.facts.failedRules.some((r) => r.startsWith(`base sha ${value} is not a commit`)),
+          out.facts.failedRules.some((r) => r.startsWith(`base sha ${value} ${rule}`)),
         `${label} (${JSON.stringify(value)}) is refused by ready (got ${out.kind} ${JSON.stringify(out.facts.failedRules)})`,
       );
     }
@@ -316,7 +379,12 @@ const { assert, failures } = makeAssert();
       );
       assert(
         out.kind === "fail" &&
-          out.facts.failedRules.some((r) => r.startsWith("base sha ") && r.includes(upper)),
+          out.facts.failedRules.some(
+            (r) =>
+              r.startsWith("base sha ") &&
+              r.includes(upper) &&
+              r.includes("is not a full commit sha"),
+          ),
         `an uppercase full sha is refused by ready (got ${out.kind} ${JSON.stringify(out.facts.failedRules)})`,
       );
       const good = await withGh(fakeGhDir(BODY), () =>
@@ -390,5 +458,3 @@ const { assert, failures } = makeAssert();
     repo.dispose();
   }
 }
-
-process.exit(failures());

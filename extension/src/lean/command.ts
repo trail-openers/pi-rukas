@@ -35,10 +35,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
-import { isFullCommitSha, resolveHeadSha } from "../review-head-sha.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import { proveBaseSha } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
 import { challengeDeps, challengeOutcome } from "./challenge.ts";
 import { leanChildOpts } from "./child-opts.ts";
@@ -98,19 +98,33 @@ export interface LeanSeed {
  * It is probed ONCE here and pinned, because the base is a run-start fact: a
  * resume keeps the recorded sha rather than re-resolving a mainline that may
  * have moved. Never throws: a repo whose mainline cannot be resolved seeds
- * `""`, and `ready` refuses the run with the reason (`why`) it deserves.
+ * `""`, and `ready` refuses the run with the reason (`why`) it deserves. The
+ * value is proven with the same `proveBaseSha` `ready` applies — shape, peel
+ * and equality — so the record never carries a value that is shaped like an oid
+ * but is not the commit the run was seeded with; an unprovable value seeds `""`
+ * with its own `why`, the same channel a probe that found nothing uses.
  */
 export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
   const version = leanVersion();
   try {
     const probed = await mainlineSha(repoRoot);
-    // A sha that is not a full oid is refused here rather than passed on to be
-    // refused by `ready`: the seed is what gets written to the record, so an
-    // abbreviated or mixed-case value would become the run's base and every
-    // later read would be anchored to a string no equality check can settle.
-    // The cause says so plainly, and the catch below keeps its own.
-    if (probed.sha !== undefined && isFullCommitSha(probed.sha)) {
-      return { version, baseSha: probed.sha };
+    // A sha that is not a full oid, or one the clone holds no commit for, is
+    // refused HERE rather than passed on to be refused by `ready`: the seed is
+    // what gets written to the record, so an abbreviated, mixed-case or absent
+    // value would become the run's base and every later read would be anchored
+    // to a string no equality check can settle. `proveBaseSha` is the same
+    // proof `ready` applies, so the seeder cannot write a base `ready` would go
+    // on to refuse. The cause says so plainly, and the catch below keeps its
+    // own; a git fault lands in that catch, which is the seed's contract — it
+    // runs before the run exists, so it must not take the command down.
+    if (probed.sha !== undefined) {
+      const proof = await proveBaseSha(repoRoot, probed.sha);
+      if (proof.ok) return { version, baseSha: probed.sha };
+      return {
+        version,
+        baseSha: "",
+        why: `origin mainline ${oneLine(probed.sha, 80)}: ${oneLine(proof.rule, 120)}`,
+      };
     }
     return {
       version,
@@ -136,38 +150,26 @@ export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
  * reports when that answer is empty. The base is pinned when the run starts so
  * a config read, a diff and a verify all mean the same commit.
  *
- * A non-empty base is PROVEN to be a commit before anything reads it. The
- * config loader cannot make that distinction: `gitType`/`gitShow` catch every
- * git failure and report "absent", which for a loader means "no config, use
- * the defaults" — so a base that names no object at all (a stale or hand-edited
- * resumed record, a seeder that passed a literal) used to read as a perfectly
- * ordinary repo with no `.pi/work.json` and go green. Refusing it here is the
- * narrow fix: the base is the one ref every later read of the run is anchored
- * to, so "that is not a commit in this clone" is a `ready` failure, not a
- * default config.
+ * A non-empty base is PROVEN to be a commit before anything reads it — see
+ * `lean/base-proof.ts`, which owns both rules and the `cat-file -e` second
+ * opinion. The config loader cannot make that distinction: `gitType`/`gitShow`
+ * catch every git failure and report "absent", which for a loader means "no
+ * config, use the defaults" — so a base that names no object at all (a stale or
+ * hand-edited resumed record, a seeder that passed a literal) used to read as a
+ * perfectly ordinary repo with no `.pi/work.json` and go green.
  *
- * The proof is TWO checks, not one, because a resolution that succeeds proves
- * less than it looks like it proves. `base` must first be a FULL lowercase
- * 40-hex oid (`isFullCommitSha`), which is what makes the value an immutable
- * object name rather than a ref: `main`, `HEAD`, `@{0}` and a short prefix all
- * fail that test, and with it the git argument can never be a moving ref or a
- * revision chain — an earlier shape of this gate passed `main^{commit}` to git
- * and was satisfied with any 40-hex answer, so `main^{commit}``touch x``@{0}`
- * resolved to main's tip and the run anchored to a commit it never named.
- * Second, the resolution must come BACK EQUAL to the base: a full sha is
- * content-addressed, so anything that resolves to a different oid was never the
- * object the run was seeded with (a mixed-case or otherwise mangled value). The
- * resolution itself goes through the repo's canonical `resolveHeadSha`, which
- * peels with `^{commit}` (so a non-commit object answers `undefined`) and is
- * bounded like every other identity git read.
- *
- * Never throws. Every failure comes back as `fail` with the rules named,
- * because a run that cannot start still has to say why on the issue.
+ * Throws on a git INFRASTRUCTURE fault, and only there. A spec that is not
+ * ready, an empty base and a base that names no commit all come back as `fail`
+ * with the rules named, because a run that cannot start still has to say why on
+ * the issue — but a run whose git could not be asked is not an unready issue,
+ * and posting "your base is not a commit" on an issue whose clone merely had a
+ * locked index would tell the operator to fix something that is not broken.
+ * The throw is what the engine turns into a handler-error handback.
  */
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
-  base: { baseSha: string; why?: string },
+  base: Pick<LeanSeed, "baseSha" | "why">,
 ): Promise<{ kind: "ok" | "fail"; facts: ReadyFacts }> {
   let body: string;
   try {
@@ -190,12 +192,13 @@ export async function readyOutcome(
     // A run whose mainline could not be resolved is not ready, and the
     // operator reading the issue comment has to be able to tell "this clone
     // has no origin/HEAD" from "git broke"; when the seed never carried a
-    // cause (a resumed run, whose seed this process did not make), ask once.
-    // The probe is a git read, so it is guarded: `readyOutcome`'s contract is
-    // that it never throws, and an unguarded throw here would end the run as a
-    // handler error instead of the refusal with a reason it is meant to be.
+    // cause (a resumed run, whose seed this process did not make, or one that
+    // carried `""`), ask once. The probe is a git read, so it is guarded: an
+    // unguarded throw on THIS path would turn a refusal-with-a-reason into a
+    // handler error, and there is no git fact left to verify — the base is
+    // already empty whatever the probe says.
     let why = base.why;
-    if (why === undefined) {
+    if (!why) {
       try {
         why = (await mainlineSha(repoRoot)).why;
       } catch (err) {
@@ -212,13 +215,19 @@ export async function readyOutcome(
   }
   // Non-empty is not enough: prove the base IS the commit before the config
   // read, whose blanket catch would otherwise turn "no such object" into
-  // "no config file" and hand the run defaults it never earned. See the
-  // jsdoc above and the cases in `test-lean-seed-base.ts`.
-  if (!isFullCommitSha(base.baseSha)) return baseRefusal(base.baseSha, "");
-  // The canonical resolution: `^{commit}` peeling (so a blob or tag object is
-  // not a base) and the bound on the git read both live in `resolveHeadSha`.
-  const resolved = await resolveHeadSha(repoRoot, base.baseSha, execp);
-  if (resolved !== base.baseSha) return baseRefusal(base.baseSha, "");
+  // "no config file" and hand the run defaults it never earned. The proof — its
+  // two rules, its peel, and the `cat-file -e` second opinion that separates a
+  // missing object from a broken git — lives in `lean/base-proof.ts`; it throws
+  // on a git fault, which is what this handler's caller turns into a handback.
+  // See the cases in `test-lean-seed-base.ts`.
+  const proof = await proveBaseSha(repoRoot, base.baseSha);
+  if (!proof.ok) {
+    // The refused value is deliberately absent from the facts: it is untrusted
+    // text from a record this process did not write, it is already inside the
+    // rule where it is clipped, and a second copy in the facts is a second
+    // place a later renderer has to remember to clip.
+    return { kind: "fail", facts: { spec: parsed.spec, failedRules: [proof.rule] } };
+  }
   try {
     const config = await loadWorkConfig(execp, repoRoot, base.baseSha);
     return {
@@ -237,20 +246,6 @@ export async function readyOutcome(
       },
     };
   }
-}
-
-/** A base the clone has no commit for — the same refusal whether the value is
- * not an oid at all or an oid that resolves to no commit, or to a different
- * one. Clipped with `oneLine`: the value came from a record this process did
- * not necessarily write, and the rule ends up in an issue comment. */
-function baseRefusal(baseSha: string, detail: string): { kind: "fail"; facts: ReadyFacts } {
-  return {
-    kind: "fail",
-    facts: {
-      baseSha,
-      failedRules: [`base sha ${oneLine(baseSha, 80)} is not a commit in this clone${detail}`],
-    },
-  };
 }
 
 /**

@@ -73,17 +73,28 @@ export const BODY = `\`\`\`pi-spec v1\n${JSON.stringify(SPEC, null, 2)}\n\`\`\``
 
 /** git in `dir` with the host's config isolated and a fixture-local identity. */
 export function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, {
-    cwd: dir,
-    encoding: "utf8",
-    env: {
-      ...gitTestEnv(),
-      GIT_AUTHOR_NAME: "t",
-      GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t",
-      GIT_COMMITTER_EMAIL: "t@t",
-    },
-  });
+  return runGit(dir, args);
+}
+
+function runGit(
+  dir: string,
+  args: string[],
+  runner?: (args: string[]) => { status: number; stdout?: string; stderr?: string },
+): string {
+  const r =
+    runner !== undefined
+      ? runner(args)
+      : spawnSync("git", args, {
+          cwd: dir,
+          encoding: "utf8",
+          env: {
+            ...gitTestEnv(),
+            GIT_AUTHOR_NAME: "t",
+            GIT_AUTHOR_EMAIL: "t@t",
+            GIT_COMMITTER_NAME: "t",
+            GIT_COMMITTER_EMAIL: "t@t",
+          },
+        });
   if (r.status !== 0)
     throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
   return (r.stdout ?? "").trim();
@@ -126,6 +137,70 @@ export function fakeGhDir(body: string): string {
   return dir;
 }
 
+/**
+ * A PATH entry whose `git` answers ONE mainline read and forwards everything
+ * else to the real binary.
+ *
+ * `mainlineSha` reads refs and the base proof peels the value it read, so a
+ * case that needs the two answers to DISAGREE — the field shape of a mixed-case
+ * or otherwise mangled mainline name, or a ref whose object the clone has
+ * dropped — cannot get it from a real object store. The script recognises
+ * `git rev-parse --verify --quiet <ref>` only, for every other argv it `exec`s
+ * the real git, so the peel, the config read and the fixture's own setup all
+ * still go through git; only the one read the case named is staged.
+ *
+ * `spec` is `<ref>=<sha>` (stage that ref, printing that sha — an empty sha
+ * means "the ref does not resolve") or `<any>` (no ref resolves at all).
+ */
+function fakeGitDir(spec: string): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "lean-seed-git-"));
+  const found = spawnSync("which", ["git"], { encoding: "utf8" });
+  const real = (found.stdout ?? "").trim() || "/usr/bin/git";
+  let rule = "  *) :;;";
+  if (spec === "<any>") {
+    rule = "  *rev-parse*--verify*--quiet*) printf '' ; exit 1;;";
+  } else if (spec === "<upper-tip>") {
+    // Print the real tip in UPPERCASE: it is still a 40-hex-shaped name, and
+    // the peel resolves it to the LOWERCASE oid, which is the one case where a
+    // probe's name and the object store's answer legitimately disagree.
+    rule = "  *rev-parse*--verify*--quiet*) printf '%s\\n' \"$UPPER_TIP\";;";
+  } else {
+    const eq = spec.indexOf("=");
+    const ref = spec.slice(0, eq);
+    const sha = spec.slice(eq + 1);
+    rule =
+      sha === ""
+        ? `  *rev-parse*--verify*--quiet*${ref}*) printf '' ; exit 1;;`
+        : `  *rev-parse*--verify*--quiet*${ref}*) printf '%s\\n' '${sha}';;`;
+  }
+  writeFileSync(
+    path.join(dir, "git"),
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "-C" ]; then REPO="$2"; shift 2; fi',
+      'ARGS="$(printf "%s " "$@")"',
+      `REAL() { '${real}' -C "\${REPO:-.}" "$@"; }`,
+      `UPPER_TIP="$(REAL rev-parse HEAD 2>/dev/null | tr a-z A-Z)"`,
+      'case "$ARGS" in',
+      rule,
+      `  *) exec '${real}' "$@";;`,
+      "esac",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return dir;
+}
+
+/** Run `fn` with the repo's staged `git` (when it has one) searched first. */
+export async function withGitBin<T>(
+  repo: { gitBin: string | undefined },
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (repo.gitBin === undefined) return fn();
+  return withGh(repo.gitBin, fn);
+}
+
 /** Run `fn` with `binDir` searched before the host's PATH; restores after. */
 export async function withGh<T>(binDir: string, fn: () => Promise<T>): Promise<T> {
   const before = process.env.PATH;
@@ -146,50 +221,98 @@ export async function withGh<T>(binDir: string, fn: () => Promise<T>): Promise<T
  * `ready` loads `.pi/work.json` AT that sha: absent it, `ready` would fall back
  * to defaults, which is a different situation from the one under test.
  *
+ * `workJson` is an OBJECT, not a boolean, because a case that needs the run to
+ * start on a particular commit has to commit that file and then record the sha
+ * — `{}` writes the minimum valid config, `false`/omitted writes no file at all
+ * (the defaults case), and a string writes those exact bytes, which is what
+ * makes a malformed-config refusal testable without a second fixture.
+ *
  * `withLocalMain: false` is the second shape the seed must answer for. `origin`
  * is the last ref `mainlineSha` probes, so with no remote AND no `main` there is
  * nothing left to resolve — and a commit still has to exist for the case to have
  * a repo, so it goes on a throwaway branch and `main` is deleted.
  */
 export function originRepo(
-  opts: { withOrigin?: boolean; withLocalMain?: boolean; workJson?: boolean } = {},
-): { repoRoot: string; originHead: string; tip: string; dispose: () => void } {
+  opts: {
+    withOrigin?: boolean;
+    withLocalMain?: boolean;
+    workJson?: boolean | object | string;
+    /**
+     * Stand in for `git` on the PATH while the returned `gitBin` is installed
+     * (see `withGitBin`): `"<ref>=<sha>"` answers one exact
+     * `git rev-parse --verify --quiet <ref>` with `<sha>` (`<sha>` empty is
+     * "the ref does not resolve"), `"<any>"` answers any read git could not
+     * answer, and everything else — including every `cat-file` the peel asks —
+     * goes to the real git. The seam for a mainline whose ref and whose object
+     * disagree, which no object store will produce on request.
+     */
+    fakeGit?: string;
+  } = {},
+): {
+  repoRoot: string;
+  originHead: string;
+  tip: string;
+  gitCalls: string[];
+  gitBin: string | undefined;
+  dispose: () => void;
+} {
   const withOrigin = opts.withOrigin !== false;
   const withLocalMain = opts.withLocalMain !== false;
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-seed-"));
+  const gitCalls: string[] = [];
+  /** One chokepoint for every git the fixture itself runs (never redirected). */
+  const setup = (args: string[]): string => runGit(repoRoot, args);
+  /**
+   * The one chokepoint for every git a case TRIGGERS: it records the argv (so a
+   * case can assert what the code asked), and answers `rev-parse` with
+   * `printForRevParse` when the case needs the probe's answer to disagree with
+   * what the object store holds. The real binary still does the work — only the
+   * printed name is the case's.
+   */
+  const run = (args: string[]): string => {
+    gitCalls.push(args.join(" "));
+    return runGit(repoRoot, args);
+  };
   const originDir = path.join(repoRoot, ".origin.git");
-  git(repoRoot, "init", "-q", "-b", "main");
+  setup(["init", "-q", "-b", "main"]);
   mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
   writeFileSync(path.join(repoRoot, "README.md"), "# seed fixture\n", "utf8");
   // `workJson: false` is a real shape, not an unused knob: `ready` loads the
   // config AT the base and a repo without one is the common case, so a case
-  // has to drive it and see the run go green on the defaults anyway.
-  if (opts.workJson !== false) {
+  // has to drive it and see the run go green on the defaults anyway. An object
+  // is written as JSON (a case that wants a specific config, and therefore a
+  // specific commit, uses it); a string is written verbatim so a malformed
+  // config is testable at the same seam.
+  if (typeof opts.workJson === "object" && opts.workJson !== null) {
+    writeFileSync(path.join(repoRoot, ".pi", "work.json"), JSON.stringify(opts.workJson), "utf8");
+  } else if (typeof opts.workJson === "string") {
+    writeFileSync(path.join(repoRoot, ".pi", "work.json"), opts.workJson, "utf8");
+  } else if (opts.workJson !== false) {
     writeFileSync(path.join(repoRoot, ".pi", "work.json"), JSON.stringify({ version: 1 }), "utf8");
   } else {
     // Keep `.pi/` in the commit so the directory exists and a later case can
     // tell "no config file" from "no config directory".
     writeFileSync(path.join(repoRoot, ".pi", "README"), "no config\n", "utf8");
   }
-  git(repoRoot, "add", "-A");
+  setup(["add", "-A"]);
   if (withLocalMain) {
-    git(repoRoot, "commit", "-q", "-m", "base");
+    setup(["commit", "-q", "-m", "base"]);
   } else {
-    git(repoRoot, "commit", "-q", "-m", "base", "--allow-empty");
-    git(repoRoot, "checkout", "-q", "-b", "side");
-    git(repoRoot, "branch", "-D", "main");
+    setup(["commit", "-q", "-m", "base", "--allow-empty"]);
+    setup(["checkout", "-q", "-b", "side"]);
+    setup(["branch", "-D", "main"]);
   }
   if (withOrigin) {
-    git(repoRoot, "init", "-q", "--bare", originDir);
-    git(repoRoot, "remote", "add", "origin", originDir);
-    git(repoRoot, "push", "-q", "origin", "main");
-    git(repoRoot, "remote", "set-head", "origin", "main");
+    setup(["init", "-q", "--bare", originDir]);
+    setup(["remote", "add", "origin", originDir]);
+    setup(["push", "-q", "origin", "main"]);
+    setup(["remote", "set-head", "origin", "main"]);
   }
-  const originHead = withOrigin && withLocalMain ? git(repoRoot, "rev-parse", "origin/HEAD") : "";
+  const originHead = withOrigin && withLocalMain ? setup(["rev-parse", "origin/HEAD"]) : "";
   // The local tip, which exists even in a repo with no remote: a case that
   // needs a REAL full sha in a repo with no `origin/HEAD` (the uppercase-sha
   // refusal) cannot use `originHead`, which is "" there.
-  const tip = withLocalMain ? git(repoRoot, "rev-parse", "HEAD") : "";
+  const tip = withLocalMain ? setup(["rev-parse", "HEAD"]) : "";
   const forgeBefore = process.env.PI_ENSEMBLE_FORGE;
   // Set BEFORE the caller's first case reads it, and restored to the exact prior
   // bytes rather than `delete`d: every reader in the tree (`fetchIssueBody`,
@@ -198,12 +321,16 @@ export function originRepo(
   // that is supposed to keep the network out. Absent is restored as absent.
   process.env.PI_ENSEMBLE_FORGE = "none";
   const forgeWasAbsent = forgeBefore === undefined;
+  const gitBin = opts.fakeGit === undefined ? undefined : fakeGitDir(opts.fakeGit);
   return {
     repoRoot,
     originHead,
     tip,
+    gitCalls,
+    gitBin,
     dispose: () => {
-      if (forgeWasAbsent) process.env.PI_ENSEMBLE_FORGE = undefined;
+      if (gitBin !== undefined) rmSync(gitBin, { recursive: true, force: true });
+      if (forgeWasAbsent) delete process.env.PI_ENSEMBLE_FORGE;
       else process.env.PI_ENSEMBLE_FORGE = forgeBefore;
       rmSync(repoRoot, { recursive: true, force: true });
     },

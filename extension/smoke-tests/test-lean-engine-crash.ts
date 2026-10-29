@@ -29,6 +29,7 @@ import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
 import { leanStateFile, loadRun } from "../src/lean/state.ts";
 import {
   CLOCK,
+  FIXTURE_BASE_SHA,
   HAPPY,
   makeAssert,
   scripted,
@@ -121,7 +122,7 @@ const { assert, failures } = makeAssert();
       issue: 11,
       version: "test",
       models: {},
-      baseSha: "base",
+      baseSha: FIXTURE_BASE_SHA,
       branch: "feature/issue-11",
       state: "build",
       counters: {
