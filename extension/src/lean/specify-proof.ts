@@ -46,6 +46,14 @@ export const TEST_TIMEOUT_MS = 120_000;
  */
 export interface TestRunLimits {
   timeoutMs?: number;
+  /**
+   * The child's environment. The command-criteria tier passes the driver's
+   * scrubbed env (`verifyChildEnv()`) so a headless runner's own knobs cannot
+   * change what the project's tests see; absent, the ambient env — which is what
+   * the freeze-time proof runs want, since they judge the tree as the developer
+   * sees it.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** Output ceiling for one test run; overflow is an infra fault, not a red. */
@@ -142,6 +150,7 @@ export async function runTestFile(
     timeout,
     maxBuffer: TEST_MAX_BUFFER,
     killGroup: true,
+    ...(opts.limits?.env === undefined ? {} : { env: opts.limits.env }),
   }).catch((err: unknown) => ({ __err: err }) as never);
   const err = (ran as { __err?: unknown })?.__err;
   if (err === undefined) return { kind: "green", cmd, code: 0, detail: "exited 0 on base" };

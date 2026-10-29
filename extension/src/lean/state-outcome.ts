@@ -14,6 +14,7 @@
  * does not exist.
  */
 
+import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-tree.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
@@ -90,7 +91,46 @@ export function validPrUrl(url: unknown): string | undefined {
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState>> = {
   prUrl: "publish",
   verifiedHead: "verify",
+  commandCriteria: "verify",
+  commandNotRunnable: "verify",
 };
+
+/** The one value a recorded `command` criterion may carry: it held. */
+const COMMAND_CRITERION_KIND = "passed";
+
+/** One why-a-command-was-not-run is prose; the record must not grow without bound. */
+const COMMAND_NOT_RUNNABLE_MAX_CHARS = 300;
+
+/** How many entries either command record may hold. */
+const COMMAND_RECORD_MAX_ENTRIES = 32;
+
+/** Is this key the id form a criterion may carry? */
+function isCriterionId(id: string): boolean {
+  return CRITERION_ID.test(id);
+}
+
+/**
+ * Why a `commandCriteria` map is not evidence this run may print, or undefined.
+ *
+ * The map is what licenses `passed (command)` in the PR body, so a value that is
+ * not the word `passed` — or an id that is not a criterion id — is refused rather
+ * than carried: it would read as evidence for a check the gate never made. The
+ * entry bound is the tier's own (`COMMAND_CRITERION_MAX` in `verify-commands`):
+ * a record with more entries than the gate can execute was not written by it.
+ */
+function commandCriteriaProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return "outcome commandCriteria must be an object";
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
+    return `outcome commandCriteria must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
+  for (const [id, kind] of entries) {
+    if (!isCriterionId(id)) return `outcome commandCriteria key ${JSON.stringify(id)} is not AC<n>`;
+    if (kind !== COMMAND_CRITERION_KIND)
+      return `outcome commandCriteria[${JSON.stringify(id)}] must be "${COMMAND_CRITERION_KIND}"`;
+  }
+  return undefined;
+}
 
 /**
  * Why a step's own report of itself is not a valid outcome, or `undefined`.
@@ -150,6 +190,31 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (typeof oc.verifiedHead !== "string" || !SHA1_HEX.test(oc.verifiedHead))
       return "outcome verifiedHead must be a 40-hex commit sha";
   }
+  if (oc.commandCriteria !== undefined) {
+    const problem = commandCriteriaProblem(oc.commandCriteria);
+    if (problem !== undefined) return problem;
+  }
+  // Each not-runnable reason reaches its own row of the PR body, so every key is
+  // a criterion id and every value a bounded string — the same rules the
+  // `commandCriteria` map and the reason field follow, since prose out of a tree
+  // check has no business widening a durable record. Per-criterion rather than a
+  // single slot because a spec's command criteria each fail for their own reason,
+  // and a reader who is told only the first cannot fix the other two.
+  if (oc.commandNotRunnable !== undefined) {
+    if (typeof oc.commandNotRunnable !== "object" || oc.commandNotRunnable === null)
+      return "outcome commandNotRunnable must be an object";
+    const entries = Object.entries(oc.commandNotRunnable as Record<string, unknown>);
+    if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
+      return `outcome commandNotRunnable must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
+    for (const [id, why] of entries) {
+      if (!isCriterionId(id))
+        return `outcome commandNotRunnable key ${JSON.stringify(id)} is not AC<n>`;
+      if (typeof why !== "string")
+        return `outcome commandNotRunnable[${JSON.stringify(id)}] must be a string`;
+      if (why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS)
+        return `outcome commandNotRunnable[${JSON.stringify(id)}] must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
+    }
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
   // length bound keeps a blob a handler stuffed in here out of the record.
@@ -160,6 +225,36 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
       return `outcome prUrl must be at most ${PR_URL_MAX_CHARS} characters`;
   }
   return undefined;
+}
+
+/**
+ * The `commandCriteria` map, rebuilt from entries this module actually checked.
+ *
+ * Rebuilt rather than spread-and-cast: `buildOutcome`'s claim is that every field
+ * it returns was looked at, and `{...(x as Record<string,string>)}` hands back the
+ * raw object — an entry the caller read off a `Record<string, unknown>` with a
+ * nested value or a stray word still in it. Each entry is re-derived from its own
+ * validation here, so the type the caller receives is produced by the check rather
+ * than asserted past it.
+ */
+function validatedCommandCriteria(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof value !== "object" || value === null) return out;
+  for (const [id, kind] of Object.entries(value as Record<string, unknown>)) {
+    if (kind === COMMAND_CRITERION_KIND && isCriterionId(id)) out[id] = COMMAND_CRITERION_KIND;
+  }
+  return out;
+}
+
+/** The `commandNotRunnable` map, rebuilt the same way — strings only, bounded. */
+function validatedCommandNotRunnable(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof value !== "object" || value === null) return out;
+  for (const [id, why] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof why !== "string" || why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS) continue;
+    if (isCriterionId(id)) out[id] = why;
+  }
+  return out;
 }
 
 /**
@@ -185,6 +280,12 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
           tests: Object.fromEntries(Object.entries(tests).map(([id, files]) => [id, [...files]])),
         }),
     ...(typeof oc.verifiedHead === "string" ? { verifiedHead: oc.verifiedHead } : {}),
+    ...(oc.commandCriteria === undefined
+      ? {}
+      : { commandCriteria: validatedCommandCriteria(oc.commandCriteria) }),
+    ...(oc.commandNotRunnable === undefined
+      ? {}
+      : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
   };
 }

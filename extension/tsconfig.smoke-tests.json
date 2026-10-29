@@ -153,6 +153,7 @@
     "smoke-tests/lib/lean-base-proof-fixtures.ts",
     "smoke-tests/test-lean-base-proof.ts",
     "smoke-tests/test-lean-base-infra.ts",
-    "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts"
+    "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts",
+    "smoke-tests/lib/lean-verify-command-fixture.ts"
   ]
 }

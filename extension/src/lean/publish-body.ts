@@ -38,6 +38,9 @@ const SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
 /** A base sha is printed only when it really is a full commit id. */
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
+/** How much of the gate's reason the PR body quotes — see its use site. */
+const VERIFY_REASON_CLIP = 2000;
+
 export interface PublishBodyInput {
   issue: number;
   spec: PiSpec;
@@ -49,6 +52,20 @@ export interface PublishBodyInput {
   verifiedHead?: string;
   /** The gate's own reason, verbatim, fenced. */
   verifyReason?: string;
+  /**
+   * The criterion ids the gate EXECUTED as `command` criteria and that exited 0,
+   * read off the verify record. A `command` row whose id is not here was not run
+   * and says `not runnable (command is not a repo test path)` — it never borrows
+   * the gate's overall verdict, which is about the frozen tests and the tiers.
+   */
+  commandCriteria?: string[];
+  /**
+   * Why the gate did not execute each `command` criterion, keyed by criterion id —
+   * e.g. the path it names is absent at base. When a row's id is absent the cell
+   * says only `not executed (command)`; when present it says why, which is the
+   * difference between an issue to fix and a step to re-run.
+   */
+  commandNotRunnable?: Record<string, string>;
   draft: boolean;
   version: string;
   models: Record<string, string>;
@@ -65,17 +82,46 @@ function rowCells(kind: "green" | "red" | undefined): string {
 /**
  * The result cell for one criterion.
  *
- * A `command` criterion is NEVER printed as green: `verify` runs the frozen
- * tests and the project's configured tiers, but it does not execute a
- * criterion's own `command`, so the gate's verdict says nothing about that
- * command having passed. Printing "green" there would be the body claiming an
+ * A `command` criterion NEVER prints the gate's verdict: `verify` runs the frozen
+ * tests and the project's configured tiers, and a criterion's own `command` is a
+ * third thing, executed separately and recorded separately. So the cell reads the
+ * gate's `commandCriteria` record — `passed (command)` for one the gate ran and
+ * that exited 0, `not executed (command): <reason>` for one it declined (the
+ * gate's own per-criterion reason: the file is absent at base, is a symlink, or
+ * changed since base), and `not executed (command)` for one it declined without
+ * recording a reason. A declined criterion is treated like `manual`, so publish
+ * opens a draft. Printing the overall verdict here would be the body claiming an
  * execution that never happened.
  */
-function resultCell(c: PiSpec["criteria"][number], kind: "green" | "red" | undefined): string {
+function resultCell(
+  c: PiSpec["criteria"][number],
+  kind: "green" | "red" | undefined,
+  passedCommands: ReadonlySet<string>,
+  notRunnable?: Record<string, string>,
+): string {
   if (c.verify === "manual") return "manual — needs a human";
-  if (c.verify === "command") return "not executed (command)";
+  if (c.verify === "command") {
+    // The wording names the residual rather than implying isolation: the FILE was
+    // pinned to the base commit, but the code it loads is HEAD's, because a
+    // preservation criterion that ran the base's own source would say nothing
+    // about this run. A reader must not take `passed (command)` for a sandboxed
+    // replay of the base.
+    if (passedCommands.has(c.id)) return "passed (command; test file unchanged since base)";
+    const why = (notRunnable?.[c.id] ?? "").trim();
+    // Two truths the reader must not confuse: the gate refused the command (the
+    // spec's or the tree's own defect, and publish keeps a draft), versus a
+    // criterion nobody declined but that never reached the runner either. Both
+    // are "not executed"; only the reason differs, and the reason is what tells
+    // the operator whether to fix the issue or re-run the step.
+    return why === ""
+      ? "not executed (command)"
+      : `not executed (command): ${oneLine(why, COMMAND_NOT_RUNNABLE_MAX_CHARS)}`;
+  }
   return rowCells(kind);
 }
+
+/** The why-not-run is prose out of a path check; it must not widen the row freely. */
+const COMMAND_NOT_RUNNABLE_MAX_CHARS = 90;
 
 /** The test paths a criterion claims, filtered to printable ones. */
 function testsCell(paths: string[] | undefined): string {
@@ -108,9 +154,10 @@ export function publishBody(o: PublishBodyInput): string {
     "| id | criterion | verify | tests | result |",
     "| --- | --- | --- | --- | --- |",
   ];
+  const passedCommands = new Set(o.commandCriteria ?? []);
   for (const c of o.spec.criteria) {
     lines.push(
-      `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind)} |`,
+      `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind, passedCommands, o.commandNotRunnable)} |`,
     );
   }
   lines.push("", "## Verification");
@@ -118,12 +165,20 @@ export function publishBody(o: PublishBodyInput): string {
     `- head: ${o.verifiedHead === undefined ? "not verified (draft)" : `\`${o.verifiedHead}\``}`,
   );
   if (o.verifyReason !== undefined && o.verifyReason !== "") {
-    lines.push("- last verify:", fenceText(o.verifyReason, 2000));
+    // Deliberately SHORTER than the record's own bound (`RED_REASON_CLIP` in
+    // `verify.ts`, 4096): the record keeps the tail `build`'s re-entry prompt
+    // needs, while the PR is read by a person, and a 4 KB log tail in a comment is
+    // a wall nobody scrolls. The two bounds are different claims — what a machine
+    // may re-read versus what a reviewer can read — so they are not kept equal.
+    lines.push("- last verify:", fenceText(o.verifyReason, VERIFY_REASON_CLIP));
   }
   lines.push("", "## Run");
   lines.push(`- pi-rukas ${oneLine(o.version, 40)}`);
   if (FULL_SHA.test(o.baseSha)) lines.push(`- base \`${o.baseSha}\``);
   lines.push(`- models: ${modelsLine(o.models)}`);
-  if (o.draft) lines.push("- draft: verification is not green or a criterion needs a human");
+  if (o.draft)
+    lines.push(
+      "- draft: verification is not green, a criterion needs a human, or a command criterion was not runnable",
+    );
   return `${lines.join("\n")}\n`;
 }

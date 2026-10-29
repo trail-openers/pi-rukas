@@ -28,6 +28,7 @@
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
+import { RED_PROOF_CONTRACT } from "./specify-prompt.ts";
 
 export interface ChallengePromptOpts {
   issue: number;
@@ -90,6 +91,8 @@ export function challengePrompt(opts: ChallengePromptOpts): string {
     "## How the parent runs your tests",
     "",
     runner,
+    "",
+    RED_PROOF_CONTRACT,
     "",
     "## What you report",
     "",

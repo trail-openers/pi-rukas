@@ -15,8 +15,9 @@
  *   (b) the path print filter: a path carrying a space, a pipe or a tab is
  *       dropped, a well-formed one is printed in backticks
  *   (c) column order, and the honest result cell for each `verify` kind — a
- *       `command` criterion is NEVER green, because verify does not execute a
- *       criterion's own command
+ *       `command` criterion is NEVER the gate's verdict — it prints `passed
+ *       (command)` only for a criterion the gate recorded as executed, and
+ *       `not executed (command)` for one it did not
  *   (d) `verifiedHead` is a green verdict's claim: a red body prints its reason
  *       and says "not verified", never a head
  *   (e) a criterion id is untrusted text and goes through `oneLine` like the

@@ -26,13 +26,13 @@ import { execp } from "../../src/exec.ts";
 import type { NormalizedPullRequest } from "../../src/forge-types.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { PublishDeps } from "../../src/lean/publish-deps.ts";
-import { netGitEnv } from "../../src/work-driver-net-git.ts";
 import { renderPiSpec } from "../../src/lean/spec.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import { pathProblem } from "../../src/lean/specify-tree.ts";
 import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
+import { netGitEnv } from "../../src/work-driver-net-git.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { git, sha } from "./lean-verify-fixture.ts";
 
@@ -220,6 +220,12 @@ export interface PublishOpts {
   worktreeBranch?: string;
   /** The verify step to log; omit for a run that never reached a verdict. */
   verify?: { kind: "green" | "red"; head?: string; reason?: string } | undefined;
+  /**
+   * The `commandCriteria` the green verify recorded (criterion id -> `passed`).
+   * The seam for a body that must print `passed (command)` from the record the
+   * step actually writes, rather than from a verdict it never made.
+   */
+  commandCriteria?: Record<string, string>;
   /** Extra steps appended to the log. */
   extraSteps?: Step[];
 }
@@ -267,6 +273,7 @@ function logFor(issue: number, o: PublishOpts, head: string): Step[] {
         kind: o.verify.kind,
         ...(o.verify.reason === undefined ? {} : { reason: o.verify.reason }),
         ...(o.verify.kind === "green" ? { verifiedHead: o.verify.head ?? head } : {}),
+        ...(o.commandCriteria === undefined ? {} : { commandCriteria: o.commandCriteria }),
       },
     });
   }
@@ -357,7 +364,13 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     listThrows: o.listThrows === true,
     viewThrows: o.viewThrows === true,
     draftThrows: o.draftThrows === true,
-    ...(o.afterDraft === undefined ? {} : { afterDraft: new Map(Object.entries(o.afterDraft).map(([k, v]) => [Number(k), v] as const)) }),
+    ...(o.afterDraft === undefined
+      ? {}
+      : {
+          afterDraft: new Map(
+            Object.entries(o.afterDraft).map(([k, v]) => [Number(k), v] as const),
+          ),
+        }),
   });
   const spec = o.spec ?? defaultSpec();
   /** The env every git child ran with, so a case can assert on the push's. */
