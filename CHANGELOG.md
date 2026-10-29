@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.41](https://github.com/trail-openers/pi-rukas/compare/v0.14.40...v0.14.41) (2026-10-29)
+
+
+### Features
+
+* **work:** work-lean publish step — push and open the PR with the criterion map ([#1901](https://github.com/trail-openers/pi-rukas/issues/1901)) ([ab1b7c2](https://github.com/trail-openers/pi-rukas/commit/ab1b7c2c3f852f31c487b4300b18f8ea9d9de65b))
+
+
+### Bug Fixes
+
+* **headless:** the supervised runner child runs main again ([#1902](https://github.com/trail-openers/pi-rukas/issues/1902)) ([c55b7d3](https://github.com/trail-openers/pi-rukas/commit/c55b7d3b5eeea9f3c5599069ab6d11b18e8c822b))
+
 ## [0.14.40](https://github.com/trail-openers/pi-rukas/compare/v0.14.39...v0.14.40) (2026-10-29)
 
 
