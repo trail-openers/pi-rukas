@@ -12,6 +12,9 @@
  *   (d) a submit for an unknown criterion -> dropped, criterion uncovered;
  *   (e) no `verify.test` configured -> no-red-test with the runner rule, and
  *       the adversary never dispatched;
+ *   (e2) a red for AC1 and a green for AC2 -> the refusal still LEADS with
+ *       `criterion AC2 has no red test` in both `failedRules` and `reason`, and
+ *       the reason still records the green file it dropped (`exited 0`);
  *   (f) a dirty leftover worktree -> reset to base before the child is asked;
  *   (g) a dispatch that did not succeed -> THROW.
  */
@@ -23,8 +26,10 @@ import {
   ROOTS,
   RUNNER,
   SpecifyInfraError,
+  TWO_AC_BODY,
   configWith,
   git,
+  greenScript,
   makeRepo,
   redScript,
   runSpecify,
@@ -128,6 +133,10 @@ function assert(cond: boolean, msg: string): void {
   assert(
     (r.outcome?.failedRules ?? []).some((x) => x.includes("AC1")),
     `(b) the rule names the uncovered criterion (got ${JSON.stringify(r.outcome?.failedRules)})`,
+  );
+  assert(
+    (r.outcome?.failedRules ?? []).some((x) => x.startsWith("criterion AC1 has no red test")),
+    `(b) the rule LEADS with the cause, so a caller that renders only failedRules still sees "criterion AC1 has no red test" first (got ${JSON.stringify(r.outcome?.failedRules)})`,
   );
   assert(
     (r.outcome?.reason ?? "").includes("exited 0"),
@@ -276,6 +285,59 @@ function assert(cond: boolean, msg: string): void {
     `(g) a dispatch that did not succeed THROWS — got ${
       r.threw === undefined ? `outcome ${r.outcome?.kind}` : r.threw.constructor.name
     }`,
+  );
+}
+
+// ------------------------- (e2) specify keeps its refusal cause when partially red
+//
+// The shared pipeline could not always answer this: `challenge` is happy with
+// one red edge case, `specify` is not, and the rule that decides is passed per
+// caller. Under `"all-criteria"` the run is refused, and — the adversarial
+// finding this pins — the refusal has to say WHY in whichever field a caller
+// renders. A `reason` that carried only the per-file drop notes left an operator
+// reading "dropped 1 non-red file(s)" with no criterion named, which is not a
+// rule to fix. Both fields lead with the criterion, exactly as they did before
+// the pipeline was shared, and `exited 0` is still there as the evidence.
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/a.ts": "1\n" });
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 8,
+    config: configWith({ test: RUNNER }),
+    specBody: TWO_AC_BODY,
+    writes: (wt) => {
+      mkdirSync(path.join(wt, "tests"), { recursive: true });
+      // AC1: the adversary closed it. AC2: it did not — this file passes.
+      writeFileSync(path.join(wt, "tests/AC1-retry.test.sh"), redScript(), { mode: 0o755 });
+      writeFileSync(path.join(wt, "tests/AC2-green.test.sh"), greenScript(), { mode: 0o755 });
+    },
+    toolUses: [
+      submit("AC1", ["tests/AC1-retry.test.sh"]),
+      submit("AC2", ["tests/AC2-green.test.sh"]),
+    ],
+  });
+  assert(
+    r.threw === undefined,
+    `(e2) no throw — a coverage gap is a verdict (${r.threw?.message})`,
+  );
+  assert(r.outcome?.kind === "no-red-test", `(e2) no-red-test, got ${r.outcome?.kind}`);
+  assert(
+    (r.outcome?.failedRules ?? []).some((x) => /criterion AC2 has no red test/.test(x)) &&
+      (r.outcome?.failedRules ?? []).some((x) => /criterion AC1/.test(x)) === false,
+    `(e2) failedRules leads with the criterion that has no red test, and only that one (got ${JSON.stringify(r.outcome?.failedRules)})`,
+  );
+  assert(
+    (r.outcome?.reason ?? "").includes("exited 0"),
+    `(e2) the reason still records the green file it dropped (got ${r.outcome?.reason})`,
+  );
+  assert(
+    (r.outcome?.reason ?? "").startsWith("criterion AC2 has no red test"),
+    `(e2) the reason LEADS with the cause, not with the drop notes (got ${r.outcome?.reason})`,
+  );
+  assert(
+    Object.keys(r.outcome?.frozen ?? {}).length === 0,
+    `(e2) a refused run freezes nothing (got ${JSON.stringify(r.outcome?.frozen)})`,
   );
 }
 

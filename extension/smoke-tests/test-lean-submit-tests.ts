@@ -119,4 +119,52 @@ function call(args: unknown): { name: string; arguments: unknown } {
   );
 }
 
+// ---------------------------------------------------- the frozen-path boundary
+//
+// `challenge` alone passes `frozenPaths`: the adversary may add tests, never
+// replace one. Two things are pinned here that the end-to-end case cannot show
+// on its own — the refusal fires for EVERY path shape that names the frozen
+// file (`./`, `//`, a `\` separator), because the check runs on the normalised
+// path; and it fires BEFORE the existence check, because a frozen path does
+// exist, so a swapped order would report the misleading "not a regular file"
+// instead of the truth.
+{
+  const present = new Set(["tests/AC1-a.test.ts", "tests/AC1-frozen.test.ts"]);
+  const { kept, dropped } = validateSubmitRows(
+    [
+      // The same frozen file, spelled four ways. All four must refuse.
+      { criterionId: "AC1", testFiles: ["tests/AC1-frozen.test.ts"] },
+      { criterionId: "AC1", testFiles: ["./tests/AC1-frozen.test.ts"] },
+      { criterionId: "AC1", testFiles: ["./tests//AC1-frozen.test.ts"] },
+      { criterionId: "AC1", testFiles: ["tests\\AC1-frozen.test.ts"] },
+      // And a genuinely new file, which must survive the same call.
+      { criterionId: "AC1", testFiles: ["tests/AC1-a.test.ts"] },
+    ],
+    {
+      spec: SPEC,
+      exists: (p) => present.has(p),
+      frozenPaths: new Set(["tests/AC1-frozen.test.ts"]),
+    },
+  );
+  const frozenReasons = dropped.filter((d) => d.reason.includes("frozen acceptance test"));
+  assert(kept.length === 1, `one kept row (got ${kept.length}, want 1)`);
+  assert(
+    kept[0]?.testFiles.join() === "tests/AC1-a.test.ts",
+    `the new file kept and the frozen ones refused (got ${JSON.stringify(kept[0]?.testFiles)})`,
+  );
+  assert(
+    frozenReasons.length === 4,
+    `every spelling of the frozen path refused, not just the canonical one (got ${frozenReasons.length}, want 4)`,
+  );
+  assert(
+    frozenReasons.every((d) => d.path === "tests/AC1-frozen.test.ts"),
+    `each refusal is recorded under the NORMALISED path (got ${JSON.stringify(frozenReasons.map((d) => d.path))})`,
+  );
+  assert(
+    present.has("tests/AC1-frozen.test.ts") &&
+      frozenReasons.every((d) => d.reason.includes("may not replace")),
+    "the reason says the adversary may not replace it — the file EXISTS, so this is not the existence check firing",
+  );
+}
+
 process.exit(exit);

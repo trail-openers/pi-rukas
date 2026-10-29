@@ -31,18 +31,25 @@
  *      HASH the committed blobs, so the record later steps check against
  *      describes the commit rather than a momentary state of the tree.
  *
- * Two kinds of failure, deliberately apart. `no-red-test` is a VERDICT about
- * the work — the spec or the child's tests are not good enough, and the run
- * ends `not-ready` with named rules. A THROW is infrastructure — an unhealthy
- * base, a worktree the step does not own, a dispatch that died, a commit that
- * did not contain what it was told to — and the engine turns it into
- * handed-back exit 10 without blaming the issue.
+ * The two kinds are deliberately apart. `no-red-test` is a VERDICT about the
+ * work — the spec or the child's tests are not good enough, and the run ends
+ * `not-ready` with named rules. A THROW is infrastructure — an unhealthy base, a
+ * worktree the step does not own, a dispatch that died, a commit that did not
+ * contain what it was told to — and the engine turns it into handed-back exit 10
+ * without blaming the issue.
+ *
+ * The CAPTURE / RESET / REWRITE / PROVE / COMMIT pipeline is shared with
+ * `challenge` through `specifyRun.ts`: `specify` calls it with the run's base
+ * sha as the ref it resets to, and `challenge` with the current head. That is
+ * the only difference between the two steps at this layer, so it is a parameter
+ * rather than a second copy — see the module header there for what the ref
+ * changes and what it must not.
  *
  * Everything outside the pure parts is injected, so the test drives a real
  * temp git repo through the same seams production uses.
  */
 
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
@@ -56,19 +63,12 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
-import { type CaptureResult, captureTestBytes } from "./specify-capture.ts";
+import type { CaptureResult } from "./specify-capture.ts";
 import { specifyPrompt, testCriteria } from "./specify-prompt.ts";
-import { type Proof, type TestRunLimits, runTestFile, sha256 } from "./specify-proof.ts";
+import type { TestRunLimits } from "./specify-proof.ts";
+import { SpecifyResetError } from "./specify-reset.ts";
+import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
 import {
-  SpecifyCommitError,
-  SpecifyResetError,
-  commitTestFiles,
-  committedBlob,
-  resetWorktreeToBase,
-  writeCaptured,
-} from "./specify-reset.ts";
-import {
-  type DroppedRow,
   assertSpecifyWorktreeOwned,
   declaredPaths,
   ensureSpecifyWorktreeWithProvision,
@@ -111,57 +111,20 @@ export interface SpecifyDeps {
   testLimits?: TestRunLimits;
 }
 
-/** A base, a tree or a child we cannot trust. The engine turns this into 10. */
-export class SpecifyInfraError extends Error {
-  override readonly name = "SpecifyInfraError";
-}
-
-/** The rules a spec fails on re-read, or [] when it still holds. */
+/**
+ * A base, a tree or a child we cannot trust. The engine turns this into 10.
+ *
+ * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so
+ * that module owns the throw without importing this step back: the class is
+ * `instanceof`-tested by the specify and challenge smoke suites, and two copies
+ * of it would make `err instanceof SpecifyInfraError` quietly false for whoever
+ * imported the wrong one.
+ */
+export { SpecifyInfraError } from "./specify-run.ts"; /** The rules a spec fails on re-read, or [] when it still holds. */
 function specRules(body: string): { spec?: PiSpec; rules: string[] } {
   const parsed = parsePiSpec(body);
   if (!parsed.ok) return { rules: [`spec: ${parsed.reason}`] };
   return { spec: parsed.spec, rules: readiness(parsed.spec) };
-}
-
-/** One line per dropped row or file, for the outcome reason. */
-function dropNote(dropped: { criterionId: string; path?: string; reason: string }[]): string {
-  if (dropped.length === 0) return "";
-  const parts = dropped
-    .slice(0, 8)
-    .map((d) => `${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`);
-  const more = dropped.length - parts.length;
-  return ` dropped ${dropped.length}${more > 0 ? ` (${more} more)` : ""} — ${parts.join("; ")}`;
-}
-
-/** A runner that could not be started, or was killed: a toolchain fault. */
-const INFRA_DETAIL = /could not be started|killed or timed out|nothing to run/;
-
-/**
- * A non-red run of one captured file, phrased as the step's reason for it.
- *
- * The old classifier here also threw on any output mentioning `node_modules`
- * or `Cannot find module` — which is exactly what the canonical TDD red prints
- * when a test imports a module nobody has written yet. That arm is gone. An
- * unrunnable runner is the only thing that still throws, and it is recognised
- * by the proof's own words rather than by the test's output, so a test that
- * prints those phrases can never be mistaken for a broken toolchain.
- */
-function proofNote(cand: { criterionId: string; path: string }, proof: Proof): string {
-  if (proof.kind === "infra" && INFRA_DETAIL.test(proof.detail))
-    throw new SpecifyInfraError(`the test runner could not run ${cand.path}: ${proof.detail}`);
-  return `${cand.criterionId} ${cand.path}: ${proof.detail}`;
-}
-
-/** Remove `rel` from the worktree; returns the reason it is still there, if any. */
-function removeRejected(wt: string, rel: string): string | undefined {
-  if (!existsSync(path.join(wt, rel))) return undefined;
-  try {
-    rmSync(path.join(wt, rel));
-  } catch (err) {
-    return `could not remove the rejected test ${rel}: ${(err as Error).message}`;
-  }
-  if (existsSync(path.join(wt, rel))) return `the rejected test ${rel} could not be removed`;
-  return undefined;
 }
 
 /**
@@ -314,7 +277,6 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
 
   // 3. The worktree: created at the base, or reset to it. Both paths clean
   //    without exemptions and re-provision, so this is the links the tree has.
-  let linked: string[] = [];
   let provisioning: { linked: string[]; problem?: string } | undefined;
   try {
     const prepared = await ensureSpecifyWorktreeWithProvision(deps.exec, {
@@ -323,7 +285,6 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
       fromRef: base,
       branch,
     });
-    linked = prepared.linked;
     if (prepared.problem !== undefined)
       provisioning = { linked: prepared.linked, problem: prepared.problem };
   } catch (err) {
@@ -343,129 +304,69 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     testRunner: runnerTemplate,
   });
 
-  // 6. Extract and validate at the boundary. A row whose path is not an
-  //    ordinary file of THIS worktree is dropped here, before a single byte of
-  //    it is read.
-  const { rows, skipped } = extractSubmitTests(toolUses);
-  const { kept, dropped } = validateSubmitRows(rows, {
-    spec,
-    exists: (rel) => existsSync(path.join(wt, rel)),
-    fileProblem: (rel) => fileProblem(wt, rel),
-  });
-  const notes: string[] = [];
-  const candidates = declaredPaths(
-    Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
-  );
-
-  // 7. CAPTURE: the bytes of every kept file, in memory, each through one
-  //    descriptor. Nothing else the child produced survives what comes next,
-  //    and a file that cannot be read that way — swapped for a hard link or a
-  //    symlink in the window after validation, emptied, truncated — is dropped
-  //    with its reason and never becomes a test.
-  const owners = new Map(candidates.map((c) => [c.path, c.criterionId]));
-  let captured: Map<string, Buffer>;
-  try {
-    const got = (deps.capture ?? captureTestBytes)(
-      wt,
-      candidates.map((c) => c.path),
-      owners,
-    );
-    captured = got.captured;
-    dropped.push(...got.dropped);
-  } catch (err) {
-    throw new SpecifyInfraError((err as Error).message);
-  }
-
-  // 8. RESET to base — the child's commits, its staging, its untracked files,
-  //    its ignore rules and its dependency links all go, and the reset is
-  //    confirmed before anything is written back. The links are then rebuilt by
-  //    the step that owns provisioning (`ensureSpecifyWorktreeWithProvision`),
-  //    so the tree the runner executes in is provisioned the same way whether
-  //    it was created here or left behind by a crash.
-  try {
-    await resetWorktreeToBase(deps.exec, wt, base, branch);
-    const prepared = await ensureSpecifyWorktreeWithProvision(deps.exec, {
-      repoRoot,
-      issue,
-      fromRef: base,
-      branch,
-    });
-    linked = prepared.linked;
-    if (prepared.problem !== undefined)
-      provisioning = { linked: prepared.linked, problem: prepared.problem };
-    // 9. REWRITE the captured bytes — never through a link, never into a name
-    //    that already exists (see `writeCaptured`).
-    writeCaptured(wt, captured);
-  } catch (err) {
-    if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
-    throw new SpecifyInfraError(
-      `could not rewrite the captured tests in ${wt}: ${(err as Error).message}`,
-    );
-  }
-
-  // 10. Prove red on exactly these bytes, per file. A green or unclear file is
-  //     dropped and DELETED from the tree; only a runner that could not be
-  //     started (or was killed) is infrastructure.
+  // 6-13. Extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
+  //       kept file red ON THE BASE, and commit. That pipeline is shared with
+  //       `challenge` (see `specify-run.ts`): the two steps differ in whose
+  //       tests the child is shown and what the tree is reset to, not in how a
+  //       submitted test file is proved and frozen, so there is one copy.
+  //
+  //       The ref is `base` here: `specify`'s whole claim is that it froze the
+  //       tests ON the base, so its `headBefore` IS the base and the child's
+  //       work is undone back to the commit `ready` resolved. The two verdicts
+  //       the shared pipeline can return are the two this step has always
+  //       returned, unchanged: a coverage gap is `no-red-test`, and there is no
+  //       third one. `uncovered` reports every criterion the run still owes —
+  //       `specify` has required all of them since before the split, so the
+  //       pipeline's partial-red case is a refusal here, not a partial freeze.
+  //
+  //       `runnerTemplate` is narrowed to a string by the refusal above (a spec
+  //       WITH test criteria cannot reach here without one), and TypeScript
+  //       cannot carry that narrowing across the object literal below, so it is
+  //       restated at the call site that needs it rather than cast away.
   if (runnerTemplate === undefined)
     throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
-  const red: typeof candidates = [];
-  for (const cand of candidates) {
-    if (!captured.has(cand.path)) continue; // dropped at capture — never run
-    const proof = await runTestFile(deps.exec, {
+  const pipeline = await runTestPipeline(
+    {
+      exec: deps.exec,
       wt,
-      template: runnerTemplate,
-      file: cand.path,
-      ...(deps.testLimits === undefined ? {} : { limits: deps.testLimits }),
-    });
-    if (proof.kind === "red") {
-      red.push(cand);
-      continue;
-    }
-    notes.push(proofNote(cand, proof));
-    const why = removeRejected(wt, cand.path);
-    if (why !== undefined) notes.push(why);
-  }
-
-  // 11. Coverage: every test criterion needs at least one red file.
-  const uncovered = wanted.filter((c) => !red.some((r) => r.criterionId === c.id)).map((c) => c.id);
-  const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
-  if (uncovered.length > 0) {
-    const why = uncovered.map((id) => `criterion ${id} has no red test${skippedNote}`);
-    return {
-      kind: "no-red-test",
-      failedRules: why,
-      reason: [...why, ...notes].join(";") + dropNote(dropped),
-    };
-  }
-
-  // 12. COMMIT the kept files, and assert the commit is exactly them.
-  const paths = [...new Set(red.map((r) => r.path))];
-  try {
-    await commitTestFiles(deps.exec, wt, base, paths, `test: acceptance tests for #${issue}`);
-  } catch (err) {
-    if (err instanceof SpecifyCommitError) throw new SpecifyInfraError(err.message);
-    throw new SpecifyInfraError(`could not commit the acceptance tests: ${(err as Error).message}`);
-  }
-
-  // 13. HASH the COMMITTED blobs, not the working files: what the rest of the
-  //     run compares against has to describe the commit, not whatever was on
-  //     disk when the step happened to look.
-  const frozen: Record<string, string> = {};
-  const tests: Record<string, string[]> = {};
-  for (const { criterionId, path: rel } of red) {
-    frozen[rel] = sha256(await committedBlob(deps.exec, wt, rel));
-    const list = tests[criterionId] ?? [];
-    if (!list.includes(rel)) list.push(rel);
-    tests[criterionId] = list;
-  }
-
-  const reason = [
-    `froze ${Object.keys(frozen).length} red test file(s) for ${Object.keys(tests).length} criterion/criteria`,
-    skipped > 0 ? `${skipped} submit_tests call(s) skipped or refused as malformed` : "",
-    notes.length > 0 ? `dropped ${notes.length} non-red file(s): ${notes.join("; ")}` : "",
-    dropNote(dropped),
-  ]
-    .filter((s) => s !== "")
-    .join("; ");
-  return { kind: "ok", frozen, tests, reason };
+      repoRoot,
+      issue,
+      branch,
+      headBefore: base,
+      runnerTemplate,
+      // `specify`'s claim is that EVERY test criterion is falsifiable, so one
+      // uncovered criterion refuses the run. The rule is passed explicitly now
+      // that `challenge` shares this pipeline under `"any-red"` — a partial
+      // freeze is what that step wants, and would be wrong here.
+      coverage: "all-criteria",
+      wanted: wanted.map((c) => c.id),
+      extract: extractSubmitTests,
+      validate: (rows) =>
+        validateSubmitRows(rows, {
+          spec,
+          exists: (rel) => existsSync(path.join(wt, rel)),
+          fileProblem: (rel) => fileProblem(wt, rel),
+        }),
+      prepare: () =>
+        ensureSpecifyWorktreeWithProvision(deps.exec, { repoRoot, issue, fromRef: base, branch }),
+      commitMessage: `test: acceptance tests for #${issue}`,
+      ...(deps.capture === undefined ? {} : { capture: deps.capture }),
+      ...(deps.testLimits === undefined ? {} : { testLimits: deps.testLimits }),
+    },
+    { toolUses },
+  );
+  if (pipeline.kind === "committed")
+    return { kind: "ok", frozen: pipeline.frozen, tests: pipeline.tests, reason: pipeline.reason };
+  if (pipeline.kind === "uncovered")
+    return { kind: "no-red-test", failedRules: pipeline.uncovered, reason: pipeline.reason };
+  // No kept candidate at all. Every criterion is uncovered, which is the same
+  // refusal this step returned before the split for the same cause — and, as
+  // there, the reason LEADS with the rules rather than opening on the drop
+  // notes, so the two fields a caller might render say the same thing first.
+  const rules = wanted.map((c) => `criterion ${c.id} has no red test`);
+  return {
+    kind: "no-red-test",
+    failedRules: rules,
+    reason: [rules.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
+  };
 }

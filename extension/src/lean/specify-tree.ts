@@ -325,10 +325,12 @@ export interface DroppedRow {
  * The boundary every submitted path passes through.
  *
  * A row is dropped, with a reason, when its criterion is not a `verify:
- * "test"` criterion of THIS spec; when a path is absolute, traverses, or sits
- * under a forbidden directory; when the file is not in the worktree; or when
- * it is not an ordinary file the worktree owns (`fileProblem`). What survives
- * is a criterion -> kept-paths map the step can capture, prove and commit.
+ * "test"` criterion of THIS spec; when its path is already FROZEN (`frozenPaths`
+ * — only `challenge` passes that set, and the child may not replace a test the
+ * run already committed); when a path is absolute, traverses, or sits under a
+ * forbidden directory; when the file is not in the worktree; or when it is not an
+ * ordinary file the worktree owns (`fileProblem`). What survives is a criterion ->
+ * kept-paths map the step can capture, prove and commit.
  */
 export function validateSubmitRows(
   rows: SubmitTestsRow[],
@@ -336,6 +338,14 @@ export function validateSubmitRows(
     spec: PiSpec;
     exists: (rel: string) => boolean;
     fileProblem?: (rel: string) => string | undefined;
+    /**
+     * Paths already frozen. `challenge` passes the run's frozen map here: a
+     * submitted path that is already frozen is REFUSED, because accepting it
+     * would let the adversary commit a replacement over a test the run proved
+     * red — the one act that would silently rewrite the contract the builder is
+     * measured against. `specify` omits it: nothing is frozen when it runs.
+     */
+    frozenPaths?: ReadonlySet<string>;
   },
 ): { kept: SubmitTestsRow[]; dropped: DroppedRow[] } {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
@@ -374,6 +384,19 @@ export function validateSubmitRows(
       const problem = rel === "" ? `empty path ${JSON.stringify(raw)}` : pathProblem(rel);
       if (problem !== undefined) {
         dropped.push({ criterionId: row.criterionId, path: raw, reason: problem });
+        continue;
+      }
+      // Checked on the NORMALISED path, so `./tests/AC1-x.test.sh` and
+      // `tests/AC1-x.test.sh` cannot both name one frozen file, and refused
+      // BEFORE the existence check: a frozen path does exist in the worktree, so
+      // the order is what makes the reason say "you may not replace a frozen
+      // test" rather than the misleading "this file is not a regular file".
+      if (opts.frozenPaths?.has(rel) === true) {
+        dropped.push({
+          criterionId: row.criterionId,
+          path: rel,
+          reason: `${rel} is a frozen acceptance test — the adversary may not replace it`,
+        });
         continue;
       }
       if (!opts.exists(rel)) {

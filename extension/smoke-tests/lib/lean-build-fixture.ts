@@ -66,6 +66,11 @@ function gitEnv(): Record<string, string> {
   };
 }
 
+/** The identity every git child runs with — exported for the challenge fixture. */
+export function gitEnvFor(): Record<string, string> {
+  return gitEnv();
+}
+
 /** git in `dir`, with an identity in the child's environment. */
 export function git(dir: string, ...args: string[]): string {
   const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
@@ -115,10 +120,24 @@ export interface Built {
  */
 export function buildFixture(
   issue: number,
-  opts?: { frozenSha?: string; frozenText?: string | Buffer; childOwnsBranch?: boolean },
+  opts?: {
+    frozenSha?: string;
+    frozenText?: string | Buffer;
+    childOwnsBranch?: boolean;
+    /**
+     * Build the run's worktree under `lean-<this>` rather than `lean-<issue>`.
+     * The run's `issue`, branch and step-log keys stay `issue`: only the tree
+     * directory moves. It is what lets a second fixture for another issue share
+     * THIS repo without the two runs landing in one worktree — which matters
+     * because `challenge`/`specify` derive their tree path from `repoRoot` plus
+     * their own issue number, so a shared repo otherwise means a shared tree.
+     */
+    worktreeIssue?: number;
+  },
 ): Built {
   const frozenText = opts?.frozenText ?? TEST;
   const frozenSha = opts?.frozenSha ?? sha(frozenText);
+  const worktreeIssue = opts?.worktreeIssue ?? issue;
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-build-"));
   ROOTS.push(repoRoot);
   git(repoRoot, "init", "-q", "-b", "main");
@@ -148,7 +167,7 @@ export function buildFixture(
   const headBefore = git(repoRoot, "rev-parse", "HEAD");
   if (!opts?.childOwnsBranch) git(repoRoot, "checkout", "-q", "main");
 
-  const wt = path.join(repoRoot, ".worktrees", `lean-${issue}`);
+  const wt = path.join(repoRoot, ".worktrees", `lean-${worktreeIssue}`);
   // Always `-B branch`: the ownership check the step runs requires the tree to
   // sit on the run's branch (or be detached at the head), and `--detach` fails
   // the former while a detached-at-head tree would let a case move HEAD and
