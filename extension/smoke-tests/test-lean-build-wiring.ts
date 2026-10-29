@@ -6,10 +6,13 @@
  *   (n) phase1Handlers.build is the real step: a missing worktree throws the
  *       infrastructure error, where the notBuilt stub would answer "done"
  *   (o) a project config that cannot load is infrastructure, thrown before the
- *       developer is dispatched
+ *       developer is dispatched, and the builder's scope contract reaches the
+ *       child verbatim (the "smallest change / no impossible guards / never the
+ *       full suite" paragraph the first lean trial showed was missing)
  */
 
 import { BuildInfraError } from "../src/lean/build-errors.ts";
+import { BUILD_SCOPE_CONTRACT } from "../src/lean/build-prompt.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import { ROOTS, buildFixture, git, put, runBuild } from "./lib/lean-build-fixture.ts";
 
@@ -58,6 +61,37 @@ function assert(cond: boolean, msg: string): void {
     "(o) the throw names the config",
   );
   assert(r.dispatched === 0, `(o) the developer was never dispatched (got ${r.dispatched})`);
+
+  // The builder's scope contract reaches the child verbatim. The first lean
+  // trial's PR was correct but not minimal — a guard for a caller that does
+  // not exist, a history-narrating comment, and a full-suite run the verify
+  // step pays for again — and the contract is the only thing that tells the
+  // child those are out of scope.
+  const scoped = await runBuild({
+    issue: 116,
+    child: (wt) => put(wt, "src/retry.ts", "export const retry = () => 5;\n"),
+  });
+  const prompt = scoped.prompts[0] ?? "";
+  assert(
+    prompt.includes(BUILD_SCOPE_CONTRACT),
+    "(o) the prompt carries the shared BUILD_SCOPE_CONTRACT paragraph verbatim",
+  );
+  assert(
+    prompt.includes("smallest change that makes the frozen tests pass"),
+    "(o) the prompt tells the builder to make the smallest change that passes",
+  );
+  assert(
+    prompt.includes("callers, inputs or states that cannot occur"),
+    "(o) the prompt forbids guards for states that cannot occur",
+  );
+  assert(
+    prompt.includes("Do not run the project's full test suite"),
+    "(o) the prompt forbids the full suite because verify runs it",
+  );
+  assert(
+    prompt.includes("never the history of the change"),
+    "(o) the prompt forbids history-narrating comments",
+  );
 }
 
 for (const dir of ROOTS) {

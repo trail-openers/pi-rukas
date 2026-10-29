@@ -29,7 +29,12 @@
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import type { TestLocation } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
-import { RED_PROOF_CONTRACT, namingLine, testLocationInstruction } from "./specify-prompt.ts";
+import {
+  RED_PROOF_CONTRACT,
+  TEST_SCOPE_CONTRACT,
+  namingLine,
+  testLocationInstruction,
+} from "./specify-prompt.ts";
 
 export interface ChallengePromptOpts {
   issue: number;
@@ -92,6 +97,8 @@ export function challengePrompt(opts: ChallengePromptOpts): string {
     "",
     namingLine(opts.testLocation),
     opts.testLocation === undefined ? "" : testLocationInstruction(opts.testLocation),
+    "",
+    TEST_SCOPE_CONTRACT,
     "",
     "**Do not edit, create or delete any non-test file.** No source changes, no config, no fixture edits outside your new test files, no package-manifest edits. The parent reverts anything you touch that you did not submit as a test. **Do not commit**: leave your files in the working tree and the parent makes the commit.",
     "",

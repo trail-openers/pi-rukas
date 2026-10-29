@@ -51,6 +51,22 @@ export const RED_PROOF_CONTRACT =
   "**Every test file must print its own file basename when it fails**, e.g. `FAIL AC1-retry.test.ts: expected 3 retries, got 1`, and exit non-zero. The parent counts a file as a real red only when its failure output names that file; a failing file whose output never names it is dropped as unclear and its criterion is left uncovered.";
 
 /**
+ * The test-writing scope contract, stated in BOTH adversary prompts for the
+ * same reason as {@link RED_PROOF_CONTRACT}: one const, so a rewrite to one
+ * step's prompt cannot quietly re-tell the other adversary a different rule.
+ *
+ * The first lean trial's adversary wrote 540 lines to prove that one parameter
+ * had been removed — tests for hypothetical misuse and for the shape of the
+ * implementation rather than the behaviour the criterion named. The contract
+ * bounds the size by asking for the smallest thing that proves the criterion,
+ * and deliberately does not name a line count: a number would be met by
+ * padding or gaming it, while "smallest test that proves the criterion" is the
+ * property the round actually needs.
+ */
+export const TEST_SCOPE_CONTRACT =
+  "**Write the smallest test that proves the criterion fails today and will pass when it is met.** Assert observable behaviour — what the entry point returns, throws, or writes — not the shape of the implementation. Do not test hypothetical misuse, or implementation details the criterion does not name: a criterion that says one parameter was removed is proved by one call and one assertion, not by a file of variants. Prefer one focused file per criterion.";
+
+/**
  * The one place the test-location sentence is spelled, for BOTH adversary
  * prompts — same reasoning as {@link RED_PROOF_CONTRACT}: a rewrite to one
  * prompt must not quietly un-tell the other step's adversary where its files
@@ -137,6 +153,8 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         tests.length === 0 || opts.testLocation === undefined
           ? ""
           : testLocationInstruction(opts.testLocation),
+        "",
+        tests.length === 0 ? "" : TEST_SCOPE_CONTRACT,
         "",
         "**Do not edit, create or delete any non-test file.** No source changes, no config, no fixtures outside your test files, no package-manifest edits. The parent reverts anything you touch that you did not submit as a test.",
         "",
