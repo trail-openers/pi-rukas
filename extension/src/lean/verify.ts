@@ -37,14 +37,19 @@
 
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
+import { trace } from "../trace.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { porcelain } from "./build-git.ts";
 import { frozenFromLog } from "./build.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { fetchIssueBody } from "./io.ts";
+import { parsePiSpec } from "./spec.ts";
+import type { Criterion } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
+import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
 import {
   type Executed,
@@ -70,6 +75,14 @@ export interface VerifyDeps {
   readVerifyCmd?: (wt: string, head: string) => Promise<string | undefined>;
   /** Bounds every tier and frozen-test run; a test shortens it to observe a hang. */
   timeoutMs?: number;
+  /**
+   * The issue body the run's contract lives in, read by the test seam. When it
+   * is absent the block is read from the forge with `fetchIssueBody`. A spec
+   * that cannot be read yields no `command` criteria rather than a verdict:
+   * a criterion nobody could see was never executed, and the PR body then says
+   * so instead of the gate claiming a check it did not make.
+   */
+  fetchSpecBody?: (repoRoot: string, issue: number) => Promise<string>;
 }
 
 /** The step log's newest red reason is pasted into a prompt; that bounds it. */
@@ -263,6 +276,25 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // 4. The frozen tests, every one of them.
   const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
+  // 4b. The spec's `command` criteria — preservation checks the frozen tests do
+  // not make. A `command` criterion states behaviour that already holds, so it
+  // can never be red on the base and belongs at the GATE, not at the freeze:
+  // `specify`'s coverage rule asks for a red test only of `verify: "test"`. Each
+  // runnable one is executed through the same `verify.test` runner a frozen test
+  // uses, at HEAD, in the run's own worktree, in argv form (never a shell).
+  //
+  // An unreadable spec is not a verdict about the work, so it is not allowed to
+  // change one: the criteria simply do not run, and publish-body reports each
+  // unexecuted `command` row honestly (as `not runnable`, not as passed).
+  const specCriteria = await specCriteriaFor(deps, repoRoot, issue);
+  const commands = await commandCriteriaOutcome(
+    specCriteria,
+    config.verify.test,
+    wt,
+    deps.exec,
+    deps.timeoutMs,
+  );
+
   // 5. The project's own tiers, fast before full, first failure wins.
   const tierResults: Executed[] = [];
   for (const [name, cmd] of tiers) {
@@ -271,7 +303,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     if (one.kind === "fail") break;
   }
 
-  const failed = firstFailure(tests, ...tierResults);
+  const failed = firstFailure(tests, ...tierResults, commandsFailedAsExecuted(commands));
   if (failed !== undefined) return { kind: "red", reason: clipReason(failed) };
 
   // The tiers run as shell commands IN the worktree, so between the checks
@@ -351,6 +383,13 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     kind: "green",
     reason: `frozen tests and project tiers passed at ${head}${note}`,
     verifiedHead: head,
+    ...(Object.keys(commands.executed).length === 0
+      ? {}
+      : {
+          commandCriteria: Object.fromEntries(
+            Object.keys(commands.executed).map((id) => [id, "passed"]),
+          ) as Record<string, string>,
+        }),
   };
 }
 
@@ -360,6 +399,41 @@ export function verifyDeps(): VerifyDeps {
     exec: (cmd, opts) => execp(cmd, opts ?? {}),
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
   };
+}
+
+/**
+ * The spec's criteria, for the `command` tier. A spec that cannot be fetched or
+ * parsed yields `[]` — the absence of a check, never a verdict — and a parse
+ * failure is traced rather than swallowed silently.
+ */
+async function specCriteriaFor(
+  deps: VerifyDeps,
+  repoRoot: string,
+  issue: number,
+): Promise<Criterion[]> {
+  try {
+    const body = await (deps.fetchSpecBody ?? fetchIssueBody)(repoRoot, issue);
+    const parsed = parsePiSpec(body);
+    if (!parsed.ok) {
+      trace(`lean/verify: no command criteria — the issue's spec is unusable: ${parsed.reason}`);
+      return [];
+    }
+    return parsed.spec.criteria;
+  } catch (err) {
+    trace(
+      `lean/verify: no command criteria — could not read the issue: ${(err as Error)?.message ?? String(err)}`,
+    );
+    return [];
+  }
+}
+
+/**
+ * A failed `command` criterion as an `Executed` so it routes through the same
+ * `firstFailure` as the frozen tests and the tiers: `fail` is a verdict, and an
+ * infra result never reaches here because `commandCriteriaOutcome` throws it.
+ */
+function commandsFailedAsExecuted(outcome: CommandCriteriaOutcome): Executed {
+  return outcome.failed === undefined ? { kind: "pass" } : { kind: "fail", reason: outcome.failed };
 }
 
 /** The newest decided `verify:red` reason on the log, clipped, for a report. */

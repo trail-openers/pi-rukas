@@ -285,7 +285,11 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   const draft =
     ctx.run.counters.draft === true ||
     verifyKind !== "green" ||
-    spec.criteria.some((c) => c.verify === "manual");
+    spec.criteria.some((c) => c.verify === "manual") ||
+    // A `command` criterion the gate could not run is a criterion nobody checked,
+    // and a ready PR behind an unchecked criterion is the claim this step exists to
+    // refuse — so it holds the PR as a draft exactly as a `manual` criterion does.
+    spec.criteria.some((c) => c.verify === "command" && !v?.outcome?.commandCriteria?.[c.id]);
 
   await pushHead(deps, wt, head, branch);
   // From here on the head is OUTSIDE the clone. Every refusal below is a
@@ -313,6 +317,9 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
         ? { verifiedHead: v.outcome.verifiedHead }
         : {}),
       ...(v?.outcome?.reason === undefined ? {} : { verifyReason: v.outcome.reason }),
+      ...(v?.outcome?.commandCriteria === undefined
+        ? {}
+        : { commandCriteria: Object.keys(v.outcome.commandCriteria) }),
       draft,
       version: ctx.run.version,
       models: ctx.run.models,

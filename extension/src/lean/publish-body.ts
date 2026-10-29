@@ -49,6 +49,13 @@ export interface PublishBodyInput {
   verifiedHead?: string;
   /** The gate's own reason, verbatim, fenced. */
   verifyReason?: string;
+  /**
+   * The criterion ids the gate EXECUTED as `command` criteria and that exited 0,
+   * read off the verify record. A `command` row whose id is not here was not run
+   * and says `not runnable (command is not a repo test path)` — it never borrows
+   * the gate's overall verdict, which is about the frozen tests and the tiers.
+   */
+  commandCriteria?: string[];
   draft: boolean;
   version: string;
   models: Record<string, string>;
@@ -65,15 +72,26 @@ function rowCells(kind: "green" | "red" | undefined): string {
 /**
  * The result cell for one criterion.
  *
- * A `command` criterion is NEVER printed as green: `verify` runs the frozen
- * tests and the project's configured tiers, but it does not execute a
- * criterion's own `command`, so the gate's verdict says nothing about that
- * command having passed. Printing "green" there would be the body claiming an
- * execution that never happened.
+ * A `command` criterion NEVER prints the gate's verdict: `verify` runs the frozen
+ * tests and the project's configured tiers, and a criterion's own `command` is a
+ * third thing, executed separately and recorded separately. So the cell reads the
+ * gate's `commandCriteria` record — `passed (command)` for one the gate ran and
+ * that exited 0, `not runnable (command is not a repo test path)` for one it did
+ * not (a `command` that is not an existing repo-relative test path, which the
+ * gate refuses to execute and treats like `manual`, so publish opens a draft).
+ * Printing the overall verdict here would be the body claiming an execution that
+ * never happened.
  */
-function resultCell(c: PiSpec["criteria"][number], kind: "green" | "red" | undefined): string {
+function resultCell(
+  c: PiSpec["criteria"][number],
+  kind: "green" | "red" | undefined,
+  passedCommands: ReadonlySet<string>,
+): string {
   if (c.verify === "manual") return "manual — needs a human";
-  if (c.verify === "command") return "not executed (command)";
+  if (c.verify === "command")
+    return passedCommands.has(c.id)
+      ? "passed (command)"
+      : "not runnable (command is not a repo test path)";
   return rowCells(kind);
 }
 
@@ -108,9 +126,10 @@ export function publishBody(o: PublishBodyInput): string {
     "| id | criterion | verify | tests | result |",
     "| --- | --- | --- | --- | --- |",
   ];
+  const passedCommands = new Set(o.commandCriteria ?? []);
   for (const c of o.spec.criteria) {
     lines.push(
-      `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind)} |`,
+      `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind, passedCommands)} |`,
     );
   }
   lines.push("", "## Verification");
@@ -124,6 +143,9 @@ export function publishBody(o: PublishBodyInput): string {
   lines.push(`- pi-rukas ${oneLine(o.version, 40)}`);
   if (FULL_SHA.test(o.baseSha)) lines.push(`- base \`${o.baseSha}\``);
   lines.push(`- models: ${modelsLine(o.models)}`);
-  if (o.draft) lines.push("- draft: verification is not green or a criterion needs a human");
+  if (o.draft)
+    lines.push(
+      "- draft: verification is not green, a criterion needs a human, or a command criterion was not runnable",
+    );
   return `${lines.join("\n")}\n`;
 }

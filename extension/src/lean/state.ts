@@ -151,6 +151,15 @@ export interface Outcome {
    */
   verifiedHead?: string;
   /**
+   * `verify` only: the spec's `command` criteria this gate EXECUTED and that
+   * exited 0, keyed by criterion id. A criterion the gate ran is a claim
+   * `publish-body` may print as `passed (command)`; one absent from this map was
+   * never run, and the body says so. Kept as a bare id->word map (not nested
+   * objects) so the durable record stays a record of verdicts and the validator
+   * can check every value it reads.
+   */
+  commandCriteria?: Record<string, string>;
+  /**
    * `publish` only: the PR's https URL, as the forge returned it. Publish-only
    * by contract — no other step writes it, and `handback` reads no other field
    * for a URL — so "there is a PR at this address" is a recorded fact rather

@@ -14,6 +14,7 @@
  * does not exist.
  */
 
+import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-tree.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
@@ -90,7 +91,30 @@ export function validPrUrl(url: unknown): string | undefined {
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState>> = {
   prUrl: "publish",
   verifiedHead: "verify",
+  commandCriteria: "verify",
 };
+
+/** The one value a recorded `command` criterion may carry: it held. */
+const COMMAND_CRITERION_KIND = "passed";
+
+/**
+ * Why a `commandCriteria` map is not evidence this run may print, or undefined.
+ *
+ * The map is what licenses `passed (command)` in the PR body, so a value that is
+ * not the word `passed` — or an id that is not a criterion id — is refused rather
+ * than carried: it would read as evidence for a check the gate never made.
+ */
+function commandCriteriaProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return "outcome commandCriteria must be an object";
+  for (const [id, kind] of Object.entries(value as Record<string, unknown>)) {
+    if (!CRITERION_ID.test(id))
+      return `outcome commandCriteria key ${JSON.stringify(id)} is not AC<n>`;
+    if (kind !== COMMAND_CRITERION_KIND)
+      return `outcome commandCriteria[${JSON.stringify(id)}] must be "${COMMAND_CRITERION_KIND}"`;
+  }
+  return undefined;
+}
 
 /**
  * Why a step's own report of itself is not a valid outcome, or `undefined`.
@@ -150,6 +174,10 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (typeof oc.verifiedHead !== "string" || !SHA1_HEX.test(oc.verifiedHead))
       return "outcome verifiedHead must be a 40-hex commit sha";
   }
+  if (oc.commandCriteria !== undefined) {
+    const problem = commandCriteriaProblem(oc.commandCriteria);
+    if (problem !== undefined) return problem;
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
   // length bound keeps a blob a handler stuffed in here out of the record.
@@ -185,6 +213,9 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
           tests: Object.fromEntries(Object.entries(tests).map(([id, files]) => [id, [...files]])),
         }),
     ...(typeof oc.verifiedHead === "string" ? { verifiedHead: oc.verifiedHead } : {}),
+    ...(oc.commandCriteria === undefined
+      ? {}
+      : { commandCriteria: { ...(oc.commandCriteria as Record<string, string>) } }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
   };
 }
