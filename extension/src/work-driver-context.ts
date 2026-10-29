@@ -17,6 +17,7 @@ import type { LensReviewSummary } from "./lens-review.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchResult, DispatchSpec, WriteFenceOpt } from "./types.ts";
+import { routeCiTier } from "./work-driver-context-ci-route.ts";
 import type { DriverPublishContextFields } from "./work-driver-context-publish.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
@@ -441,39 +442,11 @@ export function nextStep(state: WorkState): StepDecision {
   // Step-back completes → emit handoff with the spec analysis attached.
   if (lastEvent?.kind === "step-back-completed") return { kind: "step", step: "handoff" };
 
-  // A failing full verification is a failing verification.
-  //
-  // `runCi` runs `.pi/verify-cmd-full` before watching CI — strictly more than
-  // CI does — and on failure appends this event WITHOUT a `ci-status`, on the
-  // stated assumption that "the ci-retry cap will fire on the next iteration".
-  // There is no next iteration: with no branch here the tail fell through to
-  // the linear table, where `ci: "merged"`. A diff whose full verification
-  // failed went to merged, on every cycle, because the check is opt-out and
-  // this repo ships the file.
-  //
-  // Deliberately routed identically to `ci-status`, not merged into it: the two
-  // events mean different things, and `verify-full-status` carries the
-  // `evidenceTail` that says what actually broke.
-  if (lastEvent?.kind === "verify-full-status" && lastEvent.status === "failure") {
-    if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return { kind: "step", step: "handoff" };
-    return { kind: "step", step: "develop" };
-  }
-
-  // CI outcomes.
-  if (lastEvent?.kind === "ci-status") {
-    if (lastEvent.status === "success") return { kind: "step", step: "merged" };
-    if (lastEvent.status === "failure") {
-      // The re-fix loop. Cap at MAX_CI_RETRIES so a permanently-failing CI
-      // (e.g., branch step ABORTed and no PR exists for CI to watch — see
-      // issue #553) can't spin develop → adversarial → review → ci forever.
-      // The runCi step body bumps ciRetryCount when it appends the
-      // ci-status event; this check just routes on the post-bump value.
-      if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return { kind: "step", step: "handoff" };
-      return { kind: "step", step: "develop" };
-    }
-    // "pending" — caller decides whether to poll again; for v1 we just stay.
-    return { kind: "step", step: "ci" };
-  }
+  // The ci tier's two failure arms live in their own module (#1879 fix round,
+  // §12 size cap): they read the retry count AND the canary marker in the
+  // tier's evidence. `undefined` means "not a ci-tier event — keep going".
+  const ciRoute = routeCiTier(lastEvent, ps, MAX_CI_RETRIES);
+  if (ciRoute !== undefined) return ciRoute;
 
   // Linear happy-path transitions when no special event fired. The lookup
   // can no longer miss: `ps.currentStep` was membership-checked above.

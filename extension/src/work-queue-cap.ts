@@ -312,5 +312,11 @@ export function humanActionFor(
     return `read the fix pass's reason in #${primary}'s handoff — the adversarial fix pass parked on its own check`;
   if (/verify-failed/.test(reason))
     return `inspect #${primary}'s diff — the outcome gate rejected it`;
+  // #1879 — BEFORE `verify-failed`: the compiler itself was proven unsound, so
+  // the action is a reinstall, not a diff. (Checked after the verify family so
+  // an unrelated timeout keeps its own advice; a canary park carries no other
+  // verify marker in its reason.)
+  if (/toolchain-unsound/.test(reason))
+    return `the pinned type-checker on #${primary}'s host accepted a file with a known type error — reinstall dependencies (\`bun install --frozen-lockfile --force\` in the package directory) and re-run \`/work ${primary} --restart\` (no typecheck verdict this cycle can be trusted)`;
   return `inspect .pi/work-state/${primary}.json and re-run \`/work ${primary} --restart\``;
 }

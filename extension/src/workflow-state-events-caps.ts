@@ -330,7 +330,15 @@ export type WorkCapLiteral =
   // "could not look" must not degrade to "nothing to clean" — the branch step
   // parks with the git error as evidence rather than removing nothing and
   // reporting a clean pass.
-  | "worktree-listing-unreadable";
+  | "worktree-listing-unreadable"
+  // #1879 — the pinned type-checker ACCEPTED a file with a known type error, so
+  // every green typecheck this cycle reported means nothing. The incident: a
+  // read-only reviewer child replaced `extension/node_modules/typescript/bin/tsc`
+  // with a `sleep 9.5; exit 0` stub, and for eleven minutes each local tier
+  // exited 0 on any tree. NOT `verify-failed:<step>` — the code was never
+  // judged, and the operator's action is to reinstall dependencies, not to read
+  // a diff.
+  | "toolchain-unsound";
 
 /**
  * #1652 — the plan step's verdict behind a `plan-spec-mismatch` park, carried as

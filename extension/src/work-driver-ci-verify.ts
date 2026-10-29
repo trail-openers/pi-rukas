@@ -19,6 +19,7 @@ import { driverPublicTextCheck } from "./public-hygiene-driver.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { createVerifyChannel } from "./work-driver-integrate-verify-flake.ts";
+import { guardCompilerIntegrity, packageDirFor } from "./work-driver-toolchain-canary.ts";
 import { runVerifyFull, storeTierOutput } from "./work-driver-verify-full.ts";
 import { removeVerifyReportDir } from "./work-driver-verify-report-path.ts";
 import { selectOptedIn } from "./work-driver-verify-select-develop.ts";
@@ -74,6 +75,29 @@ export async function runCiVerifyFull(
   execFn: ExecFn,
 ): Promise<CiVerifyRun> {
   const baseSha = state.pipelineState.baseSha;
+  // #1879 — a green from this tier is only worth what the compiler that
+  // produced it is worth. Asked before the tier runs, so an unsound compiler is
+  // the tier's finding rather than a passing run the ci step reports.
+  const compiler = await guardCompilerIntegrity({
+    cmd,
+    cwd: packageDirFor(cmd, path.join(primaryWorktree, "extension")),
+    where: `the ci verify-full tier (worktree ${primaryWorktree})`,
+    run: execFn,
+  });
+  if (compiler?.note !== undefined) {
+    trace(`work-driver: ci step — ${compiler.note} — ${cmd.slice(0, 80)}`);
+  }
+  if (compiler?.failure !== undefined) {
+    return {
+      outcome: "failure",
+      ms: 0,
+      // The marker leads: the ci tier's evidence cut anchors on a recognised
+      // failure line, and an unsound compiler is the whole finding.
+      output: `${compiler.failure}
+`,
+      anchorOffset: 0,
+    };
+  }
   const unattributed = () =>
     runVerifyFull(cmd, primaryWorktree, timeoutMs, execFn, { retry: true });
   if (!(await selectOptedIn(ctx.repoRoot))) return unattributed();

@@ -36,8 +36,8 @@ const CONSOLIDATION_CREATED_FAILURE = /\[consolidation-created\]/;
  * The two claims are not synonyms: `baselineRedOnly` also asks that every
  * failure be the base's (#1349's excuse), `baselineRedEstablished` only that
  * the probe proved the base red for the command the gate ran. Either raises
- * the cap; `verifyCapFor` still routes a timeout, host-exhaustion or residue
- * entry ahead of them both.
+ * the cap; `verifyCapFor` still routes a timeout, host-exhaustion, residue or
+ * #1879 canary entry ahead of them both.
  */
 export function developVerifyCap(gate: {
   failures: readonly string[];
@@ -58,6 +58,12 @@ export function developVerifyCap(gate: {
  * `verify-failed:develop` cap. That is the only cap a corrective round may
  * answer: conflict and consolidation-created are distinct caps, and a run that
  * reached no verdict (timeout, host, residue, baseline) has its own cap too.
+ *
+ * #1879 — a canary failure is likewise never answered by a round: the compiler
+ * was proven unable to judge, so a developer dispatched to "fix" it would be
+ * dispatched at a tree nothing can verify. `developVerifyCap` returns
+ * `toolchain-unsound` for it, which is not `verify-failed:develop`, so the
+ * check below declines and the park site raises the canary cap instead.
  */
 export function plainVerifyFailure(gate: {
   failures: readonly string[];

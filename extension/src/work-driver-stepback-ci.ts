@@ -22,6 +22,7 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
+import { isToolchainUnsoundFailure } from "./work-driver-toolchain-canary.ts";
 import { foldVerifyAttribution } from "./work-driver-verify-events.ts";
 import { verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { keepEvidenceHead } from "./work-driver-verify-full.ts";
@@ -263,6 +264,38 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
       });
 
       if (result.outcome === "failure") {
+        // #1879 — the compiler canary proved the tier judged nothing. That is
+        // not a CI failure: it is the one case develop cannot repair, because
+        // the toolchain that would judge the repair is the broken thing. Raise
+        // the cap HERE rather than leaving the routing to `nextStep` — the
+        // event log must not grow a cap-insensitive tail — and mirror what
+        // every other ci cap does by recording the `ci-status: failure` audit
+        // event alongside it (see the ci-retry block below).
+        if (isToolchainUnsoundFailure(result.output)) {
+          trace(
+            "work-driver: ci step — verify-full failed on the compiler canary, parking toolchain-unsound",
+          );
+          // The order is the ci step's own, from the ci-retry block below: the
+          // audit event first and the cap-hit LAST, because `nextStep()` routes
+          // on the TAIL and the cap is the routing signal. A cap-hit that is
+          // not the tail is a park that never happens.
+          return appendEvent(
+            next,
+            {
+              kind: "ci-status",
+              at: Date.now(),
+              status: "failure",
+            },
+            {
+              kind: "cap-hit",
+              at: Date.now(),
+              cap: "toolchain-unsound",
+              reviewRound: next.pipelineState.reviewRound,
+              nextStep: "handoff",
+              evidence: result.output,
+            },
+          );
+        }
         // Verify-full failed — bump ciRetryCount and skip ops dispatch for
         // this round. The ci-retry cap will fire on the next iteration if
         // we've exhausted retries.

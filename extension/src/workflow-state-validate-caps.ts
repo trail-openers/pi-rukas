@@ -192,6 +192,10 @@ export const CAP_HIT_FIXED_LITERALS = [
   // validator must know it or a re-entry of a stranded cycle halts on
   // "unrecognised value".
   "queue-stranded",
+  // #1879 — the pinned type-checker accepted a known-bad file, so a green
+  // typecheck judged nothing. The validator must know the literal or a re-entry
+  // of a cycle that parked this way halts on "unrecognised value".
+  "toolchain-unsound",
 ] as const satisfies readonly FixedCap[];
 
 // Compile-time exhaustiveness: a fixed cap in WorkCapLiteral but not listed
