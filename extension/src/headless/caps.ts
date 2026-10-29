@@ -158,8 +158,19 @@ export function capVocabulary(): {
   };
 }
 
-/** The step a `<template>:<step>` cap names, if it is one. */
+/**
+ * The step a `<template>:<step>` cap names, if it is one.
+ *
+ * #1882 — `lens-fix-reposition` names its step without a colon: the
+ * reposition gate runs BEFORE `runLensFix` dispatches, and the fix step
+ * appends its `step-started` only inside that dispatch, so a reposition park
+ * left no `lens-fix` event in the log and every step reader fell back to
+ * `lens-review` (the last step actually started). The gate belongs to
+ * `lens-fix`; mapping it here is what makes both readers — `failedStepOf`
+ * and the queue's `parkReason` — name the step that stopped.
+ */
 export function capStep(cap: string): WorkStep | undefined {
+  if (cap === "lens-fix-reposition") return "lens-fix";
   const i = cap.indexOf(":");
   if (i < 0) return undefined;
   const family = cap.slice(0, i) as CapTemplate;

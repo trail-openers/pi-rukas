@@ -188,7 +188,10 @@ function assert(cond: boolean, msg: string) {
     // of the cherry-pick, not the cherry-pick itself) — this is the #981
     // normal shape the gate must reposition.
     const execBackupFail = async (cmd: string, o?: { cwd?: string; argv?: string[] }) => {
-      if (o?.argv && o.argv[0] === "update-ref") {
+      // #1882 — the backup's git calls run hardened (`-c core.hooksPath=… -c
+      // core.fsmonitor=false` before the subcommand), so the subcommand is no
+      // longer at index 0. Match it anywhere in the argv.
+      if (o?.argv && o.argv.includes("update-ref")) {
         throw new Error("simulated backup ref failure (git update-ref refused)");
       }
       return repositionExec(cmd, o);

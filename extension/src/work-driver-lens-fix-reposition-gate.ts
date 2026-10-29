@@ -26,19 +26,22 @@
  * All git commands run through the `ExecFn` argv form (no shell re-parse).
  * Split from work-driver-lens-fix-commit.ts for the 500-line gate.
  */
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { ExecFn as DevelopExecFn } from "./work-develop-git.ts";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
+import { hardenedGitArgv } from "./work-driver-fix-pass-strays.ts";
 import {
   backupLensFixTree,
   enumerateUnlanded,
   parkCherryFailedTree,
 } from "./work-driver-lens-fix-reposition-backup.ts";
+import { moveToTip, readAgainstRemote } from "./work-driver-lens-fix-reposition-move.ts";
 import {
   GIT_TIMEOUT_MS,
   cherryLines,
   isAncestor,
   rangeAllNonEmpty,
+  remoteBranchTip,
   resolveBranchTip,
 } from "./work-driver-lens-fix-reposition-queries.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
@@ -179,7 +182,7 @@ export async function repositionLensFixWorktree(
         cwd: tree,
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
-        argv: ["status", "--porcelain"],
+        argv: hardenedGitArgv(["status", "--porcelain"]),
       });
       return st.stdout.trim();
     } catch (e) {
@@ -231,7 +234,7 @@ export async function repositionLensFixWorktree(
       cwd: tree,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
-      argv: ["rev-parse", "HEAD"],
+      argv: hardenedGitArgv(["rev-parse", "HEAD"]),
     });
     treeSha = hp.stdout.trim();
   } catch (e) {
@@ -244,6 +247,33 @@ export async function repositionLensFixWorktree(
     return { kind: "already-at-tip", tipSha };
   }
 
+  // #1882 — the remote tip as a SECOND landed reference, read ONCE here and
+  // reused by the patch-equivalence arm further down so the gate cannot act
+  // on two different captures of the same ref. It is read only once the tree
+  // is proven clean and is not already at the tip. The tip above may be the LOCAL `refs/heads/<branch>`, which lags
+  // `refs/remotes/origin/<branch>` whenever the driver pushed its own commit
+  // and left that ref behind (see `remoteBranchTip`). Commits that are on the
+  // remote are the cycle's own pushed work, not un-landed work:
+  // `readAgainstRemote` is the same `git cherry` read against the remote tip
+  // with the same non-empty proof, and the park below fires only for a commit
+  // NEITHER ref accounts for.
+  // #1882 lens round 2 — `origin/<branch>` is read ONCE here and the same
+  // value feeds the patch-equivalence read below. A second read could land
+  // after a concurrent fetch and make the gate judge two different tips.
+  const remoteTipSha = await remoteBranchTip(execFn, tree, branchName);
+  // The remote is a SECOND, independent landed reference only when it is not
+  // simply the resolved tip under another name: `resolveBranchTip` returns the
+  // NEWER of the two refs, so when `origin/<branch>` is ahead of the local
+  // ref, tipSha === remoteTipSha and re-reading the same object as a second
+  // opinion proves nothing (`git cherry <tip> <tree>` against it is the read
+  // the tip arm already made). `remoteAhead` is the case #1882 was written
+  // for: the local ref lags and the remote holds the cycle's own pushed work.
+  const remoteAhead =
+    remoteTipSha !== undefined && remoteTipSha !== tipSha ? remoteTipSha : undefined;
+  const remote =
+    remoteAhead !== undefined
+      ? await readAgainstRemote(execFn, tree, treeSha, remoteAhead)
+      : undefined;
   // Strict-ancestor test in the fast-forward direction: if the tree IS an
   // ancestor of the tip, the tree is strictly behind it and a
   // `git merge --ff-only` is safe. If it is NOT, the tree holds commits the
@@ -269,18 +299,18 @@ export async function repositionLensFixWorktree(
         cwd: tree,
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
-        argv: ["merge", "--ff-only", "--quiet", tipSha],
+        argv: hardenedGitArgv(["merge", "--ff-only", "--quiet", tipSha]),
       });
       const hp2 = await execFn("git", {
         cwd: tree,
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
-        argv: ["rev-parse", "HEAD"],
+        argv: hardenedGitArgv(["rev-parse", "HEAD"]),
       });
       const newSha = hp2.stdout.trim();
       if (newSha !== tipSha) {
         const detail = `fast-forward did not land on the tip (expected ${tipSha.slice(0, 12)}, got ${newSha.slice(0, 12)})`;
-        trace(`${TRACE_PREFIX}: ${detail}`);
+        traceWarn(`${TRACE_PREFIX}: ${detail}`);
         return { kind: "git-failed", detail };
       }
       trace(`${TRACE_PREFIX}: repositioned ${treeSha.slice(0, 12)} -> ${newSha.slice(0, 12)}`);
@@ -324,61 +354,19 @@ export async function repositionLensFixWorktree(
       if (allNonEmpty === true) {
         // Landed via cherry: every worktree commit beyond the tip is a
         // NON-EMPTY commit with a patch-equivalent on the tip. Back up the
-        // tree BEFORE the detach checkout (which orphans the old HEAD),
-        // then move. `fromSha` records where the tree moved from.
-        const cherryBackup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
-        const cherryBackupRef = cherryBackup.ref;
-        if (cherryBackupRef === undefined) {
-          // Fail closed: without the backup ref the detach checkout would
-          // orphan the old HEAD with no way back, so the tree must NOT
-          // move. Park via the diverged kind (no `backupRef` recorded).
-          // The backup helper's git error rides in the detail (first line,
-          // ≤200 chars) so the operator knows WHY the ref was not created.
-          const detail = `backup ref could not be created (${cherryBackup.error ?? "git error"}); refusing to move a tree that is not a fast-forward`;
-          trace(`${TRACE_PREFIX}: ${detail}`);
-          return { kind: "diverged", detail };
-        }
-        try {
-          await execFn("git", {
-            cwd: tree,
-            timeout: GIT_TIMEOUT_MS,
-            maxBuffer: 64 * 1024,
-            argv: ["checkout", "--detach", "--quiet", tipSha],
-          });
-          const hp2 = await execFn("git", {
-            cwd: tree,
-            timeout: GIT_TIMEOUT_MS,
-            maxBuffer: 64 * 1024,
-            argv: ["rev-parse", "HEAD"],
-          });
-          const newSha = hp2.stdout.trim();
-          if (newSha !== tipSha) {
-            const detail = `checkout to the tip did not land on the tip (expected ${tipSha.slice(0, 12)}, got ${newSha.slice(0, 12)})`;
-            trace(`${TRACE_PREFIX}: ${detail}`);
-            return {
-              kind: "git-failed",
-              detail,
-              ...(cherryBackupRef ? { backupRef: cherryBackupRef } : {}),
-            };
-          }
-          trace(
-            `${TRACE_PREFIX}: repositioned (movedByPatchEquivalence) ${treeSha.slice(0, 12)} -> ${newSha.slice(0, 12)}${cherryBackupRef ? ` (backed up to ${cherryBackupRef})` : ""} — ${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
-          );
-          return {
-            kind: "repositioned",
-            fromSha: treeSha,
-            tipSha,
-            movedByPatchEquivalence: true,
-            ...(cherryBackupRef ? { backupRef: cherryBackupRef } : {}),
-          };
-        } catch (e) {
-          trace(`${TRACE_PREFIX}: checkout to tip failed: ${e}`);
-          return {
-            kind: "git-failed",
-            detail: `git checkout --detach ${tipSha.slice(0, 12)} failed: ${e}`,
-            ...(cherryBackupRef ? { backupRef: cherryBackupRef } : {}),
-          };
-        }
+        // tree BEFORE the detach checkout (which orphans the old HEAD), then
+        // move — the same post-conditions the remote-landed accept uses.
+        return moveToTip(
+          execFn,
+          tree,
+          branchName,
+          issues,
+          issueTitle,
+          treeSha,
+          tipSha,
+          `${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
+          true,
+        );
       }
       // all-`-` but the range contains an empty commit (or the emptiness
       // read failed): the cherry result is UNVERIFIED. Fall through to the
@@ -391,12 +379,32 @@ export async function repositionLensFixWorktree(
     }
 
     // Genuinely un-landed work (`+` lines), or an unverifiable all-`-`
-    // range (empty commit). Distinguish unlanded (tip is an ancestor of
-    // the tree — the tree is ahead) from true divergence (neither is an
-    // ancestor of the other). Both are guard failures; back up the tree
-    // and park. An ancestry PROBE that git failed on is neither — it
-    // parks as `git-failed` (fail closed: the tree is not moved) rather
-    // than guessing `diverged`.
+    // range (empty commit). Before the park, #1882 asks the REMOTE the same
+    // question: a commit the LOCAL tip does not hold but the freshly-fetched
+    // `refs/remotes/origin/<branch>` does is the cycle's OWN pushed commit,
+    // not un-landed work — the shape that parked 6 of 26 factory runs. The
+    // accept requires the SAME proof the tip arm requires: `git cherry` all
+    // `-` against the remote AND every commit in the remote..tree range
+    // non-empty (`remote.allLanded`, computed by `readAgainstRemote`). A `+`
+    // the remote happens to name by identity is NOT evidence — `git cherry`
+    // marks it `+` precisely because it found no patch-equivalent — so such a
+    // tree parks.
+    if (remote?.allLanded) {
+      return moveToTip(
+        execFn,
+        tree,
+        branchName,
+        issues,
+        issueTitle,
+        treeSha,
+        // The tip `readAgainstRemote` actually judged the tree against — the
+        // same capture the remote read above uses, so the move target and the
+        // proof can never be two different reads.
+        remote.tipSha,
+        "the local branch ref lags origin, which holds every worktree commit by patch-equivalence",
+        true,
+      );
+    }
     const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
     if ("error" in tipIsAncestorOfTree) {
       trace(`${TRACE_PREFIX}: git-failed (ancestry probe): ${tipIsAncestorOfTree.error}`);
