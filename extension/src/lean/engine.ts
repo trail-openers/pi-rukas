@@ -72,7 +72,12 @@ export interface RunLeanOpts {
   handlers: LeanHandlers;
   /** Injected clock. Default `Date.now`, and the engine's only clock. */
   now?: () => number;
-  /** Fields a brand-new run starts with. Ignored when a state file exists. */
+  /**
+   * Fields a brand-new run starts with. Ignored when a state file exists, so
+   * the seed is where a run-start fact belongs: a resumed run keeps what its
+   * first round recorded (a base sha re-resolved on resume would be a
+   * different commit than the one the run was cut against).
+   */
   seed?: Partial<Pick<LeanRun, "version" | "models" | "baseSha" | "branch">>;
   /** Safety net for a table that loops on a bug of its own. Never a feature. */
   maxSteps?: number;

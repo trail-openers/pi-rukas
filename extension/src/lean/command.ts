@@ -76,8 +76,45 @@ export interface ReadyFacts {
   failedRules: string[];
 }
 
+/** What the run is seeded with: the version stamp and the pinned base. */
+export interface LeanSeed {
+  version: string;
+  baseSha: string;
+  /** Why the probe failed — carried to `ready`'s rule so the comment says what git did. */
+  why?: string;
+}
+
 /**
- * The `ready` verdict: fetch, parse, judge readiness, load config at the sha.
+ * What a brand-new run starts knowing: its version and the mainline sha.
+ *
+ * The base has to be on the record from the first write. `specify`, `build`,
+ * `challenge` and `verify` all read `ctx.run.baseSha`, and before this existed
+ * nothing ever wrote it — `ready`'s handler deliberately returns only its
+ * verdict — so every fresh run carried `""` and `specify` refused with
+ * "the run carries no base sha" before a model was billed.
+ *
+ * It is probed ONCE here and pinned, because the base is a run-start fact: a
+ * resume keeps the recorded sha rather than re-resolving a mainline that may
+ * have moved. Never throws: a repo whose mainline cannot be resolved seeds
+ * `""`, and `ready` refuses the run with the reason (`why`) it deserves.
+ */
+export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
+  const version = leanVersion();
+  try {
+    const probed = await mainlineSha(repoRoot);
+    return { version, baseSha: probed.sha ?? "", ...(probed.why ? { why: probed.why } : {}) };
+  } catch {
+    return { version, baseSha: "" };
+  }
+}
+
+/**
+ * The `ready` verdict: fetch, parse, judge readiness, load config at the base.
+ *
+ * `baseSha` is the run's own — the seed's answer, read back off the record
+ * (`ctx.run.baseSha`), not a fresh probe — and `seedWhy` is what the seed
+ * reports when that answer is empty. The base is pinned when the run starts so
+ * a config read, a diff and a verify all mean the same commit.
  *
  * Never throws. Every failure comes back as `fail` with the rules named,
  * because a run that cannot start still has to say why on the issue.
@@ -85,6 +122,8 @@ export interface ReadyFacts {
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
+  baseSha: string,
+  seedWhy?: string,
 ): Promise<{ kind: "ok" | "fail"; facts: ReadyFacts }> {
   let body: string;
   try {
@@ -99,12 +138,16 @@ export async function readyOutcome(
   if (!parsed.ok) return { kind: "fail", facts: { failedRules: [parsed.reason] } };
   const failed = readiness(parsed.spec);
   if (failed.length > 0) return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
-  const probed = await mainlineSha(repoRoot);
-  if (!probed.sha) {
-    // The refs probed and why each failed — a run whose mainline could not be
-    // resolved is not ready, and the operator reading the issue comment has
-    // to be able to tell "this clone has no origin/HEAD" from "git broke".
-    const why = probed.why;
+  // The base is the run's, resolved once by `leanSeed` and pinned on the run
+  // record: re-probing here would let a `ready` that ran after origin/HEAD
+  // moved judge the run against a commit the rest of it never saw.
+  if (!baseSha) {
+    // The refs probed and why each failed are the seed's — see `leanSeed`.
+    // A run whose mainline could not be resolved is not ready, and the
+    // operator reading the issue comment has to be able to tell "this clone
+    // has no origin/HEAD" from "git broke"; when the seed never carried a
+    // cause (a resumed run, whose seed this process did not make), ask once.
+    const why = seedWhy ?? (await mainlineSha(repoRoot)).why;
     return {
       kind: "fail",
       facts: {
@@ -114,17 +157,17 @@ export async function readyOutcome(
     };
   }
   try {
-    const config = await loadWorkConfig(execp, repoRoot, probed.sha);
+    const config = await loadWorkConfig(execp, repoRoot, baseSha);
     return {
       kind: "ok",
-      facts: { spec: parsed.spec, config, baseSha: probed.sha, failedRules: [] },
+      facts: { spec: parsed.spec, config, baseSha, failedRules: [] },
     };
   } catch (err) {
     return {
       kind: "fail",
       facts: {
         spec: parsed.spec,
-        baseSha: probed.sha,
+        baseSha,
         failedRules: [`.pi/work.json is unusable: ${(err as Error).message}`],
       },
     };
@@ -192,20 +235,27 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * dispatching deps builders. It is NOT remembered anywhere: two lean runs in one
  * process each carry their own, so a headless run cannot lend its trust stamp to
  * an interactive one that follows it.
+ *
+ * `seedWhy` is the seed's reason for having no base, used only to word
+ * `ready`'s refusal — see `leanSeed`.
  */
 export function phase1Handlers(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean } = {},
+  opts: { headless?: boolean; seedWhy?: string } = {},
 ): LeanHandlers {
   const headless = opts.headless === true;
+  // Why the seed could not resolve a base, carried in a closure so the `ready`
+  // rule can name it. A resumed run never ran this process's seed, so it has
+  // no cause to report and `readyOutcome` probes for one on the failure path.
+  const seedWhy = opts.seedWhy;
   const notBuilt = (state: string) => async (): Promise<Outcome> => {
     throw new Error(`work-lean stage ${state} is not built yet`);
   };
   const handlers: LeanHandlers = {};
   for (const state of HANDLER_STATES) handlers[state] = notBuilt(state);
-  handlers.ready = async () => {
-    const { kind, facts } = await readyOutcome(repoRoot, issue);
+  handlers.ready = async (ctx) => {
+    const { kind, facts } = await readyOutcome(repoRoot, issue, ctx.run.baseSha, seedWhy);
     // Only the verdict and the rules go on the record. `spec`, `config` and
     // `baseSha` stay out of it — the step log is the durable record of what a
     // run DECIDED, and a parsed document or a loaded config written into it is
@@ -256,17 +306,23 @@ export function summarize(result: RunLeanResult, issue: number): string {
  * its children carry the /work-cycle trust stamp that the headless permission
  * path would otherwise deny every tool call on. The interactive command passes
  * nothing — its parent session is already in trust mode and needs no stamp.
+ *
+ * The run is seeded with the mainline sha (`leanSeed`) so the steps that read
+ * `ctx.run.baseSha` have a base. The seed lands only on a NEW run: `runLean`
+ * ignores it when a state file exists, which is what keeps a resume on the
+ * commit its first round pinned.
  */
 export async function runWorkLean(
   repoRoot: string,
   issue: number,
   opts: { headless?: boolean } = {},
 ): Promise<{ summary: string; result: RunLeanResult }> {
+  const seed = await leanSeed(repoRoot);
   const result = await runLean({
     repoRoot,
     issue,
-    handlers: phase1Handlers(repoRoot, issue, opts),
-    seed: { version: leanVersion() },
+    handlers: phase1Handlers(repoRoot, issue, { ...opts, seedWhy: seed.why }),
+    seed: { version: seed.version, baseSha: seed.baseSha },
   });
   return { summary: summarize(result, issue), result };
 }

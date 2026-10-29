@@ -148,6 +148,7 @@
     "smoke-tests/test-headless-work-lean-lock.ts",
     "smoke-tests/test-lean-work-config-committed.ts",
     "smoke-tests/lib/work-lean-verb-fixture.ts",
+    "smoke-tests/test-lean-seed-base.ts",
     "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts"
   ]
 }
