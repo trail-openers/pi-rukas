@@ -63,7 +63,7 @@ import {
   porcelain,
 } from "./build-git.ts";
 import type { BuildExec, NormaliseReport } from "./build-types.ts";
-import { readOneDescriptor } from "./specify-capture.ts";
+import { CaptureBudget, readOneDescriptor } from "./specify-capture.ts";
 import { resetWorktreeToBase, writeCaptured } from "./specify-reset.ts";
 
 /**
@@ -90,7 +90,12 @@ interface Classified {
  * runs before the reset: after it, "what the child did" is a fact only this
  * function still holds.
  */
-function classify(wt: string, changed: string[], frozen: Record<string, string>): Classified {
+function classify(
+  wt: string,
+  changed: string[],
+  frozen: Record<string, string>,
+  budget: CaptureBudget,
+): Classified {
   const captured = new Map<string, { bytes: Buffer; exec: boolean }>();
   const report: NormaliseReport = {
     files: [],
@@ -119,9 +124,19 @@ function classify(wt: string, changed: string[], frozen: Record<string, string>)
       report.removed.push({ path: rel, why: entry.why });
       continue;
     }
+    // Once the aggregate ceiling is spent the path is removed unread, so the
+    // step never holds more than the budget in memory.
+    if (budget.stopped) {
+      report.removed.push({ path: rel, why: `not captured: ${budget.why}` });
+      continue;
+    }
     const one = readOneDescriptor(path.join(wt, rel));
     if ("why" in one) {
       report.removed.push({ path: rel, why: one.why });
+      continue;
+    }
+    if (!budget.admit(one.bytes.length)) {
+      report.removed.push({ path: rel, why: `not captured: ${budget.why}` });
       continue;
     }
     captured.set(rel, one);
@@ -144,6 +159,8 @@ export async function normaliseBuild(opts: {
   frozen: Record<string, string>;
   attempt: number;
   issue: number;
+  /** The aggregate capture ceiling; the default is the production one. */
+  budget?: CaptureBudget;
 }): Promise<NormaliseReport> {
   const { exec, wt, repoRoot, branch, headBefore, frozen } = opts;
 
@@ -152,7 +169,12 @@ export async function normaliseBuild(opts: {
     throw new BuildInfraError(
       `the developer moved HEAD away from ${headBefore} — refusing to fold its commits`,
     );
-  const { captured, report } = classify(wt, await changedSet(exec, wt, headBefore), frozen);
+  const { captured, report } = classify(
+    wt,
+    await changedSet(exec, wt, headBefore),
+    frozen,
+    opts.budget ?? new CaptureBudget(),
+  );
 
   // 4. RESET — child commits, staging, untracked files, ignore tricks and the
   //    dependency links all go; frozen and protected files come back exactly as
@@ -308,8 +330,10 @@ export async function assertFrozenIntact(
   headBefore: string,
   frozen: Record<string, string>,
 ): Promise<void> {
+  // An empty map is not a mismatch: no record exists to match, so the step
+  // says there is nothing to build against rather than a hash that failed.
   if (Object.keys(frozen).length === 0)
-    throw new BuildInfraError("frozen tests do not match the record: the run froze no tests");
+    throw new BuildInfraError("the run froze no tests — build has nothing to build against");
   const bad = await frozenMatches(exec, wt, headBefore, frozen);
   if (bad.length > 0)
     throw new BuildInfraError(

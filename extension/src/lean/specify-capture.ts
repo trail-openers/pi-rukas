@@ -54,6 +54,46 @@ function sameStamp(a: Stamp, b: Stamp): boolean {
 /** The largest file either step reads into memory; a bigger one is refused, not read. */
 export const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 
+/** The most bytes one capture holds across all its files: each file is bounded, and this bounds the sum. */
+export const MAX_CAPTURE_TOTAL_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The aggregate ceiling a capture runs under. `admit` takes a file's size and
+ * says whether it fits; the first file that does not fit stops the capture for
+ * good, so every later file is refused without being read. Stopping rather than
+ * skipping keeps the rule "the capture ends once the total reaches the ceiling",
+ * where a smaller file behind a large one would otherwise slip in.
+ */
+export class CaptureBudget {
+  private readonly ceiling: number;
+  private used = 0;
+  private full = false;
+
+  constructor(ceiling: number = MAX_CAPTURE_TOTAL_BYTES) {
+    this.ceiling = ceiling;
+  }
+
+  /** True once the capture has stopped: a further file is refused without being read. */
+  get stopped(): boolean {
+    return this.full;
+  }
+
+  /** Why a refused file was not captured. */
+  get why(): string {
+    return `the capture reached its ${this.ceiling}-byte aggregate ceiling`;
+  }
+
+  /** Account for a file of `size` bytes; false when it is refused, and the capture stops. */
+  admit(size: number): boolean {
+    if (!this.full && this.used + size <= this.ceiling) {
+      this.used += size;
+      return true;
+    }
+    this.full = true;
+    return false;
+  }
+}
+
 /** One file's bytes and executable bit, or the reason this file cannot be captured. */
 export type OneRead = { bytes: Buffer; exec: boolean } | { why: string };
 
@@ -81,6 +121,9 @@ export function readOneDescriptor(abs: string): OneRead {
     if (!first.isFile()) return { why: "is not a regular file" };
     if (first.nlink !== 1)
       return { why: `has ${first.nlink} hard links — not a file of this worktree` };
+    // Zero bytes is never a test: a frozen empty file would hash to the empty
+    // digest and pass as a test that tests nothing.
+    if (first.size === 0) return { why: "is empty" };
     if (first.size > MAX_CAPTURE_BYTES)
       return { why: `is ${first.size} bytes, over the ${MAX_CAPTURE_BYTES}-byte capture ceiling` };
 
@@ -121,7 +164,8 @@ export interface CaptureResult {
 }
 
 /**
- * Read the bytes of every kept test file into memory, one descriptor each.
+ * Read the bytes of every kept test file into memory, one descriptor each,
+ * until the aggregate `budget` is spent.
  *
  * `owners` maps a path to the criterion that claimed it, so a dropped row
  * names the criterion the step must then call uncovered; a caller with no
@@ -131,21 +175,30 @@ export function captureTestBytes(
   wt: string,
   paths: string[],
   owners: Map<string, string> = new Map(),
+  budget: CaptureBudget = new CaptureBudget(),
 ): CaptureResult {
   const captured = new Map<string, Buffer>();
   const dropped: DroppedRow[] = [];
   for (const rel of paths) {
     const criterionId = owners.get(rel) ?? "unknown";
+    if (budget.stopped) {
+      dropped.push({
+        criterionId,
+        path: rel,
+        reason: `test ${rel} was not captured: ${budget.why}`,
+      });
+      continue;
+    }
     const read = readOneDescriptor(path.join(wt, rel));
     if ("why" in read) {
       dropped.push({ criterionId, path: rel, reason: `test ${rel} ${read.why}` });
       continue;
     }
-    if (read.bytes.length === 0) {
+    if (!budget.admit(read.bytes.length)) {
       dropped.push({
         criterionId,
         path: rel,
-        reason: `test ${rel} is empty, which cannot be a test`,
+        reason: `test ${rel} was not captured: ${budget.why}`,
       });
       continue;
     }

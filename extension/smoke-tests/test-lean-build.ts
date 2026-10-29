@@ -285,6 +285,7 @@ function assert(cond: boolean, msg: string): void {
 {
   const r = await runBuild({ issue: 107, frozenSha: sha("a test nobody committed") });
   assert(r.threw !== undefined, "(g) the step throws rather than building against a bad record");
+  assert(r.threw instanceof BuildInfraError, "(g) the throw is infrastructure, not a verdict");
   assert(
     (r.threw?.message ?? "").includes("frozen tests do not match the record"),
     `(g) the throw names the failure (got ${r.threw?.message})`,
@@ -305,6 +306,7 @@ function assert(cond: boolean, msg: string): void {
     },
   });
   assert(r.threw !== undefined, "(h) the step throws when HEAD is not a descendant");
+  assert(r.threw instanceof BuildInfraError, "(h) the throw is infrastructure, not a verdict");
   assert(
     (r.threw?.message ?? "").includes("moved HEAD away from"),
     `(h) the throw says what the child did (got ${r.threw?.message})`,
@@ -418,6 +420,7 @@ function assert(cond: boolean, msg: string): void {
   git(built.repoRoot, "worktree", "remove", "--force", built.worktree);
   const r = await runBuild({ issue: 110, built });
   assert(r.threw !== undefined, "(l) a missing worktree is infrastructure, not a verdict");
+  assert(r.threw instanceof BuildInfraError, "(l) the throw is a BuildInfraError");
   assert(
     (r.threw?.message ?? "").includes("does not exist"),
     `(l) the throw names the missing worktree (got ${r.threw?.message})`,

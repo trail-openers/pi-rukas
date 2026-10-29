@@ -59,6 +59,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";
+import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
 
@@ -70,6 +71,8 @@ export interface BuildDeps {
   dispatch: BuildDispatch;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+  /** The aggregate capture ceiling in bytes; absent, the production ceiling applies. */
+  captureCeiling?: number;
 }
 
 /** The step log's frozen map: every `specify:ok` / `challenge:new-tests`, in order. */
@@ -185,6 +188,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     frozen,
     attempt,
     issue,
+    budget: new CaptureBudget(deps.captureCeiling),
   });
   if (report.files.length === 0)
     return { kind: "exhausted", reason: "the developer produced no change" };

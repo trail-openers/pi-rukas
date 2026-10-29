@@ -58,6 +58,8 @@ export type ExecFn = (
     argv?: string[];
     /** #1095 — network git calls carry the non-interactive env (work-driver-net-git.ts). */
     env?: NodeJS.ProcessEnv;
+    /** `latin1` returns stdout byte-for-byte (see ExecOpts.stdoutEncoding); the default is utf8. */
+    stdoutEncoding?: "utf8" | "latin1";
   },
 ) => Promise<{ stdout: string; stderr?: string }>;
 

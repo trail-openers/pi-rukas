@@ -277,18 +277,19 @@ export async function commitTestFiles(
     throw new SpecifyCommitError(
       `HEAD did not move from the base ${baseSha} — the acceptance-test commit was never made`,
     );
+  // `-z` gives the raw paths NUL-separated: without it git C-quotes any name
+  // with non-ASCII bytes, and a test named `AC1-café` would never equal itself.
+  // `core.quotePath=off` is set too, so the quoting rule cannot return if `-z`
+  // is ever dropped from this call.
   const diff = await exec("git", {
-    argv: ["diff", "--name-only", baseSha, headSha],
+    argv: [...NO_HOOKS, "-c", "core.quotePath=off", "diff", "--name-only", "-z", baseSha, headSha],
     cwd: wt,
     timeout: 60_000,
     maxBuffer: 4 * 1024 * 1024,
   }).catch(() => undefined);
   if (diff === undefined)
     throw new SpecifyCommitError(`could not read the commit's diff against ${baseSha}`);
-  const changed = (diff.stdout ?? "")
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l !== "");
+  const changed = (diff.stdout ?? "").split("\0").filter((p) => p !== "");
   const expected = [...paths].sort();
   if (JSON.stringify(changed.slice().sort()) !== JSON.stringify(expected))
     throw new SpecifyCommitError(
@@ -311,14 +312,17 @@ export async function commitTestFiles(
  * tree looked like a moment earlier.
  */
 export async function committedBlob(exec: ExecFn, wt: string, rel: string): Promise<Buffer> {
+  // `latin1` keeps every byte (see ExecOpts.stdoutEncoding): the hash is over the
+  // committed bytes, and a utf8 round trip would change any invalid sequence.
   const r = await exec("git", {
     argv: ["show", `HEAD:${rel}`],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 8 * 1024 * 1024,
+    stdoutEncoding: "latin1",
   }).catch(() => undefined);
   if (r === undefined) throw new SpecifyCommitError(`could not read the committed blob ${rel}`);
-  const bytes = Buffer.from(r.stdout ?? "", "utf8");
+  const bytes = Buffer.from(r.stdout ?? "", "latin1");
   // An empty blob is not a test. `git show` of a path that is not in the tree
   // fails rather than returning "", so an empty read here means the commit
   // holds an empty file — and a hash of nothing would let a zero-byte file

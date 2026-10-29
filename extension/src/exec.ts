@@ -43,6 +43,13 @@ export interface ExecOpts {
    * the driver's network git calls (work-driver-net-git.ts).
    */
   killGroup?: boolean;
+  /**
+   * How stdout is decoded. The default `utf8` is for text. `latin1` maps every
+   * byte to one character, so `Buffer.from(stdout, "latin1")` returns the
+   * command's exact bytes — `utf8` would replace an invalid sequence with
+   * U+FFFD and the bytes could not be recovered. Blob reads use `latin1`.
+   */
+  stdoutEncoding?: "utf8" | "latin1";
 }
 
 export type ExecResult = { stdout: string; stderr: string };
@@ -110,7 +117,7 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
         );
       }, opts.timeout);
     }
-    child.stdout.setEncoding("utf8");
+    child.stdout.setEncoding(opts.stdoutEncoding ?? "utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (d: string) => {
       stdout += d;
@@ -146,8 +153,9 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
 export function execp(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
   if (opts.killGroup) return execGroup(cmd, opts.argv, opts);
   const { cwd, timeout, maxBuffer, env, shell } = opts;
+  const encoding = opts.stdoutEncoding ?? "utf8";
   if (opts.argv) {
-    return execFileP(cmd, opts.argv, { cwd, timeout, maxBuffer, env, encoding: "utf8" });
+    return execFileP(cmd, opts.argv, { cwd, timeout, maxBuffer, env, encoding });
   }
-  return execShell(cmd, { cwd, timeout, maxBuffer, env, shell, encoding: "utf8" });
+  return execShell(cmd, { cwd, timeout, maxBuffer, env, shell, encoding });
 }

@@ -75,7 +75,7 @@ export function git(dir: string, ...args: string[]): string {
 }
 
 /** The sha256 of a string's bytes, the way the freeze records them. */
-export function sha(text: string): string {
+export function sha(text: string | Buffer): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
@@ -115,7 +115,7 @@ export interface Built {
  */
 export function buildFixture(
   issue: number,
-  opts?: { frozenSha?: string; frozenText?: string; childOwnsBranch?: boolean },
+  opts?: { frozenSha?: string; frozenText?: string | Buffer; childOwnsBranch?: boolean },
 ): Built {
   const frozenText = opts?.frozenText ?? TEST;
   const frozenSha = opts?.frozenSha ?? sha(frozenText);
@@ -275,7 +275,9 @@ export interface RunOpts {
   /** A build fixture whose frozen record is deliberately wrong (case (g)). */
   frozenSha?: string;
   /** The frozen test's committed bytes, when a case needs something other than TEST. */
-  frozenText?: string;
+  frozenText?: string | Buffer;
+  /** The aggregate capture ceiling in bytes, when a case needs a small one. */
+  captureCeiling?: number;
   /** Skip the fixture's own worktree setup to test the "no worktree" throw. */
   built?: Built;
   /** Leave the run's branch to the worktree so a case can dismantle that tree. */
@@ -328,6 +330,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       if (opts.loadConfigError !== undefined) throw new Error(opts.loadConfigError);
       return opts.config ?? configWithRunner();
     },
+    ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
   };
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");

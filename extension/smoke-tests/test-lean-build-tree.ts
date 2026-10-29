@@ -16,6 +16,7 @@
 
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
+import { BuildInfraError } from "../src/lean/build-errors.ts";
 import {
   ROOTS,
   SRC,
@@ -137,6 +138,7 @@ function assert(cond: boolean, msg: string): void {
 {
   const r = await runBuild({ issue: 116, frozenText: "", frozenSha: sha("") });
   assert(r.threw !== undefined, "(p) the step refuses a zero-byte frozen test");
+  assert(r.threw instanceof BuildInfraError, "(p) the throw is a BuildInfraError");
   assert(
     (r.threw?.message ?? "").includes("frozen tests do not match the record"),
     `(p) the throw names the failure (got ${r.threw?.message})`,

@@ -19,14 +19,6 @@ import type { BuildExec } from "./build-types.ts";
 import { sha256 } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 
-/** Git's own "the object/commit you named does not exist" answers. */
-const GIT_NO_SUCH = [
-  "not a valid object",
-  "unknown revision",
-  "bad revision",
-  "ambiguous argument",
-];
-
 /**
  * Run one git argv command with the hook and fsmonitor guard in front of it;
  * `undefined` when git refused rather than crashed. Every git call in this
@@ -97,22 +89,27 @@ export async function headDescendsFrom(exec: BuildExec, wt: string, sha: string)
   return true;
 }
 
-/** The committed blob of `rel` at `ref`; `undefined` when `ref` does not hold it. */
+/**
+ * The committed blob of `rel` at `ref`, byte for byte; `undefined` when git
+ * refuses it. `latin1` is read back with `Buffer.from(…, "latin1")`, the one
+ * text encoding that keeps every byte: a frozen test holding invalid UTF-8
+ * must hash to the record the freeze made, and utf8 would rewrite it.
+ */
 async function blobAt(
   exec: BuildExec,
   wt: string,
   ref: string,
   rel: string,
 ): Promise<Buffer | undefined> {
-  const missing = (err: unknown): boolean => {
-    const text = `${(err as { message?: string })?.message ?? ""} ${(err as { stderr?: string })?.stderr ?? ""}`;
-    return GIT_NO_SUCH.some((t) => text.includes(t));
-  };
-  const r = await run(exec, wt, ["show", `${ref}:${rel}`], 30_000).catch((err: unknown) =>
-    missing(err) ? undefined : Promise.reject(err),
-  );
+  const r = await exec("git", {
+    argv: [...NO_HOOKS, "show", `${ref}:${rel}`],
+    cwd: wt,
+    timeout: 30_000,
+    maxBuffer: 8 * 1024 * 1024,
+    stdoutEncoding: "latin1",
+  }).catch(() => undefined);
   if (r === undefined) return undefined;
-  return Buffer.from(r.stdout ?? "", "utf8");
+  return Buffer.from(r.stdout ?? "", "latin1");
 }
 
 /**
