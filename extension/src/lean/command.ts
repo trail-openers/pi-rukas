@@ -23,11 +23,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
+import { spawnSpecialist } from "../spawn.ts";
+import type { DispatchSpec } from "../types.ts";
+import type { WriteFence } from "../write-fence-contract.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Step } from "./state.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -136,6 +140,23 @@ export function failedRulesFromLog(steps: Step[]): string[] {
 }
 
 /**
+ * The specify step's dependencies: the outside world, injected.
+ *
+ * `dispatch` is the only model call the step makes and `exec` the only thing
+ * that touches git, so the smoke test drives a real temp repository through
+ * both without a child process or a forge.
+ */
+export function specifyDeps(): SpecifyDeps {
+  return {
+    exec: (cmd, opts) => execp(cmd, opts ?? {}),
+    dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
+      spawnSpecialist(spec, { writeFence: o.writeFence, extraArgs: o.extraArgs }),
+    fetchIssueBody,
+    loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
+  };
+}
+
+/**
  * The phase-1 handler set.
  *
  * `ready` is real; `decline` posts the comment once; everything else is a
@@ -161,6 +182,7 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
     if (kind === "ok") return { kind };
     return { kind, failedRules: facts.failedRules };
   };
+  handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps());
   handlers.decline = async (ctx) => {
     // From the log, not from a closure: see `failedRulesFromLog`.
     const rules = failedRulesFromLog(ctx.steps);

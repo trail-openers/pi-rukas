@@ -28,7 +28,15 @@ export interface Budget {
 export interface WorkConfig {
   version: 1;
   autoMerge: boolean;
-  verify: { fast?: string; full?: string };
+  /**
+   * `test` is the per-file runner template the `specify` step uses to prove a
+   * test red on the base: it must contain exactly one whole-word `{file}`,
+   * which the step replaces with the test file's path (e.g. `bun run {file}`).
+   * The template is executed as an executable plus argv, never through a
+   * shell, so `validateTestRunner` refuses the shell-shaped strings that
+   * would only mean something if it were.
+   */
+  verify: { fast?: string; full?: string; test?: string };
   budgets: Partial<Record<string, Budget>>;
 }
 
@@ -37,11 +45,60 @@ export class LeanConfigError extends Error {
   override readonly name = "LeanConfigError";
 }
 
+/**
+ * The placeholder a `verify.test` template carries. ONE name for it: the
+ * validator here, the prompt that explains it to the child and the renderer
+ * that substitutes it all read this constant, so the string cannot drift
+ * between the three.
+ */
+export const TEST_RUNNER_PLACEHOLDER = "{file}";
+
 /** The executor seam: same signature as `execp`, injected so tests stay local. */
 export type ConfigExec = typeof execp;
 
 /** Ceiling for one committed config/verify-cmd blob; overflow is its own error class. */
 const GIT_SHOW_MAX_BUFFER = 1024 * 1024;
+
+/**
+ * Characters a runner template may never contain. Each one is a shell
+ * metacharacter (`;` `&` `|` `` ` `` `$` `<` `>` `"` `'` `\`) or a newline:
+ * present anywhere, they say the author meant the template to be read by a
+ * shell, which is not how the step executes it. Refusing them at the config
+ * boundary is what makes "no shell" a fact rather than an intention — a
+ * template like `sh -c "x {file}"` or `rm {file}; ls` would otherwise reach
+ * the executor as an argument a shell happily re-parses.
+ */
+const TEST_RUNNER_FORBIDDEN = /[;&|`$<>"'\\\n\r]/;
+
+/**
+ * Why this `verify.test` template is not usable, or undefined when it is.
+ *
+ * Three rules, all mechanical:
+ *   - it must carry {@link TEST_RUNNER_PLACEHOLDER} EXACTLY once — twice and
+ *     the second occurrence is a bug the config author should see rather than
+ *     a silently duplicated path;
+ *   - every occurrence must be a WHOLE whitespace-separated word, so
+ *     `bun run test-{file}.ts` is refused rather than silently renaming the
+ *     file it is supposed to be running; and
+ *   - no shell metacharacter anywhere (see {@link TEST_RUNNER_FORBIDDEN}).
+ */
+export function validateTestRunner(template: string): string | undefined {
+  // The metacharacter rule FIRST: a template carrying one is a template its
+  // author meant for a shell, and saying so is the useful diagnosis even when
+  // the placeholder also happens to be glued to something (`sh -c "x {file}"`
+  // is both, and "go away from the shell" is the fix, not "add a space").
+  if (TEST_RUNNER_FORBIDDEN.test(template))
+    return ".pi/work.json verify.test is run without a shell: ; & | ` $ < > \" ' \\ and newline are not allowed";
+  const count = template.split(TEST_RUNNER_PLACEHOLDER).length - 1;
+  if (count === 0)
+    return `.pi/work.json verify.test must contain the literal ${TEST_RUNNER_PLACEHOLDER}`;
+  if (count > 1)
+    return `.pi/work.json verify.test must contain ${TEST_RUNNER_PLACEHOLDER} exactly once, found ${count}`;
+  const wholeWord = template.split(/\s+/).includes(TEST_RUNNER_PLACEHOLDER);
+  if (!wholeWord)
+    return `.pi/work.json verify.test must use ${TEST_RUNNER_PLACEHOLDER} as a whole word, not glued to other characters`;
+  return undefined;
+}
 
 /** Did this rejection come from a stream breaking its buffer, not from git? */
 function isBufferOverflow(err: unknown): boolean {
@@ -134,9 +191,16 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.verify !== "object" || o.verify === null || Array.isArray(o.verify))
       return ".pi/work.json verify must be an object";
     const v = o.verify as Record<string, unknown>;
-    for (const key of ["fast", "full"] as const) {
+    for (const key of ["fast", "full", "test"] as const) {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
+    }
+    // The runner template is a template: without exactly one whole-word
+    // placeholder the step cannot name the file it is running, and would run
+    // the same command for every test and call the result a proof.
+    if (typeof v.test === "string") {
+      const reason = validateTestRunner(v.test);
+      if (reason !== undefined) return reason;
     }
   }
   if (o.budgets !== undefined) {
