@@ -81,23 +81,6 @@ export async function isAncestor(
 }
 
 /**
- * Test whether `a` is a STRICT ancestor of `b` — an ancestor, and not `b`
- * itself. `isAncestor` counts a === b as an ancestor (git does), which is
- * right for "can I reason about this pair" but wrong for "does `b` lie ahead
- * of `a`": a caller that treats equality as "ahead" moves a tree onto the tip
- * it already holds and calls that a reposition.
- */
-export async function isStrictAncestor(
-  execFn: ExecFn,
-  tree: string,
-  a: string,
-  b: string,
-): Promise<AncestryResult> {
-  if (a === b) return { isAncestor: false };
-  return isAncestor(execFn, tree, a, b);
-}
-
-/**
  * #981 — the tip of `branchName` in `tree`, resolved from the local and
  * remote refs. Returns `{ ok: true, tipSha }`, `{ ok: false, kind:
  * "git-failed" }` when neither ref is readable, or `{ ok: false, kind:
@@ -194,7 +177,9 @@ export async function cherryLines(
  * worktrees; `rewindFastForward` deliberately puts an unpushed fast-forward
  * back). A round-2 gate that read the local ref alone counted the cycle's own
  * pushed fix as "commits the branch does not" and parked
- * `lens-fix-reposition` — the top stop reason measured in the field.
+ * `lens-fix-reposition` — the top stop reason measured in the field. The gate
+ * reads this tip ONCE and the same capture feeds both the patch-equivalence
+ * read and the move target.
  */
 export async function remoteBranchTip(
   execFn: ExecFn,

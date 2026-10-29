@@ -29,6 +29,7 @@
 import { trace, traceWarn } from "./trace.ts";
 import type { ExecFn as DevelopExecFn } from "./work-develop-git.ts";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
+import { hardenedGitArgv } from "./work-driver-fix-pass-strays.ts";
 import {
   backupLensFixTree,
   enumerateUnlanded,
@@ -181,7 +182,7 @@ export async function repositionLensFixWorktree(
         cwd: tree,
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
-        argv: ["status", "--porcelain"],
+        argv: hardenedGitArgv(["status", "--porcelain"]),
       });
       return st.stdout.trim();
     } catch (e) {
@@ -233,7 +234,7 @@ export async function repositionLensFixWorktree(
       cwd: tree,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
-      argv: ["rev-parse", "HEAD"],
+      argv: hardenedGitArgv(["rev-parse", "HEAD"]),
     });
     treeSha = hp.stdout.trim();
   } catch (e) {
@@ -246,22 +247,33 @@ export async function repositionLensFixWorktree(
     return { kind: "already-at-tip", tipSha };
   }
 
-  // #1882 — the remote tip as a SECOND landed reference, read only once the
-  // tree is proven clean, is not already at the tip, and is NOT a strict
-  // ancestor of the tip (that shape took the fast-forward arm above, which
-  // already consults the remote). The tip above may be the LOCAL
-  // `refs/heads/<branch>`, which lags `refs/remotes/origin/<branch>` whenever
-  // the driver pushed its own commit and left that ref behind (see
-  // `remoteBranchTip`). Commits that are on the remote are the cycle's own
-  // pushed work, not un-landed work: `readAgainstRemote` is the same `git
-  // cherry` read against the remote tip with the same non-empty proof, and the
-  // park below fires only for a commit NEITHER ref accounts for.
+  // #1882 — the remote tip as a SECOND landed reference, read ONCE here and
+  // reused by the patch-equivalence arm further down so the gate cannot act
+  // on two different captures of the same ref. It is read only once the tree
+  // is proven clean and is not already at the tip. The tip above may be the LOCAL `refs/heads/<branch>`, which lags
+  // `refs/remotes/origin/<branch>` whenever the driver pushed its own commit
+  // and left that ref behind (see `remoteBranchTip`). Commits that are on the
+  // remote are the cycle's own pushed work, not un-landed work:
+  // `readAgainstRemote` is the same `git cherry` read against the remote tip
+  // with the same non-empty proof, and the park below fires only for a commit
+  // NEITHER ref accounts for.
+  // #1882 lens round 2 — `origin/<branch>` is read ONCE here and the same
+  // value feeds the patch-equivalence read below. A second read could land
+  // after a concurrent fetch and make the gate judge two different tips.
   const remoteTipSha = await remoteBranchTip(execFn, tree, branchName);
+  // The remote is a SECOND, independent landed reference only when it is not
+  // simply the resolved tip under another name: `resolveBranchTip` returns the
+  // NEWER of the two refs, so when `origin/<branch>` is ahead of the local
+  // ref, tipSha === remoteTipSha and re-reading the same object as a second
+  // opinion proves nothing (`git cherry <tip> <tree>` against it is the read
+  // the tip arm already made). `remoteAhead` is the case #1882 was written
+  // for: the local ref lags and the remote holds the cycle's own pushed work.
+  const remoteAhead =
+    remoteTipSha !== undefined && remoteTipSha !== tipSha ? remoteTipSha : undefined;
   const remote =
-    remoteTipSha !== undefined && remoteTipSha !== tipSha
-      ? await readAgainstRemote(execFn, tree, treeSha, remoteTipSha)
+    remoteAhead !== undefined
+      ? await readAgainstRemote(execFn, tree, treeSha, remoteAhead)
       : undefined;
-
   // Strict-ancestor test in the fast-forward direction: if the tree IS an
   // ancestor of the tip, the tree is strictly behind it and a
   // `git merge --ff-only` is safe. If it is NOT, the tree holds commits the
@@ -287,49 +299,19 @@ export async function repositionLensFixWorktree(
         cwd: tree,
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
-        argv: ["merge", "--ff-only", "--quiet", tipSha],
+        argv: hardenedGitArgv(["merge", "--ff-only", "--quiet", tipSha]),
       });
       const hp2 = await execFn("git", {
         cwd: tree,
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
-        argv: ["rev-parse", "HEAD"],
+        argv: hardenedGitArgv(["rev-parse", "HEAD"]),
       });
       const newSha = hp2.stdout.trim();
       if (newSha !== tipSha) {
         const detail = `fast-forward did not land on the tip (expected ${tipSha.slice(0, 12)}, got ${newSha.slice(0, 12)})`;
         traceWarn(`${TRACE_PREFIX}: ${detail}`);
         return { kind: "git-failed", detail };
-      }
-      // #1882 — the local ref may LAG the fetched remote ref: a tree that is
-      // a strict ancestor of `origin/<branch>` is the cycle's own pushed work,
-      // not un-landed work, and it belongs at the remote tip rather than at a
-      // `--ff-only` onto a ref nobody advanced. Accepting here (with the backup
-      // ref `moveToTip` always takes) is the positive shape of the remote arm:
-      // proven by ancestry, so no `git cherry` read is needed and the tree is
-      // not judged by patch-equivalence.
-      const remoteTip = await remoteBranchTip(execFn, tree, branchName);
-      if (remoteTip !== undefined && remoteTip !== tipSha) {
-        const tipIsAncestorOfRemote = await isAncestor(execFn, tree, newSha, remoteTip);
-        if ("error" in tipIsAncestorOfRemote) {
-          trace(
-            `${TRACE_PREFIX}: git-failed (remote ancestry probe): ${tipIsAncestorOfRemote.error}`,
-          );
-          return { kind: "git-failed", detail: tipIsAncestorOfRemote.error };
-        }
-        if (tipIsAncestorOfRemote.isAncestor) {
-          return moveToTip(
-            execFn,
-            tree,
-            branchName,
-            issues,
-            issueTitle,
-            treeSha,
-            remoteTip,
-            "the local branch ref lags origin, which the tree is a strict ancestor of",
-            false,
-          );
-        }
       }
       trace(`${TRACE_PREFIX}: repositioned ${treeSha.slice(0, 12)} -> ${newSha.slice(0, 12)}`);
       return { kind: "repositioned", fromSha: treeSha, tipSha };
@@ -407,7 +389,7 @@ export async function repositionLensFixWorktree(
     // the remote happens to name by identity is NOT evidence — `git cherry`
     // marks it `+` precisely because it found no patch-equivalent — so such a
     // tree parks.
-    if (remote?.allLanded === true) {
+    if (remote?.allLanded) {
       return moveToTip(
         execFn,
         tree,
@@ -415,7 +397,10 @@ export async function repositionLensFixWorktree(
         issues,
         issueTitle,
         treeSha,
-        remoteTipSha as string,
+        // The tip `readAgainstRemote` actually judged the tree against — the
+        // same capture the remote read above uses, so the move target and the
+        // proof can never be two different reads.
+        remote.tipSha,
         "the local branch ref lags origin, which holds every worktree commit by patch-equivalence",
         true,
       );

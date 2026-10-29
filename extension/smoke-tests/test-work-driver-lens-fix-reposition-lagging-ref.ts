@@ -24,7 +24,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -54,6 +54,10 @@ const realExec: ExecFn = async (cmd, o) => {
   if (o?.argv) {
     const { stdout } = await execFileP(cmd, o.argv, {
       cwd: o.cwd,
+      timeout: o.timeout,
+      // `runNetGit` (the gate's fetch) passes a non-interactive env and a
+      // tighter timeout; dropping them makes the fetch prompt or hang.
+      env: o.env,
       maxBuffer: o.maxBuffer ?? 8 * 1024 * 1024,
     });
     return { stdout };
@@ -68,7 +72,7 @@ const realExec: ExecFn = async (cmd, o) => {
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 /** A bare origin + a repo at main + the driver's own branch worktree. */
-async function mkRepo(tag: string, issue: number) {
+async function mkRepo(tag: string, issue: number, title: string) {
   const root = mkdtempSync(path.join(tmpdir(), `pi-ens-1882-${tag}-`));
   const origin = path.join(root, "origin.git");
   const repo = path.join(root, "repo");
@@ -84,13 +88,13 @@ async function mkRepo(tag: string, issue: number) {
   await git(repo, ["commit", "-q", "-m", "base"]);
   await git(repo, ["remote", "add", "origin", origin]);
   await git(repo, ["push", "-q", "-u", "origin", "main"]);
-  const setup = await mechanizedBranchSetup(realExec, repo, issue, [issue], [], "1882 lagging ref");
+  const setup = await mechanizedBranchSetup(realExec, repo, issue, [issue], [], title);
   return { root, origin, repo, scratch, setup, wt: setup.worktrees.default ?? "" };
 }
 
 // ── Case 1: the field shape — round-1 fix pushed, local ref behind, round 2.
 {
-  const { root, repo, scratch, setup, wt } = await mkRepo("pushed", 1882);
+  const { root, repo, scratch, setup, wt } = await mkRepo("pushed", 1882, "1882 lagging ref");
   try {
     const branch = setup.branchName;
 
@@ -184,6 +188,56 @@ async function mkRepo(tag: string, issue: number) {
       rep2.kind === "repositioned" && rep2.fromSha === r1Sha,
       "1882: the move is recorded from the tree it started on",
     );
+    // #1882 lens round 2 — the accept path's `checkout` runs with
+    // `core.hooksPath=/dev/null` and `core.fsmonitor=false`. The worktree is
+    // child-writable, so a hook the fixer dropped into the repo's hooks dir
+    // must NOT execute as part of the driver's own move — a hook that runs
+    // there runs arbitrary code in the parent, against a tree the fixer
+    // controls. `core.hooksPath` is not set in the fixture's config, so an
+    // un-hardened checkout runs this file. The hook installs BEFORE the gate
+    // runs and the tree is still off the tip, so the gate's own checkout is
+    // the only thing that can produce the marker.
+    const gitDirOfWt = (await git(wt, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+    const hooksDir = path.join(gitDirOfWt, "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    const marker = path.join(root, "hook-ran");
+    const hook = path.join(hooksDir, "post-checkout");
+    writeFileSync(hook, `#!/bin/sh\ntouch ${marker}\n`);
+    chmodSync(hook, 0o755);
+    // git only consults `<git-dir>/hooks` when `core.hooksPath` points at it
+    // (verified: an installed-but-unconfigured hook never fires). Setting it
+    // in the repo config reproduces the field shape this guard exists for — a
+    // child that writes its own hooks config into the repository it shares
+    // with the driver. `core.hooksPath=/dev/null` on the driver's own argv is
+    // what must outrank it.
+    await git(repo, ["config", "core.hooksPath", hooksDir]);
+    // The fixture's own checkout (a plain test call, not the driver's) proves
+    // the hook is installed where a driver checkout WOULD find it: the marker
+    // appears. Without this the "no marker" assertion below could pass simply
+    // because the hook was never wired up.
+    await git(wt, ["checkout", "-q", "--detach", remoteTip]);
+    assert(
+      existsSync(marker),
+      "1882: the fixture's post-checkout hook is live where the driver's checkout reaches it",
+    );
+    // Back off the tip so the gate has a move to make, then run the gate.
+    await git(wt, ["checkout", "-q", "--detach", r1Sha]);
+    rmSync(marker, { force: true });
+    const repHook = await repositionLensFixWorktree(
+      realExec,
+      wt,
+      branch,
+      [1882],
+      "1882 lagging ref",
+    );
+    assert(
+      repHook.kind === "repositioned",
+      `1882: the gate still accepts with a hook installed (got ${repHook.kind})`,
+    );
+    assert(
+      !existsSync(marker),
+      "1882: the driver's own checkout ran NO hook from the child-writable repo",
+    );
     const headNow = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
     assert(headNow === remoteTip, "1882: the tree moved to the branch tip");
     if (rep2.kind === "repositioned" && rep2.backupRef) {
@@ -249,7 +303,7 @@ async function mkRepo(tag: string, issue: number) {
 
 // ── Case 2: a GENUINE reposition still parks.
 {
-  const { root, repo, wt, setup } = await mkRepo("genuine", 1883);
+  const { root, repo, wt, setup } = await mkRepo("genuine", 1883, "1883 genuine");
   try {
     const branch = setup.branchName;
     // The field shape: commit-pr landed the feature and pushed the branch,
@@ -291,7 +345,7 @@ async function mkRepo(tag: string, issue: number) {
 
 // ── Case 3: the gate's own fetch refreshes a stale remote-tracking ref.
 {
-  const { root, origin, repo, wt, setup } = await mkRepo("fetch", 1884);
+  const { root, origin, repo, wt, setup } = await mkRepo("fetch", 1884, "1884 fetch");
   try {
     const branch = setup.branchName;
     // A second clone pushes the driver's own round-1 fix; this clone's

@@ -1,4 +1,5 @@
 import { trace } from "./trace.ts";
+import { branchSlug } from "./work-driver-branch-mechanized.ts";
 /**
  * work-driver-lens-fix-reposition-backup — #981 (task-b) — the two small
  * git helpers the round-2+ lens-fix reposition guard needs to PARK safely:
@@ -10,7 +11,7 @@ import { trace } from "./trace.ts";
  * of the guard that touch git in a way the gate (fetch / status /
  * merge-base / ff-merge) does not.
  */
-import { branchSlug } from "./work-driver-branch-mechanized.ts";
+import { hardenedGitArgv } from "./work-driver-fix-pass-strays.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
 import { GIT_TIMEOUT_MS, isAncestor } from "./work-driver-lens-fix-reposition-queries.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -42,10 +43,20 @@ export async function backupLensFixTree(
       cwd: tree,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
-      argv: ["rev-parse", "HEAD"],
+      // #1882 lens round 2 — every git call in this module runs through
+      // `hardenedGitArgv`: the worktree is child-writable, so a
+      // `core.fsmonitor` script or a hook dropped into `.git/hooks` by the
+      // fixer would otherwise run as part of the driver's own `update-ref`
+      // / `checkout` / `merge`, in the parent, against a tree the fixer
+      // controls.
+      argv: hardenedGitArgv(["rev-parse", "HEAD"]),
     });
     const sha = stdout.trim();
-    await execFn("git", { cwd: tree, timeout: GIT_TIMEOUT_MS, argv: ["update-ref", ref, sha] });
+    await execFn("git", {
+      cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
+      argv: hardenedGitArgv(["update-ref", ref, sha]),
+    });
     trace(`lens-fix-reposition: backed up worktree to ${ref} (${sha.slice(0, 12)})`);
     return { ref };
   } catch (e) {
@@ -80,7 +91,7 @@ export async function enumerateUnlanded(
       cwd: tree,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: 64 * 1024,
-      argv: ["rev-list", `${tipSha}..HEAD`],
+      argv: hardenedGitArgv(["rev-list", `${tipSha}..HEAD`]),
     });
     return stdout
       .trim()
