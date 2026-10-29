@@ -386,11 +386,13 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
 // A stub that returned an outcome kind the table does not list would end the run
 // on `no transition for <state> + "…"`, blaming the machine for a stage nobody
 // built. A throw is what the engine already turns into a handed-back run whose
-// reason names the missing stage.
+// reason names the missing stage. `verify` and `handback` are not in the list:
+// both are real steps now, and `test-lean-verify-wiring.ts` asserts each is the
+// step rather than the stub.
 {
   const built = challengeFixture(214);
   const handlers = phase1Handlers(built.repoRoot, 214);
-  const stubs = ["verify", "publish", "review", "ci", "land", "handback"] as const;
+  const stubs = ["publish", "review", "ci", "land"] as const;
   const messages = await Promise.all(
     stubs.map((s) =>
       (handlers[s] as (c: never) => Promise<unknown>)(built.ctx as never).then(

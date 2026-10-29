@@ -64,7 +64,7 @@ export interface Proof {
 }
 
 /** Was this rejection a timeout or a signal rather than a non-zero exit? */
-function wasKilled(err: unknown): boolean {
+export function wasKilled(err: unknown): boolean {
   const e = err as { killed?: boolean; signal?: string | null; timedOutKill?: boolean };
   // `killed` AND `timedOutKill` are only decisive on their own: Node's
   // execFile rejection for an ordinary non-zero exit carries `signal: null`
@@ -85,7 +85,7 @@ function exitCodeOf(err: unknown): number | undefined {
  * (not executable) and their ilk reject with a STRING code and no exit
  * status; a command that ran and failed always carries a numeric status.
  */
-function neverStarted(err: unknown): boolean {
+export function neverStarted(err: unknown): boolean {
   return typeof (err as { code?: unknown })?.code === "string" && exitCodeOf(err) === undefined;
 }
 

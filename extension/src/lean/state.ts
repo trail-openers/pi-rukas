@@ -22,11 +22,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
 
 export const SCHEMA_VERSION = 1;
-
-/** A sha256 in the hex form the `specify` step freezes into its outcome. */
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /**
  * The states a run can sit in. `decline` is the step that reports a refusal;
@@ -127,6 +125,20 @@ export interface Outcome {
    * record of which criterion each frozen file answers for.
    */
   tests?: Record<string, string[]>;
+  /**
+   * `verify` only: the 40-hex commit whose tree produced this verdict. The land
+   * gate compares it to the PR head, so "the tests were green" is a claim about
+   * a named commit rather than about whatever tree happened to be on disk when
+   * the step ran.
+   */
+  verifiedHead?: string;
+  /**
+   * `publish` only: the PR's https URL, as the forge returned it. Publish-only
+   * by contract — no other step writes it, and `handback` reads no other field
+   * for a URL — so "there is a PR at this address" is a recorded fact rather
+   * than something a later reader guesses out of a reason line.
+   */
+  prUrl?: string;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -296,35 +308,8 @@ function assertRun(obj: unknown, file: string): LeanRun {
       bad(`step ${key} outcome must be an object`);
     const oc = st.outcome as Record<string, unknown> | undefined;
     if (oc !== undefined) {
-      if (typeof oc.kind !== "string") bad(`step ${key} outcome needs a string kind`);
-      // `next()` calls `.join` on this when it routes a refusal, so a
-      // string-valued `failedRules` is a crash waiting in the report path
-      // rather than a cosmetic type slip.
-      if (
-        oc.failedRules !== undefined &&
-        (!Array.isArray(oc.failedRules) || oc.failedRules.some((x) => typeof x !== "string"))
-      )
-        bad(`step ${key} outcome failedRules must be a string[]`);
-      // `frozen` is the tamper evidence `build` and `verify` read back, so a
-      // value that is not a sha256 is refused rather than carried: a
-      // truncated or mistyped digest would compare unequal forever and the
-      // reader could not tell a broken record from an edited test.
-      if (oc.frozen !== undefined) {
-        if (typeof oc.frozen !== "object" || oc.frozen === null || Array.isArray(oc.frozen))
-          bad(`step ${key} outcome frozen must be an object`);
-        for (const [file, sha] of Object.entries(oc.frozen as Record<string, unknown>)) {
-          if (typeof sha !== "string" || !SHA256_HEX.test(sha))
-            bad(`step ${key} outcome frozen[${JSON.stringify(file)}] must be a 64-hex sha256`);
-        }
-      }
-      if (oc.tests !== undefined) {
-        if (typeof oc.tests !== "object" || oc.tests === null || Array.isArray(oc.tests))
-          bad(`step ${key} outcome tests must be an object`);
-        for (const [id, files] of Object.entries(oc.tests as Record<string, unknown>)) {
-          if (!Array.isArray(files) || files.some((x) => typeof x !== "string"))
-            bad(`step ${key} outcome tests[${JSON.stringify(id)}] must be a string[]`);
-        }
-      }
+      const problem = outcomeProblem(oc, st.state as LeanState);
+      if (problem !== undefined) bad(`step ${key} ${problem}`);
     }
     // The `:N` suffix is a derived field (the entry count) and the engine
     // trusts it when deciding whether a state still owes a handler call, so
@@ -336,7 +321,7 @@ function assertRun(obj: unknown, file: string): LeanRun {
       state: st.state as LeanState,
       startedAt,
       ...(typeof st.endedAt === "number" ? { endedAt: st.endedAt } : {}),
-      ...(oc === undefined ? {} : { outcome: st.outcome as Outcome }),
+      ...(oc === undefined ? {} : { outcome: buildOutcome(oc) }),
     });
   }
   // Built field by field rather than cast: a caller must be able to trust

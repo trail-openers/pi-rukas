@@ -2,7 +2,8 @@
  * lean/command — `/work-lean <issue>`, the phase-1 entry point.
  *
  * Phase 1 is honest about what it cannot do: `ready`, `specify`, `build`,
- * `challenge` and `decline` have real handlers, and every other state's stub
+ * `challenge`, `verify`, `handback` and `decline` have real handlers, and every
+ * other state's stub
  * THROWS "work-lean
  * stage <state> is not built yet". That is the point of the shape. The machine,
  * the step log and the config are real now, and a later phase plugs a handler in
@@ -41,11 +42,14 @@ import { buildDeps, buildOutcome } from "./build.ts";
 import { challengeDeps, challengeOutcome } from "./challenge.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
+import { handbackOutcome } from "./handback.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
+import { postHandback } from "./io.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Outcome, Step } from "./state.ts";
+import { verifyDeps, verifyOutcome } from "./verify.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -172,7 +176,8 @@ export function specifyDeps(): SpecifyDeps {
 /**
  * The phase-1 handler set.
  *
- * `ready`, `specify`, `build` and `decline` are real; everything else is a
+ * `ready`, `specify`, `build`, `challenge`, `verify`, `handback` and `decline`
+ * are real; everything else is a
  * placeholder that ends the run honestly. A stub that pretended to build would
  * be worse than a run that says which stage is missing.
  */
@@ -197,6 +202,8 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps());
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps());
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps());
+  handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
+  handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
   handlers.decline = async (ctx) => {
     // From the log, not from a closure: see `failedRulesFromLog`.
     const rules = failedRulesFromLog(ctx.steps);

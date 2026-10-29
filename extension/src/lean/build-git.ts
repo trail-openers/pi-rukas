@@ -95,7 +95,7 @@ export async function headDescendsFrom(exec: BuildExec, wt: string, sha: string)
  * text encoding that keeps every byte: a frozen test holding invalid UTF-8
  * must hash to the record the freeze made, and utf8 would rewrite it.
  */
-async function blobAt(
+export async function blobAt(
   exec: BuildExec,
   wt: string,
   ref: string,
@@ -117,6 +117,12 @@ async function blobAt(
  *
  * A zero-byte blob is never a frozen test, whatever its record says: a record of
  * the empty hash would otherwise vouch for a test that tests nothing.
+ *
+ * `build` reads a git refusal as "altered": its normalisation is about to
+ * rewrite the tree, and a blob it cannot read is one it cannot vouch for. The
+ * lean `verify` step reads the same refusal the other way — a git that could not
+ * run is infrastructure, never a verdict — so it calls
+ * {@link frozenTamperedAtHead} rather than sharing this judgement.
  */
 export async function frozenMatches(
   exec: BuildExec,
@@ -130,6 +136,31 @@ export async function frozenMatches(
     if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== want) bad.push(rel);
   }
   return bad;
+}
+
+/**
+ * Which of `frozen`'s committed blobs at `ref` hash differently from their
+ * records — and nothing else. A git read that FAILS is not an answer here: this
+ * returns only what a successful read proved, and {@link blobAt} returning
+ * `undefined` is the caller's signal that the probe itself broke.
+ *
+ * The lean `verify` step needs this split because its `green` is the run's own
+ * verdict: reporting a tamper because one `git show` timed out would send a
+ * developer to "fix" a contract nobody managed to read.
+ */
+export async function frozenTamperedAtHead(
+  exec: BuildExec,
+  wt: string,
+  ref: string,
+  frozen: Record<string, string>,
+): Promise<{ tampered: string[]; unreadable?: string }> {
+  const tampered: string[] = [];
+  for (const [rel, want] of Object.entries(frozen)) {
+    const bytes = await blobAt(exec, wt, ref, rel);
+    if (bytes === undefined) return { tampered, unreadable: rel };
+    if (bytes.length === 0 || sha256(bytes) !== want) tampered.push(rel);
+  }
+  return { tampered };
 }
 
 /**
