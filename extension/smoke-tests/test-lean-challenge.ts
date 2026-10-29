@@ -17,6 +17,9 @@
  *   (j) the prompt names the frozen tests, asks for new ones, ties them to criteria
  *   (k) no runner configured -> THROW (a round that could only say `none` judged nothing)
  *   (l) the worktree is not ours -> THROW before the dispatch
+ *   (o)-(q) the preconditions that must hold BEFORE a child is paid, and the
+ *       literal-pathspec shape of the test commit, are in
+ *       `test-lean-challenge-gates.ts`, which shares this fixture
  *   (m) phase1Handlers wires the real challenge step
  *   (n) every other state's stub throws rather than answering
  *

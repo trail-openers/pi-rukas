@@ -56,7 +56,7 @@ import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
-import { type PiSpec, parsePiSpec } from "./spec.ts";
+import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
@@ -82,6 +82,15 @@ export interface ChallengeDeps {
   testLimits?: TestRunLimits;
 }
 
+/**
+ * What `headSha` must return before any of it may be used: a git commit id.
+ * Everything downstream — `rev-parse HEAD^`, `diff <sha> <sha>`, `show <sha>:<p>`
+ * — reinterprets a value that is not one as a REF, so `"main"` or a ref name
+ * coming back from `rev-parse` would silently retarget the whole round at a
+ * different commit instead of failing.
+ */
+const COMMIT_ID = /^[0-9a-f]{40}$/;
+
 /** The spec, re-read from the forge — the same contract the builder worked to. */
 async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Promise<PiSpec> {
   let body: string;
@@ -92,6 +101,14 @@ async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Pro
   }
   const parsed = parsePiSpec(body);
   if (!parsed.ok) throw new ChallengeInfraError(`the issue's spec is unusable: ${parsed.reason}`);
+  // The SAME readiness judgement `specify` gates the run on, applied on re-read.
+  // The issue is editable while the run is going, so a spec that was ready at
+  // `ready` need not be ready now — and the round's whole claim is stated
+  // against these criteria. One that is no longer well-formed cannot be
+  // adjudicated, so it is infrastructure, not a verdict.
+  const rules = readiness(parsed.spec);
+  if (rules.length > 0)
+    throw new ChallengeInfraError(`the issue's spec is not ready: ${rules.join("; ")}`);
   return parsed.spec;
 }
 
@@ -126,6 +143,12 @@ async function assertTreeAndContract(
     throw new ChallengeInfraError((err as Error).message);
   }
   const headBefore = await headSha(deps.exec, wt);
+  // Validate BEFORE the value reaches anything: it is the ref this step resets
+  // to, proves red against, and makes its commit on top of.
+  if (!COMMIT_ID.test(headBefore))
+    throw new ChallengeInfraError(
+      `HEAD is not a commit id: ${JSON.stringify(headBefore)} in ${wt}`,
+    );
   try {
     // `headMustBe = headBefore`: registered, on the run's branch, sitting at the
     // head the frozen records were hashed at. Build passes the same pair for the

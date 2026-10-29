@@ -245,6 +245,14 @@ export async function resetWorktreeToBase(
  * the hooks a repository carries are somebody else's policy, and a pre-commit
  * hook that rewrites the index would put bytes in the frozen commit the step
  * never captured. With hooks off, the commit holds exactly what was added.
+ *
+ * `--literal-pathspecs` is a TOP-LEVEL git option and rides on all three calls
+ * that name paths — the add, the commit and the verification diff — the same
+ * way `build-normalise.ts` puts it ahead of the subcommand. It is load-bearing
+ * for the diff as much as the writes: a submitted test named `tests/[a]x.test.sh`
+ * is one file to this step, but a glob to git, and without the flag the add and
+ * the commit could sweep in a tracked `tests/ax.test.sh` while the un-literal
+ * diff still reported the pair as "exactly the paths we meant".
  */
 export async function commitTestFiles(
   exec: ExecFn,
@@ -263,8 +271,9 @@ export async function commitTestFiles(
       );
     }
   };
-  await run([...NO_HOOKS, "add", "--", ...paths]);
-  await run([...NO_HOOKS, "commit", "-m", message, "--", ...paths]);
+  const LITERAL = "--literal-pathspecs";
+  await run([LITERAL, ...NO_HOOKS, "add", "--", ...paths]);
+  await run([LITERAL, ...NO_HOOKS, "commit", "-m", message, "--", ...paths]);
 
   const head = await exec("git", {
     argv: [...NO_HOOKS, "rev-parse", "HEAD"],
@@ -282,7 +291,17 @@ export async function commitTestFiles(
   // `core.quotePath=off` is set too, so the quoting rule cannot return if `-z`
   // is ever dropped from this call.
   const diff = await exec("git", {
-    argv: [...NO_HOOKS, "-c", "core.quotePath=off", "diff", "--name-only", "-z", baseSha, headSha],
+    argv: [
+      LITERAL,
+      ...NO_HOOKS,
+      "-c",
+      "core.quotePath=off",
+      "diff",
+      "--name-only",
+      "-z",
+      baseSha,
+      headSha,
+    ],
     cwd: wt,
     timeout: 60_000,
     maxBuffer: 4 * 1024 * 1024,

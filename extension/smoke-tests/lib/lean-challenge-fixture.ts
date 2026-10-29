@@ -270,6 +270,13 @@ export interface RunOpts {
   noRunner?: boolean;
   /** A config whose runner names an executable that cannot be started. */
   runner?: string;
+  /**
+   * What `rev-parse HEAD` answers, overriding the real head. A case that poisons
+   * the tree itself would have `clean -fdx` erase the evidence before the step
+   * read it, and the claim under test is what the step does with a head that is
+   * not a commit id — not how it got there.
+   */
+  overrideHead?: string;
   /** The issue body the step re-reads; defaults to `SPEC_BODY` (one test criterion). */
   specBody?: string;
   /**
@@ -331,6 +338,8 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
   let dispatched = 0;
   const exec: ChallengeDeps["exec"] = async (cmd, o) => {
     if (cmd === "git" && o?.argv) gitArgvs.push(o.argv);
+    if (opts.overrideHead !== undefined && o?.argv?.includes("rev-parse"))
+      return { stdout: `${opts.overrideHead}\n`, stderr: "" };
     return execp(cmd, { ...o, env: gitEnvFor() });
   };
   const dispatch: ChallengeDeps["dispatch"] = async (spec: DispatchSpec) => {
