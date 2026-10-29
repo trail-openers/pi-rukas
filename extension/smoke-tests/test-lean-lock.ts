@@ -26,12 +26,36 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { acquireLock } from "../src/lean/lock.ts";
 import { leanLockFile } from "../src/lean/state.ts";
+import { formatIdentity, selfIdentity } from "../src/process-liveness.ts";
 import { makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
-/** A pid the kernel cannot hand out, so `processAlive` says dead on every OS. */
+/**
+ * A pid the kernel cannot hand out, so `processAlive` — and with it
+ * `judgeOwner` — says dead on every OS.
+ */
 const DEAD_PID = 4294967200;
+
+/** The identity this process writes into a lock it takes. */
+const OWN = formatIdentity(selfIdentity());
+
+/** An identity on this host, in this pid namespace, with a pid nothing owns. */
+function deadIdentity(): string {
+  const self = selfIdentity();
+  return formatIdentity({ ...self, pid: DEAD_PID, startTime: "1" });
+}
+
+/** An identity on another host — a pid this process cannot probe either way. */
+function foreignIdentity(): string {
+  const self = selfIdentity();
+  return formatIdentity({ ...self, host: "another-host", pid: process.pid });
+}
+
+/** A body in the OLD pid-only format — not an identity, so not judgeable. */
+function legacyPidBody(): string {
+  return `${process.pid}\n`;
+}
 
 /** The refusal thrown by a second acquire, or `undefined` when it succeeded. */
 function acquireThrows(dir: string, issue: number): Error | undefined {
@@ -60,8 +84,8 @@ function acquireThrows(dir: string, issue: number): Error | undefined {
       `the refusal says what it is (got ${second?.message})`,
     );
     assert(
-      (second?.message ?? "").includes(`pid ${process.pid}`),
-      `the refusal names the owner's pid (got ${second?.message})`,
+      (second?.message ?? "").includes(OWN),
+      `the refusal names the owner's identity (got ${second?.message})`,
     );
     assert(
       (second?.message ?? "").includes(`issue ${issue}`),
@@ -69,23 +93,29 @@ function acquireThrows(dir: string, issue: number): Error | undefined {
     );
     // The holder is still the holder: a refused reader must not disturb it.
     assert(
-      readFileSync(leanLockFile(dir, issue), "utf8").trim() === String(process.pid),
+      readFileSync(leanLockFile(dir, issue), "utf8").trim() === OWN,
       "the refused acquire leaves the live lock owned by its holder",
     );
     release();
+    assert(
+      acquireThrows(dir, issue) === undefined,
+      "releasing our own identity's lock frees the issue for the next acquire",
+    );
   } finally {
     cleanup();
   }
 }
 
-// ── a dead owner's lock is reclaimed ───────────────────────────────────────
+// ── a dead owner's lock is reclaimed, a foreign one is refused ─────────────
 
 {
   const { dir, cleanup } = tempDir();
   try {
     const issue = 61;
     mkdirSync(`${dir}/.pi/lean-state`, { recursive: true });
-    writeFileSync(leanLockFile(dir, issue), `${DEAD_PID}\n`, "utf8");
+    // Same host, same pid namespace, a pid nothing owns: the bytes a killed
+    // drive leaves, and the only body this process may call dead.
+    writeFileSync(leanLockFile(dir, issue), `${deadIdentity()}\n`, "utf8");
     let thrown: Error | undefined;
     let release: (() => void) | undefined;
     try {
@@ -95,10 +125,10 @@ function acquireThrows(dir: string, issue: number): Error | undefined {
     }
     assert(
       thrown === undefined,
-      `a lock whose pid is dead is reclaimed rather than refused (got ${String(thrown)})`,
+      `a lock whose identity is on this host with a dead pid is reclaimed rather than refused (got ${String(thrown)})`,
     );
     assert(
-      readFileSync(leanLockFile(dir, issue), "utf8").trim() === String(process.pid),
+      readFileSync(leanLockFile(dir, issue), "utf8").trim() === OWN,
       "the reclaimed lock now names the new holder",
     );
     release?.();
@@ -112,6 +142,57 @@ function acquireThrows(dir: string, issue: number): Error | undefined {
         }
       })(),
       "and releasing removes it, so the issue is not wedged",
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+{
+  const { dir, cleanup } = tempDir();
+  try {
+    const issue = 64;
+    mkdirSync(`${dir}/.pi/lean-state`, { recursive: true });
+    // A holder on another host — a sibling container, or another machine on a
+    // shared checkout. Its pid means nothing here, so `judgeOwner` says
+    // `foreign` and the lock is somebody's run: refuse, never steal.
+    const foreign = foreignIdentity();
+    writeFileSync(leanLockFile(dir, issue), `${foreign}\n`, "utf8");
+    const thrown = acquireThrows(dir, issue);
+    assert(
+      thrown !== undefined && /run already in progress/.test(thrown?.message ?? ""),
+      `a foreign identity is refused, not stolen (got ${String(thrown)})`,
+    );
+    assert(
+      (thrown?.message ?? "").includes(foreign),
+      `the refusal names the foreign holder (got ${thrown?.message})`,
+    );
+    assert(
+      readFileSync(leanLockFile(dir, issue), "utf8").trim() === foreign,
+      "a refused foreign lock survives the attempt exactly as it was",
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+{
+  const { dir, cleanup } = tempDir();
+  try {
+    const issue = 65;
+    mkdirSync(`${dir}/.pi/lean-state`, { recursive: true });
+    // The shape a lock written before the identity format carried. `parseIdentity`
+    // answers undefined for it, `judgeOwner` answers `foreign` for that, and the
+    // rule is the same as for any owner this process cannot judge: refuse.
+    writeFileSync(leanLockFile(dir, issue), legacyPidBody(), "utf8");
+    const thrown = acquireThrows(dir, issue);
+    assert(
+      thrown !== undefined && /run already in progress/.test(thrown?.message ?? ""),
+      `a bare pid body is refused as unreadable rather than swept (got ${String(thrown)})`,
+    );
+    assert(
+      readFileSync(leanLockFile(dir, issue), "utf8") === legacyPidBody(),
+      "refusing leaves the unparseable lock exactly where it was",
     );
   } finally {
     cleanup();
@@ -138,13 +219,12 @@ function acquireThrows(dir: string, issue: number): Error | undefined {
       readFileSync(leanLockFile(dir, issue), "utf8") === "",
       "refusing leaves the unreadable lock exactly where it was",
     );
-    // A body that is not a pid is the same complaint: `12abc` parses as 12 and
-    // would be judged as a liveness question.
-    writeFileSync(leanLockFile(dir, issue), "12abc\n", "utf8");
+    // A body that is neither an identity nor a pid is the same complaint.
+    writeFileSync(leanLockFile(dir, issue), "not-an-identity\n", "utf8");
     const garbage = acquireThrows(dir, issue);
     assert(
-      garbage !== undefined && /unreadable/.test(garbage?.message ?? ""),
-      `a lock whose body is not a pid is refused too (got ${String(garbage)})`,
+      garbage !== undefined && /run already in progress/.test(garbage?.message ?? ""),
+      `a lock whose body is not an identity is refused too (got ${String(garbage)})`,
     );
   } finally {
     cleanup();
@@ -159,11 +239,12 @@ function acquireThrows(dir: string, issue: number): Error | undefined {
     const issue = 63;
     const release = acquireLock(dir, issue);
     // What a takeover looks like after ours aged out: the path now holds
-    // another pid. Deleting it would release a run that is not ours.
-    writeFileSync(leanLockFile(dir, issue), `${DEAD_PID}\n`, "utf8");
+    // another identity. Deleting it would release a run that is not ours.
+    const other = deadIdentity();
+    writeFileSync(leanLockFile(dir, issue), `${other}\n`, "utf8");
     release();
     assert(
-      readFileSync(leanLockFile(dir, issue), "utf8").trim() === String(DEAD_PID),
+      readFileSync(leanLockFile(dir, issue), "utf8").trim() === other,
       "releasing after a takeover leaves the other holder's lock alone",
     );
     // And a lock that has gone entirely is not an error — the release closure

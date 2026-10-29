@@ -22,6 +22,7 @@ import path from "node:path";
 import { runLean } from "../src/lean/engine.ts";
 import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
 import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
+import { formatIdentity, selfIdentity } from "../src/process-liveness.ts";
 import {
   CLOCK,
   HAPPY,
@@ -33,6 +34,34 @@ import {
 import { driveRun, writePrefix } from "./lib/lean-real-log-fixture.ts";
 
 const { assert, failures } = makeAssert();
+
+/** The identity a live drive of THIS process writes into its lock. */
+const OWN = formatIdentity(selfIdentity());
+
+/** Same host, same pid namespace, a pid nothing owns — a killed drive's residue. */
+const DEAD = formatIdentity({ ...selfIdentity(), pid: 4294967200, startTime: "1" });
+
+/**
+ * A FRESH queue object per drive. One shared `HAPPY` spread would drain the
+ * same arrays across drives: the first consumes the single scripted `ci:green`
+ * and every later resume then throws `no scripted outcome for ci` inside its
+ * handler, which the engine logs as `{kind:"error"}` and ends handed-back.
+ * `scripted` copies each queue on construction, so the literal is the only
+ * place a queue is shared.
+ */
+function path48(): Partial<Record<LeanState, Outcome[]>> {
+  return {
+    ready: [{ kind: "ok" }],
+    specify: [{ kind: "ok" }],
+    build: [{ kind: "ok" }, { kind: "ok" }],
+    challenge: [{ kind: "none" }],
+    verify: [{ kind: "green" }],
+    publish: [{ kind: "ok" }],
+    review: [{ kind: "done" }],
+    ci: [{ kind: "green" }],
+    land: [{ kind: "merged" }],
+  };
+}
 
 const STEP = (issue: number, state: string, n: number, kind: string) => ({
   key: `${issue}:${state}:${n}`,
@@ -348,8 +377,8 @@ function forgedCiRed(dir: string, issue: number): void {
   const { dir, cleanup } = tempDir();
   try {
     mkdirSync(path.dirname(leanStateFile(dir, 45)), { recursive: true });
-    // A pid no process can own: the bytes a killed drive left behind.
-    writeFileSync(`${leanStateFile(dir, 45)}.lock`, "4294967200\n", "utf8");
+    // An identity no process can own: the bytes a killed drive left behind.
+    writeFileSync(`${leanStateFile(dir, 45)}.lock`, `${DEAD}\n`, "utf8");
     const { handlers } = scripted(HAPPY);
     const result = await runLean({ repoRoot: dir, issue: 45, handlers, now: ticking().now });
     assert(
@@ -367,7 +396,7 @@ function forgedCiRed(dir: string, issue: number): void {
   const { dir, cleanup } = tempDir();
   try {
     mkdirSync(path.dirname(leanStateFile(dir, 46)), { recursive: true });
-    writeFileSync(`${leanStateFile(dir, 46)}.lock`, `${process.pid}\n`, "utf8");
+    writeFileSync(`${leanStateFile(dir, 46)}.lock`, `${OWN}\n`, "utf8");
     const { handlers, calls } = scripted(HAPPY);
     let thrown: unknown;
     try {
@@ -376,8 +405,8 @@ function forgedCiRed(dir: string, issue: number): void {
       thrown = err;
     }
     assert(
-      thrown instanceof Error && /run already in progress \(pid \d+\)/.test(thrown.message),
-      `a live lock is refused with the owner's pid (got: ${String(thrown)})`,
+      thrown instanceof Error && /run already in progress \(.+\)/.test(thrown.message),
+      `a live lock is refused with the owner's identity (got: ${String(thrown)})`,
     );
     assert(Object.keys(calls).length === 0, "a refused drive runs no handler at all");
   } finally {
@@ -397,24 +426,7 @@ function forgedCiRed(dir: string, issue: number): void {
     // the invariant the step log exists for, and it is judged on call counts
     // rather than on the run's own claim.
     const issue = 47;
-    // A FRESH queue object per drive. One shared `HAPPY` spread would let the
-    // nine prefix drives below drain the same arrays: the first consumes the
-    // single scripted `ci:green` and every later resume then throws
-    // `no scripted outcome for ci` inside its handler, which the engine logs as
-    // `{kind:"error"}` and ends handed-back. `scripted` copies each queue on
-    // construction, so the literal is the only place a queue is shared.
-    const path = (): Partial<Record<LeanState, Outcome[]>> => ({
-      ready: [{ kind: "ok" }],
-      specify: [{ kind: "ok" }],
-      build: [{ kind: "ok" }, { kind: "ok" }],
-      challenge: [{ kind: "none" }],
-      verify: [{ kind: "green" }],
-      publish: [{ kind: "ok" }],
-      review: [{ kind: "done" }],
-      ci: [{ kind: "green" }],
-      land: [{ kind: "merged" }],
-    });
-    const { run: full } = await driveRun(dir, issue, path());
+    const { run: full } = await driveRun(dir, issue, path48());
     assert(
       full.steps.length > 0 && full.state === "landed",
       `the source run landed (${full.state}, ${full.steps.length} steps)`,
@@ -435,7 +447,7 @@ function forgedCiRed(dir: string, issue: number): void {
       // a prefix that is NOT yet complete, which is what the blank case pins.
       for (const blank of k < full.steps.length ? [false, true] : [false]) {
         writePrefix(dir, source, k, { blankLast: blank });
-        const { handlers, calls } = scripted(path());
+        const { handlers, calls } = scripted(path48());
         const resumed = await runLean({ repoRoot: dir, issue, handlers, now: ticking().now });
         const decidedStates = full.steps
           .slice(0, k)

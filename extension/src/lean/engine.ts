@@ -34,7 +34,6 @@ import {
   saveRun,
   stepKey,
 } from "./state.ts";
-import type { Transition } from "./transitions.ts";
 
 /** Everything a handler may look at. Nothing more — handlers take their args from here. */
 export interface HandlerCtx {
@@ -273,6 +272,44 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
 }
 
 /**
+ * Why a stamped `result` is not the answer its own step log gives, or
+ * `undefined` when it is.
+ *
+ * `result` is written only by `endRun`, and `endRun` writes exactly three
+ * things: a terminal state, the code `exitCodeFor` gives that state, and a
+ * reason. A resumed run therefore has to be able to say that the stamp it is
+ * holding could not have come from there, or the durable verdict is whatever
+ * the last writer of those two fields chose — and `state.ts` says plainly
+ * that the snapshot fields are a cache, not the record. These three rules are
+ * that claim turned back into a check:
+ *
+ *   - the fold must actually have reached a terminal state (a stamp on a
+ *     non-terminal position describes a run nobody ended);
+ *   - the code must be the one that state exits with;
+ *   - `landed` additionally needs `landEarned` to hold of the log, so the
+ *     merge a stamp claims is the merge the record earned.
+ *
+ * The third rule is the one that matters: `land` is gated on the arrival in
+ * `apply()` and on the derived position in `runLean`, and a stamp is read
+ * BEFORE either when it is already on the file.
+ */
+function stampedResultRefusal(
+  file: string,
+  derivedState: LeanState,
+  run: LeanRun,
+): string | undefined {
+  const result = run.result;
+  if (result === undefined) return undefined;
+  if (!isTerminal(derivedState))
+    return `${file}: stamped result disagrees with the step log (the log replays to ${derivedState}, which is not terminal, but the record carries ${JSON.stringify(result)})`;
+  if (result.code !== exitCodeFor(derivedState))
+    return `${file}: stamped result disagrees with the step log (${derivedState} exits ${exitCodeFor(derivedState)}, the record says ${result.code})`;
+  if (derivedState === "landed" && !landEarned(run))
+    return `${file}: stamped result disagrees with the step log (${landRefusal(run)}, yet the record claims ${result.code})`;
+  return undefined;
+}
+
+/**
  * Run one handler, record its outcome (or its throw), save once.
  */
 async function settle(
@@ -350,12 +387,25 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
       // well would drive the run from the cache the check exists to displace.
       const position = verifiedPosition(file, loaded);
       run = { ...loaded, state: position.state, counters: position.counters };
+      const derivedState = position.state;
       if (run.result !== undefined) {
         // The log folds to a terminal state and the record already carries its
         // result — a second `/work-lean` on a finished issue. Nothing runs and
         // nothing is written: the file is the answer. (A fold that reached a
         // terminal state with NO result is the crash-after-the-final-step
         // shape, and `driveLoop` ends it below, which is what stamps it.)
+        //
+        // The verbatim return is only for a record whose result its OWN log
+        // earned. `result` is a cache like `state` and `counters`, and before
+        // this check a file whose log folded to `landed` while its counters
+        // still carried `draft` and whose hand-written `result.code` was 0
+        // reported success: the fold had refused the merge, the stamp had
+        // granted it, and the stamp won because it was read first. So the
+        // stamp is judged against the derived position on the same three
+        // rules `endRun` writes: terminal, code matches the state, and a
+        // `landed` state whose land gate actually holds.
+        const refusal = stampedResultRefusal(file, derivedState, run);
+        if (refusal !== undefined) throw new LeanStateError(refusal);
         return { run, code: run.result.code, state: run.state };
       }
       if (run.state === "land" && !landEarned(run))

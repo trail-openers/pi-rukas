@@ -23,24 +23,25 @@
  * just created, because whichever renamed first has moved the file the second
  * one goes looking for.
  *
- * An unparseable or empty lock is NEVER stolen. Only a body whose pid parses
- * and whose process is demonstrably dead may be removed — a lock whose owner
- * this process cannot identify is somebody's run, and refusing is cheaper
- * than double-driving a merge.
+ * An unparseable or empty lock is NEVER stolen. Only a body that parses as an
+ * OWNER IDENTITY (`<host> <pidns> <pid> <starttime>`) and whose process
+ * `judgeOwner` can prove dead may be removed — a lock whose owner this process
+ * cannot identify is somebody's run, and refusing is cheaper than double-driving
+ * a merge.
+ *
+ * The body is an identity rather than a bare pid for the reason
+ * `process-liveness.ts` gives: a pid read in a pid namespace this process
+ * cannot see into proves nothing either way, so a container fleet would call
+ * every live sibling a corpse and reap it. The policy is the one
+ * `host-spawn-slots.ts` applies to slot files — `formatIdentity` / `parseIdentity`
+ * / `judgeOwner`, with `alive`, `foreign`, `unknown` and an unreadable body all
+ * refused and only `dead` reclaimed.
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  closeSync,
-  linkSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { processAlive } from "../process-liveness.ts";
+import { formatIdentity, judgeOwner, parseIdentity, selfIdentity } from "../process-liveness.ts";
 import { LeanStateError, leanLockFile } from "./state.ts";
 
 /**
@@ -51,17 +52,22 @@ import { LeanStateError, leanLockFile } from "./state.ts";
 export function acquireLock(repoRoot: string, issue: number): () => void {
   const file = leanLockFile(repoRoot, issue);
   mkdirSync(dirname(file), { recursive: true });
-  const own = `${process.pid}\n`;
+  const own = formatIdentity(selfIdentity());
   // One attempt, then one more after a stale sweep; a second EEXIST means
   // somebody took the lock between the check and here, and looping further
   // would turn contention into a hang.
   for (let attempt = 0; attempt < 2; attempt++) {
     if (tryLink(file, own)) return releaser(file, own);
-    const owner = readLockPid(file);
-    if (owner === "unreadable") throw new LeanStateError(`lock unreadable: ${file}`);
-    if (owner !== undefined) {
-      if (processAlive(owner))
-        throw new LeanStateError(`run already in progress (pid ${owner}) for issue ${issue}`);
+    const body = readLockBody(file);
+    if (body === "unreadable") throw new LeanStateError(`lock unreadable: ${file}`);
+    if (body !== undefined) {
+      // Only a holder this process can PROVE dead may be cleared. `alive`,
+      // `foreign` (another host, another pid namespace, half an identity) and
+      // an unparseable body — which `judgeOwner` answers `foreign` for — all
+      // mean "somebody's run I cannot judge", and the safe answer to that is
+      // to refuse rather than to drive the same issue twice.
+      if (judgeOwner(parseIdentity(body), selfIdentity()) !== "dead")
+        throw new LeanStateError(`run already in progress (${body}) for issue ${issue}`);
       stealStale(file);
     } else {
       // The path is there but cannot be read at all — a permission or I/O
@@ -69,9 +75,9 @@ export function acquireLock(repoRoot: string, issue: number): () => void {
       throw new LeanStateError(`lock unreadable: ${file}`);
     }
   }
-  const racer = readLockPid(file);
+  const racer = readLockBody(file);
   throw new LeanStateError(
-    `run already in progress${typeof racer === "number" ? ` (pid ${racer})` : ""} for issue ${issue}`,
+    `run already in progress${racer !== undefined && racer !== "unreadable" ? ` (${racer})` : ""} for issue ${issue}`,
   );
 }
 
@@ -142,7 +148,10 @@ function releaser(file: string, own: string): () => void {
       return;
     }
     // A lock that now names somebody else was taken after ours went stale and
-    // was cleared: deleting it would release a run that is not ours.
+    // was cleared: deleting it would release a run that is not ours. Compared
+    // against the very bytes we linked, so the rule is "still us" and not
+    // "still this pid" — a recycled pid is exactly what the identity's start
+    // time exists to tell apart.
     if (current.trim() !== own.trim()) return;
     try {
       unlinkSync(file);
@@ -153,14 +162,16 @@ function releaser(file: string, own: string): () => void {
 }
 
 /**
- * The pid a lock file names.
+ * The lock's body, verbatim.
  *
- * Three answers, deliberately distinct: a number (a pid to judge), `undefined`
- * (no pid at all — nothing to judge, so nothing to steal) and `"unreadable"`
- * (the bytes are there but mean nothing, which is a different complaint an
- * operator should see verbatim).
+ * Two answers, deliberately distinct: the trimmed bytes (an identity for
+ * `judgeOwner` to pronounce on) and `"unreadable"` (the path exists but its
+ * bytes cannot be read or are empty, which is a different complaint an
+ * operator should see verbatim). No judgement happens here: whether a body IS
+ * an identity is `parseIdentity`'s question, and whether this process may call
+ * its holder dead is `judgeOwner`'s.
  */
-function readLockPid(file: string): number | "unreadable" | undefined {
+function readLockBody(file: string): string | "unreadable" | undefined {
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
@@ -171,8 +182,5 @@ function readLockPid(file: string): number | "unreadable" | undefined {
   }
   const trimmed = raw.trim();
   if (trimmed === "") return "unreadable";
-  const n = Number.parseInt(trimmed, 10);
-  // `12abc` parses as 12 and would be judged as a pid; a body has to BE one.
-  if (!/^\d+$/.test(trimmed)) return "unreadable";
-  return Number.isInteger(n) && n > 0 ? n : "unreadable";
+  return trimmed;
 }

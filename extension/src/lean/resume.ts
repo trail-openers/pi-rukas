@@ -151,6 +151,3 @@ function sameCounters(a: RunCounters, b: RunCounters): boolean {
     a.draft === b.draft
   );
 }
-
-/** Re-exported for the fold's callers that want the type without state.ts. */
-export type { Outcome };
