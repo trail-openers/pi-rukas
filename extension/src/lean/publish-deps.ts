@@ -14,9 +14,11 @@
  * is the honest answer to "nobody looked".
  */
 
+import { execFileSync } from "node:child_process";
 import { execp } from "../exec.ts";
 import type { Forge } from "../forge-types.ts";
 import { resolveMainline } from "../mainline.ts";
+import { withSshDefaults } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { fetchIssueBody } from "./io.ts";
 import type { VerifyExec } from "./verify-types.ts";
@@ -33,9 +35,22 @@ export class PublishInfraError extends Error {
  */
 export type PublishExec = VerifyExec;
 
-/** The forge in the shape the step uses: list, then create. Nothing else. */
+/**
+ * The forge in the shape the step uses: list, read, (re)draft, then create.
+ * Nothing else.
+ *
+ * `prDraft` is here because a REUSED PR carries the draft state the previous run
+ * left on it: `prCreate`'s `draft` option only ever applies to a PR this step
+ * opens. Without it a run whose verify went red would attach a fresh unverified
+ * head to a PR that reads READY — the one thing this step's whole design
+ * refuses. `prView` exists because `gh pr list --json` does not carry `isDraft`
+ * (only `gh pr view --json …,isDraft,…` does), so the list reply alone cannot
+ * tell a reused PR's state.
+ */
 export interface PublishForge {
   prList: Forge["prList"];
+  prView: Forge["prView"];
+  prDraft: Forge["prDraft"];
   prCreate: Forge["prCreate"];
 }
 
@@ -83,6 +98,57 @@ export async function assertPublishableBranch(repoRoot: string, branch: string):
     throw new PublishInfraError(`refusing to push to the mainline ${mainline.branch}`);
 }
 
+/**
+ * The non-interactive env a publish push runs with, in the production seam only.
+ *
+ * `GIT_TERMINAL_PROMPT=0` closes the HTTPS credential prompt and `BatchMode=yes`
+ * makes ssh fail instead of reading a passphrase from /dev/tty — a forwarded
+ * agent that vanished parks a push indefinitely (the #1095 shape, measured at
+ * ~5h on a sibling project). An operator's `GIT_SSH_COMMAND` is kept verbatim
+ * and the defaults are only appended when absent, so a repo configured with its
+ * own key survives the wrapper.
+ *
+ * The helper is imported rather than hand-rolled here: `netGitEnv` itself sits
+ * in `work-driver-net-git.ts`, whose `runNetGit` pulls the whole driver graph
+ * (dispatch, lens review, spawn) into a lean step — so this file takes the pure
+ * string composer `withSshDefaults` and does its own precedence: an explicit
+ * `GIT_SSH_COMMAND` or `GIT_SSH` wins verbatim, otherwise the repo's
+ * `core.sshCommand` (git's own precedence, which an env-only overlay cannot
+ * see), otherwise plain `ssh` with the defaults appended.
+ */
+export function publishGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const operator = base.GIT_SSH_COMMAND?.trim();
+  return {
+    ...base,
+    GIT_TERMINAL_PROMPT: "0",
+    ...(operator
+      ? { GIT_SSH_COMMAND: withSshDefaults(operator) }
+      : base.GIT_SSH
+        ? {}
+        : { GIT_SSH_COMMAND: withSshDefaults(repoSshCommand() ?? "ssh") }),
+  };
+}
+
+/** The repo's `core.sshCommand`, read once per process; undefined when unset. */
+function repoSshCommand(): string | undefined {
+  const hit = sshConfigCache.get("repo");
+  if (hit !== undefined) return hit;
+  let value: string | undefined;
+  try {
+    value =
+      execFileSync("git", ["config", "--get", "core.sshCommand"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || undefined;
+  } catch {
+    // unset (git config exits 1) or not a repo: the default ssh command applies
+  }
+  sshConfigCache.set("repo", value);
+  return value;
+}
+
+const sshConfigCache = new Map<string, string | undefined>();
+
 /** Production dependencies: the real executor, the real issue read, the real forge. */
 export function publishDeps(): PublishDeps {
   return {
@@ -91,7 +157,15 @@ export function publishDeps(): PublishDeps {
     // `killGroup`), so the production seam is that executor rather than the
     // narrower executor type the worktree helpers declare (which has no
     // `killGroup`).
-    exec: (cmd, o) => execp(cmd, o ?? {}),
+    //
+    // The push is the one call that leaves the clone, so it is the one call this
+    // seam gives a non-interactive env to (see `publishGitEnv`). Every other git
+    // call the step makes is local and keeps the caller's env verbatim.
+    exec: (cmd, o) =>
+      execp(cmd, {
+        ...(o ?? {}),
+        ...(cmd === "git" && o?.env === undefined ? { env: publishGitEnv() } : {}),
+      }),
     fetchBody: fetchIssueBody,
     forge: forgeForPublish,
   };

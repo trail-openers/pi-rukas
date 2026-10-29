@@ -55,11 +55,26 @@ export interface PublishBodyInput {
   baseSha: string;
 }
 
-/** The result cell for a test / command criterion, given the gate's verdict. */
+/** The result cell for a `test` criterion, given the gate's verdict. */
 function rowCells(kind: "green" | "red" | undefined): string {
   if (kind === "green") return "green";
   if (kind === "red") return "red";
   return "not run";
+}
+
+/**
+ * The result cell for one criterion.
+ *
+ * A `command` criterion is NEVER printed as green: `verify` runs the frozen
+ * tests and the project's configured tiers, but it does not execute a
+ * criterion's own `command`, so the gate's verdict says nothing about that
+ * command having passed. Printing "green" there would be the body claiming an
+ * execution that never happened.
+ */
+function resultCell(c: PiSpec["criteria"][number], kind: "green" | "red" | undefined): string {
+  if (c.verify === "manual") return "manual — needs a human";
+  if (c.verify === "command") return "not executed (command)";
+  return rowCells(kind);
 }
 
 /** The test paths a criterion claims, filtered to printable ones. */
@@ -94,9 +109,8 @@ export function publishBody(o: PublishBodyInput): string {
     "| --- | --- | --- | --- | --- |",
   ];
   for (const c of o.spec.criteria) {
-    const result = c.verify === "manual" ? "manual — needs a human" : rowCells(o.verifyKind);
     lines.push(
-      `| ${c.id} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${result} |`,
+      `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind)} |`,
     );
   }
   lines.push("", "## Verification");

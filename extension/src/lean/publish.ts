@@ -136,13 +136,22 @@ async function pushHead(
   // line per ref, and a `Done` trailer — and for a brand-new ref it puts an
   // ASTERISK in the from/to columns (`* <sha> refs/heads/x\t[new branch]`), so
   // neither column is reliably a sha. The FLAG is git's own verdict: `[new
-  // branch]`, `[up to date]`, `[fast-forward]` and `[forced update]` are the
-  // successes and `[rejected]` is not — and the exit code stays 0 for the
-  // rejection too, which is exactly why the exit code cannot be the check.
+  // branch]`, `[up to date]` and `[fast-forward]` are the successes and `[rejected]`
+  // is not — and the exit code stays 0 for the rejection too, which is exactly
+  // why the exit code cannot be the check.
   const out = ran?.stdout ?? "";
   if (/\[rejected\]/.test(out))
     throw new PublishInfraError(`the push of ${branch} was rejected: ${out.slice(0, 500)}`);
-  if (!/\[(?:new branch|up to date|fast-forward|forced update)\]/.test(out))
+  // `forced update` is deliberately NOT a success flag: this push never passes
+  // `--force`, so git cannot report one legitimately. A line saying the ref was
+  // rewritten is therefore evidence something else forced it (a `+refspec` or a
+  // hook), and history outside the clone is exactly what this step may not
+  // rewrite — so it refuses rather than accepting a flag it did not earn.
+  if (/\[forced update\]/.test(out))
+    throw new PublishInfraError(
+      `the push of ${branch} reported a forced update, which this step never asks for: ${out.slice(0, 500)}`,
+    );
+  if (!/\[(?:new branch|up to date|fast-forward)\]/.test(out))
     throw new PublishInfraError(
       `the push of ${branch} reported no success flag: ${out.slice(0, 500)}`,
     );
@@ -165,8 +174,45 @@ async function openPr(
     );
   });
   const found = (open ?? []).find((pr) => pr.headRefName === branch);
-  if (found !== undefined) return found;
-  return f.prCreate(`work-lean #${issue}: ${oneLineTitle(problem)}`, branch, body, { draft });
+  if (found === undefined)
+    return f.prCreate(`work-lean #${issue}: ${oneLineTitle(problem)}`, branch, body, { draft });
+  // The PR is the PREVIOUS run's: `prCreate`'s `draft` option applies only to a
+  // PR this step opens, so a reused one keeps whatever state it was left in. If
+  // this run is not green, a ready PR must not stand behind an unverified head,
+  // so it goes back to draft — and a `prDraft` that fails is infrastructure,
+  // never a no-op: silently leaving it ready is the lie this step exists to
+  // prevent. `gh pr list --json` carries no `isDraft`, so the state is read with
+  // `prView` when the list did not say; a read that cannot answer is refused
+  // rather than guessed at, because guessing "draft" is what would leave it ready.
+  if (!draft) return found;
+  if ((await draftStateOf(f, found)) === false) {
+    await f.prDraft(found.number).catch((err: unknown) => {
+      throw new PublishInfraError(
+        `could not put the reused PR #${found.number} back to draft: ${(err as Error)?.message ?? String(err)}`,
+      );
+    });
+  }
+  return found;
+}
+
+/**
+ * Whether a reused PR reports itself ready, asked of the forge when the list
+ * reply did not carry the flag (`gh pr list --json` has no `isDraft`).
+ *
+ * Throws when neither reply said: a run that cannot tell must not decide the PR
+ * is already a draft, because that decision is exactly what leaves an unverified
+ * PR mergeable.
+ */
+async function draftStateOf(f: PublishForge, pr: NormalizedPullRequest): Promise<boolean> {
+  if (pr.isDraft !== undefined) return pr.isDraft;
+  const viewed = await f
+    .prView(pr.number)
+    .then((v) => v?.isDraft)
+    .catch(() => undefined);
+  if (viewed !== undefined) return viewed;
+  throw new PublishInfraError(
+    `could not tell whether the reused PR #${pr.number} is a draft, and a not-green run must not leave it ready`,
+  );
 }
 
 /** A PR title is one line, and the issue's problem statement is not. */
@@ -228,7 +274,12 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       spec,
       tests: testsFromLog(ctx.steps),
       verifyKind,
-      ...(v?.outcome?.verifiedHead === undefined ? {} : { verifiedHead: v.outcome.verifiedHead }),
+      // `verifiedHead` is the green verdict's subject. A red record's head (or
+      // one left over from an older green) printed under a red verdict would
+      // read as "this commit passed", so it travels with a green only.
+      ...(verifyKind === "green" && v?.outcome?.verifiedHead !== undefined
+        ? { verifiedHead: v.outcome.verifiedHead }
+        : {}),
       ...(v?.outcome?.reason === undefined ? {} : { verifyReason: v.outcome.reason }),
       draft,
       version: ctx.run.version,

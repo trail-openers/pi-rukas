@@ -25,13 +25,21 @@
  *   (k) wiring: phase1Handlers.publish is the step, not the notBuilt stub
  *   (l) a state file whose branch is `main`, or `refs/heads/lean/x` -> throw
  *       BEFORE the push; origin's main unchanged, no prCreate
+ *   (m) a reused PR that reports itself READY while this run is not green ->
+ *       prDraft is called; when prDraft fails the step throws rather than
+ *       leaving a ready PR over unverified work
+ *   (n) the push runs with a non-interactive git env (no terminal / ssh prompt)
+ *   (o) a push that reports `[forced update]` is a REFUSAL, not a success flag
+ *
+ * The PR-body RENDERER (`lean/publish-body`) has its own file,
+ * `test-lean-publish-body.ts`; the cases here that read a body assert only what
+ * the step's own record decides — which head a green may print, which rows a
+ * verdict colours — against the same fixture.
  */
 
 import { handbackOutcome } from "../src/lean/handback.ts";
-import { publishBody } from "../src/lean/publish-body.ts";
-import { PublishInfraError } from "../src/lean/publish-deps.ts";
+import { PublishInfraError, publishGitEnv } from "../src/lean/publish-deps.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
-import { fenceText, oneLine } from "../src/lean/text-fence.ts";
 import { ROOTS, defaultSpec, fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 import { decided, handbackCtx } from "./lib/lean-verify-fixture.ts";
 
@@ -332,6 +340,119 @@ for (const [issue, branch] of [
   assert(r.forge.prCreateCalls.length === 0, `(l) ${JSON.stringify(branch)} opens no PR`);
 }
 
+// ------------------------------- (m) a reused READY PR is put back to draft
+//
+// `prCreate`'s `draft` option only applies to a PR this step OPENS, so a reused
+// PR keeps the state the previous run left it in. A not-green run that reuses a
+// ready PR must re-draft it (or refuse) — never leave a mergeable PR attached to
+// a head nothing verified.
+{
+  const ready = fakePr(90, "https://forge.example/pull/90", "lean/issue-415", false);
+  const r = await runPublish({ issue: 415, verify: { kind: "red" }, openPrs: [ready] });
+  assert(
+    r.outcome?.kind === "ok",
+    `(m) a not-green run over a reused PR still publishes (got ${r.threw?.message})`,
+  );
+  assert(
+    r.forge.prDraftCalls.length === 1 && r.forge.prDraftCalls[0] === 90,
+    `(m) the reused ready PR is put back to draft (${JSON.stringify(r.forge.prDraftCalls)})`,
+  );
+  assert(
+    originHead(r.origin, "lean/issue-415") === r.head,
+    "(m) the work is pushed, but only behind a draft",
+  );
+}
+
+// A PR already marked draft needs nothing done to it.
+{
+  const draftPr = fakePr(91, "https://forge.example/pull/91", "lean/issue-416", true);
+  const r = await runPublish({ issue: 416, verify: { kind: "red" }, openPrs: [draftPr] });
+  assert(
+    r.forge.prDraftCalls.length === 0,
+    `(m) a reused PR already in draft is left alone (${JSON.stringify(r.forge.prDraftCalls)})`,
+  );
+}
+
+// A green run reuses a ready PR untouched — the PR is verified work.
+{
+  const ready = fakePr(92, "https://forge.example/pull/92", "lean/issue-417", false);
+  const r = await runPublish({ issue: 417, verify: { kind: "green" }, openPrs: [ready] });
+  assert(
+    r.outcome?.kind === "ok" && r.forge.prDraftCalls.length === 0,
+    `(m) a green run does not draft its own verified PR (${r.forge.prDraftCalls.length} drafts, ${r.threw?.message})`,
+  );
+}
+
+// The forge refuses the re-draft: the step throws rather than leaving it ready.
+{
+  const ready = fakePr(93, "https://forge.example/pull/93", "lean/issue-418", false);
+  const r = await runPublish({
+    issue: 418,
+    verify: { kind: "red" },
+    openPrs: [ready],
+    draftThrows: true,
+  });
+  assert(
+    r.threw instanceof PublishInfraError && /back to draft/.test(r.threw.message),
+    `(m) a prDraft that fails is infrastructure, not a silent ready PR (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    r.outcome === undefined,
+    "(m) no ok outcome is recorded for a PR left ready over unverified work",
+  );
+}
+
+// `gh pr list --json` carries no isDraft, so the step asks `prView` — and a
+// forge that answers neither is a refusal, never a guess of "already a draft".
+{
+  const unknown = fakePr(94, "https://forge.example/pull/94", "lean/issue-419", undefined);
+  const r = await runPublish({
+    issue: 419,
+    verify: { kind: "red" },
+    openPrs: [unknown],
+    viewThrows: true,
+  });
+  assert(
+    r.threw instanceof PublishInfraError && /could not tell whether/.test(r.threw.message),
+    `(m) a draft state nobody could read is refused (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    r.forge.prViewCalls.length === 1 && r.forge.prViewCalls[0] === 94,
+    `(m) the forge was asked before it was guessed at (${JSON.stringify(r.forge.prViewCalls)})`,
+  );
+  assert(
+    r.forge.prDraftCalls.length === 0,
+    "(m) nothing was drafted on a state the step could not read",
+  );
+}
+
+// ------------------- (o) a `forced update` is a refusal, never an accepted flag
+//
+// The step never passes `--force`, so git cannot print that flag for a push it
+// ran. Anything printing it rewrote history outside the clone, which is the one
+// act this step may not take under a success-looking exit code.
+{
+  const r = await runPublish({
+    issue: 421,
+    verify: { kind: "green" },
+    execOver: (cmd, opts) =>
+      opts?.argv?.includes("push") === true
+        ? Promise.resolve({
+            stdout: "To origin\n * [new branch]      abc -> lean/issue-421 [forced update]\nDone\n",
+            stderr: "",
+          })
+        : undefined,
+  });
+  assert(
+    r.threw instanceof PublishInfraError && /forced update/.test(r.threw.message),
+    `(o) a push reporting a forced update is refused (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    r.forge.prCreateCalls.length === 0 && r.forge.prListCalls === 0,
+    "(o) a refused push opens no PR",
+  );
+}
+
 // ----------------------------------------------------------- (k) the wiring is real
 {
   const { phase1Handlers } = await import("../src/lean/command.ts");
@@ -358,61 +479,6 @@ for (const [issue, branch] of [
     /does not exist/.test(message),
     "(k) the real step ran far enough to look for the worktree and refuse",
   );
-}
-
-/**
- * A path the body prints: the brief's print filter, applied verbatim. No
- * whitespace (a space would sit inside a table cell), no shell or markdown
- * metacharacter, no newline that could end the row.
- */
-const BODY_PATH = /^[A-Za-z0-9._/-]+$/;
-function printable(p: string): boolean {
-  return BODY_PATH.test(p);
-}
-
-// --------------------------------------------------- text-fence's own two guarantees
-{
-  assert(fenceText("a\nb", 100).startsWith("```text\n"), "fenceText opens a text fence");
-  assert(
-    fenceText("x".repeat(20), 5) === "```text\nxxxxx…\n```",
-    "fenceText clips with an ellipsis",
-  );
-  assert(!fenceText("```` evil", 100).includes("````"), "fenceText neutralises a run of backticks");
-  assert(oneLine("a\n### b\tc", 50) === "a ### b c", "oneLine flattens every control character");
-  assert(oneLine("a|b", 50) === "a\\|b", "oneLine escapes a pipe so a row cannot gain a column");
-  assert(oneLine("a".repeat(20), 5).endsWith("…"), "oneLine clips");
-  const paths = ["ok/test-1.sh", "bad name;rm", "bad|pipe", "bad\ttab.sh"];
-  const body = publishBody({
-    issue: 1,
-    spec: { problem: "p", size: "S", criteria: [{ id: "AC1", text: "t", verify: "command" }] },
-    tests: { AC1: paths },
-    verifyKind: "red",
-    verifyReason: "tail",
-    draft: true,
-    version: "1.2.3",
-    models: { developer: "m" },
-    baseSha: "a".repeat(40),
-  });
-  assert(
-    paths.filter((p) => !printable(p)).every((p) => !body.includes(p)),
-    `publishBody drops every path carrying a character it may not print (${paths.filter((p) => !printable(p)).join(" | ")})`,
-  );
-  assert(
-    paths.filter(printable).every((p) => body.includes(`\`${p}\``)),
-    "publishBody prints every path it may print",
-  );
-  assert(body.includes("`ok/test-1.sh`"), "publishBody prints a well-formed path");
-
-  const row = lines(body)[6] ?? "";
-  assert(
-    row.startsWith("| AC1 | t | command | `ok/test-1.sh`") && row.endsWith("| red |"),
-    `publishBody renders the row in the promised column order (${JSON.stringify(row)})`,
-  );
-  assert(
-    body.includes("- pi-rukas 1.2.3") && body.includes(`- base \`${"a".repeat(40)}\``),
-    "publishBody stamps the version and the base sha",
-  );
-  assert(body.includes("- draft:"), "a draft body says why it is a draft");
 }
 
 for (const dir of ROOTS) {

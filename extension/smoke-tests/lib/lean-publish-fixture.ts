@@ -26,6 +26,7 @@ import { execp } from "../../src/exec.ts";
 import type { NormalizedPullRequest } from "../../src/forge-types.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { PublishDeps } from "../../src/lean/publish-deps.ts";
+import { publishGitEnv } from "../../src/lean/publish-deps.ts";
 import { renderPiSpec } from "../../src/lean/spec.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
@@ -54,7 +55,12 @@ export function defaultSpec(): PiSpec {
 }
 
 /** A PR in the shape the forge adapter returns, with just the fields publish reads. */
-export function fakePr(number: number, url: string, headRefName: string): NormalizedPullRequest {
+export function fakePr(
+  number: number,
+  url: string,
+  headRefName: string,
+  isDraft?: boolean,
+): NormalizedPullRequest {
   return {
     number,
     title: "t",
@@ -66,6 +72,7 @@ export function fakePr(number: number, url: string, headRefName: string): Normal
     author: undefined,
     mergeable: null,
     mergeStateStatus: null,
+    isDraft,
     labels: [],
     createdAt: undefined,
     updatedAt: undefined,
@@ -76,9 +83,19 @@ export function fakePr(number: number, url: string, headRefName: string): Normal
 export interface FakeForge {
   prListCalls: number;
   prCreateCalls: { title: string; head: string; body: string; draft?: boolean }[];
+  /** Numbers the step asked the forge to put back to draft. */
+  prDraftCalls: number[];
+  /** Numbers the step asked to read (the list reply carries no `isDraft`). */
+  prViewCalls: number[];
+  /** Make `prView` reject — the forge cannot tell the step anything. */
+  viewThrows: boolean;
+  /** Make `prDraft` reject — the forge refuses to put a reused PR back to draft. */
+  draftThrows: boolean;
   prs: NormalizedPullRequest[];
   listThrows: boolean;
   prList: (opts?: { state?: string; sourceBranch?: string }) => Promise<NormalizedPullRequest[]>;
+  prView: (number: number) => Promise<NormalizedPullRequest>;
+  prDraft: (number: number) => Promise<void>;
   prCreate: (
     title: string,
     headBranch: string,
@@ -88,15 +105,23 @@ export interface FakeForge {
 }
 
 /** The fake forge: it records, and it answers whatever the case loaded into it. */
-export function fakeForge(over: Partial<Omit<FakeForge, "prList" | "prCreate">> = {}): FakeForge {
+export function fakeForge(
+  over: Partial<Omit<FakeForge, "prList" | "prView" | "prDraft" | "prCreate">> = {},
+): FakeForge {
   const f: FakeForge = {
     prListCalls: 0,
     prCreateCalls: [],
+    prDraftCalls: [],
+    prViewCalls: [],
+    viewThrows: false,
+    draftThrows: false,
     prs: [],
     listThrows: false,
-    // Placeholders, assigned just below: the two methods close over `f` itself,
-    // so they cannot appear in the object literal that creates `f`.
+    // Placeholders, assigned just below: the methods close over `f` itself, so
+    // they cannot appear in the object literal that creates `f`.
     prList: async () => [],
+    prView: async (n) => fakePr(n, "https://forge.example/none", "none"),
+    prDraft: async () => {},
     prCreate: async () => fakePr(0, "https://forge.example/none", "none"),
     ...over,
   };
@@ -104,6 +129,17 @@ export function fakeForge(over: Partial<Omit<FakeForge, "prList" | "prCreate">> 
     f.prListCalls++;
     if (f.listThrows) throw new Error("forge: prList could not reach the host");
     return f.prs;
+  };
+  f.prView = async (n: number) => {
+    f.prViewCalls.push(n);
+    if (f.viewThrows) throw new Error("forge: prView could not reach the host");
+    const found = f.prs.find((pr) => pr.number === n);
+    if (found === undefined) throw new Error(`forge: no PR #${n}`);
+    return found;
+  };
+  f.prDraft = async (n: number) => {
+    f.prDraftCalls.push(n);
+    if (f.draftThrows) throw new Error("forge: prDraft could not reach the host");
   };
   f.prCreate = async (
     title: string,
@@ -133,6 +169,19 @@ export interface PublishOpts {
   originForeign?: boolean;
   /** The fake forge's open PRs; `undefined` means "load none". */
   openPrs?: NormalizedPullRequest[];
+  /** Make `prView` reject, so the step cannot read a reused PR's draft state. */
+  viewThrows?: boolean;
+  /** Make `prDraft` reject, so a reused PR cannot be put back to draft. */
+  draftThrows?: boolean;
+  /**
+   * Answer one git call before the fixture's own executor sees it — the seam for
+   * a case that must control a push's porcelain output. Return `undefined` to
+   * let the call through.
+   */
+  execOver?: (
+    cmd: string,
+    opts?: Parameters<PublishDeps["exec"]>[1],
+  ) => Promise<{ stdout: string; stderr?: string }> | undefined;
   /** Make `prList` reject. */
   listThrows?: boolean;
   /** A branch name to force onto the run (an unsafe ref, for the handback case). */
@@ -155,6 +204,8 @@ export interface PublishRun {
   origin: string;
   forge: FakeForge;
   body: string;
+  /** The env each git child received, in call order. */
+  gitEnvs: NodeJS.ProcessEnv[];
 }
 
 /** The step log a run carries when it reaches publish with a green gate. */
@@ -274,33 +325,39 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   const forge = fakeForge({
     prs: o.openPrs ?? [],
     listThrows: o.listThrows === true,
+    viewThrows: o.viewThrows === true,
+    draftThrows: o.draftThrows === true,
   });
   const spec = o.spec ?? defaultSpec();
+  /** The env every git child ran with, so a case can assert on the push's. */
+  const seenEnvs: NodeJS.ProcessEnv[] = [];
   const deps: PublishDeps = {
-    exec: (cmd, opts) =>
-      execp(cmd, { ...opts, env: opts?.env ?? gitTestEnv(), cwd: opts?.cwd ?? wt }),
+    // The production seam's env decision is applied HERE rather than inside
+    // `publishDeps()` — the fixture injects its own executor, so a push env the
+    // fixture never forwards would be a guarantee no test can observe. Same
+    // helper, same condition (`cmd === "git"` and no env supplied by the caller).
+    exec: async (cmd, opts) => {
+      const override = o.execOver?.(cmd, opts);
+      if (override !== undefined) return override;
+      const env = opts?.env ?? (cmd === "git" ? publishGitEnv(gitTestEnv()) : gitTestEnv());
+      seenEnvs.push(env);
+      return execp(cmd, { ...opts, env, cwd: opts?.cwd ?? wt });
+    },
     fetchBody: async () => o.body ?? renderPiSpec(spec),
     forge: async () => forge,
   };
   const { publishOutcome } = await import("../../src/lean/publish.ts");
+  const shared = { repoRoot, wt, head, origin, forge, gitEnvs: seenEnvs };
   try {
     return {
       outcome: await publishOutcome(ctx, deps),
-      repoRoot,
-      wt,
-      head,
-      origin,
-      forge,
+      ...shared,
       body: forge.prCreateCalls[0]?.body ?? "",
     };
   } catch (err) {
     return {
       threw: err as Error,
-      repoRoot,
-      wt,
-      head,
-      origin,
-      forge,
+      ...shared,
       body: forge.prCreateCalls[0]?.body ?? "",
     };
   }
