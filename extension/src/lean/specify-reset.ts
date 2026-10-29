@@ -45,6 +45,15 @@ export class SpecifyCommitError extends Error {
   override readonly name = "SpecifyCommitError";
 }
 
+/**
+ * The git flags every lean step's git calls carry. The hooks a repository has
+ * are somebody else's policy, and a repo-supplied fsmonitor is a program git
+ * runs on every status: either could write into a commit the step never
+ * captured. The only git in this family without it is a read the step does
+ * not need to trust.
+ */
+export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
+
 /** Counter for temp names, so two files of one capture never share one. */
 let writeSeq = 0;
 
@@ -189,9 +198,9 @@ export async function resetWorktreeToBase(
   // branch from a previous attempt of the same run must move to the base
   // rather than keep its commits.
   const steps: string[][] = [
-    ["checkout", "-B", branch, baseSha],
-    ["reset", "--hard", baseSha],
-    ["clean", "-fdx"],
+    [...NO_HOOKS, "checkout", "-B", branch, baseSha],
+    [...NO_HOOKS, "reset", "--hard", baseSha],
+    [...NO_HOOKS, "clean", "-fdx"],
   ];
   for (const argv of steps) {
     try {
@@ -203,7 +212,7 @@ export async function resetWorktreeToBase(
     }
   }
   const head = await exec("git", {
-    argv: ["rev-parse", "HEAD"],
+    argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -245,7 +254,6 @@ export async function commitTestFiles(
   message: string,
 ): Promise<void> {
   if (paths.length === 0) throw new SpecifyCommitError("no test files to commit");
-  const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
   const run = async (argv: string[]): Promise<void> => {
     try {
       await exec("git", { argv, cwd: wt, timeout: 60_000, maxBuffer: 1024 * 1024 });
@@ -259,7 +267,7 @@ export async function commitTestFiles(
   await run([...NO_HOOKS, "commit", "-m", message, "--", ...paths]);
 
   const head = await exec("git", {
-    argv: ["rev-parse", "HEAD"],
+    argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,

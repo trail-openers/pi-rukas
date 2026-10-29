@@ -21,6 +21,9 @@
  * The child's acts are a callback so each case decides what its developer did:
  * edited `src/`, rewrote a frozen test, committed on its own, edited `.pi/` and
  * `.github/`, dropped a symlink and a hard link, or did nothing at all.
+ *
+ * `agents.json` is tracked in the base commit, so a case that edits it is the
+ * tracked-protected shape: the reset has to bring it back, not merely the clean.
  */
 
 import { spawnSync } from "node:child_process";
@@ -81,6 +84,8 @@ export const SRC = "export const retry = () => { throw new Error('not implemente
 /** The frozen acceptance test: fails against SRC, names its own path when it does. */
 export const TEST =
   '#!/bin/sh\nif grep -q not-implemented src/retry.ts; then echo "not ok - tests/AC1-retry.test.sh" 1>&2; exit 1; fi\nexit 0\n';
+/** The tracked `agents.json` every build case has at the base; a protected path. */
+export const AGENTS_JSON = '{"project-manager":{"write":"deny"}}\n';
 /** The runner template a `.pi/work.json` would configure. */
 export const RUNNER = "sh {file}";
 
@@ -127,6 +132,7 @@ export function buildFixture(
   mkdirSync(dir(".pi"), { recursive: true });
   mkdirSync(dir(".github/workflows"), { recursive: true });
   writeFileSync(dir("src/retry.ts"), SRC);
+  writeFileSync(dir("agents.json"), AGENTS_JSON);
   writeFileSync(dir("tests/AC1-retry.test.sh"), TEST, { mode: 0o755 });
   chmodSync(dir("tests/AC1-retry.test.sh"), 0o755);
   git(repoRoot, "add", "-A");
@@ -221,12 +227,6 @@ export function symlink(wt: string, rel: string, target: string): void {
   symlinkSync(target, path.join(wt, rel));
 }
 
-/** The child made a hard link at `rel` to an existing file in the tree. */
-export function hardlink(wt: string, rel: string, existingRel: string): void {
-  mkdirSync(path.dirname(path.join(wt, rel)), { recursive: true });
-  linkSync(path.join(wt, existingRel), path.join(wt, rel));
-}
-
 /**
  * The child hard-linked `rel` in the worktree to a file OUTSIDE the repo.
  * `linkSync` across filesystems throws EXDEV, so the outside file is written
@@ -258,14 +258,14 @@ export interface RunResult {
   specs: DispatchSpec[];
   worktree: string;
   headBefore: string;
+  /** The argv of every git call the step made, for the hook-guard canary. */
+  gitArgvs: string[][];
 }
 
 export interface RunOpts {
   issue: number;
   /** The child's acts in the worktree, at the moment it is still working. */
   child?: (wt: string) => void;
-  /** A dispatch that did not succeed. */
-  dispatchOk?: boolean;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
   extraSteps?: Step[];
   /** Override the config handed to the step. */
@@ -276,6 +276,8 @@ export interface RunOpts {
   built?: Built;
   /** Leave the run's branch to the worktree so a case can dismantle that tree. */
   childOwnsBranch?: boolean;
+  /** A config load that refuses (case o); the step must treat it as infrastructure. */
+  loadConfigError?: string;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -292,8 +294,12 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   }
   const prompts: string[] = [];
   const specs: DispatchSpec[] = [];
+  const gitArgvs: string[][] = [];
   let dispatched = 0;
-  const exec: BuildDeps["exec"] = async (cmd, o) => execp(cmd, { ...o, env: gitEnv() });
+  const exec: BuildDeps["exec"] = async (cmd, o) => {
+    if (cmd === "git" && o?.argv) gitArgvs.push(o.argv);
+    return execp(cmd, { ...o, env: gitEnv() });
+  };
   const dispatch: BuildDeps["dispatch"] = async (spec: DispatchSpec) => {
     dispatched++;
     specs.push(spec);
@@ -301,11 +307,11 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     opts.child?.(spec.cwd as string);
     const result: DispatchResult = {
       role: spec.role,
-      ok: opts.dispatchOk !== false,
+      ok: true,
       text: "implemented",
       toolUses: [],
       ms: 1,
-      exitCode: opts.dispatchOk === false ? 1 : 0,
+      exitCode: 0,
     };
     return result;
   };
@@ -313,7 +319,10 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     exec,
     dispatch,
     fetchIssueBody: async () => SPEC_BODY,
-    loadConfig: async () => opts.config ?? configWithRunner(),
+    loadConfig: async () => {
+      if (opts.loadConfigError !== undefined) throw new Error(opts.loadConfigError);
+      return opts.config ?? configWithRunner();
+    },
   };
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
@@ -325,6 +334,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       specs,
       worktree: built.worktree,
       headBefore: built.headBefore,
+      gitArgvs,
     };
   } catch (err) {
     return {
@@ -334,6 +344,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       specs,
       worktree: built.worktree,
       headBefore: built.headBefore,
+      gitArgvs,
     };
   }
 }

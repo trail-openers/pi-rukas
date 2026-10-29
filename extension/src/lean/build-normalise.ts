@@ -18,12 +18,9 @@
  *   3. Each path is classified. A frozen or protected path in that set is
  *      IGNORED — stage 4 is what undoes it — and only recorded, so the handback
  *      can say what was put back. Anything else is a DELETION (not a regular
- *      file in the tree) or is CAPTURED through one `O_RDONLY|O_NOFOLLOW`
- *      descriptor; a capture refusal (link, device, swapped inode) DROPS the
- *      path rather than committing it. A name holding no regular file at all is
- *      a DELETION, which is what separates `removed` from `deleted` in the
- *      report: the first is a path the step refused, the second a path the
- *      child asked to have gone.
+ *      file in the tree) or is CAPTURED through `readOneDescriptor`, the same
+ *      single-descriptor read `specify` uses; a refusal (link, device, swapped
+ *      inode, over the size ceiling) DROPS the path rather than committing it.
  *   4. `resetWorktreeToBase` puts the tree back to `headBefore` — commits,
  *      index, untracked files, ignore tricks and dependency links all go — and
  *      provisioning rebuilds the links. Frozen and protected files are now
@@ -31,23 +28,31 @@
  *   5. The captured bytes go back through `writeCaptured` (no symlinked
  *      ancestor, temp file plus rename), executable bits are restored, and the
  *      deletions are applied with `rmSync`.
- *   6. Nothing captured and nothing deleted is the honest answer to "did the
- *      developer change anything": `files: []`, and the caller routes `exhausted`.
- *   7. One commit, hooks off, with four claims proved about it: parent is
+ *   6. Nothing captured and nothing the commit must delete is the honest answer
+ *      to "did the developer change anything": `files: []`, and the caller
+ *      routes `exhausted`.
+ *   7. One commit, with an EXPLICIT pathspec: `git add -- <paths>` and
+ *      `git commit -- <paths>`, never `add -A`, so the commit holds the kept
+ *      paths and the deletions the commit must carry, and nothing else the
+ *      tree happens to hold. Then four claims are proved about it: parent is
  *      `headBefore`; its diff names no frozen and no protected path; the tree
  *      is clean; every frozen blob at the new head hashes to its record.
  *
- * Anything unproven throws — the step's output is a commit the run merges.
+ * Every git call here goes through `build-git.ts`, which carries the hook and
+ * fsmonitor guard (`NO_HOOKS`). Anything unproven throws — the step's output is
+ * a commit the run merges.
  */
 
 import { chmodSync, rmSync } from "node:fs";
 import path from "node:path";
+import { isProtectedPath as canonicalProtectedPath } from "../work-driver-doctrine.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
-import { captureOne, isRealFile } from "./build-capture.ts";
+import { isRealFile } from "./build-capture.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import {
   changedSet,
   commitDiff,
+  fields,
   frozenMatches,
   headDescendsFrom,
   headSha,
@@ -55,18 +60,17 @@ import {
   porcelain,
 } from "./build-git.ts";
 import type { BuildExec, NormaliseReport } from "./build-types.ts";
+import { readOneDescriptor } from "./specify-capture.ts";
 import { resetWorktreeToBase, writeCaptured } from "./specify-reset.ts";
 
-/** Paths a developer may not change, however the issue is worded. */
-const PROTECTED_DIRS = [".pi/", ".github/", ".gitmodules"] as const;
-const PROTECTED_FILES = ["CODEOWNERS"] as const;
-
-/** Is `rel` a path whose contents decide what verification means? */
-export function isProtectedPath(rel: string): boolean {
-  const p = rel.replace(/^\.\//, "");
-  for (const d of PROTECTED_DIRS) if (p === d.slice(0, -1) || p.startsWith(d)) return true;
-  for (const f of PROTECTED_FILES) if (p === f || p.endsWith(`/${f}`)) return true;
-  return false;
+/**
+ * Is `rel` a path whose contents decide what verification means? The canonical
+ * set in `work-driver-doctrine.ts` covers `agents.json`, `CODEOWNERS` at any
+ * depth, and `.pi/` / `.github/`. It lacks `.gitmodules`, which moves the tree a
+ * verify run sees, so that one is added here.
+ */
+function isProtectedPath(rel: string): boolean {
+  return canonicalProtectedPath(rel) || rel === ".gitmodules";
 }
 
 /** The kept bytes and their modes, after classification. */
@@ -108,7 +112,7 @@ function classify(wt: string, changed: string[], frozen: Record<string, string>)
       report.deleted.push(rel);
       continue;
     }
-    const one = captureOne(path.join(wt, rel));
+    const one = readOneDescriptor(path.join(wt, rel));
     if ("why" in one) {
       report.removed.push(rel);
       continue;
@@ -135,7 +139,6 @@ export async function normaliseBuild(opts: {
   issue: number;
 }): Promise<NormaliseReport> {
   const { exec, wt, repoRoot, branch, headBefore, frozen } = opts;
-  const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
 
   // 1 + 2 + 3. All reads, before any write.
   if (!(await headDescendsFrom(exec, wt, headBefore)))
@@ -147,8 +150,20 @@ export async function normaliseBuild(opts: {
   // 4. RESET — child commits, staging, untracked files, ignore tricks and the
   //    dependency links all go; frozen and protected files come back exactly as
   //    at `headBefore`; provisioning rebuilds what the clean removed.
-  await resetWorktreeToBase(exec, wt, headBefore, branch);
-  await provisionWorktree(exec, repoRoot, wt);
+  try {
+    await resetWorktreeToBase(exec, wt, headBefore, branch);
+  } catch (err) {
+    throw new BuildInfraError(
+      `could not reset the worktree to ${headBefore}: ${(err as Error).message}`,
+    );
+  }
+  try {
+    await provisionWorktree(exec, repoRoot, wt);
+  } catch (err) {
+    throw new BuildInfraError(
+      `could not re-provision the worktree after the reset: ${(err as Error).message}`,
+    );
+  }
 
   // 5. REWRITE the kept bytes, then delete what the child deleted. Both happen
   //    after the reset, so `writeCaptured` never meets a name that exists and
@@ -173,15 +188,45 @@ export async function normaliseBuild(opts: {
     }
   }
 
-  // 6. Nothing to commit is an answer, not a fault.
-  if (captured.size === 0 && report.deleted.length === 0) return report;
+  // The deletions the commit must carry are the ones git knows: a tracked file
+  // the child removed. A link the child left is a deletion of nothing in HEAD,
+  // and naming it to `git add` would fail the whole commit. The index is at
+  // `headBefore` now, so `ls-files` answers for the reset tree.
+  const deletions =
+    report.deleted.length === 0
+      ? []
+      : fields(
+          await must(
+            exec,
+            wt,
+            ["--literal-pathspecs", "ls-files", "-z", "--", ...report.deleted],
+            "read which deleted paths the commit holds",
+          ),
+        );
 
-  // 7. One commit, and everything it claims gets checked afterwards.
-  await must(exec, wt, [...NO_HOOKS, "add", "-A"], "stage the developer's work");
+  // 6. Nothing to commit is an answer, not a fault.
+  if (captured.size === 0 && deletions.length === 0) return report;
+
+  // 7. One commit, the pathspec named on both the add and the commit: the commit
+  //    holds these paths and no other, whatever else the index or tree holds.
+  const paths = [...captured.keys(), ...deletions];
   await must(
     exec,
     wt,
-    [...NO_HOOKS, "commit", "-m", `build: attempt ${opts.attempt} for #${opts.issue}`],
+    ["--literal-pathspecs", "add", "--", ...paths],
+    "stage the developer's work",
+  );
+  await must(
+    exec,
+    wt,
+    [
+      "--literal-pathspecs",
+      "commit",
+      "-m",
+      `build: attempt ${opts.attempt} for #${opts.issue}`,
+      "--",
+      ...paths,
+    ],
     "make the build commit",
   );
 

@@ -26,6 +26,7 @@ import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import { buildDeps, buildOutcome } from "./build.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
@@ -159,7 +160,7 @@ export function specifyDeps(): SpecifyDeps {
 /**
  * The phase-1 handler set.
  *
- * `ready` is real; `decline` posts the comment once; everything else is a
+ * `ready`, `specify`, `build` and `decline` are real; everything else is a
  * placeholder that ends the run honestly. A stub that pretended to build would
  * be worse than a run that says which stage is missing.
  */
@@ -183,6 +184,7 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
     return { kind, failedRules: facts.failedRules };
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps());
+  handlers.build = (ctx) => buildOutcome(ctx, buildDeps());
   handlers.decline = async (ctx) => {
     // From the log, not from a closure: see `failedRulesFromLog`.
     const rules = failedRulesFromLog(ctx.steps);

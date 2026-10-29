@@ -44,7 +44,7 @@
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
-import type { DispatchResult, DispatchSpec } from "../types.ts";
+import type { DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
@@ -59,23 +59,15 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";
-import { sha256 } from "./specify-proof.ts";
-import { committedBlob } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
 const REENTRY_CLIP = 4096;
 
-/** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
-export type BuildDispatchFn = (
-  spec: DispatchSpec,
-  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] },
-) => Promise<DispatchResult>;
-
 export interface BuildDeps {
   exec: BuildExec;
-  dispatch: BuildDispatchFn;
+  dispatch: BuildDispatch;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
 }
@@ -161,21 +153,25 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // 3. The preconditions, BEFORE the child is paid.
   await assertFrozenIntact(deps.exec, wt, headBefore, frozen);
 
-  const config = await deps.loadConfig(repoRoot, base).catch(() => undefined);
+  // A config the step cannot read is infrastructure: the developer would build
+  // without the runner the project named, and that is not a verdict on the work.
+  const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
+    throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
+  });
   const spec = await specOf(deps, repoRoot, issue);
   const attempt =
     ctx.steps.filter((s) => s.state === "build" && s.outcome !== undefined).length + 1;
 
   // 4. The builder.
   const reentry = reentryFromLog(ctx.steps);
-  await dispatchBuilder(deps.dispatch as BuildDispatch, {
+  await dispatchBuilder(deps.dispatch, {
     issue,
     spec,
     frozen,
     wt,
     repoRoot,
     attempt,
-    testRunner: config?.verify.test,
+    testRunner: config.verify.test,
     ...(reentry === undefined ? {} : { reentry }),
   });
 
@@ -212,6 +208,3 @@ export function buildDeps(): BuildDeps {
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
   };
 }
-
-/** Re-exported so the smoke test hashes a file exactly the way the step does. */
-export { sha256, committedBlob };

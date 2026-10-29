@@ -22,11 +22,19 @@
  *   (j) child deletes a tracked file        -> the deletion is committed
  *   (k) child adds an executable script     -> committed with mode 100755
  *   (l) a worktree that is not ours        -> THROW before the dispatch
+ *   (m) child edits agents.json + .gitmodules -> both reverted, the tracked one restored
+ *
+ * The wiring and config cases live in test-lean-build-wiring.ts.
+ *
+ * Every git call the step makes carries the hook and fsmonitor guard (case a).
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { BuildInfraError } from "../src/lean/build-errors.ts";
+import { phase1Handlers } from "../src/lean/command.ts";
 import {
+  AGENTS_JSON,
   ROOTS,
   RUNNER,
   SPEC_BODY,
@@ -35,7 +43,6 @@ import {
   childCommit,
   commitPaths,
   git,
-  hardlink,
   hardlinkFromOutside,
   outsideDir,
   put,
@@ -91,6 +98,14 @@ function assert(cond: boolean, msg: string): void {
   assert(
     (r.outcome?.reason ?? "").includes("1 file(s) changed"),
     `(a) the reason reports the change count (got ${r.outcome?.reason})`,
+  );
+  assert(
+    r.gitArgvs.length > 0 &&
+      r.gitArgvs.every(
+        (argv) =>
+          argv.includes("core.hooksPath=/dev/null") && argv.includes("core.fsmonitor=false"),
+      ),
+    `(a) every git call carries the hook and fsmonitor guard (${r.gitArgvs.length} calls)`,
   );
 }
 
@@ -406,6 +421,39 @@ function assert(cond: boolean, msg: string): void {
     `(l) the throw names the missing worktree (got ${r.threw?.message})`,
   );
   assert(r.dispatched === 0, "(l) the developer was never dispatched");
+}
+
+// ------------------------- (m) the child edits agents.json and .gitmodules
+//
+// `agents.json` is TRACKED at the base, so the reset has to bring the bytes back
+// (a clean alone would not). `.gitmodules` is untracked, so it must be gone.
+{
+  const r = await runBuild({
+    issue: 113,
+    child: (wt) => {
+      put(wt, "src/retry.ts", "export const retry = () => 7;\n");
+      put(wt, "agents.json", '{"project-manager":{"write":"allow"}}\n');
+      put(wt, ".gitmodules", '[submodule "x"]\n');
+    },
+  });
+  const wt = r.worktree;
+  assert(r.threw === undefined, `(m) no throw: ${r.threw?.message ?? "clean"}`);
+  assert(r.outcome?.kind === "ok", `(m) ok, got ${r.outcome?.kind}`);
+  assert(
+    readFileSync(path.join(wt, "agents.json"), "utf8") === AGENTS_JSON,
+    "(m) the tracked agents.json is back to the base bytes",
+  );
+  assert(!existsSync(path.join(wt, ".gitmodules")), "(m) the untracked .gitmodules is gone");
+  assert(
+    commitPaths(wt).join() === "src/retry.ts",
+    `(m) neither protected path reached the commit (got ${commitPaths(wt).join(", ")})`,
+  );
+  const reverted = ((r.outcome?.reason ?? "").match(/reverted: ([^;]*)/) ?? [])[1] ?? "";
+  assert(
+    reverted.split(", ").sort().join() === ".gitmodules,agents.json",
+    `(m) the reason names both reverted paths (got ${r.outcome?.reason})`,
+  );
+  assert(status(wt) === "", `(m) clean after the commit (got ${status(wt)})`);
 }
 
 for (const dir of ROOTS) {

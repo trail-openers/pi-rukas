@@ -17,6 +17,7 @@
 import { BuildInfraError } from "./build-errors.ts";
 import type { BuildExec } from "./build-types.ts";
 import { sha256 } from "./specify-proof.ts";
+import { NO_HOOKS } from "./specify-reset.ts";
 
 /** Git's own "the object/commit you named does not exist" answers. */
 const GIT_NO_SUCH = [
@@ -26,14 +27,24 @@ const GIT_NO_SUCH = [
   "ambiguous argument",
 ];
 
-/** Run one git argv command; `undefined` when git refused rather than crashed. */
+/**
+ * Run one git argv command with the hook and fsmonitor guard in front of it;
+ * `undefined` when git refused rather than crashed. Every git call in this
+ * module goes through here or through `headDescendsFrom`, which carries the
+ * same guard itself.
+ */
 async function run(
   exec: BuildExec,
   wt: string,
   argv: string[],
   timeout = 120_000,
 ): Promise<{ stdout: string } | undefined> {
-  return exec("git", { argv, cwd: wt, timeout, maxBuffer: 8 * 1024 * 1024 })
+  return exec("git", {
+    argv: [...NO_HOOKS, ...argv],
+    cwd: wt,
+    timeout,
+    maxBuffer: 8 * 1024 * 1024,
+  })
     .then((r) => ({ stdout: r.stdout ?? "" }))
     .catch(() => undefined);
 }
@@ -75,7 +86,7 @@ export async function headSha(exec: BuildExec, wt: string): Promise<string> {
  */
 export async function headDescendsFrom(exec: BuildExec, wt: string, sha: string): Promise<boolean> {
   const r = await exec("git", {
-    argv: ["merge-base", "--is-ancestor", sha, "HEAD"],
+    argv: [...NO_HOOKS, "merge-base", "--is-ancestor", sha, "HEAD"],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -125,8 +136,7 @@ export async function frozenMatches(
  *
  * The two lists are needed together. `diff` alone misses a brand-new file the
  * child never staged; `ls-files --others` alone misses its edits and every
- * deletion it made. Neither is `-c core.fsmonitor=false` because both are
- * reads of the index and the working tree, not writes.
+ * deletion it made.
  */
 export async function changedSet(
   exec: BuildExec,
@@ -161,7 +171,16 @@ export async function commitDiff(
   return fields(r.stdout);
 }
 
-/** `git status --porcelain` output; "" when the tree is clean. */
+/**
+ * `git status --porcelain` output; "" when the tree is clean. `--untracked-files=all`
+ * lists every file, not each directory: a clean-looking tree with a stray file
+ * under an untracked directory is not clean.
+ */
 export async function porcelain(exec: BuildExec, wt: string): Promise<string> {
-  return must(exec, wt, ["status", "--porcelain"], "check the tree is clean");
+  return must(
+    exec,
+    wt,
+    ["status", "--porcelain", "--untracked-files=all"],
+    "check the tree is clean",
+  );
 }

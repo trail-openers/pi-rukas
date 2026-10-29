@@ -36,7 +36,7 @@ import path from "node:path";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import type { PiSpec } from "./spec.ts";
-import { resetWorktreeToBase } from "./specify-reset.ts";
+import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 
 /** The worktree directory name for one issue's specify step. */
@@ -67,7 +67,7 @@ async function registeredWorktreePaths(
   let stdout: string | undefined;
   try {
     const r = await exec("git", {
-      argv: ["worktree", "list", "--porcelain"],
+      argv: [...NO_HOOKS, "worktree", "list", "--porcelain"],
       cwd: repoRoot,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
@@ -130,7 +130,7 @@ export async function assertSpecifyWorktreeOwned(
   }
   if (!registered.includes(real)) throw new Error(foreign);
   const head = await exec("git", {
-    argv: ["rev-parse", "HEAD"],
+    argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: opts.wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -145,7 +145,7 @@ export async function assertSpecifyWorktreeOwned(
       `${foreign} (its HEAD is ${actual === "" ? "unreadable" : actual}, expected ${want})`,
     );
   const symbolic = await exec("git", {
-    argv: ["symbolic-ref", "--short", "-q", "HEAD"],
+    argv: [...NO_HOOKS, "symbolic-ref", "--short", "-q", "HEAD"],
     cwd: opts.wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -236,7 +236,7 @@ export function parsePorcelainZ(out: string): PorcelainEntry[] {
 /** Paths git reports as changed, added or deleted in `wt` (base-relative). */
 export async function changedPaths(exec: ExecFn, wt: string): Promise<PorcelainEntry[]> {
   const { stdout } = await exec("git", {
-    argv: ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    argv: [...NO_HOOKS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
     cwd: wt,
     timeout: 60_000,
     maxBuffer: 8 * 1024 * 1024,

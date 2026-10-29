@@ -51,11 +51,20 @@ function sameStamp(a: Stamp, b: Stamp): boolean {
   return a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
 }
 
-/** One file's bytes, or the reason this file is not a capturable test. */
-type OneRead = { bytes: Buffer } | { why: string };
+/** The largest file either step reads into memory; a bigger one is refused, not read. */
+export const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 
-/** Read one file through a single descriptor, or say why it cannot. */
-function readOneDescriptor(abs: string): OneRead {
+/** One file's bytes and executable bit, or the reason this file cannot be captured. */
+export type OneRead = { bytes: Buffer; exec: boolean } | { why: string };
+
+/**
+ * Read one file through a single descriptor, or say why it cannot.
+ *
+ * `build` reads the developer's files through this too, so the rules are the
+ * same for every captured byte in this step family: a refusal is a verdict on
+ * the child's file (the caller drops it and says why), never an exception.
+ */
+export function readOneDescriptor(abs: string): OneRead {
   let fd: number;
   try {
     fd = openSync(abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
@@ -72,7 +81,8 @@ function readOneDescriptor(abs: string): OneRead {
     if (!first.isFile()) return { why: "is not a regular file" };
     if (first.nlink !== 1)
       return { why: `has ${first.nlink} hard links — not a file of this worktree` };
-    if (first.size <= 0) return { why: "is empty, which cannot be a test" };
+    if (first.size > MAX_CAPTURE_BYTES)
+      return { why: `is ${first.size} bytes, over the ${MAX_CAPTURE_BYTES}-byte capture ceiling` };
 
     const before = stampOf(first);
     const bytes = Buffer.allocUnsafe(first.size);
@@ -94,7 +104,7 @@ function readOneDescriptor(abs: string): OneRead {
       return {
         why: `changed while it was read (${JSON.stringify(before)} → ${JSON.stringify(later)})`,
       };
-    return { bytes };
+    return { bytes, exec: (first.mode & 0o111) !== 0 };
   } finally {
     try {
       closeSync(fd);
@@ -129,6 +139,14 @@ export function captureTestBytes(
     const read = readOneDescriptor(path.join(wt, rel));
     if ("why" in read) {
       dropped.push({ criterionId, path: rel, reason: `test ${rel} ${read.why}` });
+      continue;
+    }
+    if (read.bytes.length === 0) {
+      dropped.push({
+        criterionId,
+        path: rel,
+        reason: `test ${rel} is empty, which cannot be a test`,
+      });
       continue;
     }
     captured.set(rel, read.bytes);
