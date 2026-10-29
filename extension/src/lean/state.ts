@@ -25,6 +25,9 @@ import path from "node:path";
 
 export const SCHEMA_VERSION = 1;
 
+/** A sha256 in the hex form the `specify` step freezes into its outcome. */
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
 /**
  * The states a run can sit in. `decline` is the step that reports a refusal;
  * the last three end the run. See machine.ts.
@@ -112,6 +115,18 @@ export interface Outcome {
   reason?: string;
   message?: string;
   failedRules?: string[];
+  /**
+   * `specify` only: the frozen acceptance tests, path -> sha256 of the bytes
+   * at freeze time. Persisted in the step log so a resumed run, `build` and
+   * `verify` can tell "the test still holds" apart from "somebody edited it
+   * after the step that proved it red".
+   */
+  frozen?: Record<string, string>;
+  /**
+   * `specify` only: criterion id -> the kept test files that cover it. The
+   * record of which criterion each frozen file answers for.
+   */
+  tests?: Record<string, string[]>;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -290,6 +305,26 @@ function assertRun(obj: unknown, file: string): LeanRun {
         (!Array.isArray(oc.failedRules) || oc.failedRules.some((x) => typeof x !== "string"))
       )
         bad(`step ${key} outcome failedRules must be a string[]`);
+      // `frozen` is the tamper evidence `build` and `verify` read back, so a
+      // value that is not a sha256 is refused rather than carried: a
+      // truncated or mistyped digest would compare unequal forever and the
+      // reader could not tell a broken record from an edited test.
+      if (oc.frozen !== undefined) {
+        if (typeof oc.frozen !== "object" || oc.frozen === null || Array.isArray(oc.frozen))
+          bad(`step ${key} outcome frozen must be an object`);
+        for (const [file, sha] of Object.entries(oc.frozen as Record<string, unknown>)) {
+          if (typeof sha !== "string" || !SHA256_HEX.test(sha))
+            bad(`step ${key} outcome frozen[${JSON.stringify(file)}] must be a 64-hex sha256`);
+        }
+      }
+      if (oc.tests !== undefined) {
+        if (typeof oc.tests !== "object" || oc.tests === null || Array.isArray(oc.tests))
+          bad(`step ${key} outcome tests must be an object`);
+        for (const [id, files] of Object.entries(oc.tests as Record<string, unknown>)) {
+          if (!Array.isArray(files) || files.some((x) => typeof x !== "string"))
+            bad(`step ${key} outcome tests[${JSON.stringify(id)}] must be a string[]`);
+        }
+      }
     }
     // The `:N` suffix is a derived field (the entry count) and the engine
     // trusts it when deciding whether a state still owes a handler call, so

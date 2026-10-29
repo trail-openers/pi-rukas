@@ -127,6 +127,8 @@
     "smoke-tests/test-lean-engine-land-gate.ts",
     "smoke-tests/test-lean-lock.ts",
     "smoke-tests/lib/lean-real-log-fixture.ts",
-    "smoke-tests/lib/lean-resume-fixture.ts"
+    "smoke-tests/lib/lean-resume-fixture.ts",
+    "smoke-tests/test-lean-submit-tests.ts",
+    "smoke-tests/test-lean-specify.ts"
   ]
 }

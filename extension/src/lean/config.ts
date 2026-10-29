@@ -28,7 +28,12 @@ export interface Budget {
 export interface WorkConfig {
   version: 1;
   autoMerge: boolean;
-  verify: { fast?: string; full?: string };
+  /**
+   * `test` is the per-file runner template the `specify` step uses to prove a
+   * test red on the base: it must contain the literal `{file}`, which the step
+   * replaces with the test file's path (e.g. `bun run {file}`).
+   */
+  verify: { fast?: string; full?: string; test?: string };
   budgets: Partial<Record<string, Budget>>;
 }
 
@@ -36,6 +41,9 @@ export interface WorkConfig {
 export class LeanConfigError extends Error {
   override readonly name = "LeanConfigError";
 }
+
+/** The placeholder a `verify.test` template must carry (see `validate`). */
+export const TEST_RUNNER_PLACEHOLDER = "{file}";
 
 /** The executor seam: same signature as `execp`, injected so tests stay local. */
 export type ConfigExec = typeof execp;
@@ -134,10 +142,15 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.verify !== "object" || o.verify === null || Array.isArray(o.verify))
       return ".pi/work.json verify must be an object";
     const v = o.verify as Record<string, unknown>;
-    for (const key of ["fast", "full"] as const) {
+    for (const key of ["fast", "full", "test"] as const) {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
     }
+    // The runner template is a template: without the placeholder the step
+    // cannot name the file it is running, and would run the same command for
+    // every test and call the result a proof.
+    if (typeof v.test === "string" && !v.test.includes(TEST_RUNNER_PLACEHOLDER))
+      return `.pi/work.json verify.test must contain the literal ${TEST_RUNNER_PLACEHOLDER}`;
   }
   if (o.budgets !== undefined) {
     if (typeof o.budgets !== "object" || o.budgets === null || Array.isArray(o.budgets))
