@@ -84,6 +84,23 @@ const COMMAND_CRITERION = {
 };
 const CMD_FILE = "tests/AC2-preserve.test.sh";
 
+/**
+ * A `command` of eighty `dN/` components that ends `a.test.sh` — 320 characters,
+ * legal in every one of its segments (`pathProblem` refuses traversal and the
+ * forbidden directories, not length), and absent at base.
+ *
+ * It is the shape the per-component clip cannot catch: each `dN/` is short, so a
+ * reason that interpolates the whole path once is longer than the durable record
+ * holds (`state-outcome`'s 300 for a not-runnable reason), and an over-long reason
+ * does not merely read badly — it makes the whole verify outcome unloadable.
+ */
+const DEEP_CMD = `${Array.from({ length: 80 }, (_, i) => `d${i + 1}/`).join("")}a.test.sh`;
+
+// `outcomeProblem` lives in the record's own module; the (c) block below reaches
+// for it the same way, so both deep-path assertions judge the reason against the
+// bound the record actually enforces rather than a copy of the number.
+const { outcomeProblem } = await import("../src/lean/state-outcome.ts");
+
 // ----------------- (a) an unchanged existing test of the base runs, and is green
 {
   const r = await runCommandVerify({
@@ -181,7 +198,6 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
     traversalReason.length > 0 && traversalReason.length <= 300,
     `(c) a 5,000-character traversal is refused within the record's 300-character bound (got ${traversalReason.length})`,
   );
-  const { outcomeProblem } = await import("../src/lean/state-outcome.ts");
   assert(
     outcomeProblem(
       {
@@ -225,6 +241,79 @@ const CMD_FILE = "tests/AC2-preserve.test.sh";
       r.outcome?.commandCriteria?.AC2 === undefined &&
       r.outcome?.commandNotRunnable?.AC2 === "tests/absent.test.sh does not exist at base",
     `(c) a command naming a missing file is treated like manual, with its reason (${JSON.stringify(r.outcome?.commandNotRunnable)})`,
+  );
+}
+
+{
+  // The deep path, end to end: it passes the text rule (so it is not the
+  // validator's `quoted()` clip that stops it), the base holds no such file, and the
+  // reason the GATE records — not a hand-built string — has to fit the record.
+  // Unclipped this reason is 343 characters, so it would be refused on its way in
+  // and the run would lose every verdict it earned over one criterion nobody can
+  // read a reason for.
+  assert(
+    commandCriterionProblem(DEEP_CMD) === undefined && DEEP_CMD.length >= 300,
+    `(c3) the ${DEEP_CMD.length}-character deep path is a VALID command shape, so the length has to be handled by the reason, not the validator`,
+  );
+  const r = await runCommandVerify({
+    issue: 415,
+    implement: true,
+    specBody: bodyWith([TEST_CRITERION, { ...COMMAND_CRITERION, command: DEEP_CMD }]),
+  });
+  const deep = r.outcome?.commandNotRunnable?.AC2 ?? "";
+  assert(
+    r.threw === undefined &&
+      r.outcome?.kind === "green" &&
+      r.outcome?.commandCriteria?.AC2 === undefined &&
+      deep.length > 0 &&
+      deep.length <= 300,
+    `(c3) a 320-character command absent at base yields a not-runnable reason the record can hold (got ${deep.length}: ${JSON.stringify(deep.slice(0, 90))})`,
+  );
+  assert(
+    outcomeProblem(
+      {
+        kind: "ok",
+        verifiedHead: "a".repeat(40),
+        commandNotRunnable: { AC2: deep },
+      },
+      "verify",
+    ) === undefined,
+    `(c3) the recorded deep-path reason is a reason the durable record actually loads (${deep.length} chars)`,
+  );
+}
+
+{
+  // The same path on the POST-run re-check, which prefixes its own words onto the
+  // reason — the place a per-component clip helps least, because the prefix and
+  // suffix together carry the reason past the record's bound (392 characters
+  // unclipped). The tree reads are stubbed to the one shape the pre-run check
+  // accepted and the post-run check refused: the committed entry still holds the
+  // oid the run licensed, but the working file's hash has moved.
+  const { commandCriteriaTouched } = await import("../src/lean/verify-commands.ts");
+  const oid = (n: string) => n.repeat(40);
+  const execDiffers = async (_cmd: string, o: { argv?: string[] }) =>
+    (o.argv ?? []).includes("ls-tree")
+      ? { stdout: `100644 blob ${oid("a")}\t${DEEP_CMD}` }
+      : { stdout: oid("c") };
+  const touched = await commandCriteriaTouched(
+    { AC2: { kind: "passed", oid: oid("c"), rel: DEEP_CMD } },
+    "/tmp",
+    oid("b"),
+    execDiffers,
+  );
+  assert(
+    (touched ?? "").length > 0 && (touched ?? "").length <= 300,
+    `(c3) the post-run re-check clips its prefixed reason too (got ${String(touched?.length)}: ${JSON.stringify((touched ?? "").slice(0, 90))})`,
+  );
+  assert(
+    outcomeProblem(
+      {
+        kind: "red",
+        reason: touched,
+      },
+      "verify",
+    ) === undefined,
+    `(c3) the re-check's reason is one the record can carry as the run's verdict (${String(touched?.length)} chars)`,
   );
 }
 

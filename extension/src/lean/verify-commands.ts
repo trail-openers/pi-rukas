@@ -56,8 +56,13 @@
  *      runner's own default — it gets one millisecond and dies on it.
  *   6. **The `command` text is untrusted text.** It comes from the issue body, so
  *      every reason this module derives from it interpolates the clipped
- *      {@link oneLine} form: a reason reaches the durable record and then the PR
- *      body, and a 5 KB `command` must not become a 5 KB reason.
+ *      {@link quoted} form, and the assembled reason is clipped again by
+ *      {@link reason}: a reason reaches the durable record and then the PR body,
+ *      and a 5 KB `command` must not become a 5 KB reason. The second clip is not
+ *      redundant — a path can be long while each of its segments stays short, so a
+ *      320-character `dN/dN/…/a.test.sh` is legal component by component and
+ *      overshoots the record's 300-character bound on its own (`state-outcome`),
+ *      which would refuse the whole outcome rather than decline the one criterion.
  */
 
 import { trace } from "../trace.ts";
@@ -114,6 +119,31 @@ const COMMAND_QUOTE_MAX = 80;
 /** The `command` as this module may quote it: one line, at most {@link COMMAND_QUOTE_MAX}. */
 const quoted = (command: string): string => oneLine(command, COMMAND_QUOTE_MAX);
 
+/**
+ * The longest reason either tier below may produce for one criterion.
+ *
+ * `state-outcome`'s `COMMAND_NOT_RUNNABLE_MAX_CHARS` is the bound the durable
+ * record enforces, and a reason over it does not merely get clipped — it makes
+ * the whole verify outcome unloadable, so the run loses every verdict it earned
+ * over one criterion nobody can read a reason for. Each interpolation of `rel`
+ * is already clipped, and the assembled reason is clipped again, because a path
+ * can be long while every one of its segments stays short: a 320-character
+ * `dN/dN/…/a.test.sh` is legal component by component and would otherwise
+ * overshoot on its own.
+ */
+const REASON_MAX = 280;
+
+/** A reason built by interpolating a path: clipped, so the record can store it. */
+const reason = (text: string): string => oneLine(text, REASON_MAX);
+
+/**
+ * The path a tree reason may name. `parseTreeLine` builds its refusals by
+ * interpolating the `rel` it was handed, so `reason(entryRefusal(...))` is the
+ * only clip on that path — this makes both halves of every reason go through
+ * {@link quoted}, including the paths already inside a delegated message.
+ */
+const reasonPath = (text: string): string => reason(quoted(text));
+
 export interface CommandCriteriaOutcome {
   /** First failure's reason, for a red; absent when nothing failed. */
   failed?: string;
@@ -153,25 +183,25 @@ async function unchangedFileProblem(
   accepted.oid = "";
   const base = await treeEntry(exec, wt, baseSha, rel);
   const head = await treeEntry(exec, wt, "HEAD", rel);
-  if (base === "") return `${rel} does not exist at base`;
-  if (head === "") return `${rel} changed since base`;
+  if (base === "") return reasonPath(`${rel} does not exist at base`);
+  if (head === "") return reasonPath(`${rel} changed since base`);
   const atBase = parseTreeLine(base, rel);
   if (atBase.kind !== "file") {
     if (entryUnreadable(atBase)) throw unreadableEntry(rel, wt);
-    return entryRefusal(atBase);
+    return reason(entryRefusal(atBase));
   }
   const atHead = parseTreeLine(head, rel);
   if (atHead.kind !== "file") {
     if (entryUnreadable(atHead)) throw unreadableEntry(rel, wt);
-    return entryRefusal(atHead);
+    return reason(entryRefusal(atHead));
   }
   // Same mode, same oid: the bytes the base commit held are the bytes HEAD holds,
   // which is the whole claim a preservation criterion makes. A differing oid is a
   // test somebody edited during this run — no longer evidence of what already held.
-  if (atBase.oid !== atHead.oid) return `${rel} changed since base`;
+  if (atBase.oid !== atHead.oid) return reasonPath(`${rel} changed since base`);
   // git vouched for the COMMITTED entry; nothing above the commit is vouched for.
   if ((await workingOid(exec, wt, rel)) !== atBase.oid)
-    return `${rel} differs on disk from the base commit`;
+    return reasonPath(`${rel} differs on disk from the base commit`);
   // The file is the base's, byte for byte, on disk: remember which blob that was,
   // so the re-check after the runner compares against this observation rather than
   // a fresh read of whatever the tree now says.
@@ -272,7 +302,7 @@ export async function commandCriteriaOutcome(
     // executed, never a verdict, and carried to the PR body so the omission is
     // legible to the operator without a trace log.
     if (problem !== undefined) {
-      notRunnable[c.id] = problem;
+      notRunnable[c.id] = reason(problem);
       trace(`lean/verify: command criterion ${c.id} not run — ${problem}`);
       continue;
     }
@@ -281,7 +311,7 @@ export async function commandCriteriaOutcome(
     const accepted = { oid: "" };
     const treeProblem = await unchangedFileProblem(exec, wt, baseSha, rel, accepted);
     if (treeProblem !== undefined) {
-      notRunnable[c.id] = treeProblem;
+      notRunnable[c.id] = reason(treeProblem);
       trace(`lean/verify: command criterion ${c.id} not run — ${treeProblem}`);
       continue;
     }
@@ -290,7 +320,7 @@ export async function commandCriteriaOutcome(
     // reaches the runner.
     const diskProblem = fileProblem(wt, rel);
     if (diskProblem !== undefined) {
-      notRunnable[c.id] = diskProblem;
+      notRunnable[c.id] = reasonPath(diskProblem);
       trace(`lean/verify: command criterion ${c.id} not run — ${diskProblem}`);
       continue;
     }
@@ -321,7 +351,7 @@ export async function commandCriteriaOutcome(
     // test, this file was never proven red at freeze time — a command criterion
     // is never frozen — so a non-zero exit is the regression the criterion
     // states against, whether or not the output named the path.
-    failed ??= `criterion ${c.id} (command ${rel}) failed: ${proof.detail}`;
+    failed ??= reason(`criterion ${c.id} (command ${quoted(rel)}) failed: ${proof.detail}`);
   }
   return {
     ...(failed === undefined ? {} : { failed }),
@@ -349,21 +379,25 @@ export async function commandCriteriaTouched(
   for (const record of Object.values(executed)) {
     const rel = record.rel;
     const diskProblem = fileProblem(wt, rel);
-    if (diskProblem !== undefined) return `command criteria changed the tree: ${diskProblem}`;
+    if (diskProblem !== undefined)
+      return reason(`command criteria changed the tree: ${reasonPath(diskProblem)}`);
     const base = await treeEntry(exec, wt, baseSha, rel);
-    if (base === "") return `command criteria changed the tree: ${rel} does not exist at base`;
+    if (base === "")
+      return reasonPath(`command criteria changed the tree: ${rel} does not exist at base`);
     const entry = parseTreeLine(base, rel);
     if (entry.kind !== "file") {
       if (entryUnreadable(entry)) throw unreadableEntry(rel, wt);
-      return `command criteria changed the tree: ${entryRefusal(entry)}`;
+      return reason(`command criteria changed the tree: ${entryRefusal(entry)}`);
     }
     // Compared against the oid the PRE-run check accepted, not a freshly-read one:
     // a tier that rewrote the base tree itself must not have its own change serve as
     // the expectation the file is judged against.
     if (entry.oid !== record.oid)
-      return `command criteria changed the tree: ${rel} changed since base`;
+      return reasonPath(`command criteria changed the tree: ${rel} changed since base`);
     if ((await workingOid(exec, wt, rel)) !== record.oid)
-      return `command criteria changed the tree: ${rel} differs on disk from the base commit`;
+      return reasonPath(
+        `command criteria changed the tree: ${rel} differs on disk from the base commit`,
+      );
   }
   return undefined;
 }
