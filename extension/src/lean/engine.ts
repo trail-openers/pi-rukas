@@ -30,6 +30,7 @@ import {
   isTerminal,
   leanStateFile,
   loadRun,
+  newestDecided,
   nextAttempt,
   saveRun,
   stepKey,
@@ -171,19 +172,6 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
     ...run,
     steps: run.steps.map((s) => (s.key === key ? { ...s, endedAt, outcome } : s)),
   };
-}
-
-/**
- * The newest DECIDED step of one state, or `undefined`.
- *
- * A step without an outcome is a crash mid-step — the engine is about to
- * re-run it, and it has said nothing, so it is never "the newest". Reading
- * a trailing outcome-less `verify:1` as the state's verdict made a
- * legitimately green run look unverified.
- */
-function newestDecided(steps: Step[], state: LeanState): Step | undefined {
-  const decided = steps.filter((s) => s.state === state && s.outcome !== undefined);
-  return decided[decided.length - 1];
 }
 
 /**

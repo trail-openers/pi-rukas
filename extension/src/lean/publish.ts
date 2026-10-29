@@ -21,6 +21,9 @@
  *
  * Everything the step cannot observe is a `PublishInfraError` — the engine turns
  * a throw into a handed-back run, which is the honest answer to "nobody looked".
+ * Once the push has landed, every such error names the head and says the push
+ * succeeded, because a handoff that reads "could not open the PR" over a branch
+ * origin now holds would send the next run to look in the wrong place.
  * The recorded outcome carries `prUrl` and nothing else: `state-outcome.ts`
  * refuses that field on any other step, so it stays the run's only evidence
  * that a PR exists at an address.
@@ -31,6 +34,7 @@
  */
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
+import { netRefProblem } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
@@ -39,14 +43,8 @@ import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
-import type { Outcome, Step } from "./state.ts";
+import { type Outcome, type Step, newestDecided } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
-
-/** The newest DECIDED step of one state — engine.ts's rule, copied for one reader. */
-function newestDecided(steps: Step[], state: Step["state"]): Step | undefined {
-  const decided = steps.filter((s) => s.state === state && s.outcome !== undefined);
-  return decided[decided.length - 1];
-}
 
 /** The criterion -> tests map, unioned over every step that recorded one. */
 export function testsFromLog(steps: Step[]): Record<string, string[]> {
@@ -112,14 +110,23 @@ async function assertTree(
   return head;
 }
 
-/** Push the head to the branch on origin. Never forced; a rejection is fatal. */
+/**
+ * Push the head to the branch on origin. Never forced; a rejection is fatal.
+ *
+ * The ref name is checked with the driver's own `netRefProblem` BEFORE the
+ * command line is built: `branch` is state-file data, and `assertSafeRef` only
+ * says it is a legal git name — `+x`, `a:b` and `-f` all are, and git parses
+ * them as a refspec, a force, or an option (see `netRefProblem`, #1095).
+ */
 async function pushHead(
   deps: PublishDeps,
   wt: string,
   head: string,
   branch: string,
 ): Promise<void> {
-  const ran = (await deps
+  const unsafe = netRefProblem(`refs/heads/${branch}`);
+  if (unsafe !== undefined) throw new PublishInfraError(`refusing to push ${branch}: ${unsafe}`);
+  const ran = await deps
     .exec("git", {
       argv: [...NO_HOOKS, "push", "--porcelain", "origin", `${head}:refs/heads/${branch}`],
       cwd: wt,
@@ -131,7 +138,7 @@ async function pushHead(
       const e = err as { stderr?: unknown; message?: string };
       const why = String(e?.stderr ?? e?.message ?? err).slice(0, 500);
       throw new PublishInfraError(`could not push ${branch}: ${why}`);
-    })) as { stdout?: string } | undefined;
+    });
   // Porcelain form. git prints a `To <remote>` header, one `<from> <to> <flag>`
   // line per ref, and a `Done` trailer — and for a brand-new ref it puts an
   // ASTERISK in the from/to columns (`* <sha> refs/heads/x\t[new branch]`), so
@@ -139,7 +146,7 @@ async function pushHead(
   // branch]`, `[up to date]` and `[fast-forward]` are the successes and `[rejected]`
   // is not — and the exit code stays 0 for the rejection too, which is exactly
   // why the exit code cannot be the check.
-  const out = ran?.stdout ?? "";
+  const out = typeof ran?.stdout === "string" ? ran.stdout : "";
   if (/\[rejected\]/.test(out))
     throw new PublishInfraError(`the push of ${branch} was rejected: ${out.slice(0, 500)}`);
   // `forced update` is deliberately NOT a success flag: this push never passes
@@ -191,6 +198,19 @@ async function openPr(
         `could not put the reused PR #${found.number} back to draft: ${(err as Error)?.message ?? String(err)}`,
       );
     });
+    // A `prDraft` that returned without throwing is a CLAIM, not an observation:
+    // the head is already pushed at this point, so a forge that accepted the call
+    // and left the PR READY would hand back `ok` with a mergeable PR standing
+    // behind unverified bytes — the exact lie the step exists to prevent. Read
+    // it back; only `isDraft === true` is an answer that lets the run continue.
+    const after = await f
+      .prView(found.number)
+      .then((v) => v?.isDraft)
+      .catch(() => undefined);
+    if (after !== true)
+      throw new PublishInfraError(
+        `the reused PR #${found.number} does not report itself a draft after prDraft, and a not-green run must not leave it ready`,
+      );
   }
   return found;
 }
@@ -261,9 +281,14 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     spec.criteria.some((c) => c.verify === "manual");
 
   await pushHead(deps, wt, head, branch);
+  // From here on the head is OUTSIDE the clone. Every refusal below is a
+  // handback over a pushed branch, so it says so — an error that reads only
+  // "could not open the PR" hides the one fact the operator needs first.
+  const pushed = (what: string) =>
+    new PublishInfraError(`pushed ${head.slice(0, 12)} to ${branch}, but ${what}`);
 
   const f = await deps.forge(repoRoot);
-  if (f === undefined) throw new PublishInfraError("no forge adapter: cannot open the PR");
+  if (f === undefined) throw pushed("no forge adapter: cannot open the PR");
   const pr = await openPr(
     f,
     branch,
@@ -287,15 +312,19 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       baseSha: ctx.run.baseSha,
     }),
     draft,
-  );
+  ).catch((err: unknown) => {
+    // `openPr` already raises PublishInfraErrors whose text names the failure
+    // (a rejected list, a refused re-draft); the prefix says what the operator
+    // must know first — the push landed.
+    if (err instanceof PublishInfraError) throw pushed(err.message);
+    throw pushed(`the forge could not open the PR: ${(err as Error)?.message ?? String(err)}`);
+  });
 
   const prUrl = pr?.url;
   if (prUrl === undefined || !PR_URL.test(prUrl))
-    throw new PublishInfraError("the forge returned no usable PR URL");
+    throw pushed("the forge returned no usable PR URL");
   if (prUrl.length > PR_URL_MAX_CHARS)
-    throw new PublishInfraError(
-      `the forge returned a PR URL longer than ${PR_URL_MAX_CHARS} characters`,
-    );
+    throw pushed(`the forge returned a PR URL longer than ${PR_URL_MAX_CHARS} characters`);
 
   return {
     kind: "ok",

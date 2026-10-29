@@ -38,7 +38,7 @@
  */
 
 import { handbackOutcome } from "../src/lean/handback.ts";
-import { PublishInfraError, publishGitEnv } from "../src/lean/publish-deps.ts";
+import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { ROOTS, defaultSpec, fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 import { decided, handbackCtx } from "./lib/lean-verify-fixture.ts";

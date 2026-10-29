@@ -14,13 +14,12 @@
  * is the honest answer to "nobody looked".
  */
 
-import { execFileSync } from "node:child_process";
 import { execp } from "../exec.ts";
 import type { Forge } from "../forge-types.ts";
 import { resolveMainline } from "../mainline.ts";
-import { withSshDefaults } from "../work-driver-net-git.ts";
+import { netGitEnv } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
-import { fetchIssueBody } from "./io.ts";
+import { fetchIssueBody, forgeFor } from "./io.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
 /** Infrastructure: the step could not observe what it needed, so it did not act. */
@@ -47,12 +46,7 @@ export type PublishExec = VerifyExec;
  * (only `gh pr view --json …,isDraft,…` does), so the list reply alone cannot
  * tell a reused PR's state.
  */
-export interface PublishForge {
-  prList: Forge["prList"];
-  prView: Forge["prView"];
-  prDraft: Forge["prDraft"];
-  prCreate: Forge["prCreate"];
-}
+export type PublishForge = Pick<Forge, "prList" | "prView" | "prDraft" | "prCreate">;
 
 /** What the step reaches outside itself. */
 export interface PublishDeps {
@@ -101,53 +95,16 @@ export async function assertPublishableBranch(repoRoot: string, branch: string):
 /**
  * The non-interactive env a publish push runs with, in the production seam only.
  *
- * `GIT_TERMINAL_PROMPT=0` closes the HTTPS credential prompt and `BatchMode=yes`
- * makes ssh fail instead of reading a passphrase from /dev/tty — a forwarded
- * agent that vanished parks a push indefinitely (the #1095 shape, measured at
- * ~5h on a sibling project). An operator's `GIT_SSH_COMMAND` is kept verbatim
- * and the defaults are only appended when absent, so a repo configured with its
- * own key survives the wrapper.
- *
- * The helper is imported rather than hand-rolled here: `netGitEnv` itself sits
- * in `work-driver-net-git.ts`, whose `runNetGit` pulls the whole driver graph
- * (dispatch, lens review, spawn) into a lean step — so this file takes the pure
- * string composer `withSshDefaults` and does its own precedence: an explicit
- * `GIT_SSH_COMMAND` or `GIT_SSH` wins verbatim, otherwise the repo's
- * `core.sshCommand` (git's own precedence, which an env-only overlay cannot
- * see), otherwise plain `ssh` with the defaults appended.
+ * This IS the driver's env — `netGitEnv` from `work-driver-net-git.ts`, imported
+ * directly at the executor below rather than wrapped. Every other network git
+ * call in the harness already goes through that seam, so a publish push cannot
+ * drift from a driver push on what makes ssh fail instead of reading a passphrase
+ * from /dev/tty (`GIT_TERMINAL_PROMPT=0` + `-o BatchMode=yes`, #1095). The
+ * earlier argument for composing our own here was that `work-driver-net-git.ts`
+ * would drag the driver graph into a lean step; the review showed this file
+ * already pulls in ~390 driver modules through `command.ts`, so the reason was
+ * gone and the duplication was all that was left.
  */
-export function publishGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const operator = base.GIT_SSH_COMMAND?.trim();
-  return {
-    ...base,
-    GIT_TERMINAL_PROMPT: "0",
-    ...(operator
-      ? { GIT_SSH_COMMAND: withSshDefaults(operator) }
-      : base.GIT_SSH
-        ? {}
-        : { GIT_SSH_COMMAND: withSshDefaults(repoSshCommand() ?? "ssh") }),
-  };
-}
-
-/** The repo's `core.sshCommand`, read once per process; undefined when unset. */
-function repoSshCommand(): string | undefined {
-  const hit = sshConfigCache.get("repo");
-  if (hit !== undefined) return hit;
-  let value: string | undefined;
-  try {
-    value =
-      execFileSync("git", ["config", "--get", "core.sshCommand"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim() || undefined;
-  } catch {
-    // unset (git config exits 1) or not a repo: the default ssh command applies
-  }
-  sshConfigCache.set("repo", value);
-  return value;
-}
-
-const sshConfigCache = new Map<string, string | undefined>();
 
 /** Production dependencies: the real executor, the real issue read, the real forge. */
 export function publishDeps(): PublishDeps {
@@ -159,36 +116,23 @@ export function publishDeps(): PublishDeps {
     // `killGroup`).
     //
     // The push is the one call that leaves the clone, so it is the one call this
-    // seam gives a non-interactive env to (see `publishGitEnv`). Every other git
-    // call the step makes is local and keeps the caller's env verbatim.
+    // seam gives the driver's non-interactive env to (see the note above).
+    // Every other git call the step makes is local and keeps the caller's env
+    // verbatim.
     exec: (cmd, o) =>
       execp(cmd, {
         ...(o ?? {}),
-        ...(cmd === "git" && o?.env === undefined ? { env: publishGitEnv() } : {}),
+        ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv() } : {}),
       }),
     fetchBody: fetchIssueBody,
-    forge: forgeForPublish,
+    // `forgeFor` is io.ts's one lookup. `Forge` is structurally assignable to
+    // `PublishForge` (a `Pick` of it), so no cast: the narrower shape is a
+    // type-level statement about what the step may ask, not a second adapter to
+    // keep in sync. `undefined` is an ANSWER ("this clone has no forge the
+    // harness can drive"), and a detection that THREW also comes back undefined
+    // here — the same conflation `io.ts` accepts for the same reason: a forge
+    // that cannot be resolved is not a step the run can finish either way, and
+    // the step's refusal says which side of the line it stopped on.
+    forge: forgeFor,
   };
-}
-
-/**
- * The forge adapter in the publish shape, or undefined when there is none.
- *
- * `undefined` is an ANSWER ("this clone has no forge the harness can drive"),
- * and the step refuses on it; a detection that THREW also comes back undefined
- * here, which is the same conflation `io.ts` accepts for the same reason — a
- * forge that cannot be resolved is not a step the run can finish either way, and
- * the step's refusal says which side of the line it stopped on.
- */
-async function forgeForPublish(repoRoot: string): Promise<PublishForge | undefined> {
-  const { detectForge } = await import("../forge-detect.ts");
-  const { createForge } = await import("../forge.ts");
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
 }

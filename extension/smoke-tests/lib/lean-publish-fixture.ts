@@ -26,7 +26,7 @@ import { execp } from "../../src/exec.ts";
 import type { NormalizedPullRequest } from "../../src/forge-types.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { PublishDeps } from "../../src/lean/publish-deps.ts";
-import { publishGitEnv } from "../../src/lean/publish-deps.ts";
+import { netGitEnv } from "../../src/work-driver-net-git.ts";
 import { renderPiSpec } from "../../src/lean/spec.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
@@ -76,7 +76,7 @@ export function fakePr(
     labels: [],
     createdAt: undefined,
     updatedAt: undefined,
-  } as NormalizedPullRequest;
+  };
 }
 
 /** What the fake forge recorded, so a case asserts on calls rather than vibes. */
@@ -91,6 +91,12 @@ export interface FakeForge {
   viewThrows: boolean;
   /** Make `prDraft` reject — the forge refuses to put a reused PR back to draft. */
   draftThrows: boolean;
+  /**
+   * What `prView` reports for each number after a `prDraft`, overriding the PR's
+   * own `isDraft` — the seam for a forge that accepted the call and left the PR
+   * ready. `undefined` (the default) reports the state the PR carries.
+   */
+  afterDraft?: Map<number, boolean | undefined>;
   prs: NormalizedPullRequest[];
   listThrows: boolean;
   prList: (opts?: { state?: string; sourceBranch?: string }) => Promise<NormalizedPullRequest[]>;
@@ -135,11 +141,21 @@ export function fakeForge(
     if (f.viewThrows) throw new Error("forge: prView could not reach the host");
     const found = f.prs.find((pr) => pr.number === n);
     if (found === undefined) throw new Error(`forge: no PR #${n}`);
+    // A PR the step has just asked to draft is reported as the case put there,
+    // which is what makes "the forge accepted prDraft and left it ready" a
+    // testable behaviour rather than an imagined one.
+    if (f.prDraftCalls.includes(n) && f.afterDraft !== undefined && f.afterDraft.has(n))
+      return { ...found, isDraft: f.afterDraft.get(n) };
     return found;
   };
   f.prDraft = async (n: number) => {
     f.prDraftCalls.push(n);
     if (f.draftThrows) throw new Error("forge: prDraft could not reach the host");
+    // A successful re-draft is a STATE CHANGE the fake has to keep: the step
+    // reads the PR back afterwards, and a fake still reporting it ready would
+    // make every honest run look like the lie the read-back exists to catch.
+    const found = f.prs.find((pr) => pr.number === n);
+    if (found !== undefined) found.isDraft = true;
   };
   f.prCreate = async (
     title: string,
@@ -173,6 +189,12 @@ export interface PublishOpts {
   viewThrows?: boolean;
   /** Make `prDraft` reject, so a reused PR cannot be put back to draft. */
   draftThrows?: boolean;
+  /**
+   * What `prView` reports for a number AFTER the step asked to draft it — the
+   * seam for a forge that accepted `prDraft` and left the PR ready. A number the
+   * map does not carry keeps the state the PR itself reports.
+   */
+  afterDraft?: Record<number, boolean | undefined>;
   /**
    * Answer one git call before the fixture's own executor sees it — the seam for
    * a case that must control a push's porcelain output. Return `undefined` to
@@ -327,6 +349,7 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     listThrows: o.listThrows === true,
     viewThrows: o.viewThrows === true,
     draftThrows: o.draftThrows === true,
+    ...(o.afterDraft === undefined ? {} : { afterDraft: new Map(Object.entries(o.afterDraft).map(([k, v]) => [Number(k), v] as const)) }),
   });
   const spec = o.spec ?? defaultSpec();
   /** The env every git child ran with, so a case can assert on the push's. */
@@ -334,12 +357,13 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   const deps: PublishDeps = {
     // The production seam's env decision is applied HERE rather than inside
     // `publishDeps()` — the fixture injects its own executor, so a push env the
-    // fixture never forwards would be a guarantee no test can observe. Same
-    // helper, same condition (`cmd === "git"` and no env supplied by the caller).
+    // fixture never forwarded would be a guarantee no test can observe. Same
+    // env (the driver's `netGitEnv`), same condition (`cmd === "git"` and no
+    // env supplied by the caller).
     exec: async (cmd, opts) => {
       const override = o.execOver?.(cmd, opts);
       if (override !== undefined) return override;
-      const env = opts?.env ?? (cmd === "git" ? publishGitEnv(gitTestEnv()) : gitTestEnv());
+      const env = opts?.env ?? (cmd === "git" ? netGitEnv(gitTestEnv()) : gitTestEnv());
       seenEnvs.push(env);
       return execp(cmd, { ...opts, env, cwd: opts?.cwd ?? wt });
     },
