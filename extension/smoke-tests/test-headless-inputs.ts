@@ -43,6 +43,7 @@ import { roundCapMergeEnabled } from "../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
+import { readSites } from "./lib/pi-read-sites.ts";
 import { lensFixLandAheadEnabled } from "../src/work-driver-lens-fix-bound-land.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
@@ -436,32 +437,8 @@ for (const [name, read] of LIVE) {
 }
 
 // ── .pi/* files: each listed file is actually read, not just named.
-// A read site joins the path to a root (`path.join(root, ".pi", "x")`,
-// `${root}/.pi/x`, or `path.join(root, CONST)` where CONST = ".pi/x") and a
-// filesystem read or exec of it follows within two lines.
-const READ_API =
-  /\b(readFileSync|readFile|access|accessSync|existsSync|stat|statSync|fileExists|spawn|execFile)\b/;
-function readSites(files: Map<string, string>, piPath: string): string[] {
-  const base = path.basename(piPath);
-  const consts = new Set<string>();
-  for (const text of files.values()) {
-    for (const m of text.matchAll(
-      new RegExp(`const (\\w+) = "${piPath.replace(".", "\\.")}"`, "g"),
-    )) {
-      consts.add(m[1] as string);
-    }
-  }
-  const forms = [`".pi", "${base}"`, `}/${piPath}\``, ...[...consts].map((c) => `, ${c})`)];
-  const sites: string[] = [];
-  for (const [rel, text] of files) {
-    const lines = text.split("\n");
-    lines.forEach((line, n) => {
-      if (COMMENT.test(line) || !forms.some((f) => line.includes(f))) return;
-      if (READ_API.test(lines.slice(n, n + 3).join("\n"))) sites.push(`${rel}:${n + 1}`);
-    });
-  }
-  return sites;
-}
+// The scan itself lives in lib/pi-read-sites.ts (§12 size cap) and is observed
+// to fail by the two planted fixtures below.
 {
   const files = new Map(
     readdirSync(srcRoot, { recursive: true, encoding: "utf8" })
@@ -469,7 +446,12 @@ function readSites(files: Map<string, string>, piPath: string): string[] {
       .map((f) => [f, readFileSync(path.join(srcRoot, f), "utf8")] as const),
   );
   for (const f of HEADLESS_FILES) {
-    const sites = readSites(files, f.path);
+    // A git-blob read is a read: `lean/config.ts` loads `.pi/work.json` with
+    // `git show <baseSha>:.pi/work.json` through the injected exec seam
+    // (#406's doctrine-read rule — config that decides what a run may do is
+    // never read from the working tree), so that entry is judged against the
+    // git reader. Every other file keeps the filesystem rule untouched.
+    const sites = readSites(files, f.path, f.path === ".pi/work.json");
     assert(sites.length > 0, `${f.path} is read in src/ (${sites.join(", ") || "no read site"})`);
   }
   const fixture = new Map([
