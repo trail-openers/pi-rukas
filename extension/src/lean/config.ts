@@ -84,6 +84,7 @@ export type ConfigExec = typeof execp;
 /** Re-exported so a caller reads one module for the `verify` block's rules. */
 export type { TestLocation };
 export { testLocationOf, testLocationProblem } from "./config-test-location.ts";
+export { validateTestDir, validateTestGlob } from "./config-test-location.ts";
 
 /** Ceiling for one committed config/verify-cmd blob; overflow is its own error class. */
 const GIT_SHOW_MAX_BUFFER = 1024 * 1024;

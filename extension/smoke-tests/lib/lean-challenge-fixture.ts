@@ -401,6 +401,18 @@ export function configWith(runner: string = RUNNER): WorkConfig {
   return { ...defaultConfig(), verify: { fast: "true", test: runner } };
 }
 
+/**
+ * A config that also names the folder the project keeps its tests in, so a
+ * case can drive the `verify.testDir` / `verify.testGlob` prompt and boundary.
+ */
+export function configWithLocation(
+  testDir: string,
+  testGlob: string,
+  runner: string = RUNNER,
+): WorkConfig {
+  return { ...defaultConfig(), verify: { fast: "true", test: runner, testDir, testGlob } };
+}
+
 /** `git status --porcelain -uall` for a worktree, "" when clean. */
 export function status(wt: string): string {
   return git(wt, "status", "--porcelain", "-uall");

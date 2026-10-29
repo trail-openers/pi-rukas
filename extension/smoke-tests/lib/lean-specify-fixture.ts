@@ -140,6 +140,18 @@ export function configWith(verify: WorkConfig["verify"]): WorkConfig {
   return { ...defaultConfig(), verify };
 }
 
+/**
+ * A config that also tells the adversary where the project's tests live, so a
+ * case can drive the `verify.testDir` / `verify.testGlob` prompts and boundary.
+ */
+export function configWithLocation(
+  testDir: string,
+  testGlob: string,
+  verify: WorkConfig["verify"] = { fast: "true", test: RUNNER },
+): WorkConfig {
+  return configWith({ ...verify, testDir, testGlob });
+}
+
 function ctxFor(repoRoot: string, baseSha: string, issue: number): HandlerCtx {
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch: "" });
   return { repoRoot, issue, run, steps: run.steps, stepKey: `${issue}:specify:0`, now: () => 1 };
@@ -196,6 +208,13 @@ export interface RunOpts {
   testLimits?: { timeoutMs?: number };
   /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
   specBody?: string;
+  /**
+   * Where the fake child records the kickoff prompt the STEP built. The prompt
+   * is production text, so this is the only way a case asserts what the
+   * adversary was actually told (e.g. that its tests must go in the folder
+   * `.pi/work.json` names).
+   */
+  prompts?: string[];
   dispatchOk?: boolean;
 }
 
@@ -212,6 +231,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   };
   const dispatch: SpecifyDeps["dispatch"] = async (spec: DispatchSpec) => {
     dispatched++;
+    opts.prompts?.push(spec.prompt);
     const wt = spec.cwd as string;
     opts.writes(wt);
     // The child's worktree state at the moment its `submit_tests` calls are

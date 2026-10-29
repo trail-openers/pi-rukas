@@ -26,12 +26,18 @@ export interface TestLocation {
 }
 
 /**
- * Characters a `testDir` or `testGlob` may never contain. Shell metacharacters
- * and quotes have no business in a name the prompt quotes back to a child, and
- * a `*` in a directory (or `?` anywhere) says the author meant a pattern —
- * which is what `testGlob` is for.
+ * Characters neither setting may contain. Shell metacharacters and quotes have
+ * no business in a name the prompt quotes back to a child.
+ *
+ * `*` and `?` are refused in a DIRECTORY only, and checked there separately: a
+ * lone `*` IS the `testGlob` pattern, so a shared set that refused it would
+ * reject every legal glob (a validator that cannot express the one shape it
+ * exists to accept is the bug this split prevents).
  */
-const TEST_LOCATION_FORBIDDEN = /[;&|`$<>"'\\*?\n\r]/;
+const TEST_LOCATION_FORBIDDEN = /[;&|`$<>"'\\\n\r]/;
+
+/** A directory additionally has no wildcard at all — that is what `testGlob` is for. */
+const TEST_DIR_FORBIDDEN = /[?*]/;
 
 /**
  * Why this `verify.testDir` is not usable, or undefined when it is.
@@ -45,7 +51,9 @@ const TEST_LOCATION_FORBIDDEN = /[;&|`$<>"'\\*?\n\r]/;
 export function validateTestDir(dir: string): string | undefined {
   if (dir.trim() === "") return ".pi/work.json verify.testDir must not be empty";
   if (TEST_LOCATION_FORBIDDEN.test(dir))
-    return `.pi/work.json verify.testDir must be a plain repo-relative directory: ; & | \` $ < > " ' \\ * ? and newline are not allowed (${dir})`;
+    return `.pi/work.json verify.testDir must be a plain repo-relative directory: ; & | \` $ < > " ' \\ and newline are not allowed (${dir})`;
+  if (TEST_DIR_FORBIDDEN.test(dir))
+    return `.pi/work.json verify.testDir must be a plain repo-relative directory with no wildcard: * and ? are what verify.testGlob is for (${dir})`;
   if (dir.startsWith("/") || dir.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(dir))
     return `.pi/work.json verify.testDir must be repo-relative, not absolute (${dir})`;
   if (dir.endsWith("/") || dir.endsWith("\\"))
@@ -72,8 +80,10 @@ export function validateTestGlob(glob: string): string | undefined {
   const stars = glob.split("*").length - 1;
   if (stars !== 1)
     return `.pi/work.json verify.testGlob must contain exactly one "*", found ${stars} (${glob})`;
+  if (glob.includes("?"))
+    return `.pi/work.json verify.testGlob supports exactly one "*"; "?" is not part of the pattern (${glob})`;
   if (TEST_LOCATION_FORBIDDEN.test(glob))
-    return `.pi/work.json verify.testGlob must be a plain file-name pattern: ; & | \` $ < > " ' \\ ? and newline are not allowed (${glob})`;
+    return `.pi/work.json verify.testGlob must be a plain file-name pattern: ; & | \` $ < > " ' \\ and newline are not allowed (${glob})`;
   return undefined;
 }
 
