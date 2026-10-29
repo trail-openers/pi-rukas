@@ -40,6 +40,7 @@ import type { DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
 import { challengeDeps, challengeOutcome } from "./challenge.ts";
+import { leanChildOpts } from "./child-opts.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { handbackOutcome } from "./handback.ts";
@@ -169,7 +170,11 @@ export function specifyDeps(): SpecifyDeps {
   return {
     exec: (cmd, opts) => execp(cmd, opts ?? {}),
     dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
-      spawnSpecialist(spec, { writeFence: o.writeFence, extraArgs: o.extraArgs }),
+      spawnSpecialist(spec, {
+        writeFence: o.writeFence,
+        extraArgs: o.extraArgs,
+        ...leanChildOpts(),
+      }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
   };

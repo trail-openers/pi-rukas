@@ -53,6 +53,7 @@ import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import type { BuildDispatch, BuildExec } from "./build-types.ts";
+import { leanChildOpts } from "./child-opts.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -209,7 +210,11 @@ export function buildDeps(): BuildDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
     dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
-      spawnSpecialist(spec, { writeFence: o.writeFence, extraArgs: o.extraArgs }),
+      spawnSpecialist(spec, {
+        writeFence: o.writeFence,
+        extraArgs: o.extraArgs,
+        ...leanChildOpts(),
+      }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
   };

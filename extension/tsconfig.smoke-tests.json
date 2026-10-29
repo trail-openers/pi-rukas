@@ -144,6 +144,7 @@
     "smoke-tests/lib/lean-publish-fixture.ts",
     "smoke-tests/test-lean-publish-body.ts",
     "smoke-tests/test-lean-publish-push-env.ts",
+    "smoke-tests/test-headless-work-lean.ts",
     "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts"
   ]
 }

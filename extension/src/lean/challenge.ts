@@ -52,6 +52,7 @@ import { assertFrozenIntact } from "./build-normalise.ts";
 import { frozenFromLog } from "./build.ts";
 import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts";
 import type { ChallengeDispatch, ChallengeExec } from "./challenge-types.ts";
+import { leanChildOpts } from "./child-opts.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -301,7 +302,11 @@ export function challengeDeps(): ChallengeDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
     dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
-      spawnSpecialist(spec, { writeFence: o.writeFence, extraArgs: o.extraArgs }),
+      spawnSpecialist(spec, {
+        writeFence: o.writeFence,
+        extraArgs: o.extraArgs,
+        ...leanChildOpts(),
+      }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
   };
