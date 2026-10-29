@@ -14,11 +14,12 @@ import type { OperatorDirectives } from "./plan-directives.ts";
 import type { AngleFindings } from "./plan-draft.ts";
 import { draftSpec } from "./plan-draft.ts";
 import { haltResult } from "./plan-driver-halt.ts";
+import { piSpecReservation } from "./plan-pi-spec.ts";
 import { type PlanProvenance, provenanceReservation } from "./plan-provenance.ts";
 import type { PlanPhaseTiming, PlanResult, PlanType } from "./plan-types.ts";
 import { planTitle } from "./plan-types.ts";
-import { FORGE_BODY_MAX, fitDraftToBudget } from "./plan-validate.ts";
 import type { OperatorOmission, RenderBudget } from "./plan-validate.ts";
+import { FORGE_BODY_MAX, RENDER_BUDGETS, fitDraftToBudget } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
 
 /** The Phase-3 inputs: what the drafted body is built from. */
@@ -65,7 +66,36 @@ export type Phase3Outcome = { halt: PlanResult } | ({ halt?: undefined } & Phase
  * compaction note and the `filedBodyOf` sections are budgeted exactly as today
  * (BODY_BUDGET's 4,096-char headroom covers them; `validateFinalSpec`'s existing
  * `body-too-large` halt is their bound).
+ *
+ * #1883: the `## Spec (pi-spec v1)` block is reserved exactly like the marker —
+ * code places it AFTER the fitter (plan-pi-spec.ts, at `finalDraftBody`) and
+ * compaction never sees it, so nothing can trim it; its rendered width comes out
+ * of the budget up front so the FINAL body still fits the forge cap.
  */
+/**
+ * #1883 — what the budget fitter holds back for the TWO code appends that land
+ * AFTER it: the caller's provenance lines (plan-provenance.ts) and the
+ * `## Spec (pi-spec v1)` block (plan-pi-spec.ts). Both are placed by code at the
+ * one home for the filed body, `finalDraftBody`, so compaction never sees either
+ * and nothing can trim them; their width is paid for up front rather than
+ * discovered afterwards — that is the whole of the budget story for the block,
+ * and it is the same mechanism #1377 uses for the provenance marker. Exported for
+ * the budget test, which asserts a fitted body plus its reservation stays under
+ * BODY_BUDGET (a reservation nothing checks is a reservation that drifts).
+ *
+ * The block's reservation is a CONSTANT derived from the bounds in `piSpecFromDraft`
+ * (200-char title, at most 12 criteria at 200 chars each) plus the width of the
+ * omission line, so it can never under-count whatever the draft says. The earlier
+ * version measured a rendered section, which meant a third `draftSpec` call per run
+ * and a reservation computed on a render the fitter had thrown away (#1383).
+ */
+export function codeAppendReservation(
+  provenance: PlanProvenance | undefined,
+  type: PlanType,
+): number {
+  return provenanceReservation(provenance) + piSpecReservation(type);
+}
+
 export function phase3Draft(args: Phase3Args): Phase3Outcome {
   const openQuestions: string[] = [];
   const outOfScope: string[] = [];
@@ -84,9 +114,11 @@ export function phase3Draft(args: Phase3Args): Phase3Outcome {
         undefined,
         b,
       ),
-    // #1377: read at the single call site the fitter reserves it for, so
-    // nothing can forget it.
-    provenanceReservation(args.provenance),
+    // #1377 + #1883: both after-the-fitter appends (the provenance marker and
+    // the spec block) are reserved before drafting runs. The block's reservation
+    // is a constant per plan type — 0 for an epic or a spike — so it needs no
+    // render to measure, and an under-count is structurally impossible.
+    codeAppendReservation(args.provenance, args.type),
   );
   if ("tooLarge" in fitted) {
     trace(`plan-driver: body too large even after compaction (${fitted.size} chars) — halting`);
