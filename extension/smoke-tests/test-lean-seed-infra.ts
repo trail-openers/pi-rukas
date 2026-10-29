@@ -67,6 +67,25 @@ const { assert, failures } = makeAssert();
       (thrown as Error)?.name === "Error",
       `the handback is a plain Error, not a typed state error (got ${JSON.stringify((thrown as Error)?.name)})`,
     );
+    // The cause is CLIPPED, not interpolated raw: `why` is git's text (a first
+    // stderr line, an exec message) reaching a thrown message an operator and a
+    // log renderer see verbatim, so it gets the same 160-char clip
+    // `unresolvedMainlineRule` applies to the same string on the refusal path.
+    const longWhy = "x".repeat(400);
+    let longThrown: unknown;
+    try {
+      await withGh(gh, () =>
+        readyOutcome(repo.repoRoot, 4211, { baseSha: "", why: longWhy, infra: true }),
+      );
+    } catch (err) {
+      longThrown = err;
+    }
+    assert(
+      longThrown instanceof Error &&
+        longThrown.message ===
+          `could not seed the run's base: ${"x".repeat(160)}…`,
+      `the infra handback clips the seed's cause to 160 chars (got ${JSON.stringify((longThrown as Error)?.message)})`,
+    );
     // The same empty base with no mark is still a refusal the issue is told
     // about: the handback is for a fault, never for a repository that simply
     // has no mainline.

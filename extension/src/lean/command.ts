@@ -30,9 +30,6 @@
  * that posted it never runs twice.
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
@@ -55,20 +52,13 @@ import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Outcome, Step } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
 import { verifyDeps, verifyOutcome } from "./verify.ts";
+import { leanVersion } from "./version.ts";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-/** The extension version, stamped on every run so a state file reads years later. */
-export function leanVersion(): string {
-  try {
-    const pkg = JSON.parse(
-      fs.readFileSync(path.join(HERE, "..", "..", "package.json"), "utf8"),
-    ) as { version?: string };
-    return pkg.version ?? "unknown";
-  } catch {
-    return "unknown";
-  }
-}
+// The version stamp lives in `lean/version.ts`, its own leaf: the seed needs it
+// too, and importing it from here made the seed depend on this whole handler
+// table while this table depends on the seed. Re-exported because a caller that
+// wants the stamp reaches for it where it reaches for the command.
+export { leanVersion } from "./version.ts";
 
 /** What `ready` learned: kept for the run's seed and for the not-ready comment. */
 export interface ReadyFacts {
@@ -159,7 +149,14 @@ export async function readyOutcome(
     // is deliberately symmetric with the non-empty branch below, which lets
     // `proveBaseSha` throw for exactly the same class of fault.
     if (base.infra === true) {
-      throw new Error(`could not seed the run's base: ${why ?? "no reason recorded"}`);
+      // CLIPPED because `why` is git's text — a first stderr line, an exec
+      // message — being put into a thrown message an operator (and a log
+      // renderer) sees verbatim, exactly as `unresolvedMainlineRule` clips the
+      // same string on the refusal path. An unbounded `why` here is a second
+      // renderer that has to remember the rule the first one states.
+      throw new Error(
+        `could not seed the run's base: ${oneLine(why ?? "no reason recorded", 160)}`,
+      );
     }
     return {
       kind: "fail",

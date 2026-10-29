@@ -460,3 +460,9 @@ const { assert, failures } = makeAssert();
     repo.dispose();
   }
 }
+
+// An assertion-less suite is a suite that passes. The sibling suites
+// (`test-lean-base-infra.ts`, `test-lean-seed-infra.ts`) all end this way; this
+// one shipped without it, so every `✗` it printed still exited 0 and the gate
+// could not see a failure.
+process.exit(failures());

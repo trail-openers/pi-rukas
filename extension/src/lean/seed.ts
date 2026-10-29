@@ -4,8 +4,10 @@
  * Split out of `lean/command.ts` at AGENTS.md §12's line cap. It is its own
  * seam and not a convenience one: the seed is a RUN-START fact, read once before
  * the record exists, while `command.ts` is the per-step handler table. The two
- * share nothing but `leanVersion`, and a reader who wants to know what the base
- * is allowed to be should not have to scroll past eleven handlers to find it.
+ * share nothing but `leanVersion` — which lives in `lean/version.ts`, its own
+ * leaf, so neither module has to import the other for the stamp — and a reader
+ * who wants to know what the base is allowed to be should not have to scroll
+ * past eleven handlers to find it.
  *
  * The base has to be on the record from the first write. `specify`, `build`,
  * `challenge` and `verify` all read `ctx.run.baseSha`, and before this existed
@@ -20,9 +22,9 @@
  */
 
 import { proveBaseSha } from "./base-proof.ts";
-import { leanVersion } from "./command.ts";
 import { mainlineSha } from "./io.ts";
 import { oneLine } from "./text-fence.ts";
+import { leanVersion } from "./version.ts";
 
 /** What the run is seeded with: the version stamp and the pinned base. */
 export interface LeanSeed {

@@ -18,30 +18,38 @@
  *   (k) the second opinion CONTRADICTING the first (`cat-file -e` exits 0 behind
  *       a resolution miss) is a fault too — the object exists, the resolution
  *       broke — and never "not a commit";
- *   (l) the swallowed-failure counter is read as a PER-CALL DELTA: an unrelated
- *       earlier rejection elsewhere in the process does not turn this call's
- *       silent refusal into a fault;
+ *   (l) the resolver's answer is a PER-CALL value, not a process-global counter:
+ *       a failure attributed to one resolution does not turn a later, unrelated
+ *       silent refusal into a fault, and the shape itself is pinned — a caught
+ *       git error reports `failed: true`, a name that simply has no commit behind
+ *       it reports `failed: false`, and a leading dash never reaches git at all;
  *   (m) the round-2 wordings in both directions: `ambiguous argument` / `unknown
  *       revision` stay refusals, `unable to unpack` / inflate / corrupt / `bad
  *       object` stay faults, and a blob carrying both is a fault;
- *   (n) the counter is live: THIS call's failing resolution does make silence a
- *       fault, which is the other half of the delta rule (l) pins.
+ *   (n) the resolver's `failed` is live: THIS call's failing resolution does make
+ *       silence a fault, which is the other half of the per-call rule (l) pins;
+ *   (o) a NEW run refuses a seed base that is neither empty nor a full commit
+ *       sha, so the record can never carry a base the loader would go on to
+ *       reject.
  *
  * Everything goes through `lib/lean-base-proof-fixtures.ts`'s stand-in git, and
  * every case asserts on the argv that was asked for.
  */
 
+import { isFullCommitSha } from "../src/commit-sha.ts";
 import { proveBaseSha } from "../src/lean/base-proof.ts";
-import { resolveHeadSha, resolveHeadTraceCount } from "../src/review-head-sha.ts";
+import { runLean } from "../src/lean/engine.ts";
+import { resolveHeadSha, resolveHeadShaOutcome } from "../src/review-head-sha.ts";
 import {
   enoentGit,
   fakeGit,
   isCatFileProbe,
+  isRevParse,
   killedByTimeout,
   killedGit,
   oddCodeGit,
 } from "./lib/lean-base-proof-fixtures.ts";
-import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { HAPPY, makeAssert, scripted, tempDir } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -122,26 +130,27 @@ for (const [label, reply, cause] of [
   );
 }
 
-// ── (l) the trace counter is read as a PER-CALL DELTA, not absolutely.
+// ── (l) the resolver's answer is a PER-CALL value, not a process-global counter.
 //
-// `resolveHeadTraceCount` is process-global and never resets, so a probe that
-// asked it absolutely would let any unrelated git failure anywhere earlier in the
-// process — this suite's own (n), another run's config read — turn a legitimate
-// silent refusal into a fault. The counter is armed HERE, by a resolution that
-// fails for a reason this proof has nothing to do with, and the proof that runs
-// afterwards still refuses: only a failure of ITS OWN resolution is evidence
-// about its own base.
+// The old shape kept a monotonic module counter in `review-head-sha.ts` and the
+// proof compared it against a baseline taken just before its own read. A baseline
+// made the QUESTION per-call while leaving the ANSWER global — and the answer is
+// what had to be per-call: with the counter gone, a failure attributed to one
+// resolution can no longer be read as evidence about another call's silence. The
+// first block below makes that attribution explicit through the new outcome
+// shape; the second drives the exact case the counter used to decide, and it now
+// holds for the strongest possible reason — the proof never asks another call's
+// question at all.
 {
-  const armedBefore = resolveHeadTraceCount();
   const armed = fakeGit([{ throw: { code: 1, stderr: "fatal: bad revision" } }]);
-  const unrelated = await resolveHeadSha("/tmp/unrelated-repo", OID, armed.exec);
+  const unrelated = await resolveHeadShaOutcome("/tmp/unrelated-repo", OID, armed.exec);
   assert(
-    unrelated === undefined && resolveHeadTraceCount() > armedBefore,
-    `the unrelated resolution failed and armed the counter (${armedBefore} → ${resolveHeadTraceCount()})`,
+    unrelated.sha === undefined && unrelated.failed === true,
+    `the unrelated resolution reports its own git failure (got ${JSON.stringify(unrelated)})`,
   );
-  // Same proof, same empty-stderr refusal, with a traced failure already in the
-  // process: it must REFUSE, not throw. Without the per-call baseline this is
-  // the case that threw.
+  // Same proof, same empty-stderr refusal, with a FAILED resolution already in
+  // the process — the shape that used to be decided by a global counter. It must
+  // REFUSE, not throw.
   const { exec, calls } = fakeGit([{ stdout: "" }, { throw: { code: 1, stderr: "" } }]);
   let thrown: unknown;
   let out: Awaited<ReturnType<typeof proveBaseSha>> | undefined;
@@ -152,7 +161,7 @@ for (const [label, reply, cause] of [
   }
   assert(
     thrown === undefined,
-    `an unrelated traced failure does not turn this call's silence into a fault (${String(thrown)})`,
+    `an unrelated failed resolution does not turn this call's silence into a fault (${String(thrown)})`,
   );
   assert(
     out?.ok === false && out.rule === `base sha ${OID} is not a commit in this clone`,
@@ -161,6 +170,61 @@ for (const [label, reply, cause] of [
   assert(
     calls.length === 2 && isCatFileProbe(calls[1]?.argv ?? []),
     "the second opinion still ran for the silent refusal",
+  );
+}
+
+// ── (l2) the outcome shape itself: what `failed` means, and what it does not.
+//
+// `failed` is "the resolver CAUGHT a git error", and the distinction is the
+// whole reason the outcome exists: a name that peels to no commit is an ANSWER
+// (`failed: false`) and the proof must be allowed to refuse, while a rejection
+// is the absence of an answer (`failed: true`). A leading dash is refused before
+// git is asked at all — an argument-injection guard, not a git fault — so it is
+// `failed: false` and costs no subprocess.
+{
+  const refused = fakeGit([{ throw: { code: 128, stderr: "fatal: bad revision" } }]);
+  const caught = await resolveHeadShaOutcome(REPO, OID, refused.exec);
+  assert(
+    caught.sha === undefined && caught.failed === true,
+    `a caught git error reports failed (got ${JSON.stringify(caught)})`,
+  );
+  assert(
+    refused.calls.length === 1 && isRevParse(refused.calls[0]?.argv ?? []),
+    `the failed resolution asked git once (got ${JSON.stringify(refused.calls.map((c) => c.argv))})`,
+  );
+
+  const absent = fakeGit([{ stdout: "" }]);
+  const answered = await resolveHeadShaOutcome(REPO, OID, absent.exec);
+  assert(
+    answered.sha === undefined && answered.failed === false,
+    `an empty answer is no-such-ref, not a git failure (got ${JSON.stringify(answered)})`,
+  );
+
+  const hit = fakeGit([{ stdout: `${OID}\n` }]);
+  const ok = await resolveHeadShaOutcome(REPO, OID, hit.exec);
+  assert(
+    ok.sha === OID && ok.failed === undefined,
+    `a resolved ref reports its sha and no failure (got ${JSON.stringify(ok)})`,
+  );
+
+  const neverRan = fakeGit([{ stdout: OID }]);
+  const dashed = await resolveHeadShaOutcome(REPO, "-h", neverRan.exec);
+  assert(
+    dashed.sha === undefined && dashed.failed === false,
+    `a leading dash is refused without asking git (got ${JSON.stringify(dashed)})`,
+  );
+  assert(
+    neverRan.calls.length === 0,
+    `the dash guard runs git never to be asked (got ${JSON.stringify(neverRan.calls.map((c) => c.argv))})`,
+  );
+
+  // The wrapper keeps its exact old contract for the ~15 callers that only ask
+  // "did it resolve": every outcome above collapses to the same value.
+  const stillUndefined = await resolveHeadSha(REPO, OID, fakeGit([{ stdout: "" }]).exec);
+  const stillTheSha = await resolveHeadSha(REPO, OID, fakeGit([{ stdout: OID }]).exec);
+  assert(
+    stillUndefined === undefined && stillTheSha === OID,
+    `resolveHeadSha still returns string | undefined (got ${JSON.stringify([stillUndefined, stillTheSha])})`,
   );
 }
 
@@ -218,15 +282,12 @@ for (const [label, stderr, kind] of [
   }
 }
 
-// ── (n) the counter is live: THIS call's failing resolution does make silence a
-// fault. The counter is the resolver's own (ungated, unlike the trace write), so
-// the case arms it by making the injected executor reject the resolution the way
-// a real git would — and it is the DELTA past the baseline `proveBaseSha` took
-// that decides, not the absolute value, which is the half (l) pins.
+// ── (n) the resolver's `failed` is live: THIS call's failing resolution does
+// make silence a fault. The proof now receives the flag as an argument from its
+// own resolution — there is nothing global left to read — so the case arms it
+// exactly as a real git would: the injected executor rejects the rev-parse, and
+// it is that call's `failed: true` that decides, not any ambient value.
 {
-  // Armed immediately before the proof, so the value the proof reads as its
-  // baseline cannot have moved between the arming and the call.
-  const before = resolveHeadTraceCount();
   const { exec } = fakeGit([
     { throw: { code: 1, stderr: "fatal: bad revision" } },
     { throw: { code: 1, stderr: "" } },
@@ -239,16 +300,71 @@ for (const [label, stderr, kind] of [
     thrown = err;
   }
   assert(
-    resolveHeadTraceCount() > before,
-    `a failing resolution is counted (${before} → ${resolveHeadTraceCount()})`,
-  );
-  assert(
     thrown instanceof Error &&
       /git refused with no reason while a resolution failure was traced/.test(
         (thrown as Error)?.message ?? "",
       ),
-    `an empty stderr after this call's own traced failure is a fault, not a refusal (got ${JSON.stringify(out)} / ${JSON.stringify((thrown as Error)?.message)})`,
+    `an empty stderr after this call's own failed resolution is a fault, not a refusal (got ${JSON.stringify(out)} / ${JSON.stringify((thrown as Error)?.message)})`,
   );
+}
+
+// ── (o) a NEW run refuses a seed base that is neither "" nor a full sha.
+//
+// `createRun` trusts its input — `assertRun` is the READ path, and a fresh
+// record never passes through it — so before this check a caller that handed
+// `runLean` a `main`, a short prefix or a typo'd oid wrote a state file that
+// loaded green and anchored every later read to a moving ref. The two refusals
+// are the same shape the loader's own validator uses (`LeanStateError`, the
+// value clipped), and `""` stays legal: that is the seed that found no mainline.
+for (const [label, bad_base] of [
+  ["a branch name", "main"],
+  ["an 8-hex prefix", OID.slice(0, 8)],
+  ["an uppercase full sha", OID.toUpperCase()],
+  ["a typo'd oid", `${OID.slice(0, 39)}g`],
+] as const) {
+  const { dir, cleanup } = tempDir();
+  try {
+    const { handlers } = scripted(HAPPY);
+    let thrown: unknown;
+    try {
+      await runLean({ repoRoot: dir, issue: 31, handlers, seed: { baseSha: bad_base } });
+    } catch (err) {
+      thrown = err;
+    }
+    assert(
+      thrown instanceof Error &&
+        /seed baseSha must be empty or a full commit sha/.test(thrown.message) &&
+        thrown.message.includes(JSON.stringify(bad_base.slice(0, 80))),
+      `a new run refuses ${label} as its seed base (got ${String(thrown)})`,
+    );
+  } finally {
+    cleanup();
+  }
+}
+{
+  // …and the two values that ARE legal still start a run.
+  const { dir, cleanup } = tempDir();
+  try {
+    const { handlers } = scripted(HAPPY);
+    const empty = await runLean({
+      repoRoot: dir,
+      issue: 32,
+      handlers,
+      seed: { version: "test", baseSha: "" },
+    });
+    const full = await runLean({
+      repoRoot: dir,
+      issue: 33,
+      handlers,
+      seed: { version: "test", baseSha: OID },
+    });
+    assert(
+      isFullCommitSha(full.run.baseSha) && full.run.baseSha === OID && empty.run.baseSha === "",
+      `"" and a full sha both still seed a run (got ${JSON.stringify([empty.run.baseSha, full.run.baseSha])})`,
+    );
+  } finally {
+    cleanup();
+  }
 }
 
 process.exit(failures());

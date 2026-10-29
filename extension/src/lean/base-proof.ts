@@ -21,7 +21,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { execp } from "../exec.ts";
-import { resolveHeadSha, resolveHeadTraceCount } from "../review-head-sha.ts";
+import { resolveHeadShaOutcome } from "../review-head-sha.ts";
 import { LOCAL_GIT_TIMEOUT_MS } from "../review-patch-identity.ts";
 import type { VerifyExecFn } from "../work-driver-git.ts";
 import { NO_MAINLINE_WHY } from "./io.ts";
@@ -78,17 +78,17 @@ export function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
  * so anything that resolves to a different spelling was never the object the run
  * was seeded with (a mixed-case or otherwise mangled value).
  *
- * The resolution goes through the repo's canonical `resolveHeadSha`, which peels
- * with `^{commit}` (so a blob or tag object answers `undefined`) and is bounded
- * like every other identity git read.
+ * The resolution goes through the repo's canonical resolver (`review-head-sha.ts`
+ * `resolveHeadShaOutcome`), which peels with `^{commit}` (so a blob or tag object
+ * answers no sha) and is bounded like every other identity git read. The OUTCOME
+ * form is the one this module uses, because it is the only one that can answer
+ * the question the second opinion exists to settle: the miss was either git
+ * saying "no such commit" or git failing to answer at all, and the probe must be
+ * told which, per call.
  *
  * Throws on a git INFRASTRUCTURE fault and only there — see `probeCommitObject`.
  * A caller that wants a refusal rather than a handback must not get one for a
  * repository whose git could not be asked.
- *
- * The probe's "was a resolution failure traced" question is answered from a
- * baseline taken HERE, immediately before the resolution below, so it is a
- * per-call delta rather than a reading of a process-global counter.
  */
 export async function proveBaseSha(
   repoRoot: string,
@@ -96,28 +96,26 @@ export async function proveBaseSha(
   exec: VerifyExecFn = execp,
 ): Promise<{ ok: true } | { ok: false; rule: string }> {
   if (!isFullCommitSha(baseSha)) return { ok: false, rule: notAnOidRule(baseSha) };
-  // Read the counter immediately before the read it is about to explain, and
-  // hand that baseline to the probe. The resolver's counter is process-global
-  // and never reset, so an ABSOLUTE reading would let any unrelated earlier git
-  // failure anywhere in the process — another run's config read, a ledger write
-  // three steps ago — turn this call's silent refusal into a fault. Per-call is
-  // the honest question: "did THIS resolution fail", which is the only failure
-  // the probe can be evidence about. The counter still never resets (#1910 —
-  // erasing another caller's evidence to freshen the question is the wrong
-  // trade); it is the reading that is scoped, not the counter.
-  const tracedBefore = resolveHeadTraceCount();
-  const resolved = await resolveHeadSha(repoRoot, baseSha, exec);
-  if (resolved === undefined) {
-    // A miss is not yet an answer: `resolveHeadSha` returns `undefined` for a
-    // non-commit AND for a git that could not answer. Ask the narrow question.
-    const probe = await probeCommitObject(repoRoot, baseSha, exec, tracedBefore);
+  // The resolver's own verdict on its own read, carried in as an argument. There
+  // is deliberately no process-global counter to consult: an absolute reading of
+  // a monotonic counter (and even a per-call baseline of one) lets any unrelated
+  // git failure elsewhere in the process — another run's config read, a ledger
+  // write three steps ago — turn THIS call's silent refusal into a fault. The
+  // only failure this probe can be evidence about is the one THIS resolution
+  // reported, and the only place that fact can come from is the call itself.
+  const outcome = await resolveHeadShaOutcome(repoRoot, baseSha, exec);
+  if (outcome.sha === undefined) {
+    // A miss is not yet an answer: the resolver returns no sha for a non-commit
+    // AND for a git that could not answer. `failed` says which, and the probe
+    // asks the narrow question of the one case the resolver cannot see itself.
+    const probe = await probeCommitObject(repoRoot, baseSha, exec, outcome.failed === true);
     if (probe !== true) {
       throw new Error(`could not verify base sha ${oneLine(baseSha, 80)}: ${oneLine(probe, 160)}`);
     }
     return { ok: false, rule: notACommitRule(baseSha) };
   }
-  if (resolved !== baseSha)
-    return { ok: false, rule: notACommitRule(baseSha, resolvesTo(resolved)) };
+  if (outcome.sha !== baseSha)
+    return { ok: false, rule: notACommitRule(baseSha, resolvesTo(outcome.sha)) };
   return { ok: true };
 }
 
@@ -149,7 +147,7 @@ async function probeCommitObject(
   repoRoot: string,
   baseSha: string,
   exec: VerifyExecFn,
-  tracedBefore: number,
+  resolutionFailed: boolean,
 ): Promise<true | string> {
   try {
     const out = await exec("git", {
@@ -220,20 +218,18 @@ async function probeCommitObject(
       // two apart. The rule this module documents is that a refusal must be
       // POSITIVELY recognised, and silence is not that; the exception, written
       // down here as the brief required, is that silence stays a refusal while
-      // `resolveHeadSha` stayed silent too. That resolver counts every git error
-      // it swallows (`resolveHeadTraceCount`, ungated because the trace write is
-      // gated on `PI_ENSEMBLE_DEBUG`), so a count that MOVED past the baseline
-      // `proveBaseSha` took before its own read means this call's resolution
-      // actually failed and the object store is suspect. The baseline is what
-      // keeps the question per-call: the counter is process-global and monotonic,
-      // so an absolute reading would blame some unrelated git read that failed
-      // earlier in the process for this base's silence. Under an INJECTED
-      // executor (every fake-git case in the base-proof suite) nothing reaches
-      // the counter, so those cases keep answering "refusal", which is what they
-      // pin; the production shape — real git, real failing rev-parse — is the one
-      // the counter refuses, and the `chmod 000` case in test-lean-base-proof.ts
-      // drives it.
-      if (resolveHeadTraceCount() > tracedBefore)
+      // the resolution stayed silent too. That resolver reports a caught git
+      // error on its own outcome (`resolveHeadShaOutcome`'s `failed`, ungated
+      // because the trace write is gated on `PI_ENSEMBLE_DEBUG`), and THIS call's
+      // resolution is the only one whose failure can be evidence about THIS base
+      // — so the flag arrives as an argument from the caller that made the read,
+      // and a `failed: true` means the object store is suspect. Under an
+      // INJECTED executor (every fake-git case in the base-proof suite) nothing
+      // reaches a global, so those cases keep answering "refusal", which is what
+      // they pin; the production shape — real git, real failing rev-parse — is
+      // the one the flag refuses, and the `chmod 000` case in
+      // test-lean-base-proof.ts drives it.
+      if (resolutionFailed)
         return `git refused with no reason while a resolution failure was traced (exit ${String(exit)})`;
       return true;
     }
