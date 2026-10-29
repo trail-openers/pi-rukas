@@ -308,7 +308,7 @@ function assertRun(obj: unknown, file: string): LeanRun {
       bad(`step ${key} outcome must be an object`);
     const oc = st.outcome as Record<string, unknown> | undefined;
     if (oc !== undefined) {
-      const problem = outcomeProblem(oc);
+      const problem = outcomeProblem(oc, st.state as LeanState);
       if (problem !== undefined) bad(`step ${key} ${problem}`);
     }
     // The `:N` suffix is a derived field (the entry count) and the engine

@@ -68,6 +68,14 @@ export function failTier(marker: string): string {
 export const HANG_TIER = "sleep 60";
 
 /**
+ * A `verify.test` template whose runner exits non-zero WITHOUT naming the file:
+ * the shape `runTestFile` classifies as `unclear`. `sh {file}` cannot produce it
+ * (the fixture's test echoes its own path when it fails), so a case that wants
+ * to see what an unattributable failure becomes needs this runner instead.
+ */
+export const SILENT_TEST_RUNNER = "sh silent-runner.sh {file}";
+
+/**
  * A tier that writes `rel` in the worktree, COMMITTING it when `commit` is set.
  *
  * The re-check cases need a tier that disturbs the tree *after* the step has
@@ -129,6 +137,20 @@ export interface VerifyOpts {
    * been read clean. The command runs through a shell in the worktree.
    */
   full?: string;
+  /**
+   * A `verify.test` template whose runner says nothing about the file it was
+   * asked to run. The fixture's own `sh {file}` names its path on failure;
+   * this is the stand-in for a runner that does not, so a case can observe what
+   * an `unclear` proof (silent non-zero exit) becomes.
+   */
+  silentTestRunner?: boolean;
+  /**
+   * Make the HEAD read that happens AFTER the tiers reject, while every earlier
+   * git call still goes to the real git. That read is the post-tier re-check: a
+   * step that cannot re-read HEAD once the tiers have run has not observed a
+   * tier moving it — it has failed to read the tree, which is infrastructure.
+   */
+  recheckHeadFails?: boolean;
   /** Log lines to add after the fixture's own. */
   extraSteps?: Step[];
 }
@@ -251,6 +273,22 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   if (opts.dirty === true) writeFileSync(path.join(wt, "notes.txt"), "a stray file\n");
 
   const head = git(wt, "rev-parse", "HEAD");
+  const RECHECK_ARGV = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "rev-parse",
+    "HEAD",
+  ];
+  let tierRan = false;
+  if (opts.silentTestRunner === true) {
+    // Committed before `head` is read: the step refuses a dirty tree before it
+    // ever runs a test, so a helper left untracked would trip that first, and
+    // the frozen file itself is untouched, so no tamper is mistaken for this.
+    writeFileSync(path.join(wt, "silent-runner.sh"), "exit 1\n");
+    commitHere(wt, "chore: fixture runner that never names the file it ran");
+  }
   // The log's frozen record is the bytes the FREEZE committed. A case that
   // rewrote the file on disk or at HEAD afterwards faces a record that no
   // longer matches, which is exactly the tamper the step must catch.
@@ -258,14 +296,30 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const exec: VerifyExec = (cmd, o) =>
-    execp(cmd, { ...o, env: o?.env ?? gitTestEnv(), cwd: o?.cwd ?? wt });
+  const exec: VerifyExec = (cmd, o) => {
+    // The tier command is the marker between the step's pre-tier reads and its
+    // post-tier re-checks; only the HEAD read on the far side of it goes quiet.
+    if (cmd !== "git" && cmd !== "sh") tierRan = true;
+    if (
+      opts.recheckHeadFails === true &&
+      cmd === "git" &&
+      String(o?.argv ?? []) === String(RECHECK_ARGV) &&
+      tierRan
+    )
+      return Promise.reject(new Error("git: fatal: unable to read HEAD"));
+    return execp(cmd, { ...o, env: o?.env ?? gitTestEnv(), cwd: o?.cwd ?? wt });
+  };
 
   const configured = opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
   if (opts.full !== undefined) configured.full = opts.full;
   const deps: VerifyDeps = {
     exec,
-    loadConfig: async () => ({ verify: { test: "sh {file}", ...configured } }),
+    loadConfig: async () => ({
+      verify: {
+        test: opts.silentTestRunner === true ? SILENT_TEST_RUNNER : "sh {file}",
+        ...configured,
+      },
+    }),
     readVerifyCmd: async () => undefined,
     ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
   };

@@ -173,7 +173,7 @@ export async function handbackOutcome(
     // The run ends here either way; the record says whether anyone was told.
     return {
       kind: "done",
-      reason: `handback comment NOT posted: ${(err as Error)?.message ?? String(err)}`,
+      reason: `handback comment NOT posted: ${(err as Error)?.message || String(err)}`,
     };
   }
 }

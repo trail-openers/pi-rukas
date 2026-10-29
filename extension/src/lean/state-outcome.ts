@@ -14,7 +14,7 @@
  * does not exist.
  */
 
-import type { Outcome } from "./state.ts";
+import type { LeanState, Outcome } from "./state.ts";
 
 /** A sha256 in the hex form the `specify` step freezes into its outcome. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -26,9 +26,39 @@ const SHA1_HEX = /^[0-9a-f]{40}$/;
 const PR_URL = /^https:\/\/\S+$/;
 const PR_URL_MAX_CHARS = 500;
 
-/** Why a step's own report of itself is not a valid outcome, or `undefined`. */
-export function outcomeProblem(oc: Record<string, unknown>): string | undefined {
+/**
+ * Which state is allowed to record which evidence-bearing field.
+ *
+ * `prUrl` is the address `handback` prints and `verifiedHead` is what the land
+ * gate matches against the PR head, so a value that arrived on a step that
+ * never produced it is not extra information — it is a forged record that reads
+ * as evidence. `assertRun` refuses it at load with the step's own key in the
+ * message, so a hand-edited file naming a PR this run never opened (or claiming
+ * a head this run never verified) is never driven.
+ */
+const OWNER_OF_FIELD: Readonly<Record<string, LeanState>> = {
+  prUrl: "publish",
+  verifiedHead: "verify",
+};
+
+/**
+ * Why a step's own report of itself is not a valid outcome, or `undefined`.
+ *
+ * `state` is the step's own state; when it is supplied, a field that belongs to
+ * another state is refused. Omitting it keeps the shape-only checks for callers
+ * that have not resolved the step's state yet.
+ */
+export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): string | undefined {
   if (typeof oc.kind !== "string") return "outcome needs a string kind";
+  // Step-owned fields are checked BEFORE their shape: a forged `prUrl` on a
+  // handback step is refused for being on the wrong step whatever its value, so
+  // a caller cannot dodge the ownership rule with a well-formed URL.
+  if (state !== undefined) {
+    for (const [field, owner] of Object.entries(OWNER_OF_FIELD)) {
+      if (oc[field] !== undefined && state !== owner)
+        return `outcome ${field} is only recorded by a ${owner} step, not a ${state} step`;
+    }
+  }
   // `next()` calls `.join` on this when it routes a refusal, so a string-valued
   // `failedRules` is a crash waiting in the report path rather than a cosmetic
   // type slip.

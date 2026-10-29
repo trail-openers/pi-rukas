@@ -43,6 +43,12 @@ export const TIER_TAIL_LINES = 40;
  * it into a throw so the engine hands the run back rather than routing a build
  * round on a result nobody saw. Keeping the two apart in the type is what stops
  * a "could not tell" from being read as an `undefined` and then as a green.
+ *
+ * What counts as "nothing was observed" is narrower than it looks, and
+ * `frozenTestFailure` is where the line sits: a frozen test that exits non-zero
+ * without echoing its own path is a `fail` (it was proven red at freeze time,
+ * so a later non-zero exit is that failure continuing), while a runner that was
+ * killed, timed out or never started is `infra` — that one never ran.
  */
 export type Executed =
   | { kind: "pass" }
@@ -129,14 +135,18 @@ export async function frozenTestFailure(
     });
     if (proof.kind === "infra")
       throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${proof.detail}`);
-    // A non-zero exit whose output never named this file is NOT a verdict on
-    // this test: something else failed and the runner said nothing about the
-    // frozen path. Reading it as a red would tell a developer their contract
-    // broke when the only thing that broke was whatever printed.
+    // A non-zero exit whose output never named this file is a RED, not
+    // infrastructure (the PM's call, reversing the earlier reading). The file
+    // was proven red-and-named at freeze time, so it was a real failing test on
+    // the base commit; a later non-zero exit is that test still failing, and the
+    // only thing missing is the runner's own echo of the path. Treating it as
+    // infra handed the run back for a test failure the developer can act on.
+    // Only the shapes where nobody ran anything — killed, timed out, never
+    // started — stay throws, because those observed nothing.
     if (proof.kind === "unclear")
       return {
-        kind: "infra",
-        reason: `the frozen test ${file} could not be attributed: ${proof.detail}`,
+        kind: "fail",
+        reason: `frozen test ${file} failed (exit ${String(proof.code)}; output did not name it)`,
       };
     if (proof.kind !== "green") failures.push(`${file} (${proof.detail})`);
   }

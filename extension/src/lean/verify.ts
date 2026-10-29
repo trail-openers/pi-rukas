@@ -108,6 +108,10 @@ async function verifyCmdAtHead(
   // An ABSENT file is "the project configured nothing"; a read that failed for
   // any other reason is infrastructure and throws, because defaulting a git
   // that would not answer to "no tiers" turns a broken machine into a green.
+  // The wrapped rejection also covers an injected `readVerifyCmd` that rejects:
+  // the seam is a test's stand-in for this very read, so it earns the same
+  // classification — a `VerifyInfraError` it raised itself passes through
+  // untouched, anything else is re-thrown with the reader's own wording.
   const ran = await exec("git", {
     argv: [...NO_HOOKS, "show", `${head}:.pi/verify-cmd`],
     cwd: wt,
@@ -115,15 +119,29 @@ async function verifyCmdAtHead(
     maxBuffer: 1024 * 1024,
   }).catch((err: unknown) => {
     if (absentVerifyCmd(err)) return undefined;
-    throw new VerifyInfraError(
-      `could not read .pi/verify-cmd at ${head}: ${(err as Error)?.message ?? String(err)}`,
-    );
+    throw toVerifyCmdInfra(err);
   });
   if (ran === undefined) return undefined;
   return (ran.stdout ?? "")
     .split(/\r?\n/)
     .map((l) => l.trim())
     .find((l) => l !== "" && !l.startsWith("#"));
+}
+
+/**
+ * Wrap a failed `.pi/verify-cmd` read as infrastructure.
+ *
+ * One wording for both readers — the production `git show` above and an injected
+ * `deps.readVerifyCmd` — so a test that makes its seam reject cannot observe a
+ * different failure class from the one the real read produces. A rejection that
+ * is already a `VerifyInfraError` is the reader's own verdict on its machine and
+ * keeps its message; anything else is reported as a read that could not answer.
+ */
+function toVerifyCmdInfra(err: unknown): VerifyInfraError {
+  if (err instanceof VerifyInfraError) return err;
+  return new VerifyInfraError(
+    `could not read .pi/verify-cmd: ${(err as Error)?.message ?? String(err)}`,
+  );
 }
 
 /** The first failure among the executed checks; an unobservable one THROWS. */
@@ -156,7 +174,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // HEAD, and only HEAD: everything below is a claim about that commit.
   const headRan = await deps
     .exec("git", {
-      argv: ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "rev-parse", "HEAD"],
+      argv: [...NO_HOOKS, "rev-parse", "HEAD"],
       cwd: wt,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
@@ -222,7 +240,9 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   const verifyCmd =
     deps.readVerifyCmd === undefined
       ? await verifyCmdAtHead(deps.exec, wt, head)
-      : await deps.readVerifyCmd(wt, head);
+      : await deps.readVerifyCmd(wt, head).catch((err: unknown) => {
+          throw toVerifyCmdInfra(err);
+        });
 
   // 3. The compiler must still judge, before any tier may be trusted as green.
   const tiers = tiersOf(config.verify, verifyCmd);
@@ -269,6 +289,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     throw new VerifyInfraError(
       `a verify tier left the worktree dirty: ${dirtyAfter.slice(0, 500)}`,
     );
+  // A read that could not ANSWER is not evidence that a tier moved the head:
+  // the same distinction the porcelain re-check above makes, and for the same
+  // reason — blaming a tier for git refusing to reply accuses the wrong party
+  // and hands the run back with a verdict nobody observed.
   const headAfter = await deps
     .exec("git", {
       argv: [...NO_HOOKS, "rev-parse", "HEAD"],
@@ -276,7 +300,11 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     })
-    .catch(() => undefined);
+    .catch((err: unknown) => {
+      throw new VerifyInfraError(
+        `could not re-check HEAD after the tiers: ${(err as Error)?.message ?? String(err)}`,
+      );
+    });
   if ((headAfter?.stdout ?? "").trim() !== head)
     throw new VerifyInfraError("a verify tier moved HEAD");
 
