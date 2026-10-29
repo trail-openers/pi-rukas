@@ -21,11 +21,18 @@
  * honest code for that. The supervisor's crash/30 classification is untouched.
  */
 
-import { resourceReport } from "../resource-budget.ts";
+import { type ResourceReport, resourceReport } from "../resource-budget.ts";
 import { isTerminalState, readState, workStateFile } from "../workflow-state.ts";
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
-import { type IssueResult, notStartedResult, projectIssue, resultDocument } from "./result.ts";
+import {
+  ERROR_PREFIX,
+  type IssueResult,
+  SUMMARY_PREFIX,
+  notStartedResult,
+  projectIssue,
+  resultDocument,
+} from "./result.ts";
 
 /**
  * How long the runner waits for its own driver before calling it wedged.
@@ -87,21 +94,57 @@ export async function wedgedRun(
   };
 }
 
-/** One result document, in the shape `cli.ts` writes for `work`. */
+/**
+ * The document a machine host reads: the ONE builder (`result.ts`'s
+ * `resultDocument`), so the wedge document and the supervisor's crash document
+ * can never drift in schema version, build fields or key order (#1863 round 1),
+ * plus the `resources` report the `--json` branch adds at its write site.
+ *
+ * `machineLine` is the shared shape — `resources` present or absent — so the
+ * degraded fallback below cannot drift from the full one in key order.
+ *
+ * THROWS. `resourceReport()` reads the live resolvers and `readBuildCommit()`
+ * probes a checkout with git. Neither is allowed to take the human summary down
+ * with it, which is why every caller of this sits in a `try` (#1866 lens r2).
+ */
+function machineDocument(run: RunOutcome): Record<string, unknown> {
+  return machineLine(run, resourceReport());
+}
+
+function machineLine(
+  run: RunOutcome,
+  resources: ResourceReport | undefined,
+): Record<string, unknown> {
+  const doc = resultDocument(run, {
+    commit: readBuildCommit(),
+    version: readBuildVersion(),
+  });
+  return resources === undefined ? { ...doc } : { ...doc, resources };
+}
+
+/**
+ * One result document, in the shape `cli.ts` writes for `work`.
+ *
+ * Text mode builds the HUMAN lines first and the machine line last, inside a
+ * `try` (#1866 lens round 2): `machineDocument` reaches `resourceReport()` and
+ * a git probe, and a throw from either used to escape the function — so the
+ * host read nothing at all, summary included, for a run that had finished. The
+ * fallbacks degrade the machine line, never the prose: a document without
+ * `resources` still answers the supervisor, and if even that cannot be built
+ * the human lines still go out and the supervisor's own crash/30 projection
+ * covers the machine half.
+ */
 export function formatResultDocument(run: RunOutcome, json: boolean): string {
   if (json) {
     // The ONE builder (`result.ts`'s `resultDocument`), so the wedge document
     // and the supervisor's crash document can never drift in schema version,
     // build fields or key order (#1863 round 1). `resources` stays the CLI's
     // additive field, added at the write site as everywhere else.
-    const doc = resultDocument(run, {
-      commit: readBuildCommit(),
-      version: readBuildVersion(),
-    });
-    return `${JSON.stringify({ ...doc, resources: resourceReport() })}\n`;
+    return `${JSON.stringify(machineDocument(run))}\n`;
   }
   const parts = run.results.map((r) => `#${r.issue} ${r.status} (exit ${r.exitCode})`);
-  const head = `pi-rukas-headless: ${parts.join(", ") || "nothing ran"}\n`;
+  const head = `${SUMMARY_PREFIX} ${parts.join(", ") || "nothing ran"}\n`;
+  const errorLine = run.error ? `${ERROR_PREFIX} ${run.error.code} — ${run.error.message}\n` : "";
   // #1866 — the machine line. The summary and the error line are what a person
   // reads; they are not what the SUPERVISOR reads. `supervise.ts` decides "did
   // my child answer" with `parseResultLine`, which accepts only a line that
@@ -121,13 +164,23 @@ export function formatResultDocument(run: RunOutcome, json: boolean): string {
   // reads are byte-identical to the ones a `--json` host reads. A machine line
   // that differed between the modes by a field would make `resources` a mode
   // artefact rather than a property of the run.
-  const doc = resultDocument(run, {
-    commit: readBuildCommit(),
-    version: readBuildVersion(),
-  });
-  const machine = `${JSON.stringify({ ...doc, resources: resourceReport() })}\n`;
-  const errorLine = run.error ? `error: ${run.error.code} — ${run.error.message}\n` : "";
-  return `${head}${errorLine}${machine}`;
+  //
+  // Both prefixes come from `result.ts`, where `proseLinesBefore` reads the
+  // same two constants: a literal here would let the producer rename a prefix
+  // and silently turn every text-mode run into a document-only stream.
+  try {
+    return `${head}${errorLine}${JSON.stringify(machineDocument(run))}\n`;
+  } catch {
+    // The document without `resources` is still a complete result: it carries
+    // the schema version, the `issues` array and the published `exitCode`, so
+    // `parseResultLine` still accepts it and the supervisor still forwards the
+    // child's own answer instead of projecting a crash over it.
+    try {
+      return `${head}${errorLine}${JSON.stringify(machineLine(run, undefined))}\n`;
+    } catch {
+      return `${head}${errorLine}`;
+    }
+  }
 }
 
 export interface ResultGuaranteeOpts {

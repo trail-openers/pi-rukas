@@ -9,7 +9,8 @@
  *     state file (`not-started` without one).
  *   - Without `--json`, the summary line and the error line.
  *   - SIGTERM reaches the child, which keeps its own exit code.
- *   - cli.ts routes `work` through the supervisor unless SUPERVISED_ENV is set.
+ *   - cli.ts runs `main()` on the argv test alone and routes `work` through
+ *     the supervisor.
  *
  * Which bytes of a text-mode stream the host reads (the prose whitelist and the
  * byte-exact document line) are `test-headless-supervise-prose.ts`; the last
@@ -20,8 +21,17 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EXIT } from "../src/headless/exit-code.ts";
+import { type RunOutcome, formatResultDocument } from "../src/headless/ensure-result.ts";
 import { RESULT_SCHEMA_VERSION } from "../src/headless/result.ts";
-import { SUPERVISED_ENV, parseResultDocument, superviseWork } from "../src/headless/supervise.ts";
+import {
+  ERROR_PREFIX,
+  SUMMARY_PREFIX,
+  SUPERVISED_ENV,
+  parseResultDocument,
+  parseResultLine,
+  proseLinesBefore,
+  superviseWork,
+} from "../src/headless/supervise.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 import { writeState } from "../src/workflow-state.ts";
 
@@ -359,11 +369,60 @@ try {
   // ── cli.ts wiring.
   {
     const cli = readFileSync(path.join(import.meta.dirname, "../src/headless/cli.ts"), "utf8");
+    // bbd5fd2c removed the env exclusion from the ENTRY-POINT guard: the
+    // supervised child is the process that owns the run, so it must call
+    // `main()` — skipping it left stdout empty and the supervisor could only
+    // project `crash` (#1866). The guard is argv-only now (`invokedDirectly`
+    // tests `process.argv[1]` alone), and the re-spawn refusal inside `main()`
+    // 's supervise arm is what keeps the run to one document. An assertion
+    // that still looked for the deleted env test would be asserting a shape
+    // this branch deliberately does not have.
     assert(
-      cli.includes(`process.env[SUPERVISED_ENV] !== "1"`) && cli.includes("superviseWork("),
-      "cli.ts supervises work unless SUPERVISED_ENV is set",
+      /const invokedDirectly = process\.argv\[1\]\?\.endsWith\("cli\.ts"\) === true;/.test(cli),
+      "cli.ts's direct-invocation guard is argv-only",
+      cli.match(/const invokedDirectly =[^\n]*/)?.[0],
+    );
+    assert(
+      cli.includes("superviseWork(") &&
+        !/if \(process\.env\[SUPERVISED_ENV\] !== "1"\)/.test(
+          cli.slice(cli.indexOf("const invokedDirectly")),
+        ),
+      "no SUPERVISED_ENV exclusion anywhere near the entry-point guard",
     );
     assert(SUPERVISED_ENV === "PI_ENSEMBLE_HEADLESS_SUPERVISED", "the documented env name");
+  }
+
+  // ── producer ↔ consumer (#1866 lens round 2). `formatResultDocument` is the
+  // only thing that writes the text-mode stream and `parseResultLine` /
+  // `proseLinesBefore` are the only things that read it. Each side used to hold
+  // its own copy of the two prose prefixes, so a rename on either side made the
+  // supervisor drop the summary it is required to forward — or accept a line it
+  // should not have. One round trip through the real producer and the real
+  // consumer is what makes them one contract.
+  {
+    const run: RunOutcome = {
+      exitCode: 10,
+      results: [{ issue: 345, status: "merged", stateFile: "/dev/null", exitCode: 10 }],
+      error: { code: "cap-hit", message: "stopped at a cap" },
+    };
+    const out = formatResultDocument(run, false);
+    const lines = out.split("\n");
+    const answered = parseResultLine(out);
+    const found = docs(out).length;
+    assert(
+      lines[0] === `${SUMMARY_PREFIX} #345 merged (exit 10)` &&
+        lines[1] === `${ERROR_PREFIX} cap-hit — stopped at a cap`,
+      "the producer writes both prose lines with the constants the consumer reads",
+      out,
+    );
+    assert(
+      answered !== undefined &&
+        proseLinesBefore(lines, answered.index) ===
+          `${SUMMARY_PREFIX} #345 merged (exit 10)\n${ERROR_PREFIX} cap-hit — stopped at a cap\n` &&
+        found === 1,
+      "the consumer keeps both prose lines and finds exactly one document",
+      { answered, forwarded: proseLinesBefore(lines, answered?.index ?? -1), found },
+    );
   }
 
   // ── the text-mode prose rules live in their own suite (#1866 follow-up and

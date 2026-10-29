@@ -74,9 +74,11 @@ import { isTerminalState, readState, workStateFile } from "../workflow-state.ts"
 import { readBuildCommit, readBuildVersion } from "./build.ts";
 import { EXIT, exitCodeForState } from "./exit-code.ts";
 import {
+  ERROR_PREFIX,
   type IssueResult,
   RESULT_SCHEMA_VERSION,
   type ResultDocument,
+  SUMMARY_PREFIX,
   notStartedResult,
   projectIssue,
   resultDocument,
@@ -91,11 +93,12 @@ const FORWARDED = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
  * The only two prose line shapes a text-mode child is allowed onto the host's
  * stdout. `formatResultDocument` emits exactly these (`SUMMARY_PREFIX` first,
  * then the optional `ERROR_PREFIX` line, then the document), so anything else
- * the child printed is its own business. Exported so the offline test builds a
- * conforming fixture rather than guessing at the prefixes.
+ * the child printed is its own business. Re-exported so the offline test builds
+ * a conforming fixture rather than guessing at the prefixes; the constants are
+ * declared in `result.ts` so the producer in `ensure-result.ts` and this
+ * consumer cannot drift apart.
  */
-export const SUMMARY_PREFIX = "pi-rukas-headless:";
-export const ERROR_PREFIX = "error:";
+export { ERROR_PREFIX, SUMMARY_PREFIX } from "./result.ts";
 
 export interface SuperviseOptions {
   repoRoot: string;
