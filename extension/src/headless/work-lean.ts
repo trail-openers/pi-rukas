@@ -119,6 +119,25 @@ function readable(target: object, key: string): string | undefined {
 }
 
 /**
+ * Characters that read as nothing on screen while `trim()` and `\s` keep them:
+ * U+200B ZERO WIDTH SPACE, U+2060 WORD JOINER, U+180E MONGOLIAN VOWEL SEPARATOR,
+ * U+204F REVERSED SEMICOLON (a visible-looking separator that renders blank in
+ * many fonts). None is `\s` or `\p{Cc}`, so a `trim()` — or the control-character
+ * sweep in `lean/text-fence.ts` — leaves one standing.
+ */
+const INVISIBLE = /[\u200b\u2060\u180e\u204f]/;
+
+/**
+ * Is there anything here a host could print? `trim()` alone is not enough: a
+ * message made of one of `INVISIBLE` trims to itself, so it would count as
+ * content while rendering as a blank line.
+ */
+function printable(text: string | undefined): string {
+  const trimmed = text?.trim() ?? "";
+  return INVISIBLE.test(trimmed) ? "" : trimmed;
+}
+
+/**
  * What the document names a crash by: the message, else the stack, else a
  * literal.
  *
@@ -128,11 +147,13 @@ function readable(target: object, key: string): string | undefined {
  */
 function crashMessage(err: unknown): string {
   if (err instanceof Error) {
-    return readable(err, "message")?.trim() || readable(err, "stack")?.trim() || "unknown error";
+    return (
+      printable(readable(err, "message")) || printable(readable(err, "stack")) || "unknown error"
+    );
   }
   try {
     // A non-Error goes through `toString`, which is itself a seam that can throw.
-    return String(err) || "unknown error";
+    return printable(String(err)) || "unknown error";
   } catch {
     return "unknown error";
   }
