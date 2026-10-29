@@ -62,6 +62,22 @@ export const PR_URL = /^https:\/\/\S+$/;
 export const PR_URL_MAX_CHARS = 500;
 
 /**
+ * The one reader of that rule: `url` as validated text, or `undefined`.
+ *
+ * Both callers of `PR_URL` ask the same question of a value that arrived as
+ * `unknown` — `handback` before it prints a line into a comment, the headless
+ * `work-lean` verb before it puts the field in a host's document — and the
+ * three tests (string, length, shape) are easy to apply in the wrong order or
+ * to skip one of. One exported reader keeps them identical: a change to what
+ * "a URL we will print" means lands in one place.
+ */
+export function validPrUrl(url: unknown): string | undefined {
+  if (typeof url !== "string" || url === "") return undefined;
+  if (url.length > PR_URL_MAX_CHARS) return undefined;
+  return PR_URL.test(url) ? url : undefined;
+}
+
+/**
  * Which state is allowed to record which evidence-bearing field.
  *
  * `prUrl` is the address `handback` prints and `verifiedHead` is what the land

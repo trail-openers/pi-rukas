@@ -33,8 +33,10 @@
 import { runWorkLean } from "../lean/command.ts";
 import type { RunLeanResult } from "../lean/engine.ts";
 import { LeanLockError } from "../lean/lock.ts";
-import { PR_URL, PR_URL_MAX_CHARS } from "../lean/state-outcome.ts";
+import { EXIT_CODES, exitCodeFor } from "../lean/machine.ts";
+import { validPrUrl } from "../lean/state-outcome.ts";
 import { type Step, newestDecided } from "../lean/state.ts";
+import { oneLine } from "../lean/text-fence.ts";
 import { traceWarn } from "../trace.ts";
 import { EXIT } from "./exit-code.ts";
 import { type VerbContext, type VerbOutcome, badArguments, parseFlags } from "./verb.ts";
@@ -71,6 +73,46 @@ function lockHeld(err: unknown): boolean {
 }
 
 /**
+ * How much of a crash's stack reaches the trace.
+ *
+ * Exported because the test asserts against THIS number rather than a copy of
+ * it: a bound that lives only in the test is a bound nobody chose, and a change
+ * here has to be a change there. Applied AFTER the newline escaping, so the
+ * clip cannot cut a `\n` in half and rejoin two frames.
+ */
+export const TRACE_MAX = 4000;
+
+/**
+ * How long one reason line the host reads may be.
+ *
+ * Separate from `TRACE_MAX` deliberately: the trace carries a stack a developer
+ * needs, the document carries a reason a host prints, and the two bounds answer
+ * different questions. `oneLine` clips at this and `clip` at its own bound
+ * first, so a value that survives both still fits one record.
+ */
+export const MESSAGE_MAX = 1000;
+
+/** A reason line a host can print: clipped, and never the whole step log. */
+function clip(text: unknown): string {
+  const s = typeof text === "string" ? text : String(text ?? "");
+  return s.length > 2000 ? `${s.slice(0, 2000)}…` : s;
+}
+
+/**
+ * A multi-line value as ONE line: newlines escaped, so nothing splits a record.
+ *
+ * NOT `oneLine` from `lean/text-fence.ts` — that helper escapes `|` and
+ * collapses runs of spaces for a MARKDOWN table cell, and folds tabs and the
+ * Unicode separators into plain spaces. What this verb needs is narrower: the
+ * headless stderr writer turns every physical newline into its own NDJSON
+ * record, so the only hazard is a newline, and a stack whose indentation
+ * survives is far more readable than one whose leading tabs became spaces.
+ */
+function oneline(text: string): string {
+  return text.replaceAll("\n", "\\n");
+}
+
+/**
  * The newest DECIDED `publish` step's URL, if the run got that far.
  *
  * `newestDecided` is the log's own rule (an outcome-less step is a crash
@@ -84,21 +126,7 @@ function lockHeld(err: unknown): boolean {
  * should open, so the answer is the same as "no publish step recorded one".
  */
 function prUrlOf(steps: Step[]): string | undefined {
-  const url = newestDecided(steps, "publish")?.outcome?.prUrl;
-  if (typeof url !== "string" || url === "") return undefined;
-  if (url.length > PR_URL_MAX_CHARS) return undefined;
-  return PR_URL.test(url) ? url : undefined;
-}
-
-/** A reason line a host can print: clipped, and never the whole step log. */
-function clip(text: unknown): string {
-  const s = typeof text === "string" ? text : String(text ?? "");
-  return s.length > 2000 ? `${s.slice(0, 2000)}…` : s;
-}
-
-/** A multi-line value as one line: newlines escaped, so nothing splits a record. */
-function oneline(text: string): string {
-  return text.replaceAll("\n", "\\n");
+  return validPrUrl(newestDecided(steps, "publish")?.outcome?.prUrl);
 }
 
 /**
@@ -110,17 +138,30 @@ function oneline(text: string): string {
  * both are typed non-optional and both are values this verb puts in front of a
  * host, so a `null` from a JSON round-trip is a malformed outcome, judged once
  * and before anything reads it.
+ *
+ * The code is judged against `EXIT_CODES` and `exitCodeFor` rather than being
+ * range-checked: those two ARE the state→code contract, and this verb restates
+ * the run's answer instead of keeping its own copy of it. `{code: 99, state:
+ * "landed"}` is a malformed outcome, not a document that tells the host to
+ * exit 99 for work that landed.
  */
 function wellFormed(outcome: unknown): outcome is LeanRunOutcome {
   const o = outcome as LeanRunOutcome | undefined;
   const result = o?.result;
-  return (
-    typeof o?.summary === "string" &&
-    result?.run?.steps !== undefined &&
-    Array.isArray(result.run.steps) &&
-    typeof result.code === "number" &&
-    typeof result.state === "string"
-  );
+  if (
+    typeof o?.summary !== "string" ||
+    typeof result !== "object" ||
+    result === null ||
+    result.run === undefined ||
+    !Array.isArray(result.run?.steps) ||
+    typeof result.code !== "number" ||
+    typeof result.state !== "string" ||
+    !Object.hasOwn(EXIT_CODES, result.state)
+  )
+    return false;
+  // `exitCodeFor` throws on a non-terminal state, which the `hasOwn` test above
+  // already refused, so this only ever compares two numbers.
+  return result.code === exitCodeFor(result.state);
 }
 
 export async function runWorkLeanVerb(
@@ -137,7 +178,20 @@ export async function runWorkLeanVerb(
   if (!Number.isInteger(issue) || issue <= 0) {
     return badArguments("usage: work-lean <issue> [--json]");
   }
-  ctx.host.sendUserMessage(`work-lean: #${issue} starting`, { deliverAs: "steer" });
+  // Every host send goes through here. `sendUserMessage` is a host seam, and a
+  // host whose chat channel throws (a closed stream, a Pi mid-turn rejection)
+  // must not turn a run that FINISHED into an escaped exception out of the
+  // verb — the message is a courtesy, the document is the contract. A failure
+  // is traced, never swallowed silently: the run's answer still lands, and
+  // whoever reads stderr can see the channel was broken.
+  const say = (text: string): void => {
+    try {
+      ctx.host.sendUserMessage(text, { deliverAs: "steer" });
+    } catch (err) {
+      traceWarn(`work-lean: #${issue} could not tell the host — ${oneline(String(err))}`);
+    }
+  };
+  say(`work-lean: #${issue} starting`);
   // ONE guarded region: everything from the call to the return of the document
   // sits here, so whatever the engine (or a malformed return from it) does, the
   // host gets exactly one document and one exit code rather than a rejection.
@@ -145,7 +199,14 @@ export async function runWorkLeanVerb(
   // they differ only in the code and the reason word, and were two copies of
   // the same body before.
   const fail = (err: unknown, refused: boolean): VerbOutcome => {
-    const message = clip(err instanceof Error ? err.message : String(err));
+    // `oneLine` from `lean/text-fence.ts` before the message is printed
+    // anywhere: it is untrusted text (a git tail, somebody's wrapped Error)
+    // that goes into a JSON document AND a host message the NDJSON writer
+    // turns into one record per physical newline — and every control character,
+    // not just \n, has to go for the line to stay one line. The clip stays:
+    // the fence clips at its own bound and a 20 KB message is what the clip
+    // exists to stop.
+    const message = oneLine(clip(err instanceof Error ? err.message : String(err)), MESSAGE_MAX);
     const exitCode = refused ? EXIT.refused : EXIT.crash;
     // The full error goes to the trace, not just the clipped line the document
     // carries: a crash whose stack is 20 KB is still diagnosable by whoever
@@ -154,12 +215,10 @@ export async function runWorkLeanVerb(
     // every physical line into its own NDJSON record, so a raw stack would
     // arrive as a frame dump with the error name detached from it.
     if (!refused && err instanceof Error) {
-      traceWarn(`work-lean: #${issue} crashed — ${err.name}: ${oneline(err.stack ?? err.message)}`);
+      const trace = oneline(err.stack ?? err.message).slice(0, TRACE_MAX);
+      traceWarn(`work-lean: #${issue} crashed — ${err.name}: ${trace}`);
     }
-    ctx.host.sendUserMessage(
-      `work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`,
-      { deliverAs: "steer" },
-    );
+    say(`work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`);
     return {
       exitCode,
       doc: {
@@ -178,8 +237,8 @@ export async function runWorkLeanVerb(
     // not ask for it.
     const raw = await run(ctx.repoRoot, issue, { headless: true });
     if (!wellFormed(raw)) throw new Error("the run returned a malformed outcome");
-    const summary = clip(raw.summary);
-    ctx.host.sendUserMessage(`work-lean: ${summary}`, { deliverAs: "steer" });
+    const summary = oneLine(clip(raw.summary), MESSAGE_MAX);
+    say(`work-lean: ${summary}`);
     const prUrl = prUrlOf(raw.result.run.steps);
     return {
       exitCode: raw.result.code,

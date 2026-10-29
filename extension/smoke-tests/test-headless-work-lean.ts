@@ -10,7 +10,9 @@
  *   a publish step        → doc.prUrl is the newest publish step's URL, if it is
  *                           a well-formed https URL within the load-time bound
  *   a malformed outcome   → 30, error.code "crash", exactly one document
+ *   a code off the table  → 30 (a state whose code is not the one machine.ts says)
  *   a crash               → 30, and a traceWarn with the error name and stack
+ *   a host whose send throws → still exactly one document, at the run's code
  *
  * The lock refusal and the headless trust thread — the two things that reach the
  * real engine and the real dispatch seam — are in
@@ -18,8 +20,16 @@
  * `./lib/work-lean-verb-fixture.ts`.
  */
 
-import { fakeRun, spawnCrash, step, verbRun, verbThrowing } from "./lib/work-lean-verb-fixture.ts";
+import { MESSAGE_MAX, TRACE_MAX } from "../src/headless/work-lean.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
+import {
+  fakeRun,
+  spawnCrash,
+  step,
+  verbRun,
+  verbThrowing,
+  verbThrowingHost,
+} from "./lib/work-lean-verb-fixture.ts";
 
 const { assert, state } = makeAssert();
 
@@ -167,7 +177,10 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
 // `wellFormed` judges BEFORE anything reads them; the last two are what the shape
 // check lets through and the print path then has to survive.
 for (const [label, make] of [
-  ["summary undefined", () => ({ summary: undefined, result: fakeRun({ code: 0, state: "landed" }) })],
+  [
+    "summary undefined",
+    () => ({ summary: undefined, result: fakeRun({ code: 0, state: "landed" }) }),
+  ],
   ["summary null", () => ({ summary: null, result: fakeRun({ code: 0, state: "landed" }) })],
   ["outcome undefined", () => undefined],
   ["result missing", () => ({ summary: "s" })],
@@ -175,6 +188,21 @@ for (const [label, make] of [
   ["steps missing", () => ({ summary: "s", result: { code: 0, state: "landed", run: {} } })],
   ["code missing", () => ({ summary: "s", result: { state: "landed", run: { steps: [] } } })],
   ["state missing", () => ({ summary: "s", result: { code: 0, run: { steps: [] } } })],
+  // The three-code table in `lean/machine.ts` is the state→code contract; a run
+  // reporting any other number for a terminal state is a malformed outcome, not
+  // a document that tells the host to exit 99 for work that landed.
+  ["code 99 / landed", () => ({ summary: "s", result: fakeRun({ code: 99, state: "landed" }) })],
+  ["code 11 / landed", () => ({ summary: "s", result: fakeRun({ code: 11, state: "landed" }) })],
+  [
+    "code 0 / not-ready",
+    () => ({ summary: "s", result: fakeRun({ code: 0, state: "not-ready" }) }),
+  ],
+  [
+    "state not on the table",
+    () => ({ summary: "s", result: { code: 0, state: "drifting", run: { steps: [] } } }),
+  ],
+  ["result a string", () => ({ summary: "s", result: "landed" })],
+  ["result an array", () => ({ summary: "s", result: [{ code: 0, state: "landed" }] })],
 ] as const) {
   const r = await verbRun(["7"], async () => make() as never);
   assert(
@@ -224,8 +252,54 @@ for (const [label, make] of [
     "a crash traces the stack, so the host can diagnose what threw",
   );
   assert(
-    traced.every((l) => l.length <= 2200),
-    "the traced line is bounded, so one crash cannot flood the runner's stderr",
+    traced.every((l) => l.length <= TRACE_MAX + 200),
+    `the traced line is bounded by TRACE_MAX, so one crash cannot flood the runner's stderr (longest ${Math.max(0, ...traced.map((l) => l.length))})`,
+  );
+}
+
+// ── (h) a host whose chat channel throws still gets exactly one document.
+// The opening send sat BEFORE the guarded region, so a host with a closed stream
+// used to get a rejected promise instead of an answer; both sends now go through
+// the verb's own guarded `say`. The run itself is normal in one case and throws
+// in the other — the document's code is the RUN's answer either way, never the
+// channel's.
+for (const [label, crash, expected] of [
+  ["a successful run", false, 0],
+  ["a crashing run", true, 30],
+] as const) {
+  // EVERY send throws: the opening one, the summary one and the failure line. A
+  // guard on only some of them shows up as zero documents or two.
+  const r = await verbThrowingHost(crash);
+  assert(r.code === expected, `throwing host, ${label}: exit ${expected} (got ${r.code})`);
+  assert(
+    r.docs.length === 1,
+    `throwing host, ${label}: exactly one document on stdout (got ${r.docs.length})`,
+  );
+  const doc = JSON.parse(r.docs[0] ?? "{}") as Record<string, unknown>;
+  assert(doc.subcommand === "work-lean", `throwing host, ${label}: the document is the verb's own`);
+  assert(
+    doc.exitCode === expected,
+    `throwing host, ${label}: the document's exitCode is the run's (${String(doc.exitCode)})`,
+  );
+  if (crash) {
+    assert(
+      (doc.error as { code?: string })?.code === "crash",
+      "throwing host, crash: error.code survives a broken channel",
+    );
+  } else {
+    assert(doc.state === "landed", "throwing host, success: the state survives a broken channel");
+  }
+}
+{
+  // And the opening send is the one that used to escape: with a host that throws
+  // only on the FIRST message, the run still completes and the document lands.
+  const r = await verbThrowingHost(false, (_text, n) => {
+    if (n === 0) throw new Error("closed at start");
+  });
+  assert(r.code === 0, `a host that throws on the opening send still exits 0 (got ${r.code})`);
+  assert(
+    r.docs.length === 1,
+    `opening-send failure still prints one document (got ${r.docs.length})`,
   );
 }
 

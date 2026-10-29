@@ -12,9 +12,9 @@
  *   headless children                      → workCycleTrust, threaded per run
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
 import { mock } from "bun:test";
+import { existsSync, mkdirSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runWorkLeanVerb } from "../src/headless/work-lean.ts";
@@ -22,11 +22,13 @@ import { buildDeps } from "../src/lean/build.ts";
 import { challengeDeps } from "../src/lean/challenge.ts";
 import { leanChildOpts } from "../src/lean/child-opts.ts";
 import { runWorkLean, specifyDeps } from "../src/lean/command.ts";
-import { acquireLock, LeanLockError } from "../src/lean/lock.ts";
+import { LeanLockError, acquireLock } from "../src/lean/lock.ts";
 import { leanLockFile } from "../src/lean/state.ts";
 import { LeanStateError } from "../src/lean/state.ts";
+import type { DispatchSpec } from "../src/types.ts";
+import type { WriteFence } from "../src/write-fence-contract.ts";
 import { makeAssert, runVerb } from "./headless-verb-harness.ts";
-import { SRC, spawnProbe, verbThrowing } from "./lib/work-lean-verb-fixture.ts";
+import { spawnProbe, verbThrowing } from "./lib/work-lean-verb-fixture.ts";
 
 const { assert, state } = makeAssert();
 
@@ -120,11 +122,17 @@ const { assert, state } = makeAssert();
   const dirLock = await mkdtemp(path.join(os.tmpdir(), "work-lean-dirlock-"));
   mkdirSync(path.join(dirLock, ".pi", "lean-state"), { recursive: true });
   mkdirSync(leanLockFile(dirLock, 7));
-  assert(existsSync(leanLockFile(dirLock, 7)), "the fixture really has a directory at the lock path");
+  assert(
+    existsSync(leanLockFile(dirLock, 7)),
+    "the fixture really has a directory at the lock path",
+  );
   const dirVerb = await runVerb("work-lean", ["7"], dirLock, (argv, ctx) =>
     runWorkLeanVerb(argv, ctx, (root, issue, opts) => runWorkLean(root, issue, opts)),
   );
-  assert(dirVerb.code === 40, `a lock path that is a directory refuses at 40 (got ${dirVerb.code})`);
+  assert(
+    dirVerb.code === 40,
+    `a lock path that is a directory refuses at 40 (got ${dirVerb.code})`,
+  );
   assert(
     (dirVerb.doc.error as { code?: string })?.code === "refused",
     "a lock path that is a directory is reported as refused",
@@ -221,8 +229,11 @@ const { assert, state } = makeAssert();
     // The three dispatch sites ARE the deps builders' `dispatch`. Calling them
     // directly in both modes is the thread end to end: the value the run was
     // started with is the value the child's spawn options carry.
-    const spec = { role: "developer", prompt: "p", cwd: "/wt" } as never;
-    const o = { writeFence: undefined, extraArgs: undefined } as never;
+    const spec: DispatchSpec = { role: "developer", prompt: "p", cwd: "/wt" };
+    const o: { writeFence?: WriteFence; extraArgs?: readonly string[] } = {
+      writeFence: undefined,
+      extraArgs: undefined,
+    };
     await buildDeps(mode).dispatch(spec, o);
     await challengeDeps(mode).dispatch(spec, o);
     await specifyDeps(mode).dispatch(spec, o);
@@ -232,24 +243,13 @@ const { assert, state } = makeAssert();
     );
   }
 
-  // And the thread is real at the source, not only in the deps builders: every
-  // site spreads the call WITH an argument, the verb asks for headless, and the
-  // interactive command does not. A site that dropped the argument is a type
-  // error; one that passed a literal is caught here. The sources are read AFTER
-  // the mock, so the audit cannot pass on a stubbed module.
-  const read = (rel: string[]) => readFileSync(path.join(SRC, ...rel), "utf8");
-  const sites = [read(["lean", "build.ts"]), read(["lean", "challenge.ts"]), read(["lean", "command.ts"])];
-  assert(
-    sites.every((src) => /\.\.\.leanChildOpts\(headless\)/.test(src)) &&
-      !/\.\.\.leanChildOpts\(\)/.test(sites.join("")),
-    "all three lean dispatch sites spread leanChildOpts(headless) with the threaded mode",
-  );
-  assert(
-    /run\(ctx\.repoRoot, issue, \{ headless: true \}\)/.test(read(["headless", "work-lean.ts"])),
-    "the headless verb passes { headless: true } to the run",
-  );
-  const commandBody = sites[2].split("registerWorkLeanCommand")[1] ?? "headless";
-  assert(!/headless/.test(commandBody), "the interactive /work-lean command passes no headless option");
+  // The source-level half of the thread — that all three sites spread the
+  // call WITH the run's mode, and that neither call site passes a literal — is
+  // enforced by the SHARED audit in `test-work-cycle-dispatch-path.ts` section 4
+  // (its `LEAN_REGISTRY` and the `leanChildOpts(headless)` rule). This file kept
+  // its own regexes over the same three files until #1904: two rules for one
+  // invariant drift apart, and the mock above is the behavioural half that the
+  // audit cannot do.
 }
 
 process.exit(state.exit);
