@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.39](https://github.com/trail-openers/pi-rukas/compare/v0.14.38...v0.14.39) (2026-10-29)
+
+
+### Bug Fixes
+
+* **work:** lens-fix no longer parks when the local ref lags origin ([#1895](https://github.com/trail-openers/pi-rukas/issues/1895)) ([2cc79ae](https://github.com/trail-openers/pi-rukas/commit/2cc79aef3e788ab3accc191d0df0e7cc84c6ba7d))
+
 ## [0.14.38](https://github.com/trail-openers/pi-rukas/compare/v0.14.37...v0.14.38) (2026-10-29)
 
 
