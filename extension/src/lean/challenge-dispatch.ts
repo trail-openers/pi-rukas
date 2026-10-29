@@ -19,7 +19,7 @@ import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";
 import { challengePrompt } from "./challenge-prompt.ts";
 import type { ChallengeDispatch } from "./challenge-types.ts";
-import type { TestLocation } from "./config.ts";
+import type { TestLocation } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 

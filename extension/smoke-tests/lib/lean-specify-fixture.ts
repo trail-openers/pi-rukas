@@ -39,6 +39,8 @@ import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+export { put } from "./lean-build-fixture.ts";
+import { put } from "./lean-build-fixture.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -79,11 +81,7 @@ export function makeRepo(files: Record<string, string>): {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-specify-"));
   ROOTS.push(repoRoot);
   git(repoRoot, "init", "-q", "-b", "main");
-  for (const [rel, content] of Object.entries(files)) {
-    const target = path.join(repoRoot, rel);
-    mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, content, "utf8");
-  }
+  for (const [rel, content] of Object.entries(files)) put(repoRoot, rel, content);
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
   return { repoRoot, baseSha: git(repoRoot, "rev-parse", "HEAD") };
@@ -140,17 +138,9 @@ export function configWith(verify: WorkConfig["verify"]): WorkConfig {
   return { ...defaultConfig(), verify };
 }
 
-/**
- * A config that also tells the adversary where the project's tests live, so a
- * case can drive the `verify.testDir` / `verify.testGlob` prompts and boundary.
- */
-export function configWithLocation(
-  testDir: string,
-  testGlob: string,
-  verify: WorkConfig["verify"] = { fast: "true", test: RUNNER },
-): WorkConfig {
-  return configWith({ ...verify, testDir, testGlob });
-}
+// The ONE `configWithLocation` lives in `lean-test-location-fixture.ts` and is
+// re-exported here, so a specify case and a challenge case build the same config.
+export { configWithLocation } from "./lean-test-location-fixture.ts";
 
 function ctxFor(repoRoot: string, baseSha: string, issue: number): HandlerCtx {
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch: "" });

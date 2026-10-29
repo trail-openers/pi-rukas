@@ -58,16 +58,17 @@ import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import { type TestLocation, testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig, testLocationOf } from "./config.ts";
-import type { TestLocation } from "./config.ts";
+import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { existsInCommit } from "./specify-absence.ts";
 import type { CaptureResult } from "./specify-capture.ts";
 import { RED_PROOF_CONTRACT, namingLine, specifyPrompt, testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
-import { SpecifyResetError, existsInCommit } from "./specify-reset.ts";
+import { SpecifyResetError } from "./specify-reset.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,

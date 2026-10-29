@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * lean/challenge — the boundary a round's SUBMISSIONS pass, end to end.
  *
@@ -27,6 +28,7 @@
  */
 
 import { ChallengeInfraError } from "../src/lean/challenge.ts";
+import { NEWNESS_REASON } from "../src/lean/specify-tree.ts";
 import { SpecifyInfraError } from "../src/lean/specify.ts";
 import {
   ROOTS,
@@ -39,15 +41,7 @@ import {
   runChallenge,
   submit,
 } from "./lib/lean-challenge-fixture.ts";
-
-let exit = 0;
-function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
+import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
 
 const EDGE = "tests/AC1-edge-new-for-round.test.sh";
 /** A test the PROJECT shipped before the run: tracked, red-herring, not frozen. */
@@ -132,9 +126,7 @@ function withTrackedAtBase(issue: number, rel: string, content: string) {
     `(r1) only the file the child wrote is frozen — the project's own test is not (got ${JSON.stringify(r.outcome?.frozen)})`,
   );
   assert(
-    (r.outcome?.reason ?? "").includes(
-      `${TRACKED} already exists at the base commit; a new acceptance test must be a new file`,
-    ),
+    (r.outcome?.reason ?? "").includes(`${TRACKED} ${NEWNESS_REASON}`),
     `(r1) the refusal names the file and states the rule (got ${r.outcome?.reason})`,
   );
   assert(
@@ -167,11 +159,11 @@ function withTrackedAtBase(issue: number, rel: string, content: string) {
     `(r2) the frozen path is refused as FROZEN (got ${reason})`,
   );
   assert(
-    reason.includes(`${FROZEN} already exists at the base commit`) === false,
+    reason.includes(`${FROZEN} ${NEWNESS_REASON}`) === false,
     `(r2) and never as merely old — the frozen reason is the one that says leave it alone (got ${reason})`,
   );
   assert(
-    reason.includes(`${TRACKED} already exists at the base commit`) === true,
+    reason.includes(`${TRACKED} ${NEWNESS_REASON}`) === true,
     "(r2) the tracked-but-unfrozen path gets the newness reason, so the two rules stay distinguishable",
   );
 }
@@ -192,7 +184,7 @@ function withTrackedAtBase(issue: number, rel: string, content: string) {
     `(r3) a new file in a repo that also holds a tracked test still freezes (got ${JSON.stringify(r.outcome?.frozen)})`,
   );
   assert(
-    (r.outcome?.reason ?? "").includes("already exists at the base commit") === false,
+    (r.outcome?.reason ?? "").includes(NEWNESS_REASON) === false,
     "(r3) and nothing is refused when nothing names an old path — the rule is not a blanket refusal",
   );
 }
@@ -246,5 +238,7 @@ for (const dir of ROOTS) {
   }
 }
 
-console.log(exit === 0 ? "\nA challenge round's edge cases must be new." : "\nFAILED");
-process.exit(exit);
+console.log(
+  testLocationExit() === 0 ? "\nA challenge round's edge cases must be new." : "\nFAILED",
+);
+process.exit(testLocationExit());

@@ -35,6 +35,7 @@ import { validateSubmitRows } from "../src/lean/specify-tree.ts";
 import {
   challengeFixture,
   greenEdge,
+  put,
   redEdge,
   runChallenge,
 } from "./lib/lean-challenge-fixture.ts";
@@ -48,13 +49,7 @@ import {
   runSpecify,
   submit,
 } from "./lib/lean-specify-fixture.ts";
-import {
-  assert,
-  LOC,
-  SPEC,
-  executable,
-  testLocationExit,
-} from "./lib/lean-test-location-fixture.ts";
+import { assert, LOC, SPEC, testLocationExit } from "./lib/lean-test-location-fixture.ts";
 
 // ────────────────────────────────── (3a) the boundary refuses misplaced tests
 
@@ -282,7 +277,7 @@ import {
   const r = await runChallenge({
     issue: 201,
     config: configWithLocation(EDGE_DIR, "test-*.ts"),
-    child: (wt) => executable(wt, EDGE, redEdge(EDGE)),
+    child: (wt) => put(wt, EDGE, redEdge(EDGE), 0o755),
     toolUses: [submit("AC1", [EDGE])],
   });
   assert(r.threw === undefined, `(challenge) no throw: ${r.threw?.message ?? "clean"}`);
@@ -301,7 +296,7 @@ import {
   const off = await runChallenge({
     issue: 202,
     config: configWithLocation(EDGE_DIR, "test-*.ts"),
-    child: (wt) => executable(wt, "tests/test-ac1-edge.ts", redEdge("tests/test-ac1-edge.ts")),
+    child: (wt) => put(wt, "tests/test-ac1-edge.ts", redEdge("tests/test-ac1-edge.ts"), 0o755),
     toolUses: [submit("AC1", ["tests/test-ac1-edge.ts"])],
   });
   assert(
@@ -330,7 +325,7 @@ import {
   const legacy = await runChallenge({
     issue: 203,
     config: configWithLocation(EDGE_DIR, "test-*.ts"),
-    child: (wt) => executable(wt, EDGE, redEdge(EDGE)),
+    child: (wt) => put(wt, EDGE, redEdge(EDGE), 0o755),
     toolUses: [
       submit("AC1", [EDGE]),
       submit("AC1", ["tests/AC1-retry.test.sh", "extension/smoke-tests/test-ac1-misplaced.ts"]),
@@ -397,7 +392,7 @@ import {
     issue: 204,
     config: configWithLocation(EDGE_DIR, "test-*.ts"),
     child: (wt) =>
-      executable(wt, `${EDGE_DIR}/test-ac1-green.ts`, greenEdge(`${EDGE_DIR}/test-ac1-green.ts`)),
+      put(wt, `${EDGE_DIR}/test-ac1-green.ts`, greenEdge(`${EDGE_DIR}/test-ac1-green.ts`), 0o755),
     toolUses: [submit("AC1", [`${EDGE_DIR}/test-ac1-green.ts`])],
   });
   assert(

@@ -29,12 +29,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  WORK_CONFIG_FILE,
-  validateTestDir,
-  validateTestGlob,
-  validateTestRunner,
-} from "../src/lean/config.ts";
+import { validateTestDir, validateTestGlob } from "../src/lean/config-test-location.ts";
+import { LeanConfigError, WORK_CONFIG_FILE, validateTestRunner } from "../src/lean/config.ts";
 import { LOCAL_TSC_CMD } from "../src/work-driver-cap-checkpoint-typecheck.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");

@@ -36,8 +36,7 @@ import path from "node:path";
 import { gitCatFileSaysAbsent } from "../git-range.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
-import type { TestLocation } from "./config.ts";
-import { testLocationProblem } from "./config.ts";
+import { type TestLocation, testLocationProblem } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
 import { fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
@@ -260,23 +259,33 @@ export interface DroppedRow {
 }
 
 /**
+ * The boundary's newness refusal. The step composes it as `<path> ${NEWNESS_REASON}`;
+ * the tests import it rather than restating it, so the sentence the boundary
+ * states and the sentence an operator is shown cannot drift apart.
+ */
+export const NEWNESS_REASON =
+  "already exists at the base commit; a new acceptance test must be a new file";
+
+/**
  * The boundary every submitted path passes through.
  *
  * A row is dropped, with a reason, when its criterion is not a `verify:
- * "test"` criterion of THIS spec; when its path is already FROZEN (`frozenPaths`
- * — only `challenge` passes that set, and the child may not replace a test the
- * run already committed); when a path is absolute, traverses, or sits under a
- * forbidden directory; when the file is not in the worktree; when it already
- * exists AT THE BASE COMMIT (`existsAtBase` — a test the child did not write is
- * not a new acceptance test); or when it is not an ordinary file the worktree
- * owns (`fileProblem`). What survives is a criterion -> kept-paths map the step
- * can capture, prove and commit.
+ * "test"` criterion of THIS spec, or when one of these rules fires — in this
+ * order, and the FIRST that fires is the reason an operator reads:
  *
- * The rules answer in a fixed order and the reason an operator reads is the
- * first that fires: path shape, FROZEN, location, existence, base newness,
- * file shape. FROZEN comes before the location rule so an inherited contract
- * outside the configured folder is reported as the contract it is, not as a
- * file to move.
+ *   1. path shape (absolute, traversal, forbidden directory);
+ *   2. FROZEN (`frozenPaths` — only `challenge` passes that set: the child may
+ *      not replace a test the run already committed) — BEFORE the location rule,
+ *      so an inherited contract outside the configured folder is reported as the
+ *      contract it is, not as a file to move;
+ *   3. location (`testLocationProblem`);
+ *   4. existence in the worktree (`exists`);
+ *   5. base newness (`existsAtBase`) — a test the child did not write is not a
+ *      new acceptance test;
+ *   6. file shape (`fileProblem`).
+ *
+ * What survives is a criterion -> kept-paths map the step can capture, prove
+ * and commit.
  *
  * `exists` and `existsAtBase` are async because the second is a git read, and
  * both go through here rather than the callers: a rule the boundary can skip is
@@ -307,7 +316,7 @@ export async function validateSubmitRows(
     testLocation?: TestLocation;
     /**
      * A kept path must not exist at the run's BASE COMMIT. `specify` and
-     * `challenge` both pass it (see `baseCommitExistsAt`), and it is what makes
+     * `challenge` both pass it (`existsInCommit`), and it is what makes
      * an acceptance test a test the child WROTE.
      *
      * `exists` alone does not: it asks about the working tree, and the child
@@ -402,7 +411,7 @@ export async function validateSubmitRows(
         dropped.push({
           criterionId: row.criterionId,
           path: rel,
-          reason: `${rel} already exists at the base commit; a new acceptance test must be a new file`,
+          reason: `${rel} ${NEWNESS_REASON}`,
         });
         continue;
       }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * lean/specify-reset — `existsInCommit`: does this path live in that commit?
+ * lean/specify-absence — `existsInCommit`: does this path live in that commit?
  *
  * The `submit_tests` boundary refuses a test that already exists at the run's
  * base, and the single git read behind that rule has exactly two answers — "not
@@ -18,65 +18,42 @@
  *   (b) a name that is a glob to git is still one literal file
  *       (`--literal-pathspecs`) — a submitted `tests/[a]x.test.ts` must not
  *       match the tracked `tests/ax.test.ts`.
- *   (c) the three "git ran and said the object is not there" wordings are all
- *       absent; the store-fault wordings are all throws.
+ *   (c) the "git ran and said the object is not there" wordings are all
+ *       absent, and a wording mixed with a fault line is a throw;
  *   (d) a killed or signalled probe, a `not a git repository` clone, and a
- *       buffer overflow are infrastructure, never "the file is new".
+ *       buffer overflow are infrastructure, never "the file is new";
+ *   (e) the ref itself is not a shell word, and is not a moving name either:
+ *       a value that is not a full lowercase oid is an infrastructure throw
+ *       rather than a probe of whatever `main` happens to point at.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { promisify } from "node:util";
 import { execFile } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { existsInCommit } from "../src/lean/specify-reset.ts";
+import { promisify } from "node:util";
+import { existsInCommit } from "../src/lean/specify-absence.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { gitTestEnv } from "./lib/git-test-env.ts";
-
-let exit = 0;
-function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
-/** The identity a fixture's git children commit with (isolated HOME, no host config). */
-function gitEnv(): Record<string, string> {
-  return {
-    ...gitTestEnv(),
-    GIT_AUTHOR_NAME: "t",
-    GIT_AUTHOR_EMAIL: "t@t",
-    GIT_COMMITTER_NAME: "t",
-    GIT_COMMITTER_EMAIL: "t@t",
-  };
-}
-
-function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
-  if (r.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
-  return (r.stdout ?? "").trim();
-}
+import { git, gitEnvFor, put } from "./lib/lean-build-fixture.ts";
+import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
 
 /** The production executor's shape: `execFile` with an argv array, no shell. */
 const execFileP = promisify(execFile);
 const realExec: ExecFn = async (cmd, o) =>
-  execFileP(cmd, o?.argv, { cwd: o?.cwd, env: gitEnv(), maxBuffer: o?.maxBuffer });
+  execFileP(cmd, o?.argv, { cwd: o?.cwd, env: gitEnvFor(), maxBuffer: o?.maxBuffer });
 
+// A repo whose base commit holds a tracked test, a bracket-literal twin and a
+// directory, plus the child's own file: present in the tree, absent from the
+// commit. `put` rather than a hand-rolled write, so modes stay the fixture's.
 const repo = mkdtempSync(path.join(tmpdir(), "lean-catfile-"));
 git(repo, "init", "-q", "-b", "main");
-mkdirSync(path.join(repo, "tests"), { recursive: true });
-writeFileSync(path.join(repo, "tests/tracked.test.ts"), "test\n");
-writeFileSync(path.join(repo, "tests/ax.test.ts"), "test\n");
-writeFileSync(path.join(repo, "tests/[a]x.test.ts"), "test\n");
+put(repo, "tests/tracked.test.ts", "test\n");
+put(repo, "tests/ax.test.ts", "test\n");
+put(repo, "tests/[a]x.test.ts", "test\n");
 git(repo, "add", "-A");
 git(repo, "commit", "-q", "-m", "base");
 const base = git(repo, "rev-parse", "HEAD");
-// The child's own file: present in the working tree, absent from the commit.
-writeFileSync(path.join(repo, "tests/child-new.test.ts"), "test\n");
+put(repo, "tests/child-new.test.ts", "test\n");
 
 // ------------------------------------------------- (a) present, absent, new file
 
@@ -133,13 +110,15 @@ function rejection(code: number, stderr: string, extra: object = {}): unknown {
 }
 
 const PROBED = "tests/tracked.test.ts";
-// Three wordings git really prints when the object it was asked for is simply
-// not there. All three carry no `does not exist`, which is why this probe does
-// not rely on the shared tree-probe rule alone — see the `exists on disk` arm
-// below and the comment on `existsInCommitProblem` in the module under test.
+// The TWO wordings git really prints when the object it was asked for is
+// simply not there: `does not exist` (the shared rule's family) and `exists on
+// disk, but not in` (which carries neither "does not exist" nor "no such path",
+// so it is the one this caller has to recognise itself — see
+// `existsInCommitProblem` in the module under test, and the mixed wording below
+// for why recognition is per LINE and exhaustive rather than a blob test).
 const ABSENT_WORDINGS = [
-  `fatal: path '${PROBED}' does not exist in '${"abc123"}'`,
-  `fatal: path '${PROBED}' exists on disk, but not in '${"abc123"}'`,
+  `fatal: path '${PROBED}' does not exist in '${base}'`,
+  `fatal: path '${PROBED}' exists on disk, but not in '${base}'`,
 ];
 const FAULT_WORDINGS = [
   "fatal: not a git repository (or any of the parent directories): .git",
@@ -197,6 +176,24 @@ for (const wording of FAULT_WORDINGS) {
   assert(
     got === "absent",
     `"exists on disk, but not in <base>" is ABSENT (a file the child wrote), not a fault (got ${got})`,
+  );
+}
+
+// The strict half: recognition is per LINE and exhaustive, so the same absence
+// wording alongside a fault line is the fault. `git-range.ts`'s shared rule
+// tests its absence regex against the WHOLE blob, so a classifier that asked
+// "does any line say absent?" would certify a `chmod 000` object store as "the
+// base does not hold this file" — and the newness rule would then pass the
+// child's own file with total confidence.
+for (const mixed of [
+  `error: unable to open loose object ${base}: Permission denied\nfatal: path '${PROBED}' does not exist in '${base}'`,
+  `fatal: path '${PROBED}' exists on disk, but not in '${base}'\nfatal: not a git repository (or any of the parent directories): .git`,
+  `warning: unable to read pack .git/objects/pack/pack-1.pack\nfatal: path '${PROBED}' does not exist in '${base}'`,
+]) {
+  const got = await verdictOf(mixed);
+  assert(
+    got.startsWith("throw:") && got.includes(PROBED),
+    `an absence wording MIXED with a fault line is INFRA, not "new" (got ${got})`,
   );
 }
 
@@ -296,5 +293,34 @@ for (const wording of FAULT_WORDINGS) {
   );
 }
 
-console.log(exit === 0 ? "\nexistsInCommit answers two questions, not one." : "\nFAILED");
-process.exit(exit);
+// --------------------------- (f) a ref that is not a full oid never reaches git
+
+{
+  // The run's base is a full lowercase oid because `lean/base-proof.ts` says
+  // so — but THIS read is the one that decides whether a submitted test is new,
+  // and a ref that is a branch, a short prefix or a revision chain asks the
+  // question of whatever that name happens to point at. `--end-of-options` keeps
+  // a weird value out of git's option parser; only the shape check stops it
+  // being a moving ref, and it stops it without paying for a git call.
+  for (const ref of ["main", "HEAD", "abc123", `${base.slice(0, 39)}z`, "HEAD~1", ""])
+    for (const strict of [ref, ref === "" ? ref : ` ${ref} `]) {
+      let called = false;
+      const spy: ExecFn = async () => {
+        called = true;
+        return { stdout: "" };
+      };
+      let threw = "";
+      await existsInCommit(spy, repo, strict, "tests/tracked.test.ts").catch((e: unknown) => {
+        threw = (e as Error).message;
+      });
+      assert(
+        threw !== "" && !called && threw.includes("tests/tracked.test.ts"),
+        `a ref \`${strict}\` that is not a full lowercase oid is INFRA and never reaches git (got ${threw || `no throw; git called=${called}`})`,
+      );
+    }
+}
+
+console.log(
+  testLocationExit() === 0 ? "\nexistsInCommit answers two questions, not one." : "\nFAILED",
+);
+process.exit(testLocationExit());

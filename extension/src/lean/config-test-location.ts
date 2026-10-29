@@ -47,6 +47,14 @@ const TEST_DIR_FORBIDDEN = /[?*]/;
  * letters, empty segments) plus the two a directory adds — no trailing slash,
  * and nothing inside a hidden directory, which is where `pathProblem`'s
  * forbidden-segment list would otherwise have caught it.
+ *
+ * And ONE canonical form: the value must equal its own normalised form (no `.`
+ * segments, no doubled separators). The boundary compares this string against a
+ * submitted path's NORMALISED directory, so a value that merely *spells* the
+ * same folder differently — `./tests`, `tests//unit` — matches nothing, and the
+ * child is told its own tests are misplaced. The refusal prints the form to
+ * write rather than quietly normalising, because a config whose value the code
+ * silently rewrites is a config nobody can read off the file.
  */
 export function validateTestDir(dir: string): string | undefined {
   if (dir.trim() === "") return ".pi/work.json verify.testDir must not be empty";
@@ -63,6 +71,17 @@ export function validateTestDir(dir: string): string | undefined {
   const segments = dir.split(/[\\/]+/).filter((s) => s !== "");
   if (segments.length === 0) return `.pi/work.json verify.testDir must name a directory (${dir})`;
   if (segments.includes("..")) return `.pi/work.json verify.testDir must not contain ".." (${dir})`;
+  // Compared against the NORMALISED form, so a `.` segment (`./tests`) is
+  // reported as the spelling mistake it is and not swallowed by the hidden-
+  // directory rule below — whose message ("do not put your tests in a hidden
+  // folder") is the wrong instruction for a value that only *starts* with a dot
+  // because of punctuation.
+  const normalised = segments.filter((s) => s !== ".").join("/");
+  // `.` alone (or `./.`) normalises to nothing, which is the repo root — not a
+  // directory the author named. The hidden-directory rule below still owns it,
+  // so the message says "a directory", not "write the empty string".
+  if (normalised !== "" && dir !== normalised)
+    return `.pi/work.json verify.testDir has exactly one spelling — write \`${normalised}\` (the value is compared verbatim against a submitted test's directory, so \`${dir}\` would match nothing)`;
   if (segments.some((s) => s.startsWith(".")))
     return `.pi/work.json verify.testDir must not sit inside a hidden directory (${dir})`;
   return undefined;

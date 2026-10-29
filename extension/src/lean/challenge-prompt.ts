@@ -26,8 +26,8 @@
  * a child optimising for "submitted something" produces exactly those two shapes.
  */
 
+import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
-import type { TestLocation } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 import {
   RED_PROOF_CONTRACT,

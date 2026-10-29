@@ -89,6 +89,23 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
       validateTestDir(padded)?.includes("surrounding whitespace") === true,
       `validateTestDir refuses the padded \`${JSON.stringify(padded)}\` (got ${validateTestDir(padded) ?? "accepted"})`,
     );
+  // ONE canonical form, and any other spelling is refused rather than quietly
+  // accepted: `./tests`, `tests/` and `a//b` all NAME the same directory, but
+  // the boundary compares `testDir` against a submitted path's normalised
+  // directory, so a non-normalised value matches nothing and the child is told
+  // its own tests are misplaced. Refusing the spelling is cheaper than silently
+  // normalising it, because the message prints the form the author should write.
+  for (const [spelling, normalised] of [
+    ["./tests", "tests"],
+    ["tests/./unit", "tests/unit"],
+    ["././tests", "tests"],
+    ["./a/b/./c", "a/b/c"],
+    ["tests//unit", "tests/unit"],
+  ] as Array<[string, string]>)
+    assert(
+      validateTestDir(spelling)?.includes(`write \`${normalised}\``) === true,
+      `validateTestDir refuses \`${spelling}\` and names its normalised form \`${normalised}\` (got ${validateTestDir(spelling) ?? "accepted"})`,
+    );
 
   for (const good of [
     "test-*.ts",

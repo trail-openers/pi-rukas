@@ -1,6 +1,6 @@
 /**
  * lib/lean-test-location-fixture — the shared fixture and assertions for the
- * two files that pin the configured test location (`verify.testDir` +
+ * files that pin the configured test location (`verify.testDir` +
  * `verify.testGlob`).
  *
  * The seam is the kind of knowledge each file judges, not an arbitrary halving.
@@ -13,17 +13,16 @@
  * means, which is the only way two files about one feature drift apart.
  */
 
-import { chmodSync } from "node:fs";
-import path from "node:path";
+import { type WorkConfig, defaultConfig } from "../../src/lean/config.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
-import { put } from "./lean-build-fixture.ts";
+import { RUNNER } from "./lean-build-fixture.ts";
 
 let exit = 0;
 
 /**
- * Records a pass/fail and returns the verdict, so BOTH files report through one
- * helper and both exit non-zero on any failure. A second `assert` in a second
- * file is the shape that lets one half of a feature's suite go quiet.
+ * Records a pass/fail and returns the verdict, so EVERY file reports through one
+ * helper and exits non-zero on any failure. A second `assert` in a second file
+ * is the shape that lets one half of a feature's suite go quiet.
  */
 export function assert(cond: boolean, msg: string): boolean {
   if (cond) {
@@ -35,7 +34,7 @@ export function assert(cond: boolean, msg: string): boolean {
   return false;
 }
 
-/** The process exit code the two files share. */
+/** The process exit code the files sharing this helper report through. */
 export function testLocationExit(): number {
   return exit;
 }
@@ -60,14 +59,19 @@ export const SPEC: PiSpec = {
 };
 
 /**
- * A challenge edge case the runner can execute.
+ * A config that names the folder the project keeps its tests in, so a case can
+ * drive the `verify.testDir` / `verify.testGlob` prompts and boundary.
  *
- * The fixture's `put` writes 0o644 and the runner these cases use is
- * `sh {file}`, so a non-executable script is an INFRA throw ("the runner could
- * not be started") rather than the red or green the case is asserting — the bit
- * is set here so every case fails or passes for the reason it means to.
+ * The ONE copy: both lean fixture modules re-export it, so a case in a specify
+ * file and a case in a challenge file cannot disagree about what
+ * `extension/smoke-tests` + `test-*.ts` means. `runner` is the last argument
+ * rather than a `verify` object because every caller wants the fixture's own
+ * runner and none wants to rebuild the rest of the block.
  */
-export function executable(wt: string, rel: string, content: string): void {
-  put(wt, rel, content);
-  chmodSync(path.join(wt, rel), 0o755);
+export function configWithLocation(
+  testDir: string,
+  testGlob: string,
+  runner: string = RUNNER,
+): WorkConfig {
+  return { ...defaultConfig(), verify: { fast: "true", test: runner, testDir, testGlob } };
 }

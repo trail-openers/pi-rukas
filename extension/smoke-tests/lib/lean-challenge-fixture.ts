@@ -401,17 +401,9 @@ export function configWith(runner: string = RUNNER): WorkConfig {
   return { ...defaultConfig(), verify: { fast: "true", test: runner } };
 }
 
-/**
- * A config that also names the folder the project keeps its tests in, so a
- * case can drive the `verify.testDir` / `verify.testGlob` prompt and boundary.
- */
-export function configWithLocation(
-  testDir: string,
-  testGlob: string,
-  runner: string = RUNNER,
-): WorkConfig {
-  return { ...defaultConfig(), verify: { fast: "true", test: runner, testDir, testGlob } };
-}
+// The ONE `configWithLocation` lives in `lean-test-location-fixture.ts` and is
+// re-exported here, so a specify case and a challenge case build the same config.
+export { configWithLocation } from "./lean-test-location-fixture.ts";
 
 /** `git status --porcelain -uall` for a worktree, "" when clean. */
 export function status(wt: string): string {

@@ -29,13 +29,13 @@
  * `test-lean-challenge-new-tests.ts`. Shared fixture: lib/lean-specify-fixture.ts.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { NEWNESS_REASON } from "../src/lean/specify-tree.ts";
 import {
   ROOTS,
   configWithLocation,
   git,
   makeRepo,
+  put,
   redScript,
   runSpecify,
   submit,
@@ -78,9 +78,7 @@ import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
     `(specify) an existing tracked test freezes nothing → no-red-test (got ${untouched.outcome?.kind})`,
   );
   assert(
-    (untouched.outcome?.reason ?? "").includes(
-      `${TRACED} already exists at the base commit; a new acceptance test must be a new file`,
-    ),
+    (untouched.outcome?.reason ?? "").includes(`${TRACED} ${NEWNESS_REASON}`),
     `(specify) the reason is the newness sentence, naming the file (got ${untouched.outcome?.reason})`,
   );
   assert(
@@ -99,15 +97,12 @@ import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
     baseSha: repo.baseSha,
     issue: 1892,
     config: configWithLocation("extension/smoke-tests", "test-*.ts"),
-    writes: (wt) => {
-      mkdirSync(path.join(wt, "extension/smoke-tests"), { recursive: true });
-      writeFileSync(path.join(wt, TRACED), redScript(), { mode: 0o755 });
-    },
+    writes: (wt) => put(wt, TRACED, redScript(), 0o755),
     toolUses: [submit("AC1", [TRACED])],
   });
   assert(
     overwritten.outcome?.kind === "no-red-test" &&
-      (overwritten.outcome.reason ?? "").includes("already exists at the base commit") === true,
+      (overwritten.outcome.reason ?? "").includes(NEWNESS_REASON) === true,
     `(specify) an OVERWRITTEN tracked test gets the same refusal as an untouched one (got ${overwritten.outcome?.kind} / ${overwritten.outcome?.reason})`,
   );
   assert(
@@ -122,12 +117,7 @@ import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
     baseSha: repo.baseSha,
     issue: 1893,
     config: configWithLocation("extension/smoke-tests", "test-*.ts"),
-    writes: (wt) => {
-      mkdirSync(path.join(wt, "extension/smoke-tests"), { recursive: true });
-      writeFileSync(path.join(wt, "extension/smoke-tests/test-ac1-new.ts"), redScript(), {
-        mode: 0o755,
-      });
-    },
+    writes: (wt) => put(wt, "extension/smoke-tests/test-ac1-new.ts", redScript(), 0o755),
     toolUses: [submit("AC1", ["extension/smoke-tests/test-ac1-new.ts"])],
   });
   assert(
@@ -142,19 +132,14 @@ import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
     baseSha: repo.baseSha,
     issue: 1894,
     config: configWithLocation("extension/smoke-tests", "test-*.ts"),
-    writes: (wt) => {
-      mkdirSync(path.join(wt, "extension/smoke-tests"), { recursive: true });
-      writeFileSync(path.join(wt, "extension/smoke-tests/test-ac1-mixed.ts"), redScript(), {
-        mode: 0o755,
-      });
-    },
+    writes: (wt) => put(wt, "extension/smoke-tests/test-ac1-mixed.ts", redScript(), 0o755),
     toolUses: [submit("AC1", [TRACED, "extension/smoke-tests/test-ac1-mixed.ts"])],
   });
   assert(
     mixed.outcome?.kind === "ok" &&
       Object.keys(mixed.outcome.frozen ?? {}).join() ===
         "extension/smoke-tests/test-ac1-mixed.ts" &&
-      (mixed.outcome.reason ?? "").includes("already exists at the base commit") === true,
+      (mixed.outcome.reason ?? "").includes(NEWNESS_REASON) === true,
     `(specify) one call keeps the new file and refuses the tracked one, with the reason carried (got ${JSON.stringify(mixed.outcome)})`,
   );
 }

@@ -13,8 +13,8 @@
  * paraphrase rather than the contract.
  */
 
+import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
-import type { TestLocation } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 
 export interface SpecifyPromptOpts {

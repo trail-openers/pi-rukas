@@ -17,7 +17,7 @@
  */
 
 import type { execp } from "../exec.ts";
-import { type TestLocation, validateTestDir, validateTestGlob } from "./config-test-location.ts";
+import { validateTestDir, validateTestGlob } from "./config-test-location.ts";
 
 export interface Budget {
   turns: number;
@@ -80,11 +80,6 @@ export const WORK_CONFIG_FILE = ".pi/work.json";
 
 /** The executor seam: same signature as `execp`, injected so tests stay local. */
 export type ConfigExec = typeof execp;
-
-/** Re-exported so a caller reads one module for the `verify` block's rules. */
-export type { TestLocation };
-export { testLocationOf, testLocationProblem } from "./config-test-location.ts";
-export { validateTestDir, validateTestGlob } from "./config-test-location.ts";
 
 /** Ceiling for one committed config/verify-cmd blob; overflow is its own error class. */
 const GIT_SHOW_MAX_BUFFER = 1024 * 1024;

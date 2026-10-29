@@ -53,15 +53,15 @@ import { frozenFromLog } from "./build.ts";
 import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts";
 import type { ChallengeDispatch, ChallengeExec } from "./challenge-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
+import { type TestLocation, testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig, testLocationOf } from "./config.ts";
-import type { TestLocation } from "./config.ts";
+import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { existsInCommit } from "./specify-absence.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
-import { existsInCommit } from "./specify-reset.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,
