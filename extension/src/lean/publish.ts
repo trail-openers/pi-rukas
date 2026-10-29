@@ -225,13 +225,20 @@ async function openPr(
  */
 async function draftStateOf(f: PublishForge, pr: NormalizedPullRequest): Promise<boolean> {
   if (pr.isDraft !== undefined) return pr.isDraft;
+  // The rejection message is kept rather than swallowed: "could not tell" is
+  // true either way, but an operator reading the handoff has to be able to tell
+  // a forge that was unreachable from one that answered with neither field.
+  let why: string | undefined;
   const viewed = await f
     .prView(pr.number)
     .then((v) => v?.isDraft)
-    .catch(() => undefined);
+    .catch((err: unknown) => {
+      why = (err as Error)?.message ?? String(err);
+      return undefined;
+    });
   if (viewed !== undefined) return viewed;
   throw new PublishInfraError(
-    `could not tell whether the reused PR #${pr.number} is a draft, and a not-green run must not leave it ready`,
+    `could not tell whether the reused PR #${pr.number} is a draft, and a not-green run must not leave it ready${why === undefined ? "" : ` (${why})`}`,
   );
 }
 

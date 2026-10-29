@@ -52,6 +52,32 @@ function assert(cond: boolean, msg: string): void {
   );
 }
 
+// ------------- (n1) the repo's own core.sshCommand survives into the push env
+//
+// The production seam must hand `netGitEnv` the child's cwd: the ssh selection
+// git itself would use is GIT_SSH_COMMAND, then the repo's `core.sshCommand`,
+// then GIT_SSH, then `ssh`, and the cwd is the only way the middle one is read.
+// A cwd-less call promotes plain `ssh` and outranks a repo that chose its key
+// with `git config core.sshCommand` — the same bug an unconditional
+// GIT_SSH_COMMAND is (#1095).
+{
+  const r = await runPublish({
+    issue: 434,
+    verify: { kind: "green" },
+    sshCommand: "ssh -i /k",
+  });
+  assert(
+    r.outcome?.kind === "ok",
+    `(n1) a repo with its own core.sshCommand still publishes (${r.threw?.message})`,
+  );
+  const push = r.gitEnvs[r.gitEnvs.length - 1];
+  const ssh = push?.GIT_SSH_COMMAND ?? "";
+  assert(
+    ssh.includes("-i /k") && ssh.includes("BatchMode=yes"),
+    `(n1) the push env keeps the repo's ssh command AND adds BatchMode (${ssh})`,
+  );
+}
+
 // ------------------------------------------ the step applies it to every git child
 {
   const r = await runPublish({ issue: 430, verify: { kind: "green" } });

@@ -17,8 +17,14 @@
 
 /** Control characters that still read as text inside a fence: newline and tab. */
 const FENCE_KEEP = /[\n\t]/;
-/** Every control character, including \n, \r and \t. */
-const ANY_CONTROL = /\p{Cc}/gu;
+/**
+ * Every control character, including \n, \r and \t, plus the three Unicode line
+ * separators that are NOT `\p{Cc}`: U+2028 / U+2029 (line/paragraph separator)
+ * and U+0085 (NEL). JS treats the first two as line terminators and some
+ * markdown/rendering stacks do too, so a `oneLine` that leaves them in can still
+ * end the row, and a fenced reason gains a line no fence was opened for.
+ */
+const ANY_CONTROL = /[\p{Cc}\u2028\u2029\u0085]/gu;
 /** A run of 3+ backticks — the sequence that would close or open a fence. */
 const BACKTICK_RUN = /`{3,}/g;
 const HORIZONTAL_ELLIPSIS = "…";
@@ -28,7 +34,15 @@ function soften(s: string): string {
   let out = "";
   for (const ch of s)
     out +=
-      ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f ? (FENCE_KEEP.test(ch) ? ch : " ") : ch;
+      ch.charCodeAt(0) < 0x20 ||
+      ch.charCodeAt(0) === 0x7f ||
+      ch === "\u2028" ||
+      ch === "\u2029" ||
+      ch === "\u0085"
+        ? FENCE_KEEP.test(ch)
+          ? ch
+          : " "
+        : ch;
   return out;
 }
 

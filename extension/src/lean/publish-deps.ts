@@ -119,10 +119,17 @@ export function publishDeps(): PublishDeps {
     // seam gives the driver's non-interactive env to (see the note above).
     // Every other git call the step makes is local and keeps the caller's env
     // verbatim.
+    //
+    // `o?.cwd` is passed through because `netGitEnv` reads the repo's own
+    // `core.sshCommand` in that directory: with no cwd the lookup is skipped and
+    // a repo that selects its ssh with `git config core.sshCommand` (a deploy
+    // key, a custom port) would have the plain `ssh` promoted to the front of
+    // git's precedence, outranking the config exactly as an unconditional
+    // GIT_SSH_COMMAND would.
     exec: (cmd, o) =>
       execp(cmd, {
         ...(o ?? {}),
-        ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv() } : {}),
+        ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv(process.env, o?.cwd) } : {}),
       }),
     fetchBody: fetchIssueBody,
     // `forgeFor` is io.ts's one lookup. `Forge` is structurally assignable to

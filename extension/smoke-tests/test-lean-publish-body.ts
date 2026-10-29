@@ -24,6 +24,7 @@
  */
 
 import { publishBody } from "../src/lean/publish-body.ts";
+import type { PublishBodyInput } from "../src/lean/publish-body.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { fenceText, oneLine } from "../src/lean/text-fence.ts";
 import { ROOTS, runPublish } from "./lib/lean-publish-fixture.ts";
@@ -75,9 +76,12 @@ function spec(verify: "test" | "command" | "manual", id = "AC1"): PiSpec {
 }
 
 /** A body built from a record, with every optional field defaulted away. */
-function bodyOf(o: Partial<Parameters<typeof publishBody>[0]> & { spec: PiSpec }): string {
+function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): string {
   return publishBody({
     issue: 1,
+    // Required in the input type, and the value every call here means: a run
+    // that never reached a verdict, so each row reads "not run".
+    verifyKind: undefined,
     tests: {},
     draft: false,
     version: "1.2.3",
@@ -97,6 +101,14 @@ function bodyOf(o: Partial<Parameters<typeof publishBody>[0]> & { spec: PiSpec }
   );
   assert(!fenceText("```` evil", 100).includes("````"), "fenceText neutralises a run of backticks");
   assert(oneLine("a\n### b\tc", 50) === "a ### b c", "oneLine flattens every control character");
+  assert(
+    oneLine("a\u2028b\u2029c\u0085d", 50) === "a b c d",
+    "oneLine flattens the Unicode line separators U+2028/U+2029/U+0085, which are not \\p{Cc}",
+  );
+  assert(
+    fenceText("a\u2028b\nc", 100) === "```text\na b\nc\n```",
+    "fenceText flattens U+2028 but keeps the newlines a fence is allowed to hold",
+  );
   assert(oneLine("a|b", 50) === "a\\|b", "oneLine escapes a pipe so a row cannot gain a column");
   assert(oneLine("a".repeat(20), 5).endsWith("…"), "oneLine clips");
   assert(fenceOnly.length === 0, "the fence cases need no fixture — they are pure");

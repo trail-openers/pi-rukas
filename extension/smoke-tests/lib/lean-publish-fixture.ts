@@ -208,6 +208,13 @@ export interface PublishOpts {
   listThrows?: boolean;
   /** A branch name to force onto the run (an unsafe ref, for the handback case). */
   branch?: string;
+  /**
+   * Set `core.sshCommand` in the fixture repo before the step runs — the seam
+   * for a push env that must honour the repo's own ssh selection (a deploy key
+   * chosen with `git config core.sshCommand`, which an env-only `netGitEnv()`
+   * lookup silently skips).
+   */
+  sshCommand?: string;
   /** Check out a worktree whose branch differs from the run's (a state file that
    *  names the mainline while the tree sits on its own lean ref). */
   worktreeBranch?: string;
@@ -276,6 +283,7 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   git(origin, "init", "-q", "--bare");
   git(repoRoot, "init", "-q", "-b", "main");
   git(repoRoot, "remote", "add", "origin", origin);
+  if (o.sshCommand !== undefined) git(repoRoot, "config", "core.sshCommand", o.sshCommand);
 
   writeFileSync(path.join(repoRoot, "src.ts"), "export const x = 1;\n");
   git(repoRoot, "add", "-A");
@@ -359,13 +367,16 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     // `publishDeps()` — the fixture injects its own executor, so a push env the
     // fixture never forwarded would be a guarantee no test can observe. Same
     // env (the driver's `netGitEnv`), same condition (`cmd === "git"` and no
-    // env supplied by the caller).
+    // env supplied by the caller) — INCLUDING the cwd argument, which is what
+    // lets the repo's `core.sshCommand` take part in the precedence. Omitting it
+    // here would make the fixture observe a different env than production builds.
     exec: async (cmd, opts) => {
       const override = o.execOver?.(cmd, opts);
       if (override !== undefined) return override;
-      const env = opts?.env ?? (cmd === "git" ? netGitEnv(gitTestEnv()) : gitTestEnv());
+      const cwd = opts?.cwd ?? wt;
+      const env = opts?.env ?? (cmd === "git" ? netGitEnv(gitTestEnv(), cwd) : gitTestEnv());
       seenEnvs.push(env);
-      return execp(cmd, { ...opts, env, cwd: opts?.cwd ?? wt });
+      return execp(cmd, { ...opts, env, cwd });
     },
     fetchBody: async () => o.body ?? renderPiSpec(spec),
     forge: async () => forge,
