@@ -61,9 +61,9 @@ import type { ExecFn } from "./worktree.ts";
  *   patch-equivalent on the tip (the NORMAL #981 case: previous round's
  *   fix was cherry-picked as a different commit). A backup ref IS created
  *   (points at the old tree HEAD). `fromSha` records the move source.
- *   `movedByPatchEquivalence` is true when the tree was moved because every
- *   commit it held was patch-equivalent to the branch tip (detected with
- *   `git cherry`), rather than by a fast-forward.
+ *   The field is present (true) on exactly the moves made by the cherry
+ *   arms; the fast-forward arm omits it, which is the whole distinction the
+ *   field carries (#1908 — the flag is set by the mover, not passed in).
  * - `dirty` — uncommitted changes; fixer NOT dispatched.
  * - `unlanded` — clean and AHEAD of the tip (strict ancestor of the tree);
  *   holds commits the tip does not. Moved to backup ref; parks.
@@ -82,9 +82,11 @@ export type RepositionResult =
       fromSha: string;
       tipSha: string;
       /**
-       * True when the tree was moved because every commit it held was
-       * patch-equivalent to the branch tip (detected with `git cherry`),
-       * rather than by a fast-forward.
+       * Present (true) only when the tree was moved by a `git cherry`
+       * patch-equivalence arm rather than by a fast-forward. Set by
+       * `moveToTip` — the only path that moves a non-ancestor tree — and
+       * absent on the fast-forward result. See #1908 for why this is not a
+       * caller-supplied parameter.
        */
       movedByPatchEquivalence?: boolean;
       /** The backup ref created before the cherry-landed move (the old tree HEAD). */
@@ -365,7 +367,6 @@ export async function repositionLensFixWorktree(
           treeSha,
           tipSha,
           `${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
-          true,
         );
       }
       // all-`-` but the range contains an empty commit (or the emptiness
@@ -402,7 +403,6 @@ export async function repositionLensFixWorktree(
         // proof can never be two different reads.
         remote.tipSha,
         "the local branch ref lags origin, which holds every worktree commit by patch-equivalence",
-        true,
       );
     }
     const tipIsAncestorOfTree = await isAncestor(execFn, tree, tipSha, treeSha);
