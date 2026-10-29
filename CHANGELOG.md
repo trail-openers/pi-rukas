@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.38](https://github.com/trail-openers/pi-rukas/compare/v0.14.37...v0.14.38) (2026-10-29)
+
+
+### Features
+
+* **work:** work-lean challenge step — one adversary round of edge-case tests against the built head ([#1894](https://github.com/trail-openers/pi-rukas/issues/1894)) ([3a4d1e4](https://github.com/trail-openers/pi-rukas/commit/3a4d1e4d9810d2ce434bcb043010d0fbef84b4c0))
+
 ## [0.14.37](https://github.com/trail-openers/pi-rukas/compare/v0.14.36...v0.14.37) (2026-10-29)
 
 
