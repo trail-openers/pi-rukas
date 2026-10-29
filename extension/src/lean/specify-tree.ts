@@ -100,10 +100,24 @@ async function registeredWorktreePaths(
  * this repo, and its HEAD is either the run's branch or detached at the base
  * sha. Anything else, including an unreadable listing, throws before a single
  * mutation, and the foreign tree is left exactly as found.
+ *
+ * `headMustBe` is what a step other than `specify` asks the tree to be sitting
+ * at. `specify` requires the base, because its whole claim is that it froze the
+ * tests ON the base; `build` runs after that commit exists and would refuse
+ * every legitimate run if it demanded the base too, so it passes the head the
+ * step log's frozen records were hashed at. The registration check and the
+ * branch check are unchanged either way — only the commit HEAD must equal moves.
  */
 export async function assertSpecifyWorktreeOwned(
   exec: ExecFn,
-  opts: { repoRoot: string; wt: string; baseSha: string; branch: string },
+  opts: {
+    repoRoot: string;
+    wt: string;
+    baseSha: string;
+    branch: string;
+    /** Default `baseSha` — what `specify` has always required. */
+    headMustBe?: string;
+  },
 ): Promise<void> {
   const foreign = `the directory ${opts.wt} is not a worktree of this repository at ${opts.branch} or ${opts.baseSha} — refusing to reset a tree this step does not own`;
   const registered = await registeredWorktreePaths(exec, opts.repoRoot);
@@ -121,8 +135,15 @@ export async function assertSpecifyWorktreeOwned(
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
   }).catch(() => undefined);
-  if (head === undefined) throw new Error(foreign);
-  if ((head.stdout ?? "").trim() !== opts.baseSha) throw new Error(foreign);
+  const actual = (head?.stdout ?? "").trim();
+  const want = opts.headMustBe ?? opts.baseSha;
+  // The two failure messages name what was actually found: "detached at the
+  // base" and "on the run's branch but two commits ahead of it" are different
+  // diagnoses for whoever reads the handback, and both were the same lie before.
+  if (actual !== want)
+    throw new Error(
+      `${foreign} (its HEAD is ${actual === "" ? "unreadable" : actual}, expected ${want})`,
+    );
   const symbolic = await exec("git", {
     argv: ["symbolic-ref", "--short", "-q", "HEAD"],
     cwd: opts.wt,
