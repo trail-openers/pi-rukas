@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.36](https://github.com/trail-openers/pi-rukas/compare/v0.14.35...v0.14.36) (2026-10-29)
+
+
+### Features
+
+* **plan:** file every issue with a pi-spec v1 block ([#1887](https://github.com/trail-openers/pi-rukas/issues/1887)) ([60e07b8](https://github.com/trail-openers/pi-rukas/commit/60e07b8d92289380320f09d5f4e83a9e429a4644))
+
 ## [0.14.35](https://github.com/trail-openers/pi-rukas/compare/v0.14.34...v0.14.35) (2026-10-29)
 
 
