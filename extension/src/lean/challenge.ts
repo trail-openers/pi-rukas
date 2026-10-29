@@ -298,14 +298,14 @@ export { ChallengeInfraError } from "./challenge-dispatch.ts";
 export { SpecifyInfraError };
 
 /** The challenge step's dependencies: the outside world, injected. */
-export function challengeDeps(): ChallengeDeps {
+export function challengeDeps(headless: boolean): ChallengeDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
     dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        ...leanChildOpts(),
+        ...leanChildOpts(headless),
       }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),

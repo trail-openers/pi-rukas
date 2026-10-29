@@ -166,14 +166,14 @@ export function failedRulesFromLog(steps: Step[]): string[] {
  * that touches git, so the smoke test drives a real temp repository through
  * both without a child process or a forge.
  */
-export function specifyDeps(): SpecifyDeps {
+export function specifyDeps(headless: boolean): SpecifyDeps {
   return {
     exec: (cmd, opts) => execp(cmd, opts ?? {}),
     dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        ...leanChildOpts(),
+        ...leanChildOpts(headless),
       }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
@@ -187,8 +187,18 @@ export function specifyDeps(): SpecifyDeps {
  * are real; everything else is a
  * placeholder that ends the run honestly. A stub that pretended to build would
  * be worse than a run that says which stage is missing.
+ *
+ * `headless` is the run's mode, threaded from `runWorkLean` to the three
+ * dispatching deps builders. It is NOT remembered anywhere: two lean runs in one
+ * process each carry their own, so a headless run cannot lend its trust stamp to
+ * an interactive one that follows it.
  */
-export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
+export function phase1Handlers(
+  repoRoot: string,
+  issue: number,
+  opts: { headless?: boolean } = {},
+): LeanHandlers {
+  const headless = opts.headless === true;
   const notBuilt = (state: string) => async (): Promise<Outcome> => {
     throw new Error(`work-lean stage ${state} is not built yet`);
   };
@@ -206,9 +216,9 @@ export function phase1Handlers(repoRoot: string, issue: number): LeanHandlers {
     if (kind === "ok") return { kind };
     return { kind, failedRules: facts.failedRules };
   };
-  handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps());
-  handlers.build = (ctx) => buildOutcome(ctx, buildDeps());
-  handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps());
+  handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
+  handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless));
+  handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps(headless));
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
   handlers.publish = (ctx) => publishOutcome(ctx, publishDeps());
   handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
@@ -241,15 +251,21 @@ export function summarize(result: RunLeanResult, issue: number): string {
 /**
  * Run `/work-lean <issue>` to a terminal state and return the summary line.
  * The command handler prints it; a test calls this directly.
+ *
+ * `headless` says which run this is: the headless CLI's verb passes `true`, so
+ * its children carry the /work-cycle trust stamp that the headless permission
+ * path would otherwise deny every tool call on. The interactive command passes
+ * nothing — its parent session is already in trust mode and needs no stamp.
  */
 export async function runWorkLean(
   repoRoot: string,
   issue: number,
+  opts: { headless?: boolean } = {},
 ): Promise<{ summary: string; result: RunLeanResult }> {
   const result = await runLean({
     repoRoot,
     issue,
-    handlers: phase1Handlers(repoRoot, issue),
+    handlers: phase1Handlers(repoRoot, issue, opts),
     seed: { version: leanVersion() },
   });
   return { summary: summarize(result, issue), result };

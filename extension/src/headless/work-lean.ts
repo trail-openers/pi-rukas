@@ -13,6 +13,11 @@
  *
  * `--json` is accepted and changes nothing, as with every other S6 subcommand.
  *
+ * The verb passes `{ headless: true }` to the engine: a headless run's children
+ * need the /work-cycle trust stamp, and the mode belongs to THIS run rather
+ * than to the process, so a second lean run in the same host is not stamped by
+ * the first one's having come through here.
+ *
  * Exit codes, taken from the run:
  *   0   `landed`
  *  10   `handed-back`
@@ -25,27 +30,16 @@
  *       collides again.
  */
 
-import { markLeanHeadless } from "../lean/child-opts.ts";
 import { runWorkLean } from "../lean/command.ts";
 import type { RunLeanResult } from "../lean/engine.ts";
-import type { Step } from "../lean/state.ts";
+import { LeanLockError } from "../lean/lock.ts";
+import { PR_URL, PR_URL_MAX_CHARS } from "../lean/state-outcome.ts";
+import { type Step, newestDecided } from "../lean/state.ts";
+import { traceWarn } from "../trace.ts";
 import { EXIT } from "./exit-code.ts";
 import { type VerbContext, type VerbOutcome, badArguments, parseFlags } from "./verb.ts";
 
 export const WORK_LEAN_FLAGS = ["--json"] as const;
-
-/**
- * The lock-held refusals, by the words `lean/lock.ts` writes. Every message
- * that module raises for a lock it will not take: a live (or foreign, or
- * unjudgeable) holder, an unreadable body, a `link` that failed for a reason
- * other than EEXIST, and a stale lock it could not clear. Read by message and
- * not by error class: the verb must not import a class hierarchy to recognise
- * a refusal, and a lock error that arrives wrapped in somebody else's Error is
- * the same fact. Anything else — a schema violation from `lean/state.ts`, a
- * git blow-up — is a crash.
- */
-const LOCK_HELD =
-  /run already in progress|lock unreadable|cannot lock |cannot clear the stale lock/;
 
 /** What a run is described by once its document is built. */
 export interface LeanRunOutcome {
@@ -54,26 +48,46 @@ export interface LeanRunOutcome {
 }
 
 /** The run seam: the same signature `runWorkLean` has. */
-export type RunLean = (repoRoot: string, issue: number) => Promise<LeanRunOutcome>;
+export type RunLean = (
+  repoRoot: string,
+  issue: number,
+  opts?: { headless?: boolean },
+) => Promise<LeanRunOutcome>;
 
-/** Whether this throw is the engine refusing to start behind a live run. */
+/**
+ * Whether this throw is the engine refusing to start behind a live run.
+ *
+ * A TYPE test, not a message match: `lean/lock.ts` raises `LeanLockError` for
+ * every refusal it makes, so "a run holds this issue" is a fact the class
+ * carries rather than wording this verb has to keep in sync with another
+ * module's prose. Anything else — a schema violation from `lean/state.ts`, a
+ * git blow-up, a throw wrapped in somebody else's Error — is a crash, which is
+ * the honest answer: this verb cannot tell a reworded refusal from a real
+ * failure, and reporting a crash is the safe direction (a host that re-runs a
+ * refused cycle collides again and sees 40 then).
+ */
 function lockHeld(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return LOCK_HELD.test(message);
+  return err instanceof LeanLockError;
 }
 
 /**
  * The newest DECIDED `publish` step's URL, if the run got that far.
  *
- * Mirrors `newestDecided`: the last decided step of the state is the answer,
- * and the walk never reaches past it to an older one. A newer `publish` that
- * decided without a URL therefore reports no URL — reading one from an earlier
- * publish would hand the host the address of a PR this run replaced.
+ * `newestDecided` is the log's own rule (an outcome-less step is a crash
+ * mid-step and has said nothing), so a newer `publish` that decided without a
+ * URL reports no URL — reading one from an earlier publish would hand the host
+ * the address of a PR this run replaced.
+ *
+ * The value is then re-checked with the load-time rule `handback` applies, not
+ * trusted: the log a verb sees is a `Step[]`, and the loader is not the only
+ * thing that hands one over. A URL that breaks the shape is not a link the host
+ * should open, so the answer is the same as "no publish step recorded one".
  */
 function prUrlOf(steps: Step[]): string | undefined {
-  const decided = steps.filter((s) => s?.state === "publish" && s.outcome !== undefined);
-  const url = decided[decided.length - 1]?.outcome?.prUrl;
-  return typeof url === "string" && url !== "" ? url : undefined;
+  const url = newestDecided(steps, "publish")?.outcome?.prUrl;
+  if (typeof url !== "string" || url === "") return undefined;
+  if (url.length > PR_URL_MAX_CHARS) return undefined;
+  return PR_URL.test(url) ? url : undefined;
 }
 
 /** A reason line a host can print: clipped, and never the whole step log. */
@@ -82,14 +96,26 @@ function clip(text: unknown): string {
   return s.length > 2000 ? `${s.slice(0, 2000)}…` : s;
 }
 
+/** A multi-line value as one line: newlines escaped, so nothing splits a record. */
+function oneline(text: string): string {
+  return text.replaceAll("\n", "\\n");
+}
+
 /**
  * Does this object have the shape `RunLeanResult` says it has? The engine's
  * return value is the host's document, so a field that is missing or of the
  * wrong type is reported as a crash rather than thrown at the caller.
+ *
+ * `summary` and `code` are checked here rather than where they are printed:
+ * both are typed non-optional and both are values this verb puts in front of a
+ * host, so a `null` from a JSON round-trip is a malformed outcome, judged once
+ * and before anything reads it.
  */
 function wellFormed(outcome: unknown): outcome is LeanRunOutcome {
-  const result = (outcome as LeanRunOutcome | undefined)?.result;
+  const o = outcome as LeanRunOutcome | undefined;
+  const result = o?.result;
   return (
+    typeof o?.summary === "string" &&
     result?.run?.steps !== undefined &&
     Array.isArray(result.run.steps) &&
     typeof result.code === "number" &&
@@ -112,22 +138,24 @@ export async function runWorkLeanVerb(
     return badArguments("usage: work-lean <issue> [--json]");
   }
   ctx.host.sendUserMessage(`work-lean: #${issue} starting`, { deliverAs: "steer" });
-  // #1883 — a headless lean run's children need the /work-cycle trust stamp,
-  // or the headless permission path hard-denies their tool calls. Marked once
-  // for the whole process here, because this module is the only entry point
-  // that runs the engine without a UI; the interactive `/work-lean` command
-  // never calls it, so those children stay unstamped as they were. Read by the
-  // three dispatch sites (lean/child-opts.ts).
-  markLeanHeadless();
-  let outcome: LeanRunOutcome;
-  try {
-    const raw = await run(ctx.repoRoot, issue);
-    if (!wellFormed(raw)) throw new Error("the run returned a malformed outcome");
-    outcome = raw;
-  } catch (err) {
+  // ONE guarded region: everything from the call to the return of the document
+  // sits here, so whatever the engine (or a malformed return from it) does, the
+  // host gets exactly one document and one exit code rather than a rejection.
+  // `fail` is the single shape both the refusal and the crash answer take —
+  // they differ only in the code and the reason word, and were two copies of
+  // the same body before.
+  const fail = (err: unknown, refused: boolean): VerbOutcome => {
     const message = clip(err instanceof Error ? err.message : String(err));
-    const refused = lockHeld(err);
     const exitCode = refused ? EXIT.refused : EXIT.crash;
+    // The full error goes to the trace, not just the clipped line the document
+    // carries: a crash whose stack is 20 KB is still diagnosable by whoever
+    // reads the runner's stderr, and a clipped document is what the host parses.
+    // Written as ONE line (newlines escaped): the headless stderr writer turns
+    // every physical line into its own NDJSON record, so a raw stack would
+    // arrive as a frame dump with the error name detached from it.
+    if (!refused && err instanceof Error) {
+      traceWarn(`work-lean: #${issue} crashed — ${err.name}: ${oneline(err.stack ?? err.message)}`);
+    }
     ctx.host.sendUserMessage(
       `work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`,
       { deliverAs: "steer" },
@@ -141,47 +169,31 @@ export async function runWorkLeanVerb(
         error: { code: refused ? "refused" : "crash", message },
       },
     };
-  }
-  // Everything below reads the run's own record, so it sits inside the same
-  // guard: a `summary` that is not a string or a step log that is not an array
-  // is a malformed outcome, and the host still gets exactly one document with
-  // exit 30 rather than a rejected promise.
+  };
   try {
-    // `summary` is typed `string` and `code`/`state` were shape-checked above;
-    // a value that arrives as neither (a null from a JSON round-trip, say) is
-    // not a string this verb can print, and is reported rather than printed.
-    const summary = clip(outcome.summary);
-    if (typeof outcome.summary !== "string")
-      throw new Error("the run returned a malformed outcome");
-    const code = outcome.result.code;
-    if (typeof code !== "number") throw new Error("the run returned a malformed outcome");
+    // #1883 — this run's children carry the /work-cycle trust stamp, or the
+    // headless permission path hard-denies their tool calls. Passed per run
+    // rather than marked on the process: an interactive `/work-lean` in the
+    // same host stays unstamped, and so does a second headless run that does
+    // not ask for it.
+    const raw = await run(ctx.repoRoot, issue, { headless: true });
+    if (!wellFormed(raw)) throw new Error("the run returned a malformed outcome");
+    const summary = clip(raw.summary);
     ctx.host.sendUserMessage(`work-lean: ${summary}`, { deliverAs: "steer" });
-    const prUrl = prUrlOf(outcome.result.run.steps);
+    const prUrl = prUrlOf(raw.result.run.steps);
     return {
-      exitCode: code,
+      exitCode: raw.result.code,
       doc: {
         subcommand: "work-lean",
         issue,
-        exitCode: code,
-        state: outcome.result.state,
+        exitCode: raw.result.code,
+        state: raw.result.state,
         summary,
-        steps: outcome.result.run.steps.length,
+        steps: raw.result.run.steps.length,
         ...(prUrl === undefined ? {} : { prUrl }),
       },
     };
   } catch (err) {
-    const message = clip(err instanceof Error ? err.message : String(err));
-    ctx.host.sendUserMessage(`work-lean: #${issue} crashed (exit ${EXIT.crash}) — ${message}`, {
-      deliverAs: "steer",
-    });
-    return {
-      exitCode: EXIT.crash,
-      doc: {
-        subcommand: "work-lean",
-        issue,
-        exitCode: EXIT.crash,
-        error: { code: "crash", message },
-      },
-    };
+    return fail(err, lockHeld(err));
   }
 }

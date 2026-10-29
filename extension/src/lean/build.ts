@@ -206,14 +206,14 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
 }
 
 /** The build step's dependencies: the outside world, injected. */
-export function buildDeps(): BuildDeps {
+export function buildDeps(headless: boolean): BuildDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
     dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        ...leanChildOpts(),
+        ...leanChildOpts(headless),
       }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),

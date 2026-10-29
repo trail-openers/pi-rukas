@@ -6,80 +6,26 @@
  *
  *   code 10 / handed-back → 10, one document, state and steps
  *   code 0 / 11           → 0 / 11 (the engine's own codes pass through)
- *   a held lock           → 40, error.code "refused"
- *   any other throw       → 30, error.code "crash"
  *   bad argv              → 40, error.code "bad-arguments", nothing ran
- *   a publish step        → doc.prUrl is the newest publish step's URL
- *   headless children     → the lean dispatch seam stamps workCycleTrust
+ *   a publish step        → doc.prUrl is the newest publish step's URL, if it is
+ *                           a well-formed https URL within the load-time bound
+ *   a malformed outcome   → 30, error.code "crash", exactly one document
+ *   a crash               → 30, and a traceWarn with the error name and stack
+ *
+ * The lock refusal and the headless trust thread — the two things that reach the
+ * real engine and the real dispatch seam — are in
+ * `test-headless-work-lean-lock.ts`. Fixtures are in
+ * `./lib/work-lean-verb-fixture.ts`.
  */
 
-import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { runWorkLeanVerb } from "../src/headless/work-lean.ts";
-import { isLeanHeadless, leanChildOpts, markLeanHeadless } from "../src/lean/child-opts.ts";
-import { runWorkLean } from "../src/lean/command.ts";
-import type { RunLeanResult } from "../src/lean/engine.ts";
-import { acquireLock } from "../src/lean/lock.ts";
-import type { LeanState } from "../src/lean/state.ts";
-import { LeanStateError } from "../src/lean/state.ts";
-import type { Step } from "../src/lean/state.ts";
-import { makeAssert, runVerb } from "./headless-verb-harness.ts";
+import { fakeRun, spawnCrash, step, verbRun, verbThrowing } from "./lib/work-lean-verb-fixture.ts";
+import { makeAssert } from "./headless-verb-harness.ts";
 
 const { assert, state } = makeAssert();
 
-/** A run whose step log is `steps` and whose stamp is `code`/`state`. */
-function fakeRun(overrides: {
-  code: number;
-  state: LeanState;
-  reason?: string;
-  steps?: Step[];
-}): RunLeanResult {
-  return {
-    code: overrides.code,
-    state: overrides.state,
-    run: {
-      schema: 1,
-      issue: 7,
-      version: "0.0.0-test",
-      models: {},
-      baseSha: "feedbeef1234567890feedbeef1234567890abcd",
-      branch: "feature/issue-7-thing",
-      state: overrides.state,
-      counters: {
-        buildAttempts: 1,
-        challengeDone: true,
-        reviewDone: false,
-        ciFixUsed: false,
-        draft: false,
-      },
-      steps: overrides.steps ?? [],
-      result: { code: overrides.code, reason: overrides.reason ?? "because" },
-    },
-  };
-}
-
-function step(state_: Step["state"], outcome: Step["outcome"] = { kind: "ok" }): Step {
-  return { key: `7:${state_}:0`, state: state_, startedAt: 1, endedAt: 2, outcome };
-}
-
-const REPO = "/tmp/pi-rukas-work-lean-verb";
-const SRC = path.resolve(import.meta.dirname, "..", "src");
-
-/** Run the verb with an injected `run`, checking the shared output contract. */
-async function verb(
-  argv: string[],
-  run: () => Promise<{ summary: string; result: RunLeanResult } | undefined>,
-) {
-  return runVerb("work-lean", argv, REPO, (_argv, ctx) =>
-    runWorkLeanVerb(argv, ctx, async () => (await run()) as never),
-  );
-}
-
 // ── (a) a handed-back run: exit 10, one document, the state, ≥1 NDJSON line.
 {
-  const r = await verb(["7"], async () => ({
+  const r = await verbRun(["7"], async () => ({
     summary: "work-lean #7: handed-back (exit 10) — handler error at build",
     result: fakeRun({ code: 10, state: "handed-back", steps: [step("ready"), step("build")] }),
   }));
@@ -95,6 +41,7 @@ async function verb(
     "document carries the summary",
   );
   assert(r.doc.prUrl === undefined, "no publish step means no prUrl");
+  assert(r.mode?.headless === true, "the verb asks for the headless mode on every run");
   assert(r.lines.length >= 1, `at least one NDJSON line (${r.lines.length})`);
   assert(
     r.lines.some((l) => l.kind === "log" && String(l.message).includes("work-lean: #7 starting")),
@@ -111,70 +58,30 @@ for (const [code, state_] of [
   [0, "landed"],
   [11, "not-ready"],
 ] as const) {
-  const r = await verb(["7"], async () => ({
+  const r = await verbRun(["7"], async () => ({
     summary: `work-lean #7: ${state_} (exit ${code})`,
-    result: fakeRun({ code, state: state_ as LeanState }),
+    result: fakeRun({ code, state: state_ as never }),
   }));
   assert(r.code === code, `state ${state_} exits ${code} (got ${r.code})`);
   assert(r.doc.exitCode === code, `document's exitCode is ${code}`);
   assert(r.doc.state === state_, `document's state is ${state_}`);
 }
 
-// ── (c) a held lock is a refusal, not a crash.
-{
-  const r = await verb(["7"], async () => {
-    throw new LeanStateError("run already in progress (host 1 2 3) for issue 7");
-  });
-  assert(r.violations.length === 0, `held lock: output contract (${r.violations.join("; ")})`);
-  assert(r.code === 40, `a held lock exits 40 (got ${r.code})`);
-  assert((r.doc.error as { code?: string })?.code === "refused", "refused: error.code");
-  assert(
-    String((r.doc.error as { message?: string })?.message).includes("already in progress"),
-    "refused: the lock's own message is kept",
-  );
-  // A lock error raised as a plain Error but carrying lock.ts's wording is the
-  // same fact, and must not be reported as a crash.
-  const plain = await verb(["7"], async () => {
-    throw new Error("lock unreadable: /x/.pi/lean-state/7.json.lock");
-  });
-  assert(plain.code === 40, `a wording-only lock error still exits 40 (got ${plain.code})`);
-  assert(
-    (plain.doc.error as { code?: string })?.code === "refused",
-    "wording-only lock error is still refused",
-  );
-}
-
-// ── (d) any other throw is a crash, and the verb never lets one escape.
-{
-  const r = await verb(["7"], async () => {
-    throw new Error("git exploded");
-  });
-  assert(r.violations.length === 0, `crash: output contract (${r.violations.join("; ")})`);
-  assert(r.code === 30, `a throwing run exits 30 (got ${r.code})`);
-  assert((r.doc.error as { code?: string })?.code === "crash", "crash: error.code");
-  assert(
-    String((r.doc.error as { message?: string })?.message).includes("git exploded"),
-    "crash: the message is kept",
-  );
-  assert(r.doc.state === undefined, "a crash reports no state");
-}
-
-// ── (e) bad argv: no issue, a non-numeric issue, an extra flag, two issues.
+// ── (c) bad argv: no issue, a non-numeric issue, an extra flag, two issues.
 for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
-  let ran = false;
-  const r = await verb(argv, async () => {
-    ran = true;
-    return { summary: "should not run", result: fakeRun({ code: 0, state: "landed" }) };
-  });
+  const r = await verbRun(argv, async () => ({
+    summary: "should not run",
+    result: fakeRun({ code: 0, state: "landed" }),
+  }));
   assert(r.code === 40, `argv ${JSON.stringify(argv)} exits 40 (got ${r.code})`);
   assert(
     (r.doc.error as { code?: string })?.code === "bad-arguments",
     `argv ${JSON.stringify(argv)}: error.code bad-arguments`,
   );
-  assert(!ran, `argv ${JSON.stringify(argv)}: the engine never ran`);
+  assert(!r.ran, `argv ${JSON.stringify(argv)}: the engine never ran`);
 }
 {
-  const r = await verb(["0"], async () => ({
+  const r = await verbRun(["0"], async () => ({
     summary: "s",
     result: fakeRun({ code: 0, state: "landed" }),
   }));
@@ -182,16 +89,16 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
 }
 {
   // --json is accepted and changes nothing.
-  const r = await verb(["7", "--json"], async () => ({
+  const r = await verbRun(["7", "--json"], async () => ({
     summary: "work-lean #7: landed (exit 0)",
     result: fakeRun({ code: 0, state: "landed" }),
   }));
   assert(r.code === 0 && r.doc.state === "landed", "--json is accepted");
 }
 
-// ── (f) the newest publish step's URL is reported.
+// ── (d) the newest publish step's URL is reported.
 {
-  const r = await verb(["7"], async () => ({
+  const r = await verbRun(["7"], async () => ({
     summary: "work-lean #7: handed-back (exit 10)",
     result: fakeRun({
       code: 10,
@@ -212,8 +119,8 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
   // The newest DECIDED publish is the answer, and the walk never reaches past
   // it: a publish that decided without a URL says this run has no PR, and
   // reading one off an older publish would hand the host a replaced PR's
-  // address. Same rule as `newestDecided`.
-  const r = await verb(["7"], async () => ({
+  // address. Same rule as `newestDecided`, which is what the verb calls.
+  const r = await verbRun(["7"], async () => ({
     summary: "work-lean #7: handed-back (exit 10)",
     result: fakeRun({
       code: 10,
@@ -226,11 +133,39 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
   }));
   assert(r.doc.prUrl === undefined, `a newer URL-less publish wins (got ${r.doc.prUrl})`);
 }
+{
+  // The URL is re-checked with the load-time rule `handback` applies, not
+  // trusted: the loader is not the only thing that hands a `Step[]` over, and a
+  // value that breaks the shape is a line of markdown, not a link.
+  for (const [label, prUrl] of [
+    ["not https", "http://example.test/pull/1"],
+    ["whitespace", "https://example.test/pull 1"],
+    ["not a string", 42],
+    ["empty", ""],
+    ["too long", `https://example.test/${"x".repeat(600)}`],
+  ] as const) {
+    const r = await verbRun(["7"], async () => ({
+      summary: "s",
+      result: fakeRun({
+        code: 0,
+        state: "landed",
+        steps: [step("publish", { kind: "ok", prUrl: prUrl as never })],
+      }),
+    }));
+    assert(r.code === 0, `a malformed prUrl (${label}) is still a green run (got ${r.code})`);
+    assert(
+      r.doc.prUrl === undefined,
+      `a malformed prUrl (${label}) is not printed as a link (got ${String(r.doc.prUrl).slice(0, 40)})`,
+    );
+  }
+}
 
-// ── (f2) a malformed outcome is a crash, never a rejection. Everything after
-// the run returns — the destructure, the clip, the URL read, the step count —
-// sits inside the guarded region, so each shape below still prints exactly one
-// document at exit 30 with error.code "crash".
+// ── (e) a malformed outcome is a crash, never a rejection. Everything from the
+// call to the document — the shape checks, the clip, the URL read, the step
+// count — sits in ONE guarded region, so each shape below still prints exactly
+// one document at exit 30 with error.code "crash". The first four are fields
+// `wellFormed` judges BEFORE anything reads them; the last two are what the shape
+// check lets through and the print path then has to survive.
 for (const [label, make] of [
   ["summary undefined", () => ({ summary: undefined, result: fakeRun({ code: 0, state: "landed" }) })],
   ["summary null", () => ({ summary: null, result: fakeRun({ code: 0, state: "landed" }) })],
@@ -241,8 +176,11 @@ for (const [label, make] of [
   ["code missing", () => ({ summary: "s", result: { state: "landed", run: { steps: [] } } })],
   ["state missing", () => ({ summary: "s", result: { code: 0, run: { steps: [] } } })],
 ] as const) {
-  const r = await verb(["7"], async () => make() as never);
-  assert(r.violations.length === 0, `malformed (${label}): one document (${r.violations.join("; ")})`);
+  const r = await verbRun(["7"], async () => make() as never);
+  assert(
+    r.violations.length === 0,
+    `malformed (${label}): one document (${r.violations.join("; ")})`,
+  );
   assert(r.code === 30, `malformed (${label}) exits 30 (got ${r.code})`);
   assert(
     (r.doc.error as { code?: string })?.code === "crash",
@@ -250,102 +188,44 @@ for (const [label, make] of [
   );
 }
 
-// ── (g) a headless lean run's children carry the /work-cycle trust stamp.
+// ── (f) any other throw is a crash, and the verb never lets one escape.
 {
-  const headless = leanChildOpts({ headless: true });
-  assert(headless.workCycleTrust === true, "a headless lean dispatch carries workCycleTrust: true");
-  const interactive = leanChildOpts({ headless: false });
-  assert(interactive.workCycleTrust === false, "an interactive lean run's children carry no stamp");
-  assert(Object.keys(interactive).length === 1, "the stamp is the only field it adds");
-
-  // The three lean dispatch sites stamp themselves from the process, so the
-  // verb marking the process is the whole mechanism. An interactive `/work-lean`
-  // never calls `markLeanHeadless`, so it stays exactly as it was; the verb
-  // does, and the stamp then reaches a dispatch's options.
-  markLeanHeadless();
-  assert(isLeanHeadless() === true, "the headless verb marks the process headless");
-  const seen: Record<string, unknown>[] = [];
-  const fakeSpawn = async (_spec: unknown, opts: Record<string, unknown>) => {
-    seen.push(opts);
-    return { role: "developer", ok: true, text: "", toolUses: [], ms: 1, exitCode: 0 };
-  };
-  await fakeSpawn(
-    { role: "developer", prompt: "p" },
-    {
-      writeFence: undefined,
-      extraArgs: undefined,
-      ...leanChildOpts(),
-    },
-  );
+  const r = await verbThrowing(["7"], new Error("git exploded"));
+  assert(r.violations.length === 0, `crash: output contract (${r.violations.join("; ")})`);
+  assert(r.code === 30, `a throwing run exits 30 (got ${r.code})`);
+  assert((r.doc.error as { code?: string })?.code === "crash", "crash: error.code");
   assert(
-    seen[0]?.workCycleTrust === true,
-    "the dispatch seam spreads the stamp after its own opts",
+    String((r.doc.error as { message?: string })?.message).includes("git exploded"),
+    "crash: the message is kept",
   );
-  // The three sites each read the process flag through the same helper, so a
-  // site that forgot to spread it is caught by the static audit below.
-  const src = readFileSync(path.join(SRC, "lean", "build.ts"), "utf8");
-  assert(
-    /\.\.\.leanChildOpts\(\)/.test(src) &&
-      /\.\.\.leanChildOpts\(\)/.test(
-        readFileSync(path.join(SRC, "lean", "challenge.ts"), "utf8"),
-      ) &&
-      /\.\.\.leanChildOpts\(\)/.test(readFileSync(path.join(SRC, "lean", "command.ts"), "utf8")),
-    "all three lean dispatch sites spread leanChildOpts()",
-  );
-
-  // And the refusal the real engine produces: a live run holds this issue's
-  // lock, so the verb reports 40/refused and not 30/crash.
-  const repo = await mkdtemp(path.join(os.tmpdir(), "work-lean-lock-"));
-  const holder = acquireLock(repo, 7);
-  const locked = await runVerb("work-lean", ["7"], repo, (argv, ctx) =>
-    runWorkLeanVerb(argv, ctx, (root, issue) => runWorkLean(root, issue)),
-  );
-  assert(locked.code === 40, `a held lock refuses the real engine at 40 (got ${locked.code})`);
-  assert(
-    (locked.doc.error as { code?: string })?.code === "refused",
-    "the real lock refusal is reported as refused",
-  );
-  holder();
-  await rm(repo, { recursive: true, force: true });
-
-  // A schema violation is NOT a lock refusal: it is raised by the same class
-  // (`LeanStateError`) as the lock's refusals, so the verb must tell them apart
-  // by the words lock.ts actually writes, not by the class. "already in
-  // progress" is nowhere in this message.
-  const schema = await verb(["7"], async () => {
-    throw new LeanStateError("/x/.pi/lean-state/7.json: outcome prUrl must be an https URL");
-  });
-  assert(schema.code === 30, `a schema violation is a crash, not a refusal (got ${schema.code})`);
-  assert(
-    (schema.doc.error as { code?: string })?.code === "crash",
-    "a schema violation reports error.code crash",
-  );
-
-  // Every other refusal lock.ts raises, by its own wording — a live holder
-  // that cannot be judged, a link that failed for a reason other than EEXIST,
-  // and a stale lock that could not be moved out of the way — is a refusal.
-  for (const message of [
-    "cannot clear the stale lock /x/.pi/lean-state/7.json.lock: EACCES",
-    "cannot lock /x/.pi/lean-state/7.json.lock: EPERM",
-  ]) {
-    const r = await verb(["7"], async () => {
-      throw new Error(message);
-    });
-    assert(r.code === 40, `"${message.slice(0, 24)}…" exits 40 (got ${r.code})`);
-    assert(
-      (r.doc.error as { code?: string })?.code === "refused",
-      `"${message.slice(0, 24)}…" is reported as refused`,
-    );
-  }
-
+  assert(r.doc.state === undefined, "a crash reports no state");
   // A non-Error throw must not escape as a rejection either.
-  const r = await verb(["7"], async () => {
-    throw "string thrown";
-  });
-  assert(r.code === 30, `a non-Error throw still exits 30 (got ${r.code})`);
+  const thrown = await verbThrowing(["7"], "string thrown");
+  assert(thrown.code === 30, `a non-Error throw still exits 30 (got ${thrown.code})`);
   assert(
-    String((r.doc.error as { message?: string })?.message).includes("string thrown"),
+    String((thrown.doc.error as { message?: string })?.message).includes("string thrown"),
     "a non-Error throw still reports its text",
+  );
+}
+
+// ── (g) the crash is DIAGNOSABLE: the verb traces the error's name and stack.
+// The harness captures stdout and leaves stderr alone, so these run in a real
+// child — what the runner really writes to stderr is what a host reads when a
+// run dies (headless stderr is NDJSON-only; see test-headless-stderr-ndjson.ts).
+{
+  const probe = await spawnCrash();
+  const traced = probe.split("\n").filter((l) => l.startsWith("[pi-rukas] WARN"));
+  assert(
+    traced.some((l) => l.includes("work-lean: #7 crashed") && l.includes("git exploded")),
+    `a crash traces the error name (got ${JSON.stringify(traced)})`,
+  );
+  assert(
+    traced.some((l) => l.includes("at ")),
+    "a crash traces the stack, so the host can diagnose what threw",
+  );
+  assert(
+    traced.every((l) => l.length <= 2200),
+    "the traced line is bounded, so one crash cannot flood the runner's stderr",
   );
 }
 
