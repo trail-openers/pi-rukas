@@ -37,7 +37,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { leanSeed, phase1Handlers, readyOutcome } from "../src/lean/command.ts";
+import { handlersFor, leanSeed, phase1Handlers, readyOutcome } from "../src/lean/command.ts";
 import { runLean } from "../src/lean/engine.ts";
 import { HAPPY, scripted, tempDir } from "./lib/lean-engine-fixtures.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
@@ -115,7 +115,7 @@ function fakeGhDir(body: string): string {
     author: { login: "t" },
   });
   writeFileSync(path.join(dir, "answer.json"), json, "utf8");
-  writeFileSync(path.join(dir, "gh"), "#!/bin/sh\ncat \"$(dirname \"$0\")/answer.json\"\n", {
+  writeFileSync(path.join(dir, "gh"), '#!/bin/sh\ncat "$(dirname "$0")/answer.json"\n', {
     mode: 0o755,
   });
   return dir;
@@ -156,8 +156,16 @@ function originRepo(
   git(repoRoot, "init", "-q", "-b", "main");
   mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
   writeFileSync(path.join(repoRoot, "README.md"), "# seed fixture\n", "utf8");
-  if (opts.workJson !== false)
+  // `workJson: false` is a real shape, not an unused knob: `ready` loads the
+  // config AT the base and a repo without one is the common case, so a case
+  // has to drive it and see the run go green on the defaults anyway.
+  if (opts.workJson !== false) {
     writeFileSync(path.join(repoRoot, ".pi", "work.json"), JSON.stringify({ version: 1 }), "utf8");
+  } else {
+    // Keep `.pi/` in the commit so the directory exists and a later case can
+    // tell "no config file" from "no config directory".
+    writeFileSync(path.join(repoRoot, ".pi", "README"), "no config\n", "utf8");
+  }
   git(repoRoot, "add", "-A");
   if (withLocalMain) {
     git(repoRoot, "commit", "-q", "-m", "base");
@@ -331,7 +339,10 @@ function originRepo(
     const seed = await leanSeed(repo.repoRoot);
     const dir = tempDir();
     try {
-      const handlers = phase1Handlers(dir.dir, 4203);
+      // The handlers are built against the REAL repo — `readyOutcome` reads
+      // git and the forge there — while the run's state file lives in the
+      // scratch dir, which is what `repoRoot: dir.dir` below is for.
+      const handlers = phase1Handlers(repo.repoRoot, 4203);
       const result = await withGh(fakeGhDir(BODY), () =>
         runLean({
           repoRoot: dir.dir,
@@ -352,6 +363,127 @@ function originRepo(
       assert(
         result.run.baseSha === repo.originHead,
         `the driven run's record carries the base (got ${JSON.stringify(result.run.baseSha)})`,
+      );
+    } finally {
+      dir.cleanup();
+    }
+  } finally {
+    repo.dispose();
+  }
+}
+
+// ── (g) a non-empty base that names no object is a refusal, not a default config.
+//
+// `loadWorkConfig` reads through `gitType`/`gitShow`, which catch EVERY git
+// failure and answer "absent" — right for a missing file, wrong for a missing
+// COMMIT: a base that resolves to nothing used to look exactly like a repo with
+// no `.pi/work.json` and `ready` returned `ok` with the defaults. The two cases
+// below are the same mistake in both directions — a word that is not a ref, and
+// forty hex characters that are not an object — because a stale or hand-edited
+// resumed record can arrive as either.
+{
+  const repo = originRepo();
+  try {
+    const gh = fakeGhDir(BODY);
+    const bogus = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, "not-a-ref!!"));
+    assert(
+      bogus.kind === "fail" &&
+        bogus.facts.failedRules.some((r) => r.includes("is not a commit in this clone")),
+      `a base that is not a ref fails ready (got ${bogus.kind} ${JSON.stringify(bogus.facts.failedRules)})`,
+    );
+    const hex = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    const fake = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, hex));
+    assert(
+      fake.kind === "fail" &&
+        fake.facts.failedRules.some(
+          (r) => r.includes("is not a commit in this clone") && r.includes(hex),
+        ),
+      `forty hex characters that name no object fail ready (got ${fake.kind} ${JSON.stringify(fake.facts.failedRules)})`,
+    );
+    // A real base still passes the new gate, so the refusal above is about the
+    // base and not about this repo.
+    const real = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, repo.originHead));
+    assert(
+      real.kind === "ok" && real.facts.baseSha === repo.originHead,
+      `a real base sha still gives ok (got ${real.kind} ${JSON.stringify(real.facts.failedRules)})`,
+    );
+    // A base the caller invented entirely is reported CLIPPED in the part the
+    // harness composes: the sha is untrusted text going into an issue comment.
+    // (git's own stderr echoes the ref back verbatim and is clipped separately,
+    // which is why the assertion reads the `base sha …` prefix rather than the
+    // whole rule. The base is `x` + 200 `a`, so its 80-char clip is `x` + 79 `a`.)
+    const long = `x${"a".repeat(200)}`;
+    const clipped = await withGh(gh, () => readyOutcome(repo.repoRoot, 4204, long));
+    const clipRule = clipped.facts.failedRules.find((r) => r.startsWith("base sha ")) ?? "";
+    assert(
+      clipped.kind === "fail" &&
+        clipRule.includes(`${"a".repeat(79)} is not a commit`) &&
+        !clipRule.startsWith(`base sha ${long}`),
+      `a long bogus base is clipped to 80 chars in the rule (got ${JSON.stringify(clipped.facts.failedRules)})`,
+    );
+  } finally {
+    repo.dispose();
+  }
+}
+
+// ── (h) a repo whose base commits NO .pi/work.json: the other half of the
+// `workJson` knob, and the shape that made the bug above invisible. Absent
+// config is legitimate, so this must stay `ok` — it is the *absent commit* that
+// is refused, never the absent file.
+{
+  const repo = originRepo({ workJson: false });
+  try {
+    const seeded = await withGh(fakeGhDir(BODY), () =>
+      readyOutcome(repo.repoRoot, 4205, repo.originHead),
+    );
+    assert(
+      seeded.kind === "ok" && seeded.facts.config?.version === 1,
+      `a base with no .pi/work.json still gives ok on defaults (got ${seeded.kind} ${JSON.stringify(seeded.facts.failedRules)})`,
+    );
+  } finally {
+    repo.dispose();
+  }
+}
+
+// ── (i) the seed's cause reaches the rule: `runWorkLean` always re-seeds
+// through `leanSeed`, so the one line that threads a seed into the handlers is
+// what `handlersFor` owns, and this drives it directly with a seed whose probe
+// failed. A resumed run has no seed of this process's making; the run whose
+// seed DID fail must still tell the operator what git said.
+{
+  const repo = originRepo();
+  try {
+    const dir = tempDir();
+    try {
+      const handlers = handlersFor(
+        repo.repoRoot,
+        4206,
+        {},
+        {
+          version: "test",
+          baseSha: "",
+          why: "origin/HEAD: no such ref",
+        },
+      );
+      const result = await withGh(fakeGhDir(BODY), () =>
+        runLean({
+          repoRoot: dir.dir,
+          issue: 4206,
+          // `decline` posts to the forge; this case owns the RULE the handler
+          // recorded, and the comment that carries it is (f)'s shape.
+          handlers: { ...handlers, decline: () => Promise.resolve({ kind: "done" }) },
+          seed: { version: "test", baseSha: "" },
+          now: () => 4,
+        }),
+      );
+      const rules = result.run.steps.find((s) => s.state === "ready")?.outcome?.failedRules ?? [];
+      assert(
+        rules.some(
+          (r) =>
+            r.includes("could not resolve the mainline sha") &&
+            r.includes("origin/HEAD: no such ref"),
+        ),
+        `a seed whose probe failed threads its cause into ready's rule (got ${JSON.stringify(rules)})`,
       );
     } finally {
       dir.cleanup();

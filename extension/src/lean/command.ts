@@ -116,6 +116,16 @@ export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
  * reports when that answer is empty. The base is pinned when the run starts so
  * a config read, a diff and a verify all mean the same commit.
  *
+ * A non-empty base is PROVEN to be a commit before anything reads it. The
+ * config loader cannot make that distinction: `gitType`/`gitShow` catch every
+ * git failure and report "absent", which for a loader means "no config, use
+ * the defaults" — so a base that names no object at all (a stale or hand-edited
+ * resumed record, a seeder that passed a literal) used to read as a perfectly
+ * ordinary repo with no `.pi/work.json` and go green. Refusing it here is the
+ * narrow fix: the base is the one ref every later read of the run is anchored
+ * to, so "that is not a commit in this clone" is a `ready` failure, not a
+ * default config.
+ *
  * Never throws. Every failure comes back as `fail` with the rules named,
  * because a run that cannot start still has to say why on the issue.
  */
@@ -156,6 +166,28 @@ export async function readyOutcome(
       },
     };
   }
+  // Non-empty is not enough: prove the base names a commit before the config
+  // read, whose blanket catch would otherwise turn "no such object" into
+  // "no config file" and hand the run defaults it never earned. See the
+  // jsdoc above and the case in `test-lean-seed-base.ts`. The cause git gave
+  // is appended — it is the difference between "no such object" and "git
+  // broke" — but clipped and on one line: the ref is untrusted text and the
+  // rule ends up in an issue comment.
+  const baseRef = `${baseSha}^{commit}`;
+  let resolved: string;
+  try {
+    const { stdout } = await execp("git", {
+      argv: ["rev-parse", "--verify", "--quiet", "--end-of-options", baseRef],
+      cwd: repoRoot,
+      timeout: 15_000,
+    });
+    resolved = stdout.trim();
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    const cause = (e?.stderr || e?.message || String(err)).replace(/\s+/g, " ").trim();
+    return baseRefusal(baseSha, cause === "" ? "" : `: ${cause.slice(0, 160)}`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(resolved)) return baseRefusal(baseSha, "");
   try {
     const config = await loadWorkConfig(execp, repoRoot, baseSha);
     return {
@@ -172,6 +204,19 @@ export async function readyOutcome(
       },
     };
   }
+}
+
+/** A base the clone has no commit for — the same refusal whether git refused
+ * or printed something that is not an object id. Clipped: the sha came from a
+ * record this process did not necessarily write. */
+function baseRefusal(baseSha: string, detail: string): { kind: "fail"; facts: ReadyFacts } {
+  return {
+    kind: "fail",
+    facts: {
+      baseSha,
+      failedRules: [`base sha ${baseSha.slice(0, 80)} is not a commit in this clone${detail}`],
+    },
+  };
 }
 
 /**
@@ -321,10 +366,26 @@ export async function runWorkLean(
   const result = await runLean({
     repoRoot,
     issue,
-    handlers: phase1Handlers(repoRoot, issue, { ...opts, seedWhy: seed.why }),
+    handlers: handlersFor(repoRoot, issue, opts, seed),
     seed: { version: seed.version, baseSha: seed.baseSha },
   });
   return { summary: summarize(result, issue), result };
+}
+
+/**
+ * The handler set one run is driven with: the phase-1 handlers plus the seed
+ * that run was given. Extracted from `runWorkLean` so the seed → handler thread
+ * is testable on its own: `seedWhy` is what lets `ready` quote the git cause
+ * for a missing base, and that line is invisible from the outside because
+ * `runWorkLean` always re-seeds through `leanSeed`.
+ */
+export function handlersFor(
+  repoRoot: string,
+  issue: number,
+  opts: { headless?: boolean },
+  seed: LeanSeed,
+): LeanHandlers {
+  return phase1Handlers(repoRoot, issue, { ...opts, seedWhy: seed.why });
 }
 
 /**
