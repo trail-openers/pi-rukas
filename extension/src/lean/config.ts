@@ -53,6 +53,16 @@ export class LeanConfigError extends Error {
  */
 export const TEST_RUNNER_PLACEHOLDER = "{file}";
 
+/**
+ * The one spelling of the config's path, for a gate that wants to read the
+ * same bytes the loader does (`test-lean-work-config-committed.ts`).
+ * `loadWorkConfig` deliberately does NOT interpolate it: the ref it passes to
+ * `gitShow` is a literal, so the read stays visible to `test-headless-inputs.ts`
+ * (a committed config listed in `HEADLESS_FILES` but unreadable in `src/` is
+ * exactly what that gate exists to catch).
+ */
+export const WORK_CONFIG_FILE = ".pi/work.json";
+
 /** The executor seam: same signature as `execp`, injected so tests stay local. */
 export type ConfigExec = typeof execp;
 

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "autoMerge": false,
+  "verify": {
+    "fast": "cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && bun run check",
+    "test": "bun {file}"
+  }
+}

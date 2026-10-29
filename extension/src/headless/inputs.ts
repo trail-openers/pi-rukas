@@ -440,53 +440,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   str("WRITE_SCRATCH", null, "internal"),
 ];
 
-export type FileKind = "command" | "hook" | "config";
-
-export interface HostFile {
-  /** Path relative to the project root. */
-  path: string;
-  kind: FileKind;
-  /** What happens when the file is absent. */
-  whenAbsent: string;
-}
-
-/**
- * The `.pi/*` files a cycle reads from the project as input. Files the
- * driver writes (`.pi/work-state/`, `.pi/decisions.jsonl`, sidecars) are
- * state, not input, and are deliberately absent: they are not a host contract.
- */
-export const HEADLESS_FILES: readonly HostFile[] = [
-  { path: ".pi/forge", kind: "config", whenAbsent: "forge detected from the git remote" },
-  { path: ".pi/permissions.json", kind: "config", whenAbsent: "~/.pi/agent/permissions.json" },
-  // #1509 — the per-tier verify budgets a project may declare (#1041). Read
-  // like every other `.pi/` config file; an unparseable value is ignored with a
-  // trace and the next precedence level answers.
-  {
-    path: ".pi/smoke-cmd-timeout-ms",
-    kind: "config",
-    whenAbsent: "smoke tier uses PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS or its default",
-  },
-  { path: ".pi/smoke-cmd", kind: "command", whenAbsent: "no product smoke gate" },
-  { path: ".pi/verify-cmd", kind: "command", whenAbsent: "verify command derived from the repo" },
-  {
-    path: ".pi/verify-cmd-fast",
-    kind: "command",
-    whenAbsent: "no fast verify tier",
-  },
-  {
-    path: ".pi/verify-cmd-fast-timeout-ms",
-    kind: "config",
-    whenAbsent: "fast tier uses PI_ENSEMBLE_VERIFY_FAST_TIMEOUT_MS or its default",
-  },
-  { path: ".pi/verify-cmd-full", kind: "command", whenAbsent: "verify-full tier skipped" },
-  {
-    path: ".pi/verify-timeout-ms",
-    kind: "config",
-    whenAbsent: "suite tier uses PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS or its default",
-  },
-  {
-    path: ".pi/worktree-setup",
-    kind: "hook",
-    whenAbsent: "dependencies are symlinked into each worktree",
-  },
-];
+// The `.pi/*` half of the capabilities answer lives in `files.ts` (§12 size
+// cap) and is re-exported here so every existing importer keeps resolving
+// `HEADLESS_FILES` / `HostFile` from this module.
+export { type FileKind, type HostFile, HEADLESS_FILES } from "./files.ts";

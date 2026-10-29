@@ -433,5 +433,58 @@ for (const rel of PROSE_FILES) {
   else console.log("✓ canary fixed checkpoint form: not flagged");
 }
 
+/**
+ * Failures for one file's text: bare `bunx` or a launcher-routed `tsc` on any
+ * line. Applied to `.pi/work.json` as well as to the shell tiers: JSON has no
+ * comments, so every line inside those command strings is a prescription and
+ * the `isComment` exemption that keeps #1414's explanation alive in a `.ts`
+ * file cannot apply. The executable check (`readFirstConfigLine`) is
+ * deliberately NOT applied to the JSON — that is the shell tier's "the driver
+ * would fall back to derivation" rule and means nothing for a config file.
+ */
+function checkBunxLines(rel: string, text: string): string[] {
+  const fails: string[] = [];
+  for (const line of text.split("\n")) {
+    if (BARE_BUNX.test(line))
+      fails.push(
+        `${rel} uses bare \`bunx\` — \`bun x\` uses the binary that is always there: ${line.trim().slice(0, 120)}`,
+      );
+    if (prescribesRunning(line))
+      fails.push(
+        `${rel} runs tsc through a launcher instead of the project's own compiler — \`${LOCAL_TSC_TEXT}\`: ${line.trim().slice(0, 120)}`,
+      );
+  }
+  return fails;
+}
+
+// The lean driver's own tier file is JSON, so the COMMAND_FILES scan above
+// never reads it — and its `verify.fast` is the command the develop gate
+// actually runs. #1907: `verify.test` sat at `bun run {file}` (a package.json
+// SCRIPT lookup no repo satisfies) and the fast tier had lost the smoke-tree
+// typecheck §1 prescribes. What is pinned HERE is this file's rule; the
+// schema/runner assertions are `test-lean-work-config-committed.ts`.
+{
+  const rel = ".pi/work.json";
+  let text: string;
+  try {
+    text = readFileSync(path.join(REPO_ROOT, rel), "utf8");
+  } catch (err) {
+    const code = typeof err === "object" && err && "code" in err ? String(err.code) : String(err);
+    report([`${rel} is NOT readable (${code}) — its commands are not scanned`]);
+    text = "";
+  }
+  if (text !== "") report(checkBunxLines(rel, text));
+  // Both directions, exact counts: the fixed shape passes and the rot is
+  // caught. An over-firing canary hides a rule that fires where it should not.
+  const goodLine = `"fast": "cd extension && ${LOCAL_TSC_TEXT} --noEmit -p tsconfig.json && bun run check"`;
+  const planted = goodLine.replace(LOCAL_TSC_TEXT, "bunx tsc");
+  const nGood = checkBunxLines(rel, `{${goodLine}}`).length;
+  const nBad = checkBunxLines(rel, `{${planted}}`).length;
+  if (nGood === 0) console.log("✓ canary lean work config fixed shape: not flagged");
+  else report([`GATE-BROKEN: the fixed lean work config shape was flagged (${nGood})`]);
+  if (nBad === 2) console.log(`✓ canary lean work config bunx/launcher tsc: ${nBad} failure(s)`);
+  else report([`GATE-BROKEN: lean work config bunx canary expected 2 failures, got ${nBad}`]);
+}
+
 console.log(exit === 0 ? "\nAll verify-cmd bunx checks passed." : "\nFAILED");
 process.exit(exit);
