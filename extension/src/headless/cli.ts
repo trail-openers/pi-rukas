@@ -9,7 +9,10 @@
  *
  * `--continue-pr` (#1468) continues the issue's open pull request instead of
  * stopping on it, so it takes exactly one issue.
- *   pi-rukas-headless plan | research | agents-md | lens-review …   (S6, #1021)
+ *   pi-rukas-headless plan | research | agents-md | lens-review | work-lean …
+ *
+ * `work-lean <issue>` (#1883) runs the lean engine's phase-1 pipeline once and
+ * exits with the code its own step log stamped.
  *
  * The S6 subcommands run their pipelines on a headless DriverHost: their
  * flags and exit codes are documented in their own modules (plan.ts,
@@ -51,6 +54,7 @@ import { runHeadless } from "./run.ts";
 import { type StderrCapture, captureStrayOutput } from "./stderr.ts";
 import { SUPERVISED_ENV, superviseWork } from "./supervise.ts";
 import type { VerbContext, VerbOutcome } from "./verb.ts";
+import { runWorkLeanVerb } from "./work-lean.ts";
 import { workPathStdout } from "./work-path-stdout.ts";
 
 /** The S6 subcommands (#1021), keyed by verb. */
@@ -59,6 +63,7 @@ export const SUBCOMMANDS: Record<string, Subcommand> = {
   research: runResearchVerb,
   "agents-md": runAgentsMdHeadless,
   "lens-review": runLensReviewVerb,
+  "work-lean": runWorkLeanVerb,
 };
 
 type Subcommand = (argv: readonly string[], ctx: VerbContext) => Promise<VerbOutcome>;

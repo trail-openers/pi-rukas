@@ -76,7 +76,7 @@ function acquireThrows(dir: string, issue: number): Error | undefined {
     const release = acquireLock(dir, issue);
     const second = acquireThrows(dir, issue);
     assert(
-      second instanceof Error && second.name === "LeanStateError",
+      second instanceof Error && second.name === "LeanLockError",
       `the second acquire is refused (got ${String(second)})`,
     );
     assert(

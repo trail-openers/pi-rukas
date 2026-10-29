@@ -42,7 +42,27 @@ import { randomUUID } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { formatIdentity, judgeOwner, parseIdentity, selfIdentity } from "../process-liveness.ts";
-import { LeanStateError, leanLockFile } from "./state.ts";
+import { leanLockFile } from "./state.ts";
+
+/**
+ * The lock refusing to be taken.
+ *
+ * A TYPE and not a message: the headless `work-lean` verb has to tell "a live
+ * run already holds this issue" (exit 40 — re-running now only collides again)
+ * from "the engine blew up" (exit 30). Reading that distinction out of prose
+ * left the verb matching a regex over somebody else's words, so a lock refusal
+ * that arrived wrapped or reworded became a crash, and a schema violation whose
+ * message happened to mention a lock became a refusal.
+ *
+ * EVERY refusal `acquireLock` raises is one of these — a live, foreign or
+ * otherwise unjudgeable holder, an unreadable body, a `link` that failed for a
+ * reason other than EEXIST, and a stale lock it could not clear. A plain
+ * `LeanStateError` is therefore NOT a refusal, which is what lets the verb map
+ * a schema violation to 30 while this maps to 40.
+ */
+export class LeanLockError extends Error {
+  override readonly name = "LeanLockError";
+}
 
 /**
  * Take the per-issue lock, or refuse. Returns the release function; the
@@ -59,7 +79,7 @@ export function acquireLock(repoRoot: string, issue: number): () => void {
   for (let attempt = 0; attempt < 2; attempt++) {
     if (tryLink(file, own)) return releaser(file, own);
     const body = readLockBody(file);
-    if (body === "unreadable") throw new LeanStateError(`lock unreadable: ${file}`);
+    if (body === "unreadable") throw new LeanLockError(`lock unreadable: ${file}`);
     if (body !== undefined) {
       // Only a holder this process can PROVE dead may be cleared. `alive`,
       // `foreign` (another host, another pid namespace, half an identity) and
@@ -67,16 +87,16 @@ export function acquireLock(repoRoot: string, issue: number): () => void {
       // mean "somebody's run I cannot judge", and the safe answer to that is
       // to refuse rather than to drive the same issue twice.
       if (judgeOwner(parseIdentity(body), selfIdentity()) !== "dead")
-        throw new LeanStateError(`run already in progress (${body}) for issue ${issue}`);
+        throw new LeanLockError(`run already in progress (${body}) for issue ${issue}`);
       stealStale(file);
     } else {
       // The path is there but cannot be read at all — a permission or I/O
       // problem, not a stale run. Refuse rather than sweep what we cannot see.
-      throw new LeanStateError(`lock unreadable: ${file}`);
+      throw new LeanLockError(`lock unreadable: ${file}`);
     }
   }
   const racer = readLockBody(file);
-  throw new LeanStateError(
+  throw new LeanLockError(
     `run already in progress${racer !== undefined && racer !== "unreadable" ? ` (${racer})` : ""} for issue ${issue}`,
   );
 }
@@ -98,7 +118,7 @@ function tryLink(file: string, body: string): boolean {
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw new LeanStateError(`cannot lock ${file}: ${(err as Error).message}`);
+      throw new LeanLockError(`cannot lock ${file}: ${(err as Error).message}`);
     }
   } finally {
     // Only ever our own file at a path we generated; the lock, if it exists,
@@ -127,7 +147,7 @@ function stealStale(file: string): void {
     const code = (err as NodeJS.ErrnoException).code;
     // ENOENT: another stealer already moved it, which is the outcome we want.
     if (code !== "ENOENT")
-      throw new LeanStateError(`cannot clear the stale lock ${file}: ${(err as Error).message}`);
+      throw new LeanLockError(`cannot clear the stale lock ${file}: ${(err as Error).message}`);
     return;
   }
   try {

@@ -41,6 +41,7 @@ import { NDJSON_STABLE_FIELDS, NDJSON_STABLE_VERSION, NDJSON_VERSION } from "./n
 import { PLAN_FLAGS } from "./plan.ts";
 import { RESEARCH_FLAGS } from "./research.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
+import { WORK_LEAN_FLAGS } from "./work-lean.ts";
 
 /**
  * The version of the capabilities object itself. Bump on any change to the
@@ -87,6 +88,12 @@ export const HEADLESS_FEATURES = {
    * before any step runs. `PI_ENSEMBLE_REPEAT_PARK=0` disables the refusal.
    */
   repeatParkGuard: true,
+  /**
+   * #1883 — `work-lean <issue>` runs the lean engine's phase-1 pipeline once
+   * and exits with the code its own step log stamped; `--capabilities` lists
+   * its flags under `verbs["work-lean"].flags`.
+   */
+  workLeanVerb: true,
 } as const;
 
 export interface Capabilities {
@@ -111,6 +118,7 @@ export interface Capabilities {
     research: { flags: (typeof RESEARCH_FLAGS)[number][] };
     "agents-md": { flags: (typeof AGENTS_MD_FLAGS)[number][] };
     "lens-review": { flags: (typeof LENS_REVIEW_FLAGS)[number][] };
+    "work-lean": { flags: (typeof WORK_LEAN_FLAGS)[number][] };
   };
   inputs: typeof HEADLESS_INPUTS;
   files: typeof HEADLESS_FILES;
@@ -160,6 +168,7 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
       research: { flags: [...RESEARCH_FLAGS] },
       "agents-md": { flags: [...AGENTS_MD_FLAGS] },
       "lens-review": { flags: [...LENS_REVIEW_FLAGS] },
+      "work-lean": { flags: [...WORK_LEAN_FLAGS] },
     },
     inputs: HEADLESS_INPUTS,
     files: HEADLESS_FILES,

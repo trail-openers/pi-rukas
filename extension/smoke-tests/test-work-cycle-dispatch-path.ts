@@ -11,6 +11,13 @@
  *      carries; nothing hand-computes the stamp from ctx.headless.
  *   3. The canary fails on a bad site: a fixture with an unregistered spawn, a
  *      direct dispatchCore and a hand-computed stamp each produce a violation.
+ *   4. The lean engine's three dispatch sites are audited here too. `lean/`
+ *      reaches `spawnSpecialist` directly rather than through a cycle entry, so
+ *      the driver closure of section 2 cannot see them; they share THIS registry
+ *      and this auditor, so one audit enforces the stamp for both engines
+ *      (#1904 lens HIGH — a second, per-file regex was a second rule that could
+ *      drift). A lean site stamped from a process flag instead of its run's
+ *      threaded mode is caught by the same hand-computed-stamp rule.
  *
  * Adding a dispatch site to a /work cycle means adding it to REGISTRY with the
  * stamp it carries (and to docs/headless.md's audit table), or routing it through
@@ -45,6 +52,18 @@ const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
 
 /** Files allowed to name dispatchCore: its definition and the one cycle entry. */
 const CORE_OWNERS = new Set(["dispatch.ts", "work-driver-cycle-entry.ts"]);
+
+/**
+ * The registry section 4 audits the lean closure against: only the three lean
+ * dispatch sites. Kept separate from `REGISTRY` because the driver's closure
+ * never loads `lean/` and the auditor reports a registry entry it cannot see —
+ * one list would fail section 2 for files it legitimately cannot reach.
+ */
+const LEAN_REGISTRY: typeof REGISTRY = {
+  "lean/build.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
+  "lean/challenge.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
+  "lean/command.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
+};
 
 /** The code on each line: whole-line comments dropped, trailing ` // …` comments cut. */
 function codeLines(text: string): string[] {
@@ -135,6 +154,40 @@ function auditDispatchSites(
   }
   for (const f of Object.keys(registry)) {
     if (!files.has(f)) violations.push(`${f}: in the registry but not in the driver closure`);
+  }
+  return violations;
+}
+
+/**
+ * The same audit over the lean engine's own closure (#1904 lens HIGH).
+ *
+ * `lean/` dispatches through `spawnSpecialist` directly — there is no cycle
+ * entry and no `dispatchCore` in its closure — so section 2's root cannot reach
+ * it. Rather than let the lean tests keep their own regex over the three sites
+ * (a second rule for the same invariant, which can drift from this one in
+ * either direction), the three roots are closed over here with the SAME
+ * registry and the SAME auditor.
+ */
+function auditLeanDispatchSites(readFn: (rel: string) => string): string[] {
+  const files = new Map<string, string>();
+  for (const root of ["lean/build.ts", "lean/challenge.ts", "lean/command.ts"]) {
+    for (const [rel, text] of closureOf(root, readFn)) {
+      if (rel.startsWith("lean/")) files.set(rel, text);
+    }
+  }
+  const violations = auditDispatchSites(files, LEAN_REGISTRY);
+  // The stamp must come from the RUN's mode, not the process: a lean site that
+  // read a module-level flag would stamp every run in the host with the first
+  // one's trust. `leanChildOpts`'s required argument is the compile-time half
+  // of this; the source test below is the runtime half.
+  for (const root of ["lean/build.ts", "lean/challenge.ts", "lean/command.ts"]) {
+    const text = files.get(root) ?? "";
+    if (
+      /\.\.\.leanChildOpts\(\s*\)/.test(text) ||
+      /\.\.\.leanChildOpts\((?!headless\))/.test(text)
+    ) {
+      violations.push(`${root}: spreads leanChildOpts with a value that is not its run's mode`);
+    }
   }
   return violations;
 }
@@ -262,6 +315,60 @@ const readSrc = (rel: string): string => readFileSync(path.join(SRC_DIR, rel), "
   assert(
     violations.some((v) => v.startsWith("dispatch.ts") || v.startsWith("adversarial-phase.ts")),
     "3: a registry entry missing from the closure is caught",
+  );
+}
+
+// ── 4. The lean engine's three dispatch sites, audited by THIS file.
+{
+  const violations = auditLeanDispatchSites(readSrc);
+  assert(
+    violations.length === 0,
+    `4: every lean dispatch site is registered and stamped${violations.length ? `: ${violations.join("; ")}` : ""}`,
+  );
+  // Not vacuous: a lean site that stops spreading the stamp, and one that drops
+  // the call from the registry, are both caught by the same auditor the driver
+  // closure is judged by.
+  const dropped = new Map<string, string>([
+    [
+      "lean/build.ts",
+      'import { spawnSpecialist } from "../spawn.ts";\nawait spawnSpecialist(spec, { workCycleTrust: false });\n',
+    ],
+  ]);
+  const silent = auditDispatchSites(dropped, LEAN_REGISTRY);
+  assert(
+    silent.some((v) => v.startsWith("lean/build.ts") && v.includes("no stamp")),
+    "4: a lean dispatch site that carries no stamp is caught",
+  );
+  const unregistered = new Map<string, string>([
+    [
+      "lean/engine.ts",
+      'import { spawnSpecialist } from "../spawn.ts";\nawait spawnSpecialist(spec, {});\n',
+    ],
+  ]);
+  const orphan = auditDispatchSites(unregistered, LEAN_REGISTRY);
+  assert(
+    orphan.some((v) => v.startsWith("lean/engine.ts") && v.includes("not in the audit registry")),
+    "4: an unregistered lean dispatch site is caught",
+  );
+  const constant = new Map<string, string>([
+    [
+      "lean/build.ts",
+      'import { spawnSpecialist } from "../spawn.ts";\nawait spawnSpecialist(spec, {\n  ...leanChildOpts(true),\n});\n',
+    ],
+  ]);
+  const stamped = auditDispatchSites(constant, LEAN_REGISTRY);
+  assert(
+    stamped.some((v) => v.startsWith("lean/build.ts") && v.includes("carries no stamp")),
+    "4: a lean site stamping from a literal rather than its run's mode is caught",
+  );
+  const handMode = auditLeanDispatchSites((rel) =>
+    rel === "lean/build.ts"
+      ? 'import { spawnSpecialist } from "../spawn.ts";\nawait spawnSpecialist(spec, {\n  ...leanChildOpts(PROCESS_TRUST),\n});\n'
+      : readSrc(rel),
+  );
+  assert(
+    handMode.some((v) => v.startsWith("lean/build.ts") && v.includes("not its run's mode")),
+    "4: a lean site stamping from anything but its threaded mode is caught",
   );
 }
 

@@ -29,7 +29,7 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { postHandback } from "./io.ts";
-import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
+import { validPrUrl } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
 import { fenceText } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify.ts";
@@ -161,10 +161,9 @@ function prUrlFromLog(steps: Step[]): string | undefined {
     // reads is a `Step[]`, and the loader is not the only thing that hands one
     // over. A value that broke the shape would be a line of markdown, not a
     // link, so the answer is the same as "no publish step recorded one".
-    if (typeof url !== "string" || url === "") continue;
-    if (url.length > PR_URL_MAX_CHARS) continue;
-    if (!PR_URL.test(url)) continue;
-    return url;
+    const valid = validPrUrl(url);
+    if (valid === undefined) continue;
+    return valid;
   }
   return undefined;
 }

@@ -13,6 +13,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { AGENTS_MD_FLAGS } from "../src/headless/agents-md.ts";
 import {
   CAPABILITIES_VERSION,
   HEADLESS_FEATURES,
@@ -21,13 +22,13 @@ import {
   WORK_FLAGS,
   buildCapabilities,
 } from "../src/headless/capabilities.ts";
-import { AGENTS_MD_FLAGS } from "../src/headless/agents-md.ts";
 import { SUBCOMMANDS } from "../src/headless/cli.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
 import { LENS_REVIEW_FLAGS } from "../src/headless/lens-review.ts";
+import { NDJSON_VERSION } from "../src/headless/ndjson.ts";
 import { PLAN_FLAGS } from "../src/headless/plan.ts";
 import { RESEARCH_FLAGS } from "../src/headless/research.ts";
-import { NDJSON_VERSION } from "../src/headless/ndjson.ts";
+import { WORK_LEAN_FLAGS } from "../src/headless/work-lean.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -114,6 +115,7 @@ for (const [verb, flags] of [
   ["research", RESEARCH_FLAGS],
   ["agents-md", AGENTS_MD_FLAGS],
   ["lens-review", LENS_REVIEW_FLAGS],
+  ["work-lean", WORK_LEAN_FLAGS],
 ] as const) {
   assert(
     deepEqual(caps.verbs[verb].flags, [...flags]) && flags.includes("--json" as never),
@@ -169,8 +171,15 @@ assert(
   "features.repeatParkGuard is true (#1743: parks are remembered and a third identical start is refused)",
 );
 assert(CAPABILITIES_VERSION === 2, "--continue-pr is additive: CAPABILITIES_VERSION stays 2");
+// #1883 — the `work-lean` verb is additive too: its flags and feature appear
+// under the same keys, and its children carry the /work-cycle trust stamp.
+assert(deepEqual(caps.verbs["work-lean"].flags, [...WORK_LEAN_FLAGS]), "work-lean flags are live");
+assert(caps.features.workLeanVerb === true, "features.workLeanVerb is true (#1883)");
 // #1666 — `permissions` is additive (CAPABILITIES_VERSION stays 2) and reports the mode read at answer time.
-assert(caps.permissions.workCycles === "trust" || caps.permissions.workCycles === "strict", "permissions.workCycles is trust or strict");
+assert(
+  caps.permissions.workCycles === "trust" || caps.permissions.workCycles === "strict",
+  "permissions.workCycles is trust or strict",
+);
 assert(
   caps.features.cycleDeadlineHandoffAllowance === true,
   "features.cycleDeadlineHandoffAllowance is true (#1593)",
