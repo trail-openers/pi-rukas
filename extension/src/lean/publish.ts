@@ -293,6 +293,10 @@ function oneLineTitle(problem: string): string {
  * "no PR": `mapPrListReply` in `forge-list.ts` synthesises `state: ""` for a
  * forge that answered with one bare number, and an exact `=== "OPEN"`
  * comparison would force-push over a branch somebody is reviewing.
+ *
+ * A row that names NO head branch blocks too. The list was asked for THIS
+ * branch, so a row without `headRefName` is one this step cannot attribute — and
+ * an unattributed row is a row it has not cleared.
  */
 async function pushLeaseTarget(
   deps: PublishDeps,
@@ -314,7 +318,9 @@ async function pushLeaseTarget(
   });
   const settled = new Set(["CLOSED", "MERGED"]);
   const blocking = (open ?? []).find(
-    (pr) => pr.headRefName === branch && !settled.has(String(pr.state ?? "").toUpperCase()),
+    (pr) =>
+      (pr.headRefName === undefined || pr.headRefName === branch) &&
+      !settled.has(String(pr.state ?? "").toUpperCase()),
   );
   if (blocking !== undefined)
     throw new PublishInfraError(
@@ -371,12 +377,16 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   // bound to that read. When origin already holds this head there is nothing to
   // write, and the step says so rather than pushing a no-op it cannot verify.
   const remote = await pushLeaseTarget(deps, repoRoot, wt, head, branch);
-  if (remote !== head) await pushHead(deps, wt, head, branch, remote);
+  const wrote = remote !== head;
+  if (wrote) await pushHead(deps, wt, head, branch, remote);
   // From here on the head is OUTSIDE the clone. Every refusal below is a
   // handback over a pushed branch, so it says so — an error that reads only
-  // "could not open the PR" hides the one fact the operator needs first.
+  // "could not open the PR" hides the one fact the operator needs first. When
+  // origin already held this head nothing was written, so the text says so.
   const pushed = (what: string) =>
-    new PublishInfraError(`pushed ${head.slice(0, 12)} to ${branch}, but ${what}`);
+    new PublishInfraError(
+      `${wrote ? `pushed ${head.slice(0, 12)} to ${branch}` : `${branch} is already on origin`}, but ${what}`,
+    );
 
   const f = await deps.forge(repoRoot);
   if (f === undefined) throw pushed("no forge adapter: cannot open the PR");
@@ -426,6 +436,6 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   return {
     kind: "ok",
     prUrl,
-    reason: `published ${draft ? "draft " : ""}PR ${prUrl} at ${head.slice(0, 12)}`,
+    reason: `${wrote ? "published" : "already on origin, published"} ${draft ? "draft " : ""}PR ${prUrl} at ${head.slice(0, 12)}`,
   };
 }

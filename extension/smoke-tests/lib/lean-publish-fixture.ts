@@ -96,6 +96,25 @@ export interface PublishOpts {
    */
   originStale?: OriginStale;
   /**
+   * Name origin's branch in the case (a stale shape, or a head the run did not
+   * write). Defaults to the run's own `lean/issue-<n>`, and the `true` form
+   * keeps the `lean/issue-<issue>` name the existing cases read back.
+   */
+  staleAt?: string | true;
+  /**
+   * Seed a stale commit of THIS repo on a branch that is NOT the run's own push
+   * target. The forge's open-PR check is scoped by `sourceBranch`, so an open PR
+   * row naming a FOREIGN branch must never block this run.
+   */
+  staleOnForeignBranch?: boolean;
+  /**
+   * Seed origin's branch at the run's HEAD before the step runs, so the push
+   * path is genuinely skipped. Each `runPublish` builds its own temp repo, so
+   * the honest "origin already holds this head" case cannot be two runs of the
+   * same issue — it needs the ref seeded.
+   */
+  originAtHead?: boolean;
+  /**
    * Move origin's branch ref BETWEEN the step's `ls-remote` read and its push —
    * the race a lease exists to catch. The push must fail rather than overwrite.
    */
@@ -225,6 +244,19 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   git(repoRoot, "push", "-q", "origin", "main");
 
   const branch = o.branch ?? `lean/issue-${issue}`;
+  // The branch a STALE origin is planted on. A case that must observe the
+  // no-push path names a branch that is neither `specifyBranch`'s result (which
+  // would be caught by the state-file mismatch check) nor one this run pushes to
+  // in the same temp repo — each `runPublish` builds its own origin, so a rerun
+  // of the same issue is a FRESH origin, never one that already holds the head.
+  const staleBranch =
+    o.originStale === undefined
+      ? branch
+      : o.staleOnForeignBranch === true
+        ? `lean/foreign-${issue}`
+        : o.staleAt === undefined || o.staleAt === true
+          ? `lean/issue-${issue}`
+          : o.staleAt;
   const checkout = o.worktreeBranch ?? branch;
   const wt = specifyWorktreePath(repoRoot, issue);
 
@@ -245,18 +277,20 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   commitFile(wt, "backoff.ts", "export const cap = 3;\n", "feat: bound the backoff");
   const head = git(wt, "rev-parse", "HEAD");
 
-  if (o.originStale === "fast-forward") seedFastForwardOrigin({ wt, branch });
+  if (o.originStale === "fast-forward") seedFastForwardOrigin({ wt, branch: staleBranch });
   if (o.originStale === true || o.originStale === "descendants-reach")
     seedStaleOrigin({
       origin,
-      branch,
+      branch: staleBranch,
       baseMain,
       wt,
       issue,
       containsHead: o.originStale === "descendants-reach",
     });
-  else if (o.originStale === "stale-branch") seedOneCommitStaleOrigin({ wt, branch });
+  else if (o.originStale === "stale-branch")
+    seedOneCommitStaleOrigin({ wt, branch: staleBranch });
   if (o.originForeign === true) seedForeignOrigin({ origin, branch });
+  if (o.originAtHead === true) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
 
   if (o.dirty === true) writeFileSync(path.join(wt, "stray.txt"), "uncommitted\n");
   if (o.commitAfterVerify === true) {

@@ -12,7 +12,13 @@
  *   (q) the stale branch is used by an OPEN PR -> refused, reason names the URL
  *   (q2) a PR row whose state is `"open"`, `"Open"` or `""` -> also refused, and
  *       only `CLOSED`/`MERGED` let the rewrite through (fail-closed)
- *   (r) origin's branch already equals HEAD -> no push, still a PR
+ *   (q3) a PR row with NO `headRefName` and state OPEN -> refused: a row the
+ *       step cannot attribute is a row it has not cleared
+ *   (q4) a row that names ANOTHER branch -> does not block (the `sourceBranch`
+ *       filter is what makes q3's widening safe)
+ *   (r2) origin's branch is HEAD~1 -> a FAST-FORWARD lands and the PR opens
+ *   (r) origin's branch already equals HEAD (seeded) -> no push, still a PR, and
+ *       the reason says `already on origin`, never `pushed`
  *   (r2) origin's branch is HEAD~1 -> a FAST-FORWARD lands and the PR opens
  *        (the unbracketed-porcelain regression: no flag parsing is involved)
  *   (s) the ref moves between the read and the push -> the lease fails and the
@@ -23,6 +29,7 @@
  * origin holds afterwards, not about a stub's transcript.
  */
 
+import type { NormalizedPullRequest } from "../src/forge-types.ts";
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import { fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 
@@ -155,18 +162,88 @@ function assert(cond: boolean, msg: string): void {
 }
 
 // -------------------------- (r) origin's branch already equals HEAD -> nothing to push
+//
+// Each `runPublish` builds its OWN origin, so two runs of one issue are two
+// fresh origins and the second never sees the first's ref — the shape has to be
+// seeded, not sequenced. `originAtHead` writes the run's own head to origin
+// before the step looks, so the no-push path is a fact about the ref, and the
+// reason a run that WROTE NOTHING prints must not claim it pushed.
 {
-  // Two runs of the same issue: the first creates the ref, the second finds it
-  // already at this head, pushes nothing, and still opens its PR.
-  const first = await runPublish({ issue: 425, verify: { kind: "green" } });
-  const second = await runPublish({ issue: 425, verify: { kind: "green" } });
+  const r = await runPublish({ issue: 425, verify: { kind: "green" }, originAtHead: true });
   assert(
-    first.outcome?.kind === "ok" && second.outcome?.kind === "ok",
-    `(r) a remote branch equal to HEAD is a no-op push, not a refusal (got ${second.threw?.name}: ${second.threw?.message})`,
+    r.outcome?.kind === "ok",
+    `(r) a remote branch equal to HEAD is a no-op push, not a refusal (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(
-    originHead(second.origin, "lean/issue-425") === second.head,
+    originHead(r.origin, "lean/issue-425") === r.head,
     "(r) origin still holds the head after the no-op push",
+  );
+  assert(r.forge.prCreateCalls.length === 1, "(r) the PR was still opened");
+  assert(
+    r.outcome?.reason?.includes("already on origin") === true &&
+      r.outcome.reason.includes("pushed") === false,
+    `(r) a run that wrote nothing says so rather than claiming a push (got ${JSON.stringify(r.outcome?.reason)})`,
+  );
+  // The converse, so the honesty above is not just "the string always says it":
+  // a run that DID write keeps saying `published` and names no `already on origin`.
+  const pushed = await runPublish({ issue: 425, verify: { kind: "green" } });
+  assert(
+    pushed.outcome?.reason?.includes("already on origin") === false &&
+      (pushed.outcome?.prUrl ?? "").startsWith("https://"),
+    `(r) a run that DID push does not say already on origin (got ${JSON.stringify(pushed.outcome?.reason)})`,
+  );
+}
+
+// ------------- (q3) a PR row with no headRefName is a row the step cannot clear
+//
+// The list was asked for THIS branch (`sourceBranch`), so a row that reports no
+// head branch is not "no PR on the branch" — it is a row whose attribution the
+// adapter lost. Reading it as absent is the exact shape that lets a rewrite land
+// over a branch somebody is reviewing, so an unattributed OPEN row blocks.
+{
+  const unattributed: NormalizedPullRequest = {
+    ...fakePr(99, "https://forge.example/pull/99", ""),
+    headRefName: undefined,
+  };
+  const r = await runPublish({
+    issue: 441,
+    verify: { kind: "green" },
+    originStale: true,
+    openPrs: [unattributed],
+  });
+  assert(
+    r.threw instanceof PublishInfraError && /open PR already uses/.test(r.threw.message),
+    `(q3) a row with no headRefName and state OPEN refuses the push (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    originHead(r.origin, "lean/issue-441") !== r.head,
+    "(q3) the unattributed row's branch was not clobbered",
+  );
+  assert(r.forge.prCreateCalls.length === 0, "(q3) no PR is opened over an unattributed row");
+}
+
+// --------- (q4) a row on a FOREIGN branch is attributed away, and must not block
+//
+// The `sourceBranch` filter is the only reason the widened predicate is safe:
+// every row in this list was asked for THIS branch, so `undefined` is a lost
+// attribution rather than an unrelated PR. A row that DOES name another branch
+// is attributed, and blocking it would hold one issue's push hostage to another
+// issue's open PR — so it must not.
+{
+  const r = await runPublish({
+    issue: 442,
+    verify: { kind: "green" },
+    originStale: true,
+    staleOnForeignBranch: true,
+    openPrs: [fakePr(98, "https://forge.example/pull/98", "lean/foreign-442")],
+  });
+  assert(
+    r.outcome?.kind === "ok",
+    `(q4) an open PR on another branch does not block this run (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    originHead(r.origin, "lean/issue-442") === r.head,
+    "(q4) this run's branch was written",
   );
 }
 
