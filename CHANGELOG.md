@@ -8,6 +8,30 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.42](https://github.com/trail-openers/pi-rukas/compare/v0.14.41...v0.14.42) (2026-10-30)
+
+
+### Features
+
+* **headless:** work-lean writes a schema-5 result ([#1926](https://github.com/trail-openers/pi-rukas/issues/1926)) ([b63652c](https://github.com/trail-openers/pi-rukas/commit/b63652c5d1a292c0f9f28c4e913b8050cb3312e8))
+* **lean:** a challenge budget stop continues to verify ([#1919](https://github.com/trail-openers/pi-rukas/issues/1919)) ([b0a04d3](https://github.com/trail-openers/pi-rukas/commit/b0a04d36ac48fd8bd2d66f1fc46a6c9fc2f9b683))
+* **lean:** acceptance tests live in the project's test folder; scope contracts ([#1913](https://github.com/trail-openers/pi-rukas/issues/1913)) ([8135433](https://github.com/trail-openers/pi-rukas/commit/81354334a891f8a1664f77979505360fdc9d1f15))
+* **lean:** bound frozen test size per file and per criterion ([#1916](https://github.com/trail-openers/pi-rukas/issues/1916)) ([1aa3b1a](https://github.com/trail-openers/pi-rukas/commit/1aa3b1a5f9aed960ef8b88dc31fd7ffb253d84cf))
+* **lean:** enforce step budgets with a budget verdict ([#1915](https://github.com/trail-openers/pi-rukas/issues/1915)) ([3cad204](https://github.com/trail-openers/pi-rukas/commit/3cad204140cf918a3d1171ae2676b75e06023d56))
+* **lean:** record PR draft state and per-dispatch usage ([790397e](https://github.com/trail-openers/pi-rukas/commit/790397efc9dcf98fa4c2c8116d76db7f9c50b100))
+* **lean:** red-proof contract and executed command criteria ([#1911](https://github.com/trail-openers/pi-rukas/issues/1911)) ([4cdaf30](https://github.com/trail-openers/pi-rukas/commit/4cdaf300bf243511aaa5524220a93d2cfaefcc5e))
+* **lean:** specify retries once with the refusal reasons ([ad14917](https://github.com/trail-openers/pi-rukas/commit/ad149173803e73e091bf0d0a28211b370259fba6))
+* **lean:** specify retries once with the refusal reasons ([#1921](https://github.com/trail-openers/pi-rukas/issues/1921)) ([ad14917](https://github.com/trail-openers/pi-rukas/commit/ad149173803e73e091bf0d0a28211b370259fba6))
+* **work:** headless work-lean verb ([#1904](https://github.com/trail-openers/pi-rukas/issues/1904)) ([5159c8f](https://github.com/trail-openers/pi-rukas/commit/5159c8f7249593ee86f574fdc4654572d66c172c))
+
+
+### Bug Fixes
+
+* **headless:** work-lean crash path survives hostile thrown values ([2068c98](https://github.com/trail-openers/pi-rukas/commit/2068c9855a75978bc806f111d2d6f03576e24e16))
+* **lean:** frozen-test caps sized from measured adversary tests ([#1922](https://github.com/trail-openers/pi-rukas/issues/1922)) ([5aeeac8](https://github.com/trail-openers/pi-rukas/commit/5aeeac82e3dc7fc3d425466b6d9365847a4883cb))
+* **lean:** publish replaces its own stale branch under a lease ([#1917](https://github.com/trail-openers/pi-rukas/issues/1917)) ([e0171b0](https://github.com/trail-openers/pi-rukas/commit/e0171b03887e024e6c7f1b52c0e14fcc55ec603f))
+* **lean:** seed the run with the mainline sha so specify has a base ([#1910](https://github.com/trail-openers/pi-rukas/issues/1910)) ([51e09b0](https://github.com/trail-openers/pi-rukas/commit/51e09b0be80d791e5e81ed1a1d4d02b7ffbaa518))
+
 ## [0.14.41](https://github.com/trail-openers/pi-rukas/compare/v0.14.40...v0.14.41) (2026-10-29)
 
 
