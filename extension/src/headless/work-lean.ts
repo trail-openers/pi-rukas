@@ -96,6 +96,18 @@ export const TRACE_MAX = 4000;
 export const MESSAGE_MAX = 1000;
 
 /**
+ * How long an Error's own `name` may be in the trace label.
+ *
+ * `name` is the one field a hostile Error supplies VERBATIM into the trace
+ * prefix — a 100 KB `name` is a 100 KB line no `TRACE_MAX` on the body would
+ * bound, and a `name` carrying a newline would split the record the same way a
+ * raw stack would. So it is put through the same single-line rule as the body
+ * and bounded on its own: the label is a word, and a word that needs more than
+ * this many characters to say "Error" is not a label, it is the payload.
+ */
+export const NAME_MAX = 120;
+
+/**
  * What the document says when a crash's Error has nothing to say at all.
  *
  * Applied in `fail()` alone: it is the stand-in for a CRASH with no reason, not
@@ -104,6 +116,21 @@ export const MESSAGE_MAX = 1000;
  * that way rather than being handed a word this verb invented.
  */
 const UNKNOWN_CRASH = "unknown error";
+
+/**
+ * The line terminators `oneline` escapes, as code points.
+ *
+ * Tab is deliberately NOT here: it does not end a line, and leaving it raw keeps
+ * a stack's indentation readable. `\r` does — a terminal, and any NDJSON
+ * splitter that honours CRLF, ends the record on it — and U+2028 / U+2029 /
+ * U+0085 are line terminators to the JS grammar itself. Same set
+ * `lean/text-fence.ts` strips, restated because that one is not exported and
+ * folds tab to a space. Code points, not a literal of escape sequences, so a
+ * terminator can never be written in a form that matches nothing.
+ */
+const LINE_BREAK_CP = [0x0a, 0x0d, 0x2028, 0x2029, 0x0085];
+/** A single backslash — the escape introducer `oneline` writes. */
+const BS = String.fromCharCode(0x5c);
 
 /** A reason line a host can print: clipped, and never the whole step log. */
 function clip(text: string): string {
@@ -197,17 +224,45 @@ function errorFields(err: Error): { name: string; message: string; stack: string
 }
 
 /**
- * A multi-line value as ONE line: newlines escaped, so nothing splits a record.
+ * A multi-line value as ONE line: each line terminator escaped, so nothing
+ * splits a record.
  *
- * NOT `oneLine` from `lean/text-fence.ts` — that helper escapes `|` and
- * collapses runs of spaces for a MARKDOWN table cell, and folds tabs and the
- * Unicode separators into plain spaces. What this verb needs is narrower: the
- * headless stderr writer turns every physical newline into its own NDJSON
- * record, so the only hazard is a newline, and a stack whose indentation
- * survives is far more readable than one whose leading tabs became spaces.
+ * NOT `oneLine` from `lean/text-fence.ts` — that one is for a MARKDOWN table
+ * cell (it escapes `|`, collapses runs of spaces, folds tabs), and a stack
+ * wants its indentation. The hazard here is narrower: the headless stderr writer
+ * turns each physical line into its own NDJSON record, so every terminator in
+ * `LINE_BREAK_CP` becomes its escape (`\n`, `\r`, or `\uXXXX`) and the result
+ * holds no terminator at all. An escape is longer than the character it
+ * replaces, so callers bound the result AFTER this runs.
  */
 function oneline(text: string): string {
-  return text.replaceAll("\n", "\\n");
+  let out = text;
+  for (const cp of LINE_BREAK_CP) {
+    const code = cp === 0x0a ? "n" : cp === 0x0d ? "r" : `u${cp.toString(16).padStart(4, "0")}`;
+    out = out.replaceAll(String.fromCharCode(cp), BS + code);
+  }
+  return out;
+}
+
+/**
+ * The trace label: an Error's `name`, scrubbed and bounded.
+ *
+ * `name` is the only field that reaches the trace VERBATIM — `TRACE_MAX` bounds
+ * the body alone — so a 200 KB `name` or a `name` carrying a newline would get
+ * past the body's bound and split or flood the record. It goes through
+ * `oneline` — cut before the escape so it never walks a huge name, and again
+ * after it so the bound holds on the ESCAPED text, because escaping lengthens it
+ * (`\r` becomes two characters, U+2028 six) and a bound on the raw label is not
+ * a bound on what a reader sees. The cut keeps its ellipsis inside the bound.
+ */
+function traceLabel(name: string): string {
+  // Cut BEFORE the escape so `oneline` never walks a 200 KB label, then again
+  // AFTER it so the bound holds on the text a reader actually sees: an escape
+  // only ever lengthens a string (`\r` is two characters, U+2028 six), so a
+  // bound on the raw label is not a bound on the escaped one. The ellipsis is
+  // counted INSIDE the bound, so the label is never longer than NAME_MAX.
+  const scrubbed = oneline(name.slice(0, NAME_MAX));
+  return scrubbed.length > NAME_MAX ? `${scrubbed.slice(0, NAME_MAX - 1)}…` : scrubbed;
 }
 
 /**
@@ -316,8 +371,12 @@ export async function runWorkLeanVerb(
     // reads on stderr cannot disagree about what the crash said.
     const reason = fields ? (blank(fields.message) ? fields.stack : fields.message) : safeText(err);
     // The stand-in is the crash path's alone (`UNKNOWN_CRASH`), applied here and
-    // nowhere else in this module.
-    const message = oneLine(clip(reason) || UNKNOWN_CRASH, MESSAGE_MAX);
+    // nowhere else in this module. `oneLine` escapes (control chars, `|`) BEFORE
+    // it cuts, so the cut lands on the text a host reads — every `|` in a reason
+    // becomes TWO characters there, and its cut appends one "…", hence
+    // `MESSAGE_MAX - 1`: `oneLine(x, n)` returns at most n+1 characters, so this
+    // is the argument that keeps `doc.error.message` within MESSAGE_MAX.
+    const message = oneLine(clip(reason) || UNKNOWN_CRASH, MESSAGE_MAX - 1);
     const exitCode = refused ? EXIT.refused : EXIT.crash;
     // The full error goes to the trace, not just the clipped line the document
     // carries: a crash whose stack is 20 KB is still diagnosable by whoever
@@ -330,9 +389,9 @@ export async function runWorkLeanVerb(
       // trace whose reason disagrees with the host's is worse than no trace.
       const body = blank(traceFields.stack) ? reason : traceFields.stack;
       // Cut before the escape so it never walks a multi-MB stack, then again
-      // after it (`\n` became two characters) to keep the bound exact.
+      // after it (an escape is longer than its character) to keep the bound exact.
       const trace = oneline(body.slice(0, TRACE_MAX + 16)).slice(0, TRACE_MAX);
-      traceWarn(`work-lean: #${issue} crashed — ${traceFields.name}: ${trace}`);
+      traceWarn(`work-lean: #${issue} crashed — ${traceLabel(traceFields.name)}: ${trace}`);
     }
     say(`work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`);
     return {

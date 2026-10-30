@@ -16,7 +16,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -148,7 +148,7 @@ export async function spawnProbeRun(
   // stdout AND stderr are piped. The existing callers read only stderr and an
   // inherited fd is what they always had; the AC driver reads both, because it
   // judges what the host's stdout carried as well as what the trace said.
-  const r = spawnSync(process.execPath, [probe], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [probe], { encoding: "utf8", timeout: 30_000 });
   await rm(dir, { recursive: true, force: true });
   return { stderr: r.stderr, code: r.status };
 }
@@ -280,6 +280,36 @@ export function warnLines(trace: string[]): string[] {
 /** A child whose injected run throws one Error with a two-frame stack. */
 export function spawnCrash(): Promise<string> {
   return spawnProbe(
-    `const run = async () => { const e = new Error("git exploded"); e.stack = "Error: git exploded\\n" + " ".repeat(3) + "at runWorkLeanVerb (/x/work-lean.ts:1:1)"; throw e; };`,
+    `const run = async () => { const e = new Error("git exploded"); e.stack = ["Error: git exploded", "    at runWorkLeanVerb (/x/work-lean.ts:1:1)"].join(String.fromCharCode(0x0a)); throw e; };`,
   );
+}
+
+/**
+ * A child whose stack is far longer than `TRACE_MAX`, for the bound's own test.
+ *
+ * 200 KB of frames — fifty times the cap — so a verb that never cut would show
+ * it rather than hide it, and the frames carry a marker the assertion looks for
+ * so a trace truncated to nothing cannot pass a length check.
+ */
+export function spawnHugeCrash(): Promise<string> {
+  return spawnProbe(
+    `const run = async () => { const e = new Error("huge"); e.stack = ["Error: huge", ...Array.from({ length: 6000 }, () => "    at frameMark (/x/engine.ts:1:1)")].join(String.fromCharCode(0x0a)); throw e; };`,
+    true,
+  );
+}
+
+/**
+ * The trace BODY of a crash line: what follows `crashed — <name>: `.
+ *
+ * `TRACE_MAX` bounds the body, not the whole record — the `work-lean: #N` framing
+ * and the `name` label are added outside that cut (the label has its own bound,
+ * `NAME_MAX`). Stripping the label by the name the probe threw is what makes the
+ * body assertion bite: a whole-line length would tolerate a label that grew.
+ * A line without that head is returned whole, so it fails the length check
+ * rather than passing it.
+ */
+export function traceBody(line: string, name: string): string {
+  const head = `crashed — ${name}: `;
+  const at = line.indexOf(head);
+  return at < 0 ? line : line.slice(at + head.length);
 }

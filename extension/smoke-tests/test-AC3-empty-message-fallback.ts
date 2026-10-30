@@ -16,12 +16,21 @@
  *
  *   - message blank, stack present → the stack reaches the document, AND the
  *     stderr trace carries a stack frame (the same reason in both outputs);
- *   - message AND stack blank      → a literal stands in.
+ *   - message AND stack blank      → a literal stands in;
+ *   - stack blank, message present → the trace's BODY is the message (a warning
+ *     whose body came from a blank stack would be a bare label);
+ *   - a `name` carrying a newline / U+2028 / CR → the trace is still exactly one
+ *     physical stderr line, because `name` reaches the trace verbatim and
+ *     `TRACE_MAX` bounds only the body.
  *
  * A message a hostile getter REPLACES with a throw is AC1's case, not this
- * one; here the Error is readable, it just says nothing. Offline.
+ * one; here the Error is readable, it just says nothing. Cases (c) and (d) are
+ * driven through the real child as well, because the trace body and its
+ * single-line-ness are only observable on the fd the harness leaves alone.
+ * Offline.
  */
 import { EXIT } from "../src/headless/exit-code.ts";
+import { NAME_MAX, TRACE_MAX } from "../src/headless/work-lean.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import { driveThrow, warnLines } from "./lib/work-lean-verb-fixture.ts";
 
@@ -29,6 +38,9 @@ const { assert, state } = makeAssert();
 
 /** The stack a silent Error still carries, and which the host never saw. */
 const STACK = "Error: silent at build\n    at runLean (/x/engine.ts:7:3)";
+
+/** A backslash — so the assertions below spell escapes without a doubled literal. */
+const BS = String.fromCharCode(0x5c);
 
 /** A label for a value whose own toString may throw. */
 function safe(value: unknown): string {
@@ -95,6 +107,85 @@ function silentSource(stack: string): string {
   assert(
     typeof r.message === "string" && r.message.includes("unknown error"),
     `the stand-in says "unknown error" (got ${safe(r.message)})`,
+  );
+}
+
+// ── (c) a BLANK stack and a real message: the trace carries the MESSAGE.
+//
+// `body` is `blank(stack) ? reason : stack`, so with no stack the warning has
+// to repeat what the document says rather than print a bare label. A reviewer
+// that gets `Error:` and nothing after it has been told nothing about the crash.
+// Both directions of the fallback are therefore asserted on the real child's
+// stderr: (a) proves the stack reaches the trace when the message is blank, and
+// this proves the message reaches it when the stack is blank.
+{
+  const msg = "lock file was held by another run";
+  const err = new Error(msg);
+  err.stack = "   \n\t ";
+  const src = `const run = async () => { const e = new Error(${JSON.stringify(msg)}); e.stack = "   \\n\\t "; throw e; };`;
+  const r = await driveThrow(err, src);
+  assert(
+    r.code === EXIT.crash,
+    `an Error with no stack still exits 30 (got ${r.code})`,
+  );
+  assert(r.docs.length === 1, `exactly one document on stdout (got ${r.docs.length})`);
+  assert(
+    r.violations.length === 0,
+    `the output contract holds with no stack to trace (got ${JSON.stringify(r.violations)})`,
+  );
+  assert(
+    typeof r.message === "string" && r.message.includes(msg),
+    `a blank stack does not cost the document its message (got ${safe(r.message)})`,
+  );
+  const traced = warnLines(r.trace);
+  assert(
+    traced.some((l) => l.includes("work-lean: #7 crashed") && l.includes(msg)),
+    `with a blank stack the trace carries the message as its body (got ${JSON.stringify(traced)})`,
+  );
+}
+
+// ── (d) a hostile `name` cannot split the trace into two stderr lines.
+//
+// `name` is the one field that reaches the trace verbatim — `TRACE_MAX` bounds
+// the body alone — so a name carrying a newline used to write the record's
+// prefix and dump the rest of the label as a second line (which the harness's
+// NDJSON check then rejects outright). CR and the Unicode separators are the
+// same bug for a reader that splits on them.
+{
+  const nasty = "Wrapped\nError\u2028Broken\rLine";
+  const err = new Error("git exploded");
+  err.name = nasty;
+  err.stack = "WrappedError at build\n    at runLean (/x/engine.ts:7:3)";
+  const src = `const run = async () => { const e = new Error("git exploded"); e.name = ${JSON.stringify(nasty)}; e.stack = "WrappedError at build\\n    at runLean (/x/engine.ts:7:3)"; throw e; };`;
+  const r = await driveThrow(err, src);
+  assert(r.code === EXIT.crash, `a hostile name still exits 30 (got ${r.code})`);
+  assert(
+    r.violations.length === 0,
+    `a name with a newline and U+2028 keeps stderr one-record-per-line (got ${JSON.stringify(r.violations)})`,
+  );
+  const traced = warnLines(r.trace);
+  assert(
+    // `name` is scrubbed and bounded by NAME_MAX on its own, so the raw label is
+    // NOT in the line — these are its ESCAPES, which is the point: the newline
+    // became two printable characters instead of splitting the record.
+    traced.some(
+      (l) =>
+        l.includes("work-lean: #7 crashed") &&
+        l.includes("Wrapped") &&
+        l.includes(`${BS}n`) &&
+        l.includes(`${BS}u2028`) &&
+        l.includes("at runLean"),
+    ),
+    `the name's newlines are escaped into the one line it always was (got ${JSON.stringify(traced)})`,
+  );
+  assert(
+    traced.every(
+      (l) =>
+        !l.includes("\r") &&
+        !l.includes("\u2028") &&
+        l.slice(l.indexOf("crashed — ") + "crashed — ".length).length <= TRACE_MAX + NAME_MAX + 64,
+    ),
+    `no raw CR or U+2028 survives in any traced line, and a hostile name cannot flood it (got ${JSON.stringify(traced)})`,
   );
 }
 
