@@ -36,7 +36,6 @@
  * `publish-deps.ts` is what refuses a branch that is not the run's to push.
  */
 import { existsSync } from "node:fs";
-import type { ExecResult } from "../exec.ts";
 import type { NormalizedPullRequest } from "../forge-types.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -205,7 +204,8 @@ async function pushHead(
 }
 
 /** States that are not under review, and therefore do not hold a rewrite back. */
-const SETTLED_STATES = ["CLOSED", "MERGED"] as const;
+const SETTLED_STATES: readonly string[] = ["CLOSED", "MERGED"];
+const isSettled = (s: unknown) => typeof s === "string" && SETTLED_STATES.includes(s.toUpperCase());
 
 /** Reuse an open PR on the branch, or create one. Never both. */
 async function openPr(
@@ -328,12 +328,10 @@ async function pushLeaseTarget(
   const remote = (await remoteBranchSha(deps, wt, branch)) ?? "";
   if (remote === "" || remote === head) return remote;
   // Not having looked is no licence to rewrite a branch somebody may be reading.
-  const blocking = (await listOpenPrs(f, branch)).find(
-    (pr) => !SETTLED_STATES.includes(String(pr.state ?? "").toUpperCase() as never),
-  );
+  const blocking = (await listOpenPrs(f, branch)).find((pr) => !isSettled(pr.state));
   if (blocking !== undefined)
     throw new PublishInfraError(
-      `an open PR already uses ${branch}: ${blocking.url ?? "(no URL returned)"}`,
+      `refusing to rewrite ${branch}: the forge returned an unsettled PR row (${blocking.url || "(no URL returned)"})`,
     );
   return remote;
 }

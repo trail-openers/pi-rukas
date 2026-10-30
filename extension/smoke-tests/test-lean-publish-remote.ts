@@ -1,29 +1,33 @@
 #!/usr/bin/env bun
 /**
- * lean/publish — the four cases where origin's `lean/` ref, not the forge,
- * decides what the step may do. Split out of `test-lean-publish.ts` (which was
- * past the 500-line cap); same fixture, same recorder, same `runPublish`.
+ * lean/publish — the cases where origin's `lean/` ref, not the forge, decides
+ * what the step may do. Split out of `test-lean-publish.ts` (which was past the
+ * 500-line cap); same fixture, same recorder, same `runPublish`.
  *
- *   (h) origin holds a FOREIGN commit on the branch -> handback, no PR
- *   (o) a push whose porcelain output names a rejection -> REFUSAL, no PR
- *   (p) a realistic STALE branch (4 commits, cut from an older main) with no
- *       open PR -> replaced under a lease bound to the sha the step read
+ *   (h)  origin holds a FOREIGN commit on the branch -> handback, no PR
+ *   (o)  a push whose porcelain output names a rejection, over a ref it did not
+ *        move -> REFUSAL, no PR
+ *   (p)  a realistic STALE branch (4 commits, cut from an older main) with no
+ *        open PR -> replaced under a lease bound to the sha the step read
  *   (p2) the 1-commit stale shape the first version gated on -> still replaced
- *   (q) the stale branch is used by an OPEN PR -> refused, reason names the URL
- *   (q2) a PR row whose state is `"open"`, `"Open"` or `""` -> also refused, and
- *       only `CLOSED`/`MERGED` let the rewrite through (fail-closed)
+ *   (p3) a stale tip that already CONTAINS head -> still replaced
+ *   (q)  the stale branch is used by an OPEN PR -> refused, reason names the URL
+ *   (q2) a PR row whose state is `"open"`, `"Open"`, `""` or `"OPEN"` -> refused;
+ *        only `CLOSED`/`MERGED` let the rewrite through (fail-closed)
  *   (q3) a PR row with NO `headRefName` and state OPEN -> refused: a row the
- *       step cannot attribute is a row it has not cleared
- *   (q4) a row that names ANOTHER branch -> does not block (the `sourceBranch`
- *       filter is what makes q3's widening safe)
- *   (r2) origin's branch is HEAD~1 -> a FAST-FORWARD lands and the PR opens
- *   (r) origin's branch already equals HEAD (seeded) -> no push, still a PR, and
- *       the reason says `already on origin`, never `pushed`
+ *        step cannot attribute is a row it has not cleared
+ *   (q5) a PR row whose `headRefName` carries a stray space, state OPEN ->
+ *        refused: an unsettled row blocks whatever its branch name says
+ *   (r)  origin's branch already equals HEAD (seeded) -> no push, still a PR, and
+ *        the reason says `already on origin`, never `pushed`
  *   (r2) origin's branch is HEAD~1 -> a FAST-FORWARD lands and the PR opens
  *        (the unbracketed-porcelain regression: no flag parsing is involved)
- *   (s) the ref moves between the read and the push -> the lease fails and the
- *       run is handed back, never reported ok
- *   (t) a branch absent on origin -> created, origin then equals head
+ *   (r3) a stale branch, the push really runs, and its report says `! [rejected]`
+ *        while origin ends at head -> ok: origin, not the porcelain, decides
+ *   (s)  the ref moves between the read and the push -> the lease fails and the
+ *        run is handed back, never reported ok
+ *   (s2) a branch absent on origin -> leased against an ABSENT ref
+ *   (t)  a branch absent on origin -> created, origin then equals head
  *
  * The origin is a real bare repo, so "not overwritten" is a fact about the ref
  * origin holds afterwards, not about a stub's transcript.
@@ -32,8 +36,10 @@
 import { rmSync } from "node:fs";
 import type { NormalizedPullRequest } from "../src/forge-types.ts";
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
+import { execp } from "../src/exec.ts";
 import { ROOTS, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 import { fakePr } from "./lib/lean-publish-forge.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -42,6 +48,18 @@ function assert(cond: boolean, msg: string): void {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+/**
+ * A stale-seed case means nothing unless a stale sha was actually planted on
+ * origin; the fixture reads it back, and a case asserts it landed before it
+ * relies on it, so the case cannot pass vacuously over an empty seed.
+ */
+function assertSeeded(seededSha: string | undefined, label: string): void {
+  assert(
+    /^[0-9a-f]{40}$/.test(seededSha ?? ""),
+    `${label}: a stale sha was planted on origin (got ${JSON.stringify(seededSha)})`,
+  );
 }
 
 // ---------------- (h) origin holds a FOREIGN commit -> the step never reports ok
@@ -115,6 +133,7 @@ function assert(cond: boolean, msg: string): void {
 // the feature does nothing.
 {
   const r = await runPublish({ issue: 422, verify: { kind: "green" }, originStale: true });
+  assertSeeded(r.seededSha, "(p)");
   assert(
     r.outcome?.kind === "ok",
     `(p) a 4-commit stale lean/ branch with no open PR is replaced (got ${r.threw?.name}: ${r.threw?.message})`,
@@ -133,6 +152,7 @@ function assert(cond: boolean, msg: string): void {
     verify: { kind: "green" },
     originStale: "stale-branch",
   });
+  assertSeeded(r.seededSha, "(p2)");
   assert(
     r.outcome?.kind === "ok",
     `(p2) a 1-commit stale lean/ branch is replaced too (got ${r.threw?.name}: ${r.threw?.message})`,
@@ -151,8 +171,9 @@ function assert(cond: boolean, msg: string): void {
     originStale: true,
     openPrs: [fakePr(91, "https://forge.example/pull/91", "lean/issue-423")],
   });
+  assertSeeded(r.seededSha, "(q)");
   assert(
-    r.threw instanceof PublishInfraError && /open PR already uses/.test(r.threw.message),
+    r.threw instanceof PublishInfraError && /refusing to rewrite/.test(r.threw.message),
     `(q) an open PR on the branch refuses the push (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(
@@ -216,8 +237,9 @@ function assert(cond: boolean, msg: string): void {
     originStale: true,
     openPrs: [unattributed],
   });
+  assertSeeded(r.seededSha, "(q3)");
   assert(
-    r.threw instanceof PublishInfraError && /open PR already uses/.test(r.threw.message),
+    r.threw instanceof PublishInfraError && /refusing to rewrite/.test(r.threw.message),
     `(q3) a row with no headRefName and state OPEN refuses the push (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(
@@ -242,8 +264,9 @@ function assert(cond: boolean, msg: string): void {
     originStale: true,
     openPrs: [fakePr(97, "https://forge.example/pull/97", "lean/issue-443 ")],
   });
+  assertSeeded(r.seededSha, "(q5)");
   assert(
-    r.threw instanceof PublishInfraError && /open PR already uses/.test(r.threw.message),
+    r.threw instanceof PublishInfraError && /refusing to rewrite/.test(r.threw.message),
     `(q5) a row with headRefName "lean/issue-443 " and state OPEN refuses the push (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(
@@ -284,17 +307,30 @@ function assert(cond: boolean, msg: string): void {
 // it would hand back a run whose branch is published, sending the next run to
 // look in the wrong place.
 {
+  // The push REALLY runs (origin starts on a stale sha, not at head), so the
+  // ref lands at head; the report it prints is then a fabricated rejection.
   const r = await runPublish({
     issue: 444,
     verify: { kind: "green" },
-    originAtHead: true,
-    pushPorcelain: "To origin\n ! [rejected]        abc -> lean/issue-444 (stale info)\nDone\n",
+    originStale: true,
+    execOver: (cmd, opts) => {
+      if (opts?.argv?.includes("push") !== true) return undefined;
+      return execp(cmd, { ...opts, env: gitTestEnv() }).then(() => ({
+        stdout: "To origin\n ! [rejected]        abc -> lean/issue-444 (stale info)\nDone\n",
+        stderr: "",
+      }));
+    },
   });
+  assertSeeded(r.seededSha, "(r3)");
   assert(
     r.threw === undefined && r.outcome?.kind === "ok",
     `(r3) a printed rejection over a ref origin holds is still ok (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(originHead(r.origin, "lean/issue-444") === r.head, "(r3) origin holds this run's head");
+  assert(
+    /^--force-with-lease=refs\/heads\/lean\/issue-444:[0-9a-f]{40}$/.test(r.leaseArg ?? ""),
+    `(r3) the push was leased against the stale sha (got ${JSON.stringify(r.leaseArg)})`,
+  );
   assert(r.forge.prCreateCalls.length === 1, "(r3) the PR was opened");
 }
 
@@ -311,6 +347,7 @@ function assert(cond: boolean, msg: string): void {
     verify: { kind: "green" },
     originStale: "descendants-reach",
   });
+  assertSeeded(r.seededSha, "(p3)");
   assert(
     r.outcome?.kind === "ok",
     `(p3) a stale branch whose tip already contains head is replaced (got ${r.threw?.name}: ${r.threw?.message})`,
@@ -352,8 +389,9 @@ function assert(cond: boolean, msg: string): void {
       openPrs: [fakePr(90 + i, `https://forge.example/pull/${90 + i}`, `lean/issue-${issue}`)],
       stateOver: state,
     });
+    assertSeeded(r.seededSha, `(q2) state ${JSON.stringify(state)}`);
     assert(
-      r.threw instanceof PublishInfraError && /open PR already uses/.test(r.threw.message),
+      r.threw instanceof PublishInfraError && /refusing to rewrite/.test(r.threw.message),
       `(q2) state ${JSON.stringify(state)} on a PR for the branch refuses the push (got ${r.threw?.name}: ${r.threw?.message})`,
     );
     assert(
@@ -370,6 +408,7 @@ function assert(cond: boolean, msg: string): void {
       openPrs: [fakePr(95 + i, `https://forge.example/pull/${95 + i}`, `lean/issue-${issue}`)],
       stateOver: state,
     });
+    assertSeeded(r.seededSha, `(q2) state ${state}`);
     assert(
       r.outcome?.kind === "ok",
       `(q2) state ${state} is settled, so the stale branch is replaced (got ${r.threw?.name}: ${r.threw?.message})`,
@@ -394,21 +433,26 @@ function assert(cond: boolean, msg: string): void {
     noPush: true,
     moveRemoteDuringPush: true,
   });
+  assertSeeded(r.seededSha, "(s)");
   assert(
-    r.threw instanceof PublishInfraError &&
-      /could not push|after the push, expected/.test(r.threw.message),
-    `(s) a ref that moved after the read is handed back (got ${r.threw?.name}: ${r.threw?.message})`,
+    r.threw instanceof PublishInfraError && /could not push/.test(r.threw.message),
+    `(s) a ref that moved after the read is handed back by the lease (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  const rewound = originHead(r.origin, "main");
+  assert(
+    /^[0-9a-f]{40}$/.test(rewound),
+    `(s) origin's main is a real sha to rewind to (got ${rewound})`,
   );
   assert(
-    originHead(r.origin, "lean/issue-426") === originHead(r.origin, "main"),
+    originHead(r.origin, "lean/issue-426") === rewound,
     "(s) the lease held: origin keeps the sha it was rewound to, not this head",
   );
   assert(r.forge.prCreateCalls.length === 0, "(s) no PR is claimed for a failed push");
   // The lease is the whole protection here, so pin the argument the step
   // rendered rather than trusting it built one: bound to the sha it read.
   assert(
-    /^--force-with-lease=refs\/heads\/lean\/issue-426:[0-9a-f]{40}$/.test(r.leaseArg ?? ""),
-    `(s) the push carried --force-with-lease=refs/heads/<b>:<40hex> (got ${JSON.stringify(r.leaseArg)})`,
+    r.leaseArg === `--force-with-lease=refs/heads/lean/issue-426:${r.seededSha}`,
+    `(s) the push is leased against the seeded sha (got ${JSON.stringify(r.leaseArg)})`,
   );
 }
 

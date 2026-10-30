@@ -97,13 +97,6 @@ export interface PublishOpts {
    */
   originStale?: OriginStale;
   /**
-   * Seed a stale commit of THIS repo on a branch that is NOT the run's own push
-   * target (the `lean/foreign-<issue>` name the open-PR cases load a row for).
-   * The forge's open-PR check is scoped by `sourceBranch`, so the stale shape and
-   * the row's branch can be planted apart from the branch this run pushes.
-   */
-  staleOnForeignBranch?: boolean;
-  /**
    * Seed origin's branch at the run's HEAD before the step runs, so the push
    * path is genuinely skipped. Each `runPublish` builds its own temp repo, so
    * the honest "origin already holds this head" case cannot be two runs of the
@@ -197,6 +190,8 @@ export interface PublishRun {
   gitEnvs: NodeJS.ProcessEnv[];
   /** The `--force-with-lease=` argument the step rendered on its push. */
   leaseArg?: string;
+  /** The sha origin's run branch held after a stale seed, before the step ran. */
+  seededSha?: string;
 }
 
 /** The step log a run carries when it reaches publish with a green gate. */
@@ -257,14 +252,6 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   git(repoRoot, "push", "-q", "origin", "main");
 
   const branch = o.branch ?? `lean/issue-${issue}`;
-  // The branch a STALE origin is planted on: the push target, except for the case
-  // that plants the stale shape on a foreign branch to keep it out of the way of
-  // its own assertions. Each `runPublish` builds its own origin, so a rerun of the
-  // same issue is a FRESH origin, never one that already holds the head.
-  const staleBranch =
-    o.originStale === undefined || o.staleOnForeignBranch !== true
-      ? branch
-      : `lean/foreign-${issue}`;
   const checkout = o.worktreeBranch ?? branch;
   const wt = specifyWorktreePath(repoRoot, issue);
 
@@ -285,17 +272,21 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   commitFile(wt, "backoff.ts", "export const cap = 3;\n", "feat: bound the backoff");
   const head = git(wt, "rev-parse", "HEAD");
 
-  if (o.originStale === "fast-forward") seedFastForwardOrigin({ wt, branch: staleBranch });
+  if (o.originStale === "fast-forward") seedFastForwardOrigin({ wt, branch });
   if (o.originStale === true || o.originStale === "descendants-reach")
     seedStaleOrigin({
       origin,
-      branch: staleBranch,
+      branch,
       baseMain,
       wt,
       issue,
       containsHead: o.originStale === "descendants-reach",
     });
-  else if (o.originStale === "stale-branch") seedOneCommitStaleOrigin({ wt, branch: staleBranch });
+  else if (o.originStale === "stale-branch") seedOneCommitStaleOrigin({ wt, branch });
+  // What origin holds once the stale shape is planted: the sha the lease must bind
+  // to. Read back from origin rather than returned by the seeders, because origin
+  // is the only thing the step's `ls-remote` will see.
+  const seededSha = o.originStale === undefined ? undefined : originHead(origin, branch);
   if (o.originForeign === true) seedForeignOrigin({ origin, branch });
   if (o.originAtHead === true) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
   // Setup pushes THIS run's head onto the run's branch only for a first run, the
@@ -314,7 +305,6 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     o.originForeign !== true &&
     o.originAtHead !== true;
   if (setupPushesHead) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
-
 
   if (o.dirty === true) writeFileSync(path.join(wt, "stray.txt"), "uncommitted\n");
   if (o.commitAfterVerify === true) {
@@ -399,7 +389,7 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   const spec = o.spec ?? defaultSpec();
   /** The env every git child ran with, so a case can assert on the push's. */
   const seenEnvs: NodeJS.ProcessEnv[] = [];
-  const seen: { leaseArg?: string; raceMovedTo?: string } = {};
+  const seen: { leaseArg?: string } = {};
   const deps: PublishDeps = {
     // The production seam's env decision is applied HERE rather than inside
     // `publishDeps()` — the fixture injects its own executor, so a push env the
@@ -409,15 +399,16 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     // lets the repo's `core.sshCommand` take part in the precedence. Omitting it
     // here would make the fixture observe a different env than production builds.
     exec: async (cmd, opts) => {
+      // The lease is recorded before any override, so a case that substitutes the
+      // push still observes the argument the step rendered.
+      if (cmd === "git" && opts?.argv?.includes("push") === true)
+        seen.leaseArg = opts?.argv?.find((a) => a.startsWith("--force-with-lease="));
       const override = o.execOver?.(cmd, opts);
       if (override !== undefined) return override;
-      if (cmd === "git" && opts?.argv?.includes("push") === true) {
-        // Record the lease the step rendered, and let a case substitute the
-        // report: origin still decides, so a printed rejection over a ref that
-        // did move is observable rather than taken on trust.
-        seen.leaseArg = opts?.argv?.find((a) => a.startsWith("--force-with-lease="));
-        if (o.pushPorcelain !== undefined) return { stdout: o.pushPorcelain, stderr: "" };
-      }
+      // Let a case substitute the report: origin still decides, so a printed
+      // rejection over a ref that did move is observable rather than taken on trust.
+      if (cmd === "git" && opts?.argv?.includes("push") === true && o.pushPorcelain !== undefined)
+        return { stdout: o.pushPorcelain, stderr: "" };
       const cwd = opts?.cwd ?? wt;
       const env = opts?.env ?? (cmd === "git" ? netGitEnv(gitTestEnv(), cwd) : gitTestEnv());
       seenEnvs.push(env);
@@ -430,7 +421,7 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   // Read at spread time, not built now: `shared` is constructed BEFORE the step
   // runs, so a field captured here would always be undefined.
   const shared = { repoRoot, wt, head, origin, forge, gitEnvs: seenEnvs };
-  const observed = () => ({ leaseArg: seen.leaseArg });
+  const observed = () => ({ leaseArg: seen.leaseArg, seededSha });
   try {
     return {
       outcome: await publishOutcome(ctx, deps),
