@@ -40,7 +40,7 @@ import type { NormalizedPullRequest } from "../forge-types.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
 import { testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { publishBody } from "./publish-body.ts";
+import { challengeBudgetFromLog, publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import type { PublishForge } from "./publish-deps.ts";
 import { parsePiSpec } from "./spec.ts";
@@ -410,6 +410,13 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       ...(v?.outcome?.commandNotRunnable === undefined
         ? {}
         : { commandNotRunnable: v.outcome.commandNotRunnable }),
+      // The optional adversary round that ran out of its own ceiling, read off
+      // the log rather than out of a closure, so a resumed run prints the same
+      // line a live one would. The reader's object IS the pair (`{limit, value}`)
+      // and is WRAPPED here, never spread: spreading it would hand `publishBody`
+      // two fields it never reads and drop the line without a sound. `undefined`
+      // under the key is the same absence to the renderer as no key at all.
+      challengeBudget: challengeBudgetFromLog(ctx.steps),
       draft,
       version: ctx.run.version,
       models: ctx.run.models,

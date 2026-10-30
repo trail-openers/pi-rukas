@@ -80,6 +80,44 @@ function minutesUsed(ms: number): number {
   return Math.max(1, Math.ceil(ms / 60_000));
 }
 
+/**
+ * The typed trio a budget outcome must carry before any caller states it.
+ *
+ * `limit` named, `value` and `used` numbers — or `undefined`, which is what a
+ * half-record reads as. Every reader of a recorded breach (the handback's cause,
+ * the publish body's challenge line) goes through this one check, so a record
+ * that one of them would print is one they all would.
+ */
+export function budgetTrio(oc: Outcome | undefined): BudgetFired | undefined {
+  if (oc?.kind !== "budget") return undefined;
+  const { limit, value, used } = oc;
+  if (limit === undefined || typeof value !== "number" || typeof used !== "number")
+    return undefined;
+  return { limit, value, used };
+}
+
+/**
+ * One budget line, the same words for all three levers.
+ *
+ * The turns/tokens breach traces itself from inside the progress hook — the only
+ * place that sees it live ("stopping the child") — and the minutes breach is
+ * traced by the reader in {@link armBudget}, which is where the inferred stop
+ * first becomes a verdict, after the child has already stopped ("the child
+ * stopped at its bound"). Before #1883-followed the minutes path printed nothing,
+ * so a wall-clock stop was indistinguishable in a child log from any other way a
+ * round ended. Callers must already be past their abort; the sink is not ours to
+ * trust, so the write is caught: a breach whose trace line throws still routes.
+ */
+function traceBreach(fired: BudgetFired, phrase: string): void {
+  try {
+    traceWarn(
+      `lean budget: ${fired.limit} ${String(fired.value)} exceeded (used ${String(fired.used)}); ${phrase}`,
+    );
+  } catch {
+    // A sink we cannot write to cannot be written to; nothing to say about it.
+  }
+}
+
 /** The arms a step hands its dispatch seam: what the child gets, and the reader. */
 export type BudgetArms = {
   opts: BudgetOpts;
@@ -113,11 +151,26 @@ export function armBudget(b: Budget | undefined): BudgetArms {
   // Which limit ended the child, frozen at the FIRST breach: a later tick from
   // the same child must not rewrite which one it was.
   let hit: BudgetFired | undefined;
-  const fired = (result: DispatchResult): BudgetFired | undefined =>
-    hit ??
-    (boundMs !== undefined && result.killCause === CHILD_BOUND_CAUSE
-      ? { limit: "minutes", value: minutes, used: minutesUsed(result.ms ?? 0) }
-      : undefined);
+  let minutesTraced = false;
+  const fired = (result: DispatchResult): BudgetFired | undefined => {
+    if (hit !== undefined) return hit;
+    if (boundMs === undefined || result.killCause !== CHILD_BOUND_CAUSE) return undefined;
+    // The inferred minutes breach — the one lever with no hook to trace it, so
+    // the reader says it out loud (the three steps all build their verdict from
+    // this reader, so one line here covers specify, build and challenge). The
+    // flag is the dedupe: one stop is one line, however often a step re-reads
+    // the same child.
+    const breach: BudgetFired = {
+      limit: "minutes",
+      value: minutes,
+      used: minutesUsed(result.ms ?? 0),
+    };
+    if (!minutesTraced) {
+      minutesTraced = true;
+      traceBreach(breach, "the child stopped at its bound");
+    }
+    return breach;
+  };
   // The minutes lever is enforced by `armChildBound`, which returns early under
   // `PI_ENSEMBLE_DISPATCH_CAPS=0` — so arming it there buys nothing, and a step
   // that reports "the 20-minute budget stopped it" would be describing a bound
@@ -182,9 +235,7 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     if (breach === undefined) return;
     hit = breach;
     controller.abort();
-    traceOnce(
-      `lean budget: ${breach.limit} ${String(breach.value)} exceeded (used ${String(breach.used)}); stopping the child`,
-    );
+    traceBreach(breach, "stopping the child");
   };
   return {
     opts: {

@@ -436,6 +436,9 @@ const NON_TERMINAL: readonly LeanState[] = [
   "decline",
 ];
 
+/** The states that REPORT how a run ended rather than do work on it. */
+export const REPORT_STATES: readonly LeanState[] = ["handback", "decline"];
+
 /**
  * Persist atomically. A failed write cleans up its tmp file and rethrows: the
  * caller keeps the previous good file and learns the save did not happen,

@@ -46,6 +46,7 @@ import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
+import { provisionWorktree } from "../worktree-provision.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { headSha } from "./build-git.ts";
@@ -63,6 +64,7 @@ import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
+import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,
@@ -245,7 +247,30 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
   });
   const read = readDispatched(dispatched);
-  if ("stop" in read) return budgetVerdict("challenge", read.stop);
+  if ("stop" in read) {
+    // A killed child leaves whatever it wrote behind, and nothing else resets the
+    // tree before `verify`, which refuses a dirty one. So the stop resets to the
+    // head this step found, through the pipeline's own reset and clean-tree proof.
+    // The reset's `clean -fdx` also takes the dependency links, so the tree is
+    // provisioned again after it, the same order `build` uses.
+    try {
+      await resetWorktreeToBase(deps.exec, wt, headBefore, branch);
+    } catch (err) {
+      if (err instanceof SpecifyResetError)
+        throw new ChallengeInfraError(
+          `could not reset the challenge worktree to ${headBefore} after the budget stop: ${err.message}`,
+        );
+      throw new ChallengeInfraError(`unexpected reset failure: ${String(err)}`);
+    }
+    try {
+      await provisionWorktree(deps.exec, repoRoot, wt);
+    } catch (err) {
+      throw new ChallengeInfraError(
+        `could not re-provision the challenge worktree after the budget stop: ${(err as Error).message}`,
+      );
+    }
+    return budgetVerdict("challenge", read.stop);
+  }
   const toolUses = read.result.toolUses ?? [];
 
   // 4-8. Validate, capture, reset to the HEAD, rewrite, prove red, commit.

@@ -22,7 +22,7 @@ a model's recollection of what happened.
 | `ready` | driver | Fetches the issue, parses its `pi-spec v1` block, judges readiness, resolves the mainline sha, loads `.pi/work.json` **at that sha**. Any failure is a `fail` outcome. |
 | `specify` | adversary (a `developer` child) | Writes the acceptance tests and submits them. Each submitted file is run against the base commit; a file that passes there is dropped. Freeze a contract with no red test and the step returns `no-red-test` and the run is refused. |
 | `build` | builder (a `developer` child) | Makes the frozen tests pass. The frozen paths are named individually and marked untouchable. At most `MAX_BUILD_ATTEMPTS` (`machine.ts`) rounds. |
-| `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once per run. New tests earn one more build round; none go straight to verify. |
+| `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once. New tests earn one more build round; none — or a round stopped by its own budget — go to verify. |
 | `verify` | driver | The run's own gate, no model in it: clean tree, frozen-test integrity (blobs still hash to their records), a compiler canary, every frozen test, then `verify.fast` / `verify.full`, then the spec's `command` criteria. `green` or `red`. |
 | `publish` | driver | Pushes the branch under a lease bound to a sha it just read from origin, and opens (or reuses) the PR. Refuses to publish a green it did not observe at the head it is pushing. |
 | `review`, `ci`, `land` | — | In the table, not in the build. Their handlers throw `work-lean stage <state> is not built yet`. |
@@ -146,19 +146,16 @@ pins the table against literals, so changing a number is a deliberate edit):
 | `review` (no handler yet) | 150 | 20M | 15 |
 | `ci` (no handler yet) | 0 | 0 | 30 |
 
-**When a budget fires.** `turns` and `tokens` are watched on the child's
-progress stream and **abort at once** at a turn boundary. `minutes` is not a
-kill at the bound: it arms the child bound (`spawn-child-bound.ts`), which
-sends a **wrap-up steer at the bound** and kills at the bound **plus the
-child-bound grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`, 10 min by default)**.
-A child that finishes inside the grace is not a
-breach. A breach is a **verdict**, not an
-infrastructure failure — the step returns `{kind: "budget"}` with `limit`,
-`value` and `used`, the table routes it to `handback`, and the run exits **10**.
-The handback comment names the ceiling that stopped the child (`build stopped:
-minutes budget 45 exceeded (used 47)`); `used` is rounded up from elapsed time,
-which overshoots by the grace. With `PI_ENSEMBLE_DISPATCH_CAPS=0` the wall clock
-is inert and the step says so rather than describing a bound that never fired.
+**When a budget fires.** `turns` and `tokens` abort at once at a turn boundary.
+`minutes` arms the child bound (`spawn-child-bound.ts`): a **wrap-up steer at the
+bound**, then a kill at **bound + grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`,
+10 min)**. A breach is a **verdict**, not infrastructure: the step returns
+`{kind: "budget"}` with `limit`, `value` and `used`; the table routes it, and
+**the step decides the route**. A `specify` or `build` breach ends the run
+(`handback`, **10**); a **`challenge`** breach **continues to `verify`** like a
+round that added no tests — optional strengthening, and a non-converged round says
+nothing about what `verify` still checks. `PI_ENSEMBLE_DISPATCH_CAPS=0` makes the
+wall clock inert, and the step says so.
 
 **Bounds on a frozen test.** A kept acceptance test must be new at the base
 commit, at most **120 lines** (`MAX_TEST_LINES`), at most **16 KiB**
@@ -222,8 +219,10 @@ criterion with the frozen test that answers for it and the verdict the gate
 recorded for it — `green`, `red`, `not run`, `passed (command; …)`, or
 `manual — needs a human`. It also carries the gate's reason verbatim (fenced),
 the base sha, the version stamp, and the `role = model` pairs the run dispatched
-with. A run whose head is not green, or whose spec has a `manual` criterion or an
-unrunnable `command` criterion, opens the PR as a **draft**.
+with, plus one line when the challenge round hit its own budget (`challenge
+stopped at its minutes budget (15); no extra tests were added`). A run whose head
+is not green, or whose spec has a `manual` criterion or an unrunnable `command`
+criterion, opens the PR as a **draft**.
 
 **A state file** at `.pi/lean-state/<issue>.json`, written atomically
 (tmp + rename). It is WAL-shaped: `steps` is the append-only log (one entry per
@@ -232,10 +231,12 @@ and `state`/`counters` are a cache that `resume.ts` re-derives rather than
 trusts. Read it when you want to know what a run actually decided.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
-budget breach, else the newest red `verify` reason, else the newest red `ci`,
-else the newest green verdict, else the last error; then the frozen acceptance
-tests (capped at 20 paths); then `Branch:` and `PR:` (or "no PR yet"). A comment
-that could not be posted is recorded as such, and does not change the verdict.
+budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the
+table carried past to `verify` is not why the run ended, so a later red owns the
+line — else the newest red `verify` reason, else the newest red `ci`, else the
+newest green verdict, else the last error; then the frozen tests (max 20),
+`Branch:` and `PR:` (or "no PR yet"). A comment that could not be posted is
+recorded; it never changes the verdict.
 
 ## Limits today
 

@@ -29,6 +29,7 @@ import path from "node:path";
 import { DEFAULT_BUDGETS, defaultConfig } from "../src/lean/config.ts";
 import type { WorkConfig } from "../src/lean/config.ts";
 import type { Budget } from "../src/lean/config.ts";
+import type { RunCounters } from "../src/lean/state.ts";
 import { armBudget, budgetFor, budgetStop, readDispatched } from "../src/lean/step-budget.ts";
 import type { BudgetStop } from "../src/lean/step-budget.ts";
 import type { RunningState } from "../src/progress.ts";
@@ -187,6 +188,27 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(noMs?.used === 1, `a kill with no ms never reports 0 (got ${noMs?.used})`);
 }
 
+// ── (3b) one minutes stop is one trace line, however often it is read ──────
+{
+  const b = armBudget({ turns: 0, tokens: 0, minutes: 20 });
+  const originalWrite = process.stderr.write;
+  const lines: string[] = [];
+  try {
+    process.stderr.write = ((chunk: unknown): boolean => {
+      if (typeof chunk === "string" && chunk.includes("lean budget: minutes")) lines.push(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    const killed = resultWith({ killCause: "child-bound", ok: false, ms: 20 * 60_000 + 9_000 });
+    const reads = [b.fired(killed), b.fired(killed)];
+    assert(
+      reads.every((f) => f?.limit === "minutes") && lines.length === 1,
+      `two reads of one minutes stop print exactly one trace line (got ${lines.length})`,
+    );
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+}
+
 // ── (4) no breach: neither a clean result nor another cap reads as the budget
 {
   const b = armBudget({ turns: 10, tokens: 1000, minutes: 10 });
@@ -335,7 +357,7 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(budgetFor(merged, "verify") === undefined, "a state with no budget entry has none");
 }
 
-// ── (10) the machine routes a breach to handback, like an exhausted build ──
+// ── (10) the machine routes a breach: specify/build hand back, challenge does not ──
 {
   const { hasTransition, next } = await import("../src/lean/machine.ts");
   const { INITIAL_COUNTERS } = await import("../src/lean/state.ts");
@@ -350,7 +372,9 @@ function progress(over: Partial<RunningState>): RunningState {
     counters: { ...INITIAL_COUNTERS },
     steps: [],
   });
-  for (const state of ["specify", "build", "challenge"]) {
+  // A ceiling hit BEFORE the contract exists, or with the builder's work still
+  // in its tree, ends the run: there is nothing verified to hand on.
+  for (const state of ["specify", "build"]) {
     assert(hasTransition(state as never, "budget"), `${state} + budget is in the table`);
     const moved = next(run(state) as never, { kind: "budget" } as never);
     assert(
@@ -358,40 +382,28 @@ function progress(over: Partial<RunningState>): RunningState {
       `${state} + budget routes to handback (got ${(moved as { state: string }).state})`,
     );
   }
+  // A ceiling hit in the OPTIONAL challenge round does not: the contract is
+  // already frozen and `verify` still runs every test of it (#1883).
+  assert(hasTransition("challenge" as never, "budget"), "challenge + budget is in the table");
+  const challenged = next(run("challenge") as never, { kind: "budget" } as never) as {
+    state: string;
+    counters: RunCounters;
+  };
+  assert(
+    challenged.state === "verify",
+    `challenge + budget routes to verify, not handback (got ${challenged.state})`,
+  );
+  assert(
+    challenged.counters.challengeDone === true,
+    `and the round is spent, exactly as a challenge that added no tests (got ${JSON.stringify(challenged.counters)})`,
+  );
   const { exitCodeFor } = await import("../src/lean/machine.ts");
   assert(exitCodeFor("handed-back" as never) === 10, "a budget handback exits 10");
 }
 
-// ── (11) the handback comment says the budget, not an older red ────────────
-{
-  const { neededFromLog } = await import("../src/lean/handback.ts");
-  const steps = [
-    {
-      key: "1:verify:0",
-      state: "verify" as const,
-      startedAt: 1,
-      outcome: { kind: "red", reason: "AC1 exited 1 — retry gave up" },
-    },
-    {
-      key: "1:build:0",
-      state: "build" as const,
-      startedAt: 2,
-      outcome: {
-        kind: "budget",
-        limit: "turns" as const,
-        value: 3,
-        used: 999,
-        reason: "build stopped: turns budget 3 exceeded (used 999)",
-      },
-    },
-  ];
-  const needed = neededFromLog(steps);
-  assert(needed.includes("turns budget 3"), `the comment names the budget (got ${needed})`);
-  assert(
-    !needed.includes("retry gave up"),
-    `the older red does not drown the budget (got ${needed})`,
-  );
-}
+// The handback comment's choice of cause — a breach newer than every verdict
+// versus one the table carried past — is `handback.ts`'s own claim and lives in
+// `test-lean-handback-cause.ts`.
 
 // ── (12) only a stop this module made is a budget verdict ─────────────────
 {
