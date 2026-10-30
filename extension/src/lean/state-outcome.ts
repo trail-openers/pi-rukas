@@ -178,8 +178,8 @@ function commandCriteriaProblem(value: unknown): string | undefined {
   return undefined;
 }
 
-/** The three levers one row's usage carries, in the order the validator reads them. */
-const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
+/** The token-count fields of a usage row; `cost` is checked as a measure, not a count. */
+const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
 
 /** How many dispatch rows one step may record. */
 const DISPATCHES_MAX_ROWS = 16;
@@ -216,10 +216,14 @@ function isUsageRow(value: unknown): boolean {
   // A count of tokens is never a fraction and never infinite: `1e400` arrives
   // from JSON as `Infinity`, and an infinite total printed to a host is a
   // record that reads as evidence and compares against nothing.
-  if (!USAGE_COUNTERS.every((k) => isCount(u[k]))) return false;
-  // `turns` is a count of child turns the budget reader already treats as an
-  // integer, so the row asks the same question rather than a looser one.
-  return isCount(u.turns);
+  if (!["input", "output", "cacheRead", "cacheWrite", "turns"].every((k) => isCount(u[k])))
+    return false;
+  // `cost` is the one field that is NOT an integer count: `addUsage` in
+  // `pi-usage.ts` accumulates a currency total, so a real report carries
+  // fractions (0.00000625 for one small child) and refusing them would refuse
+  // every honest row. It is still a finite non-negative number — a negative
+  // cost would SUBTRACT from a host's total and an infinite one cannot print.
+  return isMeasure(u.cost);
 }
 
 /**
@@ -263,7 +267,7 @@ function validatedDispatches(value: unknown): DispatchUsageRow[] {
     // Each count is RE-DERIVED from the check rather than cast: `isUsageRow`
     // already proved all six are non-negative safe integers, and reading them
     // back through `unknown` keeps the rebuilt row a product of the validation.
-    const count = (k: (typeof USAGE_COUNTERS)[number] | "turns"): number => u[k] as number;
+    const count = (k: (typeof USAGE_COUNTERS)[number] | "cost"): number => u[k] as number;
     out.push({
       role: row.role,
       ms: row.ms as number,

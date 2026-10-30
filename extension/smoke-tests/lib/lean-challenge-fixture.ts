@@ -378,6 +378,9 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
       toolUses: declared,
       ms: bound === undefined ? 1 : bound * 60_000,
       exitCode: opts.dispatchOk === false ? 1 : 0,
+      // Reported whatever the child's state, including a killed one: a child the
+      // budget stopped still spent tokens, and the step's row must carry them.
+      usage: { input: 7, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.25, turns: 9 },
       ...(bound === undefined ? {} : { killCause: "child-bound" as const }),
     };
     return result;

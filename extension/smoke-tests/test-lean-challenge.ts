@@ -266,6 +266,14 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     TEN.every((rel) => !existsSync(path.join(r.worktree, rel))),
     "(g) every refused green file is deleted from the tree",
   );
+  // #1920 slice A — a round that found nothing still paid for an adversary, and
+  // its cost belongs to the run: a `none` with no row would make the most
+  // expensive verdict this step returns read as free.
+  assert(
+    (r.outcome?.dispatches ?? []).length === 1 &&
+      r.outcome?.dispatches?.[0]?.role === "developer",
+    `(g) the none verdict records the adversary it dispatched (${JSON.stringify(r.outcome?.dispatches)})`,
+  );
 }
 
 // ------------------------- (h) the frozen map at HEAD matches after the commit

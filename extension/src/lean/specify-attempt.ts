@@ -62,6 +62,16 @@ export interface SpecifyAttemptResult {
   outcome: Outcome;
   /** The attributed drop labels the boundary made in this attempt. */
   refused: string[];
+  /**
+   * What this attempt's dispatch cost, reported SEPARATELY from the outcome.
+   *
+   * The caller owns the retry, and the retry owns the step's single outcome —
+   * so if the rows lived only on the outcome, a second attempt would overwrite
+   * the first's and the run would report one child where it paid for two. The
+   * caller folds these; an attempt's own outcome still carries its rows, so a
+   * reader of the log alone sees the same truth as the fold.
+   */
+  dispatched: DispatchUsageRow[];
 }
 
 /**
@@ -167,6 +177,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     return {
       outcome: budgetVerdictWithRows("specify", dispatchedRead.stop, rows),
       refused: [],
+      dispatched: rows,
     };
   const toolUses = dispatchedRead.result.toolUses ?? [];
   const refused: string[] = [];
@@ -229,6 +240,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
         dispatches: rows,
       },
       refused,
+      dispatched: rows,
     };
   if (pipeline.kind === "uncovered")
     return {
@@ -239,6 +251,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
         dispatches: rows,
       },
       refused,
+      dispatched: rows,
     };
   // No kept candidate at all. Every criterion is uncovered, which is the same
   // refusal this step returned before the split for the same cause — and, as
@@ -253,5 +266,6 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       dispatches: rows,
     },
     refused,
+    dispatched: rows,
   };
 }

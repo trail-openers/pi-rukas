@@ -32,11 +32,13 @@ import { chmodSync, linkSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
+import { BuildInfraError } from "../../src/lean/build-errors.ts";
 import type { BuildDeps } from "../../src/lean/build.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
+import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
@@ -275,6 +277,12 @@ export function childCommit(wt: string, message: string): void {
 export interface RunResult {
   outcome?: Outcome;
   threw?: Error;
+  /**
+   * The cost rows the infra error carried, when the step paid for a child and
+   * died. Read off the `BuildInfraError` itself so a case asserts the rows
+   * survived the throw rather than re-deriving them from a message.
+   */
+  deadDispatches?: DispatchUsageRow[];
   dispatched: number;
   prompts: string[];
   specs: DispatchSpec[];
@@ -304,6 +312,8 @@ export interface RunOpts {
   childOwnsBranch?: boolean;
   /** A config load that refuses (case o); the step must treat it as infrastructure. */
   loadConfigError?: string;
+  /** A child whose dispatch did not succeed — the infra case, as in `challenge`. */
+  dispatchOk?: boolean;
   /**
    * Drive the fake child's progress feed at the moment it is still working.
    * A budget case calls `onProgress` the way `spawn.ts` does at every
@@ -349,11 +359,15 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     opts.child?.(spec.cwd as string);
     const result: DispatchResult = {
       role: spec.role,
-      ok: true,
+      ok: opts.dispatchOk !== false,
       text: "implemented",
       toolUses: [],
       ms: 1,
-      exitCode: 0,
+      exitCode: opts.dispatchOk === false ? 1 : 0,
+      // A child that reports no usage is a child that cost nothing, and the
+      // step's dispatch row would record zeros — so the fixture reports what a
+      // real child reports, and a case can assert the row carried it.
+      usage: { input: 11, output: 2, cacheRead: 3, cacheWrite: 1, cost: 0.5, turns: 4 },
     };
     return result;
   };
@@ -383,6 +397,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   } catch (err) {
     return {
       threw: err as Error,
+      deadDispatches: err instanceof BuildInfraError ? err.dispatches : undefined,
       dispatched,
       prompts,
       specs,

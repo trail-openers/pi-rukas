@@ -36,6 +36,7 @@ import { type CaptureResult, captureTestBytes } from "../../src/lean/specify-cap
 import { parsePorcelainZ } from "../../src/lean/specify-tree.ts";
 import { type SpecifyDeps, SpecifyInfraError } from "../../src/lean/specify.ts";
 import type { Outcome } from "../../src/lean/state.ts";
+import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -144,7 +145,17 @@ function ctxFor(repoRoot: string, baseSha: string, issue: number): HandlerCtx {
 }
 
 function okResult(toolUses: unknown[]): DispatchResult {
-  return { role: "developer", ok: true, text: "done", toolUses, ms: 1, exitCode: 0 };
+  return {
+    role: "developer",
+    ok: true,
+    text: "done",
+    toolUses,
+    ms: 1,
+    exitCode: 0,
+    // Every fake child reports usage, so a step's dispatch row is judged against
+    // the numbers a real child gives rather than against nothing.
+    usage: { input: 5, output: 6, cacheRead: 1, cacheWrite: 2, cost: 0.125, turns: 3 },
+  };
 }
 
 export function submit(criterionId: string, testFiles: string[]): unknown {
@@ -163,6 +174,8 @@ export async function worktreePaths(wt: string): Promise<string[]> {
 export interface RunResult {
   outcome?: Outcome;
   threw?: Error;
+  /** The rows the infra error carried: a dead child's cost, kept on the throw. */
+  deadDispatches?: DispatchUsageRow[];
   sawBaseHealthy: boolean;
   dispatched: number;
   worktree: string;
@@ -273,7 +286,13 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     const outcome = await specify.specifyOutcome(ctxFor(opts.repoRoot, opts.baseSha, issue), deps);
     return { outcome, sawBaseHealthy, dispatched, worktree };
   } catch (err) {
-    return { threw: err as Error, sawBaseHealthy, dispatched, worktree };
+    return {
+      threw: err as Error,
+      deadDispatches: err instanceof SpecifyInfraError ? err.dispatches : undefined,
+      sawBaseHealthy,
+      dispatched,
+      worktree,
+    };
   }
 }
 

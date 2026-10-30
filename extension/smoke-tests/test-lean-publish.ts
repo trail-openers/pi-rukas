@@ -113,6 +113,12 @@ function unfenced(ls: string[], heading: string): boolean {
     typeof r.outcome?.prUrl === "string" && r.outcome.prUrl.startsWith("https://"),
     `(a) the outcome records the PR url (${r.outcome?.prUrl})`,
   );
+  // #1920 A — the recorded `draft` is the state the PR is actually in, which for
+  // a run this step opened is exactly what it passed to `prCreate`.
+  assert(
+    r.outcome?.draft === false,
+    `(a) the outcome records the draft state the forge was told (got ${String(r.outcome?.draft)})`,
+  );
   assert(
     (r.outcome?.reason ?? "").includes("published PR") &&
       (r.outcome?.reason ?? "").includes(r.head.slice(0, 12)),
@@ -135,6 +141,10 @@ function unfenced(ls: string[], heading: string): boolean {
   };
   const r = await runPublish({ issue: 402, verify: { kind: "green" }, spec });
   assert(r.forge.prCreateCalls[0]?.draft === true, "(b) a manual criterion opens the PR as draft");
+  assert(
+    r.outcome?.draft === true,
+    `(b) the outcome records the draft the forge was passed (got ${String(r.outcome?.draft)})`,
+  );
   assert(r.body.includes("manual — needs a human"), "(b) the manual row says a human is needed");
   assert(
     originHead(r.origin, "lean/issue-402") === r.head,
@@ -150,6 +160,10 @@ function unfenced(ls: string[], heading: string): boolean {
     `(c) a run with no verdict still publishes (got ${r.threw?.message})`,
   );
   assert(r.forge.prCreateCalls[0]?.draft === true, "(c) the PR is a draft");
+  assert(
+    r.outcome?.draft === true,
+    `(c) the outcome records it as a draft (got ${String(r.outcome?.draft)})`,
+  );
   assert(r.body.includes("not verified (draft)"), "(c) the body says the head is not verified");
   assert(
     r.body.includes("not run"),
@@ -168,6 +182,13 @@ function unfenced(ls: string[], heading: string): boolean {
   assert(
     r.outcome?.prUrl === "https://forge.example/pull/9",
     "(d) the existing PR's url is recorded",
+  );
+  // A reused PR reports its own state, and the record keeps THAT rather than
+  // what this run would have wanted: `draft: true` over a ready PR is the lie
+  // the step's read-back exists to prevent, and the host reads this field.
+  assert(
+    r.outcome?.draft === false,
+    `(d) a reused PR ready at the forge is recorded ready (got ${String(r.outcome?.draft)})`,
   );
   assert(r.forge.prListCalls === 1, "(d) the forge was asked before it was told");
 }
@@ -352,6 +373,10 @@ for (const [issue, branch] of [
   assert(
     originHead(r.origin, "lean/issue-415") === r.head,
     "(m) the work is pushed, but only behind a draft",
+  );
+  assert(
+    r.outcome?.draft === true,
+    `(m) the outcome records the PR as a draft after the re-draft (got ${String(r.outcome?.draft)})`,
   );
 }
 

@@ -329,9 +329,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // refusal that dropped nothing is final wherever it lands. The last attempt's
   // outcome is the step's result whatever it is.
   let attempt = await runSpecifyAttempt(attemptArgs);
-  // The first attempt's rows, kept even when a retry replaces the outcome: the
-  // child whose tests got rejected still cost what it cost.
-  const firstRows = attempt.outcome.dispatches;
+  // What each attempt's dispatch cost, collected as they happen: the step's
+  // outcome is ONE record, so the rows are kept outside it rather than read back
+  // from whichever outcome survived.
+  const allRows: DispatchUsageRow[][] = [attempt.dispatched];
   let attempts = 1;
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
@@ -348,14 +349,20 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
         `lean specify #${String(issue)}: provisioning before the retry: ${prepared.problem}`,
       );
     attempt = await runSpecifyAttempt({ ...attemptArgs, refusal: attempt.refused });
+    allRows.push(attempt.dispatched);
     attempts += 1;
   }
   const final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
-  // A budget verdict's own rows already carry every dispatch that ran before it
-  // stopped (the step ran at most one child per attempt, and the retry path only
-  // runs for `no-red-test`), so only the non-budget forms need the merge.
-  const dispatches =
-    final.kind === "budget" ? undefined : mergedRows(firstRows, attempt.outcome.dispatches);
+  // Every child the step paid for, in order: the rows the attempts reported for
+  // themselves rather than the ones their outcomes carry, so a retry's outcome
+  // cannot overwrite the first child's cost. A budget verdict keeps the rows its
+  // own attempt recorded (a stop is always the LAST dispatch), and the merge of
+  // both attempts' rows is what a non-budget outcome gets.
+  // A budget verdict ALREADY carries its own attempt's rows (`build` and
+  // `challenge` keep theirs the same way); the assignment above is the one path
+  // that overwrites rather than supplements, so it is also the one that must not
+  // run — except that it is the only way a multi-attempt stop keeps EVERY child.
+  const dispatches = mergedRows(allRows);
   return dispatches === undefined ? final : { ...final, dispatches };
 }
 
@@ -369,10 +376,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
  * attempt dispatched, so a step that paid for nothing records no key at all
  * rather than an empty one the fold would read as "zero children".
  */
-function mergedRows(
-  first: DispatchUsageRow[] | undefined,
-  last: DispatchUsageRow[] | undefined,
-): DispatchUsageRow[] | undefined {
-  const rows = [...(first ?? []), ...(last ?? [])];
+function mergedRows(all: DispatchUsageRow[][]): DispatchUsageRow[] | undefined {
+  const rows = all.flat();
   return rows.length === 0 ? undefined : rows;
 }
