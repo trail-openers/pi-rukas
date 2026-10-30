@@ -24,6 +24,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
 import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 
 export const SCHEMA_VERSION = 1;
 
@@ -177,6 +178,22 @@ export interface Outcome {
    * than something a later reader guesses out of a reason line.
    */
   prUrl?: string;
+  /**
+   * `publish` only: whether the PR this step handed the forge was a draft. The
+   * run exits 10 whatever the answer, so a host cannot tell "green and waiting
+   * for a merge" apart from "draft behind unverified bytes" from the exit code
+   * or the reason prose — this field is the typed answer. Recorded from the
+   * value actually passed to `prCreate`/`prDraft`, not recomputed at read time.
+   */
+  draft?: boolean;
+  /**
+   * `specify`, `build` and `challenge` only: one row per dispatch the step
+   * paid for, including the ones that died or were stopped by their budget.
+   * #1920 slice A groundwork for the lean result's per-role usage: a row is
+   * written for every child so the totals a host reads cannot quietly omit the
+   * expensive failures.
+   */
+  dispatches?: DispatchUsageRow[];
   /**
    * `budget` only (#1883): ceiling crossed, its value, what the child used. Data
    * rather than reason prose, so "out of turns" reads apart from "out of minutes".

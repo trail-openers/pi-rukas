@@ -440,6 +440,13 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   return {
     kind: "ok",
     prUrl,
+    // The state the PR is ACTUALLY in, as this step read it: `draft` is the
+    // value it passed to `prCreate`, and for a reused PR `openPr` answered
+    // "ready" without asking, so the recorded value is `false` even when this
+    // run asked for a draft and the forge left the PR mergeable. That is the
+    // fact the host needs — a recorded `true` over a ready PR is the lie the
+    // step's read-back exists to prevent.
+    draft: pr.isDraft ?? draft,
     reason: `${wrote ? "published" : "already on origin, published"} ${draft ? "draft " : ""}PR ${prUrl} at ${head.slice(0, 12)}`,
   };
 }

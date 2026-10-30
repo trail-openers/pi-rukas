@@ -14,9 +14,11 @@
  * does not exist.
  */
 
+import type { DispatchUsage } from "../types.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import type { LeanState, Outcome } from "./state.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 
 /** A sha256 in the hex form the `specify` step freezes into its outcome. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -82,6 +84,13 @@ export function validPrUrl(url: unknown): string | undefined {
 const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
 
 /**
+ * Which state is allowed to record which piece of evidence.
+ *
+ * `draft` is the publish step's answer to "what did I hand the forge", so any
+ * other step carrying it is a readiness claim the run never made; `dispatches`
+ * is the per-child cost of the three dispatching steps and belongs to no other.
+ */
+/**
  * Which state is allowed to record which evidence-bearing field. One table, and
  * one `includes` reads it: an owner is a state or a SET of states, which is how
  * the budget verdict's three fields are expressed — `limit`/`value`/`used`
@@ -98,6 +107,8 @@ const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
   prUrl: "publish",
+  draft: "publish",
+  dispatches: BUDGET_STATES,
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
@@ -165,6 +176,120 @@ function commandCriteriaProblem(value: unknown): string | undefined {
       return `outcome commandCriteria[${JSON.stringify(id)}] must be "${COMMAND_CRITERION_KIND}"`;
   }
   return undefined;
+}
+
+/** The three levers one row's usage carries, in the order the validator reads them. */
+const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
+
+/** How many dispatch rows one step may record. */
+const DISPATCHES_MAX_ROWS = 16;
+
+/** Is this a duration a child can honestly report? Finite and never negative. */
+function isMeasure(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * The per-dispatch cost rows a step may attach to ANY verdict it returns.
+ *
+ * `dispatches` is owned by the three dispatching states, so a `budget` verdict
+ * carries rows legally — and the trio `limit`/`value`/`used` belongs to a
+ * `budget` verdict ALONE, because `handback` renders those three into the
+ * operator's cause line. Without this cross-check, adding `dispatches` would
+ * have widened the budget-trio guard: an `ok` step could report a ceiling it
+ * never crossed just by also reporting what its children cost. Same rule as the
+ * ownership table, read against `kind` rather than `state`.
+ */
+function dispatchesKindProblem(oc: Record<string, unknown>): string | undefined {
+  if (oc.dispatches === undefined || oc.kind === "budget") return undefined;
+  for (const key of ["limit", "value", "used"] as const) {
+    if (oc[key] !== undefined)
+      return `outcome ${key} is only recorded by a budget verdict, which an outcome carrying dispatches is not`;
+  }
+  return undefined;
+}
+
+/** Is this value a usage row of the shape `DispatchUsage` describes? */
+function isUsageRow(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const u = value as Record<string, unknown>;
+  // A count of tokens is never a fraction and never infinite: `1e400` arrives
+  // from JSON as `Infinity`, and an infinite total printed to a host is a
+  // record that reads as evidence and compares against nothing.
+  if (!USAGE_COUNTERS.every((k) => isCount(u[k]))) return false;
+  // `turns` is a count of child turns the budget reader already treats as an
+  // integer, so the row asks the same question rather than a looser one.
+  return isCount(u.turns);
+}
+
+/**
+ * Why a `dispatches` array is not a cost record this run may report, or undefined.
+ *
+ * Each row is one child the step paid for, and the headless result sums these
+ * into `usage.byRole`. A row with no role cannot be attributed to a role, a
+ * negative cost would subtract from the total, and a row whose `ok` is not a
+ * boolean leaves the reader unable to tell a stopped child from a finished one
+ * — which is the distinction the whole per-role comparison between engines rests on.
+ */
+function dispatchesProblem(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return "outcome dispatches must be an array";
+  if (value.length > DISPATCHES_MAX_ROWS)
+    return `outcome dispatches must hold at most ${DISPATCHES_MAX_ROWS} rows`;
+  for (const [i, raw] of value.entries()) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return `outcome dispatches[${String(i)}] must be an object`;
+    const row = raw as Record<string, unknown>;
+    if (typeof row.role !== "string" || row.role === "")
+      return `outcome dispatches[${String(i)}].role must be a non-empty string`;
+    if (typeof row.ok !== "boolean") return `outcome dispatches[${String(i)}].ok must be a boolean`;
+    if (!isMeasure(row.ms))
+      return `outcome dispatches[${String(i)}].ms must be a finite number >= 0`;
+    if (!isUsageRow(row.usage))
+      return `outcome dispatches[${String(i)}].usage must carry non-negative integer input, output, cacheRead, cacheWrite, cost and turns`;
+  }
+  return undefined;
+}
+
+/** The `dispatches` rows, rebuilt from the ones this module actually checked. */
+function validatedDispatches(value: unknown): DispatchUsageRow[] {
+  const out: DispatchUsageRow[] = [];
+  if (!Array.isArray(value)) return out;
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const row = raw as Record<string, unknown>;
+    if (typeof row.role !== "string" || row.role === "") continue;
+    if (typeof row.ok !== "boolean" || !isMeasure(row.ms) || !isUsageRow(row.usage)) continue;
+    const u = row.usage as Record<string, unknown>;
+    // Each count is RE-DERIVED from the check rather than cast: `isUsageRow`
+    // already proved all six are non-negative safe integers, and reading them
+    // back through `unknown` keeps the rebuilt row a product of the validation.
+    const count = (k: (typeof USAGE_COUNTERS)[number] | "turns"): number => u[k] as number;
+    out.push({
+      role: row.role,
+      ms: row.ms as number,
+      ok: row.ok as boolean,
+      usage: {
+        input: count("input"),
+        output: count("output"),
+        cacheRead: count("cacheRead"),
+        cacheWrite: count("cacheWrite"),
+        cost: count("cost"),
+        turns: count("turns"),
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * The rows of a step's dispatches, attached only when the step paid for one.
+ *
+ * A step that never dispatched records nothing: `[]` would put a key on the
+ * durable record that says "zero children" where the truth is "this step is not
+ * one that dispatches", and the fold cannot tell the two apart.
+ */
+function rowsField(rows: DispatchUsageRow[]): { dispatches?: DispatchUsageRow[] } {
+  return rows.length === 0 ? {} : { dispatches: rows };
 }
 
 /**
@@ -275,6 +400,15 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
   // length bound keeps a blob a handler stuffed in here out of the record.
+  if (oc.dispatches !== undefined) {
+    const kindProblem = dispatchesKindProblem(oc);
+    if (kindProblem !== undefined) return kindProblem;
+    const problem = dispatchesProblem(oc.dispatches);
+    if (problem !== undefined) return problem;
+  }
+  // `prUrl` is the address `handback` prints, so it is refused when it is not
+  // https url text rather than carried into a comment as a fake link; the
+  // length bound keeps a blob a handler stuffed in here out of the record.
   if (oc.prUrl !== undefined) {
     if (typeof oc.prUrl !== "string" || !PR_URL.test(oc.prUrl))
       return "outcome prUrl must be an https URL";
@@ -344,6 +478,8 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
+    ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),
+    ...rowsField(validatedDispatches(oc.dispatches)),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),

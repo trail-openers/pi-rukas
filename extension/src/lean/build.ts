@@ -45,7 +45,7 @@ import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchSpec } from "../types.ts";
+import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
@@ -66,9 +66,11 @@ import type { Outcome, Step } from "./state.ts";
 import {
   type BudgetArms,
   type BudgetOpts,
+  type BudgetStop,
+  type DispatchUsageRow,
   armBudget,
   budgetFor,
-  budgetVerdict,
+  budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
 
@@ -204,19 +206,32 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const reentry = reentryFromLog(ctx.steps);
   const budget = armBudget(budgetFor(config, "build"));
   if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
-  const built = await dispatchBuilder(deps.dispatch, {
-    issue,
-    spec,
-    frozen,
-    wt,
-    repoRoot,
-    attempt,
-    testRunner: config.verify.test,
-    budget,
-    ...(reentry === undefined ? {} : { reentry }),
-  });
-  const read = readDispatched(built);
-  if ("stop" in read) return budgetVerdict("build", read.stop);
+  // The dispatch's cost row is kept whatever the child did. A child that died
+  // throws, and the engine records no outcome for a throw — so the rows ride on
+  // the error and this step's own catch puts them back on an outcome, or the
+  // tokens a failed round spent never reach the run's total (#1920 A).
+  let built: [DispatchResult | BudgetStop, DispatchUsageRow];
+  try {
+    built = await dispatchBuilder(deps.dispatch, {
+      issue,
+      spec,
+      frozen,
+      wt,
+      repoRoot,
+      attempt,
+      testRunner: config.verify.test,
+      budget,
+      ...(reentry === undefined ? {} : { reentry }),
+    });
+  } catch (err) {
+    if (err instanceof BuildInfraError)
+      throw new BuildInfraError(err.message, err.dispatches ?? []);
+    throw err;
+  }
+  const [dispatched, row] = built;
+  const rows = [row];
+  const read = readDispatched(dispatched);
+  if ("stop" in read) return budgetVerdictWithRows("build", read.stop, rows);
 
   // 5 + 6. Capture, reset, rewrite, commit — or say there was nothing to commit.
   const report = await normaliseBuild({
@@ -231,7 +246,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     budget: new CaptureBudget(deps.captureCeiling),
   });
   if (report.files.length === 0)
-    return { kind: "exhausted", reason: "the developer produced no change" };
+    return { kind: "exhausted", reason: "the developer produced no change", dispatches: rows };
   const notes = [
     `${report.files.length} file(s) changed`,
     report.restored.length > 0 ? `restored: ${report.restored.join(", ")}` : "",
@@ -241,7 +256,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       : "",
     report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
   ].filter((s) => s !== "");
-  return { kind: "ok", reason: notes.join("; ") };
+  return { kind: "ok", reason: notes.join("; "), dispatches: rows };
 }
 
 /** The build step's dependencies: the outside world, injected. */

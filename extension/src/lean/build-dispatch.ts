@@ -15,7 +15,13 @@ import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
 import type { PiSpec } from "./spec.ts";
-import { type BudgetArms, type BudgetStop, budgetStop } from "./step-budget.ts";
+import {
+  type BudgetArms,
+  type BudgetStop,
+  type DispatchUsageRow,
+  budgetStop,
+  dispatchUsageRow,
+} from "./step-budget.ts";
 
 /** The prompt's inputs, gathered by `build.ts` from the step log and the forge. */
 export interface BuildDispatchOpts {
@@ -36,11 +42,17 @@ export interface BuildDispatchOpts {
 /**
  * Dispatch one developer. A budget breach comes back as {@link BudgetStop}, not a
  * throw; any other dead child is still infrastructure.
+ *
+ * The second element of the pair is the row this dispatch cost, and it is
+ * returned on EVERY path that observed a child — the ok path, the budget stop,
+ * and the throw included. A child that died mid-stream spent its tokens before
+ * anybody knew, and the caller has no way to build the row after a throw, so a
+ * row dropped here is a cost the run's total silently forgets.
  */
 export async function dispatchBuilder(
   dispatch: BuildDispatch,
   opts: BuildDispatchOpts,
-): Promise<DispatchResult | BudgetStop> {
+): Promise<[DispatchResult | BudgetStop, DispatchUsageRow]> {
   const prompt = buildPrompt({
     issue: opts.issue,
     spec: opts.spec,
@@ -64,16 +76,20 @@ export async function dispatchBuilder(
       ...opts.budget.opts,
     },
   );
+  // The row is built from what the child REPORTED, before either branch below
+  // decides what the child MEANT — so a budget stop and an infra throw carry it
+  // too.
+  const row = dispatchUsageRow(result);
   // Before the throw below: the step's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return budgetStop(fired);
+  if (fired !== undefined) return [budgetStop(fired), row];
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
       result.errorStop?.message ??
       result.errorStop?.reason ??
       `exit ${String(result.exitCode)}`;
-    throw new BuildInfraError(`build dispatch failed: ${String(why)}`);
+    throw new BuildInfraError(`build dispatch failed: ${String(why)}`, [row]);
   }
-  return result;
+  return [result, row];
 }

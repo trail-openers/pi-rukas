@@ -78,7 +78,7 @@ import {
   worktreeExists,
 } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
-import type { BudgetOpts } from "./step-budget.ts";
+import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
 export type SpecifyDispatch = (
@@ -329,6 +329,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // refusal that dropped nothing is final wherever it lands. The last attempt's
   // outcome is the step's result whatever it is.
   let attempt = await runSpecifyAttempt(attemptArgs);
+  // The first attempt's rows, kept even when a retry replaces the outcome: the
+  // child whose tests got rejected still cost what it cost.
+  const firstRows = attempt.outcome.dispatches;
   let attempts = 1;
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
@@ -347,5 +350,29 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     attempt = await runSpecifyAttempt({ ...attemptArgs, refusal: attempt.refused });
     attempts += 1;
   }
-  return attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  const final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  // A budget verdict's own rows already carry every dispatch that ran before it
+  // stopped (the step ran at most one child per attempt, and the retry path only
+  // runs for `no-red-test`), so only the non-budget forms need the merge.
+  const dispatches =
+    final.kind === "budget" ? undefined : mergedRows(firstRows, attempt.outcome.dispatches);
+  return dispatches === undefined ? final : { ...final, dispatches };
+}
+
+/**
+ * The rows of every dispatch the step paid for, across both attempts.
+ *
+ * A retry is a second child, and the step's outcome is a single record: if the
+ * second attempt's rows replaced the first's, the run would report one child
+ * where it paid for two — and the dropped one is the expensive case, since a
+ * child that got its tests rejected still spent its tokens. `undefined` when no
+ * attempt dispatched, so a step that paid for nothing records no key at all
+ * rather than an empty one the fold would read as "zero children".
+ */
+function mergedRows(
+  first: DispatchUsageRow[] | undefined,
+  last: DispatchUsageRow[] | undefined,
+): DispatchUsageRow[] | undefined {
+  const rows = [...(first ?? []), ...(last ?? [])];
+  return rows.length === 0 ? undefined : rows;
 }

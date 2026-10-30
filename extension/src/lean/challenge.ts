@@ -77,9 +77,11 @@ import type { Outcome } from "./state.ts";
 import {
   type BudgetArms,
   type BudgetOpts,
+  type BudgetStop,
+  type DispatchUsageRow,
   armBudget,
   budgetFor,
-  budgetVerdict,
+  budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
@@ -235,18 +237,29 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const budget = armBudget(budgetFor(config, "challenge"));
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
-  const dispatched = await dispatchAdversary(deps.dispatch, {
-    issue,
-    spec,
-    frozenPaths: Object.keys(frozen),
-    wt,
-    repoRoot,
-    testRunner: runnerTemplate,
-    budget,
-    ...(testLocation === undefined ? {} : { testLocation }),
-    ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
-  });
-  const read = readDispatched(dispatched);
+  // The adversary's cost row is kept whatever it did, including the throw
+  // (see the same comment in `build.ts`).
+  let dispatched: [DispatchResult | BudgetStop, DispatchUsageRow];
+  try {
+    dispatched = await dispatchAdversary(deps.dispatch, {
+      issue,
+      spec,
+      frozenPaths: Object.keys(frozen),
+      wt,
+      repoRoot,
+      testRunner: runnerTemplate,
+      budget,
+      ...(testLocation === undefined ? {} : { testLocation }),
+      ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
+    });
+  } catch (err) {
+    if (err instanceof ChallengeInfraError)
+      throw new ChallengeInfraError(err.message, err.dispatches ?? []);
+    throw err;
+  }
+  const [adversary, row] = dispatched;
+  const rows = [row];
+  const read = readDispatched(adversary);
   if ("stop" in read) {
     // A killed child leaves whatever it wrote behind, and nothing else resets the
     // tree before `verify`, which refuses a dirty one. So the stop resets to the
@@ -269,7 +282,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
         `could not re-provision the challenge worktree after the budget stop: ${(err as Error).message}`,
       );
     }
-    return budgetVerdict("challenge", read.stop);
+    return budgetVerdictWithRows("challenge", read.stop, rows);
   }
   const toolUses = read.result.toolUses ?? [];
 
@@ -336,6 +349,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       frozen: pipeline.frozen,
       tests: pipeline.tests,
       reason: pipeline.reason,
+      dispatches: rows,
     };
   // Every pipeline kind is named here, deliberately: `uncovered` is unreachable
   // under `"any-red"` (that rule never returns it), and a `switch` that fell
@@ -352,7 +366,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   // with the contract it already had and nothing committed. NOT an error, and
   // the reason has to say so plainly enough for an operator to tell it apart
   // from a round that was never run.
-  return { kind: "none", reason: pipeline.reason };
+  return { kind: "none", reason: pipeline.reason, dispatches: rows };
 }
 
 export { ChallengeInfraError } from "./challenge-dispatch.ts";

@@ -21,12 +21,26 @@ import { challengePrompt } from "./challenge-prompt.ts";
 import type { ChallengeDispatch } from "./challenge-types.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
-import { type BudgetArms, type BudgetStop, budgetStop } from "./step-budget.ts";
+import type { BudgetArms, BudgetStop, DispatchUsageRow } from "./step-budget.ts";
+import { budgetStop, dispatchUsageRow } from "./step-budget.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 
-/** An adversary we could not run. The engine turns this into handed-back 10. */
+/**
+ * An adversary we could not run. The engine turns this into handed-back 10.
+ *
+ * Carries the rows of the dispatch it died on (see `BuildInfraError`): the
+ * child spent tokens before it died and the throw is the only path back.
+ */
 export class ChallengeInfraError extends Error {
   override readonly name = "ChallengeInfraError";
+
+  /** The cost rows this failure already observed, when it knows them. */
+  readonly dispatches?: DispatchUsageRow[];
+
+  constructor(message: string, dispatches?: DispatchUsageRow[]) {
+    super(message);
+    if (dispatches !== undefined) this.dispatches = dispatches;
+  }
 }
 
 /** The prompt's inputs, gathered by `challenge.ts` from the step log and the forge. */
@@ -50,11 +64,13 @@ export interface ChallengeDispatchOpts {
 /**
  * Dispatch one adversary. A budget breach comes back as {@link BudgetStop}, not a
  * throw; any other dead child is still infrastructure.
+ *
+ * The row this dispatch cost travels on every path — see `dispatchBuilder`.
  */
 export async function dispatchAdversary(
   dispatch: ChallengeDispatch,
   opts: ChallengeDispatchOpts,
-): Promise<DispatchResult | BudgetStop> {
+): Promise<[DispatchResult | BudgetStop, DispatchUsageRow]> {
   await (opts.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
   const prompt = challengePrompt({
     issue: opts.issue,
@@ -79,16 +95,17 @@ export async function dispatchAdversary(
       ...opts.budget.opts,
     },
   );
+  const row = dispatchUsageRow(result);
   // Before the throw below: the round's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return budgetStop(fired);
+  if (fired !== undefined) return [budgetStop(fired), row];
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
       result.errorStop?.message ??
       result.errorStop?.reason ??
       `exit ${String(result.exitCode)}`;
-    throw new ChallengeInfraError(`challenge dispatch failed: ${String(why)}`);
+    throw new ChallengeInfraError(`challenge dispatch failed: ${String(why)}`, [row]);
   }
-  return result;
+  return [result, row];
 }
