@@ -203,10 +203,12 @@ export interface RunOpts {
   prompts?: string[];
   dispatchOk?: boolean;
   /**
-   * Turns the fake child reports to the budget hook it was handed, on every
-   * dispatch. Past the step's `turns` ceiling this is a child the budget ends.
+   * Turns the fake child reports to the budget hook it was handed. A number is
+   * reported on every dispatch; a function gets the 1-based dispatch index, so a
+   * case can end only the second attempt. Past the step's `turns` ceiling this
+   * is a child the budget ends.
    */
-  progressTurns?: number;
+  progressTurns?: number | ((dispatch: number) => number);
 }
 
 /** Run the step; a throw comes back as the error, so each case asserts on it. */
@@ -225,10 +227,12 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     opts.prompts?.push(spec.prompt);
     const wt = spec.cwd as string;
     opts.writes(wt);
-    if (opts.progressTurns !== undefined)
+    const turns =
+      typeof opts.progressTurns === "function" ? opts.progressTurns(dispatched) : opts.progressTurns;
+    if (turns !== undefined)
       dopts.onProgress?.({
         role: "developer",
-        turns: opts.progressTurns,
+        turns,
         toolUses: 0,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
         totalTokens: 0,

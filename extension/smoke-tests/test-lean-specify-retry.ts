@@ -15,7 +15,10 @@
  *   (c) attempt 1 succeeds -> one dispatch, no retry note;
  *   (c2) attempt 1 is refused with NOTHING dropped (a green test) -> no retry;
  *   (d) attempt 1 hits its budget -> no retry, the outcome is `budget`;
- *   (e) `refusalFeedback` names at most 20 reasons, each clipped to 300 chars.
+ *   (e) `refusalFeedback` names at most 20 reasons, each clipped to 300 chars,
+ *       dedupes identical lines, says `(+N more)` past the cap, and is `""` for
+ *       an empty list;
+ *   (f) attempt 2 hits its budget -> the outcome is `budget` with no retry note.
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -58,12 +61,12 @@ function writeTest(wt: string, body: string): void {
   writeFileSync(path.join(wt, TEST_REL), body, { mode: 0o755 });
 }
 
-/** A child whose `n`th dispatch writes `bodies[n]`, and submits `TEST_REL` each time. */
-function scripted(bodies: string[]) {
+/** A child whose `n`th dispatch writes `bodies[n]` (the last one repeats), and submits `TEST_REL` each time. */
+function scripted(bodies: [string, ...string[]]) {
   let n = 0;
   return {
     writes: (wt: string) => {
-      writeTest(wt, bodies[Math.min(n, bodies.length - 1)] as string);
+      writeTest(wt, bodies[Math.min(n, bodies.length - 1)] ?? bodies[0]);
       n++;
     },
     toolUses: () => [submit("AC1", [TEST_REL])],
@@ -145,6 +148,10 @@ function scripted(bodies: string[]) {
     prompts[1]?.includes("130 lines") === true,
     "(b) the second prompt names the size reason (130 lines)",
   );
+  assert(
+    prompts[1]?.includes(`AC1 ${TEST_REL}: `) === true,
+    "(b) the second prompt attributes the reason to its criterion and path",
+  );
 }
 
 // ── (c) a first attempt that succeeds is dispatched once, with no note ───────
@@ -207,7 +214,33 @@ function scripted(bodies: string[]) {
   assert(r.dispatched === 1, `(d) the budget stop is not retried (dispatched ${r.dispatched})`);
 }
 
-// ── (e) the feedback section is capped and clipped ───────────────────────────
+// ── (f) a budget stop on the SECOND attempt is the verdict, with no retry note ─
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
+  const config = {
+    ...CONFIG,
+    budgets: { ...DEFAULT_BUDGETS, specify: { turns: 2, tokens: 0, minutes: 0 } },
+  };
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 6,
+    config,
+    prompts: [],
+    // Attempt 1 is under the ceiling (its oversize submission is dropped); attempt 2 is over it.
+    progressTurns: (dispatch) => (dispatch === 2 ? 3 : 1),
+    ...scripted([oversize(), redScript()]),
+  });
+  assert(r.threw === undefined, `(f) no throw: ${r.threw?.message ?? "clean"}`);
+  assert(r.dispatched === 2, `(f) the second attempt ran (dispatched ${r.dispatched})`);
+  assert(r.outcome?.kind === "budget", `(f) the outcome is budget (got ${r.outcome?.kind})`);
+  assert(
+    r.outcome?.reason?.includes(RETRY_NOTE) !== true,
+    `(f) a budget reason carries no retry note (got ${r.outcome?.reason})`,
+  );
+}
+
+// ── (e) the feedback section is capped, clipped, deduped and attributed ─────
 {
   const reasons = Array.from({ length: 25 }, (_, i) => `reason ${i + 1}`);
   const text = refusalFeedback(reasons);
@@ -215,6 +248,7 @@ function scripted(bodies: string[]) {
   assert(lines.length === 20, `(e) at most 20 reason lines (got ${lines.length})`);
   assert(text.includes("- reason 20"), "(e) the twentieth reason is the last one named");
   assert(!text.includes("reason 21"), "(e) the twenty-first reason is not named");
+  assert(text.includes("(+5 more)"), "(e) the section says how many reasons it left out");
   assert(text.startsWith(`## ${REFUSED}`), "(e) the section is headed by the refusal title");
   assert(
     text.includes("Fix exactly these problems and call submit_tests again for every criterion."),
@@ -223,10 +257,17 @@ function scripted(bodies: string[]) {
   const long = refusalFeedback(["x".repeat(400)]);
   const longLine = long.split("\n").find((l) => l.startsWith("- ")) ?? "";
   assert(
-    longLine.length === 302,
-    `(e) a reason is clipped to 300 characters (line ${longLine.length})`,
+    longLine.length === 303,
+    `(e) a reason is clipped to 300 characters plus an ellipsis (line ${longLine.length})`,
   );
   assert(longLine.endsWith("…"), "(e) a clipped reason ends in an ellipsis");
+  const dup = refusalFeedback(["AC1 a.ts: too big", "AC1 a.ts: too big", "AC2 b.ts: green"]);
+  assert(
+    dup.split("\n").filter((l) => l === "- AC1 a.ts: too big").length === 1,
+    "(e) an identical reason is shown once",
+  );
+  assert(!dup.includes("(+"), "(e) no `(+N more)` line when nothing is left out");
+  assert(refusalFeedback([]) === "", "(e) an empty list gives an empty section");
 }
 
 for (const dir of ROOTS) {

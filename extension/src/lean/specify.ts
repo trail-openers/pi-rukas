@@ -71,7 +71,7 @@ import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { RED_PROOF_CONTRACT, namingLine, specifyPrompt, testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError } from "./specify-reset.ts";
-import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
+import { SpecifyInfraError, droppedLabel, runTestPipeline } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,
   declaredPaths,
@@ -277,8 +277,13 @@ async function prepareTree(
 /** The note a retried attempt's outcome carries, so the operator can see the retry happened. */
 const RETRY_NOTE = "(after one retry)";
 
-/** The second attempt's outcome, whatever it is, with {@link RETRY_NOTE} on its reason. */
+/**
+ * The second attempt's outcome with {@link RETRY_NOTE} on its reason. A budget
+ * stop keeps its canonical sentence: that reason is the one the operator is
+ * taught to read, and a retry suffix would bend it.
+ */
 function afterRetry(outcome: Outcome): Outcome {
+  if (outcome.kind === "budget") return outcome;
   return {
     ...outcome,
     reason: outcome.reason === undefined ? RETRY_NOTE : `${outcome.reason} ${RETRY_NOTE}`,
@@ -437,7 +442,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
             frozenByCriterion,
             ...(testLocation === undefined ? {} : { testLocation }),
           });
-          refused.push(...verdict.dropped.map((d) => d.reason));
+          refused.push(...verdict.dropped.map(droppedLabel));
           return verdict;
         },
         prepare: () =>
@@ -486,7 +491,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const first = await attempt();
   if (first.outcome.kind !== "no-red-test" || first.refused.length === 0) return first.outcome;
   // The first attempt's pipeline may have left red files in the tree, and the
-  // retry must start from the base exactly as the first did.
+  // retry must start from the base exactly as the first did. It is needed:
+  // `runTestPipeline` resets only once it has a kept file, so an attempt that
+  // kept nothing leaves its writes behind.
   await prepareTree(deps, { repoRoot, issue, wt, base, branch });
   const second = await attempt(first.refused);
   return afterRetry(second.outcome);
