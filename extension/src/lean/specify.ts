@@ -386,6 +386,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
           // refused against the run's BASE, which is the commit this step's
           // whole claim is made on.
           existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
+          // The size/quota rules read the file the SAME way the capture does;
+          // `wt` is the tree these paths are relative to.
+          wt,
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       prepare: () =>

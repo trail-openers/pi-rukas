@@ -274,6 +274,9 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
           // what it is. At the head every test of the run is present, so the
           // head cannot answer this question.
           existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
+          // Same size/quota rules as `specify`: an edge case of 1,000 lines is
+          // not an edge case, and one criterion does not get four files.
+          wt,
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       // Provisioning is `challenge`'s own call, and the `prepare` the pipeline

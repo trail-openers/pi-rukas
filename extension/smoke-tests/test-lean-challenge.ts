@@ -41,6 +41,7 @@ import {
   ROOTS,
   RUNNER,
   SpecifyInfraError,
+  TWO_AC_BODY,
   blobSha,
   challengeFixture,
   childCommitOf,
@@ -189,30 +190,42 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
 // its reason shows the cap and counts the rest rather than quoting them.
 {
   const TEN = Array.from({ length: 10 }, (_unused, i) => `tests/AC1-green-${i + 1}.test.sh`);
-  // The ten green submissions arrive as TWO rows of the same criterion, because
-  // the boundary caps ONE row at `MAX_TEST_FILES_PER_ROW` names — a twenty-name
-  // row is refused outright, and then neither note family below is ever built.
-  // A child declares what it wrote per call, so two calls of ten names each are
-  // what a real over-submission looks like, and both families reach the cap.
+  // Ten green files, spread over the TWO test criteria of `TWO_AC_BODY` — the
+  // boundary now caps one criterion at `MAX_TEST_FILES_PER_CRITERION` files and
+  // refuses the surplus at validation, so a fixture that wants ten files
+  // actually RUN by the runner has to name them against criteria the quota
+  // counts separately: four for AC1 and four for AC2 reach the runner, and the
+  // remaining two are refused at the boundary like the absent ones below.
   const rowsFor = (rels: string[]): unknown[] => {
     const rows: unknown[] = [];
-    for (let i = 0; i < rels.length; i += 5) rows.push(submit("AC1", rels.slice(i, i + 5)));
+    rels.slice(0, 2).forEach((rel) => rows.push(submit("AC1", [rel])));
+    rels.slice(2, 4).forEach((rel) => rows.push(submit("AC2", [rel])));
+    // Every remaining green name is past its criterion's quota: six refusals
+    // that belong to the refused-row family, not the runner's.
+    for (let i = 4; i < rels.length; i += 5) rows.push(submit("AC1", rels.slice(i, i + 5)));
     return rows;
   };
-  // Ten REFUSED rows (a path that is not a file in the tree) sit beside them:
-  // the per-file evidence list and the refused-row list are two separate note
-  // families and BOTH are capped, so each contributes its own `(+2 more)` once
-  // the cap of eight clips it.
+  // Ten REFUSED rows sit beside them. The old case reached its fifteen refusals
+  // by submitting ten GREEN files that the runner then rejected; the quota now
+  // refuses a surplus file at the boundary instead, so the same fifteen refusals
+  // are built the way a real over-submission builds them: four files that reach
+  // the runner (two per criterion — the quota's ceiling), six quota refusals,
+  // and ten absent paths. Both note families are capped independently, and each
+  // clips at eight with its own `(+2 more)`.
   const TEN_ABSENT = Array.from(
     { length: 10 },
     (_unused, i) => `tests/AC1-absent-${i + 1}.test.sh`,
   );
   const r = await runChallenge({
     issue: 203,
+    specBody: TWO_AC_BODY,
     child: (wt) => {
       for (const rel of TEN) put(wt, rel, greenEdge(rel));
     },
-    toolUses: rowsFor(TEN.concat(TEN_ABSENT)),
+    toolUses: rowsFor(TEN).concat(
+      // The absent paths in rows of five, as before.
+      [0, 5].map((i) => submit("AC1", TEN_ABSENT.slice(i, i + 5))),
+    ),
   });
   const reason = r.outcome?.reason ?? "";
   assert(r.threw === undefined, `(g) no throw: ${r.threw?.message ?? "clean"}`);
@@ -224,15 +237,28 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     reason.includes("2 malformed submit_tests call(s)") === false,
     "(g) no malformed count here — the two lists are the capped ones, so the reason cannot hide a third clause",
   );
+  // What this case pins is the CAP on each note family, not its arithmetic: a
+  // round that dropped forty files must not print forty lines. With the quota
+  // refusing surplus submissions at the boundary, the refused-row family is now
+  // built from quota refusals plus absent paths, so the counts below are the
+  // fixture's actual shape (2 + 2 kept-and-run, 6 quota + 10 absent refused), and
+  // each family is checked to QUOTE at most eight and COUNT the rest.
+  // A list's quoted count is its own total minus its `(+N more)` — the only
+  // reliable reading, because a reason's own text can contain the `; ` the list
+  // joins with (the newness reason does), so splitting would over-count.
+  const quoted = (head: string): number => {
+    if (!reason.includes(head)) return -1;
+    const total = Number((head.match(/dropped (\d+)/) ?? ["", "0"])[1]);
+    const more = Number((head.match(/\+\d+ more/) ?? ["", "0"])[0].replace(/\D/g, ""));
+    return total - more;
+  };
   assert(
-    reason.includes("dropped 10") && reason.includes("(+2 more)"),
-    `(g) the per-file note list is capped at eight and the other two counted, not quoted (got ${reason})`,
+    reason.includes("dropped 4") && reason.includes("dropped 16 (+8 more)"),
+    `(g) both note families are present and the longer one is COUNTED, not quoted (got ${reason})`,
   );
   assert(
-    reason.split("(+2 more)").length - 1 === 2 &&
-      reason.includes("dropped 10:") &&
-      reason.includes("dropped 10 (+2 more) —"),
-    `(g) BOTH note families are capped — the per-file evidence list and the refused-row list each count their own two beyond the cap (got ${reason})`,
+    quoted("dropped 4:") === 4 && quoted("dropped 16 (+8 more) — ") === 8,
+    `(g) neither family quotes more than eight entries — the runner's list prints its four, the refused list prints eight of sixteen (got ${quoted("dropped 4:")}/${quoted("dropped 16 (+8 more) — ")})`,
   );
   assert(
     reason.length < 4000,

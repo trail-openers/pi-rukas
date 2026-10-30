@@ -38,6 +38,10 @@ import {
   testCriteria,
 } from "../src/lean/specify-prompt.ts";
 import { runTestFile } from "../src/lean/specify-proof.ts";
+import {
+  MAX_TEST_FILES_PER_CRITERION,
+  MAX_TEST_LINES,
+} from "../src/lean/submit-tests-cap.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 
 let exit = 0;
@@ -119,6 +123,19 @@ for (const [name, prompt] of [
   ["challenge", challenge],
 ] as const) {
   assert(
+    prompt.includes("at most 120 lines") && prompt.includes("at most 2 files"),
+    `${name}: the prompt states BOTH size bounds the boundary enforces, so a child is never dropped for a rule it was not told`,
+  );
+  assert(
+    prompt.includes("reuse the project's existing test helpers"),
+    `${name}: the prompt tells the adversary where the bytes come from — the project's own test helpers, not a new harness`,
+  );
+}
+for (const [name, prompt] of [
+  ["specify", specify],
+  ["challenge", challenge],
+] as const) {
+  assert(
     prompt.includes("smallest test that proves the criterion"),
     `${name}: the prompt asks for the smallest test that proves the criterion`,
   );
@@ -131,8 +148,17 @@ for (const [name, prompt] of [
     `${name}: the prompt prefers one focused file per criterion`,
   );
   assert(
-    !/\d+\s*(lines|LOC)\b/.test(prompt),
-    `${name}: no hard line count — the bound is the property, not a number to game`,
+    // The old assertion forbade ANY number in the prompt, which is what let a
+    // thousand-line freeze through: a property with no number behind it is a
+    // request, not a bound. What is pinned now is that the prompt's numbers are
+    // the boundary's numbers — one source, so the two cannot drift.
+    /at most \d+ lines/.test(prompt) && /at most \d+ files/.test(prompt),
+    `${name}: the prompt states the size bounds as NUMBERS, so a child cannot read them as a preference`,
+  );
+  assert(
+    prompt.includes(`at most ${MAX_TEST_LINES} lines`) &&
+      prompt.includes(`at most ${MAX_TEST_FILES_PER_CRITERION} files`),
+    `${name}: the numbers the prompt quotes ARE the constants the boundary enforces (${MAX_TEST_LINES}/${MAX_TEST_FILES_PER_CRITERION})`,
   );
 }
 assert(

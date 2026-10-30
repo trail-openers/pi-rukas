@@ -59,12 +59,15 @@ export const RED_PROOF_CONTRACT =
  * had been removed — tests for hypothetical misuse and for the shape of the
  * implementation rather than the behaviour the criterion named. The contract
  * bounds the size by asking for the smallest thing that proves the criterion,
- * and deliberately does not name a line count: a number would be met by
- * padding or gaming it, while "smallest test that proves the criterion" is the
- * property the round actually needs.
+ * and deliberately did not name a line count on its own — a number alone is met
+ * by padding. It now states the two numbers the boundary enforces (`MAX_TEST_LINES`,
+ * `MAX_TEST_FILES_PER_CRITERION` in `submit-tests-cap.ts`) and where the bytes
+ * are supposed to come from: the project's own test helpers. The rule is still
+ * the property, and the numbers are what a 15-line change froze a thousand lines
+ * of tests needed — a prompt plea had already been tried on that trial.
  */
 export const TEST_SCOPE_CONTRACT =
-  "**Write the smallest test that proves the criterion fails today and will pass when it is met.** Assert observable behaviour — what the entry point returns, throws, or writes — not the shape of the implementation. Do not test hypothetical misuse, or implementation details the criterion does not name: a criterion that says one parameter was removed is proved by one call and one assertion, not by a file of variants. Prefer one focused file per criterion.";
+  "**Write the smallest test that proves the criterion fails today and will pass when it is met.** Assert observable behaviour — what the entry point returns, throws, or writes — not the shape of the implementation. Do not test hypothetical misuse, or implementation details the criterion does not name: a criterion that says one parameter was removed is proved by one call and one assertion, not by a file of variants. Prefer one focused file per criterion. A kept test file is at most 120 lines and a criterion gets at most 2 files, so reuse the project's existing test helpers in the test folder rather than rebuilding a harness — the parent drops a longer file and the extra files it cannot use.";
 
 /**
  * The one place the test-location sentence is spelled, for BOTH adversary
