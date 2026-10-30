@@ -158,7 +158,7 @@ nothing about what `verify` still checks. `PI_ENSEMBLE_DISPATCH_CAPS=0` makes th
 wall clock inert, and the step says so.
 
 **Bounds on a frozen test.** A kept acceptance test must be new at the base
-commit, at most **120 lines** (`MAX_TEST_LINES`), at most **16 KiB**
+commit, at most **150 lines** (`MAX_TEST_LINES`), at most **24 KiB**
 (`MAX_TEST_BYTES`), and at most **2 per criterion** across the whole run
 (`MAX_TEST_FILES_PER_CRITERION`, seeded from what earlier rounds froze so a
 second round cannot double it). Two call-cost bounds sit beside them: one

@@ -124,7 +124,8 @@ for (const [name, prompt] of [
   ["challenge", challenge],
 ] as const) {
   assert(
-    prompt.includes("at most 120 lines") && prompt.includes("at most 2 files"),
+    prompt.includes(`at most ${MAX_TEST_LINES} lines`) &&
+      prompt.includes(`at most ${MAX_TEST_FILES_PER_CRITERION} files`),
     `${name}: the prompt states BOTH size bounds the boundary enforces, so a child is never dropped for a rule it was not told`,
   );
   assert(

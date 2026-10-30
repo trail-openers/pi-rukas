@@ -9,7 +9,7 @@
  * fixtures, same boundary, same `existsAtBase` stub — the seam is between the
  * size rules and the read they cost, not between two behaviours.
  *
- * A line bound alone does not bound a read: 120 lines of 200 characters is
+ * A line bound alone does not bound a read: 150 lines of 200 characters is
  * 24 KiB, and the boundary would have paid for all of it to discover the file
  * was one line under the cap. The byte ceiling is judged on the `lstat` the
  * boundary already holds, so a file too big to be a test is refused without
@@ -28,7 +28,7 @@
  * errno is the operating system's rather than a fixture's.
  *
  * One case is deliberate and easy to "fix" away: the oversized fixture is over
- * BOTH bounds (121 lines of 200 characters). A fixture under the line bound and
+ * BOTH bounds (`MAX_TEST_LINES` + 1 lines of 200 characters). A fixture under the line bound and
  * over the byte one cannot be built with `countTestLines`' rules — bytes are
  * always at least as many lines when split hard enough — so this case pins the
  * ORDER (byte judged on the stat, before the line count is ever taken) rather
@@ -75,19 +75,22 @@ const noBase = async () => false;
 // ---- The byte ceiling: refused on the stat, before any read -----------------
 {
   const wt = mkdtempSync(`${process.env.TMPDIR ?? "/tmp"}/pi-lean-test-bytes-`);
-  writeFileSync(`${wt}/tests-wide.test.ts`, `${"// ".padEnd(200, "x").trim()}\n`.repeat(121));
+  writeFileSync(
+    `${wt}/tests-wide.test.ts`,
+    `${"// ".padEnd(200, "x").trim()}\n`.repeat(MAX_TEST_LINES + 1),
+  );
   writeFileSync(`${wt}/tests-small.test.ts`, "// small\n");
   try {
     const wideBytes = readFileSync(`${wt}/tests-wide.test.ts`);
     // Over BOTH bounds, so the byte rule — which runs first, on the stat, and
     // never opens the file — is the only thing that can have refused it.
     // A file under the byte bound that the LINE rule would refuse: 200-char
-    // lines, 121 of them. It is only refused by the byte rule because the byte
+    // lines, `MAX_TEST_LINES` + 1 of them. It is only refused by the byte rule because the byte
     // rule runs first, on the stat, and that ordering is the whole point of the
     // case — so the fixture is asserted on BOTH bounds, not on one.
     assert(
       linesOf(wideBytes) > MAX_TEST_LINES && wideBytes.length > MAX_TEST_BYTES,
-      `the 121-line fixture is over BOTH bounds (${linesOf(wideBytes)} lines > ${MAX_TEST_LINES}, ${wideBytes.length} bytes > ${MAX_TEST_BYTES}), so only the byte rule — which runs first, on the stat — can be what refused it`,
+      `the ${MAX_TEST_LINES + 1}-line fixture is over BOTH bounds (${linesOf(wideBytes)} lines > ${MAX_TEST_LINES}, ${wideBytes.length} bytes > ${MAX_TEST_BYTES}), so only the byte rule — which runs first, on the stat — can be what refused it`,
     );
     const reads: string[] = [];
     const byBytes = await validateSubmitRows(
@@ -107,7 +110,7 @@ const noBase = async () => false;
     assert(
       wide?.reason ===
         `tests-wide.test.ts is ${wideBytes.length} bytes; an acceptance test is at most ${MAX_TEST_BYTES} bytes`,
-      `a 121-line, 24 KiB file is refused by the BYTE rule and not the line rule, with the byte count and the bound in its reason (got ${wide?.reason})`,
+      `a ${MAX_TEST_LINES + 1}-line file over the byte bound is refused by the BYTE rule and not the line rule, with the byte count and the bound in its reason (got ${wide?.reason})`,
     );
     assert(
       byBytes.kept[0]?.testFiles.includes("tests-small.test.ts") === true,
@@ -122,12 +125,26 @@ const noBase = async () => false;
     );
     // A file at exactly the bound, and under the line bound, is KEPT: the rule
     // refuses excess, not the bound itself — the same rule the line cap applies
-    // to `MAX_TEST_LINES`. The arithmetic is spelled out (`16384 = 160 × 102 +
-    // 64`) because the assertion is precisely about hitting the constant: 102
-    // 160-character lines plus one unterminated 64-character segment is 103
-    // lines, well under `MAX_TEST_LINES`, so the byte rule is the only one here
-    // with anything to say about this file.
-    const exactBytes = Buffer.from(`${"x".repeat(159)}\n`.repeat(102) + "x".repeat(64));
+    // to `MAX_TEST_LINES`.
+    //
+    // Built FROM both constants rather than as a literal, because the two bounds
+    // interact and a hard-coded shape rots the moment either moves: a fixture of
+    // 160-character lines is 153 lines at `MAX_TEST_LINES` = 150, and the case
+    // would then be refused by the LINE rule while claiming to pin the byte one.
+    // `w` is the widest terminated line whose `MAX_TEST_LINES` copies still fit
+    // the byte cap, and the file is `MAX_TEST_LINES - 1` of them plus one
+    // unterminated `w`-character segment: `w × MAX_TEST_LINES` bytes on exactly
+    // `MAX_TEST_LINES` lines (AT the line bound, never past it), padded to the
+    // byte constant by a final short segment. At the shipped 24 576 / 150 that is
+    // w = 162 — 162 × 150 = 24 300, plus a 276-byte final segment — and the
+    // one-byte overrun below extends that segment, so it stays a 150-line file
+    // refused for 24 577 bytes rather than the line rule arriving late.
+    const width = Math.floor(MAX_TEST_BYTES / MAX_TEST_LINES);
+    const exactBytes = Buffer.from(
+      `${"x".repeat(width - 1)}\n`.repeat(MAX_TEST_LINES - 1) +
+        "x".repeat(width) +
+        "x".repeat(MAX_TEST_BYTES - width * MAX_TEST_LINES),
+    );
     writeFileSync(`${wt}/tests-exact.test.ts`, exactBytes);
     const keptExact = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: ["tests-exact.test.ts"] }],
@@ -139,7 +156,9 @@ const noBase = async () => false;
         keptExact.kept[0]?.testFiles.includes("tests-exact.test.ts") === true,
       `a file of exactly ${MAX_TEST_BYTES} bytes under the line bound is KEPT — the bound refuses excess, not the bound (size ${exactBytes.length}, lines ${linesOf(exactBytes)})`,
     );
-    // One byte more and the same file is refused, on the stat.
+    // One byte more and the same file is refused, on the stat — and by the BYTE
+    // rule, not the line rule arriving late: the extra byte extends the tail, so
+    // the line count is unchanged.
     writeFileSync(`${wt}/tests-over.test.ts`, Buffer.from(`${exactBytes.toString()}x`));
     const keptOver = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: ["tests-over.test.ts"] }],
@@ -147,6 +166,7 @@ const noBase = async () => false;
     );
     assert(
       keptOver.kept.length === 0 &&
+        linesOf(Buffer.from(`${exactBytes.toString()}x`)) === MAX_TEST_LINES &&
         keptOver.dropped[0]?.reason ===
           `tests-over.test.ts is ${MAX_TEST_BYTES + 1} bytes; an acceptance test is at most ${MAX_TEST_BYTES} bytes`,
       `one byte past the bound is refused with the byte count in its reason (got ${JSON.stringify(keptOver.dropped.map((d) => d.reason))})`,
@@ -291,7 +311,9 @@ const noBase = async () => false;
 // shape a grow exploits: pass at 12 KiB, grow to 20 KiB, commit 20 KiB.
 {
   const grew = "tests-grew.test.ts";
-  const bytes = Buffer.from(`${"// ".padEnd(200, "x").trim()}\n`.repeat(121));
+  const bytes = Buffer.from(
+    `${"// ".padEnd(200, "x").trim()}\n`.repeat(MAX_TEST_LINES + 1),
+  );
   let captured: Map<string, Buffer> | undefined;
   const r = await growRun(bytes, (got) => {
     captured = got;

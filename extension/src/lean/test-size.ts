@@ -21,11 +21,18 @@
  * correct and the PR was unmergeable, which is what a deterministic rule is
  * for: `TEST_SCOPE_CONTRACT` already asks for the smallest test that proves the
  * criterion, and a prompt that is obeyed in spirit and not in size still ships
- * a thousand lines. 120 is the size of a focused test of one criterion written
- * against the project's own helpers; a file past it is testing the code around
- * the criterion.
+ * a thousand lines.
+ *
+ * The number is measured, not guessed: five live adversary tests came in at
+ * 125, 129, 130, 135 and 139 lines, so a cap of 120 declined real work — and
+ * the 139 came AFTER the specify retry had shown the child the refusal reason,
+ * which is how we know a git-heavy acceptance test is written at about 130
+ * rather than being trimmed to fit. 150 is that distribution with room above
+ * it; the original failure was ~1,000 lines per issue, and at 150 lines and
+ * `MAX_TEST_FILES_PER_CRITERION` files the bound is still 300 lines per
+ * criterion. A file past it is testing the code around the criterion.
  */
-export const MAX_TEST_LINES = 120;
+export const MAX_TEST_LINES = 150;
 
 /**
  * How many test files ONE criterion may end up with across the WHOLE RUN.
@@ -52,10 +59,11 @@ export const MAX_TEST_FILES_PER_CRITERION = 2;
  * `MAX_TEST_LINES` bounds the count, but the count is only known AFTER the
  * bytes are in memory, and the read that produces them is the one thing this
  * rule should not be paid for on a file it is going to refuse. A line count is
- * not a size: 120 lines of 200 characters is 24 KiB, and the trial that froze a
+ * not a size: 150 lines of 200 characters is 24 KiB, and the trial that froze a
  * thousand lines of test froze them in files nobody could read in one screen.
- * 16 KiB is a focused test of one criterion written against the project's own
- * helpers — comfortably above any file that fits the line bound honestly.
+ * 24 KiB is that line bound honoured honestly — the widest lines a real test
+ * writes (a 200-character git fixture) at the cap measured in #1883 — and so
+ * refuses a file by its bytes only when the line count could not have saved it.
  *
  * The bound is checked on the stat the boundary already has, BEFORE the read,
  * which is what makes it a bound on the CALL as well as on the file: at most
@@ -68,7 +76,7 @@ export const MAX_TEST_FILES_PER_CRITERION = 2;
  * deliberately so: that one bounds what a run keeps, this one what a rule will
  * even look at.
  */
-export const MAX_TEST_BYTES = 16_384;
+export const MAX_TEST_BYTES = 24_576;
 
 /** The tail of the not-a-text refusal, shared so the two spellings cannot drift. */
 const NOT_TEXT = "is not a text file (NUL byte); an acceptance test is a source file";
@@ -89,7 +97,7 @@ export function testNotTextProblem(rel: string): string {
 /**
  * Lines in a captured test file — the count the size rule judges.
  *
- * `bytes.length` is not it: a 120-line file with no trailing newline has 119
+ * `bytes.length` is not it: a 150-line file with no trailing newline has 149
  * `\n`, and the child would be refused for a byte it did not write. So a
  * non-empty final line counts as a line, and an empty one does not.
  *

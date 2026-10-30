@@ -3,15 +3,16 @@
  * lean/specify — one retry with the refusal reasons.
  *
  * A submission the boundary drops is invisible to the child: it sees "no red
- * test" and nothing else, so a 130-line test and a fixable green one look the
+ * test" and nothing else, so an over-long test and a fixable green one look the
  * same. The step retries ONCE when an attempt dropped a row, with the reasons
  * appended to the prompt. Driven through the real fixture (lib/lean-specify-
  * fixture.ts), the fake child is the only stub.
  *
- *   (a) attempt 1 submits a 130-line test (dropped); attempt 2 submits a red
+ *   (a) attempt 1 submits an over-long test (dropped); attempt 2 submits a red
  *       one -> ok, and the reason says `(after one retry)`;
  *   (b) both attempts submit over-size tests -> no-red-test, the adversary ran
- *       exactly twice, and the second prompt carries the refusal and "130 lines";
+ *       exactly twice, and the second prompt carries the refusal and the line
+ *       count of the fixture;
  *   (c) attempt 1 succeeds -> one dispatch, no retry note;
  *   (c2) attempt 1 is refused with NOTHING dropped (a green test) -> no retry;
  *   (d) attempt 1 hits its budget -> no retry, the outcome is `budget`;
@@ -25,6 +26,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_BUDGETS } from "../src/lean/config.ts";
 import { refusalFeedback } from "../src/lean/specify-prompt.ts";
+import { MAX_TEST_LINES } from "../src/lean/test-size.ts";
 import {
   ROOTS,
   RUNNER,
@@ -50,9 +52,9 @@ const REFUSED = "Your previous submission was refused";
 const CONFIG = configWith({ fast: "true", test: RUNNER });
 const TEST_REL = "tests/AC1-retry.test.sh";
 
-/** A test file over `MAX_TEST_LINES` (120): 130 comment lines. */
+/** A test file over `MAX_TEST_LINES`: one line past the cap. */
 function oversize(): string {
-  return `${Array.from({ length: 130 }, (_, i) => `# line ${i}`).join("\n")}\n`;
+  return `${Array.from({ length: MAX_TEST_LINES + 1 }, (_, i) => `# line ${i}`).join("\n")}\n`;
 }
 
 /** The child's writes for one attempt: the given body at the test path. */
@@ -145,8 +147,8 @@ function scripted(bodies: [string, ...string[]]) {
     "(b) the second prompt carries the refusal section",
   );
   assert(
-    prompts[1]?.includes("130 lines") === true,
-    "(b) the second prompt names the size reason (130 lines)",
+    prompts[1]?.includes(`${MAX_TEST_LINES + 1} lines`) === true,
+    `(b) the second prompt names the size reason (${MAX_TEST_LINES + 1} lines)`,
   );
   assert(
     prompts[1]?.includes(`AC1 ${TEST_REL}: `) === true,
