@@ -123,19 +123,18 @@ for (const [name, prompt] of [
   ["specify", specify],
   ["challenge", challenge],
 ] as const) {
+  // One assertion for the three bounds, keeping the message that says WHY: the
+  // numbers quoted in the prompt must BE the constants the boundary enforces.
   assert(
-    prompt.includes("at most 120 lines") && prompt.includes("at most 2 files"),
-    `${name}: the prompt states BOTH size bounds the boundary enforces, so a child is never dropped for a rule it was not told`,
+    prompt.includes(`at most ${MAX_TEST_LINES} lines`) &&
+      prompt.includes(`at most ${MAX_TEST_LINES} lines and ${MAX_TEST_BYTES} bytes`) &&
+      prompt.includes(`at most ${MAX_TEST_FILES_PER_CRITERION} files`),
+    `${name}: the numbers the prompt quotes ARE the constants the boundary enforces (${MAX_TEST_LINES}/${MAX_TEST_BYTES}/${MAX_TEST_FILES_PER_CRITERION}), so a child is never dropped for a rule it was not told`,
   );
   assert(
     prompt.includes("reuse the project's existing test helpers"),
     `${name}: the prompt tells the adversary where the bytes come from — the project's own test helpers, not a new harness`,
   );
-}
-for (const [name, prompt] of [
-  ["specify", specify],
-  ["challenge", challenge],
-] as const) {
   assert(
     prompt.includes("smallest test that proves the criterion"),
     `${name}: the prompt asks for the smallest test that proves the criterion`,
@@ -147,12 +146,6 @@ for (const [name, prompt] of [
   assert(
     prompt.includes("one focused file per criterion"),
     `${name}: the prompt prefers one focused file per criterion`,
-  );
-  assert(
-    prompt.includes(`at most ${MAX_TEST_LINES} lines`) &&
-      prompt.includes(`${MAX_TEST_BYTES} bytes`) &&
-      prompt.includes(`at most ${MAX_TEST_FILES_PER_CRITERION} files`),
-    `${name}: the numbers the prompt quotes ARE the constants the boundary enforces (${MAX_TEST_LINES}/${MAX_TEST_BYTES}/${MAX_TEST_FILES_PER_CRITERION})`,
   );
 }
 assert(

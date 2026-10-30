@@ -46,8 +46,8 @@ const REFUSAL_LINE_MAX = 300;
 /**
  * The section a retried adversary reads after the normal prompt: each drop the
  * boundary made on its last submission, attributed (`<criterionId> <path>: <reason>`,
- * see `droppedLabel`), one per line. The child never saw those reasons, so a
- * 130-line test and a green test were both indistinguishable from "the step
+ * see `droppedLabel`), one per line. The child never saw those reasons, so an
+ * over-long test and a green test were both indistinguishable from "the step
  * found nothing" — naming them is the whole point of the retry. Identical lines
  * are shown once; past the cap the section says how many it left out.
  */

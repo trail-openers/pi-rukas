@@ -3,39 +3,40 @@
  * lean/test-size (2/2) — the byte ceiling and the infra/verdict split.
  *
  * Split from `test-lean-test-size.ts` (AGENTS.md §12 size limit): that file
- * drives the line rule, the per-criterion quota and the run-level seed; this one
- * drives the byte bound and the rule that a stat or read which will not ANSWER
- * is handback material, never a report about work nobody looked at. Same
- * fixtures, same boundary, same `existsAtBase` stub — the seam is between the
- * size rules and the read they cost, not between two behaviours.
+ * drives the line rule, the per-criterion quota and the run-level seed; this
+ * one drives the byte bound and the rule that a stat or read which will not
+ * ANSWER is handback material, never a report about work nobody looked at.
+ * Same fixtures, same boundary, same `existsAtBase` stub — the seam is between
+ * the size rules and the read they cost, not between two behaviours.
  *
- * A line bound alone does not bound a read: 120 lines of 200 characters is
- * 24 KiB, and the boundary would have paid for all of it to discover the file
- * was one line under the cap. The byte ceiling is judged on the `lstat` the
- * boundary already holds, so a file too big to be a test is refused without
- * being read at all — which is what bounds the read ONE VALIDATION performs: at
- * most `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at most
+ * A line bound alone does not bound a read: a file can sit under the line cap
+ * and still be far too many bytes, and the boundary would have paid to read all
+ * of it to discover that. The byte ceiling is judged on the `lstat`
+ * the boundary already holds, so a file too big to be a test is refused without
+ * being read at all — which is what bounds the read ONE VALIDATION performs:
+ * at most `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at most
  * `MAX_TEST_BYTES`. It is a bound per validation, not per run: the capture
- * re-checks the bytes it actually holds against the same constant, and case (7)
- * below drives the file that grew in between.
+ * re-checks the bytes it actually holds against the same constant, and case
+ * (7) below drives the file that grew in between.
  *
  * The size rules read the file the way the capture does, so the fixtures here
- * are real files under a real temp `wt`: a test that stubbed the read would pass
- * whether or not production could perform it. `statSize` is driven only for the
- * shapes a real filesystem cannot be asked to produce on command — a disk fault
- * carrying a given errno, or a size no fixture should pay for. Every read-side
- * failure is driven for REAL: an unresolvable name and a 000-mode file, so the
- * errno is the operating system's rather than a fixture's.
+ * are real files under a real temp `wt`: a test that stubbed the read would
+ * pass whether or not production could perform it. `statSize` is driven only
+ * for the shapes a real filesystem cannot be asked to produce on command — a
+ * disk fault carrying a given errno, or a size no fixture should pay for. Every
+ * read-side failure is driven for REAL: an unresolvable name and a 000-mode
+ * file, so the errno is the operating system's rather than a fixture's.
  *
  * One case is deliberate and easy to "fix" away: the oversized fixture is over
- * BOTH bounds (121 lines of 200 characters). A fixture under the line bound and
- * over the byte one cannot be built with `countTestLines`' rules — bytes are
- * always at least as many lines when split hard enough — so this case pins the
- * ORDER (byte judged on the stat, before the line count is ever taken) rather
- * than the byte rule in isolation. `sizeJudgement` refuses on the stat before it
- * reads, so a file the line rule would ALSO refuse still reports bytes, and that
- * is the assertion here. The byte rule in isolation — kept at exactly the bound
- * — is the exact-bound pair below.
+ * BOTH bounds — `MAX_TEST_LINES` + 1 lines of 200 characters, asserted on both
+ * (see `WIDE_OVER_BOUND_BYTES`). A fixture under the line bound and over the
+ * byte one cannot be built with `countTestLines`' rules — bytes are always at
+ * least as many lines when split hard enough — so this case pins the ORDER
+ * (byte judged on the stat, before the line count is ever taken) rather than
+ * the byte rule in isolation. `sizeJudgement` refuses on the stat before it
+ * reads, so a file the line rule would ALSO refuse still reports bytes, and
+ * that is the assertion here. The byte rule in isolation — kept at exactly the
+ * bound — is the exact-bound pair below.
  */
 
 import { spawnSync } from "node:child_process";
@@ -46,11 +47,16 @@ import { validateSubmitRows } from "../src/lean/submit-tests-cap.ts";
 import { MAX_TEST_BYTES, MAX_TEST_LINES, countTestLines } from "../src/lean/test-size.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
-/** The line count alone, for the fixtures that must not be a NUL-bearing file. */
-const linesOf = (bytes: Buffer): number => {
-  const counted = countTestLines(bytes);
-  return "lines" in counted ? counted.lines : -1;
-};
+/**
+ * The over-both-bounds fixture, built from the two constants so it cannot drift
+ * when either moves: `MAX_TEST_LINES` + 1 lines of the widest comment line the
+ * fixtures use. Shared by the byte-rule case (which pins the ORDER of the two
+ * rules) and the grow case (which pins the re-check at capture); its bounds are
+ * asserted once, right below, before either consumer runs.
+ */
+const WIDE_OVER_BOUND_BYTES = Buffer.from(
+  `${"// ".padEnd(200, "x").trim()}\n`.repeat(MAX_TEST_LINES + 1),
+);
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -60,6 +66,22 @@ function assert(cond: boolean, msg: string): void {
     exit = 1;
   }
 }
+
+/** The line count alone, for the fixtures that must not be a NUL-bearing file. */
+const linesOf = (bytes: Buffer): number => {
+  const counted = countTestLines(bytes);
+  return "lines" in counted ? counted.lines : -1;
+};
+
+// The fixture both consumers below rest on, asserted on BOTH bounds rather than
+// assumed: the claim that only the byte rule could have refused it (it runs
+// first, on the stat, and never opens the file) is worthless if a later edit to
+// a constant quietly moves this file under one of the bounds.
+assert(
+  WIDE_OVER_BOUND_BYTES.length > MAX_TEST_BYTES &&
+    linesOf(WIDE_OVER_BOUND_BYTES) > MAX_TEST_LINES,
+  `the shared over-bound fixture really exceeds BOTH bounds (${linesOf(WIDE_OVER_BOUND_BYTES)} lines > ${MAX_TEST_LINES}, ${WIDE_OVER_BOUND_BYTES.length} bytes > ${MAX_TEST_BYTES}), so only the byte rule — which runs first, on the stat — can be what refused it`,
+);
 
 const SPEC: PiSpec = {
   problem: "p",
@@ -75,20 +97,10 @@ const noBase = async () => false;
 // ---- The byte ceiling: refused on the stat, before any read -----------------
 {
   const wt = mkdtempSync(`${process.env.TMPDIR ?? "/tmp"}/pi-lean-test-bytes-`);
-  writeFileSync(`${wt}/tests-wide.test.ts`, `${"// ".padEnd(200, "x").trim()}\n`.repeat(121));
+  writeFileSync(`${wt}/tests-wide.test.ts`, WIDE_OVER_BOUND_BYTES);
   writeFileSync(`${wt}/tests-small.test.ts`, "// small\n");
   try {
     const wideBytes = readFileSync(`${wt}/tests-wide.test.ts`);
-    // Over BOTH bounds, so the byte rule — which runs first, on the stat, and
-    // never opens the file — is the only thing that can have refused it.
-    // A file under the byte bound that the LINE rule would refuse: 200-char
-    // lines, 121 of them. It is only refused by the byte rule because the byte
-    // rule runs first, on the stat, and that ordering is the whole point of the
-    // case — so the fixture is asserted on BOTH bounds, not on one.
-    assert(
-      linesOf(wideBytes) > MAX_TEST_LINES && wideBytes.length > MAX_TEST_BYTES,
-      `the 121-line fixture is over BOTH bounds (${linesOf(wideBytes)} lines > ${MAX_TEST_LINES}, ${wideBytes.length} bytes > ${MAX_TEST_BYTES}), so only the byte rule — which runs first, on the stat — can be what refused it`,
-    );
     const reads: string[] = [];
     const byBytes = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: ["tests-wide.test.ts", "tests-small.test.ts"] }],
@@ -107,7 +119,7 @@ const noBase = async () => false;
     assert(
       wide?.reason ===
         `tests-wide.test.ts is ${wideBytes.length} bytes; an acceptance test is at most ${MAX_TEST_BYTES} bytes`,
-      `a 121-line, 24 KiB file is refused by the BYTE rule and not the line rule, with the byte count and the bound in its reason (got ${wide?.reason})`,
+      `a file over BOTH bounds is refused by the BYTE rule and not the line rule, with the byte count and the bound in its reason (got ${wide?.reason})`,
     );
     assert(
       byBytes.kept[0]?.testFiles.includes("tests-small.test.ts") === true,
@@ -122,12 +134,38 @@ const noBase = async () => false;
     );
     // A file at exactly the bound, and under the line bound, is KEPT: the rule
     // refuses excess, not the bound itself — the same rule the line cap applies
-    // to `MAX_TEST_LINES`. The arithmetic is spelled out (`16384 = 160 × 102 +
-    // 64`) because the assertion is precisely about hitting the constant: 102
-    // 160-character lines plus one unterminated 64-character segment is 103
-    // lines, well under `MAX_TEST_LINES`, so the byte rule is the only one here
-    // with anything to say about this file.
-    const exactBytes = Buffer.from(`${"x".repeat(159)}\n`.repeat(102) + "x".repeat(64));
+    // to `MAX_TEST_LINES`.
+    //
+    // Built FROM both constants rather than as a literal, because the two
+    // bounds interact and a hard-coded shape rots the moment either moves: a
+    // fixture of 160-character lines can already sit past the line cap, and the
+    // case would then be refused by the LINE rule while claiming to pin the byte
+    // one. `w` is the widest terminated line whose `MAX_TEST_LINES` copies still
+    // fit the byte cap, and the file is `MAX_TEST_LINES - 1` of them plus one
+    // unterminated `w`-character segment: `w × MAX_TEST_LINES` bytes on exactly
+    // `MAX_TEST_LINES` lines (AT the line bound, never past it), padded up to the
+    // byte constant by a final short segment. The one-byte overrun below extends
+    // that segment, so the file stays at the line bound and is refused for one
+    // byte over, rather than the line rule arriving late.
+    const width = Math.floor(MAX_TEST_BYTES / MAX_TEST_LINES);
+    // The two parts of the fixture, named so the arithmetic is checkable rather
+    // than implied by the expression below: what the terminated lines account
+    // for, and the short unterminated segment that pads up to the bound.
+    const terminated = width * MAX_TEST_LINES;
+    const tail = MAX_TEST_BYTES - terminated;
+    // A fixture precondition, not a verdict: were `width` zero the terminated
+    // lines would carry no content at all and the case would report a bound it
+    // never held. `tail` cannot fail this way — it is `MAX_TEST_BYTES mod
+    // MAX_TEST_LINES`, always in range.
+    assert(
+      width >= 1,
+      `the byte cap must allow at least one character per line (got width ${width})`,
+    );
+    const exactBytes = Buffer.from(
+      `${"x".repeat(width - 1)}\n`.repeat(MAX_TEST_LINES - 1) +
+        "x".repeat(width) +
+        "x".repeat(tail),
+    );
     writeFileSync(`${wt}/tests-exact.test.ts`, exactBytes);
     const keptExact = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: ["tests-exact.test.ts"] }],
@@ -135,11 +173,14 @@ const noBase = async () => false;
     );
     assert(
       exactBytes.length === MAX_TEST_BYTES &&
-        linesOf(exactBytes) <= MAX_TEST_LINES &&
+        linesOf(exactBytes) === MAX_TEST_LINES &&
         keptExact.kept[0]?.testFiles.includes("tests-exact.test.ts") === true,
       `a file of exactly ${MAX_TEST_BYTES} bytes under the line bound is KEPT — the bound refuses excess, not the bound (size ${exactBytes.length}, lines ${linesOf(exactBytes)})`,
     );
-    // One byte more and the same file is refused, on the stat.
+    // One byte more and the same file is refused, on the stat — and by the BYTE
+    // rule, not the line rule arriving late: the extra byte extends the tail, so
+    // the line count is unchanged, and the guard below pins that (=== the bound
+    // rather than <=, so a fixture that lost its tail would not pass unnoticed).
     writeFileSync(`${wt}/tests-over.test.ts`, Buffer.from(`${exactBytes.toString()}x`));
     const keptOver = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: ["tests-over.test.ts"] }],
@@ -147,6 +188,7 @@ const noBase = async () => false;
     );
     assert(
       keptOver.kept.length === 0 &&
+        linesOf(Buffer.from(`${exactBytes.toString()}x`)) === MAX_TEST_LINES &&
         keptOver.dropped[0]?.reason ===
           `tests-over.test.ts is ${MAX_TEST_BYTES + 1} bytes; an acceptance test is at most ${MAX_TEST_BYTES} bytes`,
       `one byte past the bound is refused with the byte count in its reason (got ${JSON.stringify(keptOver.dropped.map((d) => d.reason))})`,
@@ -219,8 +261,8 @@ const noBase = async () => false;
       );
     }
     // (3) An error that carries no `code` at all is not a missing-path verdict:
-    // there is nothing to read, so the rule cannot claim the child's name is the
-    // problem, and a message is never parsed for one.
+    // there is nothing to read, so the rule cannot claim the child's name is
+    // the problem, and a message is never parsed for one.
     const got = await runOne("tests-ok.test.ts", {
       statSize: () => {
         throw new Error("ENOENT: this message must not decide anything");
@@ -282,24 +324,23 @@ const noBase = async () => false;
 
 // ---- The grow window: a file that grew AFTER validation is refused at capture
 //
-// The byte bound in `sizeJudgement` is a bound on ONE VALIDATION. The child owns
-// the window between that validation and the capture — it wrote the file and it
-// can keep writing — so `specify-run.ts` re-checks the bytes it actually holds
+// The byte bound in `sizeJudgement` is a bound on ONE VALIDATION. The child
+// owns the window between that validation and the capture — it wrote the file
+// and it can keep writing — so `specify-run.ts` re-checks the bytes it actually
 // against the same constant before a single one of them is rewritten into the
 // tree. Without that second bound the rule would be a promise about a snapshot
 // the run never keeps, and the trial that froze a thousand lines is exactly the
-// shape a grow exploits: pass at 12 KiB, grow to 20 KiB, commit 20 KiB.
+// shape a grow exploits: pass the bound while the boundary looks, keep writing
+// past `MAX_TEST_BYTES`, and have the oversized file committed anyway.
 {
   const grew = "tests-grew.test.ts";
-  const bytes = Buffer.from(`${"// ".padEnd(200, "x").trim()}\n`.repeat(121));
+  const bytes = WIDE_OVER_BOUND_BYTES;
   let captured: Map<string, Buffer> | undefined;
   const r = await growRun(bytes, (got) => {
     captured = got;
   });
-  assert(
-    bytes.length > MAX_TEST_BYTES,
-    `the fixture really is over the bound (${bytes.length} bytes > ${MAX_TEST_BYTES}) — the growth is real, not a stubbed number`,
-  );
+  // The fixture's own bounds are asserted once, where it is defined, so by
+  // here the growth is known to be real rather than a stubbed number.
   assert(
     captured?.has(grew) === true,
     "the capture itself accepted the file (it holds a looser `MAX_CAPTURE_BYTES` ceiling), so what refused it can only be the pipeline's re-check",
@@ -392,10 +433,11 @@ async function growRun(
     );
     out.notes = (verdict.reason ?? "").split("; ");
     // What the pipeline left in the tree is exactly what `writeCaptured` was
-    // handed: the capture's map minus whatever step 2 refused. The reset deleted
-    // the child's small version of the same name, so a name present here can only
-    // have come from the captured bytes — and the step's own commit is read back
-    // from git rather than from anything the pipeline claims about itself.
+    // handed: the capture's map minus whatever step 2 refused. The reset
+    // deleted the child's small version of the same name, so a name present here
+    // can only have come from the captured bytes — and the step's own commit is
+    // read back from git rather than from anything the pipeline claims about
+    // itself.
     for (const f of git("ls-files").split("\n").filter(Boolean)) written.add(f);
     for (const f of git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean))
       written.add(f);

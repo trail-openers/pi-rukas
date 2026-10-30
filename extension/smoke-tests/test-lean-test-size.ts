@@ -99,7 +99,7 @@ const SPEC: PiSpec = {
     assert(
       linesOf(readFileSync(`${wt}/${atLimit}`)) === MAX_TEST_LINES &&
         linesOf(readFileSync(`${wt}/${overLimit}`)) === MAX_TEST_LINES + 1,
-      "the fixtures really are 120 and 121 lines — judged on a real count, not a stub",
+      `the fixtures really are ${MAX_TEST_LINES} and ${MAX_TEST_LINES + 1} lines — judged on a real count, not a stub`,
     );
     const keptFiles = sized.kept.flatMap((r) => r.testFiles);
     assert(
@@ -186,7 +186,7 @@ const SPEC: PiSpec = {
       noSize.dropped.length === 5 - MAX_TEST_FILES_PER_CRITERION &&
         noSize.kept[0]?.testFiles.length === MAX_TEST_FILES_PER_CRITERION &&
         noSize.dropped.every((d) => d.reason.includes("already has") === true),
-      `\`sizeRules: false\` → the line and byte rules never fire (the 121-line file is not refused for its length), but the QUOTA still keeps ${MAX_TEST_FILES_PER_CRITERION} and refuses the rest (kept ${noSize.kept[0]?.testFiles.length}, dropped ${JSON.stringify(noSize.dropped.map((d) => d.reason))})`,
+      `\`sizeRules: false\` → the line and byte rules never fire (the ${MAX_TEST_LINES + 1}-line file is not refused for its length), but the QUOTA still keeps ${MAX_TEST_FILES_PER_CRITERION} and refuses the rest (kept ${noSize.kept[0]?.testFiles.length}, dropped ${JSON.stringify(noSize.dropped.map((d) => d.reason))})`,
     );
     // ... and the escape is not a way to skip the run-level seed either: a
     // criterion the record says is full is full with the size rules off too.

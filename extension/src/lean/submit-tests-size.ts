@@ -87,7 +87,7 @@ function missingPathCode(err: unknown): string | undefined {
  * The stat comes first: the byte bound is judged on the size the filesystem
  * already handed the boundary, so an oversized file never becomes bytes in
  * memory. That is the whole reason a byte bound sits beside the line bound — a
- * line cap alone cannot bound a read, since 120 lines of 200 characters is
+ * line cap alone cannot bound a read, since 150 lines of 200 characters is
  * 24 KiB, and the boundary would pay for all of it to learn the file was one
  * line under the cap. Only a file the stat admits is read, through
  * `readOneDescriptor`, the capture's own descriptor read.
