@@ -83,14 +83,6 @@ export async function moveToTip(
    *  park the arm exists to close. */
   tipSha: string,
   why: string,
-  /**
-   * True when the accept rests on `git cherry` patch-equivalence. Every
-   * current caller passes true (both accept paths are patch-equivalence arms;
-   * the fast-forward arm does not come through here — it runs `merge --ff-only`
-   * and returns directly). Carried on the result so a caller can tell a
-   * verified patch move from a plain fast-forward.
-   */
-  byPatchEquivalence: boolean,
 ): Promise<RepositionResult> {
   if (!SHA_RE.test(tipSha)) {
     // Refuse before the backup ref or the checkout: a non-commit id reaching
@@ -132,13 +124,12 @@ export async function moveToTip(
       return { kind: "git-failed", detail, backupRef };
     }
     trace(
-      `${TRACE_PREFIX}: repositioned ${treeSha.slice(0, 12)} -> ${movedSha.slice(0, 12)} (backed up to ${backupRef}, ${byPatchEquivalence ? "patch-equivalence" : "fast-forward to the remote tip"}) — ${why}`,
+      `${TRACE_PREFIX}: repositioned ${treeSha.slice(0, 12)} -> ${movedSha.slice(0, 12)} (backed up to ${backupRef}, patch-equivalence) — ${why}`,
     );
     return {
       kind: "repositioned",
       fromSha: treeSha,
       tipSha,
-      movedByPatchEquivalence: byPatchEquivalence,
       backupRef,
     };
   } catch (e) {
