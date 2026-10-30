@@ -102,16 +102,25 @@ function assert(cond: boolean, msg: string): void {
   );
 }
 
-// ------------------------- the env does not make a refused push into a silent ok
+// ------------- the env cannot turn a foreign branch into a silent ok
+//
+// The lease is always bound to the sha the step read, so what keeps a foreign
+// branch safe is not git's non-fast-forward rule — it is the forge's open-PR
+// read before the push. A non-interactive env must not weaken that check.
 {
-  const r = await runPublish({ issue: 431, verify: { kind: "green" }, originForeign: true });
+  const r = await runPublish({
+    issue: 431,
+    verify: { kind: "green" },
+    originForeign: true,
+    openPrs: [fakePr(97, "https://forge.example/pull/97", "lean/issue-431")],
+  });
   assert(
     r.threw instanceof PublishInfraError,
-    `(n) the non-interactive env does not rescue a non-fast-forward push (got ${r.threw?.name})`,
+    `(n) the non-interactive env does not rescue a push over a branch under review (got ${r.threw?.name})`,
   );
   assert(
     originHead(r.origin, "lean/issue-431") !== r.head,
-    "(n) origin's foreign commit still stands — the env is about prompts, not force",
+    "(n) this run's head was not published over the foreign branch — the env is about prompts, not force",
   );
 }
 
@@ -134,7 +143,7 @@ function assert(cond: boolean, msg: string): void {
     `(n2) a prDraft that left the PR ready is a refusal, not an ok (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(
-    r.threw !== undefined && r.threw.message.includes("pushed "),
+    r.threw?.message.includes("pushed ") === true,
     `(n2) the refusal says the push landed (${r.threw?.message})`,
   );
   assert(

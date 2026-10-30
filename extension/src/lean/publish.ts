@@ -13,10 +13,11 @@
  *      pushed is REFUSED before the push — "green" is a claim about a named
  *      tree, and pushing something else under it is the one lie this step
  *      cannot take back;
- *   4. the push is porcelain, and its force is conditional: origin is read
- *      first (`remoteBranchSha`) and a stale `lean/` ref exactly one of our own
- *      commits behind is replaced under a lease bound to that sha; other pushes
- *      stay non-forced, and an OPEN PR's branch is refused with its URL;
+ *   4. origin is read first (`remoteBranchSha`), an OPEN PR on the branch is
+ *      refused with its URL, and the push ALWAYS carries a lease bound to the
+ *      sha that read returned — so a rewrite is legitimate only because it was
+ *      bound to an observed sha and survived the PR check; success is decided
+ *      afterwards by reading origin again, never by parsing porcelain;
  *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told
  *      to create one. A `prList` that throws aborts the step: creating without
  *      looking is how a resumed run opens a second PR for the same work.
@@ -133,39 +134,47 @@ async function remoteBranchSha(
 }
 
 /**
- * Porcelain push of the head to origin's branch, non-forced unless `replaceSha`
- * — the stale sha this run read from origin — earns the lease (rule below). The
- * ref name is checked with the driver's own `netRefProblem` BEFORE the command
- * line: `branch` is state-file data, and `assertSafeRef` only says it is a legal
- * git name — `+x`, `a:b` and `-f` all are, and git parses them as a refspec, a
- * force, or an option (see `netRefProblem`, #1095).
+ * The head pushed to origin's branch under a lease bound to `remote` — the sha
+ * this step read from origin moments before, or `""` when the read said the
+ * branch is absent (git then requires the ref to STILL not exist).
+ *
+ * A forced update is legitimate here for exactly one reason: the lease binds the
+ * rewrite to the sha we observed and the open-PR check passed on that same
+ * branch, so nothing moves that this step did not read and clear. Hence no
+ * `--no-verify`, no unconditional `--force`, and no `rev-list` heuristic about
+ * how many commits separate the two tips — a realistic stale branch is 2-6
+ * commits deep, and a count gate that admits only 1 never replaces one.
+ *
+ * Success is NOT read from porcelain. `git push --porcelain` prints a fast-forward
+ * UNBRACKETED (`abc..def`), so flag regexes have already been observed reporting
+ * a push that landed as "no success flag"; git's exit code is no better, since
+ * a rejection exits 0. So the rejection markers are a first sweep, and the
+ * verdict is origin itself: re-read after the push and require it to be head.
+ *
+ * The ref name is checked with the driver's own `netRefProblem` BEFORE the
+ * command line: `branch` is state-file data, and `assertSafeRef` only says it is
+ * a legal git name — `+x`, `a:b` and `-f` all are, and git parses them as a
+ * refspec, a force, or an option (see `netRefProblem`, #1095).
  */
 async function pushHead(
   deps: PublishDeps,
   wt: string,
   head: string,
   branch: string,
-  replaceSha?: string,
+  remote: string,
 ): Promise<void> {
   const unsafe = netRefProblem(`refs/heads/${branch}`);
   if (unsafe !== undefined) throw new PublishInfraError(`refusing to push ${branch}: ${unsafe}`);
-  const [refspec, why] = [`${head}:refs/heads/${branch}`, `could not compare origin's ${branch}`];
-  // The force is for ONE shape: origin holds the previous run's head and this
-  // rerun's amend left exactly one commit between it and us — `rev-list --count
-  // ^HEAD <remote>` == 1. Only that forces. `--count` exits 0 with "0" for a sha
-  // this clone cannot resolve, so an unreadable foreign commit never buys a
-  // force, and the sha is not fetched to make it readable: that would pull a
-  // foreign commit's objects in to manufacture an answer git refused. And the
-  // lease checks the tip only, so a foreign commit under the observed sha
-  // satisfies it — binding it to that sha is what makes a moved ref fail.
-  const force =
-    replaceSha !== undefined &&
-    replaceSha !== head &&
-    (await gitIn(deps, wt, ["rev-list", "--count", "^HEAD", replaceSha], why, 30_000)) === "1";
-  const forceArgv = force ? [`--force-with-lease=refs/heads/${branch}:${replaceSha}`] : [];
   const ran = await deps
     .exec("git", {
-      argv: [...NO_HOOKS, "push", "--porcelain", ...forceArgv, "origin", refspec],
+      argv: [
+        ...NO_HOOKS,
+        "push",
+        "--porcelain",
+        `--force-with-lease=refs/heads/${branch}:${remote}`,
+        "origin",
+        `${head}:refs/heads/${branch}`,
+      ],
       cwd: wt,
       timeout: 120_000,
       maxBuffer: 4 * 1024 * 1024,
@@ -176,28 +185,17 @@ async function pushHead(
       const why = String(e?.stderr ?? e?.message ?? err).slice(0, 500);
       throw new PublishInfraError(`could not push ${branch}: ${why}`);
     });
-  // Porcelain form: a `To <remote>` header, one `<from> <to> <flag>` line per
-  // ref, a `Done` trailer — and for a brand-new ref git puts an
-  // ASTERISK in the from/to columns (`* <sha> refs/heads/x\t[new branch]`), so
-  // neither column is reliably a sha. The FLAG is git's own verdict, and even a
-  // rejection exits 0 — so these regexes are the check. A rewrite is the one
-  // flag porcelain prints UNBRACKETED (`(abc...def (forced update)`), so it
-  // cannot share the bracketed alternatives, and it counts ONLY for the push
-  // that asked for the lease: otherwise something else forced the ref (a
-  // `+refspec`, a hook) and this step may not rewrite outside the clone.
+  // A rejection is printed and exits 0, so the two shapes git uses for one
+  // (`! [rejected] …` and any `!`-flagged ref line) are a fast refusal. They are
+  // not the check: the read below is, because a porcelain line that matches
+  // neither shape and still did not move the ref is the case the regexes missed.
   const out = typeof ran?.stdout === "string" ? ran.stdout : "";
-  if (/\[rejected\]/.test(out))
+  if (/\[rejected\]/.test(out) || /^\s*!/m.test(out))
     throw new PublishInfraError(`the push of ${branch} was rejected: ${out.slice(0, 500)}`);
-  if (/forced update/.test(out) && !force)
+  const after = await remoteBranchSha(deps, wt, branch);
+  if (after !== head)
     throw new PublishInfraError(
-      `the push of ${branch} reported a forced update, which this step never asks for: ${out.slice(0, 500)}`,
-    );
-  const okFlags = force
-    ? /\[(?:new branch|up to date|fast-forward)\]|forced update/
-    : /\[(?:new branch|up to date|fast-forward)\]/;
-  if (!okFlags.test(out))
-    throw new PublishInfraError(
-      `the push of ${branch} reported no success flag: ${out.slice(0, 500)}`,
+      `origin's ${branch} is ${after === undefined ? "absent" : after} after the push, expected ${head}`,
     );
 }
 
@@ -285,20 +283,26 @@ function oneLineTitle(problem: string): string {
 }
 
 /**
- * The sha of a stale `lean/` ref this run may replace, or `undefined` when the
- * push stays non-forced: no ref on origin, a ref already at HEAD, or a ref an
- * OPEN PR points at (refused with its URL, never clobbered). Whether the sha is
- * ours to overwrite is `pushHead`'s call, not this one's.
+ * What origin's branch points at, as the lease's expected value: `""` when the
+ * ref is absent, `head` when it already matches (the push is then skipped).
+ *
+ * Any OTHER sha means this step is about to rewrite a branch, so it first asks
+ * the forge whether that branch is under review — and the check FAILS CLOSED: a
+ * row naming this branch blocks unless its state reads CLOSED or MERGED once
+ * uppercased. A lowercase `"open"` or an empty string must refuse, not read as
+ * "no PR": `mapPrListReply` in `forge-list.ts` synthesises `state: ""` for a
+ * forge that answered with one bare number, and an exact `=== "OPEN"`
+ * comparison would force-push over a branch somebody is reviewing.
  */
-async function staleReplaceSha(
+async function pushLeaseTarget(
   deps: PublishDeps,
   repoRoot: string,
   wt: string,
   head: string,
   branch: string,
-): Promise<string | undefined> {
-  const remote = await remoteBranchSha(deps, wt, branch);
-  if (remote === undefined || remote === head) return undefined;
+): Promise<string> {
+  const remote = (await remoteBranchSha(deps, wt, branch)) ?? "";
+  if (remote === "" || remote === head) return remote;
   // Not having looked is no licence to rewrite a branch somebody may be reading.
   const f = await deps.forge(repoRoot);
   if (f === undefined)
@@ -308,7 +312,10 @@ async function staleReplaceSha(
       `could not list open PRs for ${branch}: ${(err as Error)?.message ?? String(err)}`,
     );
   });
-  const blocking = (open ?? []).find((pr) => pr.headRefName === branch && pr.state === "OPEN");
+  const settled = new Set(["CLOSED", "MERGED"]);
+  const blocking = (open ?? []).find(
+    (pr) => pr.headRefName === branch && !settled.has(String(pr.state ?? "").toUpperCase()),
+  );
   if (blocking !== undefined)
     throw new PublishInfraError(
       `an open PR already uses ${branch}: ${blocking.url ?? "(no URL returned)"}`,
@@ -360,7 +367,11 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     // refuse — so it holds the PR as a draft exactly as a `manual` criterion does.
     spec.criteria.some((c) => c.verify === "command" && !v?.outcome?.commandCriteria?.[c.id]);
 
-  await pushHead(deps, wt, head, branch, await staleReplaceSha(deps, repoRoot, wt, head, branch));
+  // Read origin, clear the branch against the forge, then push under a lease
+  // bound to that read. When origin already holds this head there is nothing to
+  // write, and the step says so rather than pushing a no-op it cannot verify.
+  const remote = await pushLeaseTarget(deps, repoRoot, wt, head, branch);
+  if (remote !== head) await pushHead(deps, wt, head, branch, remote);
   // From here on the head is OUTSIDE the clone. Every refusal below is a
   // handback over a pushed branch, so it says so — an error that reads only
   // "could not open the PR" hides the one fact the operator needs first.
