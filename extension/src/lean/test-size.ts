@@ -59,11 +59,10 @@ export const MAX_TEST_FILES_PER_CRITERION = 2;
  * `MAX_TEST_LINES` bounds the count, but the count is only known AFTER the
  * bytes are in memory, and the read that produces them is the one thing this
  * rule should not be paid for on a file it is going to refuse. A line count is
- * not a size: 150 lines of 200 characters is 24 KiB, and the trial that froze a
- * thousand lines of test froze them in files nobody could read in one screen.
- * 24 KiB is that line bound honoured honestly — the widest lines a real test
- * writes (a 200-character git fixture) at the cap measured in #1883 — and so
- * refuses a file by its bytes only when the line count could not have saved it.
+ * not a size: the cap bounds the size of a file that is within the line cap —
+ * about 163 characters a line on average — so a file of wider lines is refused
+ * on bytes first. The trial that froze a thousand lines froze them in files
+ * nobody could read on one screen.
  *
  * The bound is checked on the stat the boundary already has, BEFORE the read,
  * which is what makes it a bound on the CALL as well as on the file: at most
