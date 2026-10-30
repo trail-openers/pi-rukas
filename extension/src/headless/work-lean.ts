@@ -441,6 +441,11 @@ export async function runWorkLeanVerb(
     const summary = oneLine(clip(raw.summary), MESSAGE_MAX);
     say(`work-lean: ${summary}`);
     const prUrl = prUrlOf(raw.result.run.steps);
+    // No usage fields here yet: the step log already carries the per-child rows
+    // (`Outcome.dispatches`), but the result document that reports them is
+    // schema 5, a later slice, which also adds the capability flag. This PR is
+    // record-only, so a host reading this document today gets no usage key at
+    // all rather than one it was never told to expect.
     return {
       exitCode: raw.result.code,
       doc: {

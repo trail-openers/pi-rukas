@@ -280,6 +280,21 @@ for (const [label, issue, step, expect] of [
     },
     /outcome used must be a non-negative safe integer/,
   ],
+  [
+    // #1920 A — `draft` is what the publish step handed the forge, and the only
+    // typed answer to "green and waiting, or a draft behind unverified bytes".
+    // On any other step it is a readiness claim the run never made.
+    "draft on a verify step",
+    61,
+    {
+      key: "61:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "green", verifiedHead: "b".repeat(40), draft: true },
+    },
+    /outcome draft is only recorded by a publish step/,
+  ],
 ] as const) {
   const { dir, cleanup } = tempDir();
   try {

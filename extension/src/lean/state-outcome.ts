@@ -14,9 +14,11 @@
  * does not exist.
  */
 
+import type { DispatchUsage } from "../types.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import type { LeanState, Outcome } from "./state.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 
 /** A sha256 in the hex form the `specify` step freezes into its outcome. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -78,8 +80,14 @@ export function validPrUrl(url: unknown): string | undefined {
   return PR_URL.test(url) ? url : undefined;
 }
 
-/** The states whose dispatch may be stopped by its budget, hence own those fields. */
-const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
+/**
+ * The states whose dispatch may be stopped by its budget, hence own those fields.
+ *
+ * Exported as the answer to "may this state record `dispatches`": `errorOutcome`
+ * asks it before copying rows off a throw, so the ownership rule the loader
+ * enforces has exactly one statement in the pipeline.
+ */
+export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
 
 /**
  * Which state is allowed to record which evidence-bearing field. One table, and
@@ -92,12 +100,16 @@ const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
  * `prUrl` is the address `handback` prints and `verifiedHead` is what the land
  * gate matches against the PR head, so a value that arrived on a step that never
  * produced it is not extra information — it is a forged record that reads as
- * evidence. `assertRun` refuses it at load with the step's own key in the
- * message, so a hand-edited file naming a PR this run never opened (or claiming
- * a head this run never verified) is never driven.
+ * evidence. `draft` is the publish step's answer to "what did I hand the forge",
+ * and `dispatches` is the per-child cost of the three dispatching steps, so both
+ * belong to no other state either. `assertRun` refuses a breach at load with the
+ * step's own key in the message, so a hand-edited file naming a PR this run never
+ * opened (or claiming a head this run never verified) is never driven.
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
   prUrl: "publish",
+  draft: "publish",
+  dispatches: BUDGET_STATES,
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
@@ -167,6 +179,108 @@ function commandCriteriaProblem(value: unknown): string | undefined {
   return undefined;
 }
 
+/** The token-count fields of a usage row; `cost` is checked as a measure, not a count. */
+const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
+
+/**
+ * How many dispatch rows one step may record. Exported because `specify` folds
+ * two attempts into ONE outcome and clips its merge here rather than keeping a
+ * second copy of the bound the validator enforces.
+ */
+export const DISPATCHES_MAX_ROWS = 16;
+
+/** Is this a duration a child can honestly report? Finite and never negative. */
+function isMeasure(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/** Is this value a usage row of the shape `DispatchUsage` describes? */
+function isUsageRow(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const u = value as Record<string, unknown>;
+  // A count of tokens is never a fraction and never infinite: `1e400` arrives
+  // from JSON as `Infinity`, and an infinite total printed to a host is a
+  // record that reads as evidence and compares against nothing.
+  if (!["input", "output", "cacheRead", "cacheWrite", "turns"].every((k) => isCount(u[k])))
+    return false;
+  // `cost` is the one field that is NOT an integer count: `addUsage` in
+  // `pi-usage.ts` accumulates a currency total, so a real report carries
+  // fractions (0.00000625 for one small child) and refusing them would refuse
+  // every honest row. It is still a finite non-negative number — a negative
+  // cost would SUBTRACT from a host's total and an infinite one cannot print.
+  return isMeasure(u.cost);
+}
+
+/**
+ * Why a `dispatches` array is not a cost record this run may report, or undefined.
+ *
+ * Each row is one child the step paid for, and the headless result sums these
+ * into `usage.byRole`. A row with no role cannot be attributed to a role, a
+ * negative cost would subtract from the total, and a row whose `ok` is not a
+ * boolean leaves the reader unable to tell a stopped child from a finished one
+ * — which is the distinction the whole per-role comparison between engines rests on.
+ */
+function dispatchesProblem(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return "outcome dispatches must be an array";
+  if (value.length > DISPATCHES_MAX_ROWS)
+    return `outcome dispatches must hold at most ${DISPATCHES_MAX_ROWS} rows`;
+  for (const [i, raw] of value.entries()) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return `outcome dispatches[${String(i)}] must be an object`;
+    const row = raw as Record<string, unknown>;
+    if (typeof row.role !== "string" || row.role === "")
+      return `outcome dispatches[${String(i)}].role must be a non-empty string`;
+    if (typeof row.ok !== "boolean") return `outcome dispatches[${String(i)}].ok must be a boolean`;
+    if (!isMeasure(row.ms))
+      return `outcome dispatches[${String(i)}].ms must be a finite number >= 0`;
+    if (!isUsageRow(row.usage))
+      return `outcome dispatches[${String(i)}].usage must carry non-negative integer input, output, cacheRead, cacheWrite, cost and turns`;
+  }
+  return undefined;
+}
+
+/** The `dispatches` rows, rebuilt from the ones this module actually checked. */
+export function validatedDispatches(value: unknown): DispatchUsageRow[] {
+  const out: DispatchUsageRow[] = [];
+  if (!Array.isArray(value)) return out;
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const row = raw as Record<string, unknown>;
+    if (typeof row.role !== "string" || row.role === "") continue;
+    if (typeof row.ok !== "boolean" || !isMeasure(row.ms) || !isUsageRow(row.usage)) continue;
+    const u = row.usage as Record<string, unknown>;
+    // Each count is RE-DERIVED from the check rather than cast: `isUsageRow`
+    // already proved all six are non-negative safe integers, and reading them
+    // back through `unknown` keeps the rebuilt row a product of the validation.
+    const count = (k: (typeof USAGE_COUNTERS)[number] | "cost"): number => u[k] as number;
+    out.push({
+      role: row.role,
+      ms: row.ms as number,
+      ok: row.ok as boolean,
+      usage: {
+        input: count("input"),
+        output: count("output"),
+        cacheRead: count("cacheRead"),
+        cacheWrite: count("cacheWrite"),
+        cost: count("cost"),
+        turns: count("turns"),
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * The rows of a step's dispatches, attached only when the step paid for one.
+ *
+ * A step that never dispatched records nothing: `[]` would put a key on the
+ * durable record that says "zero children" where the truth is "this step is not
+ * one that dispatches", and the fold cannot tell the two apart.
+ */
+function rowsField(rows: DispatchUsageRow[]): { dispatches?: DispatchUsageRow[] } {
+  return rows.length === 0 ? {} : { dispatches: rows };
+}
+
 /**
  * Why a step's own report of itself is not a valid outcome, or `undefined`.
  *
@@ -186,14 +300,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
         return `outcome ${field} is only recorded by a ${String(owner)} step, not a ${state} step`;
     }
   }
-  // Checked as a set: a breach naming neither ceiling nor overshoot is a
-  // sentence nobody can act on. Same place as the ownership rule above, so a
-  // budget verdict is judged by one reader for both questions.
   // The budget trio is only ever written by a budget verdict: `handback` renders
   // `limit`/`value`/`used` into the operator's cause line, so the same trio on a
   // step whose kind is not `budget` is a ceiling this run never crossed, printed
   // as the run's cause. Refused whatever the step's state, so an `ok` step on a
-  // budget-owning state cannot carry them either.
+  // budget-owning state cannot carry them either — which is also what stops a
+  // step reporting a ceiling merely because it reports what its children cost.
   if (oc.kind !== "budget") {
     for (const key of ["limit", "value", "used"] as const) {
       if (oc[key] !== undefined) return `outcome ${key} is only recorded by a budget verdict`;
@@ -272,6 +384,10 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
         return `outcome commandNotRunnable[${JSON.stringify(id)}] must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
     }
   }
+  if (oc.dispatches !== undefined) {
+    const problem = dispatchesProblem(oc.dispatches);
+    if (problem !== undefined) return problem;
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
   // length bound keeps a blob a handler stuffed in here out of the record.
@@ -344,6 +460,8 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
+    ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),
+    ...rowsField(validatedDispatches(oc.dispatches)),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),

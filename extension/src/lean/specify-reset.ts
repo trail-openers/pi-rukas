@@ -34,6 +34,7 @@ import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } f
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
 import { changedPaths } from "./specify-tree.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 
 /** A reset the step cannot confirm. The engine turns this into handed-back 10. */
 export class SpecifyResetError extends Error {
@@ -117,9 +118,23 @@ function ensureRealDirs(wt: string, abs: string): void {
   }
 }
 
-/** A write the step refuses because following it would leave the worktree. */
+/**
+ * A write the step refuses because following it would leave the worktree.
+ *
+ * Also the type the `specify` dispatch throws for a child that died, and it
+ * carries that dispatch's cost rows (`BuildInfraError` says why): the child
+ * spent tokens before it died and a throw records no outcome.
+ */
 export class SpecifyInfraError extends Error {
   override readonly name = "SpecifyInfraError";
+
+  /** The cost rows this failure already observed, when it knows them. */
+  readonly dispatches?: DispatchUsageRow[];
+
+  constructor(message: string, dispatches?: DispatchUsageRow[]) {
+    super(message);
+    if (dispatches !== undefined) this.dispatches = dispatches;
+  }
 }
 
 /**

@@ -15,7 +15,7 @@
 import type { RunningState } from "../progress.ts";
 import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchResult } from "../types.ts";
+import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
@@ -31,6 +31,24 @@ export interface BudgetOpts {
   childBoundMs?: number;
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
+}
+
+/**
+ * The cost of one dispatch, as the dispatching steps record it (#1920 A).
+ *
+ * `usage` is the child's own report — `DispatchUsage`, the same shape the
+ * headless result sums — and `role`/`ms`/`ok` are what the step observed about
+ * the dispatch. Declared here, beside the budget arms a dispatch already
+ * carries, so the three sites that build a row and the fold in `usage-sum.ts`
+ * read ONE type: `state.ts` cannot import this module (its budget trio lives
+ * here) and a duplicated shape in two files is how the two engines start
+ * disagreeing about what "cost" means.
+ */
+export interface DispatchUsageRow {
+  role: string;
+  ms: number;
+  ok: boolean;
+  usage: DispatchUsage;
 }
 
 /** `spawn-child-bound.ts` stamps this on a child the wall clock ended. */
@@ -254,6 +272,32 @@ export function budgetFor(cfg: WorkConfig, state: LeanState): Budget | undefined
 }
 
 /**
+ * The one row a dispatching step records for one child it paid for.
+ *
+ * Every lean dispatch becomes a row — the child that finished, the child the
+ * budget stopped, and the child whose transport died all spent tokens before
+ * anybody knew, so the step that owns the dispatch builds its row through here
+ * rather than three sites inventing three shapes. `ms` and `usage` are what the
+ * child reported (a killed child still reports both, and a child that never
+ * started reports neither, which reads as zero cost — the truth); `ok` is the
+ * step's own judgement, and is deliberately NOT `result.ok` alone: a child that
+ * exited 0 with a kill cause or a provider error did not succeed.
+ */
+export function dispatchUsageRow(result: DispatchResult): DispatchUsageRow {
+  return {
+    role: result.role,
+    ms: result.ms ?? 0,
+    ok: result.ok && result.killCause === undefined && result.errorStop === undefined,
+    usage: result.usage ?? zeroDispatchUsage(),
+  };
+}
+
+/** A child that reported nothing cost nothing that anybody observed. */
+function zeroDispatchUsage(): DispatchUsageRow["usage"] {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+}
+
+/**
  * The verdict for a step that ran out of budget, not out of ideas. Callers ask
  * {@link readDispatched} before their infra throw, or this never gets to route.
  */
@@ -265,4 +309,20 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
     used: fired.used,
     reason: `${state} stopped: ${fired.limit} budget ${fired.value} exceeded (used ${fired.used})`,
   };
+}
+
+/**
+ * The budget verdict carrying the rows of every dispatch the step paid for.
+ *
+ * Same sentence as {@link budgetVerdict} — the reason text is what the operator
+ * is taught to read — with the cost rows attached, so a stopped round's tokens
+ * reach the host instead of vanishing with the child.
+ */
+export function budgetVerdictWithRows(
+  state: LeanState,
+  fired: BudgetFired,
+  rows: DispatchUsageRow[],
+): Outcome {
+  const verdict = budgetVerdict(state, fired);
+  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows };
 }

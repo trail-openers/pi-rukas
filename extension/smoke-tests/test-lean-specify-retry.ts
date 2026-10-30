@@ -240,6 +240,14 @@ function scripted(bodies: [string, ...string[]]) {
     r.outcome?.reason?.includes(RETRY_NOTE) !== true,
     `(f) a budget reason carries no retry note (got ${r.outcome?.reason})`,
   );
+  // #1920 slice A: two children ran, so the run's record carries two rows. A
+  // retry that OVERWROTE the first attempt's rows would report a two-child run
+  // as a one-child one, and the first attempt is the one most easily lost — it
+  // is the child whose tests were rejected.
+  assert(
+    (r.outcome?.dispatches ?? []).length === 2,
+    `(f) both attempts' dispatches are recorded (${JSON.stringify(r.outcome?.dispatches)})`,
+  );
 }
 
 // ── (e) the feedback section is capped, clipped, deduped and attributed ─────

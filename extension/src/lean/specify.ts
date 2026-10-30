@@ -77,8 +77,9 @@ import {
   specifyWorktreePath,
   worktreeExists,
 } from "./specify-tree.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { Outcome } from "./state.ts";
-import type { BudgetOpts } from "./step-budget.ts";
+import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
 export type SpecifyDispatch = (
@@ -329,6 +330,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // refusal that dropped nothing is final wherever it lands. The last attempt's
   // outcome is the step's result whatever it is.
   let attempt = await runSpecifyAttempt(attemptArgs);
+  // What each attempt's dispatch cost, collected as they happen: the step's
+  // outcome is ONE record, so the rows are kept outside it rather than read back
+  // from whichever outcome survived.
+  const allRows: DispatchUsageRow[][] = [attempt.dispatched];
   let attempts = 1;
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
@@ -345,7 +350,32 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
         `lean specify #${String(issue)}: provisioning before the retry: ${prepared.problem}`,
       );
     attempt = await runSpecifyAttempt({ ...attemptArgs, refusal: attempt.refused });
+    allRows.push(attempt.dispatched);
     attempts += 1;
   }
-  return attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  const final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  // ONE rule: the step's outcome carries the FLAT rows of EVERY attempt, in
+  // order, whichever verdict survived. A retry is a second child and the step
+  // is one record, so a fold that kept only the last attempt's rows would
+  // report one child where the run paid for two — and the dropped one is the
+  // expensive case, since a child whose tests were rejected still spent its
+  // tokens. A budget verdict is no exception: its own attempt is the last
+  // dispatch, so the merge is its rows plus any earlier attempt's. `undefined`
+  // when no attempt dispatched, so a step that paid for nothing records no key.
+  const dispatches = mergedRows(allRows);
+  return dispatches === undefined ? final : { ...final, dispatches };
+}
+
+/**
+ * The rows of every dispatch the step paid for, across both attempts, clipped
+ * to the validator's bound for ONE outcome ({@link DISPATCHES_MAX_ROWS}) by
+ * keeping the TAIL: rows are appended in dispatch order, so the clip keeps the
+ * child that actually decided the verdict and drops the earliest ones.
+ *
+ * `specify` folds up to two children into one record, so it is the one step
+ * that can exceed what `outcomeProblem` will load.
+ */
+function mergedRows(all: DispatchUsageRow[][]): DispatchUsageRow[] | undefined {
+  const rows = all.flat().slice(-DISPATCHES_MAX_ROWS);
+  return rows.length === 0 ? undefined : rows;
 }

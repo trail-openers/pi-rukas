@@ -30,13 +30,13 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { PublishDeps } from "../../src/lean/publish-deps.ts";
 import { renderPiSpec } from "../../src/lean/spec.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
-import { pathProblem } from "../../src/lean/specify-path.ts";
+import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { netGitEnv } from "../../src/work-driver-net-git.ts";
-import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { originHead } from "./lean-publish-asserts.ts";
 import { type FakeForge, fakeForge, fakePr, prWithState } from "./lean-publish-forge.ts";
 import {
   ORIGIN_ROOTS,
@@ -49,6 +49,7 @@ import {
 } from "./lean-publish-origin.ts";
 import { git, sha } from "./lean-verify-fixture.ts";
 
+export { originHead } from "./lean-publish-asserts.ts";
 export type { FakeForge } from "./lean-publish-forge.ts";
 
 /**
@@ -128,14 +129,29 @@ export interface PublishOpts {
   openPrs?: NormalizedPullRequest[];
   /** Make `prView` reject, so the step cannot read a reused PR's draft state. */
   viewThrows?: boolean;
+  /**
+   * What `prView` reports for a REUSED PR, overriding the `openPrs` row. The
+   * list reply the real CLI gives carries no `isDraft`, so a case that means
+   * "the PR is ready" without teaching the step that the list answers says it
+   * here, on the only reply that can.
+   */
+  viewIsDraft?: Record<string, boolean>;
   /** Make `prDraft` reject, so a reused PR cannot be put back to draft. */
   draftThrows?: boolean;
+  /** Make `prView` reject for these PR numbers only (the read-back after a re-draft). */
+  viewThrowsFor?: number[];
   /**
    * What `prView` reports for a number AFTER the step asked to draft it — the
    * seam for a forge that accepted `prDraft` and left the PR ready. A number the
    * map does not carry keeps the state the PR itself reports.
    */
   afterDraft?: Record<number, boolean | undefined>;
+  /**
+   * What `prView` reports for the PR the step CREATES — the seam for a forge
+   * that made a draft and reports it ready (`gh pr create --json` carries no
+   * `isDraft`, so the create reply never answers and the step must ask).
+   */
+  afterCreate?: Record<number, boolean | undefined>;
   /**
    * Answer one git call before the fixture's own executor sees it — the seam for
    * a case that must control a push's porcelain output. Return `undefined` to
@@ -348,12 +364,27 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     ),
     listThrows: o.listThrows === true,
     viewThrows: o.viewThrows === true,
+    ...(o.viewIsDraft === undefined
+      ? {}
+      : {
+          viewIsDraft: new Map(
+            Object.entries(o.viewIsDraft).map(([k, v]) => [Number(k), v] as const),
+          ),
+        }),
     draftThrows: o.draftThrows === true,
+    viewThrowsFor: o.viewThrowsFor,
     ...(o.afterDraft === undefined
       ? {}
       : {
           afterDraft: new Map(
             Object.entries(o.afterDraft).map(([k, v]) => [Number(k), v] as const),
+          ),
+        }),
+    ...(o.afterCreate === undefined
+      ? {}
+      : {
+          afterCreate: new Map(
+            Object.entries(o.afterCreate).map(([k, v]) => [Number(k), v] as const),
           ),
         }),
   });
@@ -437,44 +468,4 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
       body: forge.prCreateCalls[0]?.body ?? "",
     };
   }
-}
-
-/**
- * A path the publish body may print: a normalised git-relative path that
- * `specify-tree`'s own traversal / forbidden-directory rule accepts. The body's
- * own filter is deliberately NARROWER still — it also refuses a space or a
- * semicolon — so this helper is the looser class.
- */
-export function printablePath(p: string): boolean {
-  const rel = p
-    .replace(/\/+/g, "/")
-    .split("/")
-    .filter((s) => s !== "" && s !== ".")
-    .join("/");
-  return pathProblem(rel) === undefined && /^[A-Za-z0-9._/-]+$/.test(rel);
-}
-
-/** What origin's branch actually points at, or "" when the ref does not exist. */
-export function originHead(origin: string, branch: string): string {
-  try {
-    return git(origin, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`);
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Load an EXTRA criterion id -> test-file map onto the fixture's step log.
- *
- * The default log maps AC1/AC2 to two clean paths; a case that wants the body's
- * path filter exercised adds its own criterion and hands its files in here, so
- * the paths under test are the ones the step actually reads from the record.
- */
-export function testsStep(issue: number, tests: Record<string, string[]>): Step {
-  return {
-    key: `${issue}:challenge:0`,
-    state: "challenge",
-    startedAt: 5,
-    outcome: { kind: "new-tests", tests },
-  };
 }

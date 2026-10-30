@@ -401,12 +401,17 @@ function assertSeeded(seededSha: string | undefined, label: string): void {
   }
   for (const [i, state] of ["CLOSED", "MERGED"].entries()) {
     const issue = 438 + i;
+    const number = 95 + i;
     const r = await runPublish({
       issue,
       verify: { kind: "green" },
       originStale: true,
-      openPrs: [fakePr(95 + i, `https://forge.example/pull/${95 + i}`, `lean/issue-${issue}`)],
+      openPrs: [fakePr(number, `https://forge.example/pull/${number}`, `lean/issue-${issue}`)],
       stateOver: state,
+      // A settled PR is not the one this run publishes into — the step treats it
+      // as no PR and opens a fresh one — but its state is still read, so the
+      // forge is made to say it rather than leaving the step to guess.
+      viewIsDraft: { [String(number)]: false },
     });
     assertSeeded(r.seededSha, `(q2) state ${state}`);
     assert(

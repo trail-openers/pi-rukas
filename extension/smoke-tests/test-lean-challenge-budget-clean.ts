@@ -57,6 +57,19 @@ function assert(cond: boolean, msg: string): void {
     head === r.headBefore,
     `(a) HEAD equals the head the step found (${head} vs ${r.headBefore})`,
   );
+  // #1920 slice A — the child the ceiling stopped spent fifteen minutes of
+  // tokens, and the budget verdict carries that row: a stop that recorded no
+  // dispatch would report a run that burned its whole budget as one that paid
+  // for nothing.
+  assert(
+    (r.outcome?.dispatches ?? []).length === 1 &&
+      r.outcome?.dispatches?.[0]?.role === "developer",
+    `(a) the budget verdict records the stopped child (${JSON.stringify(r.outcome?.dispatches)})`,
+  );
+  assert(
+    (r.outcome?.dispatches?.[0]?.usage.input ?? 0) > 0,
+    `(a) and its reported usage, not zeros (${JSON.stringify(r.outcome?.dispatches?.[0]?.usage)})`,
+  );
 }
 
 // ----------------------- (b) a stop re-provisions the dependency links it removed

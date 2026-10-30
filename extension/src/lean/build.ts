@@ -45,7 +45,7 @@ import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchSpec } from "../types.ts";
+import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
@@ -66,9 +66,10 @@ import type { Outcome, Step } from "./state.ts";
 import {
   type BudgetArms,
   type BudgetOpts,
+  type BudgetStop,
   armBudget,
   budgetFor,
-  budgetVerdict,
+  budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
 
@@ -201,10 +202,14 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
 
   // 4. The builder, under the state's budget (#1883). A breach is a routed
   //    verdict; the child's work goes back with the tree, nothing is committed.
+  //    A child that died THROWS, and a throw records no outcome — so the rows
+  //    ride on the error and the engine puts them on the error outcome it writes
+  //    (see `error-outcome.ts`, #1920 A). Nothing here catches them: the original
+  //    error already carries them, and re-wrapping it could only drop them.
   const reentry = reentryFromLog(ctx.steps);
   const budget = armBudget(budgetFor(config, "build"));
   if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
-  const built = await dispatchBuilder(deps.dispatch, {
+  const [dispatched, row] = await dispatchBuilder(deps.dispatch, {
     issue,
     spec,
     frozen,
@@ -215,8 +220,9 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     budget,
     ...(reentry === undefined ? {} : { reentry }),
   });
-  const read = readDispatched(built);
-  if ("stop" in read) return budgetVerdict("build", read.stop);
+  const rows = [row];
+  const read = readDispatched(dispatched);
+  if ("stop" in read) return budgetVerdictWithRows("build", read.stop, rows);
 
   // 5 + 6. Capture, reset, rewrite, commit — or say there was nothing to commit.
   const report = await normaliseBuild({
@@ -231,7 +237,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     budget: new CaptureBudget(deps.captureCeiling),
   });
   if (report.files.length === 0)
-    return { kind: "exhausted", reason: "the developer produced no change" };
+    return { kind: "exhausted", reason: "the developer produced no change", dispatches: rows };
   const notes = [
     `${report.files.length} file(s) changed`,
     report.restored.length > 0 ? `restored: ${report.restored.join(", ")}` : "",
@@ -241,7 +247,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       : "",
     report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
   ].filter((s) => s !== "");
-  return { kind: "ok", reason: notes.join("; ") };
+  return { kind: "ok", reason: notes.join("; "), dispatches: rows };
 }
 
 /** The build step's dependencies: the outside world, injected. */

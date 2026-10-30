@@ -67,6 +67,14 @@ function assert(cond: boolean, msg: string): void {
   const wt = r.worktree;
   assert(r.threw === undefined, `(a) no throw: ${r.threw?.message ?? "clean"}`);
   assert(r.outcome?.kind === "ok", `(a) ok, got ${r.outcome?.kind}`);
+  // #1920 slice A: the step records the one child it paid for, with the usage
+  // the child reported.
+  assert(
+    (r.outcome?.dispatches ?? []).length === 1 &&
+      r.outcome?.dispatches?.[0]?.role === "developer" &&
+      r.outcome?.dispatches?.[0]?.ok === true,
+    `(a) ok records exactly the successful dispatch (${JSON.stringify(r.outcome?.dispatches)})`,
+  );
   assert(r.sawBaseHealthy, "(a) the fast verify tier ran before any red was trusted");
   assert(
     Object.keys(r.outcome?.frozen ?? {}).join() === "tests/AC1-retry.test.sh",
@@ -280,11 +288,13 @@ function assert(cond: boolean, msg: string): void {
     toolUses: [submit("AC1", ["tests/AC1-retry.test.sh"])],
     dispatchOk: false,
   });
+  const err = r.threw;
+  assert(err instanceof SpecifyInfraError, `(g) a dispatch that did not succeed THROWS (got ${err === undefined ? `outcome ${r.outcome?.kind}` : err.constructor.name})`);
+  // #1920 slice A: a throw records no outcome, so the row rides on the error or
+  // the child's tokens never reach the run's total.
   assert(
-    r.threw instanceof SpecifyInfraError,
-    `(g) a dispatch that did not succeed THROWS — got ${
-      r.threw === undefined ? `outcome ${r.outcome?.kind}` : r.threw.constructor.name
-    }`,
+    (r.deadDispatches ?? []).length === 1 && r.deadDispatches?.[0]?.ok === false,
+    `(g) and the throw carries the dead child's cost row, marked not-ok (${JSON.stringify(r.deadDispatches)})`,
   );
 }
 

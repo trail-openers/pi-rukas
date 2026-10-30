@@ -27,10 +27,12 @@ import type { Outcome } from "./state.ts";
 import {
   type BudgetArms,
   type BudgetStop,
+  type DispatchUsageRow,
   armBudget,
   budgetFor,
   budgetStop,
-  budgetVerdict,
+  budgetVerdictWithRows,
+  dispatchUsageRow,
   readDispatched,
 } from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
@@ -60,9 +62,28 @@ export interface SpecifyAttemptResult {
   outcome: Outcome;
   /** The attributed drop labels the boundary made in this attempt. */
   refused: string[];
+  /**
+   * What this attempt's dispatch cost, reported SEPARATELY from the outcome.
+   *
+   * The caller owns the retry, and the retry owns the step's single outcome —
+   * so if the rows lived only on the outcome, a second attempt would overwrite
+   * the first's and the run would report one child where it paid for two. The
+   * caller folds these; an attempt's own outcome still carries its rows, so a
+   * reader of the log alone sees the same truth as the fold.
+   */
+  dispatched: DispatchUsageRow[];
 }
 
-/** The dispatch, with a non-OK child turned into the throw it deserves. */
+/**
+ * The dispatch, with a non-OK child turned into the throw it deserves.
+ *
+ * The row this dispatch cost comes back on every path that RECEIVED a
+ * `DispatchResult`: the ok path, the budget stop, and the `SpecifyInfraError`
+ * (which carries it on the error, because a throw records no outcome and the
+ * child still spent tokens). A throw from before the dispatch returned — a
+ * preflight that could not stat the reporter, a dispatch seam that rejected —
+ * saw no child and carries no row.
+ */
 async function dispatchAdversary(
   deps: SpecifyDeps,
   opts: {
@@ -76,7 +97,7 @@ async function dispatchAdversary(
     /** The drop reasons of the previous attempt; set only on the one retry. */
     refusal?: string[];
   },
-): Promise<DispatchResult | BudgetStop> {
+): Promise<[DispatchResult | BudgetStop, DispatchUsageRow]> {
   await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
   const prompt = specifyPrompt({
     issue: opts.issue,
@@ -101,19 +122,20 @@ async function dispatchAdversary(
       ...opts.budget.opts,
     },
   );
+  const row = dispatchUsageRow(result);
   // BEFORE the infra throw: the step's own ceiling ending the child is a
   // verdict about the round, not a fault in the harness.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return budgetStop(fired);
+  if (fired !== undefined) return [budgetStop(fired), row];
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
       result.errorStop?.message ??
       result.errorStop?.reason ??
       `exit ${String(result.exitCode)}`;
-    throw new SpecifyInfraError(`specify dispatch failed: ${String(why)}`);
+    throw new SpecifyInfraError(`specify dispatch failed: ${String(why)}`, [row]);
   }
-  return result;
+  return [result, row];
 }
 
 /**
@@ -149,9 +171,17 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     ...(refusal === undefined ? {} : { refusal }),
     ...(testLocation === undefined ? {} : { testLocation }),
   });
-  const dispatchedRead = readDispatched(dispatched);
+  const [dispatchedChild, row] = dispatched;
+  // Every outcome this attempt returns carries the row: a dispatch that ended
+  // the attempt is still a dispatch the run paid for.
+  const rows = [row];
+  const dispatchedRead = readDispatched(dispatchedChild);
   if ("stop" in dispatchedRead)
-    return { outcome: budgetVerdict("specify", dispatchedRead.stop), refused: [] };
+    return {
+      outcome: budgetVerdictWithRows("specify", dispatchedRead.stop, rows),
+      refused: [],
+      dispatched: rows,
+    };
   const toolUses = dispatchedRead.result.toolUses ?? [];
   const refused: string[] = [];
   const pipeline = await runTestPipeline(
@@ -210,13 +240,21 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
         frozen: pipeline.frozen,
         tests: pipeline.tests,
         reason: pipeline.reason,
+        dispatches: rows,
       },
       refused,
+      dispatched: rows,
     };
   if (pipeline.kind === "uncovered")
     return {
-      outcome: { kind: "no-red-test", failedRules: pipeline.uncovered, reason: pipeline.reason },
+      outcome: {
+        kind: "no-red-test",
+        failedRules: pipeline.uncovered,
+        reason: pipeline.reason,
+        dispatches: rows,
+      },
       refused,
+      dispatched: rows,
     };
   // No kept candidate at all. Every criterion is uncovered, which is the same
   // refusal this step returned before the split for the same cause — and, as
@@ -228,7 +266,9 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       kind: "no-red-test",
       failedRules: rules,
       reason: [rules.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
+      dispatches: rows,
     },
     refused,
+    dispatched: rows,
   };
 }
