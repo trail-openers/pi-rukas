@@ -29,7 +29,8 @@ import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
 import type { WorkConfig } from "../src/lean/config.ts";
 import type { Budget } from "../src/lean/config.ts";
-import { armBudget, budgetFor, budgetStopOf } from "../src/lean/step-budget.ts";
+import { armBudget, budgetFor, budgetStop, readDispatched } from "../src/lean/step-budget.ts";
+import type { BudgetStop } from "../src/lean/step-budget.ts";
 import type { RunningState } from "../src/progress.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { buildFixture, configWithRunner, runBuild } from "./lib/lean-build-fixture.ts";
@@ -77,6 +78,26 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(fired?.value === 5, `the value is the ceiling (got ${fired?.value})`);
   assert(fired?.used === 6, `the used amount is what the child reported (got ${fired?.used})`);
   assert(b.opts.signal?.aborted === true, "the breach aborts the child's signal");
+  // The hook never throws into spawn's stdout path: an internal failure is
+  // swallowed after one trace line, because a budget that cannot report itself
+  // must not take the child down with it.
+  let ticks = 0;
+  const guarded = armBudget({ turns: 1, tokens: 0, minutes: 0 });
+  try {
+    // A `RunningState` whose comparison throws (a getter-backed snapshot from a
+    // malformed child line) is the failure this guards.
+    guarded.opts.onProgress?.({
+      ...progress({}),
+      get turns(): number {
+        ticks++;
+        throw new Error("bad child line");
+      },
+    } as RunningState);
+    assert(true, "a throwing progress hook does not propagate to the caller");
+  } catch {
+    assert(false, "a throwing progress hook must not reach the caller");
+  }
+  assert(ticks > 0, "and the hook was actually entered");
 }
 
 // ── (2) a tokens breach ─────────────────────────────────────────────────────
@@ -106,9 +127,20 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(fired?.limit === "minutes", `the bound's kill reads as minutes (got ${fired?.limit})`);
   assert(fired?.value === 20, `the value is the configured minutes (got ${fired?.value})`);
   assert(
-    fired?.used === 20,
-    `the used amount is the elapsed minutes, rounded (got ${fired?.used})`,
+    fired?.used === 21,
+    `the used amount is the elapsed minutes rounded UP, never short (got ${fired?.used})`,
   );
+  const justOver = armBudget({ turns: 0, tokens: 0, minutes: 20 }).fired(
+    resultWith({ killCause: "child-bound", ok: false, ms: 19 * 60_000 + 59_000 }),
+  );
+  assert(
+    justOver?.used === 20,
+    `a kill at 19:59 reports 20 minutes used, not 19 (got ${justOver?.used})`,
+  );
+  const noMs = armBudget({ turns: 0, tokens: 0, minutes: 20 }).fired(
+    resultWith({ killCause: "child-bound", ok: false }),
+  );
+  assert(noMs?.used === 1, `a kill with no ms never reports 0 (got ${noMs?.used})`);
 }
 
 // ── (4) no breach: neither a clean result nor another cap reads as the budget
@@ -158,20 +190,22 @@ function progress(over: Partial<RunningState>): RunningState {
   // own budget and not some other figure.
   // The config is the one the STEP reads, so the number the verdict carries is
   // the one the config set — which is the whole claim of this case.
-  const buildTurns = 3;
+  const BUILD_TURNS = 3;
   assert(defaultConfig().budgets.build?.turns === 150, "the shipped default stays 150 turns");
   const r = await runBuild({
     issue: 201,
-    exactConfig: {
+    config: {
       ...configWithRunner(),
-      budgets: { ...defaultConfig().budgets, build: { turns: 3, tokens: 0, minutes: 0 } },
+      budgets: { ...defaultConfig().budgets, build: { turns: BUILD_TURNS, tokens: 0, minutes: 0 } },
     },
     child: (wt) => {
       writeFileSync(path.join(wt, "src/retry.ts"), "export const retry = () => 1;\n");
     },
     // The child's own progress feed, driven from the fake dispatch: the same
-    // call `spawn.ts` makes at every `message_end`.
-    onProgressTick: (onProgress) => onProgress?.(progress({ turns: 999, totalTokens: 0 })),
+    // call `spawn.ts` makes at every `message_end`. One turn past the single
+    // ceiling this case sets, so no second number can drift from the first.
+    onProgressTick: (onProgress) =>
+      onProgress?.(progress({ turns: BUILD_TURNS + 1, totalTokens: 0 })),
   });
   assert(r.threw === undefined, `(7) no throw: ${r.threw?.message ?? "clean"}`);
   assert(r.outcome?.kind === "budget", `(7) the outcome kind is budget (got ${r.outcome?.kind})`);
@@ -185,11 +219,15 @@ function progress(over: Partial<RunningState>): RunningState {
   );
   assert(r.outcome?.limit === "turns", `(7) the limit field is carried (got ${r.outcome?.limit})`);
   assert(
-    r.outcome?.value === buildTurns,
+    r.outcome?.value === BUILD_TURNS,
     `(7) the value is the CONFIG's ceiling, not an invented one (got ${r.outcome?.value})`,
   );
   assert(
-    r.outcome?.used === 999,
+    (r.outcome?.reason ?? "").includes(String(BUILD_TURNS + 1)),
+    `(7) the reason carries the overshoot (got ${r.outcome?.reason})`,
+  );
+  assert(
+    r.outcome?.used === BUILD_TURNS + 1,
     `(7) the used amount is what the child hit (got ${r.outcome?.used})`,
   );
   assert(r.dispatched === 1, `(7) the child was dispatched once (got ${r.dispatched})`);
@@ -245,7 +283,9 @@ function progress(over: Partial<RunningState>): RunningState {
     budgetFor(merged, "specify")?.turns === 80,
     "an unoverridden state keeps its default rather than the override",
   );
-  assert(budgetFor(merged, "no-such-state") === undefined, "an unknown state has no budget");
+  // A state the run can sit in but has no budget for: the lookup is keyed on
+  // `LeanState`, so an unknown key is a type error rather than a silent `undefined`.
+  assert(budgetFor(merged, "verify") === undefined, "a state with no budget entry has none");
 }
 
 // ── (10) the machine routes a breach to handback, like an exhausted build ──
@@ -306,13 +346,14 @@ function progress(over: Partial<RunningState>): RunningState {
   );
 }
 
-// ── (12) only a POSITIVELY TAGGED stop is a budget verdict ─────────────────
+// ── (12) only a stop this module made is a budget verdict ─────────────────
 {
-  // `budgetStopOf` used to read `?.fired` off whatever the dispatch seam handed
-  // back, so a `DispatchResult` that happened to carry a `fired` key — a child
-  // tool result, a replayed payload — became a budget verdict and routed the step
-  // to handback for a ceiling that never fired. The tag is what distinguishes a
-  // stop from a child result at runtime; this is the canary for that distinction.
+  // The stop used to be a plain object with a `leanBudgetStop: true` field, so
+  // ANY object carrying that field — a child tool result, a replayed JSON
+  // payload, a `JSON.parse` of a stored result — read as this step's verdict and
+  // routed the run to handback for a ceiling that never fired. A symbol key
+  // cannot be minted from JSON and cannot be forged by a child: only
+  // {@link budgetStop} makes one, so the canary is that neither lookalike reads.
   const lookalike = {
     role: "developer",
     ok: true,
@@ -321,17 +362,23 @@ function progress(over: Partial<RunningState>): RunningState {
     ms: 0,
     exitCode: 0,
     fired: { limit: "turns", value: 1, used: 99 },
-  } as unknown as Parameters<typeof budgetStopOf>[0];
+    leanBudgetStop: true,
+  } as unknown as DispatchResult | BudgetStop;
+  const forged = JSON.parse(
+    '{"fired":{"limit":"turns","value":1,"used":99},"leanBudgetStop":true}',
+  ) as unknown as DispatchResult | BudgetStop;
+  assert("result" in readDispatched(lookalike), "a plain object carrying `fired` is not a verdict");
   assert(
-    budgetStopOf(lookalike) === undefined,
-    "an untagged `fired` on a child result is not a verdict",
+    "result" in readDispatched(forged),
+    "a JSON payload carrying the old tag is not a verdict",
   );
+  const real = readDispatched(budgetStop({ limit: "turns", value: 1, used: 99 }));
+  assert("stop" in real && real.stop.limit === "turns", "a stop built by the factory reads back");
+  const clean = readDispatched(resultWith({ toolUses: [1, 2] }));
   assert(
-    budgetStopOf({ fired: { limit: "turns", value: 1, used: 99 }, leanBudgetStop: true })?.limit ===
-      "turns",
-    "a tagged stop reads back",
+    "result" in clean && clean.result.toolUses?.length === 2,
+    "and a clean result hands back its tool uses through the same reader",
   );
-  assert(budgetStopOf(undefined as never) === undefined, "and nothing at all is not a verdict");
 }
 
 // ── (13) an inert minutes lever says so ──────────────────────────────────

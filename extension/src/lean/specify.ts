@@ -87,9 +87,9 @@ import {
   type BudgetStop,
   armBudget,
   budgetFor,
-  budgetStopOf,
+  budgetStop,
   budgetVerdict,
-  toolUsesOf,
+  readDispatched,
 } from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
@@ -231,7 +231,7 @@ async function dispatchAdversary(
   // BEFORE the infra throw: the step's own ceiling ending the child is a
   // verdict about the round, not a fault in the harness.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return { fired, leanBudgetStop: true };
+  if (fired !== undefined) return budgetStop(fired);
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
@@ -334,9 +334,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     budget,
     ...(testLocation === undefined ? {} : { testLocation }),
   });
-  const stop = budgetStopOf(dispatched);
-  if (stop !== undefined) return budgetVerdict("specify", stop);
-  const toolUses = toolUsesOf(dispatched);
+  const dispatchedRead = readDispatched(dispatched);
+  if ("stop" in dispatchedRead) return budgetVerdict("specify", dispatchedRead.stop);
+  const toolUses = dispatchedRead.result.toolUses ?? [];
 
   // 6-13. Extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
   //       kept file red ON THE BASE, and commit. That pipeline is shared with

@@ -77,9 +77,8 @@ import {
   type BudgetOpts,
   armBudget,
   budgetFor,
-  budgetStopOf,
   budgetVerdict,
-  toolUsesOf,
+  readDispatched,
 } from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 
@@ -239,9 +238,9 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     ...(testLocation === undefined ? {} : { testLocation }),
     ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
   });
-  const stop = budgetStopOf(dispatched);
-  if (stop !== undefined) return budgetVerdict("challenge", stop);
-  const toolUses = toolUsesOf(dispatched);
+  const read = readDispatched(dispatched);
+  if ("stop" in read) return budgetVerdict("challenge", read.stop);
+  const toolUses = read.result.toolUses ?? [];
 
   // 4-8. Validate, capture, reset to the HEAD, rewrite, prove red, commit.
   const pipeline = await runTestPipeline(

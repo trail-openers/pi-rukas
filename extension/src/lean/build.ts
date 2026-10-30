@@ -68,8 +68,8 @@ import {
   type BudgetOpts,
   armBudget,
   budgetFor,
-  budgetStopOf,
   budgetVerdict,
+  readDispatched,
 } from "./step-budget.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
@@ -190,8 +190,8 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     budget,
     ...(reentry === undefined ? {} : { reentry }),
   });
-  const stop = budgetStopOf(built);
-  if (stop !== undefined) return budgetVerdict("build", stop);
+  const read = readDispatched(built);
+  if ("stop" in read) return budgetVerdict("build", read.stop);
 
   // 5 + 6. Capture, reset, rewrite, commit — or say there was nothing to commit.
   const report = await normaliseBuild({

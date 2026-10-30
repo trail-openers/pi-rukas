@@ -21,7 +21,7 @@ import { challengePrompt } from "./challenge-prompt.ts";
 import type { ChallengeDispatch } from "./challenge-types.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
-import type { BudgetArms, BudgetStop } from "./step-budget.ts";
+import { type BudgetArms, type BudgetStop, budgetStop } from "./step-budget.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 
 /** An adversary we could not run. The engine turns this into handed-back 10. */
@@ -81,7 +81,7 @@ export async function dispatchAdversary(
   );
   // Before the throw below: the round's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return { fired, leanBudgetStop: true };
+  if (fired !== undefined) return budgetStop(fired);
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??

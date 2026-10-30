@@ -38,7 +38,7 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
-import type { RunningState } from "../../src/progress.ts";
+import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -292,8 +292,6 @@ export interface RunOpts {
   child?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
   extraSteps?: Step[];
-  /** Override the config handed to the step. */
-  config?: WorkConfig;
   /** A build fixture whose frozen record is deliberately wrong (case (g)). */
   frozenSha?: string;
   /** The frozen test's committed bytes, when a case needs something other than TEST. */
@@ -312,15 +310,14 @@ export interface RunOpts {
    * `message_end`, which is what makes a ceiling breach observable without a
    * real child.
    */
-  onProgressTick?: (onProgress: ((s: RunningState) => void) | undefined) => void;
+  onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
   /**
-   * THE config the step reads, verbatim — as opposed to `config`, which is
-   * discarded unless it is set whole. A case that wants to change one field of
-   * the runner config (a budget, a tier) uses this so the rest still comes from
-   * {@link configWithRunner}: a budget case that dropped the runner template
-   * would fail for the wrong reason.
+   * THE config the step reads, verbatim. A case that wants to change one field
+   * of the runner config (a budget, a tier) spreads {@link configWithRunner}
+   * into this so the rest still comes from it: a budget case that dropped the
+   * runner template would fail for the wrong reason.
    */
-  exactConfig?: WorkConfig;
+  config?: WorkConfig;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -366,7 +363,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     fetchIssueBody: async () => SPEC_BODY,
     loadConfig: async () => {
       if (opts.loadConfigError !== undefined) throw new Error(opts.loadConfigError);
-      return opts.exactConfig ?? opts.config ?? configWithRunner();
+      return opts.config ?? configWithRunner();
     },
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
   };

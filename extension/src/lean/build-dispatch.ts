@@ -15,7 +15,7 @@ import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
 import type { PiSpec } from "./spec.ts";
-import type { BudgetArms, BudgetStop } from "./step-budget.ts";
+import { type BudgetArms, type BudgetStop, budgetStop } from "./step-budget.ts";
 
 /** The prompt's inputs, gathered by `build.ts` from the step log and the forge. */
 export interface BuildDispatchOpts {
@@ -66,7 +66,7 @@ export async function dispatchBuilder(
   );
   // Before the throw below: the step's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return { fired, leanBudgetStop: true };
+  if (fired !== undefined) return budgetStop(fired);
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??

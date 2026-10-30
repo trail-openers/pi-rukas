@@ -96,13 +96,21 @@ function terminalCause(steps: Step[]): string | undefined {
 /**
  * The newest budget breach the log records, and FIRST in {@link neededFromLog}:
  * the breach is why the run stopped; an earlier red is only why it was trying.
+ *
+ * Rendered from the typed fields (`limit` / `value` / `used`), not from the
+ * step's `reason` prose: those three are what `assertRun` validated on load, so
+ * the sentence the operator reads is built from checked data rather than from
+ * free text whatever handler (or hand-edited file) wrote. A breach missing a
+ * field is not a breach this function will describe, and falls through to the
+ * next cause rather than printing a half-sentence.
  */
 function budgetCause(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const oc = steps[i]?.outcome;
     if (oc?.kind !== "budget") continue;
-    const reason = oc.reason ?? oc.message;
-    if (typeof reason === "string" && reason.trim() !== "") return reason;
+    const { limit, value, used } = oc;
+    if (limit === undefined || typeof value !== "number" || typeof used !== "number") continue;
+    return `${steps[i]?.state ?? "the step"} stopped: ${limit} budget ${String(value)} exceeded (used ${String(used)})`;
   }
   return undefined;
 }
