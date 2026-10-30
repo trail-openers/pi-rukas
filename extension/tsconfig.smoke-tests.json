@@ -164,6 +164,9 @@
     "smoke-tests/test-lean-specify-new-tests.ts",
     "smoke-tests/test-lean-challenge-new-tests.ts",
     "smoke-tests/test-lean-budgets.ts",
-    "smoke-tests/test-lean-specify-retry.ts"
+    "smoke-tests/test-lean-specify-retry.ts",
+    "smoke-tests/test-AC1-hostile-error-fail.ts",
+    "smoke-tests/test-AC2-nonerror-tostring-fail.ts",
+    "smoke-tests/test-AC3-empty-message-fallback.ts"
   ]
 }

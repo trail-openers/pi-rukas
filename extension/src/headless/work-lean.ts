@@ -118,17 +118,27 @@ export const NAME_MAX = 120;
 const UNKNOWN_CRASH = "unknown error";
 
 /**
- * The line terminators `oneline` escapes, as code points.
+ * Every character `oneline` escapes, as ONE regex and ONE pass.
  *
- * Tab is deliberately NOT here: it does not end a line, and leaving it raw keeps
- * a stack's indentation readable. `\r` does — a terminal, and any NDJSON
- * splitter that honours CRLF, ends the record on it — and U+2028 / U+2029 /
- * U+0085 are line terminators to the JS grammar itself. Same set
+ * The floor is the set that ends a line for SOME reader: `\r` and `\n`, and
+ * U+2028 / U+2029 / U+0085, which are line terminators to the JS grammar itself
+ * and to any NDJSON splitter that honours CRLF. Same family
  * `lean/text-fence.ts` strips, restated because that one is not exported and
- * folds tab to a space. Code points, not a literal of escape sequences, so a
- * terminator can never be written in a form that matches nothing.
+ * folds tab to a space.
+ *
+ * But stopping at the terminators leaves ESC, BEL and NUL RAW, and those do not
+ * need to end a line to do damage: ESC opens a sequence a terminal then
+ * EXECUTES, BEL rings the host, and NUL truncates anything that reads the line
+ * as a C string. Since the whole point of this function is that a hostile value
+ * gets printed on somebody's stderr, the class is widened to every C0 code point
+ * below 0x20 plus DEL (0x7f) — `\p{Cc}` — with the three Unicode separators
+ * added because they are NOT `\p{Cc}` and would otherwise slip through. Tab is
+ * inside the widened class now (it did not end a line, but it is a control
+ * character and this is a trace, not a table), and a `\t` escape still spells a
+ * stack's indentation. One regex with a replacer, so a multi-MB stack is walked
+ * once rather than once per character.
  */
-const LINE_BREAK_CP = [0x0a, 0x0d, 0x2028, 0x2029, 0x0085];
+const CONTROL = /[\p{Cc}\u2028\u2029\u0085]/gu;
 /** A single backslash — the escape introducer `oneline` writes. */
 const BS = String.fromCharCode(0x5c);
 
@@ -232,16 +242,21 @@ function errorFields(err: Error): { name: string; message: string; stack: string
  * wants its indentation. The hazard here is narrower: the headless stderr writer
  * turns each physical line into its own NDJSON record, so every terminator in
  * `LINE_BREAK_CP` becomes its escape (`\n`, `\r`, or `\uXXXX`) and the result
- * holds no terminator at all. An escape is longer than the character it
+ * holds no terminator at all — and no other control character either, so ESC,
+ * BEL and NUL reach a reader as `\u001b` / `\u0007` / `\u0000` text rather than
+ * as sequences a terminal executes. An escape is longer than the character it
  * replaces, so callers bound the result AFTER this runs.
  */
 function oneline(text: string): string {
-  let out = text;
-  for (const cp of LINE_BREAK_CP) {
-    const code = cp === 0x0a ? "n" : cp === 0x0d ? "r" : `u${cp.toString(16).padStart(4, "0")}`;
-    out = out.replaceAll(String.fromCharCode(cp), BS + code);
-  }
-  return out;
+  return text.replace(CONTROL, (ch) => {
+    const cp = ch.codePointAt(0) as number;
+    // The two ASCII breaks keep their short forms because that is what a
+    // developer reading a truncated stack expects; everything else gets the
+    // six-character `\u00XX` form, which stays complete without a table.
+    if (cp === 0x0a) return `${BS}n`;
+    if (cp === 0x0d) return `${BS}r`;
+    return `${BS}u${cp.toString(16).padStart(4, "0")}`;
+  });
 }
 
 /**
@@ -391,7 +406,18 @@ export async function runWorkLeanVerb(
       // Cut before the escape so it never walks a multi-MB stack, then again
       // after it (an escape is longer than its character) to keep the bound exact.
       const trace = oneline(body.slice(0, TRACE_MAX + 16)).slice(0, TRACE_MAX);
-      traceWarn(`work-lean: #${issue} crashed — ${traceLabel(traceFields.name)}: ${trace}`);
+      // Its OWN guarded frame. The trace is a diagnostic; the document this
+      // function returns is the contract, and `fail()` is the LAST net the verb
+      // has — so a stderr writer that throws (a closed fd, a host that replaced
+      // the stream, a trace seam that itself fails) must not cost the host its
+      // one document and its exit code 30. Swallowed on purpose: there is no
+      // second channel to report a broken first channel to from inside the
+      // handler for it.
+      try {
+        traceWarn(`work-lean: #${issue} crashed — ${traceLabel(traceFields.name)}: ${trace}`);
+      } catch {
+        /* the document is the contract */
+      }
     }
     say(`work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`);
     return {

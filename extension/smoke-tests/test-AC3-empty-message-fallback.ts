@@ -30,7 +30,7 @@
  * Offline.
  */
 import { EXIT } from "../src/headless/exit-code.ts";
-import { NAME_MAX, TRACE_MAX } from "../src/headless/work-lean.ts";
+import { MESSAGE_MAX, NAME_MAX, TRACE_MAX } from "../src/headless/work-lean.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import { driveThrow, warnLines } from "./lib/work-lean-verb-fixture.ts";
 
@@ -110,6 +110,31 @@ function silentSource(stack: string): string {
   );
 }
 
+// ── (b2) a huge reason cannot make the document's message longer than MESSAGE_MAX.
+//
+// The bound is what stops a crash whose reason is a 200 KB step log turning the
+// host's one document into a megabyte of JSON. Nothing else in this file drives
+// a reason longer than `MESSAGE_MAX`, so without this case the `oneLine(...,
+// MESSAGE_MAX - 1)` argument could be widened, or the clip removed, and every
+// other assertion here would still pass — a bound nobody tests is a bound nobody
+// chose.
+{
+  const huge = "x".repeat(MESSAGE_MAX * 5);
+  const err = new Error(huge);
+  err.stack = huge;
+  const src = `const run = async () => { const e = new Error(${JSON.stringify(huge)}); e.stack = ${JSON.stringify(huge)}; throw e; };`;
+  const r = await driveThrow(err, src);
+  assert(r.code === EXIT.crash, `a huge reason still exits 30 (got ${r.code})`);
+  assert(
+    r.violations.length === 0,
+    `a huge reason keeps the output contract (got ${JSON.stringify(r.violations)})`,
+  );
+  assert(
+    typeof r.message === "string" && r.message.length <= MESSAGE_MAX,
+    `a reason far longer than MESSAGE_MAX is clipped TO it, not past it (length ${safe(r.message?.length)}, MESSAGE_MAX=${MESSAGE_MAX})`,
+  );
+}
+
 // ── (c) a BLANK stack and a real message: the trace carries the MESSAGE.
 //
 // `body` is `blank(stack) ? reason : stack`, so with no stack the warning has
@@ -186,6 +211,35 @@ function silentSource(stack: string): string {
         l.slice(l.indexOf("crashed — ") + "crashed — ".length).length <= TRACE_MAX + NAME_MAX + 64,
     ),
     `no raw CR or U+2028 survives in any traced line, and a hostile name cannot flood it (got ${JSON.stringify(traced)})`,
+  );
+}
+
+// ── (e) a `name` carrying ESC is ESCAPED, not just de-terminator-ed.
+//
+// Escaping the LINE TERMINATORS only stops a record splitting; ESC does not end
+// a line, and it is the character a terminal then acts on — an ESC sequence in a
+// name printed raw is a terminal control sequence a hostile Error gets executed
+// on whoever reads the runner's stderr. So the trace carries `\u001b` as six
+// printable characters, never 0x1b itself.
+{
+  const esc = String.fromCharCode(0x1b);
+  const nasty = `Wrapped${esc}[31mRed`;
+  const err = new Error("git exploded");
+  err.name = nasty;
+  err.stack = "WrappedError at build\n    at runLean (/x/engine.ts:7:3)";
+  const src = `const run = async () => { const e = new Error("git exploded"); e.name = ${JSON.stringify(nasty)}; e.stack = "WrappedError at build\\n    at runLean (/x/engine.ts:7:3)"; throw e; };`;
+  const r = await driveThrow(err, src);
+  assert(r.code === EXIT.crash, `a name with ESC still exits 30 (got ${r.code})`);
+  const traced = warnLines(r.trace);
+  assert(
+    traced.some(
+      (l) => l.includes("work-lean: #7 crashed") && l.includes(`${BS}u001b`) && l.includes("[31mRed"),
+    ),
+    `an ESC in the name shows up as \\u001b in the trace (got ${JSON.stringify(traced)})`,
+  );
+  assert(
+    traced.every((l) => !l.includes(esc)),
+    `no raw ESC reaches a terminal in any traced line (got ${JSON.stringify(traced)})`,
   );
 }
 
