@@ -338,7 +338,7 @@ export async function runLensFix(
     );
     if (rep.kind === "already-at-tip" || rep.kind === "repositioned") {
       trace(
-        `work-driver: lens-fix reposition ${rep.kind}${rep.kind === "repositioned" && rep.movedByPatchEquivalence ? " (movedByPatchEquivalence)" : ""} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
+        `work-driver: lens-fix reposition ${rep.kind} for ${fixTree} (branch ${branchName}) — dispatching fixer onto the verified tip`,
       );
     } else {
       // Park: the base is not trustworthy. Build the cap-hit (routed to

@@ -177,8 +177,10 @@ async function mkRepo(tag: string, issue: number, title: string) {
       })`,
     );
     assert(
-      rep2.kind === "repositioned" && rep2.movedByPatchEquivalence === true,
-      "1882: the accept came from the remote's patch-equivalence read",
+      rep2.kind === "repositioned" && rep2.tipSha === remoteTip,
+      `1882: the accept came from the remote's patch-equivalence read, so it landed on the REMOTE tip (got ${
+        rep2.kind === "repositioned" ? rep2.tipSha.slice(0, 12) : rep2.kind
+      }, expected ${remoteTip.slice(0, 12)})`,
     );
     assert(
       rep2.kind === "repositioned" && rep2.backupRef !== undefined,
