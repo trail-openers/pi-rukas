@@ -128,6 +128,9 @@ async function dispatchAdversary(
  * owes — `specify` has required all of them since before the split, so the
  * pipeline's partial-red case is a refusal here, not a partial freeze.
  *
+ * Returns the boundary's drop reasons too: an attempt that dropped a row is the
+ * only kind of refusal the child can fix by being told about it.
+ *
  * THROWS on infrastructure (a dispatch that died, a pipeline fault).
  */
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {

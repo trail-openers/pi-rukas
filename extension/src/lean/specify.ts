@@ -118,7 +118,9 @@ export interface SpecifyDeps {
  * of it would make `err instanceof SpecifyInfraError` quietly false for whoever
  * imported the wrong one.
  */
-export { SpecifyInfraError } from "./specify-run.ts"; /** The rules a spec fails on re-read, or [] when it still holds. */
+export { SpecifyInfraError } from "./specify-run.ts";
+
+/** The rules a spec fails on re-read, or [] when it still holds. */
 function specRules(body: string): { spec?: PiSpec; rules: string[] } {
   const parsed = parsePiSpec(body);
   if (!parsed.ok) return { rules: [`spec: ${parsed.reason}`] };
