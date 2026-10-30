@@ -317,6 +317,12 @@ export interface RunOpts {
   testLimits?: { timeoutMs?: number };
   /** A child whose dispatch did not succeed (the infra case). */
   dispatchOk?: boolean;
+  /**
+   * The challenge state's minutes ceiling, and a child the wall clock ended at
+   * it: the dispatch reports `child-bound`, which the armed budget reads as a
+   * minutes stop, the same path a real child takes.
+   */
+  challengeMinutes?: number;
   /** A pre-built fixture, for a case that dismantles the tree first. */
   built?: ChallengeBuilt;
   /** A step log to use instead of the one the fixture builds. */
@@ -362,6 +368,7 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     specs.push(spec);
     prompts.push(spec.prompt);
     opts.child?.(spec.cwd as string);
+    const bound = opts.challengeMinutes;
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
     const result: DispatchResult = {
@@ -369,8 +376,9 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
       ok: opts.dispatchOk !== false,
       text: "found an edge case",
       toolUses: declared,
-      ms: 1,
+      ms: bound === undefined ? 1 : bound * 60_000,
       exitCode: opts.dispatchOk === false ? 1 : 0,
+      ...(bound === undefined ? {} : { killCause: "child-bound" as const }),
     };
     return result;
   };
@@ -381,6 +389,11 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     loadConfig: async () => {
       if (opts.noRunner === true) return { ...configWith(), verify: { fast: "true" } };
       if (opts.runner !== undefined) return configWith(opts.runner);
+      if (opts.challengeMinutes !== undefined)
+        return {
+          ...configWith(),
+          budgets: { challenge: { turns: 0, tokens: 0, minutes: opts.challengeMinutes } },
+        };
       return opts.config ?? configWith();
     },
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),

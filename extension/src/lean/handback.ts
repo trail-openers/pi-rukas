@@ -31,6 +31,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { postHandback } from "./io.ts";
 import { validPrUrl } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
+import { budgetTrio } from "./step-budget.ts";
 import { fenceText } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify.ts";
 
@@ -97,44 +98,41 @@ function terminalCause(steps: Step[]): string | undefined {
  * The newest budget breach the log records, and FIRST in {@link neededFromLog}:
  * the breach is why the run stopped; an earlier red is only why it was trying.
  *
- * A breach only counts when NOTHING DECIDED is newer than it. A budget is a
+ * A breach only counts when NOTHING that did work is newer than it. A budget is a
  * step's own ceiling, and one step's ceiling says nothing about the run: since
  * #1883 a `challenge` breach that the table routes on is a CONTINUATION (the run
  * goes to `verify`, which still runs every frozen test), so a budget step whose
  * verdict the table carried past is not why the run ended. The one true test of
- * that is position, not prose: the breach is the newest decided step in the log
+ * that is position, not prose: the breach is the newest working step in the log
  * when the handback is written, so whatever the run then died on is newer than
  * it and is the reason the operator came for. A `build` or `specify` breach that
  * ends the run still satisfies the test — those steps route a breach straight to
- * `handback`, so nothing is decided after them.
+ * `handback`, so nothing is newer after them.
+ *
+ * `handback` and `decline` entries are excluded from that scan: they are the
+ * run REPORTING how it ended, not work it went on to do, so a report written
+ * after a breach must not hide it. An outcome-less step that is not a report
+ * still counts as newer — undecided work after a breach means the breach did not
+ * end the run.
  *
  * Rendered from the typed fields (`limit` / `value` / `used`), not from the
- * step's `reason` prose: those three are what `assertRun` validated on load, so
- * the sentence the operator reads is built from checked data rather than from
- * free text whatever handler (or hand-edited file) wrote. A breach missing a
- * field is not a breach this function will describe, and falls through to the
- * next cause rather than printing a half-sentence. The `kind` test is what makes
- * that field check meaningful rather than decorative, so it stays: it also means
- * a caller that reads the log without going through `assertRun` still cannot get
- * a half-sentence out of here.
+ * step's `reason` prose: {@link budgetTrio} reads those three, the same check
+ * every reader of a recorded breach makes, so a breach missing a field falls
+ * through to the next cause rather than printing a half-sentence.
  */
 function budgetCause(steps: Step[]): string | undefined {
-  let newestDecided = -1;
+  let newest: number | undefined;
   for (let i = steps.length - 1; i >= 0; i--) {
-    if (steps[i]?.outcome !== undefined) {
-      newestDecided = i;
-      break;
-    }
+    const step = steps[i];
+    if (step === undefined || step.state === "handback" || step.state === "decline") continue;
+    newest = i;
+    break;
   }
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const oc = steps[i]?.outcome;
-    if (oc?.kind !== "budget") continue;
-    if (i !== newestDecided) continue;
-    const { limit, value, used } = oc;
-    if (limit === undefined || typeof value !== "number" || typeof used !== "number") continue;
-    return `${steps[i]?.state ?? "the step"} stopped: ${limit} budget ${String(value)} exceeded (used ${String(used)})`;
-  }
-  return undefined;
+  if (newest === undefined) return undefined;
+  const step = steps[newest];
+  const fired = budgetTrio(step?.outcome);
+  if (fired === undefined) return undefined;
+  return `${step?.state ?? "the step"} stopped: ${fired.limit} budget ${String(fired.value)} exceeded (used ${String(fired.used)})`;
 }
 
 /**

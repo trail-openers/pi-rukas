@@ -231,7 +231,7 @@ and `state`/`counters` are a cache that `resume.ts` re-derives rather than
 trusts. Read it when you want to know what a run actually decided.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
-budget breach **that nothing decided is newer than** — a `challenge` breach the
+budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the
 table carried past to `verify` is not why the run ended, so a later red owns the
 line — else the newest red `verify` reason, else the newest red `ci`, else the
 newest green verdict, else the last error; then the frozen tests (max 20),

@@ -81,20 +81,37 @@ function minutesUsed(ms: number): number {
 }
 
 /**
+ * The typed trio a budget outcome must carry before any caller states it.
+ *
+ * `limit` named, `value` and `used` numbers — or `undefined`, which is what a
+ * half-record reads as. Every reader of a recorded breach (the handback's cause,
+ * the publish body's challenge line) goes through this one check, so a record
+ * that one of them would print is one they all would.
+ */
+export function budgetTrio(oc: Outcome | undefined): BudgetFired | undefined {
+  if (oc?.kind !== "budget") return undefined;
+  const { limit, value, used } = oc;
+  if (limit === undefined || typeof value !== "number" || typeof used !== "number")
+    return undefined;
+  return { limit, value, used };
+}
+
+/**
  * One budget line, the same words for all three levers.
  *
  * The turns/tokens breach traces itself from inside the progress hook — the only
- * place that sees it live — and the minutes breach is traced by the reader in
- * {@link armBudget}, which is where the inferred stop first becomes a verdict.
- * Before #1883-followed the minutes path printed nothing, so a wall-clock stop was
- * indistinguishable in a child log from any other way a round ended. Callers must
- * already be past their abort; the sink is not ours to trust, so the write is
- * caught: a breach whose trace line throws still routes.
+ * place that sees it live ("stopping the child") — and the minutes breach is
+ * traced by the reader in {@link armBudget}, which is where the inferred stop
+ * first becomes a verdict, after the child has already stopped ("the child
+ * stopped at its bound"). Before #1883-followed the minutes path printed nothing,
+ * so a wall-clock stop was indistinguishable in a child log from any other way a
+ * round ended. Callers must already be past their abort; the sink is not ours to
+ * trust, so the write is caught: a breach whose trace line throws still routes.
  */
-function traceBreach(fired: BudgetFired): void {
+function traceBreach(fired: BudgetFired, phrase: string): void {
   try {
     traceWarn(
-      `lean budget: ${fired.limit} ${String(fired.value)} exceeded (used ${String(fired.used)}); stopping the child`,
+      `lean budget: ${fired.limit} ${String(fired.value)} exceeded (used ${String(fired.used)}); ${phrase}`,
     );
   } catch {
     // A sink we cannot write to cannot be written to; nothing to say about it.
@@ -150,7 +167,7 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     };
     if (!minutesTraced) {
       minutesTraced = true;
-      traceBreach(breach);
+      traceBreach(breach, "the child stopped at its bound");
     }
     return breach;
   };
@@ -218,7 +235,7 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     if (breach === undefined) return;
     hit = breach;
     controller.abort();
-    traceBreach(breach);
+    traceBreach(breach, "stopping the child");
   };
   return {
     opts: {

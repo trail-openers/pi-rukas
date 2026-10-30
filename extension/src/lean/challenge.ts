@@ -63,6 +63,7 @@ import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
+import { resetWorktreeToBase } from "./specify-reset.ts";
 import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,
@@ -245,7 +246,17 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
   });
   const read = readDispatched(dispatched);
-  if ("stop" in read) return budgetVerdict("challenge", read.stop);
+  if ("stop" in read) {
+    // A killed child leaves whatever it wrote behind, and nothing else resets the
+    // tree before `verify`, which refuses a dirty one. So the stop resets to the
+    // head this step found, through the pipeline's own reset and clean-tree proof.
+    try {
+      await resetWorktreeToBase(deps.exec, wt, headBefore, branch);
+    } catch (err) {
+      throw new ChallengeInfraError((err as Error).message);
+    }
+    return budgetVerdict("challenge", read.stop);
+  }
   const toolUses = read.result.toolUses ?? [];
 
   // 4-8. Validate, capture, reset to the HEAD, rewrite, prove red, commit.

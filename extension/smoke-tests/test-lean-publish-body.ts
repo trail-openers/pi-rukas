@@ -285,6 +285,13 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
     challengeBudgetFromLog([step(0, { kind: "budget", limit: "minutes", used: 26 })]) === undefined,
     "and so one missing its value",
   );
+  assert(
+    challengeBudgetFromLog([
+      step(0, stop),
+      step(1, { kind: "new-tests", frozen: {}, tests: {} }),
+    ]) === undefined,
+    "a later new-tests round means the stop no longer decides the line",
+  );
 
   const run = await runPublish({
     issue: 434,
@@ -297,10 +304,7 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
     noPush: true,
     extraSteps: [budgetStep(0)],
   });
-  assert(
-    run.threw === undefined,
-    `(f) the step ran (got ${run.threw?.message ?? "clean"})`,
-  );
+  assert(run.threw === undefined, `(f) the step ran (got ${run.threw?.message ?? "clean"})`);
   assert(
     run.body.includes("no extra tests were added") &&
       run.body.includes("challenge stopped at its minutes budget (15)"),

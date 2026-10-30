@@ -112,6 +112,19 @@ function breach(state: "build" | "challenge") {
   );
 }
 
+// ── a handback report written after a breach does not hide it ────────────
+{
+  const needed = neededFromLog([
+    decided("verify", { kind: "red", reason: "an earlier red" }),
+    decided("build", breach("build")),
+    decided("handback", { kind: "done", reason: "handback comment posted" }),
+  ]);
+  assert(
+    needed.includes("minutes budget 15"),
+    `a handback entry after a build breach does not hide the breach (got ${needed})`,
+  );
+}
+
 // ── a breach missing its typed trio is not a sentence this prints ─────────
 {
   // The renderer reads `limit`/`value`/`used`, the fields `assertRun` validated

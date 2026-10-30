@@ -20,6 +20,7 @@
 
 import type { PiSpec } from "./spec.ts";
 import type { Step } from "./state.ts";
+import { budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 
 /** The marker that says which renderer produced this body, for a later reader. */
@@ -153,8 +154,10 @@ function modelsLine(models: Record<string, string>): string {
  *
  * Lives beside the renderer rather than in `publish.ts` because it is the body's
  * own claim: it decides whether the "challenge stopped at its … budget" line is
- * printed, and the test drives the renderer. A `budget` outcome missing its typed
- * `limit`/`value` — the fields `state.ts` validates on load — is no evidence the
+ * printed, and the test drives the renderer. Only the NEWEST decided challenge
+ * round decides: a later round that found new tests means the optional round did
+ * not end on its ceiling, so an earlier stop says nothing the body may state. A
+ * `budget` outcome missing its typed trio ({@link budgetTrio}) is no evidence the
  * body may state, so it prints nothing rather than a half-sentence.
  */
 export function challengeBudgetFromLog(
@@ -162,10 +165,9 @@ export function challengeBudgetFromLog(
 ): { limit: "minutes" | "turns" | "tokens"; value: number } | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
-    const oc = step?.outcome;
-    if (step?.state !== "challenge" || oc?.kind !== "budget") continue;
-    if (oc.limit === undefined || typeof oc.value !== "number") continue;
-    return { limit: oc.limit, value: oc.value };
+    if (step?.state !== "challenge" || step.outcome === undefined) continue;
+    const fired = budgetTrio(step.outcome);
+    return fired === undefined ? undefined : { limit: fired.limit, value: fired.value };
   }
   return undefined;
 }
