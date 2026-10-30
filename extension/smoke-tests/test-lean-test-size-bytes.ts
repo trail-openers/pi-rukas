@@ -9,9 +9,9 @@
  * Same fixtures, same boundary, same `existsAtBase` stub — the seam is between
  * the size rules and the read they cost, not between two behaviours.
  *
- * A line bound alone does not bound a read: 150 lines of 200 characters is
- * 30 000 bytes, and the boundary would have paid for all of it to discover the
- * file was one line under the cap. The byte ceiling is judged on the `lstat`
+ * A line bound alone does not bound a read: a file can sit under the line cap
+ * and still be far too many bytes, and the boundary would have paid to read all
+ * of it to discover that. The byte ceiling is judged on the `lstat`
  * the boundary already holds, so a file too big to be a test is refused without
  * being read at all — which is what bounds the read ONE VALIDATION performs:
  * at most `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at most
@@ -52,17 +52,11 @@ import type { ExecFn } from "../src/worktree.ts";
  * when either moves: `MAX_TEST_LINES` + 1 lines of the widest comment line the
  * fixtures use. Shared by the byte-rule case (which pins the ORDER of the two
  * rules) and the grow case (which pins the re-check at capture); its bounds are
- * asserted where the byte-rule case uses it, not assumed.
+ * asserted once, right below, before either consumer runs.
  */
 const WIDE_OVER_BOUND_BYTES = Buffer.from(
   `${"// ".padEnd(200, "x").trim()}\n`.repeat(MAX_TEST_LINES + 1),
 );
-
-/** The line count alone, for the fixtures that must not be a NUL-bearing file. */
-const linesOf = (bytes: Buffer): number => {
-  const counted = countTestLines(bytes);
-  return "lines" in counted ? counted.lines : -1;
-};
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -72,6 +66,22 @@ function assert(cond: boolean, msg: string): void {
     exit = 1;
   }
 }
+
+/** The line count alone, for the fixtures that must not be a NUL-bearing file. */
+const linesOf = (bytes: Buffer): number => {
+  const counted = countTestLines(bytes);
+  return "lines" in counted ? counted.lines : -1;
+};
+
+// The fixture both consumers below rest on, asserted on BOTH bounds rather than
+// assumed: the claim that only the byte rule could have refused it (it runs
+// first, on the stat, and never opens the file) is worthless if a later edit to
+// a constant quietly moves this file under one of the bounds.
+assert(
+  WIDE_OVER_BOUND_BYTES.length > MAX_TEST_BYTES &&
+    linesOf(WIDE_OVER_BOUND_BYTES) > MAX_TEST_LINES,
+  `the shared over-bound fixture really exceeds BOTH bounds (${linesOf(WIDE_OVER_BOUND_BYTES)} lines > ${MAX_TEST_LINES}, ${WIDE_OVER_BOUND_BYTES.length} bytes > ${MAX_TEST_BYTES}), so only the byte rule — which runs first, on the stat — can be what refused it`,
+);
 
 const SPEC: PiSpec = {
   problem: "p",
@@ -91,16 +101,6 @@ const noBase = async () => false;
   writeFileSync(`${wt}/tests-small.test.ts`, "// small\n");
   try {
     const wideBytes = readFileSync(`${wt}/tests-wide.test.ts`);
-    // The fixture the case rests on, asserted on BOTH bounds rather than
-    // assumed: the claim that only the byte rule could have refused it (it runs
-    // first, on the stat, and never opens the file) is worthless if a later edit
-    // to a constant quietly moves this file under one of the bounds.
-    assert(
-      wideBytes.length === WIDE_OVER_BOUND_BYTES.length &&
-        wideBytes.length > MAX_TEST_BYTES &&
-        linesOf(wideBytes) > MAX_TEST_LINES,
-      `the shared over-bound fixture really exceeds BOTH bounds (${linesOf(wideBytes)} lines > ${MAX_TEST_LINES}, ${wideBytes.length} bytes > ${MAX_TEST_BYTES}), so only the byte rule — which runs first, on the stat — can be what refused it`,
-    );
     const reads: string[] = [];
     const byBytes = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: ["tests-wide.test.ts", "tests-small.test.ts"] }],
@@ -153,11 +153,13 @@ const noBase = async () => false;
     // for, and the short unterminated segment that pads up to the bound.
     const terminated = width * MAX_TEST_LINES;
     const tail = MAX_TEST_BYTES - terminated;
-    // A fixture precondition, not a verdict: were `tail` negative the final
-    // `repeat` would throw and the case would report a bound it never held.
+    // A fixture precondition, not a verdict: were `width` zero the terminated
+    // lines would carry no content at all and the case would report a bound it
+    // never held. `tail` cannot fail this way — it is `MAX_TEST_BYTES mod
+    // MAX_TEST_LINES`, always in range.
     assert(
-      tail >= 0,
-      `the exact-bound fixture has a non-negative tail segment (${tail} bytes)`,
+      width >= 1,
+      `the byte cap must allow at least one character per line (got width ${width})`,
     );
     const exactBytes = Buffer.from(
       `${"x".repeat(width - 1)}\n`.repeat(MAX_TEST_LINES - 1) +
@@ -337,10 +339,8 @@ const noBase = async () => false;
   const r = await growRun(bytes, (got) => {
     captured = got;
   });
-  assert(
-    bytes.length > MAX_TEST_BYTES && linesOf(bytes) > MAX_TEST_LINES,
-    `the grow fixture is over BOTH bounds (${linesOf(bytes)} lines > ${MAX_TEST_LINES}, ${bytes.length} bytes > ${MAX_TEST_BYTES}) — the growth is real, not a stubbed number`,
-  );
+  // The fixture's own bounds are asserted once, where it is defined, so by
+  // here the growth is known to be real rather than a stubbed number.
   assert(
     captured?.has(grew) === true,
     "the capture itself accepted the file (it holds a looser `MAX_CAPTURE_BYTES` ceiling), so what refused it can only be the pipeline's re-check",

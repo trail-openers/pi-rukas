@@ -127,7 +127,7 @@ for (const [name, prompt] of [
   // numbers quoted in the prompt must BE the constants the boundary enforces.
   assert(
     prompt.includes(`at most ${MAX_TEST_LINES} lines`) &&
-      prompt.includes(`${MAX_TEST_BYTES} bytes`) &&
+      prompt.includes(`at most ${MAX_TEST_LINES} lines and ${MAX_TEST_BYTES} bytes`) &&
       prompt.includes(`at most ${MAX_TEST_FILES_PER_CRITERION} files`),
     `${name}: the numbers the prompt quotes ARE the constants the boundary enforces (${MAX_TEST_LINES}/${MAX_TEST_BYTES}/${MAX_TEST_FILES_PER_CRITERION}), so a child is never dropped for a rule it was not told`,
   );
