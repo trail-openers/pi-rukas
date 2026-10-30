@@ -53,7 +53,9 @@ const REFUSAL_LINE_MAX = 300;
  */
 export function refusalFeedback(reasons: string[]): string {
   if (reasons.length === 0) return "";
-  const lines = [...new Set(reasons.map((reason) => oneLine(reason, REFUSAL_LINE_MAX)))];
+  // Deduped before clipping: two reasons that share their first 300 characters
+  // are two reasons, and clipping first would show the second as a repeat.
+  const lines = [...new Set(reasons)].map((reason) => oneLine(reason, REFUSAL_LINE_MAX));
   const shown = lines.slice(0, REFUSAL_LINES_MAX).map((line) => `- ${line}`);
   const more = lines.length - shown.length;
   return [

@@ -268,6 +268,16 @@ function scripted(bodies: [string, ...string[]]) {
   );
   assert(!dup.includes("(+"), "(e) no `(+N more)` line when nothing is left out");
   assert(refusalFeedback([]) === "", "(e) an empty list gives an empty section");
+  // Two reasons of 400 characters that share their first 300: both are named.
+  // Clipping before the dedupe would have collapsed them into one line.
+  const shared = "y".repeat(300);
+  const twins = refusalFeedback([`${shared}-first`, `${shared}-second`]);
+  const twinLines = twins.split("\n").filter((l) => l.startsWith("- "));
+  assert(
+    twinLines.length === 2,
+    `(e) two reasons sharing a 300-char prefix are both named (got ${twinLines.length})`,
+  );
+  assert(!twins.includes("(+"), "(e) nothing is left out of two reasons");
 }
 
 for (const dir of ROOTS) {
