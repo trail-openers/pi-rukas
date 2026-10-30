@@ -57,6 +57,7 @@ import {
   resetWorktreeToBase,
   writeCaptured,
 } from "./specify-reset.ts";
+import { MAX_TEST_BYTES, testBytesProblem } from "./test-size.ts";
 
 export { SpecifyInfraError };
 import type { DeclaredPath, DroppedRow } from "./specify-tree.ts";
@@ -248,6 +249,14 @@ export async function runTestPipeline(
   //    and a file that cannot be read that way — swapped for a hard link or a
   //    symlink in the window after validation, emptied, truncated — is dropped
   //    with its reason and never becomes a test.
+  //
+  //    The size rules bounded the file the boundary READ (their bound is per
+  //    validation), and the child owns this window: it can grow a kept file
+  //    between that read and this one. `readOneDescriptor` proves one file was
+  //    stable across its own read and `MAX_CAPTURE_BYTES` is a far looser
+  //    ceiling, so the byte bound is asserted again on the bytes actually held
+  //    before a single one of them is rewritten into the tree. A file that grew
+  //    past the bound is refused here, in the same words the boundary uses.
   const owners = new Map(candidates.map((c) => [c.path, c.criterionId]));
   let captured: Map<string, Buffer>;
   try {
@@ -256,7 +265,18 @@ export async function runTestPipeline(
       candidates.map((c) => c.path),
       owners,
     );
-    captured = got.captured;
+    captured = new Map();
+    for (const [rel, bytes] of got.captured) {
+      if (bytes.length > MAX_TEST_BYTES) {
+        dropped.push({
+          criterionId: owners.get(rel) ?? "unknown",
+          path: rel,
+          reason: testBytesProblem(rel, bytes.length),
+        });
+        continue;
+      }
+      captured.set(rel, bytes);
+    }
     dropped.push(...got.dropped);
   } catch (err) {
     throw new SpecifyInfraError((err as Error).message);

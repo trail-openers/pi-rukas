@@ -28,7 +28,7 @@
  * Shared fixture: lib/lean-test-location-fixture.ts.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import { validateSubmitRows } from "../src/lean/specify-tree.ts";
@@ -58,6 +58,21 @@ import {
 
 // ────────────────────────────────── (3a) the boundary refuses misplaced tests
 
+/**
+ * A temp worktree for the boundary calls that judge nothing but placement.
+ *
+ * `wt` is a required argument — the size rules read the candidate out of a real
+ * tree, and a rule that goes quiet when its argument is missing is a rule a
+ * caller can forget. These cases are about WHERE a file sits, so they hand the
+ * boundary a real (empty) tree and say `sizeRules: false`: no stat, no read, and
+ * every other rule — the quota included — judged exactly as production judges it.
+ */
+function emptyWt(label: string): string {
+  const dir = mkdtempSync(`${process.env.TMPDIR ?? "/tmp"}/pi-lean-loc-${label}-`);
+  ROOTS.push(dir);
+  return dir;
+}
+
 {
   const present = new Set([
     "extension/smoke-tests/test-ac1.ts",
@@ -76,7 +91,13 @@ import {
       { criterionId: "AC1", testFiles: ["./extension/smoke-tests/test-ac1.ts"] },
       { criterionId: "AC1", testFiles: ["extension\\smoke-tests\\test-ac1.ts"] },
     ],
-    { spec: SPEC, exists: (p) => present.has(p), testLocation: LOC },
+    {
+      spec: SPEC,
+      exists: (p) => present.has(p),
+      testLocation: LOC,
+      wt: emptyWt("placed"),
+      sizeRules: false,
+    },
   );
   assert(
     kept.length === 1 && kept[0]?.testFiles.join() === "extension/smoke-tests/test-ac1.ts",
@@ -113,7 +134,7 @@ import {
       { criterionId: "AC1", testFiles: ["tests/test-wrong-dir.ts"] },
       { criterionId: "AC1", testFiles: ["extension/smoke-tests/spec-wrong-name.ts"] },
     ],
-    { spec: SPEC, exists: (p) => present.has(p) },
+    { spec: SPEC, exists: (p) => present.has(p), wt: emptyWt("unconfigured"), sizeRules: false },
   );
   assert(
     unconfigured.kept.length === 1 && unconfigured.dropped.length === 0,
@@ -146,6 +167,8 @@ import {
       spec: SPEC,
       exists: (p) => p === "extension/smoke-tests/test-ac1.ts",
       testLocation: LOC,
+      wt: emptyWt("ordered"),
+      sizeRules: false,
       frozenPaths: new Set(["tests/AC1-retry.test.sh", "extension/smoke-tests/test-ac1.ts"]),
     },
   );
@@ -359,6 +382,8 @@ import {
       spec: SPEC,
       exists: () => true,
       testLocation: LOC,
+      wt: emptyWt("frozen-in-place"),
+      sizeRules: false,
       frozenPaths: new Set(["extension/smoke-tests/test-ac1.ts"]),
     },
   );
@@ -381,6 +406,8 @@ import {
       spec: SPEC,
       exists: () => true,
       existsAtBase: async () => true,
+      wt: emptyWt("frozen-at-base"),
+      sizeRules: false,
       frozenPaths: new Set(["tests/AC1-retry.test.sh"]),
     },
   );

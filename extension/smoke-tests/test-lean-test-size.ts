@@ -171,15 +171,40 @@ const SPEC: PiSpec = {
         ),
       `the quota is PER criterion — AC4 fills its own two files while AC1 keeps two of its own, so the bound cannot starve a spec with several (got ${JSON.stringify(perCriterion.kept)})`,
     );
-    // A caller with no tree cannot see the bytes, so neither rule fires and the
-    // other verdicts are untouched — the boundary stays usable without a worktree.
-    const noTree = await validateSubmitRows(
+    // The test-only escape, and the one thing it does NOT switch off. `wt` is
+    // required — there is no "no tree" shape of this call, and a rule that went
+    // quiet on a missing argument was a rule a caller could forget. `sizeRules:
+    // false` skips the stat and the read and nothing else, so the SIZE rules stay
+    // home while the QUOTA still refuses the third and later files: a bound on
+    // how many files a criterion ends up with is a question about counts, and a
+    // caller that could not see the bytes still has to answer it.
+    const noSize = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: [atLimit, overLimit, small, mid, three] }],
-      { spec: SPEC, exists: () => true },
+      { spec: SPEC, exists: () => true, wt, sizeRules: false },
     );
     assert(
-      noTree.dropped.length === 0 && noTree.kept[0]?.testFiles.length === 5,
-      `no \`wt\` → neither size rule fires, so a unit caller keeps every other verdict (kept ${noTree.kept[0]?.testFiles.length}, dropped ${noTree.dropped.length})`,
+      noSize.dropped.length === 5 - MAX_TEST_FILES_PER_CRITERION &&
+        noSize.kept[0]?.testFiles.length === MAX_TEST_FILES_PER_CRITERION &&
+        noSize.dropped.every((d) => d.reason.includes("already has") === true),
+      `\`sizeRules: false\` → the line and byte rules never fire (the 121-line file is not refused for its length), but the QUOTA still keeps ${MAX_TEST_FILES_PER_CRITERION} and refuses the rest (kept ${noSize.kept[0]?.testFiles.length}, dropped ${JSON.stringify(noSize.dropped.map((d) => d.reason))})`,
+    );
+    // ... and the escape is not a way to skip the run-level seed either: a
+    // criterion the record says is full is full with the size rules off too.
+    const noSizeSeeded = await validateSubmitRows(
+      [{ criterionId: "AC1", testFiles: [small, mid, three] }],
+      {
+        spec: SPEC,
+        exists: () => true,
+        wt,
+        sizeRules: false,
+        frozenByCriterion: { AC1: ["tests/AC1-frozen-a.test.ts", "tests/AC1-frozen-b.test.ts"] },
+      },
+    );
+    assert(
+      noSizeSeeded.kept.length === 0 &&
+        noSizeSeeded.dropped.length === 3 &&
+        noSizeSeeded.dropped.every((d) => d.reason.includes("already has") === true),
+      `a full criterion keeps nothing under \`sizeRules: false\` either — the escape skips reads, not the bound (kept ${JSON.stringify(noSizeSeeded.kept)})`,
     );
     // Size before quota: an over-long THIRD file is reported as too long, not as
     // surplus — the remedies differ (shorten it vs. do not write it at all).

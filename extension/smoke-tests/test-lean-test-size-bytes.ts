@@ -13,15 +13,19 @@
  * 24 KiB, and the boundary would have paid for all of it to discover the file
  * was one line under the cap. The byte ceiling is judged on the `lstat` the
  * boundary already holds, so a file too big to be a test is refused without
- * being read at all — which is also what bounds the read one validation
- * performs: at most `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at
- * most `MAX_TEST_BYTES`.
+ * being read at all — which is what bounds the read ONE VALIDATION performs: at
+ * most `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at most
+ * `MAX_TEST_BYTES`. It is a bound per validation, not per run: the capture
+ * re-checks the bytes it actually holds against the same constant, and case (7)
+ * below drives the file that grew in between.
  *
  * The size rules read the file the way the capture does, so the fixtures here
  * are real files under a real temp `wt`: a test that stubbed the read would pass
  * whether or not production could perform it. `statSize` is driven only for the
- * shapes a real filesystem cannot be asked to produce on command — a stat that
- * throws, or a size no fixture should pay for.
+ * shapes a real filesystem cannot be asked to produce on command — a disk fault
+ * carrying a given errno, or a size no fixture should pay for. Every read-side
+ * failure is driven for REAL: an unresolvable name and a 000-mode file, so the
+ * errno is the operating system's rather than a fixture's.
  *
  * One case is deliberate and easy to "fix" away: the oversized fixture is over
  * BOTH bounds (121 lines of 200 characters). A fixture under the line bound and
@@ -34,10 +38,13 @@
  * — is the exact-bound pair below.
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { PiSpec } from "../src/lean/spec.ts";
+import { SpecifyInfraError, runTestPipeline } from "../src/lean/specify-run.ts";
 import { validateSubmitRows } from "../src/lean/submit-tests-cap.ts";
 import { MAX_TEST_BYTES, MAX_TEST_LINES, countTestLines } from "../src/lean/test-size.ts";
+import type { ExecFn } from "../src/worktree.ts";
 
 /** The line count alone, for the fixtures that must not be a NUL-bearing file. */
 const linesOf = (bytes: Buffer): number => {
@@ -115,12 +122,11 @@ const noBase = async () => false;
     );
     // A file at exactly the bound, and under the line bound, is KEPT: the rule
     // refuses excess, not the bound itself — the same rule the line cap applies
-    // to `MAX_TEST_LINES`. `16384 = 160 x 102 + 64`: a file at the byte bound,
-    // A file at the byte bound whose 102 160-character lines make it 103 lines
-    // (the last segment is unterminated, so it counts as one): well under the
-    // line bound, so the only rule that can judge it is the byte one. The
-    // literal is spelled out because the assertion is precisely about hitting
-    // the constant.
+    // to `MAX_TEST_LINES`. The arithmetic is spelled out (`16384 = 160 × 102 +
+    // 64`) because the assertion is precisely about hitting the constant: 102
+    // 160-character lines plus one unterminated 64-character segment is 103
+    // lines, well under `MAX_TEST_LINES`, so the byte rule is the only one here
+    // with anything to say about this file.
     const exactBytes = Buffer.from(`${"x".repeat(159)}\n`.repeat(102) + "x".repeat(64));
     writeFileSync(`${wt}/tests-exact.test.ts`, exactBytes);
     const keptExact = await validateSubmitRows(
@@ -150,45 +156,110 @@ const noBase = async () => false;
   }
 }
 
-// ---- Infra versus verdict: a read that cannot answer is not a drop ----------
+// ---- Infra versus verdict: a stat that will not answer is not a drop --------
 //
 // The rule the boundary keeps having to be pulled back from: a toolchain that
 // could not look must not come back as "the adversary wrote nothing", because
-// that is a VERDICT about work nobody judged. EIO / EMFILE / EACCES are the
-// real shapes; `statSize` throwing is how a test says so without owning a disk.
+// that is a VERDICT about work nobody judged. The split is on the error's `code`,
+// not on whether it threw at all. EIO / EMFILE / EACCES are the filesystem
+// declining to answer — `infra`, and a handback. ENOENT / ENOTDIR / ELOOP are
+// statements about the NAME the child submitted: the capture reading that same
+// name refuses it for the same fact, so the size rule says so too, as a DROP that
+// names the code and carries no message.
+//
+// Both arms are driven through the `statSize` seam, which is what the boundary
+// calls: a test cannot arrange a disk fault on command, and a `{ why }` refusal
+// from the read is classified by what it IS — a verdict on the file — never by
+// parsing an errno out of prose (see `missingPathCode`).
 {
   const wt = mkdtempSync(`${process.env.TMPDIR ?? "/tmp"}/pi-lean-test-infra-`);
   writeFileSync(`${wt}/tests-ok.test.ts`, "// fine\n");
+  const errWith =
+    (code: string): (() => number) =>
+    () => {
+      throw Object.assign(new Error(`${code}: a message no operator should ever read`), { code });
+    };
+  const runOne = async (
+    rel: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<{ kept: unknown[]; dropped: { reason: string }[]; threw?: unknown }> => {
+    try {
+      return await validateSubmitRows([{ criterionId: "AC1", testFiles: [rel] }], {
+        spec: SPEC,
+        exists: () => true,
+        existsAtBase: noBase,
+        wt,
+        ...extra,
+      });
+    } catch (err) {
+      return { kept: [], dropped: [], threw: err };
+    }
+  };
   try {
-    for (const [name, statSize] of [
-      ["a stat that throws", () => throwSomething("EIO: i/o error")],
-      [
-        "a read that throws",
-        (abs: string) => Number(readFileSync(`${abs.replace(/\/tests-/, "/never-")}`).length),
-      ],
-    ] as const) {
-      let threw: unknown;
-      try {
-        await validateSubmitRows([{ criterionId: "AC1", testFiles: ["tests-ok.test.ts"] }], {
-          spec: SPEC,
-          exists: () => true,
-          existsAtBase: noBase,
-          wt,
-          statSize,
-        });
-      } catch (err) {
-        threw = err;
-      }
+    // (1) A non-path errno is infrastructure, for each family of real failure —
+    // and neither the code nor the message rides into the handback.
+    for (const code of ["EIO", "EMFILE", "EACCES"]) {
+      const got = await runOne("tests-ok.test.ts", { statSize: errWith(code) });
       assert(
-        threw !== undefined &&
-          (threw as Error).name === "SpecifyInfraError" &&
-          /could not read tests-ok\.test\.ts/.test((threw as Error).message),
-        `${name} is INFRASTRUCTURE — it throws SpecifyInfraError, which specify-run maps to a handback (got ${String(threw)})`,
+        got.threw instanceof SpecifyInfraError &&
+          got.threw.message.includes("could not read tests-ok.test.ts") &&
+          got.threw.message.includes(code) === false,
+        `a stat that throws with code ${code} is INFRASTRUCTURE — SpecifyInfraError, which specify-run maps to a handback, naming no errno and carrying no message (got ${String(got.threw)})`,
       );
     }
-    // And the drop reasons never carry a raw error message: an unreadable stat
-    // that the FILE explains (`readOneDescriptor`'s own `{ why }`) is a drop, in
-    // the capture's words, and no absolute path rides along in it.
+    // (2) A missing-path code is a DROP, worded with the code and nothing else.
+    for (const code of ["ENOENT", "ENOTDIR", "ELOOP"]) {
+      const got = await runOne("tests-ok.test.ts", { statSize: errWith(code) });
+      assert(
+        got.threw === undefined &&
+          got.kept.length === 0 &&
+          got.dropped.length === 1 &&
+          got.dropped[0]?.reason === `test tests-ok.test.ts could not be read (${code})`,
+        `a stat that throws with code ${code} is a DROP on the child's own path, naming the code and nothing else (got ${JSON.stringify(got.dropped.map((d) => d.reason))})`,
+      );
+    }
+    // (3) An error that carries no `code` at all is not a missing-path verdict:
+    // there is nothing to read, so the rule cannot claim the child's name is the
+    // problem, and a message is never parsed for one.
+    const got = await runOne("tests-ok.test.ts", {
+      statSize: () => {
+        throw new Error("ENOENT: this message must not decide anything");
+      },
+    });
+    assert(
+      got.threw instanceof SpecifyInfraError && got.dropped.length === 0,
+      `a stat error with no \`code\` is INFRASTRUCTURE even when its MESSAGE names an errno — the code is the contract, the prose is not (got ${String(got.threw)})`,
+    );
+    // (4) A `{ why }` refusal from the read stays a drop, in the capture's own
+    // words: an empty file is the child's, not the toolchain's.
+    writeFileSync(`${wt}/tests-empty.test.ts`, "");
+    const empty = await runOne("tests-empty.test.ts");
+    assert(
+      empty.threw === undefined &&
+        empty.dropped.length === 1 &&
+        empty.dropped[0]?.reason === "test tests-empty.test.ts is empty" &&
+        (empty.dropped[0]?.reason.includes(wt) ?? true) === false,
+      `a read that refuses the file is a drop worded exactly as the capture words it, with no absolute path (got ${JSON.stringify(empty.dropped.map((d) => d.reason))})`,
+    );
+    // (5) A stat that does not return a size is not a size. No file has a
+    // negative, fractional, infinite or beyond-safe-integer size, and reasoning
+    // from one would let a broken seam decide what the byte rule saw.
+    for (const [label, size] of [
+      ["NaN", Number.NaN],
+      ["-1", -1],
+      ["1.5", 1.5],
+      ["Infinity", Number.POSITIVE_INFINITY],
+      ["a size past MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER + 10],
+    ] as const) {
+      const bad = await runOne("tests-ok.test.ts", { statSize: () => size });
+      assert(
+        bad.threw instanceof SpecifyInfraError,
+        `a stat returning ${label} is INFRASTRUCTURE, not a byte-bound verdict (got ${String(bad.threw)})`,
+      );
+    }
+    // (6) And a drop never carries a raw error message: a refusal the FILE
+    // explains (`readOneDescriptor`'s own `{ why }`) is a drop in the capture's
+    // words, and no absolute path rides along in it.
     const droppedOnly = await validateSubmitRows(
       [{ criterionId: "AC1", testFiles: ["tests-ok.test.ts"] }],
       {
@@ -209,8 +280,133 @@ const noBase = async () => false;
   }
 }
 
-function throwSomething(why: string): never {
-  throw new Error(why);
+// ---- The grow window: a file that grew AFTER validation is refused at capture
+//
+// The byte bound in `sizeJudgement` is a bound on ONE VALIDATION. The child owns
+// the window between that validation and the capture — it wrote the file and it
+// can keep writing — so `specify-run.ts` re-checks the bytes it actually holds
+// against the same constant before a single one of them is rewritten into the
+// tree. Without that second bound the rule would be a promise about a snapshot
+// the run never keeps, and the trial that froze a thousand lines is exactly the
+// shape a grow exploits: pass at 12 KiB, grow to 20 KiB, commit 20 KiB.
+{
+  const grew = "tests-grew.test.ts";
+  const bytes = Buffer.from(`${"// ".padEnd(200, "x").trim()}\n`.repeat(121));
+  let captured: Map<string, Buffer> | undefined;
+  const r = await growRun(bytes, (got) => {
+    captured = got;
+  });
+  assert(
+    bytes.length > MAX_TEST_BYTES,
+    `the fixture really is over the bound (${bytes.length} bytes > ${MAX_TEST_BYTES}) — the growth is real, not a stubbed number`,
+  );
+  assert(
+    captured?.has(grew) === true,
+    "the capture itself accepted the file (it holds a looser `MAX_CAPTURE_BYTES` ceiling), so what refused it can only be the pipeline's re-check",
+  );
+  assert(
+    r.threw === undefined &&
+      r.notes.some((n) => n.includes(grew) && n.includes(`is ${bytes.length} bytes`)) &&
+      r.written.has(grew) === false,
+    `a file that grew past ${MAX_TEST_BYTES} after validation is refused at capture with the byte reason, and none of its bytes are rewritten into the tree (threw ${String(r.threw)}; notes ${JSON.stringify(r.notes)})`,
+  );
+  assert(
+    r.committed.includes(grew) === false,
+    `the grown file is nowhere in the commit the step made (commit ${JSON.stringify(r.committed)})`,
+  );
+}
+
+/**
+ * Drive `runTestPipeline` once against a REAL git tree, with a capture that hands
+ * back an over-bound file. `validate` is a pass-through (production's own boundary
+ * is pinned in the sections above; this case is about the SECOND bound), so the
+ * only thing standing between these bytes and the commit is the re-check in step
+ * 2. `written` lists what ended up in the tree and `committed` what the step's own
+ * commit contains — both read back from git, not from a claim.
+ */
+async function growRun(
+  bytes: Buffer,
+  onCapture: (captured: Map<string, Buffer>) => void,
+): Promise<{ threw?: unknown; notes: string[]; written: Set<string>; committed: string[] }> {
+  const wt = mkdtempSync(`${process.env.TMPDIR ?? "/tmp"}/pi-lean-grow-`);
+  const rel = "tests-grew.test.ts";
+  const written = new Set<string>();
+  const committed: string[] = [];
+  const out = { threw: undefined as unknown, notes: [] as string[], written, committed };
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "t",
+    GIT_AUTHOR_EMAIL: "t@t",
+    GIT_COMMITTER_NAME: "t",
+    GIT_COMMITTER_EMAIL: "t@t",
+    HOME: wt,
+    XDG_CONFIG_HOME: wt,
+  };
+  const git = (...argv: string[]): string => {
+    const r = spawnSync("git", ["-C", wt, ...argv], { encoding: "utf8", env });
+    if (r.status !== 0) throw new Error(`git ${argv.join(" ")}: ${r.stderr}`);
+    return (r.stdout ?? "").trim();
+  };
+  const exec: ExecFn = async (_cmd, opts) => {
+    const argv = (opts?.argv ?? []) as string[];
+    // Run exactly what the pipeline asked for — the argv it built IS the thing
+    // under test here, and a filter would make the case pass for the wrong reason.
+    const r = spawnSync("git", ["-C", (opts?.cwd as string) ?? wt, ...argv], {
+      encoding: "utf8",
+      env,
+      input: "",
+    });
+    if (r.status !== 0) throw new Error(`git ${argv.join(" ")}: ${(r.stderr ?? "").trim()}`);
+    return { stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+  try {
+    git("init", "-q", "-b", "main");
+    writeFileSync(`${wt}/a.ts`, "1\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    const headBefore = git("rev-parse", "HEAD");
+    // The child's own file, present when the step validates and captures it.
+    writeFileSync(`${wt}/${rel}`, "// small when the boundary looked at it\n");
+    const verdict = await runTestPipeline(
+      {
+        exec,
+        wt,
+        repoRoot: wt,
+        issue: 77,
+        branch: "main",
+        headBefore,
+        runnerTemplate: "sh {file}",
+        wanted: ["AC1"],
+        coverage: "any-red",
+        extract: () => ({ rows: [{ criterionId: "AC1", testFiles: [rel] }], skipped: 0 }),
+        validate: async (rows) => ({ kept: rows, dropped: [] }),
+        prepare: async () => ({ wt, linked: [] }),
+        commitMessage: "test: grown",
+        capture: () => {
+          const got = new Map([[rel, bytes]]);
+          onCapture(got);
+          return { captured: got, dropped: [] };
+        },
+      },
+      { toolUses: [] },
+    );
+    out.notes = (verdict.reason ?? "").split("; ");
+    // What the pipeline left in the tree is exactly what `writeCaptured` was
+    // handed: the capture's map minus whatever step 2 refused. The reset deleted
+    // the child's small version of the same name, so a name present here can only
+    // have come from the captured bytes — and the step's own commit is read back
+    // from git rather than from anything the pipeline claims about itself.
+    for (const f of git("ls-files").split("\n").filter(Boolean)) written.add(f);
+    for (const f of git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean))
+      written.add(f);
+    for (const f of git("show", "--name-only", "--pretty=", "HEAD").split("\n").filter(Boolean))
+      committed.push(f);
+  } catch (err) {
+    out.threw = err;
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
+  }
+  return out;
 }
 
 console.log(

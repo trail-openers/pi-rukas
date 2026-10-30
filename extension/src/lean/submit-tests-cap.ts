@@ -126,11 +126,11 @@ export const NEWNESS_REASON =
  *   5. base newness (`existsAtBase`) — a test the child did not write is not a
  *      new acceptance test;
  *   6. file shape (`fileProblem`);
- *   7. size — with `wt` the boundary stats the file FIRST and refuses anything
- *      over `MAX_TEST_BYTES` without reading it, then reads what the stat
- *      admitted through the capture's own `readOneDescriptor` and counts lines
- *      (`MAX_TEST_LINES`). The byte bound is what makes the read bounded per
- *      CALL rather than merely bounded per kept file: at most
+ *   7. size (`sizeRules` aside — see below) — the boundary stats the file FIRST
+ *      and refuses anything over `MAX_TEST_BYTES` without reading it, then reads
+ *      what the stat admitted through the capture's own `readOneDescriptor` and
+ *      counts lines (`MAX_TEST_LINES`). The byte bound is what makes the read
+ *      bounded per CALL rather than merely bounded per kept file: at most
  *      `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at most
  *      `MAX_TEST_BYTES`, is the most one validation ever reads. A NUL byte is
  *      dropped here too, as not a text file: the count cannot be honest about
@@ -138,24 +138,35 @@ export const NEWNESS_REASON =
  *   8. the per-criterion file quota (`MAX_TEST_FILES_PER_CRITERION`) — the
  *      first files kept for the criterion fill it, so the count is across the
  *      whole call, not per row, and across the whole RUN once `frozenByCriterion`
- *      seeds it. It is judged together with the size rule, on the content the
- *      size rule read.
+ *      seeds it. It is judged AFTER the size rule, so an over-long third file is
+ *      reported as too long rather than as surplus, and it is NOT conditional on
+ *      the size rules: a count is a count whether or not the bytes were read.
  *
- * A stat or a read that fails for a reason the CHILD'S file does not explain —
- * an EIO, an EMFILE, an EACCES — is infrastructure and THROWS `SpecifyInfraError`,
- * which `specify-run.ts` maps to a handback. It is never a drop. No raw
- * `err.message` is ever interpolated into a drop reason.
+ * A stat or a read whose error carries `ENOENT`, `ENOTDIR` or `ELOOP` is a DROP
+ * — the submitted name does not resolve, which is a fact about the child's file,
+ * and the capture reading the same name would refuse it for the same reason.
+ * Any other failure — an EIO, an EMFILE, an EACCES — is infrastructure and
+ * THROWS `SpecifyInfraError`, which `specify-run.ts` maps to a handback. It is
+ * never a drop. No raw `err.message` is ever interpolated into a drop reason.
  *
- * A caller that passes no `wt` cannot be size-judged, and the quota rule does
- * not silently fire on files it has not seen: with no tree both rules are inert
- * and everything else is unchanged. The two steps do pass it, so the boundary
- * and the capture judge a kept file through the SAME code — `readOneDescriptor`,
- * the capture's own single-descriptor read — but the read happens twice, once
- * per consumer: a second open is the honest cost of deciding before a byte is
- * captured, and the capture's own `fstat` checks (one inode, one hard link, and
- * the same `ino`/`size`/`mtimeMs` before and after its read) are what catch a
- * file swapped in the window between the two. It costs one extra read per KEPT
- * file, and the quota keeps that number bounded.
+ * `wt` is REQUIRED: the size rules read the candidate out of that tree, and a
+ * caller that cannot name a tree cannot ask this question at all (a unit test
+ * passes a real temp dir — a boundary whose rules switch themselves off on a
+ * missing argument is a boundary a caller can silently opt out of). `sizeRules:
+ * false` is the one deliberate exception, and it is test-only: it switches off
+ * the stat and the read and NOTHING else. The per-criterion QUOTA is a rule
+ * about how MANY files a criterion ends up with, not about their bytes, so it
+ * applies with the size rules off exactly as it does with them on — a caller
+ * that could not see the bytes must still not freeze four files for one
+ * criterion. Both the steps pass `wt` and neither passes `sizeRules`.
+ *
+ * The boundary and the capture judge a kept file through the SAME code —
+ * `readOneDescriptor`, the capture's own single-descriptor read — but the read
+ * happens twice, once per consumer: a second open is the honest cost of deciding
+ * before a byte is captured, and the capture's own `fstat` checks (one inode,
+ * one hard link, and the same `ino`/`size`/`mtimeMs` before and after its read)
+ * are what catch a file swapped in the window between the two. It costs one
+ * extra read per KEPT file, and the quota keeps that number bounded.
  *
  * What survives is a criterion -> kept-paths map the step can capture, prove
  * and commit.
@@ -199,20 +210,30 @@ export async function validateSubmitRows(
      * which is the red the proof accepts), and is frozen as the run's contract.
      * The mirrored act — overwriting a tracked test and submitting it — was
      * reproduced too. Both are refused here, before a byte is captured.
-     */
-    existsAtBase?: (rel: string) => Promise<boolean>;
+     */ existsAtBase?: (rel: string) => Promise<boolean>;
     /**
-     * The worktree whose files the size rules judge. With it the boundary stats
-     * the candidate, refuses it on `MAX_TEST_BYTES` alone, and reads what the
-     * stat admitted through `readOneDescriptor` — the capture's own
+     * The worktree whose files the size rules judge. REQUIRED: the boundary
+     * stats the candidate, refuses it on `MAX_TEST_BYTES` alone, and reads what
+     * the stat admitted through `readOneDescriptor` — the capture's own
      * single-descriptor read, so the boundary and the capture judge a kept file
      * through the SAME code; the read itself happens once per consumer, and the
-     * capture's own `fstat` checks catch a file swapped in that window. Omit it
-     * (a unit
-     * test with no tree) and the size rules are inert: a rule that cannot see
-     * the bytes never fires, and every other rule is unchanged.
+     * capture's own `fstat` checks catch a file swapped in that window.
+     *
+     * There is no "no tree" shape of this call: a rule that quietly switches
+     * itself off when its argument is absent is a rule a caller can forget to
+     * apply, and both real callers have a worktree in hand. A unit test passes a
+     * temp dir it wrote its fixtures into.
      */
-    wt?: string;
+    wt: string;
+    /**
+     * TEST-ONLY escape: refuse the stat and the read, and judge every other
+     * rule — including the per-criterion quota — as normal. It exists so a test
+     * of a non-size rule does not have to build files that satisfy the size
+     * rules; production never sets it, and `specify` and `challenge` both leave
+     * it out. With it off (the default) the size rules are applied to every
+     * candidate the cheap rules admit.
+     */
+    sizeRules?: false;
     /**
      * The byte size the size rules judge a candidate against BEFORE reading it.
      * Defaults to `statSizeOf` (`lstat`, like `fileProblem`). A test drives it to
@@ -379,12 +400,13 @@ export async function validateSubmitRows(
       // Already named AND kept earlier in this row? Free: it neither re-reads
       // the file nor spends the quota a second time for the same name.
       if (keptRels.get(row.criterionId)?.has(rel) === true) continue;
-      // The size and quota rules are the last two checks: they are the only ones
-      // that cost a read, so a row the cheap rules already refused never opens a
-      // descriptor. They run together or not at all — a quota that fired on
-      // bytes nobody had read would refuse a file the rule cannot see, and a
-      // caller with no tree (a unit test) keeps every other verdict unchanged.
-      if (opts.wt !== undefined) {
+      // The last two checks. The size rules are the only ones that cost a read,
+      // so a row the cheap rules already refused never opens a descriptor; the
+      // quota costs nothing and is NOT conditional on them — it bounds how many
+      // files a criterion ends up with, a question about COUNTS that a caller
+      // with the size rules off still has to answer. A quota that fired only
+      // when the bytes were readable was a quota switched off by an argument.
+      if (opts.sizeRules !== false) {
         // AFTER `fileProblem`, which is where an ordinary file of this worktree
         // is established — reading a symlink or a fifo is not this rule's job.
         const judgement = sizeJudgement(path.join(opts.wt, rel), rel, opts.statSize ?? statSizeOf);
@@ -400,17 +422,19 @@ export async function validateSubmitRows(
           dropped.push({ criterionId: row.criterionId, path: rel, reason: judgement.reason });
           continue;
         }
-        // One counter: what the run froze for the criterion plus what this call
-        // has kept for it, so three rows of one file each still stop at two, and
-        // a criterion that arrived full from the record keeps nothing new.
-        if ((quota.get(row.criterionId) ?? 0) >= MAX_TEST_FILES_PER_CRITERION) {
-          dropped.push({
-            criterionId: row.criterionId,
-            path: rel,
-            reason: testFileQuotaProblem(row.criterionId),
-          });
-          continue;
-        }
+      }
+      // OUTSIDE the size-rule branch on purpose: one counter for what the run
+      // froze for the criterion plus what this call has kept for it, so three
+      // rows of one file each still stop at two, a criterion that arrived full
+      // from the record keeps nothing new, and a caller that switched the size
+      // rules off is still bounded on how many files a criterion holds.
+      if ((quota.get(row.criterionId) ?? 0) >= MAX_TEST_FILES_PER_CRITERION) {
+        dropped.push({
+          criterionId: row.criterionId,
+          path: rel,
+          reason: testFileQuotaProblem(row.criterionId),
+        });
+        continue;
       }
       files.push(rel);
       const seen = keptRels.get(row.criterionId) ?? new Set<string>();

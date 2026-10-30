@@ -39,7 +39,11 @@ import {
   testCriteria,
 } from "../src/lean/specify-prompt.ts";
 import { runTestFile } from "../src/lean/specify-proof.ts";
-import { MAX_TEST_BYTES, MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "../src/lean/test-size.ts";
+import {
+  MAX_TEST_BYTES,
+  MAX_TEST_FILES_PER_CRITERION,
+  MAX_TEST_LINES,
+} from "../src/lean/test-size.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

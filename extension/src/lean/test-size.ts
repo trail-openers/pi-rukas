@@ -61,9 +61,12 @@ export const MAX_TEST_FILES_PER_CRITERION = 2;
  * which is what makes it a bound on the CALL as well as on the file: at most
  * `MAX_TEST_FILES_PER_CRITERION` files per criterion are ever read, each at
  * most this many bytes, so one validation reads no more than that product in
- * total. The capture's own `MAX_CAPTURE_BYTES` is a different, far larger
- * number, and deliberately so: that one bounds what a run keeps, this one what
- * a rule will even look at.
+ * total. It is a bound per VALIDATION, not per run: the child owns the window
+ * between this read and the capture's, so `specify-run.ts` re-checks the bytes
+ * it actually holds against this same constant before rewriting any of them.
+ * The capture's own `MAX_CAPTURE_BYTES` is a different, far larger number, and
+ * deliberately so: that one bounds what a run keeps, this one what a rule will
+ * even look at.
  */
 export const MAX_TEST_BYTES = 16_384;
 

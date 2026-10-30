@@ -201,7 +201,7 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     // two. Three files reach the runner, seven names are refused, and the ten
     // absent paths fill the rest of the refused family.
     rows.push(submit("AC1", [rels[0] as string]));
-    rels.slice(1, 3).forEach((rel) => rows.push(submit("AC2", [rel])));
+    for (const rel of rels.slice(1, 3)) rows.push(submit("AC2", [rel]));
     for (let i = 3; i < rels.length; i += 5) rows.push(submit("AC1", rels.slice(i, i + 5)));
     return rows;
   };
