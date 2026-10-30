@@ -43,6 +43,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
+import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
@@ -225,6 +226,8 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
 
   // 3. The adversary, under the state's budget (#1883).
   const budget = armBudget(budgetFor(config, "challenge"));
+  if (budget.warning !== undefined)
+    traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
   const dispatched = await dispatchAdversary(deps.dispatch, {
     issue,
     spec,

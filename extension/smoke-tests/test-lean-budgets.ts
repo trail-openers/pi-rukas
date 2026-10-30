@@ -26,11 +26,11 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { RunningState } from "../src/progress.ts";
 import { defaultConfig } from "../src/lean/config.ts";
 import type { WorkConfig } from "../src/lean/config.ts";
 import type { Budget } from "../src/lean/config.ts";
-import { armBudget, budgetFor } from "../src/lean/step-budget.ts";
+import { armBudget, budgetFor, budgetStopOf } from "../src/lean/step-budget.ts";
+import type { RunningState } from "../src/progress.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { buildFixture, configWithRunner, runBuild } from "./lib/lean-build-fixture.ts";
 
@@ -95,14 +95,20 @@ function progress(over: Partial<RunningState>): RunningState {
 // ── (3) minutes, via the child-bound kill cause ────────────────────────────
 {
   const b = armBudget({ turns: 0, tokens: 0, minutes: 20 });
-  assert(b.opts.childBoundMs === 1_200_000, `20 minutes is 1_200_000ms (got ${b.opts.childBoundMs})`);
+  assert(
+    b.opts.childBoundMs === 1_200_000,
+    `20 minutes is 1_200_000ms (got ${b.opts.childBoundMs})`,
+  );
   assert(b.opts.onProgress === undefined, "a minutes-only budget needs no progress hook");
   assert(b.opts.signal === undefined, "and no abort signal — the bound is the child's own");
   const killed = resultWith({ killCause: "child-bound", ok: false, ms: 20 * 60_000 + 9_000 });
   const fired = b.fired(killed);
   assert(fired?.limit === "minutes", `the bound's kill reads as minutes (got ${fired?.limit})`);
   assert(fired?.value === 20, `the value is the configured minutes (got ${fired?.value})`);
-  assert(fired?.used === 20, `the used amount is the elapsed minutes, rounded (got ${fired?.used})`);
+  assert(
+    fired?.used === 20,
+    `the used amount is the elapsed minutes, rounded (got ${fired?.used})`,
+  );
 }
 
 // ── (4) no breach: neither a clean result nor another cap reads as the budget
@@ -120,7 +126,10 @@ function progress(over: Partial<RunningState>): RunningState {
 // ── (5) a zero budget sets no opts at all ──────────────────────────────────
 {
   const zero = armBudget({ turns: 0, tokens: 0, minutes: 0 });
-  assert(Object.keys(zero.opts).length === 0, `a zero budget sets no opts (got ${JSON.stringify(zero.opts)})`);
+  assert(
+    Object.keys(zero.opts).length === 0,
+    `a zero budget sets no opts (got ${JSON.stringify(zero.opts)})`,
+  );
   assert(
     zero.fired(resultWith({ killCause: "child-bound", ok: false })) === undefined,
     "and the child-bound cause is not attributed to a zero-minute budget",
@@ -162,8 +171,7 @@ function progress(over: Partial<RunningState>): RunningState {
     },
     // The child's own progress feed, driven from the fake dispatch: the same
     // call `spawn.ts` makes at every `message_end`.
-    onProgressTick: (onProgress) =>
-      onProgress?.(progress({ turns: 999, totalTokens: 0 })),
+    onProgressTick: (onProgress) => onProgress?.(progress({ turns: 999, totalTokens: 0 })),
   });
   assert(r.threw === undefined, `(7) no throw: ${r.threw?.message ?? "clean"}`);
   assert(r.outcome?.kind === "budget", `(7) the outcome kind is budget (got ${r.outcome?.kind})`);
@@ -180,7 +188,10 @@ function progress(over: Partial<RunningState>): RunningState {
     r.outcome?.value === buildTurns,
     `(7) the value is the CONFIG's ceiling, not an invented one (got ${r.outcome?.value})`,
   );
-  assert(r.outcome?.used === 999, `(7) the used amount is what the child hit (got ${r.outcome?.used})`);
+  assert(
+    r.outcome?.used === 999,
+    `(7) the used amount is what the child hit (got ${r.outcome?.used})`,
+  );
   assert(r.dispatched === 1, `(7) the child was dispatched once (got ${r.dispatched})`);
   assert(
     r.headBefore === r.headAfter,
@@ -221,7 +232,10 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(b.tokens === 42, `the override's tokens reach the step (got ${b.tokens})`);
   assert(b.minutes === 3, `the override's minutes reach the step (got ${b.minutes})`);
   const armed = armBudget(b);
-  assert(armed.opts.childBoundMs === 180_000, `3 minutes armed as 180000ms (got ${armed.opts.childBoundMs})`);
+  assert(
+    armed.opts.childBoundMs === 180_000,
+    `3 minutes armed as 180000ms (got ${armed.opts.childBoundMs})`,
+  );
   armed.opts.onProgress?.(progress({ turns: 8, totalTokens: 0 }));
   assert(
     armed.fired(resultWith({}))?.limit === "turns",
@@ -289,6 +303,87 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(
     !needed.includes("retry gave up"),
     `the older red does not drown the budget (got ${needed})`,
+  );
+}
+
+// ── (12) only a POSITIVELY TAGGED stop is a budget verdict ─────────────────
+{
+  // `budgetStopOf` used to read `?.fired` off whatever the dispatch seam handed
+  // back, so a `DispatchResult` that happened to carry a `fired` key — a child
+  // tool result, a replayed payload — became a budget verdict and routed the step
+  // to handback for a ceiling that never fired. The tag is what distinguishes a
+  // stop from a child result at runtime; this is the canary for that distinction.
+  const lookalike = {
+    role: "developer",
+    ok: true,
+    text: "",
+    toolUses: [],
+    ms: 0,
+    exitCode: 0,
+    fired: { limit: "turns", value: 1, used: 99 },
+  } as unknown as Parameters<typeof budgetStopOf>[0];
+  assert(
+    budgetStopOf(lookalike) === undefined,
+    "an untagged `fired` on a child result is not a verdict",
+  );
+  assert(
+    budgetStopOf({ fired: { limit: "turns", value: 1, used: 99 }, leanBudgetStop: true })?.limit ===
+      "turns",
+    "a tagged stop reads back",
+  );
+  assert(budgetStopOf(undefined as never) === undefined, "and nothing at all is not a verdict");
+}
+
+// ── (13) an inert minutes lever says so ──────────────────────────────────
+{
+  // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0`, so a
+  // minutes budget armed in that environment binds nothing. The step must be
+  // TOLD (the `warning` it traces) and must not invent a verdict the disabled
+  // runtime could never have produced. Read the switch at ENTRY and restore it
+  // on the way out: an inherited value must not linger as the literal string
+  // "undefined" and poison the clean assertion below (the env-clear ratchet
+  // keeps `delete` as the only correct unset).
+  const priorCaps = process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+  process.env.PI_ENSEMBLE_DISPATCH_CAPS = "0";
+  try {
+    const b = armBudget({ turns: 0, tokens: 0, minutes: 20 });
+    assert(
+      b.opts.childBoundMs === 1_200_000,
+      "the bound is still armed (the switch is the child's)",
+    );
+    assert(
+      (b.warning ?? "").includes("20-minute budget is inert"),
+      `the warning names the inert lever (got ${JSON.stringify(b.warning)})`,
+    );
+    assert(
+      (b.warning ?? "").includes("PI_ENSEMBLE_DISPATCH_CAPS=0"),
+      `and the switch that disabled it (got ${JSON.stringify(b.warning)})`,
+    );
+    assert(
+      b.fired(resultWith({ killCause: "timeout", ok: false })) === undefined,
+      "a timeout result under the disabled caps still reads as no budget verdict",
+    );
+    const both = armBudget({ turns: 5, tokens: 0, minutes: 20 });
+    assert(
+      (both.warning ?? "").includes("inert"),
+      "a turns+minutes budget reports the inert minutes lever too",
+    );
+    const turnsOnly = armBudget({ turns: 5, tokens: 0, minutes: 0 });
+    assert(
+      turnsOnly.warning === undefined,
+      `a budget with no minutes has no warning (got ${JSON.stringify(turnsOnly.warning)})`,
+    );
+  } finally {
+    // `delete` is the correct "reset to unset": assigning `undefined` stores the
+    // literal string "undefined" on Bun 1.4 (test-env-clear-gate.ts, #997).
+    // biome-ignore lint/performance/noDelete: unset is what this resets.
+    if (priorCaps === undefined) delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+    else process.env.PI_ENSEMBLE_DISPATCH_CAPS = priorCaps;
+  }
+  const clean = armBudget({ turns: 0, tokens: 0, minutes: 20 });
+  assert(
+    clean.warning === undefined,
+    `without the switch the minutes lever is not reported inert (got ${JSON.stringify(clean.warning)})`,
   );
 }
 

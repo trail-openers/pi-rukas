@@ -44,6 +44,7 @@
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
+import { traceWarn } from "../trace.ts";
 import type { DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
@@ -177,6 +178,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   //    verdict; the child's work goes back with the tree, nothing is committed.
   const reentry = reentryFromLog(ctx.steps);
   const budget = armBudget(budgetFor(config, "build"));
+  if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
   const built = await dispatchBuilder(deps.dispatch, {
     issue,
     spec,

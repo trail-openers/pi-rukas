@@ -488,8 +488,6 @@ async function driveLoop(
     // line at each boundary an operator watching stderr cannot tell a step
     // that is working from one that is hung. Stderr, gated like every other
     // trace line, because stdout is the JSON stream in `-p` mode.
-    // One line each side of the handler: a step can sit inside one for twenty
-    // minutes, so without these a working step and a hung one look alike.
     trace(`lean #${opts.issue} ${key} start`);
     run = await settle(drive, opts, started, key, state, now);
     const verdict = newestDecided(run.steps, state)?.outcome?.kind ?? "undecided";

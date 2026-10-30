@@ -81,7 +81,7 @@ export async function dispatchAdversary(
   );
   // Before the throw below: the round's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return { fired } as BudgetStop;
+  if (fired !== undefined) return { fired, leanBudgetStop: true };
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??

@@ -37,6 +37,12 @@ export interface BudgetOpts {
 export type BudgetArms = {
   opts: BudgetOpts;
   fired: (result: DispatchResult) => BudgetFired | undefined;
+  /**
+   * Set when {@link armBudget} armed a wall clock that the runtime will not
+   * enforce (the caps master switch is off), so the step can tell the operator
+   * rather than let a minutes budget read as a bound that never fires.
+   */
+  warning?: string;
 };
 
 /** The state's budget for this run, or `undefined` when it has none. */
@@ -58,8 +64,20 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     (boundMs !== undefined && result.killCause === CHILD_BOUND_CAUSE
       ? { limit: "minutes", value: minutes, used: Math.round((result.ms ?? 0) / 60_000) }
       : undefined);
+  // The minutes lever is enforced by `armChildBound`, which returns early under
+  // `PI_ENSEMBLE_DISPATCH_CAPS=0` — so arming it there buys nothing, and a step
+  // that reports "the 20-minute budget stopped it" would be describing a bound
+  // that was never live. Say so instead of staying quiet.
+  const inert =
+    boundMs !== undefined && process.env.PI_ENSEMBLE_DISPATCH_CAPS === "0"
+      ? `${String(minutes)}-minute budget is inert: PI_ENSEMBLE_DISPATCH_CAPS=0`
+      : undefined;
   if (turns <= 0 && tokens <= 0) {
-    return { opts: boundMs === undefined ? {} : { childBoundMs: boundMs }, fired };
+    return {
+      opts: boundMs === undefined ? {} : { childBoundMs: boundMs },
+      fired,
+      ...(inert === undefined ? {} : { warning: inert }),
+    };
   }
   const controller = new AbortController();
   return {
@@ -75,21 +93,30 @@ export function armBudget(b: Budget | undefined): BudgetArms {
       },
     },
     fired,
+    ...(inert === undefined ? {} : { warning: inert }),
   };
 }
 
 /**
  * What a seam returns INSTEAD of a `DispatchResult` when the step's ceiling ended
- * the child. The arm makes that a compile-time distinction: a child result is not
- * assignable to it, so a step cannot mistake one for the other.
+ * the child. The tag is what makes the two distinguishable at RUNTIME: the seams
+ * build it as `{ fired, leanBudgetStop: true }`, and {@link budgetStopOf} reads a
+ * stop only on `leanBudgetStop === true`. The compile-time distinction alone is
+ * not enough — a dispatch seam returns whatever its `dispatch` function hands it,
+ * so a child result that happens to carry a `fired` key would otherwise be read
+ * as this step's budget verdict and routed as one.
  */
 export type BudgetStop = { readonly fired: BudgetFired } & {
-  readonly __leanBudgetStop?: never;
+  readonly leanBudgetStop: true;
 };
 
-/** Did the step's own ceiling end this child? A child result has no `fired`. */
+/**
+ * Did the step's own ceiling end this child? Only a positively tagged stop
+ * answers; a child result carrying `fired` is not one and reads as `undefined`.
+ */
 export function budgetStopOf(result: Dispatched): BudgetFired | undefined {
-  return (result as BudgetStop)?.fired;
+  const stop = result as BudgetStop | undefined;
+  return stop?.leanBudgetStop === true ? stop.fired : undefined;
 }
 
 /** What a seam hands back: a child result, or the verdict. */

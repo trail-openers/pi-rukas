@@ -52,6 +52,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
+import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
@@ -230,7 +231,7 @@ async function dispatchAdversary(
   // BEFORE the infra throw: the step's own ceiling ending the child is a
   // verdict about the round, not a fault in the harness.
   const fired = opts.budget.fired(result);
-  if (fired !== undefined) return { fired } as BudgetStop;
+  if (fired !== undefined) return { fired, leanBudgetStop: true };
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
@@ -323,6 +324,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
 
   // 5. The adversary, under the state's budget (#1883).
   const budget = armBudget(budgetFor(config, "specify"));
+  if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
   const dispatched = await dispatchAdversary(deps, {
     issue,
     spec,
