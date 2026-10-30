@@ -43,7 +43,8 @@
 import { handbackOutcome } from "../src/lean/handback.ts";
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
-import { ROOTS, defaultSpec, fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
+import { fakePr } from "./lib/lean-publish-forge.ts";
+import { ROOTS, defaultSpec, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 import { decided, handbackCtx } from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;
@@ -191,6 +192,7 @@ function unfenced(ls: string[], heading: string): boolean {
     issue: 406,
     verify: { kind: "green" },
     commitAfterVerify: true,
+    noPush: true,
   });
   assert(
     r.threw instanceof PublishInfraError && /HEAD moved/.test(r.threw.message),
@@ -205,7 +207,7 @@ function unfenced(ls: string[], heading: string): boolean {
 
 // ------------------------------------------------------------- (g) a dirty tree
 {
-  const r = await runPublish({ issue: 407, verify: { kind: "green" }, dirty: true });
+  const r = await runPublish({ issue: 407, verify: { kind: "green" }, dirty: true, noPush: true });
   assert(
     r.threw instanceof PublishInfraError && /not clean/.test(r.threw.message),
     `(g) uncommitted bytes are refused (got ${r.threw?.message})`,
@@ -309,6 +311,7 @@ for (const [issue, branch] of [
     verify: { kind: "green" },
     branch,
     worktreeBranch: leanRef,
+    noPush: true,
   });
   assert(
     r.threw instanceof PublishInfraError,
@@ -414,7 +417,6 @@ for (const [issue, branch] of [
     "(m) nothing was drafted on a state the step could not read",
   );
 }
-
 
 // ----------------------------------------------------------- (k) the wiring is real
 {

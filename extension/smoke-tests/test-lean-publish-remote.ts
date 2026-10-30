@@ -29,9 +29,11 @@
  * origin holds afterwards, not about a stub's transcript.
  */
 
+import { rmSync } from "node:fs";
 import type { NormalizedPullRequest } from "../src/forge-types.ts";
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
-import { fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
+import { ROOTS, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
+import { fakePr } from "./lib/lean-publish-forge.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -83,6 +85,9 @@ function assert(cond: boolean, msg: string): void {
   const r = await runPublish({
     issue: 421,
     verify: { kind: "green" },
+    // Nothing seeded: the branch is absent on origin, so the stub's claim of a
+    // new branch is a claim the post-push read can refute.
+    noPush: true,
     execOver: (cmd, opts) =>
       opts?.argv?.includes("push") === true
         ? Promise.resolve({
@@ -186,11 +191,11 @@ function assert(cond: boolean, msg: string): void {
   );
   // The converse, so the honesty above is not just "the string always says it":
   // a run that DID write keeps saying `published` and names no `already on origin`.
-  const pushed = await runPublish({ issue: 425, verify: { kind: "green" } });
+  const didPush = await runPublish({ issue: 425, verify: { kind: "green" }, noPush: true });
   assert(
-    pushed.outcome?.reason?.includes("already on origin") === false &&
-      (pushed.outcome?.prUrl ?? "").startsWith("https://"),
-    `(r) a run that DID push does not say already on origin (got ${JSON.stringify(pushed.outcome?.reason)})`,
+    didPush.outcome?.reason?.includes("already on origin") === false &&
+      (didPush.outcome?.prUrl ?? "").startsWith("https://"),
+    `(r) a run that DID push does not say already on origin (got ${JSON.stringify(didPush.outcome?.reason)})`,
   );
 }
 
@@ -222,29 +227,30 @@ function assert(cond: boolean, msg: string): void {
   assert(r.forge.prCreateCalls.length === 0, "(q3) no PR is opened over an unattributed row");
 }
 
-// --------- (q4) a row on a FOREIGN branch is attributed away, and must not block
+// --------- (q5) an unsettled row blocks whatever its headRefName says
 //
-// The `sourceBranch` filter is the only reason the widened predicate is safe:
-// every row in this list was asked for THIS branch, so `undefined` is a lost
-// attribution rather than an unrelated PR. A row that DOES name another branch
-// is attributed, and blocking it would hold one issue's push hostage to another
-// issue's open PR — so it must not.
+// The list was asked for THIS branch (`sourceBranch`), so a row the adapter
+// reports with a head name that merely LOOKS different — a stray trailing space,
+// a trim the adapter did not do — is still a row about this branch. Reading it
+// as "another PR" is the shape that force-pushes over a branch somebody is
+// reviewing, so the predicate names no head branch at all: only a positively
+// CLOSED/MERGED state lets a rewrite through.
 {
   const r = await runPublish({
-    issue: 442,
+    issue: 443,
     verify: { kind: "green" },
     originStale: true,
-    staleOnForeignBranch: true,
-    openPrs: [fakePr(98, "https://forge.example/pull/98", "lean/foreign-442")],
+    openPrs: [fakePr(97, "https://forge.example/pull/97", "lean/issue-443 ")],
   });
   assert(
-    r.outcome?.kind === "ok",
-    `(q4) an open PR on another branch does not block this run (got ${r.threw?.name}: ${r.threw?.message})`,
+    r.threw instanceof PublishInfraError && /open PR already uses/.test(r.threw.message),
+    `(q5) a row with headRefName "lean/issue-443 " and state OPEN refuses the push (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(
-    originHead(r.origin, "lean/issue-442") === r.head,
-    "(q4) this run's branch was written",
+    originHead(r.origin, "lean/issue-443") !== r.head,
+    "(q5) the row's branch was not clobbered",
   );
+  assert(r.forge.prCreateCalls.length === 0, "(q5) no PR is opened over an unsettled row");
 }
 
 // ---------------- (r2) origin's branch is HEAD~1 -> the fast-forward lands, PR opens
@@ -268,6 +274,28 @@ function assert(cond: boolean, msg: string): void {
     "(r2) origin advanced from HEAD~1 to this run's head",
   );
   assert(r.forge.prCreateCalls.length === 1, "(r2) the PR was opened after the fast-forward");
+}
+
+// ------------- (r3) origin is at head, so a printed rejection is not a refusal
+//
+// The porcelain is not the success check, and this pins the direction: a push
+// whose report says `! [rejected]` while origin genuinely holds this head is a
+// LANDED push. Were the step to sweep the rejection shapes before reading origin
+// it would hand back a run whose branch is published, sending the next run to
+// look in the wrong place.
+{
+  const r = await runPublish({
+    issue: 444,
+    verify: { kind: "green" },
+    originAtHead: true,
+    pushPorcelain: "To origin\n ! [rejected]        abc -> lean/issue-444 (stale info)\nDone\n",
+  });
+  assert(
+    r.threw === undefined && r.outcome?.kind === "ok",
+    `(r3) a printed rejection over a ref origin holds is still ok (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(originHead(r.origin, "lean/issue-444") === r.head, "(r3) origin holds this run's head");
+  assert(r.forge.prCreateCalls.length === 1, "(r3) the PR was opened");
 }
 
 // ------------- (p3) a stale tip that CONTAINS head -> still replaced
@@ -355,22 +383,57 @@ function assert(cond: boolean, msg: string): void {
 
 // ------------------- (s) the remote ref moves between the read and the push
 {
+  // A genuine rerun: origin holds four stale commits (`originStale: true`), so
+  // the step reads a sha and leases against it — and the race rewinds the ref to
+  // main's commit behind its back, which is NOT the sha it read. The lease is what
+  // must refuse the write.
   const r = await runPublish({
     issue: 426,
     verify: { kind: "green" },
     originStale: true,
+    noPush: true,
     moveRemoteDuringPush: true,
   });
   assert(
-    r.threw instanceof PublishInfraError,
+    r.threw instanceof PublishInfraError &&
+      /could not push|after the push, expected/.test(r.threw.message),
     `(s) a ref that moved after the read is handed back (got ${r.threw?.name}: ${r.threw?.message})`,
   );
   assert(
-    originHead(r.origin, "lean/issue-426") !== r.head,
-    "(s) the lease held: origin was not overwritten on a stale expectation",
+    originHead(r.origin, "lean/issue-426") === originHead(r.origin, "main"),
+    "(s) the lease held: origin keeps the sha it was rewound to, not this head",
   );
   assert(r.forge.prCreateCalls.length === 0, "(s) no PR is claimed for a failed push");
+  // The lease is the whole protection here, so pin the argument the step
+  // rendered rather than trusting it built one: bound to the sha it read.
+  assert(
+    /^--force-with-lease=refs\/heads\/lean\/issue-426:[0-9a-f]{40}$/.test(r.leaseArg ?? ""),
+    `(s) the push carried --force-with-lease=refs/heads/<b>:<40hex> (got ${JSON.stringify(r.leaseArg)})`,
+  );
+}
+
+// ------------- (s2) a new branch -> the lease requires the ref to STILL be absent
+//
+// An empty expected value is git's "must not exist" form: a branch that appeared
+// between the read and the push then refuses the push rather than being rewritten.
+{
+  const r = await runPublish({ issue: 445, verify: { kind: "green" }, noPush: true });
+  assert(
+    r.outcome?.kind === "ok" && originHead(r.origin, "lean/issue-445") === r.head,
+    `(s2) a new lean/ branch is created (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    r.leaseArg === "--force-with-lease=refs/heads/lean/issue-445:",
+    `(s2) a new branch is leased against an ABSENT ref (got ${JSON.stringify(r.leaseArg)})`,
+  );
 }
 
 if (exit === 0) console.log("\nlean publish, origin-side: all assertions passed");
+for (const dir of ROOTS) {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best-effort: a temp dir the OS reaps anyway is not a failing assertion.
+  }
+}
 process.exit(exit);

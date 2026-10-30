@@ -18,7 +18,8 @@
 
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import { netGitEnv } from "../src/work-driver-net-git.ts";
-import { ROOTS, fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
+import { fakePr } from "./lib/lean-publish-forge.ts";
+import { ROOTS, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -135,6 +136,7 @@ function assert(cond: boolean, msg: string): void {
   const r = await runPublish({
     issue: 432,
     verify: { kind: "red" },
+    noPush: true,
     openPrs: [ready],
     afterDraft: { 95: false },
   });

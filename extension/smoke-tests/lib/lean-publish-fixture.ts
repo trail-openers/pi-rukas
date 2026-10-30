@@ -35,6 +35,7 @@ import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { netGitEnv } from "../../src/work-driver-net-git.ts";
+import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { type FakeForge, fakeForge, fakePr, prWithState } from "./lean-publish-forge.ts";
 import {
@@ -48,7 +49,7 @@ import {
 } from "./lean-publish-origin.ts";
 import { git, sha } from "./lean-verify-fixture.ts";
 
-export { fakePr, prWithState, type FakeForge } from "./lean-publish-forge.ts";
+export type { FakeForge } from "./lean-publish-forge.ts";
 
 /**
  * Temp dirs the publish fixtures made, including the scratch clones the origin
@@ -96,15 +97,10 @@ export interface PublishOpts {
    */
   originStale?: OriginStale;
   /**
-   * Name origin's branch in the case (a stale shape, or a head the run did not
-   * write). Defaults to the run's own `lean/issue-<n>`, and the `true` form
-   * keeps the `lean/issue-<issue>` name the existing cases read back.
-   */
-  staleAt?: string | true;
-  /**
    * Seed a stale commit of THIS repo on a branch that is NOT the run's own push
-   * target. The forge's open-PR check is scoped by `sourceBranch`, so an open PR
-   * row naming a FOREIGN branch must never block this run.
+   * target (the `lean/foreign-<issue>` name the open-PR cases load a row for).
+   * The forge's open-PR check is scoped by `sourceBranch`, so the stale shape and
+   * the row's branch can be planted apart from the branch this run pushes.
    */
   staleOnForeignBranch?: boolean;
   /**
@@ -117,8 +113,17 @@ export interface PublishOpts {
   /**
    * Move origin's branch ref BETWEEN the step's `ls-remote` read and its push —
    * the race a lease exists to catch. The push must fail rather than overwrite.
+   * The case also passes `noPush`: the race is the moment just before the push,
+   * and a setup push would have moved the ref once already.
    */
   moveRemoteDuringPush?: boolean;
+  /**
+   * Do not push this run's head at the end of setup, so origin's run branch is
+   * absent when the step looks and the step's own push is the only write. For the
+   * cases that must observe it: a refusal that has to happen BEFORE any push, a
+   * stubbed push report, a lease that has to fail.
+   */
+  noPush?: boolean;
   /**
    * Report every PR row's `state` as something outside the `PullRequestState`
    * union — the seam for `mapPrListReply`'s `state: ""` row and for an adapter
@@ -147,6 +152,12 @@ export interface PublishOpts {
     cmd: string,
     opts?: Parameters<PublishDeps["exec"]>[1],
   ) => Promise<{ stdout: string; stderr?: string }> | undefined;
+  /**
+   * What `git push` prints, reported by the fake INSTEAD of running the real
+   * push — the seam for a case that must control the porcelain, e.g. a rejection
+   * printed over a ref origin actually holds.
+   */
+  pushPorcelain?: string;
   /** Make `prList` reject. */
   listThrows?: boolean;
   /** A branch name to force onto the run (an unsafe ref, for the handback case). */
@@ -184,6 +195,8 @@ export interface PublishRun {
   body: string;
   /** The env each git child received, in call order. */
   gitEnvs: NodeJS.ProcessEnv[];
+  /** The `--force-with-lease=` argument the step rendered on its push. */
+  leaseArg?: string;
 }
 
 /** The step log a run carries when it reaches publish with a green gate. */
@@ -244,19 +257,14 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   git(repoRoot, "push", "-q", "origin", "main");
 
   const branch = o.branch ?? `lean/issue-${issue}`;
-  // The branch a STALE origin is planted on. A case that must observe the
-  // no-push path names a branch that is neither `specifyBranch`'s result (which
-  // would be caught by the state-file mismatch check) nor one this run pushes to
-  // in the same temp repo — each `runPublish` builds its own origin, so a rerun
-  // of the same issue is a FRESH origin, never one that already holds the head.
+  // The branch a STALE origin is planted on: the push target, except for the case
+  // that plants the stale shape on a foreign branch to keep it out of the way of
+  // its own assertions. Each `runPublish` builds its own origin, so a rerun of the
+  // same issue is a FRESH origin, never one that already holds the head.
   const staleBranch =
-    o.originStale === undefined
+    o.originStale === undefined || o.staleOnForeignBranch !== true
       ? branch
-      : o.staleOnForeignBranch === true
-        ? `lean/foreign-${issue}`
-        : o.staleAt === undefined || o.staleAt === true
-          ? `lean/issue-${issue}`
-          : o.staleAt;
+      : `lean/foreign-${issue}`;
   const checkout = o.worktreeBranch ?? branch;
   const wt = specifyWorktreePath(repoRoot, issue);
 
@@ -287,10 +295,26 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
       issue,
       containsHead: o.originStale === "descendants-reach",
     });
-  else if (o.originStale === "stale-branch")
-    seedOneCommitStaleOrigin({ wt, branch: staleBranch });
+  else if (o.originStale === "stale-branch") seedOneCommitStaleOrigin({ wt, branch: staleBranch });
   if (o.originForeign === true) seedForeignOrigin({ origin, branch });
   if (o.originAtHead === true) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+  // Setup pushes THIS run's head onto the run's branch only for a first run, the
+  // shape where the step's honest answer is `already on origin` and no write is
+  // due. Everything else brings its own shape for the ref and must be left alone:
+  // `originStale`/`originForeign` seed a DIFFERENT commit there (and a case that
+  // must watch a lease refuse, or read a porcelain back, depends on that commit
+  // still being there when the step looks — pushing the head here silently
+  // un-seeds it and the step then takes the no-op path it was meant to rule out),
+  // and `originAtHead` above already put the head there. `noPush` is how a case
+  // that must see the branch ABSENT says so: a refusal that has to land before any
+  // write, a stubbed push report, a lease that has to fail against a new branch.
+  const setupPushesHead =
+    o.noPush !== true &&
+    o.originStale === undefined &&
+    o.originForeign !== true &&
+    o.originAtHead !== true;
+  if (setupPushesHead) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+
 
   if (o.dirty === true) writeFileSync(path.join(wt, "stray.txt"), "uncommitted\n");
   if (o.commitAfterVerify === true) {
@@ -343,9 +367,39 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
           ),
         }),
   });
+  // The race lands between the step's origin read and its lease-bound push: the
+  // read happens before the forge is asked, so a ref moved inside `prList` is a
+  // ref the lease was not bound to. A separate clone makes origin's ref move.
+  const listed = forge.prList;
+  forge.prList = async (q) => {
+    const rows = await listed(q);
+    if (o.moveRemoteDuringPush === true) {
+      const other = mkdtempSync(path.join(tmpdir(), "lean-publish-race-"));
+      ROOTS.push(other);
+      git(other, "init", "-q", "-b", "main");
+      git(other, "remote", "add", "origin", origin);
+      git(other, "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
+      // Rewind the branch to origin's main behind the step's back: the sha it
+      // read is then no longer origin's, and the lease must refuse.
+      await deps.exec("git", {
+        argv: [
+          ...NO_HOOKS,
+          "push",
+          "-q",
+          "--force",
+          "origin",
+          `refs/remotes/origin/main:refs/heads/${branch}`,
+        ],
+        cwd: other,
+        timeout: 60_000,
+      });
+    }
+    return rows;
+  };
   const spec = o.spec ?? defaultSpec();
   /** The env every git child ran with, so a case can assert on the push's. */
   const seenEnvs: NodeJS.ProcessEnv[] = [];
+  const seen: { leaseArg?: string; raceMovedTo?: string } = {};
   const deps: PublishDeps = {
     // The production seam's env decision is applied HERE rather than inside
     // `publishDeps()` — the fixture injects its own executor, so a push env the
@@ -357,36 +411,38 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     exec: async (cmd, opts) => {
       const override = o.execOver?.(cmd, opts);
       if (override !== undefined) return override;
+      if (cmd === "git" && opts?.argv?.includes("push") === true) {
+        // Record the lease the step rendered, and let a case substitute the
+        // report: origin still decides, so a printed rejection over a ref that
+        // did move is observable rather than taken on trust.
+        seen.leaseArg = opts?.argv?.find((a) => a.startsWith("--force-with-lease="));
+        if (o.pushPorcelain !== undefined) return { stdout: o.pushPorcelain, stderr: "" };
+      }
       const cwd = opts?.cwd ?? wt;
       const env = opts?.env ?? (cmd === "git" ? netGitEnv(gitTestEnv(), cwd) : gitTestEnv());
       seenEnvs.push(env);
       return execp(cmd, { ...opts, env, cwd });
     },
     fetchBody: async () => o.body ?? renderPiSpec(spec),
-    // The stale-branch decision asks the forge BEFORE it pushes, so this call is
-    // the moment between the step's `ls-remote` read and its push — the race the
-    // lease exists to catch. Moving origin's ref here means the observed sha is
-    // already stale by the time the push runs.
-    forge: async () => {
-      if (o.moveRemoteDuringPush === true) {
-        git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
-        git(origin, "update-ref", `refs/heads/${branch}`, git(origin, "rev-parse", "main"));
-      }
-      return forge;
-    },
+    forge: async () => forge,
   };
   const { publishOutcome } = await import("../../src/lean/publish.ts");
+  // Read at spread time, not built now: `shared` is constructed BEFORE the step
+  // runs, so a field captured here would always be undefined.
   const shared = { repoRoot, wt, head, origin, forge, gitEnvs: seenEnvs };
+  const observed = () => ({ leaseArg: seen.leaseArg });
   try {
     return {
       outcome: await publishOutcome(ctx, deps),
       ...shared,
+      ...observed(),
       body: forge.prCreateCalls[0]?.body ?? "",
     };
   } catch (err) {
     return {
       threw: err as Error,
       ...shared,
+      ...observed(),
       body: forge.prCreateCalls[0]?.body ?? "",
     };
   }
