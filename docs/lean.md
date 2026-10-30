@@ -20,7 +20,7 @@ a model's recollection of what happened.
 | Step | Who | What it does |
 |---|---|---|
 | `ready` | driver | Fetches the issue, parses its `pi-spec v1` block, judges readiness, resolves the mainline sha, loads `.pi/work.json` **at that sha**. Any failure is a `fail` outcome. |
-| `specify` | adversary (a `developer` child) | Writes the acceptance tests and submits them. Each submitted file is run against the base commit; a file that passes there is dropped. Freeze a contract with no red test and the step returns `no-red-test` and the run is refused. |
+| `specify` | adversary (a `developer` child) | Writes the acceptance tests and submits them. Each submitted file is run against the base commit; a file that passes there is dropped. Freeze a contract with no red test and the step returns `no-red-test` and the run is refused. If the boundary dropped a submitted test, `specify` retries once with the refusal reasons in the adversary's prompt, and the second attempt's result is final. |
 | `build` | builder (a `developer` child) | Makes the frozen tests pass. The frozen paths are named individually and marked untouchable. At most `MAX_BUILD_ATTEMPTS` (`machine.ts`) rounds. |
 | `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once. New tests earn one more build round; none — or a round stopped by its own budget — go to verify. |
 | `verify` | driver | The run's own gate, no model in it: clean tree, frozen-test integrity (blobs still hash to their records), a compiler canary, every frozen test, then `verify.fast` / `verify.full`, then the spec's `command` criteria. `green` or `red`. |

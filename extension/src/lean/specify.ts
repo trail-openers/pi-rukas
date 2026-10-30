@@ -204,6 +204,8 @@ async function dispatchAdversary(
     testRunner?: string;
     testLocation?: TestLocation;
     budget: BudgetArms;
+    /** The drop reasons of the previous attempt; set only on the one retry. */
+    refusal?: string[];
   },
 ): Promise<DispatchResult | BudgetStop> {
   await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
@@ -213,6 +215,7 @@ async function dispatchAdversary(
     testRunner: opts.testRunner,
     ...(opts.testLocation === undefined ? {} : { testLocation: opts.testLocation }),
     worktree: opts.wt,
+    ...(opts.refusal === undefined ? {} : { refusal: opts.refusal }),
   });
   const result = await deps.dispatch(
     { role: "developer", prompt, cwd: opts.wt },
@@ -244,7 +247,45 @@ async function dispatchAdversary(
   return result;
 }
 
-/** The `specify` step. Returns `ok` | `no-red-test`; THROWS on infrastructure. */
+/**
+ * The worktree at the base — created, or reset to it — and provisioned. The
+ * first attempt and the retry both come through here, so the tree the second
+ * dispatch sees is cleaned exactly as the first one's was.
+ */
+async function prepareTree(
+  deps: SpecifyDeps,
+  opts: { repoRoot: string; issue: number; wt: string; base: string; branch: string },
+): Promise<{ linked: string[]; problem?: string } | undefined> {
+  try {
+    const prepared = await ensureSpecifyWorktreeWithProvision(deps.exec, {
+      repoRoot: opts.repoRoot,
+      issue: opts.issue,
+      fromRef: opts.base,
+      branch: opts.branch,
+    });
+    return prepared.problem === undefined
+      ? undefined
+      : { linked: prepared.linked, problem: prepared.problem };
+  } catch (err) {
+    if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
+    throw new SpecifyInfraError(
+      `could not prepare the worktree ${opts.wt}: ${(err as Error).message}`,
+    );
+  }
+}
+
+/** The note a retried attempt's outcome carries, so the operator can see the retry happened. */
+const RETRY_NOTE = "(after one retry)";
+
+/** The second attempt's outcome, whatever it is, with {@link RETRY_NOTE} on its reason. */
+function afterRetry(outcome: Outcome): Outcome {
+  return {
+    ...outcome,
+    reason: outcome.reason === undefined ? RETRY_NOTE : `${outcome.reason} ${RETRY_NOTE}`,
+  };
+}
+
+/** The `specify` step. Returns `ok` | `no-red-test` | `budget`; THROWS on infrastructure. */
 export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   // 1. The spec, re-read — `ready` may have run in another process, minutes
@@ -305,41 +346,23 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
 
   // 3. The worktree: created at the base, or reset to it. Both paths clean
   //    without exemptions and re-provision, so this is the links the tree has.
-  let provisioning: { linked: string[]; problem?: string } | undefined;
-  try {
-    const prepared = await ensureSpecifyWorktreeWithProvision(deps.exec, {
-      repoRoot,
-      issue,
-      fromRef: base,
-      branch,
-    });
-    if (prepared.problem !== undefined)
-      provisioning = { linked: prepared.linked, problem: prepared.problem };
-  } catch (err) {
-    if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
-    throw new SpecifyInfraError(`could not prepare the worktree ${wt}: ${(err as Error).message}`);
-  }
+  const provisioning = await prepareTree(deps, { repoRoot, issue, wt, base, branch });
 
   // 4. Base health BEFORE any red is trusted.
   await assertBaseHealthy(deps.exec, wt, config, provisioning);
 
-  // 5. The adversary, under the state's budget (#1883).
-  const budget = armBudget(budgetFor(config, "specify"));
-  if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
-  const dispatched = await dispatchAdversary(deps, {
-    issue,
-    spec,
-    wt,
-    repoRoot,
-    testRunner: runnerTemplate,
-    budget,
-    ...(testLocation === undefined ? {} : { testLocation }),
-  });
-  const dispatchedRead = readDispatched(dispatched);
-  if ("stop" in dispatchedRead) return budgetVerdict("specify", dispatchedRead.stop);
-  const toolUses = dispatchedRead.result.toolUses ?? [];
+  // `runnerTemplate` is narrowed to a string by the refusal above (a spec WITH
+  // test criteria cannot reach here without one). Checked here, once, so every
+  // attempt below is typed against the narrowed binding.
+  if (runnerTemplate === undefined)
+    throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
+  // The run's frozen test record, read ONCE. The quota seed does not change
+  // while the boundary runs (nothing commits in between), so reading it per
+  // `validate` invocation would just re-fold the step log for the same answer.
+  const frozenByCriterion = testsFromLog(ctx.steps);
 
-  // 6-13. Extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
+  // 5-13. One attempt: the adversary under the state's budget (#1883), then
+  //       extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
   //       kept file red ON THE BASE, and commit. That pipeline is shared with
   //       `challenge` (see `specify-run.ts`): the two steps differ in whose
   //       tests the child is shown and what the tree is reset to, not in how a
@@ -354,74 +377,117 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   //       `specify` has required all of them since before the split, so the
   //       pipeline's partial-red case is a refusal here, not a partial freeze.
   //
-  //       `runnerTemplate` is narrowed to a string by the refusal above (a spec
-  //       WITH test criteria cannot reach here without one), and TypeScript
-  //       cannot carry that narrowing across the object literal below, so it is
-  //       restated at the call site that needs it rather than cast away.
-  if (runnerTemplate === undefined)
-    throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
-  // The run's frozen test record, read ONCE. The quota seed does not change
-  // while the boundary runs (nothing commits in between), so reading it per
-  // `validate` invocation would just re-fold the step log for the same answer.
-  const frozenByCriterion = testsFromLog(ctx.steps);
-  const pipeline = await runTestPipeline(
-    {
-      exec: deps.exec,
+  //       Returns the boundary's drop reasons too: an attempt that dropped a row
+  //       is the only kind of refusal the child can fix by being told about it.
+  const attempt = async (refusal?: string[]): Promise<{ outcome: Outcome; refused: string[] }> => {
+    // Each dispatch gets its own budget (#1883), armed the way the first was.
+    const budget = armBudget(budgetFor(config, "specify"));
+    if (budget.warning !== undefined)
+      traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
+    const dispatched = await dispatchAdversary(deps, {
+      issue,
+      spec,
       wt,
       repoRoot,
-      issue,
-      branch,
-      headBefore: base,
-      runnerTemplate,
-      // `specify`'s claim is that EVERY test criterion is falsifiable, so one
-      // uncovered criterion refuses the run. The rule is passed explicitly now
-      // that `challenge` shares this pipeline under `"any-red"` — a partial
-      // freeze is what that step wants, and would be wrong here.
-      coverage: "all-criteria",
-      wanted: wanted.map((c) => c.id),
-      extract: extractSubmitTests,
-      validate: (rows) =>
-        validateSubmitRows(rows, {
-          spec,
-          exists: (rel) => existsSync(path.join(wt, rel)),
-          fileProblem: (rel) => fileProblem(wt, rel),
-          // A test the child did not write is not an acceptance test: an
-          // existing tracked project test freezes as "red" without ever being
-          // run, and a child that overwrote one rewrites the contract. Both are
-          // refused against the run's BASE, which is the commit this step's
-          // whole claim is made on.
-          existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
-          // The size/quota rules judge the file with the same code the capture
-          // reads it with; `wt` is the tree these paths are relative to.
-          wt,
-          // The quota is a RUN-level bound. On a first `specify` the union is
-          // empty and this changes nothing; on a re-run of the step (a resumed
-          // or re-entered cycle whose log already carries a decided `specify:ok`)
-          // it is what stops a second round refilling every criterion to two
-          // files. Read from the same log `challenge` seeds its own quota with.
-          frozenByCriterion,
-          ...(testLocation === undefined ? {} : { testLocation }),
-        }),
-      prepare: () =>
-        ensureSpecifyWorktreeWithProvision(deps.exec, { repoRoot, issue, fromRef: base, branch }),
-      commitMessage: `test: acceptance tests for #${issue}`,
-      ...(deps.capture === undefined ? {} : { capture: deps.capture }),
-      ...(deps.testLimits === undefined ? {} : { testLimits: deps.testLimits }),
-    },
-    { toolUses },
-  );
-  if (pipeline.kind === "committed")
-    return { kind: "ok", frozen: pipeline.frozen, tests: pipeline.tests, reason: pipeline.reason };
-  if (pipeline.kind === "uncovered")
-    return { kind: "no-red-test", failedRules: pipeline.uncovered, reason: pipeline.reason };
-  // No kept candidate at all. Every criterion is uncovered, which is the same
-  // refusal this step returned before the split for the same cause — and, as
-  // there, the reason LEADS with the rules rather than opening on the drop
-  // notes, so the two fields a caller might render say the same thing first.
-  const rules = wanted.map((c) => `criterion ${c.id} has no red test`);
-  return {
-    kind: "no-red-test",
-    failedRules: rules,
-    reason: [rules.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
+      testRunner: runnerTemplate,
+      budget,
+      ...(refusal === undefined ? {} : { refusal }),
+      ...(testLocation === undefined ? {} : { testLocation }),
+    });
+    const dispatchedRead = readDispatched(dispatched);
+    if ("stop" in dispatchedRead)
+      return { outcome: budgetVerdict("specify", dispatchedRead.stop), refused: [] };
+    const toolUses = dispatchedRead.result.toolUses ?? [];
+    const refused: string[] = [];
+    const pipeline = await runTestPipeline(
+      {
+        exec: deps.exec,
+        wt,
+        repoRoot,
+        issue,
+        branch,
+        headBefore: base,
+        runnerTemplate,
+        // `specify`'s claim is that EVERY test criterion is falsifiable, so one
+        // uncovered criterion refuses the run. The rule is passed explicitly now
+        // that `challenge` shares this pipeline under `"any-red"` — a partial
+        // freeze is what that step wants, and would be wrong here.
+        coverage: "all-criteria",
+        wanted: wanted.map((c) => c.id),
+        extract: extractSubmitTests,
+        validate: async (rows) => {
+          const verdict = await validateSubmitRows(rows, {
+            spec,
+            exists: (rel) => existsSync(path.join(wt, rel)),
+            fileProblem: (rel) => fileProblem(wt, rel),
+            // A test the child did not write is not an acceptance test: an
+            // existing tracked project test freezes as "red" without ever being
+            // run, and a child that overwrote one rewrites the contract. Both are
+            // refused against the run's BASE, which is the commit this step's
+            // whole claim is made on.
+            existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
+            // The size/quota rules judge the file with the same code the capture
+            // reads it with; `wt` is the tree these paths are relative to.
+            wt,
+            // The quota is a RUN-level bound. On a first `specify` the union is
+            // empty and this changes nothing; on a re-run of the step (a resumed
+            // or re-entered cycle whose log already carries a decided `specify:ok`)
+            // it is what stops a second round refilling every criterion to two
+            // files. Read from the same log `challenge` seeds its own quota with.
+            frozenByCriterion,
+            ...(testLocation === undefined ? {} : { testLocation }),
+          });
+          refused.push(...verdict.dropped.map((d) => d.reason));
+          return verdict;
+        },
+        prepare: () =>
+          ensureSpecifyWorktreeWithProvision(deps.exec, { repoRoot, issue, fromRef: base, branch }),
+        commitMessage: `test: acceptance tests for #${issue}`,
+        ...(deps.capture === undefined ? {} : { capture: deps.capture }),
+        ...(deps.testLimits === undefined ? {} : { testLimits: deps.testLimits }),
+      },
+      { toolUses },
+    );
+    if (pipeline.kind === "committed")
+      return {
+        outcome: {
+          kind: "ok",
+          frozen: pipeline.frozen,
+          tests: pipeline.tests,
+          reason: pipeline.reason,
+        },
+        refused,
+      };
+    if (pipeline.kind === "uncovered")
+      return {
+        outcome: { kind: "no-red-test", failedRules: pipeline.uncovered, reason: pipeline.reason },
+        refused,
+      };
+    // No kept candidate at all. Every criterion is uncovered, which is the same
+    // refusal this step returned before the split for the same cause — and, as
+    // there, the reason LEADS with the rules rather than opening on the drop
+    // notes, so the two fields a caller might render say the same thing first.
+    const rules = wanted.map((c) => `criterion ${c.id} has no red test`);
+    return {
+      outcome: {
+        kind: "no-red-test",
+        failedRules: rules,
+        reason: [rules.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
+      },
+      refused,
+    };
   };
+
+  // At most ONE retry. A refusal that dropped a submitted row is the one
+  // the child can fix by reading why, so the adversary is dispatched again with
+  // the reasons in its prompt. A budget stop, a clean `ok`, or a refusal that
+  // dropped nothing is final on the first attempt. The second attempt's outcome
+  // is the step's result whatever it is.
+  const first = await attempt();
+  if (first.outcome.kind !== "no-red-test" || first.refused.length === 0) return first.outcome;
+  // The first attempt's pipeline may have left red files in the tree, and the
+  // retry must start from the base exactly as the first did.
+  await prepareTree(deps, { repoRoot, issue, wt, base, branch });
+  const second = await attempt(first.refused);
+  return afterRetry(second.outcome);
 }

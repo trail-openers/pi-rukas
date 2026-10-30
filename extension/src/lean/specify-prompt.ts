@@ -30,6 +30,40 @@ export interface SpecifyPromptOpts {
   testLocation?: TestLocation;
   /** Absolute path of the worktree the child works in. */
   worktree: string;
+  /**
+   * The drop reasons the boundary gave the PREVIOUS attempt, when this is the
+   * one retry (`specify.ts`). Undefined or empty on a first attempt.
+   */
+  refusal?: string[];
+}
+
+/** The most drop reasons {@link refusalFeedback} names; the rest are not repeated. */
+const REFUSAL_LINES_MAX = 20;
+/** One drop reason, clipped to this many characters (the ellipsis included). */
+const REFUSAL_LINE_MAX = 300;
+
+/**
+ * The section a retried adversary reads after the normal prompt: each reason the
+ * boundary dropped its last submission for, verbatim, one per line. The child
+ * never saw those reasons, so a 130-line test and a green test were both
+ * indistinguishable from "the step found nothing" — naming them is the whole
+ * point of the retry.
+ */
+export function refusalFeedback(reasons: string[]): string {
+  const lines = reasons.slice(0, REFUSAL_LINES_MAX).map((reason) => {
+    const one = reason.replace(/\s+/g, " ").trim();
+    const clipped = one.length > REFUSAL_LINE_MAX ? `${one.slice(0, REFUSAL_LINE_MAX - 1)}…` : one;
+    return `- ${clipped}`;
+  });
+  return [
+    "## Your previous submission was refused",
+    "",
+    "The parent dropped these submitted tests:",
+    "",
+    ...lines,
+    "",
+    "Fix exactly these problems and call submit_tests again for every criterion. The limits in the contract above still apply.",
+  ].join("\n");
 }
 
 /** The criteria the child must produce tests for: only `verify: "test"`. */
@@ -128,7 +162,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
     opts.testRunner === undefined
       ? "No project test runner is configured, so run each file directly and report the command you used in `note`."
       : `The parent runs each file with the project template \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path, so the file must be executable by that command alone.`;
-  return [
+  const prompt = [
     `You are writing the ACCEPTANCE TESTS for issue #${opts.issue}, before anybody implements it.`,
     "",
     "## The problem",
@@ -182,4 +216,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         "Do not run the implementation. Do not try to make the tests pass.",
       ].join("\n"),
   ].join("\n");
+  return opts.refusal === undefined || opts.refusal.length === 0
+    ? prompt
+    : `${prompt}\n\n${refusalFeedback(opts.refusal)}`;
 }

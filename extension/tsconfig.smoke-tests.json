@@ -163,6 +163,7 @@
     "smoke-tests/test-lean-exists-in-commit.ts",
     "smoke-tests/test-lean-specify-new-tests.ts",
     "smoke-tests/test-lean-challenge-new-tests.ts",
-    "smoke-tests/test-lean-budgets.ts"
+    "smoke-tests/test-lean-budgets.ts",
+    "smoke-tests/test-lean-specify-retry.ts"
   ]
 }

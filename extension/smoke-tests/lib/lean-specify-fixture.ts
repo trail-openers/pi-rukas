@@ -202,6 +202,11 @@ export interface RunOpts {
    */
   prompts?: string[];
   dispatchOk?: boolean;
+  /**
+   * Turns the fake child reports to the budget hook it was handed, on every
+   * dispatch. Past the step's `turns` ceiling this is a child the budget ends.
+   */
+  progressTurns?: number;
 }
 
 /** Run the step; a throw comes back as the error, so each case asserts on it. */
@@ -215,11 +220,21 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     // commit the step makes — that commit is the thing under test.
     return execp(cmd, { ...o, env: { ...gitEnv(), ...(o?.env ?? {}) } });
   };
-  const dispatch: SpecifyDeps["dispatch"] = async (spec: DispatchSpec) => {
+  const dispatch: SpecifyDeps["dispatch"] = async (spec: DispatchSpec, dopts) => {
     dispatched++;
     opts.prompts?.push(spec.prompt);
     const wt = spec.cwd as string;
     opts.writes(wt);
+    if (opts.progressTurns !== undefined)
+      dopts.onProgress?.({
+        role: "developer",
+        turns: opts.progressTurns,
+        toolUses: 0,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+        totalTokens: 0,
+        elapsedMs: 0,
+        done: false,
+      });
     // The child's worktree state at the moment its `submit_tests` calls are
     // made. Everything after this line is what the child leaves behind, and the
     // step must not be able to be moved by it.
