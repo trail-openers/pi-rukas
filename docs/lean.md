@@ -21,7 +21,7 @@ a model's recollection of what happened.
 |---|---|---|
 | `ready` | driver | Fetches the issue, parses its `pi-spec v1` block, judges readiness, resolves the mainline sha, loads `.pi/work.json` **at that sha**. Any failure is a `fail` outcome. |
 | `specify` | adversary (a `developer` child) | Writes the acceptance tests and submits them. Each submitted file is run against the base commit; a file that passes there is dropped. Freeze a contract with no red test and the step returns `no-red-test` and the run is refused. |
-| `build` | builder (a `developer` child) | Makes the frozen tests pass. The frozen paths are named individually and marked untouchable. At most `MAX_BUILD_ATTEMPTS` (2) rounds. |
+| `build` | builder (a `developer` child) | Makes the frozen tests pass. The frozen paths are named individually and marked untouchable. At most `MAX_BUILD_ATTEMPTS` (`machine.ts`) rounds. |
 | `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once per run. New tests earn one more build round; none go straight to verify. |
 | `verify` | driver | The run's own gate, no model in it: clean tree, frozen-test integrity (blobs still hash to their records), a compiler canary, every frozen test, then `verify.fast` / `verify.full`, then the spec's `command` criteria. `green` or `red`. |
 | `publish` | driver | Pushes the branch under a lease bound to a sha it just read from origin, and opens (or reuses) the PR. Refuses to publish a green it did not observe at the head it is pushing. |
@@ -33,9 +33,9 @@ or unready spec failed and ends the run `not-ready`, and any handler that
 throws ends the run `handed-back` with `handler error at <state>: …`.
 
 The load-bearing rule: only `ci` + `green` enters `land`, and even then the
-engine re-reads its own log — the newest decided `verify` **and** `ci` must
-both be green and no `draft` marker may be standing. Green is the only verdict
-that clears a draft.
+engine re-reads its own log — the newest decided `verify` **and** `ci` must both
+be green and no `draft` marker may be standing. Green is the only verdict that
+clears a draft.
 
 ## What an issue needs
 
@@ -50,14 +50,11 @@ does not infer scope, criteria or size from prose.
 | `scope` | optional object | `paths` (may touch) and `out` (must not), both `string[]`. |
 | `size` | `"S"`, `"M"` or `"L"` | `L` is refused: *"size L is too large for one run — split it"*. |
 
-Verify kinds:
-
-- **`test`** — an acceptance test proves it. Only `test` criteria may have
-  frozen test files submitted against them.
-- **`command`** — must carry a non-empty `command`, which the gate executes
-  separately and records separately. A `command` criterion the gate could not
-  run holds the PR as a draft.
-- **`manual`** — nobody can check it, so the PR is always a draft.
+Verify kinds: **`test`** — an acceptance test proves it, and only `test`
+criteria may have frozen files submitted against them. **`command`** — must
+carry a non-empty `command`, which the gate executes and records separately; a
+`command` criterion the gate could not run holds the PR as a draft.
+**`manual`** — nobody can check it, so the PR is always a draft.
 
 A minimal example:
 
@@ -79,19 +76,23 @@ Failures name themselves — "no pi-spec v1 block", "2 pi-spec v1 blocks",
 "pi-spec v1 block is empty", "…is not valid JSON", "spec.size must be one of
 S, M, L" are distinct reasons, and they are the rules `decline` posts.
 
-**`/plan` writes it.** `plan-pi-spec.ts` maps the drafted spec onto the
-contract, bounds every field it emits (title clipped, at most 12 criteria, all
-`verify: "test"`, no `scope`), places the section at the **top** of the body (so
-an unclosed fence in prose below cannot swallow it), and reads the block back
-through the real parser before filing. Any `pi-spec v1` fence already in the
-drafted prose is renamed to `pi-spec-example v1`, so a quoted example can never
-become the contract.
+**`/plan` writes it on the filing path.** The driver assembles the body once
+(`assembleFinalBody` in `plan-driver-final-body.ts`, which calls
+`plan-pi-spec.ts`), and that assembled body is the one the driver files — the
+block is not injected any other way. `plan-pi-spec.ts` maps the
+drafted spec onto the contract, bounds every field it emits (title clipped, at
+most 12 criteria, all `verify: "test"`, no `scope`), places the section at the
+**top** of the body (so an unclosed fence in prose below cannot swallow it), and
+reads the block back through the real parser before filing. Any `pi-spec v1`
+fence already in the drafted prose is renamed to `pi-spec-example v1`, so a
+quoted example can never become the contract.
 
 ## Configuration
 
-Full field-by-field reference: [configuration.md](configuration.md) (the
-`.pi/work.json` row). Headless flags and exit codes:
-[headless.md](headless.md). What follows is the shape of it.
+Full field-by-field reference — including every `verify.*` rule, the
+`.pi/verify-cmd` fallback, and what each refusal says:
+[configuration.md](configuration.md) → the `.pi/work.json` row. Headless flags
+and exit codes: [headless.md](headless.md). What follows is the shape of it.
 
 `.pi/work.json` is read with `git show <baseSha>:.pi/work.json` — never from
 the working tree — so a run is not judged by bytes it wrote itself. **Absent
@@ -109,40 +110,43 @@ means defaults.** An invalid file is *not* defaulted: it raises
     "testDir": "extension/smoke-tests",
     "testGlob": "test-*.ts"
   },
-  "budgets": { "build": { "turns": 150, "tokens": 20000000, "minutes": 45 } }
+  "budgets": { "build": { "turns": 400, "tokens": 60000000, "minutes": 45 } }
 }
 ```
 
 - **`version`** — must be exactly `1`; anything else, including absent, is
   invalid.
-- **`verify.testDir` / `verify.testGlob`** — a pair or neither. Where the
-  adversary's acceptance tests live and what they are called. Both absent (the
-  default) means the child may write its tests anywhere in the worktree. When
-  set, both adversary prompts name the folder and the pattern, and the
-  `submit_tests` boundary refuses a test that is not **directly** inside
-  `testDir` or whose basename does not match `testGlob` — so the frozen tests
-  land where your own CI runs them. `testDir` is repo-relative with no
-  wildcard and exactly one canonical spelling; `testGlob` is a basename pattern
-  with exactly one `*` and a real extension after it.
+- **`verify.fast` / `verify.full`** — shell strings run with `cwd` at the
+  worktree root, fast before full, first failure wins, each under its own
+  30-minute bound. A committed `.pi/verify-cmd` is the fallback for the full
+  tier **only when `work.json` is absent**.
 - **`verify.test`** — the per-file runner template `specify` uses to prove a
-  test red on the base. Executed as an executable plus argv, **never through a
-  shell**: it must carry exactly one whole-word `{file}` (`bun run test-{file}.ts`
-  is refused), and no `;` `&` `|` `` ` `` `$` `<` `>` `"` `'` `\` or newline
-  anywhere.
-- **`verify.fast` / `verify.full`** — shell command strings, run with `cwd` at
-  the worktree root, fast before full, first failure wins, each under its own
-  30-minute bound (`TIER_TIMEOUT_MS`). A committed
-  `.pi/verify-cmd` is the fallback for the full tier **only when `work.json` is
-  absent**; a `work.json` with no `verify.full` runs no full tier at all.
+  test red on the base: argv form, never a shell, exactly one whole-word
+  `{file}`.
+- **`verify.testDir` / `verify.testGlob`** — a pair or neither: where the
+  adversary's acceptance tests live and what they are called, so the frozen
+  tests land where your own CI runs them.
 - **`autoMerge`** — boolean, default `false`. **Read, not acted on.** Nothing
   consumes it yet; the land step will. Today it records intent only.
 - **`budgets`** — per state, each `{turns, tokens, minutes}`, non-negative
   integers (`0` is unbounded for turns and tokens, never for minutes), merged
   **over** the shipped defaults, so naming `build` alone keeps the defaults for
-  the others. Shipped defaults: `specify` 80/10 000 000/20, `build`
-  150/20 000 000/45, `challenge` 60/8 000 000/15, `review` 40/6 000 000/15,
-  `ci` 0/0/30. A state with no default has no budget until a phase adds its
+  the others. A state with no default has no budget until a phase adds its
   handler.
+
+**Shipped defaults** (`DEFAULT_BUDGETS` in `extension/src/lean/config.ts`),
+sized from the measured rate of the default model — about **150 turns per 20M
+tokens in 3–4 minutes**. Two live runs stopped on the old turn ceilings at 3
+minutes (specify at 81 of 80, challenge at 61 of 60), so each entry leaves room
+for a full working session rather than a third of one:
+
+| State | turns | tokens | minutes |
+|---|---|---|---|
+| `specify` | 250 | 30 000 000 | 20 |
+| `build` | 400 | 60 000 000 | 45 |
+| `challenge` | 200 | 25 000 000 | 15 |
+| `review` | 150 | 20 000 000 | 15 |
+| `ci` | 0 | 0 | 30 |
 
 **When a budget fires.** `minutes` becomes the child's wall clock;
 `turns`/`tokens` are watched on the child's progress stream and abort at a turn
@@ -153,23 +157,15 @@ that stopped the child (`build stopped: minutes budget 45 exceeded (used 47)`).
 With `PI_ENSEMBLE_DISPATCH_CAPS=0` the wall clock is inert and the step says so
 rather than describing a bound that never fired.
 
-**Bounds on a frozen test.** A kept acceptance test must be:
-
-- at most **120 lines** (`MAX_TEST_LINES`);
-- at most **16 KiB** (`MAX_TEST_BYTES` = 16 384), checked on the file's stat
-  before it is read;
-- **new at the base commit** — an existing path is refused ("a new acceptance
-  test must be a new file"), which is what makes a frozen test one the child
-  wrote rather than a project test that was already green;
-- **no more than 2 files per criterion across the whole run**
-  (`MAX_TEST_FILES_PER_CRITERION`) — the quota is seeded from what earlier
-  rounds already froze, so a second round cannot double it.
-
-Two call-cost bounds sit beside them: a single `submit_tests` row names at most
-8 files (`MAX_TEST_FILES_PER_ROW`) and one call gets at most 32 distinct paths
-probed against the base (`MAX_TEST_FILES_PER_CALL`). A test the run already
-froze may never be resubmitted — the adversary cannot replace the contract the
-builder is measured against.
+**Bounds on a frozen test.** A kept acceptance test must be new at the base
+commit, at most **120 lines** (`MAX_TEST_LINES`), at most **16 KiB**
+(`MAX_TEST_BYTES`), and at most **2 per criterion** across the whole run
+(`MAX_TEST_FILES_PER_CRITERION`, seeded from what earlier rounds froze so a
+second round cannot double it). Two call-cost bounds sit beside them: one
+`submit_tests` row names at most 8 files, one call gets at most 32 distinct
+paths probed against the base, and a test the run already froze may never be
+resubmitted — the adversary cannot replace the contract the builder is measured
+against.
 
 ## Running it
 
@@ -177,18 +173,13 @@ builder is measured against.
 else. It seeds the run with the mainline sha, drives it to a terminal state and
 notifies one summary line: `work-lean #<issue>: handed-back (exit 10) — <reason>`.
 
-**Headless.**
-
-```
-pi-rukas-headless work-lean <issue> [--json]
-```
-
-Exactly one positional issue number; `--json` is accepted and changes nothing,
-as with every other subcommand. Stderr carries only NDJSON v1 log lines;
-stdout carries exactly one JSON document with `subcommand`, `issue`,
-`exitCode`, `state`, `summary`, `steps` (the step-log length) and, when the run
-reached `publish`, `prUrl`. The verb adds no policy of its own — the run's own
-code is the exit code.
+**Headless.** `pi-rukas-headless work-lean <issue> [--json]` — exactly one
+positional issue number; `--json` is accepted and changes nothing, as with every
+other subcommand. Stderr carries only NDJSON v1 log lines; stdout carries
+exactly one JSON document with `subcommand`, `issue`, `exitCode`, `state`,
+`summary`, `steps` (the step-log length) and, when the run reached `publish`,
+`prUrl`. The verb adds no policy of its own — the run's own code is the exit
+code.
 
 **Exit codes** (`EXIT_CODES` in `machine.ts`, plus the two the verb adds):
 
@@ -206,18 +197,17 @@ reported `{code: 99, state: "landed"}` is a crash rather than a document.
 
 **Resume.** The state file *is* the resume. `runLean` loads it, folds the
 append-only step log through the table, and refuses a file whose snapshot the
-fold cannot reproduce. A step recorded **without** an outcome is a crash
-mid-step and is the only thing re-run — so a crash never double-bills a build
-or re-posts a comment. A run that already carries a terminal `result` returns
-verbatim, provided the stamp agrees with the log (terminal state, matching
-code, and a `landed` whose land gate actually holds); a stamp the log did not
-earn is a `LeanStateError`, not a success.
+fold cannot reproduce. A step recorded **without** an outcome is a crash mid-step
+and is the only thing re-run — so a crash never double-bills a build or re-posts
+a comment. A run carrying a terminal `result` returns verbatim provided the stamp
+agrees with the log (terminal state, matching code, and a `landed` whose land
+gate actually holds); a stamp the log did not earn is a `LeanStateError`.
 
 **Lock.** `<repoRoot>/.pi/lean-state/<issue>.lock`, taken atomically with its
 owner identity (`<host> <pidns> <pid> <starttime>`) written inside it. Only a
-holder this process can **prove dead** is reclaimed; a live, foreign, or
-unjudgeable owner — and an unreadable body — all refuse rather than risk
-driving one issue twice. A refusal is `LeanLockError`, which is what the
+holder this process can **prove dead** is reclaimed; a live, foreign,
+unjudgeable or unreadable owner all refuse rather than risk driving one issue
+twice. A refusal is `LeanLockError`, which is what the
 headless verb maps to exit 40.
 
 ## What you get back
@@ -228,15 +218,15 @@ claim about itself, generated from the step log: one row per acceptance
 criterion with the frozen test that answers for it and the verdict the gate
 recorded for it — `green`, `red`, `not run`, `passed (command; …)`, or
 `manual — needs a human`. It also carries the gate's reason verbatim (fenced),
-the base sha, the version stamp, and the `role = model` pairs the run
-dispatched with. A run whose head is not green, or whose spec has a `manual`
-criterion or an unrunnable `command` criterion, opens the PR as a **draft**.
+the base sha, the version stamp, and the `role = model` pairs the run dispatched
+with. A run whose head is not green, or whose spec has a `manual` criterion or an
+unrunnable `command` criterion, opens the PR as a **draft**.
 
 **A state file** at `.pi/lean-state/<issue>.json`, written atomically
-(tmp + rename). It is WAL-shaped: `steps` is the append-only log (one entry
-per visit, keyed `<issue>:<state>:<n>`, outcome stamped in when the step
-settles) and `state`/`counters` are a cache that `resume.ts` re-derives rather
-than trusts. Read it when you want to know what a run actually decided.
+(tmp + rename). It is WAL-shaped: `steps` is the append-only log (one entry per
+visit, keyed `<issue>:<state>:<n>`, outcome stamped in when the step settles)
+and `state`/`counters` are a cache that `resume.ts` re-derives rather than
+trusts. Read it when you want to know what a run actually decided.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
 budget breach, else the newest red `verify` reason, else the newest red `ci`,
