@@ -11,9 +11,11 @@
  *   - invalid → `LeanConfigError` (a typo'd budget must not silently become
  *     "no budget", which is the expensive direction to be wrong)
  *
- * The defaults carry no budgets for states that phase 1 has no handler for
- * beyond handback, and a wall clock for `ci` where a stalled watch is the
- * whole risk.
+ * The shipped table has a row for every state the machine can visit, including
+ * `review` and `ci`, which phase 1 has no handler for beyond handback — `ci`
+ * carries a wall clock where a stalled watch is the whole risk. A key that is
+ * not in the table is refused at load, so there is no such thing as a budget
+ * for an unbuilt state.
  */
 
 import type { execp } from "../exec.ts";
@@ -195,6 +197,43 @@ function firstLine(content: string): string | undefined {
     .find((l) => l.length > 0 && !l.startsWith("#"));
 }
 
+/**
+ * The shipped defaults plus the own, validated keys of the file's `budgets`.
+ *
+ * `validate` has already refused anything not an own key of `DEFAULT_BUDGETS`
+ * and any malformed member, so this only assembles — but it assembles by
+ * copying the three named fields from `Object.entries` rather than spreading,
+ * which is what keeps a prototype-polluting key out of the result object even
+ * if the caller hands it an object that got past validation some other way.
+ */
+function mergeBudgets(
+  overrides: Partial<Record<string, Budget>> | undefined,
+): WorkConfig["budgets"] {
+  const merged: Record<string, Budget> = {};
+  // `DEFAULT_BUDGETS` is typed as a `Record<string, Budget>`, so an index read
+  // is `Budget` by declaration yet `undefined` at runtime for an unknown key —
+  // the keys here come from `Object.keys`, so they are all present.
+  for (const state of Object.keys(DEFAULT_BUDGETS)) {
+    const base = DEFAULT_BUDGETS[state] as Budget;
+    merged[state] = { turns: base.turns, tokens: base.tokens, minutes: base.minutes };
+  }
+  for (const [state, budget] of Object.entries(overrides ?? {})) {
+    const base = DEFAULT_BUDGETS[state] as Budget | undefined;
+    if (!Object.hasOwn(DEFAULT_BUDGETS, state) || budget === undefined || base === undefined)
+      continue;
+    // Explicit fields, each defaulted to the shipped number: the JSON schema
+    // lets a budget omit any of the three (`{turns: 1}` is valid) and the
+    // declared type is `Partial<Record<…>>`, so an omitted member means
+    // "keep the default", not "undefined".
+    merged[state] = {
+      turns: budget.turns ?? base.turns,
+      tokens: budget.tokens ?? base.tokens,
+      minutes: budget.minutes ?? base.minutes,
+    };
+  }
+  return merged;
+}
+
 /** A budget whose members are all non-negative integers, or undefined to skip. */
 function checkBudget(where: string, v: unknown): string | undefined {
   if (v === undefined) return undefined;
@@ -259,7 +298,10 @@ function validate(obj: unknown): string | undefined {
       // state keeps the default. Refusing it is the same reasoning as the
       // invalid-JSON rule above: a typo'd budget must not quietly mean
       // "the budget I thought I set".
-      if (!(state in DEFAULT_BUDGETS)) {
+      // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so
+      // `__proto__`, `constructor` and `toString` all "exist" in this table
+      // and would pass a check whose whole job is to refuse an inert key.
+      if (!Object.hasOwn(DEFAULT_BUDGETS, state)) {
         const known = Object.keys(DEFAULT_BUDGETS).join(", ");
         return `.pi/work.json budgets.${state} is not a lean state (known: ${known})`;
       }
@@ -349,6 +391,10 @@ export async function loadWorkConfig(
     version: 1,
     autoMerge: o.autoMerge ?? false,
     verify: { ...(o.verify ?? {}) },
-    budgets: { ...DEFAULT_BUDGETS, ...(o.budgets ?? {}) },
+    // Built from the validated own keys only, never spread wholesale: a
+    // prototype-polluting key (`__proto__`) is an own property of the parsed
+    // object, and spreading it would put the object on the result rather than
+    // refuse it.
+    budgets: mergeBudgets(o.budgets),
   };
 }

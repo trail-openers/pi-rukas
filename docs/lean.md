@@ -149,8 +149,9 @@ pins the table against literals, so changing a number is a deliberate edit):
 **When a budget fires.** `turns` and `tokens` are watched on the child's
 progress stream and **abort at once** at a turn boundary. `minutes` is not a
 kill at the bound: it arms the child bound (`spawn-child-bound.ts`), which
-sends a **wrap-up steer at the bound** and kills at the bound **plus a 10-minute
-grace** (`childBoundGraceMs`). A child that finishes inside the grace is not a
+sends a **wrap-up steer at the bound** and kills at the bound **plus the
+child-bound grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`, 10 min by default)**.
+A child that finishes inside the grace is not a
 breach. A breach is a **verdict**, not an
 infrastructure failure — the step returns `{kind: "budget"}` with `limit`,
 `value` and `used`, the table routes it to `handback`, and the run exits **10**.
@@ -241,10 +242,10 @@ that could not be posted is recorded as such, and does not change the verdict.
 - **No `review`, `ci` or `land` steps.** The states and their edges exist in the
   table; their handlers throw `work-lean stage <state> is not built yet`, which
   the engine turns into `handler error at <state>: …`, a handback, exit 10.
-  Nothing merges, so **`autoMerge` is read and never acted on.**
-- **`land` will need the same merge-authority resolution `/work` has** (#380 /
-  #407): a grant read from the project's `AGENTS.md` at the cycle's base sha,
-  plus executed forge evidence, before anything merges — `autoMerge` is intent.
+  Nothing merges, so **`autoMerge` is read and never acted on** — and when
+  `land` is built it will need the same merge-authority resolution `/work` has
+  (#380 / #407): a grant read from the project's `AGENTS.md` at the cycle's
+  base sha, plus executed forge evidence, before anything merges.
 - In practice every run that reaches `publish` ends in a handback, because the
   very next state is unbuilt. Treat the PR, not the exit code, as the artefact.
 - **The old `/work` driver is a separate program.** `extension/src/work-driver.ts`

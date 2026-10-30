@@ -19,6 +19,9 @@ MCP bridge walkthrough: installing `pi-mcp-adapter`, the 4-tier server config, `
 ### [custom-providers.md](custom-providers.md)
 Adding a custom OpenAI-compatible provider: registering it in `~/.pi/agent/models.json`, compat flags, storing the API key, and the three usage modes (main agent, per-project, subagents).
 
+### [lean.md](lean.md)
+The lean engine — the deterministic `/work` (`pi-rukas-headless work-lean`, `/work-lean`): the state table and who runs each step, the `pi-spec v1` issue contract and its verify kinds, `.pi/work.json` shape and shipped budgets, headless flags and exit codes, resume and lock semantics, and what a run hands back.
+
 ### [skill-vetting.md](skill-vetting.md)
 Vetting checklist for vendoring third-party agent skills into `skill/` and the process for retiring one: provenance + SHA pin, licence, prompt-injection review, frontmatter rules, and the `test-skill-name-surface.ts` gate.
 
