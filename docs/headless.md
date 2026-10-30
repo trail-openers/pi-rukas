@@ -37,7 +37,7 @@ A headless caller calls `--capabilities` once per image build and once before ea
 - **`research`**: a deep run whose entailment pass could not run carries `"entailment": "unavailable"`.
 - **`agents-md`** documents carry `verb` (`create` / `update` / `check`), `status` (`clean`, `findings`, `gated`, `refused`), `findings[]` and, for `create` / `update`, `wouldWrite`. `root` defaults to the repository root.
 - **`lens-review`** is admitted through the same round budget as `dispatch_lens_review` and writes the review ledger like it. Without `--base` / `--head` it reviews the working tree.
-- **`work-lean`** takes exactly one positional issue number; `--json` is accepted and changes nothing, as with every other S6 subcommand. Its document carries `subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`. The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanVerb`.
+- **`work-lean`** takes exactly one positional issue number; `--json` is accepted and changes nothing, as with every other S6 subcommand. Its document carries `subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`. The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanVerb`. Operator guide to the engine itself: [lean.md](lean.md).
 
 ### Planning sessions
 
