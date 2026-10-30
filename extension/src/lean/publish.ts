@@ -35,7 +35,7 @@
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
-import { frozenFromLog, testsFromLog } from "./build.ts";
+import { testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
@@ -44,7 +44,7 @@ import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
-import { type Outcome, type Step, newestDecided } from "./state.ts";
+import { type Outcome, newestDecided } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** Run git in `wt`, rejecting a read that cannot answer as infrastructure. */

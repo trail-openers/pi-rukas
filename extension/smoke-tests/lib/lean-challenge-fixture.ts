@@ -134,8 +134,6 @@ export function challengeFixture(
   issue: number,
   opts?: {
     extraFrozen?: Record<string, string>;
-    /** See `RunOpts.extraTests` — the run's per-criterion test record. */
-    extraTests?: Record<string, string[]>;
     issueDir?: number;
   },
 ): ChallengeBuilt {
@@ -168,6 +166,7 @@ export function challengeFixture(
     throw new Error(
       `fixture: issue ${issue} in repo ${repoRoot} — the step's worktree ${wt} is not the fixture's ${built.worktree}`,
     );
+  // NOTE: `extraFrozen` deliberately does NOT join the `tests` record below.
   // The builder's work, committed the way the build step commits it: a real
   // commit ON the run's branch, above the frozen test commit. Written in the
   // worktree because that is the tree the run's branch is checked out in.
@@ -186,27 +185,16 @@ export function challengeFixture(
     extra[rel] = sha(text);
   }
   const frozen = { ...built.frozen, ...extra };
-  // A frozen path is a file the RUN froze, so it joins the run's `tests` record
-  // for the criterion that owns it — the record `frozenFromLog`'s partner
-  // `testsFromLog` reads, and the record the boundary seeds its per-criterion
-  // quota from. A fixture that froze a file without saying which criterion it
-  // proves is a fixture whose log no real step would ever have written (a step
-  // records `tests` and `frozen` from the same kept rows), and a case built on
-  // it would measure a quota the production path never sees. `challenge` has
-  // always unioned `extraFrozen` into the `frozen` map above; this is the other
-  // half of that same union.
   // The run's per-criterion test record, which is what `challenge`'s boundary
-  // seeds its per-criterion file quota from (`testsFromLog`). A case says what
-  // its own log records; it is NOT derived from `extraFrozen`, whose paths are
-  // deliberately criterion-agnostic ("the adversary may not replace this path"
-  // is a rule about a path, and the cases that exercise it freeze files under
-  // names no criterion owns).
+  // seeds its per-criterion file quota from (`testsFromLog`). A step writes
+  // `tests` and `frozen` from the same kept rows, so a real log does carry a
+  // frozen path here — but the fixture's `extraFrozen` files are written for
+  // rules about a PATH ("the adversary may not replace this file"), and the
+  // cases that use them name no criterion, so they join `frozen` above and not
+  // this record. A case that needs a second criterion's row builds its own
+  // `specify:ok` step via `extraSteps` rather than asking this fixture to
+  // invent one.
   const tests: Record<string, string[]> = { AC1: ["tests/AC1-retry.test.sh"] };
-  for (const [id, files] of Object.entries(opts?.extraTests ?? {})) {
-    const list = tests[id] ?? [];
-    for (const f of files) if (!list.includes(f)) list.push(f);
-    tests[id] = list;
-  }
 
   git(wt, "add", "-A");
   git(wt, "commit", "-q", "-m", `build: attempt 1 for #${issue}`);
@@ -314,13 +302,6 @@ export interface RunOpts {
    */
   extraFrozen?: Record<string, string>;
   /**
-   * The run's per-criterion `tests` record, merged into the `specify:ok` step.
-   * A case whose child submits under a second test criterion says so here, the
-   * way a real run would have recorded a red test for it — the record the
-   * boundary's per-criterion quota seeds from.
-   */
-  extraTests?: Record<string, string[]>;
-  /**
    * Run this case inside ANOTHER issue's repo, keeping its own step log keys,
    * commit subject, branch AND worktree. Two runs against one repo fight over
    * the same tree, so a pair of cases that differ only in what the child did
@@ -348,7 +329,6 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     opts.built ??
     challengeFixture(opts.issue, {
       ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
-      ...(opts.extraTests === undefined ? {} : { extraTests: opts.extraTests }),
       ...(opts.issueDir === undefined ? {} : { issueDir: opts.issueDir }),
     });
   // The tree this case runs in must be the one the STEP computes, from

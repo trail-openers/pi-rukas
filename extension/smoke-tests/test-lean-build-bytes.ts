@@ -6,7 +6,7 @@
  * Same harness as test-lean-build.ts (a real temp repo, a real worktree, only
  * the model stubbed). Split out to keep each smoke file under the size gate.
  *
- *   (r) a frozen test holding the bytes 0xff 0xfe 0x00 0x80 -> ok, and the frozen
+ *   (r) a frozen test holding the bytes 0xff 0xfe 0x41 0x80 -> ok, and the frozen
  *       hash still matches: the blob is read byte-exactly, so the record the
  *       freeze made is the one build verifies
  *   (s) a run that froze no tests -> THROW with its own message, not the

@@ -10,8 +10,10 @@
  * come from an untrusted child. `specify-tree.ts` keeps the worktree primitives
  * and re-exports `validateSubmitRows` from here, so the callers never moved.
  *
- * The two size rules (`MAX_TEST_LINES`, `MAX_TEST_FILES_PER_CRITERION`, with
- * `countTestLines` and the three refusal sentences in `test-size.ts`) judge the
+ * The three size rules (`MAX_TEST_LINES`, `MAX_TEST_BYTES`,
+ * `MAX_TEST_FILES_PER_CRITERION`, with
+ * `countTestLines` and the refusal sentences in `test-size.ts`, applied by
+ * `sizeJudgement` in `submit-tests-size.ts`) judge the
  * CHILDREN'S work rather than the call's cost: what a run freezes is a property
  * of the tests, and a thousand lines of them is the failure the boundary exists
  * to refuse. They are applied here, where a submitted path is finally a file,
@@ -22,18 +24,11 @@
 import path from "node:path";
 import { type TestLocation, testLocationProblem } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
-import { readOneDescriptor } from "./specify-capture.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
+import { SpecifyInfraError } from "./specify-reset.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
-import {
-  MAX_TEST_FILES_PER_CRITERION,
-  MAX_TEST_LINES,
-  countTestLines,
-  testFileQuotaProblem,
-  testNotTextProblem,
-  testSizeProblem,
-} from "./test-size.ts";
-
+import { sizeJudgement, statSizeOf } from "./submit-tests-size.ts";
+import { MAX_TEST_FILES_PER_CRITERION, testFileQuotaProblem } from "./test-size.ts";
 /**
  * How many test files one submitted row may name.
  *
@@ -131,17 +126,25 @@ export const NEWNESS_REASON =
  *   5. base newness (`existsAtBase`) — a test the child did not write is not a
  *      new acceptance test;
  *   6. file shape (`fileProblem`);
- *   7. size — with `wt` the boundary reads the file through the capture's own
- *      `readOneDescriptor` and counts lines (`MAX_TEST_LINES`); a file too long
- *      to be one focused test of one criterion is dropped here, before the step
- *      captures and commits it. A NUL byte is dropped here too, as not a text
- *      file: the count cannot be honest about it, so the file is refused rather
- *      than guessed at (`countTestLines` throws, the boundary drops);
+ *   7. size — with `wt` the boundary stats the file FIRST and refuses anything
+ *      over `MAX_TEST_BYTES` without reading it, then reads what the stat
+ *      admitted through the capture's own `readOneDescriptor` and counts lines
+ *      (`MAX_TEST_LINES`). The byte bound is what makes the read bounded per
+ *      CALL rather than merely bounded per kept file: at most
+ *      `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at most
+ *      `MAX_TEST_BYTES`, is the most one validation ever reads. A NUL byte is
+ *      dropped here too, as not a text file: the count cannot be honest about
+ *      it, so the file is refused rather than guessed at;
  *   8. the per-criterion file quota (`MAX_TEST_FILES_PER_CRITERION`) — the
  *      first files kept for the criterion fill it, so the count is across the
  *      whole call, not per row, and across the whole RUN once `frozenByCriterion`
  *      seeds it. It is judged together with the size rule, on the content the
  *      size rule read.
+ *
+ * A stat or a read that fails for a reason the CHILD'S file does not explain —
+ * an EIO, an EMFILE, an EACCES — is infrastructure and THROWS `SpecifyInfraError`,
+ * which `specify-run.ts` maps to a handback. It is never a drop. No raw
+ * `err.message` is ever interpolated into a drop reason.
  *
  * A caller that passes no `wt` cannot be size-judged, and the quota rule does
  * not silently fire on files it has not seen: with no tree both rules are inert
@@ -199,16 +202,26 @@ export async function validateSubmitRows(
      */
     existsAtBase?: (rel: string) => Promise<boolean>;
     /**
-     * The worktree whose files the size rule counts lines in. With it the
-     * boundary reads a candidate through `readOneDescriptor` — the capture's own
+     * The worktree whose files the size rules judge. With it the boundary stats
+     * the candidate, refuses it on `MAX_TEST_BYTES` alone, and reads what the
+     * stat admitted through `readOneDescriptor` — the capture's own
      * single-descriptor read, so the boundary and the capture judge a kept file
      * through the SAME code; the read itself happens once per consumer, and the
      * capture's own `fstat` checks catch a file swapped in that window. Omit it
      * (a unit
-     * test with no tree) and both size rules are inert: a rule that cannot see
+     * test with no tree) and the size rules are inert: a rule that cannot see
      * the bytes never fires, and every other rule is unchanged.
      */
     wt?: string;
+    /**
+     * The byte size the size rules judge a candidate against BEFORE reading it.
+     * Defaults to `statSizeOf` (`lstat`, like `fileProblem`). A test drives it to
+     * prove a file is refused on size without the fixture on disk, or to prove an
+     * unreadable stat is infrastructure rather than a drop. Its value is never
+     * interpolated into a reason: it is a number, and the sentence built from it
+     * is `testBytesProblem`'s.
+     */
+    statSize?: (abs: string) => number;
     /**
      * What the RUN has already frozen per criterion, from the step log's
      * `tests` maps (`frozenFromLog`'s partners in `build.ts` / `publish.ts`).
@@ -229,15 +242,26 @@ export async function validateSubmitRows(
 ): Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }> {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
   const keptByCriterion = new Map<string, string[]>();
-  // The quota is a RUN-level bound, so a criterion's count starts from what the
-  // run already froze rather than from zero. `Set` so a path the child resubmits
-  // against its own frozen copy is counted once, and `files.length` stays the
-  // number this call keeps while `countAgainstQuota` is the number that fills.
-  const frozenCount = new Map<string, Set<string>>();
+  // ONE counter per criterion: the quota is a RUN-level bound, so a criterion
+  // starts at what the run already froze and every keep in this call lands on
+  // the same number. Two structures used to carry it (a kept-paths array per
+  // criterion and a `Set` per seeded criterion) that had to be ADDED together at
+  // the check, which is the shape a bound acquires an off-by-one in.
+  const quota = new Map<string, number>();
   for (const [id, files] of Object.entries(opts.frozenByCriterion ?? {})) {
-    if (files.length === 0) continue;
-    frozenCount.set(id, new Set(files));
+    quota.set(id, files.length);
   }
+  // Paths already kept for a criterion IN THIS CALL — the dedupe. A path a
+  // later row names again is a fresh REQUEST the quota judges (that is how AC4
+  // fills its two files from `[small, fill, mid]` across rows in
+  // `test-lean-test-size.ts`, and how a `./`-spelling of an already-kept good
+  // path is refused rather than silently dropped — both pre-existing behaviour,
+  // both pinned). What this set forbids is one name appearing TWICE inside one
+  // criterion's kept row, because that row is what the step captures and
+  // commits; `files` is keyed by criterion, so the check is per criterion and
+  // lives on this map rather than on a per-row scratch set that a later row
+  // cleared — which is what let a duplicated name reach the kept row twice.
+  const keptRels = new Map<string, Set<string>>();
   // One git read per distinct path per call, and the call is bounded by
   // `MAX_TEST_FILES_PER_CALL` above.
   const base = baseProbe(opts.existsAtBase);
@@ -352,7 +376,9 @@ export async function validateSubmitRows(
         dropped.push({ criterionId: row.criterionId, path: rel, reason: notAFile });
         continue;
       }
-      if (files.includes(rel)) continue;
+      // Already named AND kept earlier in this row? Free: it neither re-reads
+      // the file nor spends the quota a second time for the same name.
+      if (keptRels.get(row.criterionId)?.has(rel) === true) continue;
       // The size and quota rules are the last two checks: they are the only ones
       // that cost a read, so a row the cheap rules already refused never opens a
       // descriptor. They run together or not at all — a quota that fired on
@@ -361,60 +387,23 @@ export async function validateSubmitRows(
       if (opts.wt !== undefined) {
         // AFTER `fileProblem`, which is where an ordinary file of this worktree
         // is established — reading a symlink or a fifo is not this rule's job.
-        let bytes: Buffer | undefined;
-        try {
-          const read = readOneDescriptor(path.join(opts.wt, rel));
-          bytes = "why" in read ? undefined : read.bytes;
-        } catch (err) {
-          // `countTestLines` refuses a NUL-bearing file by throwing, and this is
-          // the only place its bytes come from: the message already says why, so
-          // it is the reason the operator reads.
-          dropped.push({
-            criterionId: row.criterionId,
-            path: rel,
-            reason: `test ${rel} could not be read to count its lines: ${(err as Error).message}`,
-          });
+        const judgement = sizeJudgement(path.join(opts.wt, rel), rel, opts.statSize ?? statSizeOf);
+        if (judgement.kind === "infra") {
+          // The filesystem would not answer, so nothing here judges the child's
+          // work. `runTestPipeline` maps this to a handback; a drop would tell
+          // the operator the adversary wrote nothing.
+          throw new SpecifyInfraError(
+            `could not read ${rel} to apply the acceptance-test size rules`,
+          );
+        }
+        if (judgement.kind === "drop") {
+          dropped.push({ criterionId: row.criterionId, path: rel, reason: judgement.reason });
           continue;
         }
-        if (bytes === undefined) {
-          dropped.push({
-            criterionId: row.criterionId,
-            path: rel,
-            reason: `test ${rel} could not be read to count its lines`,
-          });
-          continue;
-        }
-        let lines: number;
-        try {
-          lines = countTestLines(bytes);
-        } catch (err) {
-          // A NUL byte: not a text file, so no honest count and no kept test.
-          // `testNotTextProblem` is the same sentence from the same module, so
-          // the reason an operator reads and the one `countTestLines` throws are
-          // one string rather than two that can drift.
-          dropped.push({
-            criterionId: row.criterionId,
-            path: rel,
-            reason: testNotTextProblem(rel),
-          });
-          continue;
-        }
-        if (lines > MAX_TEST_LINES) {
-          dropped.push({
-            criterionId: row.criterionId,
-            path: rel,
-            reason: testSizeProblem(rel, lines),
-          });
-          continue;
-        }
-        // The quota is judged on what this CALL has already kept for the
-        // criterion PLUS what the run already froze for it (`frozenByCriterion`),
-        // so three rows of one file each still stop at two, and a criterion that
-        // arrived full from the record keeps nothing new.
-        if (
-          files.length + (frozenCount.get(row.criterionId)?.size ?? 0) >=
-          MAX_TEST_FILES_PER_CRITERION
-        ) {
+        // One counter: what the run froze for the criterion plus what this call
+        // has kept for it, so three rows of one file each still stop at two, and
+        // a criterion that arrived full from the record keeps nothing new.
+        if ((quota.get(row.criterionId) ?? 0) >= MAX_TEST_FILES_PER_CRITERION) {
           dropped.push({
             criterionId: row.criterionId,
             path: rel,
@@ -424,7 +413,10 @@ export async function validateSubmitRows(
         }
       }
       files.push(rel);
-      frozenCount.get(row.criterionId)?.add(rel);
+      const seen = keptRels.get(row.criterionId) ?? new Set<string>();
+      seen.add(rel);
+      keptRels.set(row.criterionId, seen);
+      quota.set(row.criterionId, (quota.get(row.criterionId) ?? 0) + 1);
     }
     if (files.length > 0) keptByCriterion.set(row.criterionId, files);
   }

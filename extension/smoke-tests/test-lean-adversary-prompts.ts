@@ -39,7 +39,7 @@ import {
   testCriteria,
 } from "../src/lean/specify-prompt.ts";
 import { runTestFile } from "../src/lean/specify-proof.ts";
-import { MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "../src/lean/test-size.ts";
+import { MAX_TEST_BYTES, MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "../src/lean/test-size.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -145,17 +145,10 @@ for (const [name, prompt] of [
     `${name}: the prompt prefers one focused file per criterion`,
   );
   assert(
-    // The old assertion forbade ANY number in the prompt, which is what let a
-    // thousand-line freeze through: a property with no number behind it is a
-    // request, not a bound. What is pinned now is that the prompt's numbers are
-    // the boundary's numbers — one source, so the two cannot drift.
-    /at most \d+ lines/.test(prompt) && /at most \d+ files/.test(prompt),
-    `${name}: the prompt states the size bounds as NUMBERS, so a child cannot read them as a preference`,
-  );
-  assert(
     prompt.includes(`at most ${MAX_TEST_LINES} lines`) &&
+      prompt.includes(`${MAX_TEST_BYTES} bytes`) &&
       prompt.includes(`at most ${MAX_TEST_FILES_PER_CRITERION} files`),
-    `${name}: the numbers the prompt quotes ARE the constants the boundary enforces (${MAX_TEST_LINES}/${MAX_TEST_FILES_PER_CRITERION})`,
+    `${name}: the numbers the prompt quotes ARE the constants the boundary enforces (${MAX_TEST_LINES}/${MAX_TEST_BYTES}/${MAX_TEST_FILES_PER_CRITERION})`,
   );
 }
 assert(

@@ -9,23 +9,39 @@
  * what was missing is the deterministic rule behind the ask, applied by the
  * parent rather than requested of the child.
  *
- * Two bounds, both judged AT the boundary — before a byte of a kept file is
- * captured and committed — in this order: path, FROZEN, location, exists,
- * newness, fileProblem, size, quota.
+ * Two bounds and one byte ceiling, all judged AT the boundary — before a byte
+ * of a kept file is captured and committed — in this order: path, FROZEN,
+ * location, exists, newness, fileProblem, bytes, size, quota. The byte ceiling
+ * and the infra/verdict split are driven in `test-lean-test-size-bytes.ts`.
  *
- * The size rule reads the file the way the capture does, so the fixtures here
+ * The byte ceiling is judged on the `lstat` the boundary already holds, so a
+ * file too big to be a test is refused without being read at all — which is
+ * also what bounds the read a single validation performs: at most
+ * `MAX_TEST_FILES_PER_CRITERION` files per criterion, each at most
+ * `MAX_TEST_BYTES`.
+ *
+ * The size rules read the file the way the capture does, so the fixtures here
  * are real files under a real temp `wt` rather than a stubbed reader: a test
  * that stubbed the read would pass whether or not production could perform it.
+ * The seams that ARE driven (`statSize`) are the ones a real filesystem cannot
+ * be asked to produce on command — a stat that throws, or a size no fixture
+ * should pay for.
  */
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { PiSpec } from "../src/lean/spec.ts";
-import { validateSubmitRows } from "../src/lean/specify-tree.ts";
+import { validateSubmitRows } from "../src/lean/submit-tests-cap.ts";
 import {
   MAX_TEST_FILES_PER_CRITERION,
   MAX_TEST_LINES,
   countTestLines,
 } from "../src/lean/test-size.ts";
+
+/** The line count alone, for the fixtures that must not be a NUL-bearing file. */
+const linesOf = (bytes: Buffer): number => {
+  const counted = countTestLines(bytes);
+  return "lines" in counted ? counted.lines : -1;
+};
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -46,7 +62,7 @@ const SPEC: PiSpec = {
 };
 
 {
-  const wt = `${process.env.TMPDIR ?? "/tmp"}/pi-lean-test-size-${process.pid}-${Date.now()}`;
+  const wt = mkdtempSync(`${process.env.TMPDIR ?? "/tmp"}/pi-lean-test-size-`);
   mkdirSync(`${wt}/tests`, { recursive: true });
   const write = (name: string, lines: number): string => {
     const rel = `tests/${name}`;
@@ -81,8 +97,8 @@ const SPEC: PiSpec = {
       { spec: SPEC, exists: () => true, existsAtBase: async () => false, wt },
     );
     assert(
-      countTestLines(readFileSync(`${wt}/${atLimit}`)) === MAX_TEST_LINES &&
-        countTestLines(readFileSync(`${wt}/${overLimit}`)) === MAX_TEST_LINES + 1,
+      linesOf(readFileSync(`${wt}/${atLimit}`)) === MAX_TEST_LINES &&
+        linesOf(readFileSync(`${wt}/${overLimit}`)) === MAX_TEST_LINES + 1,
       "the fixtures really are 120 and 121 lines — judged on a real count, not a stub",
     );
     const keptFiles = sized.kept.flatMap((r) => r.testFiles);
@@ -185,30 +201,33 @@ const SPEC: PiSpec = {
     const lines = (n: number, sep: string): Buffer =>
       Buffer.from(Array.from({ length: n }, (_, i) => `// l${i}`).join(sep));
     assert(
-      countTestLines(lines(MAX_TEST_LINES + 1, "\r")) === MAX_TEST_LINES + 1,
-      `a lone-CR file of ${MAX_TEST_LINES + 1} lines counts as ${MAX_TEST_LINES + 1}, so the separator is not a getout (got ${countTestLines(lines(MAX_TEST_LINES + 1, "\r"))})`,
+      linesOf(lines(MAX_TEST_LINES + 1, "\r")) === MAX_TEST_LINES + 1,
+      `a lone-CR file of ${MAX_TEST_LINES + 1} lines counts as ${MAX_TEST_LINES + 1}, so the separator is not a getout (got ${linesOf(lines(MAX_TEST_LINES + 1, "\r"))})`,
     );
     assert(
-      countTestLines(lines(MAX_TEST_LINES, "\r\n")) === MAX_TEST_LINES,
-      `CRLF counts one break per pair, not two (got ${countTestLines(lines(MAX_TEST_LINES, "\r\n"))})`,
+      linesOf(lines(MAX_TEST_LINES, "\r\n")) === MAX_TEST_LINES,
+      `CRLF counts one break per pair, not two (got ${linesOf(lines(MAX_TEST_LINES, "\r\n"))})`,
     );
     // Mixed separators: four breaks (CRLF, CR, LF, LF) and an unterminated `d`,
     // which is a line the child wrote — 5 lines, each break counted exactly once.
     assert(
-      countTestLines(Buffer.from("a\r\nb\rc\n\nd")) === 5,
-      `a file mixing CRLF, lone CR and LF counts each break once (got ${countTestLines(Buffer.from("a\r\nb\rc\n\nd"))})`,
+      linesOf(Buffer.from("a\r\nb\rc\n\nd")) === 5,
+      `a file mixing CRLF, lone CR and LF counts each break once (got ${linesOf(Buffer.from("a\r\nb\rc\n\nd"))})`,
     );
     assert(
-      countTestLines(Buffer.from("")) === 0,
-      `an empty file counts 0 lines — the count does not invent a line (got ${countTestLines(Buffer.from(""))})`,
+      linesOf(Buffer.from("")) === 0,
+      `an empty file counts 0 lines — the count does not invent a line (got ${linesOf(Buffer.from(""))})`,
     );
-    let nulThrew = false;
+    let nulRefused = false;
     try {
-      countTestLines(Buffer.from([0x61, 0x00, 0x62]));
+      nulRefused = "notText" in countTestLines(Buffer.from([0x61, 0x00, 0x62]));
     } catch {
-      nulThrew = true;
+      nulRefused = false;
     }
-    assert(nulThrew, "a NUL byte refuses the count rather than guessing at it");
+    assert(
+      nulRefused,
+      "a NUL byte refuses the count rather than guessing at it — and says so as a RESULT, not a throw, so the boundary can tell it from a read that failed",
+    );
     // The same three cases where the rule actually bites: at the boundary, on
     // real files under a real `wt`.
     const crLong = "tests/AC1-cr-long.test.ts";

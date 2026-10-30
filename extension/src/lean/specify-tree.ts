@@ -10,13 +10,14 @@
  *      `assertSpecifyWorktreeOwned`, which refuses a path at that location
  *      that the step does not own. A directory someone else made is not the
  *      step's to `reset --hard`.
- *   2. `validateSubmitRows` (in submit-tests-cap.ts, re-exported here, with the
- *      size rules it applies in test-size.ts) — the
+ *   2. `validateSubmitRows` (in submit-tests-cap.ts, re-exported here) — the
  *      boundary a `submit_tests` row has to pass before the step believes a file
  *      is a test the child wrote (see submit-tests-extract.ts for the reading
  *      half), including the filesystem check that a kept path is an ordinary
- *      file of the worktree, and the two size rules that bound how much test
- *      code a run freezes.
+ *      file of the worktree. The size rules it applies live in `test-size.ts`
+ *      and the boundary imports them from there directly: the facade re-exports
+ *      only what its callers actually import through it, because a re-export
+ *      nothing uses is a second public surface that drifts.
  *   3. `captureTestBytes` (in specify-capture.ts) — the ONLY thing that
  *      survives from the child: the bytes of each kept file, read into memory
  *      through one descriptor per file, so a link swapped in after validation
@@ -38,16 +39,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
-export {
-  type DroppedRow,
-  NEWNESS_REASON,
-  validateSubmitRows,
-} from "./submit-tests-cap.ts";
-export {
-  MAX_TEST_FILES_PER_CRITERION,
-  MAX_TEST_LINES,
-  countTestLines,
-} from "./test-size.ts";
+export { type DroppedRow, NEWNESS_REASON, validateSubmitRows } from "./submit-tests-cap.ts";
 
 /** The worktree directory name for one issue's specify step. */
 export function specifyWorktreeName(issue: number): string {

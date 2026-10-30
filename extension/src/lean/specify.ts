@@ -360,6 +360,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   //       restated at the call site that needs it rather than cast away.
   if (runnerTemplate === undefined)
     throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
+  // The run's frozen test record, read ONCE. The quota seed does not change
+  // while the boundary runs (nothing commits in between), so reading it per
+  // `validate` invocation would just re-fold the step log for the same answer.
+  const frozenByCriterion = testsFromLog(ctx.steps);
   const pipeline = await runTestPipeline(
     {
       exec: deps.exec,
@@ -395,7 +399,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
           // or re-entered cycle whose log already carries a decided `specify:ok`)
           // it is what stops a second round refilling every criterion to two
           // files. Read from the same log `challenge` seeds its own quota with.
-          frozenByCriterion: testsFromLog(ctx.steps),
+          frozenByCriterion,
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       prepare: () =>

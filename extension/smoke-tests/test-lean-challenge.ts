@@ -190,12 +190,9 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
 // its reason shows the cap and counts the rest rather than quoting them.
 {
   const TEN = Array.from({ length: 10 }, (_unused, i) => `tests/AC1-green-${i + 1}.test.sh`);
-  // Ten green files, spread over the TWO test criteria of `TWO_AC_BODY` — the
-  // boundary now caps one criterion at `MAX_TEST_FILES_PER_CRITERION` files and
-  // refuses the surplus at validation, so a fixture that wants ten files
-  // actually RUN by the runner has to name them against criteria the quota
-  // counts separately: four for AC1 and four for AC2 reach the runner, and the
-  // remaining two are refused at the boundary like the absent ones below.
+  // How the ten green files are spread over the TWO test criteria of
+  // `TWO_AC_BODY`. The quota, not the runner, decides how many of them are seen:
+  // see `rowsFor` for the one-and-two split and the count that follows from it.
   const rowsFor = (rels: string[]): unknown[] => {
     const rows: unknown[] = [];
     // ONE for AC1, TWO for AC2: AC1's criterion already holds one of its two
@@ -208,13 +205,10 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     for (let i = 3; i < rels.length; i += 5) rows.push(submit("AC1", rels.slice(i, i + 5)));
     return rows;
   };
-  // Ten REFUSED rows sit beside them. The old case reached its fifteen refusals
-  // by submitting ten GREEN files that the runner then rejected; the quota now
-  // refuses a surplus file at the boundary instead, so the same fifteen refusals
-  // are built the way a real over-submission builds them: four files that reach
-  // the runner (two per criterion — the quota's ceiling), six quota refusals,
-  // and ten absent paths. Both note families are capped independently, and each
-  // clips at eight with its own `(+8 more)`.
+  // Ten ABSENT paths sit beside them, submitted in rows of five. They are
+  // refused by the existence rule rather than the quota, and they exist to push
+  // the refused-note family past its cap. Both note families are capped
+  // independently, and each clips at eight with its own `(+N more)`.
   const TEN_ABSENT = Array.from(
     { length: 10 },
     (_unused, i) => `tests/AC1-absent-${i + 1}.test.sh`,
@@ -226,7 +220,7 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
       for (const rel of TEN) put(wt, rel, greenEdge(rel));
     },
     toolUses: rowsFor(TEN).concat(
-      // The absent paths in rows of five, as before.
+      // The absent paths in rows of five.
       [0, 5].map((i) => submit("AC1", TEN_ABSENT.slice(i, i + 5))),
     ),
   });
@@ -241,13 +235,12 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     "(g) no malformed count here — the two lists are the capped ones, so the reason cannot hide a third clause",
   );
   // What this case pins is the CAP on each note family, not its arithmetic: a
-  // round that dropped forty files must not print forty lines. With the quota
-  // refusing surplus submissions at the boundary, the refused-row family is now
-  // built from quota refusals plus absent paths, so the counts below are the
-  // fixture's actual shape (2 + 2 kept-and-run, 6 quota + 10 absent refused), and
-  // each family is checked to QUOTE at most eight and COUNT the rest.
-  // (the counts are the fixture's shape: 3 files reached the runner, 7 quota
-  // refusals + 10 absent paths were refused at the boundary)
+  // round that dropped forty files must not print forty lines. The fixture's
+  // shape, which the two families are counted against: 3 files reached the
+  // runner (1 for AC1 — one of its two run-level slots is already held by the
+  // `tests/AC1-retry.test.sh` its `specify:ok` recorded — and 2 for AC2), and 17
+  // names were refused at the boundary (7 quota refusals + 10 absent paths).
+  // Each family is checked to QUOTE at most eight and COUNT the rest.
   // A list's quoted count is its own total minus its `(+N more)` — the only
   // reliable reading, because a reason's own text can contain the `; ` the list
   // joins with (the newness reason does), so splitting would over-count.
