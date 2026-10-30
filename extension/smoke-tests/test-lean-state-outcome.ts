@@ -28,7 +28,8 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
+import { REPORTING_STATES } from "../src/lean/state-outcome.ts";
+import { INITIAL_COUNTERS, REPORT_STATES, leanStateFile, loadRun } from "../src/lean/state.ts";
 import { FIXTURE_BASE_SHA, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
@@ -324,6 +325,42 @@ for (const [label, issue, step, expect] of [
     },
     /outcome posted must be a boolean/,
   ],
+  [
+    // #1920 B — `publishedHead` is the head `publish` says it pushed, and the
+    // result's `prState: "ready"` compares it to the green verify's
+    // `verifiedHead`. On a step that shipped nothing it is a claim about a
+    // commit that step never wrote, and `ready` would rest on it.
+    "publishedHead on a verify step",
+    64,
+    {
+      key: "64:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "green", verifiedHead: "b".repeat(40), publishedHead: "c".repeat(40) },
+    },
+    /outcome publishedHead is only recorded by a publish step/,
+  ],
+  [
+    // A 12-char prefix is what the reason line prints, never what the field
+    // holds: the result compares it for EQUALITY against `verifiedHead`, so a
+    // prefix would compare unequal forever and no reader could tell a broken
+    // record from a run that shipped another commit.
+    "publishedHead as an abbreviated oid",
+    65,
+    {
+      key: "65:publish:0",
+      state: "publish",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "ok",
+        prUrl: "https://github.com/o/r/pull/1",
+        publishedHead: "a".repeat(12),
+      },
+    },
+    /outcome publishedHead must be a 40-hex commit sha/,
+  ],
 ] as const) {
   const { dir, cleanup } = tempDir();
   try {
@@ -350,6 +387,24 @@ for (const [label, issue, step, expect] of [
     cleanup();
   }
 }
+
+/**
+ * The two lists of REPORTING states are one list. `state.ts` declares
+ * `REPORT_STATES` (where `handback.ts` and every caller read it) and
+ * `state-outcome.ts` keeps a local `REPORTING_STATES` for the `posted` row of its
+ * ownership table, because it cannot import across the cycle its own loader
+ * creates. Two lists that drift mean the ownership table enforces a set no
+ * longer equal to the set the engine treats as reports — a `posted` claim on a
+ * state one list calls a report and the other does not is exactly the forgery the
+ * table exists to refuse, silently permitted or silently refused. This is what
+ * makes the copy honest, and it is the only thing keeping it so.
+ */
+assert(
+  JSON.stringify(REPORTING_STATES) === JSON.stringify(REPORT_STATES),
+  `the ownership table's REPORTING_STATES equals state.ts's REPORT_STATES (got ${JSON.stringify(
+    [REPORTING_STATES, REPORT_STATES],
+  )})`,
+);
 
 /**
  * The base invariant, checked at load rather than at first use.

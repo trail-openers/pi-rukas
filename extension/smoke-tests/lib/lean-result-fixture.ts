@@ -11,12 +11,12 @@
  * What one legal log has to carry, and why the fixture builds all of it:
  *
  *   - a `ready` PR needs THREE records that agree, not one. `publish` says
- *     `draft: false`, `verify` went green, and the green's `verifiedHead` IS the
- *     head publish says it pushed — the `at <sha>` its reason line carries, which
- *     is the only head publish records (`state-outcome.ts` refuses `verifiedHead`
- *     on any step but `verify`). That equality is the land gate's rule, and why
- *     `head` and `publishedHead` are two knobs rather than one: a log naming a
- *     head in only one place is the drift case, and must not read as ready.
+ *     `draft: false` AND records the full `publishedHead` it pushed, `verify`
+ *     goes green, and the green's `verifiedHead` IS that head — the land gate's
+ *     rule, typed end to end since #1920 B (the reason line's `at <sha>` is
+ *     prose and the projection reads no prose). That equality is why `head` and
+ *     `publishedHead` are two knobs rather than one: a log naming a head in only
+ *     one place is the drift case, and must not read as ready.
  *   - `handback`'s `posted` is the typed claim that its comment reached the forge.
  *     The step ends `done` whether or not the post landed, so the projection
  *     reads THAT field and not the reason prose — and a fixture that omitted it
@@ -69,6 +69,15 @@ export function stepWith(state: Step["state"], outcome: Outcome, n = 0): Step {
   };
 }
 
+/**
+ * The same step with its `reason` rewritten — for the case where a step's PROSE
+ * says something its typed fields do not, which the projection must not read.
+ */
+export function withReason(step: Step, reason: string): Step {
+  if (step.outcome === undefined) return step;
+  return { ...step, outcome: { ...step.outcome, reason } };
+}
+
 export interface LeanLogOpts {
   prUrl?: string;
   draft?: boolean;
@@ -76,17 +85,20 @@ export interface LeanLogOpts {
   verify?: "green" | "red";
   /** The head `verify` judged and `publish` shipped. Green only. */
   head?: string;
-  /** Override the head `publish`'s reason names, to build a drift case. */
+  /** What `publish` records as the head it pushed: a full sha, `""` for none at
+   *  all, or a different sha to build the drift case. */
   publishedHead?: string;
+  /** Whether `publish` records a head at all (default: it does). */
+  withPublishedHead?: boolean;
   /** Whether the handback comment reached the forge (default: it did). */
   posted?: boolean;
 }
 
 /** The whole log one ending is made of — see the module header for its rules. */
 export function leanLog(opts: LeanLogOpts): Step[] {
-  // The 12-char prefix `publish` prints, and the full sha `verify` records.
+  // The 12-char prefix `publish` prints in its reason line, and the full sha
+  // `verify` records.
   const head = opts.head ?? HEAD;
-  const headPrefix = head.slice(0, 12);
   const steps: Step[] = [
     stepWith("ready", { kind: "ok" }),
     stepWith("specify", { kind: "ok", dispatches: opts.dispatches }),
@@ -99,12 +111,20 @@ export function leanLog(opts: LeanLogOpts): Step[] {
     }),
   ];
   if (opts.prUrl !== undefined) {
+    // The head publish records as typed data, never as a prefix in prose:
+    // `publishedHead` absent is the unobserved case, and a value unequal to the
+    // green's `verifiedHead` is the drift case.
+    const published =
+      opts.withPublishedHead === false
+        ? undefined
+        : (opts.publishedHead ?? head);
     steps.push(
       stepWith("publish", {
         kind: "ok",
         prUrl: opts.prUrl,
         ...(opts.draft === undefined ? {} : { draft: opts.draft }),
-        reason: `published ${opts.draft === true ? "draft " : ""}PR ${opts.prUrl} at ${opts.publishedHead ?? headPrefix}`,
+        ...(published === undefined ? {} : { publishedHead: published }),
+        reason: `published ${opts.draft === true ? "draft " : ""}PR ${opts.prUrl} at ${head.slice(0, 12)}`,
       }),
     );
   }

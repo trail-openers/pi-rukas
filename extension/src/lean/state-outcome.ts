@@ -14,6 +14,7 @@
  * does not exist.
  */
 
+import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
@@ -22,14 +23,13 @@ import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The states that REPORT how a run ended rather than do work on it. The single
- * definition lives in `state.ts` (the record's own module, which is where every
- * caller looks for it); this module keeps a LOCAL copy for the ownership table
- * below only because `state.ts` imports this file as its validator, so a value
- * binding reaching back across that edge is a cycle and the array would be read
- * before it was initialised. `test-lean-state-outcome.ts` pins the two lists
- * being equal, which is what keeps the copy honest.
+ * definition lives in `state.ts` (where every caller reads it); this copy is
+ * exported so a reader of the table below can reach what the table enforces.
+ * Local because `state.ts` imports this file as its validator, so a binding
+ * reaching back is a cycle read before init; `test-lean-state-outcome.ts` pins
+ * the two equal, which keeps the copy honest.
  */
-const REPORTING_STATES: readonly LeanState[] = ["handback", "decline"];
+export const REPORTING_STATES: readonly LeanState[] = ["handback", "decline"];
 
 /** A sha256 in the hex form the `specify` step freezes into its outcome. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -122,6 +122,10 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
   prUrl: "publish",
+  // Publish's own record of what it pushed; elsewhere it claims a commit that
+  // step never shipped. Same shape rule as `verifiedHead`, which it is matched
+  // to for equality: a prefix or mistyped oid compares unequal forever.
+  publishedHead: "publish",
   draft: "publish",
   // The two steps that REPORT how a run ended are the only ones that may claim a
   // comment reached the forge.
@@ -168,11 +172,6 @@ const COMMAND_NOT_RUNNABLE_MAX_CHARS = 300;
 /** How many entries either command record may hold. */
 const COMMAND_RECORD_MAX_ENTRIES = 32;
 
-/** Is this key the id form a criterion may carry? */
-function isCriterionId(id: string): boolean {
-  return CRITERION_ID.test(id);
-}
-
 /**
  * Why a `commandCriteria` map is not evidence this run may print, or undefined.
  *
@@ -189,7 +188,8 @@ function commandCriteriaProblem(value: unknown): string | undefined {
   if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
     return `outcome commandCriteria must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
   for (const [id, kind] of entries) {
-    if (!isCriterionId(id)) return `outcome commandCriteria key ${JSON.stringify(id)} is not AC<n>`;
+    if (!CRITERION_ID.test(id))
+      return `outcome commandCriteria key ${JSON.stringify(id)} is not AC<n>`;
     if (kind !== COMMAND_CRITERION_KIND)
       return `outcome commandCriteria[${JSON.stringify(id)}] must be "${COMMAND_CRITERION_KIND}"`;
   }
@@ -376,6 +376,13 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (typeof oc.verifiedHead !== "string" || !SHA1_HEX.test(oc.verifiedHead))
       return "outcome verifiedHead must be a 40-hex commit sha";
   }
+  // Matched to `verifiedHead` for EQUALITY by the result's `prState`, so it
+  // takes that field's shape rule: a broken oid is indistinguishable from a run
+  // that shipped another commit. Same predicate `state.ts` holds `baseSha` to.
+  if (oc.publishedHead !== undefined) {
+    if (typeof oc.publishedHead !== "string" || !isFullCommitSha(oc.publishedHead))
+      return "outcome publishedHead must be a 40-hex commit sha";
+  }
   if (oc.commandCriteria !== undefined) {
     const problem = commandCriteriaProblem(oc.commandCriteria);
     if (problem !== undefined) return problem;
@@ -393,7 +400,7 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
       return `outcome commandNotRunnable must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
     for (const [id, why] of entries) {
-      if (!isCriterionId(id))
+      if (!CRITERION_ID.test(id))
         return `outcome commandNotRunnable key ${JSON.stringify(id)} is not AC<n>`;
       if (typeof why !== "string")
         return `outcome commandNotRunnable[${JSON.stringify(id)}] must be a string`;
@@ -436,7 +443,7 @@ function validatedCommandCriteria(value: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (typeof value !== "object" || value === null) return out;
   for (const [id, kind] of Object.entries(value as Record<string, unknown>)) {
-    if (kind === COMMAND_CRITERION_KIND && isCriterionId(id)) out[id] = COMMAND_CRITERION_KIND;
+    if (kind === COMMAND_CRITERION_KIND && CRITERION_ID.test(id)) out[id] = COMMAND_CRITERION_KIND;
   }
   return out;
 }
@@ -447,7 +454,7 @@ function validatedCommandNotRunnable(value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null) return out;
   for (const [id, why] of Object.entries(value as Record<string, unknown>)) {
     if (typeof why !== "string" || why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS) continue;
-    if (isCriterionId(id)) out[id] = why;
+    if (CRITERION_ID.test(id)) out[id] = why;
   }
   return out;
 }
@@ -482,6 +489,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
+    ...(typeof oc.publishedHead === "string" ? { publishedHead: oc.publishedHead } : {}),
     ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),
     ...(typeof oc.posted === "boolean" ? { posted: oc.posted } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),

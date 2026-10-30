@@ -392,6 +392,14 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   return {
     kind: "ok",
     prUrl,
+    // The FULL head this step pushed, not the 12-char prefix the reason line
+    // prints. `prUrl` alone says a PR exists; this says which commit stands under
+    // it, which is the half the host's `prState` compares to the green verify's
+    // `verifiedHead` — and `verifiedHead` is a `verify` field, so there is no
+    // other place a later reader could get this from. Recorded from the same
+    // `head` the push carried (`assertTree` proved it 40-hex before anything was
+    // written), so `ready` never rests on prose.
+    publishedHead: head,
     // The state as the forge REPORTED it, never as this run asked for it: the
     // create path read the new PR back through `draftStateOf`, so a forge that
     // left a requested draft mergeable is recorded `false`; a reply that

@@ -178,6 +178,9 @@ export interface Outcome {
    * than something a later reader guesses out of a reason line.
    */
   prUrl?: string;
+  /** `publish` only: the full 40-hex head it pushed, from the value the push
+   *  carried — what the result matches against `verify`'s `verifiedHead`. */
+  publishedHead?: string;
   /**
    * `publish` only: whether the PR this step handed the forge was a draft. The
    * run exits 10 whatever the answer, so a host cannot tell "green and waiting
@@ -464,13 +467,10 @@ const NON_TERMINAL: readonly LeanState[] = [
 ];
 
 /**
- * The states that REPORT how a run ended rather than do work on it.
- *
- * Defined in `state-outcome.ts` — the module that owns which step may record which
- * field, the only reader that distinguishes these two from the work states — and
- * re-exported here so callers reach it from the record it is a property of. It
- * cannot be re-exported with `export { … } from`: `state.ts` is that module's
- * importer, so the cycle would read the binding before it was initialised.
+ * The states that REPORT how a run ended rather than do work on it. Declared
+ * here, where every caller reads it; `state-outcome.ts` keeps its own copy for
+ * the ownership table (it is this module's validator, so a binding reaching back
+ * would be a cycle), and `test-lean-state-outcome.ts` pins the two equal.
  */
 export const REPORT_STATES: readonly LeanState[] = ["handback", "decline"];
 

@@ -25,7 +25,7 @@
 import { runWorkLeanVerb } from "../src/headless/work-lean.ts";
 import type { LeanRun } from "../src/lean/state.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
-import { CHILDREN, HEAD, URL, driveLean, leanLog, stepWith } from "./lib/lean-result-fixture.ts";
+import { CHILDREN, HEAD, URL, driveLean, leanLog, stepWith, withReason } from "./lib/lean-result-fixture.ts";
 import { REPO, fakeRun, verbRun } from "./lib/work-lean-verb-fixture.ts";
 
 const { assert, state } = makeAssert();
@@ -122,8 +122,9 @@ const log = leanLog;
 }
 
 // ── (2c) `ready` also needs the green to be about the head publish shipped: a
-// verify whose `verifiedHead` is not the `at <sha>` publish names is a verdict
-// about a different commit, exactly the case publish itself refuses to push over.
+// green whose `verifiedHead` is not the `publishedHead` the step recorded is a
+// verdict about a different commit, exactly the case publish itself refuses to
+// push over. The drift is typed on both sides — no prose involved.
 {
   const r = await drive(
     "handed-back",
@@ -139,13 +140,15 @@ const log = leanLog;
   assert(i.cap === undefined, `drift: and no awaiting-human-merge (got ${String(i.cap)})`);
 }
 
-// ── (2d) a publish that named no head at all cannot be checked against the
-// green, so the claim is unobserved and goes to the safe side.
+// ── (2d) a publish that recorded no head at all cannot be checked against the
+// green, so the claim is unobserved and goes to the safe side. This is the case
+// the typed `publishedHead` exists for: before it the head lived only in the
+// reason line, so "a publish that named no head" was a prose question.
 {
   const r = await drive(
     "handed-back",
     10,
-    log({ prUrl: URL, draft: false, dispatches: CHILDREN, publishedHead: "" }),
+    log({ prUrl: URL, draft: false, dispatches: CHILDREN, withPublishedHead: false }),
   );
   const i = r.issue ?? {};
   assert(
@@ -153,6 +156,22 @@ const log = leanLog;
     `no-head: a publish that named no head is not ready (got ${String(i.prState)})`,
   );
   assert(i.cap === undefined, `no-head: and no cap (got ${String(i.cap)})`);
+}
+
+// ── (2e) the head is TYPED, not prose: a reason line naming the very head the
+// gate cleared is not evidence when the step recorded no `publishedHead`, so the
+// result still says draft. This is the case that fails the moment anyone reads
+// the reason line back.
+{
+  const steps = log({ prUrl: URL, draft: false, dispatches: CHILDREN, withPublishedHead: false });
+  const prose = steps.map((s) => (s.state === "publish" ? withReason(s, `published PR ${URL} at ${HEAD.slice(0, 12)}`) : s));
+  const r = await drive("handed-back", 10, prose);
+  const i = r.issue ?? {};
+  assert(
+    i.prState === "draft",
+    `prose-head: a reason line is not a published head (got ${String(i.prState)})`,
+  );
+  assert(i.cap === undefined, `prose-head: and no cap (got ${String(i.cap)})`);
 }
 
 // ── (3) NO PR: the run handed back before any publish step decided.
@@ -207,7 +226,13 @@ const log = leanLog;
   const r = await drive("landed", 0, [
     stepWith("ready", { kind: "ok", dispatches: CHILDREN }),
     stepWith("verify", { kind: "green", verifiedHead: HEAD }),
-    stepWith("publish", { kind: "ok", prUrl: URL, draft: false, reason: `published PR ${URL} at ${HEAD.slice(0, 12)}` }),
+    stepWith("publish", {
+      kind: "ok",
+      prUrl: URL,
+      draft: false,
+      publishedHead: HEAD,
+      reason: `published PR ${URL} at ${HEAD.slice(0, 12)}`,
+    }),
     stepWith("ci", { kind: "green" }),
     stepWith("land", { kind: "merged" }),
   ]);
