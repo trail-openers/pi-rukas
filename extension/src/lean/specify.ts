@@ -59,6 +59,7 @@ import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import { testsFromLog } from "./build.ts";
 import { type TestLocation, testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
@@ -359,6 +360,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   //       restated at the call site that needs it rather than cast away.
   if (runnerTemplate === undefined)
     throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
+  // The run's frozen test record, read ONCE. The quota seed does not change
+  // while the boundary runs (nothing commits in between), so reading it per
+  // `validate` invocation would just re-fold the step log for the same answer.
+  const frozenByCriterion = testsFromLog(ctx.steps);
   const pipeline = await runTestPipeline(
     {
       exec: deps.exec,
@@ -386,6 +391,15 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
           // refused against the run's BASE, which is the commit this step's
           // whole claim is made on.
           existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
+          // The size/quota rules judge the file with the same code the capture
+          // reads it with; `wt` is the tree these paths are relative to.
+          wt,
+          // The quota is a RUN-level bound. On a first `specify` the union is
+          // empty and this changes nothing; on a re-run of the step (a resumed
+          // or re-entered cycle whose log already carries a decided `specify:ok`)
+          // it is what stops a second round refilling every criterion to two
+          // files. Read from the same log `challenge` seeds its own quota with.
+          frozenByCriterion,
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       prepare: () =>

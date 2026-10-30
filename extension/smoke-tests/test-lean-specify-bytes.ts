@@ -13,9 +13,11 @@
  * on a tree nobody touched. The failure is silent at freeze time and lands
  * several steps later, blamed on tampering.
  *
- * So this freezes a test whose committed bytes are exactly `ff fe 00 80` — a
- * UTF-16 BOM followed by a byte that is not valid UTF-8 in either encoding. It
- * asserts three things, and the middle one is the point:
+ * So this freezes a test whose committed bytes are exactly `ff fe 41 80` — a
+ * UTF-16 BOM, an ASCII byte, and a byte that is not valid UTF-8 in either
+ * encoding (no NUL: the boundary refuses a NUL-bearing test before the freeze
+ * is ever reached — see the note on `BYTES`). It asserts three things, and the
+ * middle one is the point:
  *
  *   - the step committed the four bytes the child wrote, not four characters;
  *   - `outcome.frozen[path]` is `sha256` of those four bytes;
@@ -65,7 +67,13 @@ function showBlob(wt: string, rel: string): Buffer {
 }
 
 /** The bytes under test: a UTF-16LE BOM and a byte no encoding maps losslessly. */
-const BYTES = Buffer.from([0xff, 0xfe, 0x00, 0x80]);
+// No NUL: a test file holding one is refused at the boundary as not a text
+// file (`countTestLines` in test-size.ts), and this case is about the FREEZE
+// keeping the bytes, not about that rule (test-lean-test-size.ts pins the
+// refusal). 0xff and 0x80 are never valid UTF-8 in any position, so the
+// latin1-vs-utf8 failure this file exists to catch is unchanged; the BOM is
+// kept because it is the shape a real UTF-16 test starts with.
+const BYTES = Buffer.from([0xff, 0xfe, 0x41, 0x80]);
 const REL = "tests/AC1-bytes.test.sh";
 const shaOf = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
 

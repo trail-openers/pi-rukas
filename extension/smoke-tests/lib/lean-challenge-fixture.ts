@@ -132,7 +132,10 @@ ${JSON.stringify(
  */
 export function challengeFixture(
   issue: number,
-  opts?: { extraFrozen?: Record<string, string>; issueDir?: number },
+  opts?: {
+    extraFrozen?: Record<string, string>;
+    issueDir?: number;
+  },
 ): ChallengeBuilt {
   // A second run against ONE repo is a case the step cannot see apart from the
   // first: `challenge` derives its tree path from `ctx.repoRoot` plus its own
@@ -163,6 +166,7 @@ export function challengeFixture(
     throw new Error(
       `fixture: issue ${issue} in repo ${repoRoot} — the step's worktree ${wt} is not the fixture's ${built.worktree}`,
     );
+  // NOTE: `extraFrozen` deliberately does NOT join the `tests` record below.
   // The builder's work, committed the way the build step commits it: a real
   // commit ON the run's branch, above the frozen test commit. Written in the
   // worktree because that is the tree the run's branch is checked out in.
@@ -181,6 +185,17 @@ export function challengeFixture(
     extra[rel] = sha(text);
   }
   const frozen = { ...built.frozen, ...extra };
+  // The run's per-criterion test record, which is what `challenge`'s boundary
+  // seeds its per-criterion file quota from (`testsFromLog`). A step writes
+  // `tests` and `frozen` from the same kept rows, so a real log does carry a
+  // frozen path here — but the fixture's `extraFrozen` files are written for
+  // rules about a PATH ("the adversary may not replace this file"), and the
+  // cases that use them name no criterion, so they join `frozen` above and not
+  // this record. A case that needs a second criterion's row builds its own
+  // `specify:ok` step via `extraSteps` rather than asking this fixture to
+  // invent one.
+  const tests: Record<string, string[]> = { AC1: ["tests/AC1-retry.test.sh"] };
+
   git(wt, "add", "-A");
   git(wt, "commit", "-q", "-m", `build: attempt 1 for #${issue}`);
   const buildSha = git(wt, "rev-parse", "HEAD");
@@ -202,7 +217,7 @@ export function challengeFixture(
       outcome: {
         kind: "ok",
         frozen,
-        tests: { AC1: ["tests/AC1-retry.test.sh"] },
+        tests,
       },
     },
     { key: `${issue}:build:0`, state: "build", startedAt: 3, outcome: { kind: "ok" } },

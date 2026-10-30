@@ -29,8 +29,9 @@
  *       edits fence, the `submit_tests` protocol, the frozen-list fence).
  */
 
-import { challengePrompt } from "../src/lean/challenge-prompt.ts";
 import { BUILD_SCOPE_CONTRACT } from "../src/lean/build-prompt.ts";
+import { challengePrompt } from "../src/lean/challenge-prompt.ts";
+import type { PiSpec } from "../src/lean/spec.ts";
 import {
   RED_PROOF_CONTRACT,
   TEST_SCOPE_CONTRACT,
@@ -38,7 +39,11 @@ import {
   testCriteria,
 } from "../src/lean/specify-prompt.ts";
 import { runTestFile } from "../src/lean/specify-proof.ts";
-import type { PiSpec } from "../src/lean/spec.ts";
+import {
+  MAX_TEST_BYTES,
+  MAX_TEST_FILES_PER_CRITERION,
+  MAX_TEST_LINES,
+} from "../src/lean/test-size.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -119,6 +124,19 @@ for (const [name, prompt] of [
   ["challenge", challenge],
 ] as const) {
   assert(
+    prompt.includes("at most 120 lines") && prompt.includes("at most 2 files"),
+    `${name}: the prompt states BOTH size bounds the boundary enforces, so a child is never dropped for a rule it was not told`,
+  );
+  assert(
+    prompt.includes("reuse the project's existing test helpers"),
+    `${name}: the prompt tells the adversary where the bytes come from — the project's own test helpers, not a new harness`,
+  );
+}
+for (const [name, prompt] of [
+  ["specify", specify],
+  ["challenge", challenge],
+] as const) {
+  assert(
     prompt.includes("smallest test that proves the criterion"),
     `${name}: the prompt asks for the smallest test that proves the criterion`,
   );
@@ -131,13 +149,14 @@ for (const [name, prompt] of [
     `${name}: the prompt prefers one focused file per criterion`,
   );
   assert(
-    !/\d+\s*(lines|LOC)\b/.test(prompt),
-    `${name}: no hard line count — the bound is the property, not a number to game`,
+    prompt.includes(`at most ${MAX_TEST_LINES} lines`) &&
+      prompt.includes(`${MAX_TEST_BYTES} bytes`) &&
+      prompt.includes(`at most ${MAX_TEST_FILES_PER_CRITERION} files`),
+    `${name}: the numbers the prompt quotes ARE the constants the boundary enforces (${MAX_TEST_LINES}/${MAX_TEST_BYTES}/${MAX_TEST_FILES_PER_CRITERION})`,
   );
 }
 assert(
-  BUILD_SCOPE_CONTRACT.includes("full test suite") &&
-    BUILD_SCOPE_CONTRACT.includes("cannot occur"),
+  BUILD_SCOPE_CONTRACT.includes("full test suite") && BUILD_SCOPE_CONTRACT.includes("cannot occur"),
   "the builder's contract names both first-trial failures: the full suite and guards for impossible states",
 );
 

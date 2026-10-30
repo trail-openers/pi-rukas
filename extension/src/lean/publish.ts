@@ -35,6 +35,7 @@
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
+import { testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
@@ -43,26 +44,8 @@ import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
-import { type Outcome, type Step, newestDecided } from "./state.ts";
+import { type Outcome, newestDecided } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
-
-/** The criterion -> tests map, unioned over every step that recorded one. */
-export function testsFromLog(steps: Step[]): Record<string, string[]> {
-  const tests: Record<string, string[]> = {};
-  for (const step of steps) {
-    if (step.outcome === undefined) continue;
-    const decided =
-      (step.state === "specify" && step.outcome.kind === "ok") ||
-      (step.state === "challenge" && step.outcome.kind === "new-tests");
-    if (!decided) continue;
-    for (const [id, files] of Object.entries(step.outcome.tests ?? {})) {
-      const seen = new Set(tests[id] ?? []);
-      for (const f of files) seen.add(f);
-      tests[id] = [...seen];
-    }
-  }
-  return tests;
-}
 
 /** Run git in `wt`, rejecting a read that cannot answer as infrastructure. */
 async function gitIn(

@@ -9,11 +9,22 @@
  *   - `validateSubmitRows` judges a row against the spec and the worktree. An
  *     unknown criterion, an escaping path, or a file that is not there is
  *     DROPPED with a reason — never trusted, never fatal.
+ *
+ * `wt` is a REQUIRED argument of the boundary: the size rules read the candidate
+ * out of a real tree. The cases here are about criteria, path shape, newness and
+ * the git-read caps, so they pass a real temp dir plus `sizeRules: false` — the
+ * test-only escape that skips the stat and the read and NOTHING else. The
+ * per-criterion quota still applies (it is a rule about counts, not bytes), which
+ * is why no case here keeps more than two files for one criterion. The size rules
+ * themselves are driven in `test-lean-test-size.ts` /
+ * `test-lean-test-size-bytes.ts`, on real fixtures under a real `wt`.
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { validateSubmitRows } from "../src/lean/specify-tree.ts";
 import { extractSubmitTests } from "../src/lean/submit-tests-extract.ts";
+import { MAX_TEST_FILES_PER_CRITERION } from "../src/lean/test-size.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -33,6 +44,26 @@ const SPEC: PiSpec = {
     { id: "AC3", text: "builds", verify: "command", command: "bun run build" },
   ],
 };
+
+/** Temp worktrees made here, removed at the end of the run. */
+const WTS: string[] = [];
+
+function emptyTree(): string {
+  const dir = mkdtempSync(`${process.env.TMPDIR ?? "/tmp"}/pi-lean-submit-`);
+  WTS.push(dir);
+  return dir;
+}
+
+/**
+ * The two options every case in this file passes: a real temp worktree (the
+ * boundary requires `wt`), and `sizeRules: false` so a case about criteria,
+ * path shape, newness or the git-read caps pays no stat and no read. The quota
+ * is NOT switched off by it — it is a rule about counts — so no case here keeps
+ * more than `MAX_TEST_FILES_PER_CRITERION` files for one criterion. Where a case
+ * deliberately exceeds that, the row it exceeds on is refused earlier by a cheap
+ * rule, as the eight-file cap case notes.
+ */
+const noSizeRules = { wt: emptyTree(), sizeRules: false as const };
 
 function call(args: unknown): { name: string; arguments: unknown } {
   return { name: "submit_tests", arguments: args };
@@ -93,7 +124,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
       { criterionId: "AC1", testFiles: ["tests/AC1-a.test.ts", "tests/missing.test.ts"] },
       { criterionId: "AC1", testFiles: ["./tests/AC1-a.test.ts"] },
     ],
-    { spec: SPEC, exists: (p) => present.has(p) },
+    { spec: SPEC, exists: (p) => present.has(p), ...noSizeRules },
   );
 
   assert(kept.length === 1, `kept rows (got ${kept.length}, want 1)`);
@@ -143,6 +174,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
     {
       spec: SPEC,
       exists: (p) => present.has(p),
+      ...noSizeRules,
       frozenPaths: new Set(["tests/AC1-frozen.test.ts"]),
     },
   );
@@ -211,6 +243,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
     {
       spec: SPEC,
       exists: (p) => present.has(p),
+      ...noSizeRules,
       existsAtBase: async (p) => {
         asked.push(p);
         return tracked.has(p);
@@ -245,7 +278,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
   // A file the child never wrote is refused for EXISTENCE, not newness.
   const missing = await validateSubmitRows(
     [{ criterionId: "AC1", testFiles: ["tests/AC1-never-written.test.ts"] }],
-    { spec: SPEC, exists: () => false, existsAtBase: async () => false },
+    { spec: SPEC, exists: () => false, existsAtBase: async () => false, ...noSizeRules },
   );
   assert(
     missing.dropped.length === 1 &&
@@ -257,7 +290,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
   // everything: the rule is opt-in per call, never a default that breaks a step.
   const unprobed = await validateSubmitRows(
     [{ criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] }],
-    { spec: SPEC, exists: (p) => present.has(p) },
+    { spec: SPEC, exists: (p) => present.has(p), ...noSizeRules },
   );
   assert(
     unprobed.kept.length === 1 && unprobed.dropped.length === 0,
@@ -269,6 +302,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
     {
       spec: SPEC,
       exists: (p) => present.has(p),
+      ...noSizeRules,
       existsAtBase: async () => true,
       frozenPaths: new Set(["tests/AC1-tracked.test.ts"]),
     },
@@ -290,6 +324,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
   const over = await validateSubmitRows([{ criterionId: "AC1", testFiles: many }], {
     spec: SPEC,
     exists: () => true,
+    ...noSizeRules,
     existsAtBase: async () => false,
   });
   assert(
@@ -299,14 +334,28 @@ function call(args: unknown): { name: string; arguments: unknown } {
       over.dropped[0]?.reason.includes("8") === true,
     `(bound) a row of 9 test files is refused with a reason naming the cap, not processed (got ${JSON.stringify(over.dropped)})`,
   );
+  // Eight names in one row is the ROW cap itself — `MAX_TEST_FILES_PER_ROW` —
+  // and it is judged on the row's LENGTH, before any per-file rule runs. The
+  // per-criterion quota then keeps the first TWO of them and refuses the other
+  // six: the quota is a rule about how MANY files a criterion ends up with, so
+  // it applies under `sizeRules: false` exactly as it does with the size rules
+  // on. That the eight-name row still leaves a bounded footprint is the point of
+  // this pair of assertions — a row the cheap cap admits cannot become eight
+  // frozen files, with or without a read.
   const eight = await validateSubmitRows([{ criterionId: "AC1", testFiles: many.slice(0, 8) }], {
     spec: SPEC,
     exists: () => true,
+    ...noSizeRules,
     existsAtBase: async () => false,
   });
   assert(
-    eight.kept.length === 1 && eight.kept[0]?.testFiles.length === 8,
-    `(bound) eight files — the cap itself — are kept, so the rule refuses excess and not the row (got ${JSON.stringify(eight.kept)})`,
+    eight.kept.length === 1 && eight.kept[0]?.testFiles.length === MAX_TEST_FILES_PER_CRITERION,
+    `(bound) a row of eight — the row cap itself — is processed rather than refused, and the per-criterion quota holds it to ${MAX_TEST_FILES_PER_CRITERION} files even with the size rules off (got ${JSON.stringify(eight.kept)})`,
+  );
+  assert(
+    eight.dropped.length === 8 - MAX_TEST_FILES_PER_CRITERION &&
+      eight.dropped.every((d) => d.reason.includes("already has") === true),
+    `(bound) the six surplus names of that row leave a QUOTA drop note each — the cap is not silent when the size rules are off (got ${JSON.stringify(eight.dropped.map((d) => d.reason))})`,
   );
 
   // One probe per distinct path per call: four rows and one duplicated name
@@ -322,6 +371,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
     {
       spec: SPEC,
       exists: () => true,
+      ...noSizeRules,
       existsAtBase: async (p) => {
         asked.push(p);
         return p === "tests/AC1-tracked.test.ts";
@@ -341,6 +391,7 @@ function call(args: unknown): { name: string; arguments: unknown } {
   await validateSubmitRows([{ criterionId: "AC1", testFiles: ["tests/AC1-tracked.test.ts"] }], {
     spec: SPEC,
     exists: () => true,
+    ...noSizeRules,
     existsAtBase: async (p) => {
       second.push(p);
       return false;
@@ -361,9 +412,20 @@ function call(args: unknown): { name: string; arguments: unknown } {
     testFiles: Array.from({ length: 8 }, (_, i) => `tests/AC1-c${r}-${i}.test.ts`),
   }));
   const probes: string[] = [];
+  // The 32 paths inside the call cap are the ones PROBED — that is the bound this
+  // case pins: excess is refused without a git read, so 32 probes and 48 refusals
+  // is the exact arithmetic of 80 submitted names. The per-criterion quota is
+  // deliberately seeded full here because this call has no run behind it and the
+  // quota is a RUN-level bound (`test-lean-test-size.ts` pins the quota itself,
+  // on real fixtures). So nothing is kept: a path past 32 leaves a cap note and
+  // one inside it a quota note, and both families are counted separately below.
   const capped = await validateSubmitRows(tenRows, {
     spec: SPEC,
     exists: () => true,
+    ...noSizeRules,
+    frozenByCriterion: {
+      AC1: Array.from({ length: MAX_TEST_FILES_PER_CRITERION }, (_, i) => `tests/frozen-${i}.ts`),
+    },
     existsAtBase: async (p) => {
       probes.push(p);
       return false;
@@ -381,8 +443,11 @@ function call(args: unknown): { name: string; arguments: unknown } {
     `(bound) the other 48 paths are refused with a reason naming the per-call cap (got ${overCap.length})`,
   );
   assert(
-    capped.kept.length === 1 && capped.kept[0]?.testFiles.length === 32,
-    `(bound) the 32 paths inside the call cap are kept — the bound refuses excess, not the submission (got ${capped.kept[0]?.testFiles.length})`,
+    capped.kept.length === 0 &&
+      capped.dropped.length === 80 &&
+      overCap.length === 48 &&
+      capped.dropped.length - overCap.length === 32,
+    `(bound) the 32 paths inside the call cap are probed and the other 48 refused for the cap; with the quota seeded full nothing is kept, and every one of the 80 leaves a note (kept ${capped.kept.length}, dropped ${capped.dropped.length}, cap notes ${overCap.length})`,
   );
 }
 
