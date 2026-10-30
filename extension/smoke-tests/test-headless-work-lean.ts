@@ -25,7 +25,9 @@ import { makeAssert } from "./headless-verb-harness.ts";
 import {
   fakeRun,
   spawnCrash,
+  spawnHugeCrash,
   step,
+  traceBody,
   verbRun,
   verbThrowing,
   verbThrowingHost,
@@ -254,6 +256,27 @@ for (const [label, make] of [
   assert(
     traced.every((l) => l.length <= TRACE_MAX + 200),
     `the traced line is bounded by TRACE_MAX, so one crash cannot flood the runner's stderr (longest ${Math.max(0, ...traced.map((l) => l.length))})`,
+  );
+}
+
+// ── (g2) the bound is REAL: a 200 KB stack still gives one line whose TRACE
+// part is no longer than TRACE_MAX. The (g) case above has a two-frame stack, so
+// it passes whether or not the verb cut anything — this is the case that would
+// fail if the `slice(0, TRACE_MAX)` after the escape were removed, or if the
+// escape ran after the cut and doubled a stack of `\n`s past the cap.
+{
+  const probe = await spawnHugeCrash();
+  const traced = probe.split("\n").filter((l) => l.startsWith("[pi-rukas] WARN"));
+  assert(traced.length === 1, `a huge stack is traced as ONE line (got ${traced.length})`);
+  assert(
+    traced.some((l) => l.includes("frameMark")),
+    "the truncated trace still carries real frames, so a bound that printed nothing would not pass",
+  );
+  // The probe throws `new Error("huge")`, whose name is the default "Error".
+  const bodies = traced.map((l) => traceBody(l, "Error"));
+  assert(
+    bodies.every((b) => b.length <= TRACE_MAX),
+    `the trace part is no longer than TRACE_MAX=${TRACE_MAX} whatever the stack's length (longest ${Math.max(0, ...bodies.map((b) => b.length))})`,
   );
 }
 

@@ -77,8 +77,11 @@ function lockHeld(err: unknown): boolean {
  *
  * Exported because the test asserts against THIS number rather than a copy of
  * it: a bound that lives only in the test is a bound nobody chose, and a change
- * here has to be a change there. Applied AFTER the newline escaping, so the
- * clip cannot cut a `\n` in half and rejoin two frames.
+ * here has to be a change there. The text is cut to this BEFORE the newline
+ * escaping, so `oneline` never runs over a multi-MB stack, and cut once more
+ * AFTER it: escaping turns each `\n` into two characters, so the second cut is
+ * what keeps the line at `TRACE_MAX` and lands on escaped text, where a cut
+ * cannot split a `\n` pair in half and rejoin two frames.
  */
 export const TRACE_MAX = 4000;
 
@@ -92,24 +95,189 @@ export const TRACE_MAX = 4000;
  */
 export const MESSAGE_MAX = 1000;
 
+/**
+ * How long an Error's own `name` may be in the trace label.
+ *
+ * `name` is the one field a hostile Error supplies VERBATIM into the trace
+ * prefix — a 100 KB `name` is a 100 KB line no `TRACE_MAX` on the body would
+ * bound, and a `name` carrying a newline would split the record the same way a
+ * raw stack would. So it is put through the same single-line rule as the body
+ * and bounded on its own: the label is a word, and a word that needs more than
+ * this many characters to say "Error" is not a label, it is the payload.
+ */
+export const NAME_MAX = 120;
+
+/**
+ * What the document says when a crash's Error has nothing to say at all.
+ *
+ * Applied in `fail()` alone: it is the stand-in for a CRASH with no reason, not
+ * a rule for any text this verb prints. The success path's summary goes through
+ * `clip` with no stand-in, so a run that reported an empty summary is reported
+ * that way rather than being handed a word this verb invented.
+ */
+const UNKNOWN_CRASH = "unknown error";
+
+/**
+ * Every character `oneline` escapes, as ONE regex and ONE pass.
+ *
+ * The floor is the set that ends a line for SOME reader: `\r` and `\n`, and
+ * U+2028 / U+2029 / U+0085, which are line terminators to the JS grammar itself
+ * and to any NDJSON splitter that honours CRLF. Same family
+ * `lean/text-fence.ts` strips, restated because that one is not exported and
+ * folds tab to a space.
+ *
+ * But stopping at the terminators leaves ESC, BEL and NUL RAW, and those do not
+ * need to end a line to do damage: ESC opens a sequence a terminal then
+ * EXECUTES, BEL rings the host, and NUL truncates anything that reads the line
+ * as a C string. Since the whole point of this function is that a hostile value
+ * gets printed on somebody's stderr, the class is widened to every C0 code point
+ * below 0x20 plus DEL (0x7f) — `\p{Cc}` — with the three Unicode separators
+ * added because they are NOT `\p{Cc}` and would otherwise slip through. Tab is
+ * inside the widened class now (it did not end a line, but it is a control
+ * character and this is a trace, not a table), and a `\t` escape still spells a
+ * stack's indentation. One regex with a replacer, so a multi-MB stack is walked
+ * once rather than once per character.
+ */
+const CONTROL = /[\p{Cc}\u2028\u2029\u0085]/gu;
+/** A single backslash — the escape introducer `oneline` writes. */
+const BS = String.fromCharCode(0x5c);
+
 /** A reason line a host can print: clipped, and never the whole step log. */
-function clip(text: unknown): string {
-  const s = typeof text === "string" ? text : String(text ?? "");
-  return s.length > 2000 ? `${s.slice(0, 2000)}…` : s;
+function clip(text: string): string {
+  const reason = text.trim();
+  return reason.length > 2000 ? `${reason.slice(0, 2000)}…` : reason;
 }
 
 /**
- * A multi-line value as ONE line: newlines escaped, so nothing splits a record.
+ * Whether a value has anything to say — one predicate, one rule (a blank trim),
+ * behind every blank test in this module. A bare `||` on a string treats a
+ * whitespace-only message as present, which is AC3's bug.
+ */
+function blank(text: string): boolean {
+  return text.trim() === "";
+}
+
+/**
+ * Text a hostile value cannot refuse to give: its own text, or "".
  *
- * NOT `oneLine` from `lean/text-fence.ts` — that helper escapes `|` and
- * collapses runs of spaces for a MARKDOWN table cell, and folds tabs and the
- * Unicode separators into plain spaces. What this verb needs is narrower: the
- * headless stderr writer turns every physical newline into its own NDJSON
- * record, so the only hazard is a newline, and a stack whose indentation
- * survives is far more readable than one whose leading tabs became spaces.
+ * "" is the answer that says "this value gave nothing", and the CALLER supplies
+ * the stand-in (`UNKNOWN_CRASH` for a crash, nothing at all for a summary) — a
+ * stand-in baked in here would leak a crash's wording into text that is not a
+ * crash.
+ *
+ * `String()` is where a thrown value's own code runs — `Symbol.toPrimitive`,
+ * `valueOf`, `toString` for a non-Error, and a computed `message`/`stack`
+ * property for an Error — and `fail()` is the LAST net this verb has. A throw
+ * from any of them escapes the verb, `runSubcommand` rejects, and the host
+ * reads an empty stdout where the contract promises one document at 30. So a
+ * value that refuses to describe itself still gets a label the host can print.
+ * A hostile PROPERTY is handed to this function already read (`readField`),
+ * because the read itself has to happen in a frame whose try can catch it.
+ */
+function safeText(text: unknown): string {
+  if (typeof text === "string") return text;
+  // A symbol has no string form — a bare coercion throws — and `description` is
+  // the only text it has; "symbol" is what an undecorated one is called.
+  if (typeof text === "symbol") return text.description ?? "symbol";
+  // `text` arrives already obtained in a guarded frame, so a failed property
+  // read reaches here as `undefined`/`null` and becomes "" rather than the word
+  // "undefined" — which would otherwise outrank a readable stack in the
+  // fallback chain. The throw this catch exists for is the conversion's own.
+  if (text === undefined || text === null) return "";
+  try {
+    return String(text);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Read ONE property in THIS frame, so the throw lands inside this function's try.
+ *
+ * `String(err.message)` and `{ message: err.message }` do not do: bun evaluates
+ * the property read at the CALLER's frame, before any callee's try can see it —
+ * so a hostile `message` getter throws past `safeText`'s catch and takes the
+ * verb down, which is the exact failure this net exists to stop (measured: the
+ * getter's throw escapes with `safeText(String)` as its only guard). Each field
+ * is therefore read through a call whose own try can see the throw, and one
+ * hostile field cannot take the others with it. A property read, not
+ * `Object.getOwnPropertyDescriptor`: reading a getter's descriptor is safe but
+ * useless — the value still has to be obtained, and that is the dangerous step.
+ * A failed read is `undefined`, which `safeText` turns into "" — never a string,
+ * because a sentinel would be `String`-ified into a fake reason that outranks a
+ * readable stack in the fallback chain.
+ */
+function readField(obj: object, key: string): unknown {
+  try {
+    return (obj as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * An Error's own fields, each read on its own (`readField` + `safeText`): one
+ * getter that throws costs ONLY that field. A try around the whole read would
+ * discard a readable `name` and `stack` because `message` refused — exactly what
+ * a hostile wrapped Error does.
+ *
+ * `name` is the one field with a default, because it labels the trace line and
+ * an unlabelled warning says nothing about what warned.
+ */
+function errorFields(err: Error): { name: string; message: string; stack: string } {
+  const name = safeText(readField(err, "name")).trim();
+  return {
+    name: name === "" ? "Error" : name,
+    message: safeText(readField(err, "message")),
+    stack: safeText(readField(err, "stack")),
+  };
+}
+
+/**
+ * A multi-line value as ONE line: each line terminator escaped, so nothing
+ * splits a record.
+ *
+ * NOT `oneLine` from `lean/text-fence.ts` — that one is for a MARKDOWN table
+ * cell (it escapes `|`, collapses runs of spaces, folds tabs), and a stack
+ * wants its indentation. The hazard here is narrower: the headless stderr writer
+ * turns each physical line into its own NDJSON record, so every terminator in
+ * `LINE_BREAK_CP` becomes its escape (`\n`, `\r`, or `\uXXXX`) and the result
+ * holds no terminator at all — and no other control character either, so ESC,
+ * BEL and NUL reach a reader as `\u001b` / `\u0007` / `\u0000` text rather than
+ * as sequences a terminal executes. An escape is longer than the character it
+ * replaces, so callers bound the result AFTER this runs.
  */
 function oneline(text: string): string {
-  return text.replaceAll("\n", "\\n");
+  return text.replace(CONTROL, (ch) => {
+    const cp = ch.codePointAt(0) as number;
+    // The two ASCII breaks keep their short forms because that is what a
+    // developer reading a truncated stack expects; everything else gets the
+    // six-character `\u00XX` form, which stays complete without a table.
+    if (cp === 0x0a) return `${BS}n`;
+    if (cp === 0x0d) return `${BS}r`;
+    return `${BS}u${cp.toString(16).padStart(4, "0")}`;
+  });
+}
+
+/**
+ * The trace label: an Error's `name`, scrubbed and bounded.
+ *
+ * `name` is the only field that reaches the trace VERBATIM — `TRACE_MAX` bounds
+ * the body alone — so a 200 KB `name` or a `name` carrying a newline would get
+ * past the body's bound and split or flood the record. It goes through
+ * `oneline` — cut before the escape so it never walks a huge name, and again
+ * after it so the bound holds on the ESCAPED text, because escaping lengthens it
+ * (`\r` becomes two characters, U+2028 six) and a bound on the raw label is not
+ * a bound on what a reader sees. The cut keeps its ellipsis inside the bound.
+ */
+function traceLabel(name: string): string {
+  // Cut BEFORE the escape so `oneline` never walks a 200 KB label, then again
+  // AFTER it so the bound holds on the text a reader actually sees: an escape
+  // only ever lengthens a string (`\r` is two characters, U+2028 six), so a
+  // bound on the raw label is not a bound on the escaped one. The ellipsis is
+  // counted INSIDE the bound, so the label is never longer than NAME_MAX.
+  const scrubbed = oneline(name.slice(0, NAME_MAX));
+  return scrubbed.length > NAME_MAX ? `${scrubbed.slice(0, NAME_MAX - 1)}…` : scrubbed;
 }
 
 /**
@@ -188,7 +356,7 @@ export async function runWorkLeanVerb(
     try {
       ctx.host.sendUserMessage(text, { deliverAs: "steer" });
     } catch (err) {
-      traceWarn(`work-lean: #${issue} could not tell the host — ${oneline(String(err))}`);
+      traceWarn(`work-lean: #${issue} could not tell the host — ${oneline(safeText(err))}`);
     }
   };
   say(`work-lean: #${issue} starting`);
@@ -206,7 +374,24 @@ export async function runWorkLeanVerb(
     // not just \n, has to go for the line to stay one line. The clip stays:
     // the fence clips at its own bound and a 20 KB message is what the clip
     // exists to stop.
-    const message = oneLine(clip(err instanceof Error ? err.message : String(err)), MESSAGE_MAX);
+    const fields = err instanceof Error ? errorFields(err) : undefined;
+    // The trace and the document's reason come from ONE read of the Error, so
+    // the `err instanceof Error` test is not written twice: `traceFields` is
+    // this crash's fields or nothing, which is both the "is it an Error" and the
+    // "is it a crash" test the trace needs.
+    const traceFields = refused ? undefined : fields;
+    // ONE derivation for both outputs: the message, or the stack when the
+    // message says nothing, or nothing at all. The document prints that and the
+    // trace carries it, so the reason the host parses and the reason a developer
+    // reads on stderr cannot disagree about what the crash said.
+    const reason = fields ? (blank(fields.message) ? fields.stack : fields.message) : safeText(err);
+    // The stand-in is the crash path's alone (`UNKNOWN_CRASH`), applied here and
+    // nowhere else in this module. `oneLine` escapes (control chars, `|`) BEFORE
+    // it cuts, so the cut lands on the text a host reads — every `|` in a reason
+    // becomes TWO characters there, and its cut appends one "…", hence
+    // `MESSAGE_MAX - 1`: `oneLine(x, n)` returns at most n+1 characters, so this
+    // is the argument that keeps `doc.error.message` within MESSAGE_MAX.
+    const message = oneLine(clip(reason) || UNKNOWN_CRASH, MESSAGE_MAX - 1);
     const exitCode = refused ? EXIT.refused : EXIT.crash;
     // The full error goes to the trace, not just the clipped line the document
     // carries: a crash whose stack is 20 KB is still diagnosable by whoever
@@ -214,9 +399,25 @@ export async function runWorkLeanVerb(
     // Written as ONE line (newlines escaped): the headless stderr writer turns
     // every physical line into its own NDJSON record, so a raw stack would
     // arrive as a frame dump with the error name detached from it.
-    if (!refused && err instanceof Error) {
-      const trace = oneline(err.stack ?? err.message).slice(0, TRACE_MAX);
-      traceWarn(`work-lean: #${issue} crashed — ${err.name}: ${trace}`);
+    if (err instanceof Error && traceFields !== undefined) {
+      // Same fields as the document's reason, never a second derivation: a
+      // trace whose reason disagrees with the host's is worse than no trace.
+      const body = blank(traceFields.stack) ? reason : traceFields.stack;
+      // Cut before the escape so it never walks a multi-MB stack, then again
+      // after it (an escape is longer than its character) to keep the bound exact.
+      const trace = oneline(body.slice(0, TRACE_MAX + 16)).slice(0, TRACE_MAX);
+      // Its OWN guarded frame. The trace is a diagnostic; the document this
+      // function returns is the contract, and `fail()` is the LAST net the verb
+      // has — so a stderr writer that throws (a closed fd, a host that replaced
+      // the stream, a trace seam that itself fails) must not cost the host its
+      // one document and its exit code 30. Swallowed on purpose: there is no
+      // second channel to report a broken first channel to from inside the
+      // handler for it.
+      try {
+        traceWarn(`work-lean: #${issue} crashed — ${traceLabel(traceFields.name)}: ${trace}`);
+      } catch {
+        /* the document is the contract */
+      }
     }
     say(`work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`);
     return {

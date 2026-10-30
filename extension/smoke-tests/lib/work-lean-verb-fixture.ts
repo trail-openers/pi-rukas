@@ -117,11 +117,23 @@ export async function verbThrowing(argv: string[], err: unknown): Promise<VerbRu
  * see what the verb TOLD the host, which the harness swallows.
  */
 export async function spawnProbe(runSource: string, echoMessages = false): Promise<string> {
+  return (await spawnProbeRun(runSource, echoMessages)).stderr;
+}
+
+/** `spawnProbe` plus the child's exit code and its whole stderr in one result. */
+export async function spawnProbeRun(
+  runSource: string,
+  echoMessages = false,
+): Promise<{ stderr: string; code: number | null }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "work-lean-probe-"));
   const probe = path.join(dir, "probe.ts");
   // `join` rather than a chain of `+` over template literals: the last segment
   // has no interpolation at all, which a concatenated literal cannot express
   // without tripping the linter's template rules.
+  //
+  // `process.exit` is reached through a tick (`setTimeout(…, 0)`) so a piped
+  // stderr is flushed before the child dies — with an inherited fd the write is
+  // synchronous and the delay is free.
   writeFileSync(
     probe,
     [
@@ -130,12 +142,15 @@ export async function spawnProbe(runSource: string, echoMessages = false): Promi
       `const host = { sendUserMessage: (t: string) => { if (${String(echoMessages)}) process.stderr.write(t + "\\n"); }, emit: () => {} };`,
       runSource,
       `const out = await runWorkLeanVerb(["7"], { repoRoot: ${JSON.stringify(dir)}, host }, run);`,
-      "process.exit(out.exitCode);",
+      "setTimeout(() => process.exit(out.exitCode), 0);",
     ].join("\n"),
   );
-  const r = spawnSync(process.execPath, [probe], { encoding: "utf8" });
+  // stdout AND stderr are piped. The existing callers read only stderr and an
+  // inherited fd is what they always had; the AC driver reads both, because it
+  // judges what the host's stdout carried as well as what the trace said.
+  const r = spawnSync(process.execPath, [probe], { encoding: "utf8", timeout: 30_000 });
   await rm(dir, { recursive: true, force: true });
-  return r.stderr;
+  return { stderr: r.stderr, code: r.status };
 }
 
 /**
@@ -197,9 +212,104 @@ export async function verbThrowingHost(
   return { code, docs };
 }
 
+export interface CrashDrive {
+  /** The exit code `runSubcommand` returned (a rejected run leaves it undefined). */
+  code: number;
+  /** The stdout document(s) the host received. */
+  docs: string[];
+  /** The shared output contract's verdict — every AC asserts this is empty. */
+  violations: string[];
+  /** The verb's NDJSON `log` lines from the child's stderr, when probed. */
+  trace: string[];
+  /** The child's exit code, when probed. */
+  probeCode: number | null;
+  /** `doc.error.code` from the in-process run. */
+  errorCode?: string;
+  /** `doc.error.message` from the in-process run. */
+  message?: string;
+}
+
+/**
+ * The shared driver for the #1909 AC tests: throw `err` from the injected run
+ * and report what the host got.
+ *
+ * One driver, three AC files. Each used to carry its own copy of the stdout
+ * capture and its own `safe`/`note` helpers, and a copy that checked less was a
+ * copy that could pass while the contract broke. Two drives, because neither
+ * sees the whole contract on its own:
+ *
+ *   - the in-process `verbThrowing` (which is `runVerb`, so the shared NDJSON
+ *     `violations` check applies) gives the code, the one document, and the
+ *     parsed `error`;
+ *   - `spawnProbeRun` runs the SAME throw in a real child, because the harness
+ *     captures stdout and leaves stderr alone — a `traceWarn` is visible only
+ *     to a child that writes the real fd, which is what a host reads when a run
+ *     dies. `probeCode` is that child's own exit code.
+ *
+ * The probe is given `runSource` rather than `err`: the child builds the value
+ * itself, so a hostile getter is real code in the probe, not a value this file
+ * has to serialise.
+ */
+export async function driveThrow(err: unknown, runSource: string): Promise<CrashDrive> {
+  const r = await verbThrowing(["7"], err);
+  const error = (r.doc.error ?? {}) as { code?: string; message?: string };
+  const probe = await spawnProbeRun(runSource, true);
+  return {
+    code: r.code,
+    docs: r.violations.some((v) => v.startsWith("stdout is not JSON"))
+      ? []
+      : [JSON.stringify(r.doc)],
+    violations: r.violations,
+    trace: probe.stderr.split("\n").filter((l) => l.trim() !== ""),
+    probeCode: probe.code,
+    errorCode: error.code,
+    message: error.message,
+  };
+}
+
+/**
+ * One probe's stderr as the `[pi-rukas] WARN` lines it carries — the verb's
+ * crash trace. The verb writes a plain-text warning through `traceWarn` and the
+ * probe leaves stderr inherited (as the runner's own trace path does), so the
+ * line is read as written rather than as an NDJSON envelope.
+ */
+export function warnLines(trace: string[]): string[] {
+  return trace.filter((line) => line.startsWith("[pi-rukas] WARN"));
+}
+
 /** A child whose injected run throws one Error with a two-frame stack. */
 export function spawnCrash(): Promise<string> {
   return spawnProbe(
-    `const run = async () => { const e = new Error("git exploded"); e.stack = "Error: git exploded\\n" + " ".repeat(3) + "at runWorkLeanVerb (/x/work-lean.ts:1:1)"; throw e; };`,
+    `const run = async () => { const e = new Error("git exploded"); e.stack = ["Error: git exploded", "    at runWorkLeanVerb (/x/work-lean.ts:1:1)"].join(String.fromCharCode(0x0a)); throw e; };`,
   );
+}
+
+/**
+ * A child whose stack is far longer than `TRACE_MAX`, for the bound's own test.
+ *
+ * 200 KB of frames — fifty times the cap — so a verb that never cut would show
+ * it rather than hide it, and the frames carry a marker the assertion looks for
+ * so a trace truncated to nothing cannot pass a length check.
+ */
+export function spawnHugeCrash(): Promise<string> {
+  return spawnProbe(
+    `const run = async () => { const e = new Error("huge"); e.stack = ["Error: huge", ...Array.from({ length: 6000 }, () => "    at frameMark (/x/engine.ts:1:1)")].join(String.fromCharCode(0x0a)); throw e; };`,
+    true,
+  );
+}
+
+/**
+ * The trace BODY of a crash line: what follows `crashed — <name>: `.
+ *
+ * `TRACE_MAX` bounds the body, not the whole record — the `work-lean: #N` framing
+ * and the `name` label are added outside that cut (the label has its own bound,
+ * `NAME_MAX`). Stripping the label by the name the probe threw is what makes the
+ * body assertion bite: a whole-line length would tolerate a label that grew.
+ * A line without that head is returned whole, so it fails the length check
+ * rather than passing it.
+ */
+export function traceBody(line: string, name: string): string {
+  const head = `crashed — ${name}: `;
+  const at = line.indexOf(head);
+  return at < 0 ? line : line.slice(at + head.length);
 }
