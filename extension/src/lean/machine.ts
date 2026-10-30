@@ -27,9 +27,9 @@ import { type Transition, to, viaBuild } from "./transitions.ts";
 /** Outcome kinds per state. The handler for a state may return only these. */
 export const OUTCOME_KINDS = {
   ready: ["ok", "fail"],
-  specify: ["ok", "no-red-test"],
-  build: ["ok", "exhausted"],
-  challenge: ["new-tests", "none"],
+  specify: ["ok", "no-red-test", "budget"],
+  build: ["ok", "exhausted", "budget"],
+  challenge: ["new-tests", "none", "budget"],
   verify: ["green", "red"],
   publish: ["ok"],
   review: ["done"],
@@ -77,6 +77,9 @@ export const MAX_BUILD_ATTEMPTS = 2;
 /** The `decline` kind that says the comment did not reach the forge. */
 export const REPORT_FAILED_KIND = "report-failed";
 
+/** A step's own budget ended the child: a verdict like `exhausted` (#1883). */
+export const BUDGET_KIND = "budget";
+
 /**
  * Is this pair in the table? `next()` throws on a pair it does not have, so
  * callers that must not throw (the engine, the table test) ask first.
@@ -116,6 +119,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
       switch (outcome.kind) {
         case "ok":
           return to(run, "build");
+        case BUDGET_KIND:
+          // Out of budget before the contract was written: nothing was proved,
+          // so there is nothing to build against.
+          return to(run, "handback");
         case "no-red-test":
           // A spec with no falsifiable test is not buildable from: it reads
           // fine and verifies nothing. Same refusal and same exit as an
@@ -135,6 +142,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // The first build ever earned a challenge round; a build that came
           // back from one has already been challenged and goes to verify.
           return viaBuild(run, c.challengeDone ? "verify" : "challenge");
+        case BUDGET_KIND:
+          // `exhausted`'s shape with no draft to clear: the child's work went
+          // back with the tree, so there is nothing to verify.
+          return to(run, "handback");
         case "exhausted":
           // Out of build attempts. Whether this is a degradation or a defeat
           // depends entirely on the last verdict the run's own gate returned:
@@ -159,6 +170,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
 
     case "challenge":
       switch (outcome.kind) {
+        case BUDGET_KIND:
+          // The contract held is untouched, but the run has spent what the config
+          // allows and another round is not this step's to buy.
+          return to(run, "handback");
         case "new-tests":
           // New tests mean new red. One more build, and only one: the flag is
           // charged HERE, on the branch that re-enters build, so the build it

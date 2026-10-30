@@ -50,6 +50,7 @@ import { publishOutcome } from "./publish.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Outcome, Step } from "./state.ts";
+import type { BudgetOpts } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 import { verifyDeps, verifyOutcome } from "./verify.ts";
 import { leanVersion } from "./version.ts";
@@ -241,10 +242,17 @@ export function failedRulesFromLog(steps: Step[]): string[] {
 export function specifyDeps(headless: boolean): SpecifyDeps {
   return {
     exec: (cmd, opts) => execp(cmd, opts ?? {}),
-    dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
+    dispatch: (
+      spec: DispatchSpec,
+      o: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+    ) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
+        // Forwarded so the ceiling binds the child.
+        childBoundMs: o.childBoundMs,
+        signal: o.signal,
+        onProgress: o.onProgress,
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,

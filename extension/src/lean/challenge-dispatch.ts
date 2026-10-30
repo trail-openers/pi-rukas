@@ -21,6 +21,7 @@ import { challengePrompt } from "./challenge-prompt.ts";
 import type { ChallengeDispatch } from "./challenge-types.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
+import type { BudgetArms, BudgetStop } from "./step-budget.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 
 /** An adversary we could not run. The engine turns this into handed-back 10. */
@@ -42,13 +43,18 @@ export interface ChallengeDispatchOpts {
   testLocation?: TestLocation;
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
+  /** The step's budget arms, armed before the child and read back after. */
+  budget: BudgetArms;
 }
 
-/** Dispatch one adversary, and turn a non-OK child into the throw it deserves. */
+/**
+ * Dispatch one adversary. A budget breach comes back as {@link BudgetStop}, not a
+ * throw; any other dead child is still infrastructure.
+ */
 export async function dispatchAdversary(
   dispatch: ChallengeDispatch,
   opts: ChallengeDispatchOpts,
-): Promise<unknown[]> {
+): Promise<DispatchResult | BudgetStop> {
   await (opts.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
   const prompt = challengePrompt({
     issue: opts.issue,
@@ -70,8 +76,12 @@ export async function dispatchAdversary(
         scratch: path.join(path.dirname(opts.wt), "..", "tmp", `lean-${opts.issue}`),
       },
       extraArgs: ["--no-skills", "--extension", SUBMIT_TESTS_REPORTER_PATH],
+      ...opts.budget.opts,
     },
   );
+  // Before the throw below: the round's own ceiling ending the child is a verdict.
+  const fired = opts.budget.fired(result);
+  if (fired !== undefined) return { fired } as BudgetStop;
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
@@ -80,5 +90,5 @@ export async function dispatchAdversary(
       `exit ${String(result.exitCode)}`;
     throw new ChallengeInfraError(`challenge dispatch failed: ${String(why)}`);
   }
-  return result.toolUses ?? [];
+  return result;
 }

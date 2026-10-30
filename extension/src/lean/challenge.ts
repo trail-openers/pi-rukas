@@ -43,7 +43,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
-import type { DispatchSpec } from "../types.ts";
+import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
@@ -71,6 +71,15 @@ import {
   validateSubmitRows,
 } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
+import {
+  type BudgetArms,
+  type BudgetOpts,
+  armBudget,
+  budgetFor,
+  budgetStopOf,
+  budgetVerdict,
+  toolUsesOf,
+} from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 
 export interface ChallengeDeps {
@@ -214,17 +223,22 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       "no test runner configured (.pi/work.json verify.test) for a spec with test criteria",
     );
 
-  // 3. The adversary.
-  const toolUses = await dispatchAdversary(deps.dispatch, {
+  // 3. The adversary, under the state's budget (#1883).
+  const budget = armBudget(budgetFor(config, "challenge"));
+  const dispatched = await dispatchAdversary(deps.dispatch, {
     issue,
     spec,
     frozenPaths: Object.keys(frozen),
     wt,
     repoRoot,
     testRunner: runnerTemplate,
+    budget,
     ...(testLocation === undefined ? {} : { testLocation }),
     ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
   });
+  const stop = budgetStopOf(dispatched);
+  if (stop !== undefined) return budgetVerdict("challenge", stop);
+  const toolUses = toolUsesOf(dispatched);
 
   // 4-8. Validate, capture, reset to the HEAD, rewrite, prove red, commit.
   const pipeline = await runTestPipeline(
@@ -311,10 +325,17 @@ export { SpecifyInfraError };
 export function challengeDeps(headless: boolean): ChallengeDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
-    dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
+    dispatch: (
+      spec: DispatchSpec,
+      o: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+    ) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
+        // Forwarded so the ceiling binds the child.
+        childBoundMs: o.childBoundMs,
+        signal: o.signal,
+        onProgress: o.onProgress,
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,

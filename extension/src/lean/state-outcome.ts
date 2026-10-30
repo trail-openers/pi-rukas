@@ -88,12 +88,25 @@ export function validPrUrl(url: unknown): string | undefined {
  * message, so a hand-edited file naming a PR this run never opened (or claiming
  * a head this run never verified) is never driven.
  */
+/** The budget verdict's fields; the map takes one owner per field. */
+const BUDGET_FIELDS: Readonly<Record<string, LeanState>> = {
+  limit: "build",
+  value: "build",
+  used: "build",
+};
+
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState>> = {
   prUrl: "publish",
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
+  // Owned by the dispatching steps: a handback inventing a ceiling the step never
+  // hit would print it as the run's cause.
+  ...BUDGET_FIELDS,
 };
+
+/** The states whose handler may report a breach, hence own its fields. */
+const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
 
 /** The one value a recorded `command` criterion may carry: it held. */
 const COMMAND_CRITERION_KIND = "passed";
@@ -146,8 +159,21 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   // a caller cannot dodge the ownership rule with a well-formed URL.
   if (state !== undefined) {
     for (const [field, owner] of Object.entries(OWNER_OF_FIELD)) {
-      if (oc[field] !== undefined && state !== owner)
-        return `outcome ${field} is only recorded by a ${owner} step, not a ${state} step`;
+      if (oc[field] === undefined || state === owner) continue;
+      // A budget field's owner is a SET the map cannot express.
+      if (field in BUDGET_FIELDS && BUDGET_STATES.includes(state)) continue;
+      return `outcome ${field} is only recorded by a ${owner} step, not a ${state} step`;
+    }
+  }
+  // Checked as a set: a breach naming neither ceiling nor overshoot is a
+  // sentence nobody can act on.
+  if (oc.kind === "budget") {
+    if (oc.limit !== "minutes" && oc.limit !== "turns" && oc.limit !== "tokens")
+      return 'outcome kind "budget" needs limit "minutes" | "turns" | "tokens"';
+    for (const key of ["value", "used"] as const) {
+      const n = oc[key];
+      if (typeof n !== "number" || !Number.isFinite(n) || n < 0)
+        return `outcome ${key} must be a non-negative number for a budget verdict`;
     }
   }
   // `next()` calls `.join` on this when it routes a refusal, so a string-valued
@@ -287,5 +313,8 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
+    ...(typeof oc.limit === "string" ? { limit: oc.limit as Outcome["limit"] } : {}),
+    ...(typeof oc.value === "number" ? { value: oc.value } : {}),
+    ...(typeof oc.used === "number" ? { used: oc.used } : {}),
   };
 }

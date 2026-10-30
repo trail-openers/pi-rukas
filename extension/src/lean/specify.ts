@@ -80,13 +80,23 @@ import {
   worktreeExists,
 } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
+import {
+  type BudgetArms,
+  type BudgetOpts,
+  type BudgetStop,
+  armBudget,
+  budgetFor,
+  budgetStopOf,
+  budgetVerdict,
+  toolUsesOf,
+} from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
 export type SpecifyDispatch = (
   spec: DispatchSpec,
-  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] },
+  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
 ) => Promise<DispatchResult>;
 
 export interface SpecifyDeps {
@@ -191,8 +201,9 @@ async function dispatchAdversary(
     repoRoot: string;
     testRunner?: string;
     testLocation?: TestLocation;
+    budget: BudgetArms;
   },
-): Promise<unknown[]> {
+): Promise<DispatchResult | BudgetStop> {
   await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
   const prompt = specifyPrompt({
     issue: opts.issue,
@@ -213,8 +224,13 @@ async function dispatchAdversary(
         scratch: path.join(path.dirname(opts.wt), "..", "tmp", `lean-${opts.issue}`),
       },
       extraArgs: ["--no-skills", "--extension", SUBMIT_TESTS_REPORTER_PATH],
+      ...opts.budget.opts,
     },
   );
+  // BEFORE the infra throw: the step's own ceiling ending the child is a
+  // verdict about the round, not a fault in the harness.
+  const fired = opts.budget.fired(result);
+  if (fired !== undefined) return { fired } as BudgetStop;
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
@@ -223,7 +239,7 @@ async function dispatchAdversary(
       `exit ${String(result.exitCode)}`;
     throw new SpecifyInfraError(`specify dispatch failed: ${String(why)}`);
   }
-  return result.toolUses ?? [];
+  return result;
 }
 
 /** The `specify` step. Returns `ok` | `no-red-test`; THROWS on infrastructure. */
@@ -305,15 +321,20 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // 4. Base health BEFORE any red is trusted.
   await assertBaseHealthy(deps.exec, wt, config, provisioning);
 
-  // 5. The adversary.
-  const toolUses = await dispatchAdversary(deps, {
+  // 5. The adversary, under the state's budget (#1883).
+  const budget = armBudget(budgetFor(config, "specify"));
+  const dispatched = await dispatchAdversary(deps, {
     issue,
     spec,
     wt,
     repoRoot,
     testRunner: runnerTemplate,
+    budget,
     ...(testLocation === undefined ? {} : { testLocation }),
   });
+  const stop = budgetStopOf(dispatched);
+  if (stop !== undefined) return budgetVerdict("specify", stop);
+  const toolUses = toolUsesOf(dispatched);
 
   // 6-13. Extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
   //       kept file red ON THE BASE, and commit. That pipeline is shared with

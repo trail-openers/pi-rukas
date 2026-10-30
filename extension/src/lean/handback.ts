@@ -94,6 +94,20 @@ function terminalCause(steps: Step[]): string | undefined {
 }
 
 /**
+ * The newest budget breach the log records, and FIRST in {@link neededFromLog}:
+ * the breach is why the run stopped; an earlier red is only why it was trying.
+ */
+function budgetCause(steps: Step[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const oc = steps[i]?.outcome;
+    if (oc?.kind !== "budget") continue;
+    const reason = oc.reason ?? oc.message;
+    if (typeof reason === "string" && reason.trim() !== "") return reason;
+  }
+  return undefined;
+}
+
+/**
  * Why the run is ending, in the record's own words.
  *
  * The order is the order of USEFULNESS, not of recency: what the run's own gate
@@ -106,6 +120,7 @@ function terminalCause(steps: Step[]): string | undefined {
  */
 export function neededFromLog(steps: Step[]): string {
   const reason =
+    budgetCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
     // Nothing ever went red: the run ended for a reason only the log's own
