@@ -92,10 +92,11 @@ export interface LeanLogOpts {
   withPublishedHead?: boolean;
   /** Whether the handback comment reached the forge (default: it did). */
   posted?: boolean;
-  /** Whether a green `ci` step follows the publish (default: it does not).
-   *  The engine's land gate reads the newest decided `ci` beside the newest
-   *  decided `verify`, and so does `prState`. */
-  ci?: "green";
+  /** Whether a `ci` step follows the publish (default: none). The engine's land
+   *  gate reads the newest decided `ci` beside the newest decided `verify`, and
+   *  so does `prState` — but only to REJECT: a run with no `ci` step is unjudged
+   *  by the pipeline, not refused, because lean has no `ci` step built. */
+  ci?: "green" | "red";
 }
 
 /** The whole log one ending is made of — see the module header for its rules. */
@@ -127,11 +128,11 @@ export function leanLog(opts: LeanLogOpts): Step[] {
       }),
     );
   }
-  if (opts.ci === "green") {
+  if (opts.ci !== undefined) {
     // The pipeline's verdict on the head the PR stands on: a decided `ci` that
-    // is not green is as much a refusal as a red gate, and a later red verify is
-    // newer than the publish either way.
-    steps.push(stepWith("ci", { kind: "green" }));
+    // is not green is as much a refusal as a red gate. Its ABSENCE is neither —
+    // lean has no `ci` step built, so a run with none is unjudged, not refused.
+    steps.push(stepWith("ci", { kind: opts.ci }));
   }
   steps.push(
     stepWith("handback", {

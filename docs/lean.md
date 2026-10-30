@@ -187,7 +187,7 @@ reads one document. The one field `work` never writes is **`prState`**:
 
 | `prState` | When |
 |---|---|
-| `ready` | publish recorded `draft: false` AND the newest DECIDED `verify` that had already started by then was `green` with `verifiedHead` **equal** to publish's `publishedHead` |
+| `ready` | publish recorded `draft: false` AND the newest DECIDED `verify` is `green` with `verifiedHead` **equal** to publish's `publishedHead`, AND no DECIDED `ci` has gone against it. A run with **no `ci` step** is unjudged by the pipeline, not refused — `ci` is not built, so it blocks `ready` only when it ran non-green |
 | `draft` | publish recorded `draft: true`, or any half of the `ready` evidence is missing |
 | `none` | no decided `publish` step left a PR URL |
 

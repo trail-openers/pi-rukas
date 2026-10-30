@@ -283,9 +283,10 @@ function publishedHeadOf(publish: Step | undefined): string | undefined {
  * STARTED by the publish's time) was the wrong rule: a table that re-runs
  * `verify` after `publish` leaves a verdict NEWER than the publish, and reading
  * an older green over it told a host to merge work its own gate had since called
- * red. Position in the log, not the publish's clock, is what makes a verdict the * run's current one. A decided `ci` is read the same way: the newest one must be
- * green, because it is the pipeline's verdict on the very head the PR stands on,
- * and an older `verify` green says nothing about it.
+ * red. Position in the log, not the publish's clock, is what makes a verdict the * run's current one. A decided `ci` is read the same way, and it only ever
+ * REJECTS: a run with no `ci` step at all is unjudged by the pipeline, not
+ * judged red (lean has no `ci` step built), while a newest decided `ci` that is
+ * not green is the pipeline's verdict against the very head the PR stands on.
  *
  * An outcome-less `verify` or `ci` is a crash mid-step and has said nothing
  * (`newestDecided`), and a publish that named no head, or a green that named
@@ -293,7 +294,8 @@ function publishedHeadOf(publish: Step | undefined): string | undefined {
  */
 function gateClearedPublishedHead(steps: Step[], head: string | undefined): boolean {
   if (head === undefined) return false;
-  if (newestDecided(steps, "ci")?.outcome?.kind !== "green") return false;
+  const ci = newestDecided(steps, "ci");
+  if (ci !== undefined && ci.outcome?.kind !== "green") return false;
   const gate = newestDecided(steps, "verify");
   if (gate?.outcome?.kind !== "green") return false;
   const verified = gate.outcome.verifiedHead;
@@ -305,8 +307,9 @@ function gateClearedPublishedHead(steps: Step[], head: string | undefined): bool
  * question exit 10 cannot ask.
  *
  * - `ready` — publish recorded `draft === false` AND the newest decided `verify`
- *   is green about the very head publish says it shipped AND the newest decided
- *   `ci` is green (the land gate's own rule, read from typed fields only);
+ *   is green about the very head publish says it shipped, and no decided `ci`
+ *   has gone against it (the land gate's own rule, read from typed fields only;
+ *   a run with no `ci` step is unjudged, not refused);
  * - `draft` — publish recorded `draft === true`, or anything about the claim is
  *   missing;
  * - `none` — no publish step left a PR URL.

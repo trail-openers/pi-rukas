@@ -42,11 +42,12 @@ const drive = driveLean;
 const log = leanLog;
 
 // ── (1) a green run with a READY PR: publish said `draft: false`, verify green.
+// No `ci` step: lean has none built, so readiness must not require one.
 {
   const r = await drive(
     "handed-back",
     10,
-    log({ prUrl: URL, draft: false, ci: "green", dispatches: CHILDREN }),
+    log({ prUrl: URL, draft: false, dispatches: CHILDREN }),
   );
   assert(r.violations.length === 0, `ready: output contract (${r.violations.join("; ")})`);
   assert(r.doc.schemaVersion === 5, `ready: schemaVersion 5 (got ${String(r.doc.schemaVersion)})`);
@@ -195,7 +196,7 @@ const log = leanLog;
 // refuses to merge over either, so a projection that said `ready` over one would
 // tell a host to merge bytes both gates called red.
 {
-  const base = log({ prUrl: URL, draft: false, ci: "green", dispatches: CHILDREN });
+  const base = log({ prUrl: URL, draft: false, dispatches: CHILDREN });
   // The log is append-only, so "decided after publish" is a LATER ENTRY, not a
   // later clock: a re-run appends `verify:1` and the land gate reads that one
   // (`newestDecided`), whichever wall-clock stamp it carries.
@@ -212,13 +213,32 @@ const log = leanLog;
   assert(i.cap === undefined, `late-red: and no awaiting-human-merge (got ${String(i.cap)})`);
 }
 {
-  const redCi = log({ prUrl: URL, draft: false, ci: "green", dispatches: CHILDREN }).map((s) =>
-    s.state === "ci" ? { ...s, outcome: { kind: "red", reason: "ci failed" } } : s,
-  );
+  const redCi = log({
+    prUrl: URL,
+    draft: false,
+    ci: "red",
+    dispatches: CHILDREN,
+  });
   const r = await drive("handed-back", 10, redCi);
   const i = r.issue ?? {};
   assert(i.prState === "draft", `red-ci: a red ci is not ready (got ${String(i.prState)})`);
   assert(i.cap === undefined, `red-ci: and no awaiting-human-merge (got ${String(i.cap)})`);
+}
+
+// ── (2g) NO `ci` step at all, with everything else in place: `ready`. Lean has
+// no `ci` step built, so requiring a green one would read every real run as
+// `draft` — the rule rejects a DECIDED non-green `ci`, it never demands one.
+{
+  const r = await drive("handed-back", 10, log({ prUrl: URL, draft: false }));
+  const i = r.issue ?? {};
+  assert(
+    i.prState === "ready",
+    `no-ci: a run with no ci step is ready, not draft (got ${String(i.prState)})`,
+  );
+  assert(
+    i.cap === "awaiting-human-merge",
+    `no-ci: and it carries awaiting-human-merge (got ${String(i.cap)})`,
+  );
 }
 
 // ── (3) NO PR: the run handed back before any publish step decided.
@@ -246,7 +266,7 @@ const log = leanLog;
 {
   const seen = new Set<string>();
   for (const [label, steps] of [
-    ["ready", log({ prUrl: URL, draft: false, ci: "green" })],
+    ["ready", log({ prUrl: URL, draft: false })],
     ["draft", log({ prUrl: URL, draft: true })],
     ["none", log({})],
   ] as const) {
