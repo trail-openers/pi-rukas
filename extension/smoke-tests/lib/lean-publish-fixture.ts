@@ -183,6 +183,18 @@ export interface PublishOpts {
   draft?: boolean;
   /** Origin already holds a foreign commit on the branch (non-fast-forward). */
   originForeign?: boolean;
+  /**
+   * Origin already holds ANOTHER commit of this repo on the run's branch — the
+   * stale-branch shape a rerun of a lean issue meets: the previous run pushed,
+   * its PR was closed, the ref was never deleted. Unlike `originForeign` the
+   * commit is the head's own parent, so a lease-correct force replaces it.
+   */
+  originStale?: boolean;
+  /**
+   * Move origin's branch ref BETWEEN the step's `ls-remote` read and its push —
+   * the race a lease exists to catch. The push must fail rather than overwrite.
+   */
+  moveRemoteDuringPush?: boolean;
   /** The fake forge's open PRs; `undefined` means "load none". */
   openPrs?: NormalizedPullRequest[];
   /** Make `prView` reject, so the step cannot read a reused PR's draft state. */
@@ -325,6 +337,22 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     git(other, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
   }
 
+  if (o.originStale === true) {
+    // The previous run's head, one commit BEHIND this one (a rerun redoes the
+    // same work on the same base). Pushed rather than `update-ref`'d: a push is
+    // the only path that carries the object INTO the bare origin.
+    const prev = git(
+      wt,
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      git(wt, "rev-parse", "HEAD^"),
+      "-m",
+      "feat: the previous run's head",
+    );
+    git(wt, "push", "-q", "--force-with-lease", "origin", `${prev}:refs/heads/${branch}`);
+  }
+
   if (o.dirty === true) writeFileSync(path.join(wt, "stray.txt"), "uncommitted\n");
   if (o.commitAfterVerify === true) {
     writeFileSync(path.join(wt, "later.ts"), "export const later = 1;\n");
@@ -392,7 +420,17 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
       return execp(cmd, { ...opts, env, cwd });
     },
     fetchBody: async () => o.body ?? renderPiSpec(spec),
-    forge: async () => forge,
+    // The stale-branch decision asks the forge BEFORE it pushes, so this call is
+    // the moment between the step's `ls-remote` read and its push — the race the
+    // lease exists to catch. Moving origin's ref here means the observed sha is
+    // already stale by the time the push runs.
+    forge: async () => {
+      if (o.moveRemoteDuringPush === true) {
+        git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
+        git(origin, "update-ref", `refs/heads/${branch}`, git(origin, "rev-parse", "main"));
+      }
+      return forge;
+    },
   };
   const { publishOutcome } = await import("../../src/lean/publish.ts");
   const shared = { repoRoot, wt, head, origin, forge, gitEnvs: seenEnvs };

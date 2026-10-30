@@ -13,8 +13,10 @@
  *      pushed is REFUSED before the push — "green" is a claim about a named
  *      tree, and pushing something else under it is the one lie this step
  *      cannot take back;
- *   4. the push is non-forced and porcelain, so a rejection (a foreign commit
- *      already on the ref) is an error rather than a rewrite of history;
+ *   4. the push is porcelain, and its force is conditional: origin is read
+ *      first (`remoteBranchSha`) and a stale `lean/` ref exactly one of our own
+ *      commits behind is replaced under a lease bound to that sha; other pushes
+ *      stay non-forced, and an OPEN PR's branch is refused with its URL;
  *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told
  *      to create one. A `prList` that throws aborts the step: creating without
  *      looking is how a resumed run opens a second PR for the same work.
@@ -111,24 +113,59 @@ async function assertTree(
 }
 
 /**
- * Push the head to the branch on origin. Never forced; a rejection is fatal.
- *
- * The ref name is checked with the driver's own `netRefProblem` BEFORE the
- * command line is built: `branch` is state-file data, and `assertSafeRef` only
- * says it is a legal git name — `+x`, `a:b` and `-f` all are, and git parses
- * them as a refspec, a force, or an option (see `netRefProblem`, #1095).
+ * What origin's branch points at, or `undefined` when absent. A read that
+ * cannot answer is infrastructure, never "absent".
+ */
+async function remoteBranchSha(
+  deps: PublishDeps,
+  wt: string,
+  branch: string,
+): Promise<string | undefined> {
+  const [ref, why] = [`refs/heads/${branch}`, `could not read origin's ${branch}`];
+  const out = await gitIn(deps, wt, ["ls-remote", "--heads", "origin", ref], why, 60_000);
+  if (out === "") return undefined;
+  // One line `<sha>\t<ref>`; a reply not naming the ref asked for is refused,
+  // not read as "absent".
+  const [sha = "", gotRef = ""] = out.split(/\s+/);
+  if (gotRef !== ref || !/^[0-9a-f]{40}$/.test(sha))
+    throw new PublishInfraError(`${why} (got ${out.slice(0, 120)})`);
+  return sha;
+}
+
+/**
+ * Porcelain push of the head to origin's branch, non-forced unless `replaceSha`
+ * — the stale sha this run read from origin — earns the lease (rule below). The
+ * ref name is checked with the driver's own `netRefProblem` BEFORE the command
+ * line: `branch` is state-file data, and `assertSafeRef` only says it is a legal
+ * git name — `+x`, `a:b` and `-f` all are, and git parses them as a refspec, a
+ * force, or an option (see `netRefProblem`, #1095).
  */
 async function pushHead(
   deps: PublishDeps,
   wt: string,
   head: string,
   branch: string,
+  replaceSha?: string,
 ): Promise<void> {
   const unsafe = netRefProblem(`refs/heads/${branch}`);
   if (unsafe !== undefined) throw new PublishInfraError(`refusing to push ${branch}: ${unsafe}`);
+  const [refspec, why] = [`${head}:refs/heads/${branch}`, `could not compare origin's ${branch}`];
+  // The force is for ONE shape: origin holds the previous run's head and this
+  // rerun's amend left exactly one commit between it and us — `rev-list --count
+  // ^HEAD <remote>` == 1. Only that forces. `--count` exits 0 with "0" for a sha
+  // this clone cannot resolve, so an unreadable foreign commit never buys a
+  // force, and the sha is not fetched to make it readable: that would pull a
+  // foreign commit's objects in to manufacture an answer git refused. And the
+  // lease checks the tip only, so a foreign commit under the observed sha
+  // satisfies it — binding it to that sha is what makes a moved ref fail.
+  const force =
+    replaceSha !== undefined &&
+    replaceSha !== head &&
+    (await gitIn(deps, wt, ["rev-list", "--count", "^HEAD", replaceSha], why, 30_000)) === "1";
+  const forceArgv = force ? [`--force-with-lease=refs/heads/${branch}:${replaceSha}`] : [];
   const ran = await deps
     .exec("git", {
-      argv: [...NO_HOOKS, "push", "--porcelain", "origin", `${head}:refs/heads/${branch}`],
+      argv: [...NO_HOOKS, "push", "--porcelain", ...forceArgv, "origin", refspec],
       cwd: wt,
       timeout: 120_000,
       maxBuffer: 4 * 1024 * 1024,
@@ -139,26 +176,26 @@ async function pushHead(
       const why = String(e?.stderr ?? e?.message ?? err).slice(0, 500);
       throw new PublishInfraError(`could not push ${branch}: ${why}`);
     });
-  // Porcelain form. git prints a `To <remote>` header, one `<from> <to> <flag>`
-  // line per ref, and a `Done` trailer — and for a brand-new ref it puts an
+  // Porcelain form: a `To <remote>` header, one `<from> <to> <flag>` line per
+  // ref, a `Done` trailer — and for a brand-new ref git puts an
   // ASTERISK in the from/to columns (`* <sha> refs/heads/x\t[new branch]`), so
-  // neither column is reliably a sha. The FLAG is git's own verdict: `[new
-  // branch]`, `[up to date]` and `[fast-forward]` are the successes and `[rejected]`
-  // is not — and the exit code stays 0 for the rejection too, which is exactly
-  // why the exit code cannot be the check.
+  // neither column is reliably a sha. The FLAG is git's own verdict, and even a
+  // rejection exits 0 — so these regexes are the check. A rewrite is the one
+  // flag porcelain prints UNBRACKETED (`(abc...def (forced update)`), so it
+  // cannot share the bracketed alternatives, and it counts ONLY for the push
+  // that asked for the lease: otherwise something else forced the ref (a
+  // `+refspec`, a hook) and this step may not rewrite outside the clone.
   const out = typeof ran?.stdout === "string" ? ran.stdout : "";
   if (/\[rejected\]/.test(out))
     throw new PublishInfraError(`the push of ${branch} was rejected: ${out.slice(0, 500)}`);
-  // `forced update` is deliberately NOT a success flag: this push never passes
-  // `--force`, so git cannot report one legitimately. A line saying the ref was
-  // rewritten is therefore evidence something else forced it (a `+refspec` or a
-  // hook), and history outside the clone is exactly what this step may not
-  // rewrite — so it refuses rather than accepting a flag it did not earn.
-  if (/\[forced update\]/.test(out))
+  if (/forced update/.test(out) && !force)
     throw new PublishInfraError(
       `the push of ${branch} reported a forced update, which this step never asks for: ${out.slice(0, 500)}`,
     );
-  if (!/\[(?:new branch|up to date|fast-forward)\]/.test(out))
+  const okFlags = force
+    ? /\[(?:new branch|up to date|fast-forward)\]|forced update/
+    : /\[(?:new branch|up to date|fast-forward)\]/;
+  if (!okFlags.test(out))
     throw new PublishInfraError(
       `the push of ${branch} reported no success flag: ${out.slice(0, 500)}`,
     );
@@ -248,6 +285,38 @@ function oneLineTitle(problem: string): string {
 }
 
 /**
+ * The sha of a stale `lean/` ref this run may replace, or `undefined` when the
+ * push stays non-forced: no ref on origin, a ref already at HEAD, or a ref an
+ * OPEN PR points at (refused with its URL, never clobbered). Whether the sha is
+ * ours to overwrite is `pushHead`'s call, not this one's.
+ */
+async function staleReplaceSha(
+  deps: PublishDeps,
+  repoRoot: string,
+  wt: string,
+  head: string,
+  branch: string,
+): Promise<string | undefined> {
+  const remote = await remoteBranchSha(deps, wt, branch);
+  if (remote === undefined || remote === head) return undefined;
+  // Not having looked is no licence to rewrite a branch somebody may be reading.
+  const f = await deps.forge(repoRoot);
+  if (f === undefined)
+    throw new PublishInfraError(`no forge adapter: cannot check ${branch} is in review`);
+  const open = await f.prList({ state: "open", sourceBranch: branch }).catch((err: unknown) => {
+    throw new PublishInfraError(
+      `could not list open PRs for ${branch}: ${(err as Error)?.message ?? String(err)}`,
+    );
+  });
+  const blocking = (open ?? []).find((pr) => pr.headRefName === branch && pr.state === "OPEN");
+  if (blocking !== undefined)
+    throw new PublishInfraError(
+      `an open PR already uses ${branch}: ${blocking.url ?? "(no URL returned)"}`,
+    );
+  return remote;
+}
+
+/**
  * The `publish` step. Returns `ok` with `prUrl`; THROWS on infrastructure.
  *
  * `deps.forge` is the seam a test drives: production resolves the real adapter
@@ -291,7 +360,7 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     // refuse — so it holds the PR as a draft exactly as a `manual` criterion does.
     spec.criteria.some((c) => c.verify === "command" && !v?.outcome?.commandCriteria?.[c.id]);
 
-  await pushHead(deps, wt, head, branch);
+  await pushHead(deps, wt, head, branch, await staleReplaceSha(deps, repoRoot, wt, head, branch));
   // From here on the head is OUTSIDE the clone. Every refusal below is a
   // handback over a pushed branch, so it says so — an error that reads only
   // "could not open the PR" hides the one fact the operator needs first.
