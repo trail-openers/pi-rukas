@@ -9,11 +9,15 @@
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import type { BudgetOpts } from "./step-budget.ts";
 
-/** The dispatch seam: one adversary, one result. `spawnSpecialist` in production. */
+/**
+ * The dispatch seam: one adversary, one result. `spawnSpecialist` in production.
+ * `BudgetOpts` carries the step's ceiling through to the child (#1883).
+ */
 export type ChallengeDispatch = (
   spec: DispatchSpec,
-  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] },
+  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
 ) => Promise<DispatchResult>;
 
 /** The git executor, in the driver's argv-form shape. */

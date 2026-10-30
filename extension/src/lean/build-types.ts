@@ -10,11 +10,18 @@
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import type { BudgetOpts } from "./step-budget.ts";
 
-/** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
+/**
+ * The dispatch seam: one child, one result. `spawnSpecialist` in production.
+ *
+ * `BudgetOpts` is what lets the step arm its ceiling on the actual child: the
+ * three budget levers are spawn options, so a seam that could not carry them
+ * could only enforce a budget by refusing to dispatch at all.
+ */
 export type BuildDispatch = (
   spec: DispatchSpec,
-  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] },
+  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
 ) => Promise<DispatchResult>;
 
 /** The git executor, in the driver's argv-form shape. */

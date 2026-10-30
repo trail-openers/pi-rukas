@@ -78,22 +78,57 @@ export function validPrUrl(url: unknown): string | undefined {
   return PR_URL.test(url) ? url : undefined;
 }
 
+/** The states whose dispatch may be stopped by its budget, hence own those fields. */
+const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
+
 /**
- * Which state is allowed to record which evidence-bearing field.
+ * Which state is allowed to record which evidence-bearing field. One table, and
+ * one `includes` reads it: an owner is a state or a SET of states, which is how
+ * the budget verdict's three fields are expressed — `limit`/`value`/`used`
+ * belong to whichever dispatching step's ceiling was crossed, so a list says it
+ * directly instead of naming a fake owner and excusing the real ones past it in
+ * a second check.
  *
  * `prUrl` is the address `handback` prints and `verifiedHead` is what the land
- * gate matches against the PR head, so a value that arrived on a step that
- * never produced it is not extra information — it is a forged record that reads
- * as evidence. `assertRun` refuses it at load with the step's own key in the
+ * gate matches against the PR head, so a value that arrived on a step that never
+ * produced it is not extra information — it is a forged record that reads as
+ * evidence. `assertRun` refuses it at load with the step's own key in the
  * message, so a hand-edited file naming a PR this run never opened (or claiming
  * a head this run never verified) is never driven.
  */
-const OWNER_OF_FIELD: Readonly<Record<string, LeanState>> = {
+const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
   prUrl: "publish",
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
+  // Owned by whichever dispatching step hit its ceiling: a handback inventing a
+  // ceiling the step never crossed would print it as the run's cause.
+  limit: BUDGET_STATES,
+  value: BUDGET_STATES,
+  used: BUDGET_STATES,
 };
+
+/** The ceilings a budget verdict may name; the only reader of the field's type. */
+const LIMITS = ["minutes", "turns", "tokens"] as const;
+
+/**
+ * Is this a count a ceiling can be compared against? A float, a negative or
+ * `Infinity` is not a number of turns or tokens anybody counted, and `1e400`
+ * arrives as `Infinity` from a JSON file — so the reader that validates and the
+ * builder that rebuilds ask the SAME question, or a field could pass one and be
+ * written back unexamined by the other.
+ */
+function isCount(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Is this value one of the ceilings {@link LIMITS} names? No cast involved. */
+function isBudgetLimit(value: unknown): value is LeanLimit {
+  return LIMITS.some((limit) => limit === value);
+}
+
+/** The ceiling kinds a budget verdict may carry — the form `Outcome.limit` uses. */
+type LeanLimit = (typeof LIMITS)[number];
 
 /** The one value a recorded `command` criterion may carry: it held. */
 const COMMAND_CRITERION_KIND = "passed";
@@ -146,8 +181,30 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   // a caller cannot dodge the ownership rule with a well-formed URL.
   if (state !== undefined) {
     for (const [field, owner] of Object.entries(OWNER_OF_FIELD)) {
-      if (oc[field] !== undefined && state !== owner)
-        return `outcome ${field} is only recorded by a ${owner} step, not a ${state} step`;
+      if (oc[field] === undefined) continue;
+      if (Array.isArray(owner) ? !owner.includes(state) : owner !== state)
+        return `outcome ${field} is only recorded by a ${String(owner)} step, not a ${state} step`;
+    }
+  }
+  // Checked as a set: a breach naming neither ceiling nor overshoot is a
+  // sentence nobody can act on. Same place as the ownership rule above, so a
+  // budget verdict is judged by one reader for both questions.
+  // The budget trio is only ever written by a budget verdict: `handback` renders
+  // `limit`/`value`/`used` into the operator's cause line, so the same trio on a
+  // step whose kind is not `budget` is a ceiling this run never crossed, printed
+  // as the run's cause. Refused whatever the step's state, so an `ok` step on a
+  // budget-owning state cannot carry them either.
+  if (oc.kind !== "budget") {
+    for (const key of ["limit", "value", "used"] as const) {
+      if (oc[key] !== undefined) return `outcome ${key} is only recorded by a budget verdict`;
+    }
+  }
+  if (oc.kind === "budget") {
+    if (!isBudgetLimit(oc.limit))
+      return 'outcome kind "budget" needs limit "minutes" | "turns" | "tokens"';
+    for (const key of ["value", "used"] as const) {
+      if (!isCount(oc[key]))
+        return `outcome ${key} must be a non-negative safe integer for a budget verdict`;
     }
   }
   // `next()` calls `.join` on this when it routes a refusal, so a string-valued
@@ -287,5 +344,8 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
+    ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
+    ...(isCount(oc.value) ? { value: oc.value as number } : {}),
+    ...(isCount(oc.used) ? { used: oc.used as number } : {}),
   };
 }

@@ -94,6 +94,31 @@ function terminalCause(steps: Step[]): string | undefined {
 }
 
 /**
+ * The newest budget breach the log records, and FIRST in {@link neededFromLog}:
+ * the breach is why the run stopped; an earlier red is only why it was trying.
+ *
+ * Rendered from the typed fields (`limit` / `value` / `used`), not from the
+ * step's `reason` prose: those three are what `assertRun` validated on load, so
+ * the sentence the operator reads is built from checked data rather than from
+ * free text whatever handler (or hand-edited file) wrote. A breach missing a
+ * field is not a breach this function will describe, and falls through to the
+ * next cause rather than printing a half-sentence. The `kind` test is what makes
+ * that field check meaningful rather than decorative, so it stays: it also means
+ * a caller that reads the log without going through `assertRun` still cannot get
+ * a half-sentence out of here.
+ */
+function budgetCause(steps: Step[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const oc = steps[i]?.outcome;
+    if (oc?.kind !== "budget") continue;
+    const { limit, value, used } = oc;
+    if (limit === undefined || typeof value !== "number" || typeof used !== "number") continue;
+    return `${steps[i]?.state ?? "the step"} stopped: ${limit} budget ${String(value)} exceeded (used ${String(used)})`;
+  }
+  return undefined;
+}
+
+/**
  * Why the run is ending, in the record's own words.
  *
  * The order is the order of USEFULNESS, not of recency: what the run's own gate
@@ -106,6 +131,7 @@ function terminalCause(steps: Step[]): string | undefined {
  */
 export function neededFromLog(steps: Step[]): string {
   const reason =
+    budgetCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
     // Nothing ever went red: the run ended for a reason only the log's own

@@ -43,7 +43,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
-import type { DispatchSpec } from "../types.ts";
+import { traceWarn } from "../trace.ts";
+import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
@@ -71,6 +72,14 @@ import {
   validateSubmitRows,
 } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
+import {
+  type BudgetArms,
+  type BudgetOpts,
+  armBudget,
+  budgetFor,
+  budgetVerdict,
+  readDispatched,
+} from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 
 export interface ChallengeDeps {
@@ -214,17 +223,24 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       "no test runner configured (.pi/work.json verify.test) for a spec with test criteria",
     );
 
-  // 3. The adversary.
-  const toolUses = await dispatchAdversary(deps.dispatch, {
+  // 3. The adversary, under the state's budget (#1883).
+  const budget = armBudget(budgetFor(config, "challenge"));
+  if (budget.warning !== undefined)
+    traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
+  const dispatched = await dispatchAdversary(deps.dispatch, {
     issue,
     spec,
     frozenPaths: Object.keys(frozen),
     wt,
     repoRoot,
     testRunner: runnerTemplate,
+    budget,
     ...(testLocation === undefined ? {} : { testLocation }),
     ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
   });
+  const read = readDispatched(dispatched);
+  if ("stop" in read) return budgetVerdict("challenge", read.stop);
+  const toolUses = read.result.toolUses ?? [];
 
   // 4-8. Validate, capture, reset to the HEAD, rewrite, prove red, commit.
   const pipeline = await runTestPipeline(
@@ -311,10 +327,20 @@ export { SpecifyInfraError };
 export function challengeDeps(headless: boolean): ChallengeDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
-    dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
+    dispatch: (
+      spec: DispatchSpec,
+      o: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+    ) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
+        // Forwarded so the ceiling binds the child.
+        childBoundMs: o.childBoundMs,
+        signal: o.signal,
+        onProgress: o.onProgress,
+        // The budget's kill goes through `killProcessTree`, which only reaches
+        // the child's tool tree when the child leads its own group.
+        processGroup: true,
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,

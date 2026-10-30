@@ -44,6 +44,7 @@
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
+import { traceWarn } from "../trace.ts";
 import type { DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
@@ -58,11 +59,18 @@ import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
-import type { PiSpec } from "./spec.ts";
-import { parsePiSpec } from "./spec.ts";
+import { type PiSpec, parsePiSpec } from "./spec.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
+import {
+  type BudgetArms,
+  type BudgetOpts,
+  armBudget,
+  budgetFor,
+  budgetVerdict,
+  readDispatched,
+} from "./step-budget.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
 const REENTRY_CLIP = 4096;
@@ -166,9 +174,12 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const attempt =
     ctx.steps.filter((s) => s.state === "build" && s.outcome !== undefined).length + 1;
 
-  // 4. The builder.
+  // 4. The builder, under the state's budget (#1883). A breach is a routed
+  //    verdict; the child's work goes back with the tree, nothing is committed.
   const reentry = reentryFromLog(ctx.steps);
-  await dispatchBuilder(deps.dispatch, {
+  const budget = armBudget(budgetFor(config, "build"));
+  if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
+  const built = await dispatchBuilder(deps.dispatch, {
     issue,
     spec,
     frozen,
@@ -176,8 +187,11 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     repoRoot,
     attempt,
     testRunner: config.verify.test,
+    budget,
     ...(reentry === undefined ? {} : { reentry }),
   });
+  const read = readDispatched(built);
+  if ("stop" in read) return budgetVerdict("build", read.stop);
 
   // 5 + 6. Capture, reset, rewrite, commit — or say there was nothing to commit.
   const report = await normaliseBuild({
@@ -209,10 +223,20 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
 export function buildDeps(headless: boolean): BuildDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
-    dispatch: (spec: DispatchSpec, o: { writeFence?: WriteFence; extraArgs?: readonly string[] }) =>
+    dispatch: (
+      spec: DispatchSpec,
+      o: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+    ) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
+        // Forwarded so the ceiling binds the child.
+        childBoundMs: o.childBoundMs,
+        signal: o.signal,
+        onProgress: o.onProgress,
+        // The budget's kill goes through `killProcessTree`, which only reaches
+        // the child's tool tree when the child leads its own group.
+        processGroup: true,
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,

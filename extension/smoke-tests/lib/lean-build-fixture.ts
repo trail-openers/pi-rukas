@@ -38,6 +38,7 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
+import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -279,6 +280,8 @@ export interface RunResult {
   specs: DispatchSpec[];
   worktree: string;
   headBefore: string;
+  /** The worktree's HEAD after the step, so a case can say nothing was committed. */
+  headAfter: string;
   /** The argv of every git call the step made, for the hook-guard canary. */
   gitArgvs: string[][];
 }
@@ -289,8 +292,6 @@ export interface RunOpts {
   child?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
   extraSteps?: Step[];
-  /** Override the config handed to the step. */
-  config?: WorkConfig;
   /** A build fixture whose frozen record is deliberately wrong (case (g)). */
   frozenSha?: string;
   /** The frozen test's committed bytes, when a case needs something other than TEST. */
@@ -303,6 +304,20 @@ export interface RunOpts {
   childOwnsBranch?: boolean;
   /** A config load that refuses (case o); the step must treat it as infrastructure. */
   loadConfigError?: string;
+  /**
+   * Drive the fake child's progress feed at the moment it is still working.
+   * A budget case calls `onProgress` the way `spawn.ts` does at every
+   * `message_end`, which is what makes a ceiling breach observable without a
+   * real child.
+   */
+  onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
+  /**
+   * THE config the step reads, verbatim. A case that wants to change one field
+   * of the runner config (a budget, a tier) spreads {@link configWithRunner}
+   * into this so the rest still comes from it: a budget case that dropped the
+   * runner template would fail for the wrong reason.
+   */
+  config?: WorkConfig;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -326,10 +341,11 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     if (cmd === "git" && o?.argv) gitArgvs.push(o.argv);
     return execp(cmd, { ...o, env: gitEnv() });
   };
-  const dispatch: BuildDeps["dispatch"] = async (spec: DispatchSpec) => {
+  const dispatch: BuildDeps["dispatch"] = async (spec: DispatchSpec, o) => {
     dispatched++;
     specs.push(spec);
     prompts.push(spec.prompt);
+    opts.onProgressTick?.(o.onProgress);
     opts.child?.(spec.cwd as string);
     const result: DispatchResult = {
       role: spec.role,
@@ -361,6 +377,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       specs,
       worktree: built.worktree,
       headBefore: built.headBefore,
+      headAfter: headOf(built.worktree),
       gitArgvs,
     };
   } catch (err) {
@@ -371,8 +388,18 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       specs,
       worktree: built.worktree,
       headBefore: built.headBefore,
+      headAfter: headOf(built.worktree),
       gitArgvs,
     };
+  }
+}
+
+/** The worktree's HEAD, or "" when the tree is gone. */
+function headOf(wt: string): string {
+  try {
+    return git(wt, "rev-parse", "HEAD");
+  } catch {
+    return "";
   }
 }
 

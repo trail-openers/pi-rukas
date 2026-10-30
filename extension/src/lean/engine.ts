@@ -18,6 +18,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import { trace } from "../trace.ts";
 import { acquireLock } from "./lock.ts";
 import { REPORT_FAILED_KIND, exitCodeFor, hasTransition, next } from "./machine.ts";
 import { verifiedPosition } from "./resume.ts";
@@ -482,7 +483,15 @@ async function driveLoop(
     // step with no outcome, which is exactly the "re-run this one" signal.
     const started = { ...run, steps: [...run.steps, { key, state, startedAt: now() }] };
     drive.save(started);
+    // One line when a step begins and one when it ends: a lean run drives a
+    // model per step and can sit inside one for twenty minutes, and without a
+    // line at each boundary an operator watching stderr cannot tell a step
+    // that is working from one that is hung. Stderr, gated like every other
+    // trace line, because stdout is the JSON stream in `-p` mode.
+    trace(`lean #${opts.issue} ${key} start`);
     run = await settle(drive, opts, started, key, state, now);
+    const verdict = newestDecided(run.steps, state)?.outcome?.kind ?? "undecided";
+    trace(`lean #${opts.issue} ${key} end: ${verdict}`);
   }
 
   return { run, code: run.result?.code ?? exitCodeFor(run.state), state: run.state };

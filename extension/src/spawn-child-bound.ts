@@ -77,6 +77,18 @@ export function childBoundGraceMs(): number {
 }
 
 /**
+ * Would this module's bound actually end a child? Exported because a caller that
+ * ARMED `childBoundMs` needs the same answer for a different reason: `lean`
+ * arms a minutes budget from `.pi/work.json` and must tell its operator the
+ * lever is inert rather than let a disabled runtime read as a bound that simply
+ * never fired. Read per call, like every other knob here, so a flip between
+ * spawns is respected.
+ */
+export function capsEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_DISPATCH_CAPS !== "0";
+}
+
+/**
  * When the wrap-up steer and the kill land, in ms from now. `killAtMs` is
  * absent when the cycle deadline comes first: the deadline backstop kills.
  * `stopInMs` is how long the child has between the steer and the kill.
@@ -175,7 +187,7 @@ export function armChildBound(o: {
       for (const t of timers) clearTimeout(t);
     },
   };
-  if (process.env.PI_ENSEMBLE_DISPATCH_CAPS === "0") return result;
+  if (!capsEnabled()) return result;
   const head = o.head ?? readHead;
   const headAtStart = o.commits ? head(o.cwd) : Promise.resolve(undefined);
   // #1847 — the ONE liveness signal, so this bound, the caps stack and the

@@ -177,6 +177,13 @@ export interface Outcome {
    * than something a later reader guesses out of a reason line.
    */
   prUrl?: string;
+  /**
+   * `budget` only (#1883): ceiling crossed, its value, what the child used. Data
+   * rather than reason prose, so "out of turns" reads apart from "out of minutes".
+   */
+  limit?: "minutes" | "turns" | "tokens";
+  value?: number;
+  used?: number;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {

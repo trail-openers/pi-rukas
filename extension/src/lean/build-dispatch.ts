@@ -15,6 +15,7 @@ import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
 import type { PiSpec } from "./spec.ts";
+import { type BudgetArms, type BudgetStop, budgetStop } from "./step-budget.ts";
 
 /** The prompt's inputs, gathered by `build.ts` from the step log and the forge. */
 export interface BuildDispatchOpts {
@@ -28,13 +29,18 @@ export interface BuildDispatchOpts {
   testRunner?: string;
   /** The verify-red / CI-red reason this round is a fix for, if any. */
   reentry?: string;
+  /** The step's budget arms, armed before the child and read back after. */
+  budget: BudgetArms;
 }
 
-/** Dispatch one developer, and turn a non-OK child into the throw it deserves. */
+/**
+ * Dispatch one developer. A budget breach comes back as {@link BudgetStop}, not a
+ * throw; any other dead child is still infrastructure.
+ */
 export async function dispatchBuilder(
   dispatch: BuildDispatch,
   opts: BuildDispatchOpts,
-): Promise<DispatchResult> {
+): Promise<DispatchResult | BudgetStop> {
   const prompt = buildPrompt({
     issue: opts.issue,
     spec: opts.spec,
@@ -55,8 +61,12 @@ export async function dispatchBuilder(
         // hygiene convention names, inside the run's own clone.
         scratch: path.join(path.dirname(opts.wt), "..", "tmp", `lean-${opts.issue}`),
       },
+      ...opts.budget.opts,
     },
   );
+  // Before the throw below: the step's own ceiling ending the child is a verdict.
+  const fired = opts.budget.fired(result);
+  if (fired !== undefined) return budgetStop(fired);
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??

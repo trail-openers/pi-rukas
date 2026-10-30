@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 19,
+  pairs === 22,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
@@ -481,7 +481,7 @@ assert(JSON.stringify(pristine) === snapshot, "next() does not mutate its run");
 
 // The typed kind union is inhabited: this compiles only if the registry types
 // match the strings the table routes on.
-const typed: OutcomeKind<"build">[] = ["ok", "exhausted"];
-assert(typed.length === 2, "the kind union for build is exactly its two kinds");
+const typed: OutcomeKind<"build">[] = ["ok", "exhausted", "budget"];
+assert(typed.length === 3, "the kind union for build is exactly its three kinds");
 
 process.exit(exit);

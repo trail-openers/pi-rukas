@@ -246,6 +246,40 @@ for (const [label, issue, step, expect] of [
     },
     /commandCriteria must hold at most 32/,
   ],
+  [
+    // The budget trio belongs to a `budget` verdict and nowhere else: `handback`
+    // renders these three into the operator's cause line, so a ceiling reported on
+    // an `ok` step is a run that stopped for a limit it never crossed. `build` is
+    // one of the states that legitimately owns them, so only the `kind` separates
+    // this record from a real verdict.
+    "limit/value/used on an ok step",
+    59,
+    {
+      key: "59:build:0",
+      state: "build",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "ok", limit: "turns", value: 1, used: 2 },
+    },
+    /outcome limit is only recorded by a budget verdict/,
+  ],
+  [
+    // `used` is a count the operator is told about, not a float: JSON turns
+    // `1e400` into `Infinity`, and an infinite overshoot printed as a budget
+    // verdict is a record that reads as evidence and compares against nothing.
+    // Distinct key from the case above: the refusal message quotes the step key,
+    // so two cases sharing one key cannot both assert on it.
+    "budget verdict with an infinite used",
+    60,
+    {
+      key: "60:build:0",
+      state: "build",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "budget", limit: "turns", value: 3, used: 1e400 },
+    },
+    /outcome used must be a non-negative safe integer/,
+  ],
 ] as const) {
   const { dir, cleanup } = tempDir();
   try {
