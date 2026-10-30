@@ -97,6 +97,17 @@ function terminalCause(steps: Step[]): string | undefined {
  * The newest budget breach the log records, and FIRST in {@link neededFromLog}:
  * the breach is why the run stopped; an earlier red is only why it was trying.
  *
+ * A breach only counts when NOTHING DECIDED is newer than it. A budget is a
+ * step's own ceiling, and one step's ceiling says nothing about the run: since
+ * #1883 a `challenge` breach that the table routes on is a CONTINUATION (the run
+ * goes to `verify`, which still runs every frozen test), so a budget step whose
+ * verdict the table carried past is not why the run ended. The one true test of
+ * that is position, not prose: the breach is the newest decided step in the log
+ * when the handback is written, so whatever the run then died on is newer than
+ * it and is the reason the operator came for. A `build` or `specify` breach that
+ * ends the run still satisfies the test — those steps route a breach straight to
+ * `handback`, so nothing is decided after them.
+ *
  * Rendered from the typed fields (`limit` / `value` / `used`), not from the
  * step's `reason` prose: those three are what `assertRun` validated on load, so
  * the sentence the operator reads is built from checked data rather than from
@@ -108,9 +119,17 @@ function terminalCause(steps: Step[]): string | undefined {
  * a half-sentence out of here.
  */
 function budgetCause(steps: Step[]): string | undefined {
+  let newestDecided = -1;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i]?.outcome !== undefined) {
+      newestDecided = i;
+      break;
+    }
+  }
   for (let i = steps.length - 1; i >= 0; i--) {
     const oc = steps[i]?.outcome;
     if (oc?.kind !== "budget") continue;
+    if (i !== newestDecided) continue;
     const { limit, value, used } = oc;
     if (limit === undefined || typeof value !== "number" || typeof used !== "number") continue;
     return `${steps[i]?.state ?? "the step"} stopped: ${limit} budget ${String(value)} exceeded (used ${String(used)})`;

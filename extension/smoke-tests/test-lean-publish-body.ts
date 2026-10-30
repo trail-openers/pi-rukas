@@ -25,8 +25,10 @@
  */
 
 import { publishBody } from "../src/lean/publish-body.ts";
+import { challengeBudgetFromLog } from "../src/lean/publish-body.ts";
 import type { PublishBodyInput } from "../src/lean/publish-body.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
+import type { Outcome } from "../src/lean/state.ts";
 import { fenceText, oneLine } from "../src/lean/text-fence.ts";
 import { ROOTS, runPublish } from "./lib/lean-publish-fixture.ts";
 
@@ -214,6 +216,102 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
   assert(
     !unfenced(lines(idBody), "### X|y") && idBody.includes("| AC ### X\\|y |"),
     "a criterion id is flattened like every other untrusted field, never printed raw",
+  );
+}
+
+// -------------------------------------- (f) a challenge budget stop is disclosed
+{
+  // The optional adversary round that ran out of its own ceiling no longer ends
+  // the run (#1883) — it goes on to verify and publishes. The PR is then the
+  // only place the reader learns the contract was never attacked, so the line is
+  // printed from the step record and not printed when there was no stop.
+  const stop = {
+    kind: "budget" as const,
+    limit: "minutes" as const,
+    value: 15,
+    used: 26,
+    reason: "challenge stopped: minutes budget 15 exceeded (used 26)",
+  };
+  const step = (n: number, outcome: Outcome) => ({
+    key: `434:challenge:${n}`,
+    state: "challenge" as const,
+    startedAt: n,
+    outcome,
+  });
+  const budgetStep = (n: number) => ({
+    key: `434:challenge:${n}`,
+    state: "challenge" as const,
+    startedAt: n,
+    outcome: stop,
+  });
+  const withStop = bodyOf({
+    spec: spec("test"),
+    verifyKind: "green",
+    challengeBudget: { limit: "minutes", value: 15 },
+  });
+  assert(
+    lines(withStop).some(
+      (l) => l === "- challenge stopped at its minutes budget (15); no extra tests were added",
+    ),
+    `a challenge budget stop gets its own Run line (${lines(withStop).find((l) => l.includes("challenge stopped"))})`,
+  );
+  const without = bodyOf({ spec: spec("test"), verifyKind: "green" });
+  assert(
+    !without.includes("challenge stopped"),
+    "a body with no challenge stop in the record prints no such line",
+  );
+  const zero = bodyOf({ spec: spec("test"), challengeBudget: { limit: "turns", value: 0 } });
+  assert(
+    zero.includes("- challenge stopped at its turns budget (0);"),
+    "the pair is printed as recorded, including a bound of 0",
+  );
+
+  // The reader is the only thing that decides the line, so it is pinned against a
+  // real log: a `challenge` step carrying the typed trio, and the same trio on a
+  // step that never dispatched (a forged record prints nothing).
+  assert(
+    challengeBudgetFromLog([step(0, stop)])?.value === 15,
+    "challengeBudgetFromLog reads the trio off a challenge budget step",
+  );
+  assert(
+    challengeBudgetFromLog([step(0, { kind: "none" })]) === undefined,
+    "a challenge that found nothing is not a budget stop",
+  );
+  assert(
+    challengeBudgetFromLog([step(0, { kind: "budget", value: 15, used: 26 })]) === undefined,
+    "a stop missing its ceiling prints nothing",
+  );
+  assert(
+    challengeBudgetFromLog([step(0, { kind: "budget", limit: "minutes", used: 26 })]) === undefined,
+    "and so one missing its value",
+  );
+
+  const run = await runPublish({
+    issue: 434,
+    verify: { kind: "green" },
+    // `noPush` keeps the fixture's own setup push back AND leaves the forge with
+    // no open PR for this head, so the step opens one and `prCreateCalls[0].body`
+    // is the body this run actually wrote. With the branch already on origin the
+    // step reuses the fixture's PR and sends no body at all — the assertion would
+    // then pass against an empty string.
+    noPush: true,
+    extraSteps: [budgetStep(0)],
+  });
+  assert(
+    run.threw === undefined,
+    `(f) the step ran (got ${run.threw?.message ?? "clean"})`,
+  );
+  assert(
+    run.body.includes("no extra tests were added") &&
+      run.body.includes("challenge stopped at its minutes budget (15)"),
+    `(f) the step's own body carries the line when the log holds the stop (${JSON.stringify(run.body.split("\n").slice(-4))})`,
+  );
+  const clean = await runPublish({ issue: 435, verify: { kind: "green" }, noPush: true });
+  assert(
+    clean.threw === undefined &&
+      clean.body.includes("## Run") &&
+      !clean.body.includes("challenge stopped"),
+    `(f) and no line when it does not (${clean.threw?.message ?? "clean"})`,
   );
 }
 

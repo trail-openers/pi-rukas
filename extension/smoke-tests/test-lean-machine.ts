@@ -288,6 +288,9 @@ assert(
   next(run("challenge"), { kind: "none" }).counters.challengeDone === true,
   "challenge sets challengeDone either way",
 );
+// The `challenge` + `budget` edge is a PAIR claim against `none` — same
+// destination, same counters — and is asserted across several counter
+// combinations in its own file, `test-lean-machine-challenge-budget.ts`.
 assert(next(run("verify"), { kind: "green" }).state === "publish", "verify green → publish");
 assert(
   next(run("publish"), { kind: "ok" }).state === "review",

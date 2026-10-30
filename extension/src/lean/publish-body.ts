@@ -19,6 +19,7 @@
  */
 
 import type { PiSpec } from "./spec.ts";
+import type { Step } from "./state.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 
 /** The marker that says which renderer produced this body, for a later reader. */
@@ -66,6 +67,15 @@ export interface PublishBodyInput {
    * difference between an issue to fix and a step to re-run.
    */
   commandNotRunnable?: Record<string, string>;
+  /**
+   * The challenge round's own ceiling, when the step log carries a `challenge`
+   * `budget` outcome. The optional adversary round that strengthens the frozen
+   * tests stopped at its limit and added nothing, and the run went on to verify
+   * anyway (#1883). The reader must be able to tell "the contract was never
+   * attacked" apart from "it was attacked and held", which is otherwise
+   * indistinguishable from a PR body.
+   */
+  challengeBudget?: { limit: "minutes" | "turns" | "tokens"; value: number };
   draft: boolean;
   version: string;
   models: Record<string, string>;
@@ -139,6 +149,28 @@ function modelsLine(models: Record<string, string>): string {
 }
 
 /**
+ * The challenge round's ceiling, read off the step log, or `undefined`.
+ *
+ * Lives beside the renderer rather than in `publish.ts` because it is the body's
+ * own claim: it decides whether the "challenge stopped at its … budget" line is
+ * printed, and the test drives the renderer. A `budget` outcome missing its typed
+ * `limit`/`value` — the fields `state.ts` validates on load — is no evidence the
+ * body may state, so it prints nothing rather than a half-sentence.
+ */
+export function challengeBudgetFromLog(
+  steps: Step[],
+): { limit: "minutes" | "turns" | "tokens"; value: number } | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    const oc = step?.outcome;
+    if (step?.state !== "challenge" || oc?.kind !== "budget") continue;
+    if (oc.limit === undefined || typeof oc.value !== "number") continue;
+    return { limit: oc.limit, value: oc.value };
+  }
+  return undefined;
+}
+
+/**
  * The full PR body.
  *
  * `verifyKind` is the newest DECIDED `verify` verdict and `verifiedHead` the
@@ -176,6 +208,15 @@ export function publishBody(o: PublishBodyInput): string {
   lines.push(`- pi-rukas ${oneLine(o.version, 40)}`);
   if (FULL_SHA.test(o.baseSha)) lines.push(`- base \`${o.baseSha}\``);
   lines.push(`- models: ${modelsLine(o.models)}`);
+  // One line, only when the log records the stop. The counter pair is the one
+  // the run carries into verify either way, so this is the only place the fact
+  // survives into the PR; `value`/`limit` are typed numbers/enums off the step
+  // record, hence printed directly rather than as prose.
+  if (o.challengeBudget !== undefined) {
+    lines.push(
+      `- challenge stopped at its ${o.challengeBudget.limit} budget (${String(o.challengeBudget.value)}); no extra tests were added`,
+    );
+  }
   if (o.draft)
     lines.push(
       "- draft: verification is not green, a criterion needs a human, or a command criterion was not runnable",

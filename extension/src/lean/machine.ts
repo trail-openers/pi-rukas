@@ -171,9 +171,13 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "challenge":
       switch (outcome.kind) {
         case BUDGET_KIND:
-          // The contract held is untouched, but the run has spent what the config
-          // allows and another round is not this step's to buy.
-          return to(run, "handback");
+          // The adversary ran out of budget mid-round, so it added nothing: the
+          // counters are exactly `none`'s. And like `none` it ends the optional
+          // round rather than the run — the contract the run holds was written
+          // and paid for by `specify`, and whether it HOLDS is `verify`'s
+          // question, which still runs every frozen test. A challenge that did
+          // not converge says nothing about the build, so it does not end it.
+          return to(run, "verify", { challengeDone: true });
         case "new-tests":
           // New tests mean new red. One more build, and only one: the flag is
           // charged HERE, on the branch that re-enters build, so the build it
