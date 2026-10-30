@@ -41,11 +41,14 @@ function assert(cond: boolean, msg: string): void {
 
 // ------------------------- (r) a frozen test that is not valid UTF-8
 //
-// 0xff and 0x80 are never valid UTF-8, and 0x00 makes git treat the file as
-// binary. Read as utf8 and written back, the blob changes, so the frozen hash
-// no longer matches the record and the step throws before or after the child.
+// 0xff and 0x80 are never valid UTF-8. Read as utf8 and written back, the blob
+// changes, so the frozen hash no longer matches the record and the step throws
+// before or after the child. No NUL: `submit_tests` refuses a NUL-bearing test
+// as not a text file (test-size.ts), and this case is about the build step's
+// own blob round trip, not that rule; 0xff/0x80 alone still make git treat the
+// file as binary for the purposes here (an invalid-UTF-8 blob).
 {
-  const bytes = Buffer.from([0xff, 0xfe, 0x00, 0x80]);
+  const bytes = Buffer.from([0xff, 0xfe, 0x41, 0x80]);
   const r = await runBuild({
     issue: 122,
     frozenText: bytes,

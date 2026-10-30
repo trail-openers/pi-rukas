@@ -99,6 +99,31 @@ export function frozenFromLog(steps: Step[]): Record<string, string> {
 }
 
 /**
+ * The criterion -> tests map, unioned over every step that recorded one.
+ *
+ * The run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION`
+ * bounds what a criterion ENDS UP WITH across the run, and only this map knows
+ * what an earlier round already froze for it. Same decided outcomes as
+ * `frozenFromLog`, so the two readers of the run's test record cannot disagree.
+ */
+export function testsFromLog(steps: Step[]): Record<string, string[]> {
+  const tests: Record<string, string[]> = {};
+  for (const step of steps) {
+    if (step.outcome === undefined) continue;
+    const decided =
+      (step.state === "specify" && step.outcome.kind === "ok") ||
+      (step.state === "challenge" && step.outcome.kind === "new-tests");
+    if (!decided) continue;
+    for (const [id, files] of Object.entries(step.outcome.tests ?? {})) {
+      const seen = new Set(tests[id] ?? []);
+      for (const f of files) seen.add(f);
+      tests[id] = [...seen];
+    }
+  }
+  return tests;
+}
+
+/**
  * Why this round exists, in the gate's own words: the newest decided
  * `verify:red` reason, or the newest `ci:red` one, clipped.
  */

@@ -59,6 +59,7 @@ import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import { testsFromLog } from "./build.ts";
 import { type TestLocation, testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
@@ -386,9 +387,15 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
           // refused against the run's BASE, which is the commit this step's
           // whole claim is made on.
           existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
-          // The size/quota rules read the file the SAME way the capture does;
-          // `wt` is the tree these paths are relative to.
+          // The size/quota rules judge the file with the same code the capture
+          // reads it with; `wt` is the tree these paths are relative to.
           wt,
+          // The quota is a RUN-level bound. On a first `specify` the union is
+          // empty and this changes nothing; on a re-run of the step (a resumed
+          // or re-entered cycle whose log already carries a decided `specify:ok`)
+          // it is what stops a second round refilling every criterion to two
+          // files. Read from the same log `challenge` seeds its own quota with.
+          frozenByCriterion: testsFromLog(ctx.steps),
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       prepare: () =>

@@ -10,7 +10,8 @@
  *      `assertSpecifyWorktreeOwned`, which refuses a path at that location
  *      that the step does not own. A directory someone else made is not the
  *      step's to `reset --hard`.
- *   2. `validateSubmitRows` (in submit-tests-cap.ts, re-exported here) — the
+ *   2. `validateSubmitRows` (in submit-tests-cap.ts, re-exported here, with the
+ *      size rules it applies in test-size.ts) — the
  *      boundary a `submit_tests` row has to pass before the step believes a file
  *      is a test the child wrote (see submit-tests-extract.ts for the reading
  *      half), including the filesystem check that a kept path is an ordinary
@@ -42,6 +43,11 @@ export {
   NEWNESS_REASON,
   validateSubmitRows,
 } from "./submit-tests-cap.ts";
+export {
+  MAX_TEST_FILES_PER_CRITERION,
+  MAX_TEST_LINES,
+  countTestLines,
+} from "./test-size.ts";
 
 /** The worktree directory name for one issue's specify step. */
 export function specifyWorktreeName(issue: number): string {

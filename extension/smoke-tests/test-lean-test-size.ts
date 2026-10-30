@@ -25,7 +25,7 @@ import {
   MAX_TEST_FILES_PER_CRITERION,
   MAX_TEST_LINES,
   countTestLines,
-} from "../src/lean/submit-tests-cap.ts";
+} from "../src/lean/test-size.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -92,8 +92,7 @@ const SPEC: PiSpec = {
     );
     const long = sized.dropped.find((d) => d.path === overLimit);
     assert(
-      long !== undefined &&
-        long.reason.includes(`${overLimit} has ${MAX_TEST_LINES + 1} lines`) &&
+      long?.reason.includes(`${overLimit} has ${MAX_TEST_LINES + 1} lines`) === true &&
         long.reason.includes(`an acceptance test is at most ${MAX_TEST_LINES}`) &&
         long.reason.includes("reuse the project's existing test helpers"),
       `a ${MAX_TEST_LINES + 1}-line file is dropped with a reason the child can act on (got ${long?.reason})`,
@@ -115,11 +114,9 @@ const SPEC: PiSpec = {
     );
     const quota = sized.dropped.find((d) => d.path === three);
     assert(
-      quota !== undefined &&
-        quota.reason.includes(
-          `criterion AC1 already has ${MAX_TEST_FILES_PER_CRITERION} test files`,
-        ) &&
-        quota.reason.includes("one focused test per criterion is the norm"),
+      quota?.reason.includes(
+        `criterion AC1 already has ${MAX_TEST_FILES_PER_CRITERION} test files`,
+      ) === true && quota.reason.includes("one focused test per criterion is the norm"),
       `the third file for one criterion is dropped with the quota reason, whichever row it arrived in (got ${quota?.reason})`,
     );
     assert(
@@ -181,9 +178,183 @@ const SPEC: PiSpec = {
       ),
       `the size rule is judged before the quota, so the reason is the actionable one (got ${JSON.stringify(order.dropped.map((d) => d.reason))})`,
     );
+
+    // --- The count itself, on bytes rather than through a file ----
+    // Every separator a child's editor can write must end exactly one line, or
+    // "choose a different separator" is an unbounded getout of the size rule.
+    const lines = (n: number, sep: string): Buffer =>
+      Buffer.from(Array.from({ length: n }, (_, i) => `// l${i}`).join(sep));
+    assert(
+      countTestLines(lines(MAX_TEST_LINES + 1, "\r")) === MAX_TEST_LINES + 1,
+      `a lone-CR file of ${MAX_TEST_LINES + 1} lines counts as ${MAX_TEST_LINES + 1}, so the separator is not a getout (got ${countTestLines(lines(MAX_TEST_LINES + 1, "\r"))})`,
+    );
+    assert(
+      countTestLines(lines(MAX_TEST_LINES, "\r\n")) === MAX_TEST_LINES,
+      `CRLF counts one break per pair, not two (got ${countTestLines(lines(MAX_TEST_LINES, "\r\n"))})`,
+    );
+    // Mixed separators: four breaks (CRLF, CR, LF, LF) and an unterminated `d`,
+    // which is a line the child wrote — 5 lines, each break counted exactly once.
+    assert(
+      countTestLines(Buffer.from("a\r\nb\rc\n\nd")) === 5,
+      `a file mixing CRLF, lone CR and LF counts each break once (got ${countTestLines(Buffer.from("a\r\nb\rc\n\nd"))})`,
+    );
+    assert(
+      countTestLines(Buffer.from("")) === 0,
+      `an empty file counts 0 lines — the count does not invent a line (got ${countTestLines(Buffer.from(""))})`,
+    );
+    let nulThrew = false;
+    try {
+      countTestLines(Buffer.from([0x61, 0x00, 0x62]));
+    } catch {
+      nulThrew = true;
+    }
+    assert(nulThrew, "a NUL byte refuses the count rather than guessing at it");
+    // The same three cases where the rule actually bites: at the boundary, on
+    // real files under a real `wt`.
+    const crLong = "tests/AC1-cr-long.test.ts";
+    writeFileSync(`${wt}/${crLong}`, lines(MAX_TEST_LINES + 1, "\r"));
+    const crFit = "tests/AC1-cr-fit.test.ts";
+    writeFileSync(`${wt}/${crFit}`, lines(MAX_TEST_LINES, "\r"));
+    const nul = "tests/AC1-nul.test.ts";
+    writeFileSync(`${wt}/${nul}`, Buffer.from("// a test\n\u0000\n// more\n"));
+    const separators = await validateSubmitRows(
+      [{ criterionId: "AC1", testFiles: [crLong, crFit, nul] }],
+      { spec: SPEC, exists: () => true, existsAtBase: async () => false, wt },
+    );
+    const crLongDrop = separators.dropped.find((d) => d.path === crLong);
+    assert(
+      crLongDrop?.reason.includes(`${crLong} has ${MAX_TEST_LINES + 1} lines`) === true,
+      `a ${MAX_TEST_LINES + 1}-line CR-separated file is refused at the boundary (got ${crLongDrop?.reason})`,
+    );
+    assert(
+      separators.kept.flatMap((r) => r.testFiles).includes(crFit),
+      `a ${MAX_TEST_LINES}-line CR-separated file is kept — the honest count refuses excess, not the bound (kept ${JSON.stringify(separators.kept)})`,
+    );
+    const nulDrop = separators.dropped.find((d) => d.path === nul);
+    assert(
+      nulDrop?.reason ===
+        `${nul} is not a text file (NUL byte); an acceptance test is a source file`,
+      `a NUL-bearing file is refused with the not-a-text reason naming the file — a UTF-16 test cannot read as 1 line and ship (got ${nulDrop?.reason})`,
+    );
+
+    // --- The quota is a RUN-level bound, not a per-call one ----
+    // Three separate calls of two files each for AC1: per call every one of them
+    // is legal, and the trial's four-file criterion is exactly what that shape
+    // produced. With the run's frozen record seeded between the calls, AC1 keeps
+    // `MAX_TEST_FILES_PER_CRITERION` files in TOTAL and the rest are refused.
+    const run: Record<string, string[]> = {};
+    const seed = (rows: { criterionId: string; testFiles: string[] }[]): void => {
+      for (const r of rows) {
+        const seen = new Set(run[r.criterionId] ?? []);
+        for (const f of r.testFiles) seen.add(f);
+        run[r.criterionId] = [...seen];
+      }
+    };
+    const runFiles = [
+      write("AC1-r1a.test.ts", 20),
+      write("AC1-r1b.test.ts", 20),
+      write("AC1-r2a.test.ts", 20),
+      write("AC1-r2b.test.ts", 20),
+      write("AC1-r3a.test.ts", 20),
+      write("AC1-r3b.test.ts", 20),
+    ];
+    const keptAcrossRun: string[] = [];
+    const droppedNotes = new Map<string, string>();
+    for (const pair of [runFiles.slice(0, 2), runFiles.slice(2, 4), runFiles.slice(4, 6)]) {
+      const call = await validateSubmitRows([{ criterionId: "AC1", testFiles: pair }], {
+        spec: SPEC,
+        exists: () => true,
+        existsAtBase: async () => false,
+        wt,
+        frozenByCriterion: run,
+      });
+      for (const row of call.kept) {
+        keptAcrossRun.push(...row.testFiles);
+        seed([{ criterionId: row.criterionId, testFiles: row.testFiles }]);
+      }
+      for (const d of call.dropped) if (d.path !== undefined) droppedNotes.set(d.path, d.reason);
+    }
+    assert(
+      keptAcrossRun.length === MAX_TEST_FILES_PER_CRITERION &&
+        keptAcrossRun.every((f) => runFiles.includes(f)) &&
+        droppedNotes.size === runFiles.length - MAX_TEST_FILES_PER_CRITERION,
+      `three separate calls of ${MAX_TEST_FILES_PER_CRITERION} files each for AC1 keep ${MAX_TEST_FILES_PER_CRITERION} IN TOTAL across the run, not per call (kept ${JSON.stringify(keptAcrossRun)}, dropped ${JSON.stringify([...droppedNotes.keys()])})`,
+    );
+    assert(
+      keptAcrossRun.length === MAX_TEST_FILES_PER_CRITERION &&
+        runFiles
+          .filter((f) => !keptAcrossRun.includes(f))
+          .every((f) => (droppedNotes.get(f) ?? "").includes("already has")),
+      "every file the run did not keep was REFUSED at the boundary, not silently never submitted — the surplus leaves a drop note the operator reads",
+    );
+    // A challenge round for a criterion the record says is already full keeps
+    // NOTHING and refuses every file with the quota reason — the shape a second
+    // round arrives in.
+    const fullRound = await validateSubmitRows(
+      [
+        {
+          criterionId: "AC1",
+          testFiles: [write("AC1-r4a.test.ts", 20), write("AC1-r4b.test.ts", 20)],
+        },
+      ],
+      {
+        spec: SPEC,
+        exists: () => true,
+        existsAtBase: async () => false,
+        wt,
+        frozenByCriterion: { AC1: ["tests/AC1-frozen-a.test.ts", "tests/AC1-frozen-b.test.ts"] },
+      },
+    );
+    assert(
+      fullRound.kept.length === 0 &&
+        fullRound.dropped.length === 2 &&
+        fullRound.dropped.every(
+          (d) =>
+            d.criterionId === "AC1" &&
+            d.reason ===
+              `criterion AC1 already has ${MAX_TEST_FILES_PER_CRITERION} test files; one focused test per criterion is the norm`,
+        ),
+      `a round for a criterion that already has ${MAX_TEST_FILES_PER_CRITERION} frozen files keeps 0 and refuses the rest with the existing quota reason (kept ${JSON.stringify(fullRound.kept)}, dropped ${JSON.stringify(fullRound.dropped.map((d) => d.reason))})`,
+    );
+    // One frozen file leaves room for one, not two: the seed is a starting
+    // count, not a switch.
+    const halfFull = await validateSubmitRows(
+      [
+        {
+          criterionId: "AC1",
+          testFiles: [write("AC1-r5a.test.ts", 20), write("AC1-r5b.test.ts", 20)],
+        },
+      ],
+      {
+        spec: SPEC,
+        exists: () => true,
+        existsAtBase: async () => false,
+        wt,
+        frozenByCriterion: { AC1: ["tests/AC1-frozen-a.test.ts"] },
+      },
+    );
+    assert(
+      halfFull.kept.length === 1 &&
+        halfFull.kept[0]?.testFiles.length === 1 &&
+        halfFull.dropped.length === 1 &&
+        (halfFull.dropped[0]?.reason.includes("already has") ?? false),
+      `one frozen file leaves room for exactly one more — the seed counts, it does not merely flag (kept ${JSON.stringify(halfFull.kept)}, dropped ${JSON.stringify(halfFull.dropped.map((d) => d.reason))})`,
+    );
   } finally {
     rmSync(wt, { recursive: true, force: true });
   }
+}
+
+// The facade test: `specify-tree.ts` is what both steps import, so if it ever
+// re-exported a second implementation the two callers would be running
+// different boundaries while the tests here judged one of them.
+{
+  const viaFacade = await import("../src/lean/specify-tree.ts");
+  const direct = await import("../src/lean/submit-tests-cap.ts");
+  assert(
+    viaFacade.validateSubmitRows === direct.validateSubmitRows,
+    "`validateSubmitRows` reached through the `specify-tree.ts` facade IS the one in `submit-tests-cap.ts` — one boundary, not two",
+  );
 }
 
 process.exit(exit);

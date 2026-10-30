@@ -10,10 +10,13 @@
  * come from an untrusted child. `specify-tree.ts` keeps the worktree primitives
  * and re-exports `validateSubmitRows` from here, so the callers never moved.
  *
- * The two size rules (`MAX_TEST_LINES`, `MAX_TEST_FILES_PER_CRITERION`) judge
- * the CHILDREN'S work rather than the call's cost: what a run freezes is a
- * property of the tests, and a thousand lines of them is the failure this
- * module exists to refuse.
+ * The two size rules (`MAX_TEST_LINES`, `MAX_TEST_FILES_PER_CRITERION`, with
+ * `countTestLines` and the three refusal sentences in `test-size.ts`) judge the
+ * CHILDREN'S work rather than the call's cost: what a run freezes is a property
+ * of the tests, and a thousand lines of them is the failure the boundary exists
+ * to refuse. They are applied here, where a submitted path is finally a file,
+ * and defined there, where the prompt that quotes the numbers and the tests
+ * that pin them have one place to import from.
  */
 
 import path from "node:path";
@@ -22,6 +25,14 @@ import type { PiSpec } from "./spec.ts";
 import { readOneDescriptor } from "./specify-capture.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
+import {
+  MAX_TEST_FILES_PER_CRITERION,
+  MAX_TEST_LINES,
+  countTestLines,
+  testFileQuotaProblem,
+  testNotTextProblem,
+  testSizeProblem,
+} from "./test-size.ts";
 
 /**
  * How many test files one submitted row may name.
@@ -89,59 +100,6 @@ export function baseProbe(existsAtBase: ((rel: string) => Promise<boolean>) | un
   };
 }
 
-/**
- * How many lines one kept acceptance test may have.
- *
- * A real trial froze ~1,000 lines of tests for a 15-line change, in four files
- * of ~100 lines each that re-implemented the same harness. The tests were
- * correct and the PR was unmergeable, which is what a deterministic rule is
- * for: `TEST_SCOPE_CONTRACT` already asks for the smallest test that proves the
- * criterion, and a prompt that is obeyed in spirit and not in size still ships
- * a thousand lines. 120 is the size of a focused test of one criterion written
- * against the project's own helpers; a file past it is testing the code around
- * the criterion.
- */
-export const MAX_TEST_LINES = 120;
-
-/**
- * How many test files ONE criterion may end up with across a call.
- *
- * `MAX_TEST_FILES_PER_ROW` bounds one row; a child that spreads the same work
- * over several `submit_tests` calls for one criterion was bounded by nothing.
- * The rows are judged together here, which is the number that matters: a
- * criterion has one criterion, and one focused test per criterion is the norm.
- */
-export const MAX_TEST_FILES_PER_CRITERION = 2;
-
-/**
- * Lines in a captured test file — the count the size rule judges.
- *
- * `bytes.length` is not it: a 120-line file with no trailing newline has 119
- * `\n`, and the child would be refused for a byte it did not write. So a
- * non-empty final line counts as a line, and an empty one does not.
- */
-export function countTestLines(bytes: Buffer): number {
-  let lines = 0;
-  let trailing = false;
-  for (const b of bytes) {
-    if (b === 10) {
-      lines++;
-      trailing = true;
-    } else trailing = false;
-  }
-  return trailing ? lines : lines + 1;
-}
-
-/** Why an over-long test file is not a kept test — the sentence the boundary states. */
-export function testSizeProblem(rel: string, lines: number): string {
-  return `${rel} has ${lines} lines; an acceptance test is at most ${MAX_TEST_LINES} — test the criterion, not the code around it, and reuse the project's existing test helpers`;
-}
-
-/** Why the third (and later) file for one criterion is not kept. */
-export function testFileQuotaProblem(criterionId: string): string {
-  return `criterion ${criterionId} already has ${MAX_TEST_FILES_PER_CRITERION} test files; one focused test per criterion is the norm`;
-}
-
 export interface DroppedRow {
   criterionId: string;
   path?: string;
@@ -176,18 +134,25 @@ export const NEWNESS_REASON =
  *   7. size — with `wt` the boundary reads the file through the capture's own
  *      `readOneDescriptor` and counts lines (`MAX_TEST_LINES`); a file too long
  *      to be one focused test of one criterion is dropped here, before the step
- *      captures and commits it;
+ *      captures and commits it. A NUL byte is dropped here too, as not a text
+ *      file: the count cannot be honest about it, so the file is refused rather
+ *      than guessed at (`countTestLines` throws, the boundary drops);
  *   8. the per-criterion file quota (`MAX_TEST_FILES_PER_CRITERION`) — the
  *      first files kept for the criterion fill it, so the count is across the
- *      whole call, not per row. It is judged together with the size rule, on
- *      the content the size rule read.
+ *      whole call, not per row, and across the whole RUN once `frozenByCriterion`
+ *      seeds it. It is judged together with the size rule, on the content the
+ *      size rule read.
  *
  * A caller that passes no `wt` cannot be size-judged, and the quota rule does
  * not silently fire on files it has not seen: with no tree both rules are inert
  * and everything else is unchanged. The two steps do pass it, so the boundary
- * and the capture read a kept file through the SAME code and nobody opens it
- * twice; it costs one extra read per KEPT file, and the quota keeps that number
- * bounded.
+ * and the capture judge a kept file through the SAME code — `readOneDescriptor`,
+ * the capture's own single-descriptor read — but the read happens twice, once
+ * per consumer: a second open is the honest cost of deciding before a byte is
+ * captured, and the capture's own `fstat` checks (one inode, one hard link, and
+ * the same `ino`/`size`/`mtimeMs` before and after its read) are what catch a
+ * file swapped in the window between the two. It costs one extra read per KEPT
+ * file, and the quota keeps that number bounded.
  *
  * What survives is a criterion -> kept-paths map the step can capture, prove
  * and commit.
@@ -236,16 +201,43 @@ export async function validateSubmitRows(
     /**
      * The worktree whose files the size rule counts lines in. With it the
      * boundary reads a candidate through `readOneDescriptor` — the capture's own
-     * single-descriptor read, so the boundary and the capture read a kept file
-     * through the SAME code and no second read path is opened. Omit it (a unit
+     * single-descriptor read, so the boundary and the capture judge a kept file
+     * through the SAME code; the read itself happens once per consumer, and the
+     * capture's own `fstat` checks catch a file swapped in that window. Omit it
+     * (a unit
      * test with no tree) and both size rules are inert: a rule that cannot see
      * the bytes never fires, and every other rule is unchanged.
      */
     wt?: string;
+    /**
+     * What the RUN has already frozen per criterion, from the step log's
+     * `tests` maps (`frozenFromLog`'s partners in `build.ts` / `publish.ts`).
+     *
+     * The quota is a bound on what a criterion ENDS UP WITH across the run, and
+     * a fresh call sees none of what an earlier round committed, so without this
+     * seed the cap is a per-call number that a second round silently doubles.
+     * Each criterion starts its count at the number of files already recorded
+     * for it; a criterion that is already full refuses every submission with the
+     * existing quota reason. Paths here are counted, not re-checked: they come
+     * from the run's own record, already captured, proved and committed.
+     *
+     * Omit it (a unit test, or a first `specify` — nothing is frozen yet) and
+     * the count starts at zero, exactly as before.
+     */
+    frozenByCriterion?: Record<string, readonly string[]>;
   },
 ): Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }> {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
   const keptByCriterion = new Map<string, string[]>();
+  // The quota is a RUN-level bound, so a criterion's count starts from what the
+  // run already froze rather than from zero. `Set` so a path the child resubmits
+  // against its own frozen copy is counted once, and `files.length` stays the
+  // number this call keeps while `countAgainstQuota` is the number that fills.
+  const frozenCount = new Map<string, Set<string>>();
+  for (const [id, files] of Object.entries(opts.frozenByCriterion ?? {})) {
+    if (files.length === 0) continue;
+    frozenCount.set(id, new Set(files));
+  }
   // One git read per distinct path per call, and the call is bounded by
   // `MAX_TEST_FILES_PER_CALL` above.
   const base = baseProbe(opts.existsAtBase);
@@ -374,6 +366,9 @@ export async function validateSubmitRows(
           const read = readOneDescriptor(path.join(opts.wt, rel));
           bytes = "why" in read ? undefined : read.bytes;
         } catch (err) {
+          // `countTestLines` refuses a NUL-bearing file by throwing, and this is
+          // the only place its bytes come from: the message already says why, so
+          // it is the reason the operator reads.
           dropped.push({
             criterionId: row.criterionId,
             path: rel,
@@ -389,7 +384,21 @@ export async function validateSubmitRows(
           });
           continue;
         }
-        const lines = countTestLines(bytes);
+        let lines: number;
+        try {
+          lines = countTestLines(bytes);
+        } catch (err) {
+          // A NUL byte: not a text file, so no honest count and no kept test.
+          // `testNotTextProblem` is the same sentence from the same module, so
+          // the reason an operator reads and the one `countTestLines` throws are
+          // one string rather than two that can drift.
+          dropped.push({
+            criterionId: row.criterionId,
+            path: rel,
+            reason: testNotTextProblem(rel),
+          });
+          continue;
+        }
         if (lines > MAX_TEST_LINES) {
           dropped.push({
             criterionId: row.criterionId,
@@ -399,8 +408,13 @@ export async function validateSubmitRows(
           continue;
         }
         // The quota is judged on what this CALL has already kept for the
-        // criterion, so three rows of one file each still stop at two.
-        if (files.length >= MAX_TEST_FILES_PER_CRITERION) {
+        // criterion PLUS what the run already froze for it (`frozenByCriterion`),
+        // so three rows of one file each still stop at two, and a criterion that
+        // arrived full from the record keeps nothing new.
+        if (
+          files.length + (frozenCount.get(row.criterionId)?.size ?? 0) >=
+          MAX_TEST_FILES_PER_CRITERION
+        ) {
           dropped.push({
             criterionId: row.criterionId,
             path: rel,
@@ -410,6 +424,7 @@ export async function validateSubmitRows(
         }
       }
       files.push(rel);
+      frozenCount.get(row.criterionId)?.add(rel);
     }
     if (files.length > 0) keptByCriterion.set(row.criterionId, files);
   }

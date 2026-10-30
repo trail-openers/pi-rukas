@@ -50,7 +50,7 @@ import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact } from "./build-normalise.ts";
-import { frozenFromLog } from "./build.ts";
+import { frozenFromLog, testsFromLog } from "./build.ts";
 import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts";
 import type { ChallengeDispatch, ChallengeExec } from "./challenge-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
@@ -188,6 +188,12 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   //    union of every `specify:ok` and `challenge:new-tests` the log carries, so
   //    a resumed run attacks the same tests a live one was shown.
   const frozen = frozenFromLog(ctx.steps);
+  // The same record, read per criterion: the file quota is a RUN-level bound, so
+  // what an earlier round already froze for a criterion counts against it and a
+  // second challenge round cannot double the cap by being a second call. A
+  // resumed run seeds from what a crashed one froze, exactly as `frozen` above
+  // does. Union of `specify:ok` and `challenge:new-tests`, same log reader.
+  const frozenByCriterion = testsFromLog(ctx.steps);
   const branch = specifyBranch(ctx.run.branch, issue);
   const wt = specifyWorktreePath(repoRoot, issue);
   const base = ctx.run.baseSha;
@@ -275,8 +281,11 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
           // head cannot answer this question.
           existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
           // Same size/quota rules as `specify`: an edge case of 1,000 lines is
-          // not an edge case, and one criterion does not get four files.
+          // not an edge case, and one criterion does not get four files ACROSS
+          // THE RUN — hence the seed, so files the run already froze fill the
+          // quota rather than a fresh call of two more per round.
           wt,
+          frozenByCriterion,
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
       // Provisioning is `challenge`'s own call, and the `prepare` the pipeline

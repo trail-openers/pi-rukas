@@ -29,8 +29,9 @@
  *       edits fence, the `submit_tests` protocol, the frozen-list fence).
  */
 
-import { challengePrompt } from "../src/lean/challenge-prompt.ts";
 import { BUILD_SCOPE_CONTRACT } from "../src/lean/build-prompt.ts";
+import { challengePrompt } from "../src/lean/challenge-prompt.ts";
+import type { PiSpec } from "../src/lean/spec.ts";
 import {
   RED_PROOF_CONTRACT,
   TEST_SCOPE_CONTRACT,
@@ -38,11 +39,7 @@ import {
   testCriteria,
 } from "../src/lean/specify-prompt.ts";
 import { runTestFile } from "../src/lean/specify-proof.ts";
-import {
-  MAX_TEST_FILES_PER_CRITERION,
-  MAX_TEST_LINES,
-} from "../src/lean/submit-tests-cap.ts";
-import type { PiSpec } from "../src/lean/spec.ts";
+import { MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "../src/lean/test-size.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -162,8 +159,7 @@ for (const [name, prompt] of [
   );
 }
 assert(
-  BUILD_SCOPE_CONTRACT.includes("full test suite") &&
-    BUILD_SCOPE_CONTRACT.includes("cannot occur"),
+  BUILD_SCOPE_CONTRACT.includes("full test suite") && BUILD_SCOPE_CONTRACT.includes("cannot occur"),
   "the builder's contract names both first-trial failures: the full suite and guards for impossible states",
 );
 

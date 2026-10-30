@@ -198,11 +198,14 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
   // remaining two are refused at the boundary like the absent ones below.
   const rowsFor = (rels: string[]): unknown[] => {
     const rows: unknown[] = [];
-    rels.slice(0, 2).forEach((rel) => rows.push(submit("AC1", [rel])));
-    rels.slice(2, 4).forEach((rel) => rows.push(submit("AC2", [rel])));
-    // Every remaining green name is past its criterion's quota: six refusals
-    // that belong to the refused-row family, not the runner's.
-    for (let i = 4; i < rels.length; i += 5) rows.push(submit("AC1", rels.slice(i, i + 5)));
+    // ONE for AC1, TWO for AC2: AC1's criterion already holds one of its two
+    // run-level slots (the `tests/AC1-retry.test.sh` the run's `specify:ok`
+    // recorded), so only one AC1 file fits; AC2 has nothing recorded and takes
+    // two. Three files reach the runner, seven names are refused, and the ten
+    // absent paths fill the rest of the refused family.
+    rows.push(submit("AC1", [rels[0] as string]));
+    rels.slice(1, 3).forEach((rel) => rows.push(submit("AC2", [rel])));
+    for (let i = 3; i < rels.length; i += 5) rows.push(submit("AC1", rels.slice(i, i + 5)));
     return rows;
   };
   // Ten REFUSED rows sit beside them. The old case reached its fifteen refusals
@@ -211,7 +214,7 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
   // are built the way a real over-submission builds them: four files that reach
   // the runner (two per criterion — the quota's ceiling), six quota refusals,
   // and ten absent paths. Both note families are capped independently, and each
-  // clips at eight with its own `(+2 more)`.
+  // clips at eight with its own `(+8 more)`.
   const TEN_ABSENT = Array.from(
     { length: 10 },
     (_unused, i) => `tests/AC1-absent-${i + 1}.test.sh`,
@@ -243,6 +246,8 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
   // built from quota refusals plus absent paths, so the counts below are the
   // fixture's actual shape (2 + 2 kept-and-run, 6 quota + 10 absent refused), and
   // each family is checked to QUOTE at most eight and COUNT the rest.
+  // (the counts are the fixture's shape: 3 files reached the runner, 7 quota
+  // refusals + 10 absent paths were refused at the boundary)
   // A list's quoted count is its own total minus its `(+N more)` — the only
   // reliable reading, because a reason's own text can contain the `; ` the list
   // joins with (the newness reason does), so splitting would over-count.
@@ -253,12 +258,12 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     return total - more;
   };
   assert(
-    reason.includes("dropped 4") && reason.includes("dropped 16 (+8 more)"),
+    reason.includes("dropped 3") && reason.includes("dropped 17 (+9 more)"),
     `(g) both note families are present and the longer one is COUNTED, not quoted (got ${reason})`,
   );
   assert(
-    quoted("dropped 4:") === 4 && quoted("dropped 16 (+8 more) — ") === 8,
-    `(g) neither family quotes more than eight entries — the runner's list prints its four, the refused list prints eight of sixteen (got ${quoted("dropped 4:")}/${quoted("dropped 16 (+8 more) — ")})`,
+    quoted("dropped 3:") === 3 && quoted("dropped 17 (+9 more) — ") === 8,
+    `(g) neither family quotes more than eight entries — the runner's list prints its three, the refused list prints eight of seventeen (got ${quoted("dropped 3:")}/${quoted("dropped 17 (+9 more) — ")})`,
   );
   assert(
     reason.length < 4000,
