@@ -111,6 +111,17 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
 const LIMITS = ["minutes", "turns", "tokens"] as const;
 
+/**
+ * Is this a count a ceiling can be compared against? A float, a negative or
+ * `Infinity` is not a number of turns or tokens anybody counted, and `1e400`
+ * arrives as `Infinity` from a JSON file — so the reader that validates and the
+ * builder that rebuilds ask the SAME question, or a field could pass one and be
+ * written back unexamined by the other.
+ */
+function isCount(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 /** Is this value one of the ceilings {@link LIMITS} names? No cast involved. */
 function isBudgetLimit(value: unknown): value is LeanLimit {
   return LIMITS.some((limit) => limit === value);
@@ -178,13 +189,22 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   // Checked as a set: a breach naming neither ceiling nor overshoot is a
   // sentence nobody can act on. Same place as the ownership rule above, so a
   // budget verdict is judged by one reader for both questions.
+  // The budget trio is only ever written by a budget verdict: `handback` renders
+  // `limit`/`value`/`used` into the operator's cause line, so the same trio on a
+  // step whose kind is not `budget` is a ceiling this run never crossed, printed
+  // as the run's cause. Refused whatever the step's state, so an `ok` step on a
+  // budget-owning state cannot carry them either.
+  if (oc.kind !== "budget") {
+    for (const key of ["limit", "value", "used"] as const) {
+      if (oc[key] !== undefined) return `outcome ${key} is only recorded by a budget verdict`;
+    }
+  }
   if (oc.kind === "budget") {
     if (!isBudgetLimit(oc.limit))
       return 'outcome kind "budget" needs limit "minutes" | "turns" | "tokens"';
     for (const key of ["value", "used"] as const) {
-      const n = oc[key];
-      if (typeof n !== "number" || !Number.isFinite(n) || n < 0)
-        return `outcome ${key} must be a non-negative number for a budget verdict`;
+      if (!isCount(oc[key]))
+        return `outcome ${key} must be a non-negative safe integer for a budget verdict`;
     }
   }
   // `next()` calls `.join` on this when it routes a refusal, so a string-valued
@@ -325,7 +345,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
-    ...(typeof oc.value === "number" ? { value: oc.value } : {}),
-    ...(typeof oc.used === "number" ? { used: oc.used } : {}),
+    ...(isCount(oc.value) ? { value: oc.value as number } : {}),
+    ...(isCount(oc.used) ? { used: oc.used as number } : {}),
   };
 }

@@ -80,9 +80,11 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(b.opts.signal?.aborted === true, "the breach aborts the child's signal");
   // The hook never throws into spawn's stdout path: an internal failure is
   // swallowed after one trace line, because a budget that cannot report itself
-  // must not take the child down with it.
+  // must not take the child down with it — and it must NOT abort either, since
+  // nothing proved the child was over its ceiling.
   let ticks = 0;
   const guarded = armBudget({ turns: 1, tokens: 0, minutes: 0 });
+  let hookThrew = false;
   try {
     // A `RunningState` whose comparison throws (a getter-backed snapshot from a
     // malformed child line) is the failure this guards.
@@ -93,11 +95,53 @@ function progress(over: Partial<RunningState>): RunningState {
         throw new Error("bad child line");
       },
     } as RunningState);
-    assert(true, "a throwing progress hook does not propagate to the caller");
   } catch {
-    assert(false, "a throwing progress hook must not reach the caller");
+    hookThrew = true;
   }
+  assert(hookThrew === false, "a throwing progress hook does not propagate to the caller");
   assert(ticks > 0, "and the hook was actually entered");
+  assert(
+    guarded.opts.signal?.aborted === false,
+    "a hook that threw while READING the snapshot did not abort the child",
+  );
+}
+
+// ── (1b) a real breach still aborts when the trace sink itself throws ───────
+{
+  const b = armBudget({ turns: 2, tokens: 0, minutes: 0 });
+  const originalWrite = process.stderr.write;
+  // The sink itself is the probe: while the hook is inside its trace call it has
+  // already aborted, and the only way to read the signal AT that moment is from
+  // the sink. If that state were wrong, the hook's own catch would be writing
+  // this line — so the probe also proves the abort precedes the trace.
+  let abortedInsideTrace: boolean | undefined;
+  let reachedSink = 0;
+  let escaped = false;
+  try {
+    process.stderr.write = ((chunk: unknown): boolean => {
+      if (typeof chunk !== "string" || !chunk.includes("lean budget:")) return true;
+      reachedSink++;
+      abortedInsideTrace = b.opts.signal?.aborted;
+      throw new Error("stderr is closed");
+    }) as typeof process.stderr.write;
+    // The breach is real (3 turns against a ceiling of 2).
+    try {
+      b.opts.onProgress?.(progress({ turns: 3 }));
+    } catch {
+      escaped = true;
+    }
+    assert(reachedSink > 0, "and the case really reached a throwing trace sink");
+    assert(
+      abortedInsideTrace === true,
+      `the child was already aborted INSIDE the trace call (got ${String(abortedInsideTrace)})`,
+    );
+    assert(escaped === false, "a breach whose trace line throws does not escape the hook");
+    assert(b.opts.signal?.aborted === true, "and the breach still aborted the child");
+    const fired = b.fired(resultWith({}));
+    assert(fired?.limit === "turns", `the breach still reads back as turns (got ${fired?.limit})`);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
 }
 
 // ── (2) a tokens breach ─────────────────────────────────────────────────────

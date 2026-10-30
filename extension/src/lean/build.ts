@@ -234,6 +234,9 @@ export function buildDeps(headless: boolean): BuildDeps {
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,
+        // The budget's kill goes through `killProcessTree`, which only reaches
+        // the child's tool tree when the child leads its own group.
+        processGroup: true,
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,

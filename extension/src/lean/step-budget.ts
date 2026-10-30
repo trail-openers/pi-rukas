@@ -99,26 +99,6 @@ export type BudgetArms = {
 /**
  * Arm the three levers of one state's budget, or nothing when it has none.
  *
- * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — which means the kill lands AFTER that module's child-bound grace period, so the
- * child's reported `ms` overshoots the ceiling by the grace and by whatever the
- * OS took to tear the tree down. {@link minutesUsed} rounds that up: a bound of
- * 20 minutes never reports a child killed at 19:59 as having used 19.
- */
-/**
- * The trace line of a hook failure is printed once per process, not per tick (the
- * hook is called once per child turn, so a broken snapshot would otherwise print
- * hundreds of identical lines into the child's stderr).
- */
-let hookFailureTraced = false;
-function traceHookFailureOnce(err: unknown): void {
-  if (hookFailureTraced) return;
-  hookFailureTraced = true;
-  traceWarn(`lean budget: progress hook failed: ${(err as Error).message}`);
-}
-
-/**
- * Arm the three levers of one state's budget, or nothing when it has none.
- *
  * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — so
  * the kill lands AFTER that module's child-bound grace period (`childBoundGraceMs`)
  * and the child's reported `ms` overshoots the ceiling by that grace plus whatever
@@ -154,27 +134,57 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     };
   }
   const controller = new AbortController();
+  // The trace lines are printed once per ARM, not per tick: the hook runs once
+  // per child turn, so a broken snapshot would otherwise print hundreds of
+  // identical lines into the child's stderr. Per arm rather than per process,
+  // because a second dispatch is a different child and its hook failing is news.
+  let hookFailureTraced = false;
+  // The trace sink is not ours to trust, and it sits on BOTH arms of this hook: a
+  // breach traces itself, and a hook failure is reported by tracing. Left as-is
+  // that is a throw path with no catcher — a `traceWarn` called from inside a
+  // `catch` escapes that `catch`, because a catch block's own throws are not
+  // caught by it (measured: the throw left `onProgress` and landed in `spawn.ts`'s
+  // stdout handler, costing the dispatch). So every write goes through one catcher.
+  // A failure to trace leaves no line, which is the right trade against a hook that
+  // can cost the child: the record of a failure is worth less than the dispatch
+  // destroying it would cost, and the abort — what the hook exists to do — has
+  // already landed by then.
+  const traceOnce = (msg: string): void => {
+    try {
+      traceWarn(msg);
+    } catch {
+      // A sink we cannot write to cannot be written to; nothing to say about it.
+    }
+  };
+  const traceHookFailureOnce = (err: unknown): void => {
+    if (hookFailureTraced) return;
+    hookFailureTraced = true;
+    traceOnce(`lean budget: progress hook failed: ${(err as Error).message}`);
+  };
   // `spawn.ts` calls this from its stdout handler, on the same tick it parses a
   // child line: an exception thrown here lands in the read loop, not in the step,
-  // and costs the dispatch. So the body is wrapped — a budget that cannot report
-  // itself must never take the child down with it — and the failure is traced once
-  // (`traceHookFailureOnce`) rather than once per tick. The breach itself is traced
-  // AT THE BREACH: a stopped child whose log says nothing about why leaves the next
-  // reader guessing whether the budget or the harness ended it.
+  // and costs the dispatch. So nothing may escape the body, and the ABORT comes
+  // BEFORE the trace — the log line is the nice-to-have, and a breach whose trace
+  // throws must still stop the child. Only the reads of `s` are wrapped, so a
+  // malformed snapshot is reported and returns without claiming a breach it never
+  // measured (and without aborting a child that is inside its ceiling).
   const onProgress = (s: RunningState): void => {
+    let breach: BudgetFired | undefined;
     try {
       if (hit !== undefined) return;
-      if (turns > 0 && s.turns > turns) hit = { limit: "turns", value: turns, used: s.turns };
+      if (turns > 0 && s.turns > turns) breach = { limit: "turns", value: turns, used: s.turns };
       else if (tokens > 0 && s.totalTokens > tokens)
-        hit = { limit: "tokens", value: tokens, used: s.totalTokens };
-      if (hit === undefined) return;
-      traceWarn(
-        `lean budget: ${hit.limit} ${String(hit.value)} exceeded (used ${String(hit.used)}); stopping the child`,
-      );
-      controller.abort();
+        breach = { limit: "tokens", value: tokens, used: s.totalTokens };
     } catch (err) {
       traceHookFailureOnce(err);
+      return;
     }
+    if (breach === undefined) return;
+    hit = breach;
+    controller.abort();
+    traceOnce(
+      `lean budget: ${breach.limit} ${String(breach.value)} exceeded (used ${String(breach.used)}); stopping the child`,
+    );
   };
   return {
     opts: {

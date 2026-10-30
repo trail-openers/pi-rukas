@@ -102,7 +102,10 @@ function terminalCause(steps: Step[]): string | undefined {
  * the sentence the operator reads is built from checked data rather than from
  * free text whatever handler (or hand-edited file) wrote. A breach missing a
  * field is not a breach this function will describe, and falls through to the
- * next cause rather than printing a half-sentence.
+ * next cause rather than printing a half-sentence. The `kind` test is what makes
+ * that field check meaningful rather than decorative, so it stays: it also means
+ * a caller that reads the log without going through `assertRun` still cannot get
+ * a half-sentence out of here.
  */
 function budgetCause(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
