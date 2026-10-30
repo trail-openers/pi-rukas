@@ -37,7 +37,7 @@ A headless caller calls `--capabilities` once per image build and once before ea
 - **`research`**: a deep run whose entailment pass could not run carries `"entailment": "unavailable"`.
 - **`agents-md`** documents carry `verb` (`create` / `update` / `check`), `status` (`clean`, `findings`, `gated`, `refused`), `findings[]` and, for `create` / `update`, `wouldWrite`. `root` defaults to the repository root.
 - **`lens-review`** is admitted through the same round budget as `dispatch_lens_review` and writes the review ledger like it. Without `--base` / `--head` it reviews the working tree.
-- **`work-lean`** takes exactly one positional issue number; `--json` is accepted and changes nothing, as with every other S6 subcommand. Its document carries `subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`. The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanVerb`. Operator guide to the engine itself: [lean.md](lean.md).
+- **`work-lean`** takes exactly one positional issue number; `--json` is accepted and changes nothing, as with every other S6 subcommand. With `features.workLeanResultSchema` present its document is the schema-5 result (`schemaVersion`, `issues[]` with one entry) in the same field names `work` uses, so a host reads one reader for both engines; the lean-only field is `issues[].prState`. A build without that feature writes lean's own document (`subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`). The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanResultSchema` (and the verb itself as `features.workLeanVerb`). Operator guide to the engine itself: [lean.md](lean.md).
 
 ### Planning sessions
 
@@ -602,7 +602,8 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
     "failureReason": true,      // #1367 — issues[].failure in the result
     "usageByRole": true,        // #1368 — issues[].usage.byRole in the result
     "continuePr": true,         // #1468 — work --continue-pr and issues[].continuedPr
-    "repeatParkGuard": true     // #1743 — parks are remembered; a third identical start is refused
+    "repeatParkGuard": true,    // #1743 — parks are remembered; a third identical start is refused
+    "workLeanResultSchema": 5   // #1920 — work-lean writes the schema-5 result with issues[].prState
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
@@ -640,6 +641,7 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
 | `features.usageByRole` | Constant `true` | `true` when the result's `usage` carries `byRole`, failed dispatches included (#1368). |
 | `features.repeatParkGuard` | Constant `true` | `true` when a park is remembered per (issue, cap) whether or not a comment was posted, `issues[].handoff.repeat` publishes `{count, firstAt, marker}`, and a third identical start is refused with `cap: "repeat-park"` and exit 40 (#1743). See [Parks for hosts](#parks-for-hosts). |
 | `features.continuePr` | Constant `true` | `true` when `work` accepts `--continue-pr` and the result carries `issues[].continuedPr` (#1468). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
+| `features.workLeanResultSchema` | `RESULT_SCHEMA_VERSION` (`result.ts`) | The result schema `work-lean` writes, present only on a build that writes it (#1920). The value is `5`; a host reads `issues[]` exactly as it does `work`'s, plus the lean-only `issues[].prState` (`ready` / `draft` / `none`). `awaiting-human-merge` means `ready`: publish recorded `draft: false` and the newest DECIDED `verify` is green about the same head publish recorded, and no DECIDED `ci` has gone against it — a run with no `ci` step is unjudged, not refused, because lean has no `ci` step built. Absent means the build writes lean's own document and has no `prState` to switch on — refuse the image rather than guess. See [lean.md → Running it](lean.md#running-it). |
 | `resources` | `resourceReport()` (`resource-budget.ts`) | The host budget and the limits a cycle started now would run with, read when the answer is built. See [Resource report](#resource-report). |
 
 ### Parks for hosts

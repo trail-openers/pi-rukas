@@ -178,6 +178,9 @@ export interface Outcome {
    * than something a later reader guesses out of a reason line.
    */
   prUrl?: string;
+  /** `publish` only: the full 40-hex head it pushed, from the value the push
+   *  carried — what the result matches against `verify`'s `verifiedHead`. */
+  publishedHead?: string;
   /**
    * `publish` only: whether the PR this step handed the forge was a draft. The
    * run exits 10 whatever the answer, so a host cannot tell "green and waiting
@@ -186,6 +189,16 @@ export interface Outcome {
    * value actually passed to `prCreate`/`prDraft`, not recomputed at read time.
    */
   draft?: boolean;
+  /**
+   * `handback` and `decline` only: whether the comment this step was the run's
+   * way of telling someone actually reached the forge. The step never throws
+   * either way — the run ends on its verdict regardless of the comment — so this
+   * field is the ONLY record of a failed post, and a result that printed
+   * "delivered" without it would send a host to look at a comment nobody posted.
+   * Absent means no claim was recorded, which every reader treats as NOT
+   * delivered.
+   */
+  posted?: boolean;
   /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step
    * paid for, including the ones that died or were stopped by their budget.
@@ -453,7 +466,12 @@ const NON_TERMINAL: readonly LeanState[] = [
   "decline",
 ];
 
-/** The states that REPORT how a run ended rather than do work on it. */
+/**
+ * The states that REPORT how a run ended rather than do work on it. Declared
+ * here, where every caller reads it; `state-outcome.ts` keeps its own copy for
+ * the ownership table (it is this module's validator, so a binding reaching back
+ * would be a cycle), and `test-lean-state-outcome.ts` pins the two equal.
+ */
 export const REPORT_STATES: readonly LeanState[] = ["handback", "decline"];
 
 /**

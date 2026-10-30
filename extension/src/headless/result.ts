@@ -10,7 +10,7 @@
  */
 
 import type { ResourceReport } from "../resource-budget.ts";
-import type { DispatchUsage } from "../types.ts";
+import { type UsageTotals, foldUsage } from "../usage-fold.ts";
 import { causeVerdictOf } from "../work-driver-cause-class.ts";
 import type { CauseVerdict } from "../work-driver-cause-class.ts";
 import { causeForCycle } from "../work-driver-cause-for.ts";
@@ -56,11 +56,21 @@ export const SUMMARY_PREFIX = "pi-rukas-headless:";
 export const ERROR_PREFIX = "error:";
 
 /** Token and cost totals over a set of dispatches, and how many there were. */
-export type UsageTotals = DispatchUsage & { dispatches: number };
+export type { UsageTotals } from "../usage-fold.ts";
 
 /**
  * Totals over every dispatch the cycle recorded, and the same sums per dispatch
  * `role` (#1368), so the rows add up to the total.
+ *
+ * The SHAPE this name has always had is kept literally, not aliased to the
+ * shared fold's `{total, byRole}`: every existing reader of the host contract —
+ * `test-headless-failure-usage.ts`, `test-headless-gates.ts`, and whatever the
+ * host that drives `work` headless parses — all read `usage.input` and
+ * `usage.dispatches` FLAT, and `result.ts`
+ * is the one module of this slice whose observable output must not change at
+ * all. What is shared is the arithmetic: `foldUsage` does the counting and the
+ * per-role fold once, and `usageOf` below re-exports its `total` and `byRole`
+ * under the flat names.
  */
 export type ResultUsage = UsageTotals & { byRole: Record<string, UsageTotals> };
 
@@ -145,6 +155,18 @@ export interface IssueResult {
   prNumber?: number;
   /** The PR's web URL, only when it is unambiguous (pr-url.ts). */
   prUrl?: string;
+  /**
+   * #1920 — is the PR ready, a draft, or is there no PR at all? OPTIONAL, and
+   * `work` writes none of it: the classic driver reaches a merge or a park and
+   * its cap already says which, so it has no need of the field and its output
+   * is unchanged. The lean engine has that need — it exits 10 for every run
+   * that reaches `publish` (its `review`/`ci`/`land` steps are not built), so
+   * exit 10 covers a green PR waiting for a merge, a draft behind unverified
+   * bytes, and a run that opened nothing, and no other typed field separates
+   * them. `work-lean-result.ts` fills it; a host told to read it reads
+   * `--capabilities`' `features.workLeanResultSchema` first.
+   */
+  prState?: "ready" | "draft" | "none";
   /** Present whenever a state existed to sum. */
   usage?: ResultUsage;
   /**
@@ -261,44 +283,28 @@ export function repeatParkRefusalResult(
   return result;
 }
 
-const zeroUsage = (): UsageTotals => ({
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  cost: 0,
-  turns: 0,
-  dispatches: 0,
-});
-
-function addUsage(t: UsageTotals, u: DispatchUsage | undefined): void {
-  t.dispatches++;
-  if (!u) return;
-  t.input += u.input;
-  t.output += u.output;
-  t.cacheRead += u.cacheRead;
-  t.cacheWrite += u.cacheWrite;
-  t.cost += u.cost;
-  t.turns += u.turns;
-}
-
-/** Sum the usage of every dispatch event in the log, in total and per role. */
+/**
+ * Sum the usage of every dispatch event in the log, in total and per role.
+ *
+ * The fold itself is `usage-fold.ts`'s `foldUsage`, which lean's `leanUsage`
+ * calls with its own rows: a host comparing the two engines' cost is comparing
+ * one definition, and a failed dispatch counts in both (see that module). The
+ * flat `{...total, byRole}` shape this function has always returned is rebuilt
+ * here rather than in the shared fold, because that shape is the host contract
+ * and the fold's `{total, byRole}` is lean's.
+ */
 export function usageOf(state: WorkState): ResultUsage {
-  const total: ResultUsage = { ...zeroUsage(), byRole: {} };
-  for (const e of state.eventLog) {
-    if (
-      e.kind !== "dispatch-completed" &&
-      e.kind !== "dispatch-failed" &&
-      e.kind !== "dispatch-failed-provider"
-    ) {
-      continue;
-    }
-    addUsage(total, e.usage);
-    const row = total.byRole[e.role] ?? zeroUsage();
-    total.byRole[e.role] = row;
-    addUsage(row, e.usage);
-  }
-  return total;
+  const { total, byRole } = foldUsage(
+    state.eventLog
+      .filter(
+        (e) =>
+          e.kind === "dispatch-completed" ||
+          e.kind === "dispatch-failed" ||
+          e.kind === "dispatch-failed-provider",
+      )
+      .map((e) => ({ role: e.role, usage: e.usage })),
+  );
+  return { ...total, byRole };
 }
 
 /** `- item` bullet lines of a cap's evidence, in order. */

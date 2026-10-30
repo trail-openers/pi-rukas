@@ -176,10 +176,30 @@ notifies one summary line: `work-lean #<issue>: handed-back (exit 10) — <reaso
 **Headless.** `pi-rukas-headless work-lean <issue> [--json]` — exactly one
 positional issue number; `--json` is accepted and changes nothing, as with every
 other subcommand. Stderr carries only NDJSON v1 log lines; stdout carries
-exactly one JSON document with `subcommand`, `issue`, `exitCode`, `state`,
-`summary`, `steps` (the step-log length) and, when the run reached `publish`,
-`prUrl`. The verb adds no policy of its own — the run's own code is the exit
-code.
+exactly one JSON document. The run's own code is the exit code; the verb adds no
+policy of its own.
+
+With `features.workLeanResultSchema` in `--capabilities` (value `5`) that
+document is the **schema-5 result** — `schemaVersion` and `issues[]` with one
+entry, in the same field names `work` uses (`status`, `cap`, `failedStep`,
+`failure`, `branch`, `prUrl`, `usage`), so a host comparing the two engines
+reads one document. The one field `work` never writes is **`prState`**:
+
+| `prState` | When |
+|---|---|
+| `ready` | publish recorded `draft: false` AND the newest DECIDED `verify` is `green` with `verifiedHead` **equal** to publish's `publishedHead`, AND no DECIDED `ci` has gone against it. A run with **no `ci` step** is unjudged by the pipeline, not refused — `ci` is not built, so it blocks `ready` only when it ran non-green |
+| `draft` | publish recorded `draft: true`, or any half of the `ready` evidence is missing |
+| `none` | no decided `publish` step left a PR URL |
+
+Both sides of that rule are typed records (`Outcome.publishedHead` is the full
+40-hex head the step pushed; `verifiedHead` is the green's subject) and neither
+is read out of prose. The rule is publish's own — it will not push at all over a
+green about a different commit — restated as a report. `ready` is also the only
+thing that earns the `awaiting-human-merge` cap, so **`awaiting-human-merge`
+means `ready`**; a draft, or a PR over a gate that did not clear its head, gets
+no cap and rides `failure` alone. A build without the feature writes lean's own
+pre-#1920 document (`state`, `summary`, `steps`, `prUrl`) and has no `prState`:
+refuse the image rather than guess.
 
 **Exit codes** (`EXIT_CODES` in `machine.ts`, plus the two the verb adds):
 

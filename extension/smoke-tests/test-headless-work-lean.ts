@@ -35,6 +35,20 @@ import {
 
 const { assert, state } = makeAssert();
 
+/**
+ * The one issue the schema-5 document projects (#1920 slice B), or `undefined`
+ * when the document is a refusal or a crash (those carry `error`, not `issues`).
+ *
+ * Every assertion below that used to read a per-issue field off the top level
+ * (`issue`, `state`, `prUrl`, `steps`, `summary`) reads it here instead: those
+ * fields moved into `issues[]` where `work` puts them, and a helper is what
+ * keeps the seventeen cases in this file from each re-inventing the cast.
+ */
+function issue(doc: Record<string, unknown>): Record<string, unknown> | undefined {
+  const issues = doc.issues as Record<string, unknown>[] | undefined;
+  return Array.isArray(issues) ? issues[0] : undefined;
+}
+
 // ── (a) a handed-back run: exit 10, one document, the state, ≥1 NDJSON line.
 {
   const r = await verbRun(["7"], async () => ({
@@ -44,15 +58,28 @@ const { assert, state } = makeAssert();
   assert(r.violations.length === 0, `handed-back: output contract (${r.violations.join("; ")})`);
   assert(r.code === 10, `handed-back exits 10 (got ${r.code})`);
   assert(r.doc.subcommand === "work-lean", "document names the subcommand");
-  assert(r.doc.issue === 7, "document carries the issue");
+  assert(r.doc.schemaVersion === 5, "the success document is schema 5");
+  assert(issue(r.doc)?.issue === 7, "the projected issue is the one asked for");
+  assert(
+    issue(r.doc)?.status === "handoff",
+    `a handed-back run projects status handoff (got ${String(issue(r.doc)?.status)})`,
+  );
   assert(r.doc.state === "handed-back", `document carries the state (got ${r.doc.state})`);
   assert(r.doc.exitCode === 10, "document's exitCode matches");
   assert(r.doc.steps === 2, `document counts the steps (got ${r.doc.steps})`);
   assert(
+    Array.isArray(issue(r.doc)?.steps) && (issue(r.doc)?.steps as unknown[]).length === 2,
+    `issues[0].steps carries one timing per step (got ${JSON.stringify(issue(r.doc)?.steps)})`,
+  );
+  assert(
     typeof r.doc.summary === "string" && (r.doc.summary as string).includes("handed-back"),
     "document carries the summary",
   );
-  assert(r.doc.prUrl === undefined, "no publish step means no prUrl");
+  assert(issue(r.doc)?.prUrl === undefined, "no publish step means no prUrl");
+  assert(
+    issue(r.doc)?.prState === "none",
+    `no publish step means prState none (got ${String(issue(r.doc)?.prState)})`,
+  );
   assert(r.mode?.headless === true, "the verb asks for the headless mode on every run");
   assert(r.lines.length >= 1, `at least one NDJSON line (${r.lines.length})`);
   assert(
@@ -77,6 +104,12 @@ for (const [code, state_] of [
   assert(r.code === code, `state ${state_} exits ${code} (got ${r.code})`);
   assert(r.doc.exitCode === code, `document's exitCode is ${code}`);
   assert(r.doc.state === state_, `document's state is ${state_}`);
+  const expected =
+    state_ === "landed" ? "merged" : state_ === "not-ready" ? "aborted" : "handoff";
+  assert(
+    issue(r.doc)?.status === expected,
+    `issues[0].status is ${expected} for ${state_} (got ${String(issue(r.doc)?.status)})`,
+  );
 }
 
 // ── (c) bad argv: no issue, a non-numeric issue, an extra flag, two issues.
@@ -123,8 +156,8 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
     }),
   }));
   assert(
-    r.doc.prUrl === "https://example.test/pull/2",
-    `doc.prUrl is the newest publish URL (got ${r.doc.prUrl})`,
+    issue(r.doc)?.prUrl === "https://example.test/pull/2",
+    `issues[0].prUrl is the newest publish URL (got ${String(issue(r.doc)?.prUrl)})`,
   );
 }
 {
@@ -143,7 +176,14 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
       ],
     }),
   }));
-  assert(r.doc.prUrl === undefined, `a newer URL-less publish wins (got ${r.doc.prUrl})`);
+  assert(
+    issue(r.doc)?.prUrl === undefined,
+    `a newer URL-less publish wins (got ${String(issue(r.doc)?.prUrl)})`,
+  );
+  assert(
+    issue(r.doc)?.prState === "none",
+    `a newer URL-less publish is no PR (got ${String(issue(r.doc)?.prState)})`,
+  );
 }
 {
   // The URL is re-checked with the load-time rule `handback` applies, not
@@ -166,8 +206,12 @@ for (const argv of [[], ["abc"], ["--bogus"], ["7", "8"], ["7", "--force"]]) {
     }));
     assert(r.code === 0, `a malformed prUrl (${label}) is still a green run (got ${r.code})`);
     assert(
-      r.doc.prUrl === undefined,
-      `a malformed prUrl (${label}) is not printed as a link (got ${String(r.doc.prUrl).slice(0, 40)})`,
+      issue(r.doc)?.prUrl === undefined,
+      `a malformed prUrl (${label}) is not printed as a link (got ${String(issue(r.doc)?.prUrl).slice(0, 40)})`,
+    );
+    assert(
+      issue(r.doc)?.prState === "none",
+      `a malformed prUrl (${label}) is not a PR either (got ${String(issue(r.doc)?.prState)})`,
     );
   }
 }
@@ -229,6 +273,7 @@ for (const [label, make] of [
     "crash: the message is kept",
   );
   assert(r.doc.state === undefined, "a crash reports no state");
+  assert(issue(r.doc) === undefined, "a crash projects no issue");
   // A non-Error throw must not escape as a rejection either.
   const thrown = await verbThrowing(["7"], "string thrown");
   assert(thrown.code === 30, `a non-Error throw still exits 30 (got ${thrown.code})`);
@@ -311,6 +356,14 @@ for (const [label, crash, expected] of [
     );
   } else {
     assert(doc.state === "landed", "throwing host, success: the state survives a broken channel");
+    assert(
+      issue(doc)?.status === "merged",
+      `throwing host, success: the schema-5 issue survives a broken channel (got ${String(issue(doc)?.status)})`,
+    );
+    assert(
+      doc.schemaVersion === 5,
+      "throwing host, success: the surviving document is still schema 5",
+    );
   }
 }
 {

@@ -298,6 +298,18 @@ function zeroDispatchUsage(): DispatchUsageRow["usage"] {
 }
 
 /**
+ * The one budget sentence, rendered from the typed trio.
+ *
+ * Every surface that prints a breach reads it from here: the verdict's `reason`
+ * ({@link budgetVerdict}), `lean/handback.ts`'s cause, and the headless result's
+ * `failure.message` (`headless/work-lean-result.ts`). Three renderings of one
+ * fact is how they start disagreeing about which lever fired.
+ */
+export function budgetSentence(state: LeanState, fired: BudgetFired): string {
+  return `${state} stopped: ${fired.limit} budget ${String(fired.value)} exceeded (used ${String(fired.used)})`;
+}
+
+/**
  * The verdict for a step that ran out of budget, not out of ideas. Callers ask
  * {@link readDispatched} before their infra throw, or this never gets to route.
  */
@@ -307,7 +319,7 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
     limit: fired.limit,
     value: fired.value,
     used: fired.used,
-    reason: `${state} stopped: ${fired.limit} budget ${fired.value} exceeded (used ${fired.used})`,
+    reason: budgetSentence(state, fired),
   };
 }
 

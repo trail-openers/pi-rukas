@@ -28,6 +28,7 @@ import { LENS_REVIEW_FLAGS } from "../src/headless/lens-review.ts";
 import { NDJSON_VERSION } from "../src/headless/ndjson.ts";
 import { PLAN_FLAGS } from "../src/headless/plan.ts";
 import { RESEARCH_FLAGS } from "../src/headless/research.ts";
+import { RESULT_SCHEMA_VERSION } from "../src/headless/result.ts";
 import { WORK_LEAN_FLAGS } from "../src/headless/work-lean.ts";
 
 let exit = 0;
@@ -175,6 +176,22 @@ assert(CAPABILITIES_VERSION === 2, "--continue-pr is additive: CAPABILITIES_VERS
 // under the same keys, and its children carry the /work-cycle trust stamp.
 assert(deepEqual(caps.verbs["work-lean"].flags, [...WORK_LEAN_FLAGS]), "work-lean flags are live");
 assert(caps.features.workLeanVerb === true, "features.workLeanVerb is true (#1883)");
+// #1920 slice B — the lean verb's document is the host contract's own schema, and
+// the feature names the version so a host can refuse an image that lacks it. The
+// number comes from the same live constant the document itself stamps, so the
+// capability and the output cannot disagree.
+assert(
+  caps.features.workLeanResultSchema === RESULT_SCHEMA_VERSION,
+  `features.workLeanResultSchema is the live RESULT_SCHEMA_VERSION (${String(caps.features.workLeanResultSchema)})`,
+);
+assert(
+  caps.features.workLeanResultSchema === 5,
+  "features.workLeanResultSchema is 5: the lean verb writes the same schema as work",
+);
+assert(
+  caps.contracts.resultSchema.version === caps.features.workLeanResultSchema,
+  "the lean result feature and the result schema contract name the same version",
+);
 // #1666 — `permissions` is additive (CAPABILITIES_VERSION stays 2) and reports the mode read at answer time.
 assert(
   caps.permissions.workCycles === "trust" || caps.permissions.workCycles === "strict",

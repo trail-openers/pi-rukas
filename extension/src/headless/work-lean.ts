@@ -40,7 +40,7 @@ import { oneLine } from "../lean/text-fence.ts";
 import { traceWarn } from "../trace.ts";
 import { EXIT } from "./exit-code.ts";
 import { type VerbContext, type VerbOutcome, badArguments, parseFlags } from "./verb.ts";
-
+import { leanResultDocument } from "./work-lean-result.ts";
 export const WORK_LEAN_FLAGS = ["--json"] as const;
 
 /** What a run is described by once its document is built. */
@@ -281,6 +281,27 @@ function traceLabel(name: string): string {
 }
 
 /**
+ * The document one crash or one refusal is described by.
+ *
+ * Extracted UNCHANGED from `fail` (#1920 slice B) so the verb's thin facade can
+ * rebuild the byte-identical answer rather than copy it: #1924 hardened these
+ * two documents — a refusal at 40, a crash at 30 — and their tests must stay
+ * green, so there is exactly one place that writes them.
+ */
+export function leanFailureDocument(
+  issue: number,
+  refused: boolean,
+  message: string,
+): Record<string, unknown> {
+  return {
+    subcommand: "work-lean",
+    issue,
+    exitCode: refused ? EXIT.refused : EXIT.crash,
+    error: { code: refused ? "refused" : "crash", message },
+  };
+}
+
+/**
  * The newest DECIDED `publish` step's URL, if the run got that far.
  *
  * `newestDecided` is the log's own rule (an outcome-less step is a crash
@@ -420,15 +441,11 @@ export async function runWorkLeanVerb(
       }
     }
     say(`work-lean: #${issue} ${refused ? "refused" : "crashed"} (exit ${exitCode}) — ${message}`);
-    return {
-      exitCode,
-      doc: {
-        subcommand: "work-lean",
-        issue,
-        exitCode,
-        error: { code: refused ? "refused" : "crash", message },
-      },
-    };
+    // ONE writer for this document: the export below is what builds it, so the
+    // facade cannot drift from the shape #1924 hardened (key order included —
+    // `JSON.stringify` follows insertion order, and a host that string-compares
+    // the refusal would see a reordering as a changed contract).
+    return { exitCode, doc: leanFailureDocument(issue, refused, message) };
   };
   try {
     // #1883 — this run's children carry the /work-cycle trust stamp, or the
@@ -440,12 +457,13 @@ export async function runWorkLeanVerb(
     if (!wellFormed(raw)) throw new Error("the run returned a malformed outcome");
     const summary = oneLine(clip(raw.summary), MESSAGE_MAX);
     say(`work-lean: ${summary}`);
-    const prUrl = prUrlOf(raw.result.run.steps);
-    // No usage fields here yet: the step log already carries the per-child rows
-    // (`Outcome.dispatches`), but the result document that reports them is
-    // schema 5, a later slice, which also adds the capability flag. This PR is
-    // record-only, so a host reading this document today gets no usage key at
-    // all rather than one it was never told to expect.
+    // #1920 slice B — the success path is a schema-5 `ResultDocument`: one
+    // issue, with `status`, `cap`, `failure`, `branch`, `prUrl`, `prState` and
+    // `usage`, so the host that drives `work` reads one reader for both engines.
+    // `schemaVersion` is written here, not in `result.ts`'s `resultDocument`,
+    // because `runSubcommand` (cli.ts) spreads `buildCommit`/`buildVersion` into
+    // whatever a verb returns and the two surfaces must not both own the build.
+    // The crash and refusal documents are untouched — #1924 hardened them.
     return {
       exitCode: raw.result.code,
       doc: {
@@ -454,8 +472,11 @@ export async function runWorkLeanVerb(
         exitCode: raw.result.code,
         state: raw.result.state,
         summary,
+        // Kept beside the schema-5 fields: the step COUNT is what the
+        // pre-#1920 document carried and a host that read it still finds it.
+        // The per-step timings are in `issues[0].steps`.
         steps: raw.result.run.steps.length,
-        ...(prUrl === undefined ? {} : { prUrl }),
+        ...leanResultDocument(raw.result.run, raw.result.code).doc,
       },
     };
   } catch (err) {
