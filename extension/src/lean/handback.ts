@@ -30,7 +30,7 @@ import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { postHandback } from "./io.ts";
 import { validPrUrl } from "./state-outcome.ts";
-import type { Outcome, Step } from "./state.ts";
+import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetTrio } from "./step-budget.ts";
 import { fenceText } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify.ts";
@@ -124,7 +124,7 @@ function budgetCause(steps: Step[]): string | undefined {
   let newest: number | undefined;
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
-    if (step === undefined || step.state === "handback" || step.state === "decline") continue;
+    if (step === undefined || REPORT_STATES.includes(step.state)) continue;
     newest = i;
     break;
   }

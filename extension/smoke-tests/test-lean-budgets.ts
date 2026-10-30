@@ -188,6 +188,27 @@ function progress(over: Partial<RunningState>): RunningState {
   assert(noMs?.used === 1, `a kill with no ms never reports 0 (got ${noMs?.used})`);
 }
 
+// ── (3b) one minutes stop is one trace line, however often it is read ──────
+{
+  const b = armBudget({ turns: 0, tokens: 0, minutes: 20 });
+  const originalWrite = process.stderr.write;
+  const lines: string[] = [];
+  try {
+    process.stderr.write = ((chunk: unknown): boolean => {
+      if (typeof chunk === "string" && chunk.includes("lean budget: minutes")) lines.push(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    const killed = resultWith({ killCause: "child-bound", ok: false, ms: 20 * 60_000 + 9_000 });
+    const reads = [b.fired(killed), b.fired(killed)];
+    assert(
+      reads.every((f) => f?.limit === "minutes") && lines.length === 1,
+      `two reads of one minutes stop print exactly one trace line (got ${lines.length})`,
+    );
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+}
+
 // ── (4) no breach: neither a clean result nor another cap reads as the budget
 {
   const b = armBudget({ turns: 10, tokens: 1000, minutes: 10 });
