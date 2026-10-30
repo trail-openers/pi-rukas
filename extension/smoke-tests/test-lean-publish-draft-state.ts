@@ -15,6 +15,8 @@
  *   (m) a reused PR already in draft is left alone
  *   (m) a green run does not draft its own verified PR
  *   (m) a `prDraft` that fails is infrastructure, never a silently-ready PR
+ *   (m) a read-back that rejects after an accepted `prDraft` is refused with
+ *       the forge's reason in the text
  *   (m) a draft state the forge will not say is REFUSED on a run that needs it
  *   (m) a draft state no reply was asked for is omitted, never copied from the
  *       state this run wanted
@@ -118,6 +120,31 @@ function assert(cond: boolean, msg: string): void {
   assert(
     r.outcome === undefined,
     "(m) no ok outcome is recorded for a PR left ready over unverified work",
+  );
+}
+
+// The re-draft was ACCEPTED and the read-back then went dark: the step still
+// refuses (an unconfirmed draft is a ready PR as far as the host can tell), and
+// the operator has to be able to tell that forge from the one that answered
+// `ready` — so the rejection message rides in the refusal text.
+{
+  const ready = fakePr(96, "https://forge.example/pull/96", "lean/issue-433", false);
+  const r = await runPublish({
+    issue: 433,
+    verify: { kind: "red" },
+    openPrs: [ready],
+    viewIsDraft: { "96": false },
+    viewThrowsFor: [96],
+  });
+  assert(
+    r.threw instanceof PublishInfraError &&
+      /does not report itself a draft/.test(r.threw.message) &&
+      /prView could not reach the host/.test(r.threw.message),
+    `(m) a read-back that rejects is refused WITH the forge's reason (got ${r.threw?.name}: ${r.threw?.message})`,
+  );
+  assert(
+    r.forge.prDraftCalls.length === 1 && r.outcome === undefined,
+    "(m) the PR was drafted and still not published over an unconfirmed draft",
   );
 }
 

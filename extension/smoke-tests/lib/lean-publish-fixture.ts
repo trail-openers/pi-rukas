@@ -49,7 +49,7 @@ import {
 } from "./lean-publish-origin.ts";
 import { git, sha } from "./lean-verify-fixture.ts";
 
-export { originHead, printablePath, testsStep } from "./lean-publish-asserts.ts";
+export { originHead } from "./lean-publish-asserts.ts";
 export type { FakeForge } from "./lean-publish-forge.ts";
 
 /**
@@ -138,6 +138,8 @@ export interface PublishOpts {
   viewIsDraft?: Record<string, boolean>;
   /** Make `prDraft` reject, so a reused PR cannot be put back to draft. */
   draftThrows?: boolean;
+  /** Make `prView` reject for these PR numbers only (the read-back after a re-draft). */
+  viewThrowsFor?: number[];
   /**
    * What `prView` reports for a number AFTER the step asked to draft it — the
    * seam for a forge that accepted `prDraft` and left the PR ready. A number the
@@ -370,6 +372,7 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
           ),
         }),
     draftThrows: o.draftThrows === true,
+    viewThrowsFor: o.viewThrowsFor,
     ...(o.afterDraft === undefined
       ? {}
       : {

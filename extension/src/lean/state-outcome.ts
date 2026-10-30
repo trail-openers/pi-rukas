@@ -80,8 +80,14 @@ export function validPrUrl(url: unknown): string | undefined {
   return PR_URL.test(url) ? url : undefined;
 }
 
-/** The states whose dispatch may be stopped by its budget, hence own those fields. */
-const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
+/**
+ * The states whose dispatch may be stopped by its budget, hence own those fields.
+ *
+ * Exported as the answer to "may this state record `dispatches`": `errorOutcome`
+ * asks it before copying rows off a throw, so the ownership rule the loader
+ * enforces has exactly one statement in the pipeline.
+ */
+export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
 
 /**
  * Which state is allowed to record which evidence-bearing field. One table, and
@@ -234,7 +240,7 @@ function dispatchesProblem(value: unknown): string | undefined {
 }
 
 /** The `dispatches` rows, rebuilt from the ones this module actually checked. */
-function validatedDispatches(value: unknown): DispatchUsageRow[] {
+export function validatedDispatches(value: unknown): DispatchUsageRow[] {
   const out: DispatchUsageRow[] = [];
   if (!Array.isArray(value)) return out;
   for (const raw of value) {

@@ -68,6 +68,14 @@ export interface FakeForge {
   prViewCalls: number[];
   /** Make `prView` reject — the forge cannot tell the step anything. */
   viewThrows: boolean;
+  /**
+   * Make `prView` reject for these numbers only. The read-back after a `prDraft`
+   * goes through the same `prView` as the first read, so a case that wants the
+   * FORGE to answer once and then go dark on the confirmation has to be able to
+   * fail just the second call — which is what the read-back's error text exists
+   * to report.
+   */
+  viewThrowsFor?: number[];
   /** Make `prDraft` reject — the forge refuses to put a reused PR back to draft. */
   draftThrows: boolean;
   /**
@@ -112,6 +120,7 @@ export function fakeForge(
     prViewCalls: [],
     viewIsDraft: undefined,
     viewThrows: false,
+    viewThrowsFor: undefined,
     draftThrows: false,
     prs: [],
     created: [],
@@ -132,7 +141,8 @@ export function fakeForge(
   };
   f.prView = async (n: number) => {
     f.prViewCalls.push(n);
-    if (f.viewThrows) throw new Error("forge: prView could not reach the host");
+    if (f.viewThrows || f.viewThrowsFor?.includes(n))
+      throw new Error("forge: prView could not reach the host");
     // `gh pr list --json` carries no `isDraft`; `gh pr view --json …,isDraft,…`
     // is the only reply that does. So a reused PR whose state the list row does
     // not carry gets it from the SEED (`viewIsDraft`), and the state itself then
@@ -163,9 +173,6 @@ export function fakeForge(
   f.prDraft = async (n: number) => {
     f.prDraftCalls.push(n);
     if (f.draftThrows) throw new Error("forge: prDraft could not reach the host");
-    // A successful re-draft is a STATE CHANGE the fake has to keep: the step
-    // reads the PR back afterwards, and a fake still reporting it ready would
-    // make every honest run look like the lie the read-back exists to catch.
     // A successful re-draft is a STATE CHANGE the fake has to keep: the step
     // reads the PR back afterwards, and a fake still reporting it ready would
     // make every honest run look like the lie the read-back exists to catch.

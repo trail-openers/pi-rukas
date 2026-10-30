@@ -344,7 +344,7 @@ async function settle(
       now,
     });
   } catch (err) {
-    outcome = errorOutcome(state, err) as Outcome;
+    outcome = errorOutcome(state, err);
   }
   const logged = withOutcome(run, key, outcome, now());
   if (outcome.kind === "error") {

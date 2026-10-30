@@ -68,32 +68,42 @@ export async function reusedDraftState(
   found: NormalizedPullRequest,
   draft: boolean,
 ): Promise<NormalizedPullRequest> {
+  // ONE read, then branch on the answer. `draftStateOf` either returns a boolean
+  // or throws, so the `draft` branch lets that refusal stand — a not-green run
+  // has a decision to make with the answer and must not guess — while the
+  // not-green branch swallows it and records nothing.
   const observed = draft
     ? await draftStateOf(f, found)
     : await draftStateOf(f, found).catch(() => undefined);
   if (!draft) return { ...found, isDraft: observed };
-  if (observed === false) {
-    await f.prDraft(found.number).catch((err: unknown) => {
-      throw new PublishInfraError(
-        `could not put the reused PR #${found.number} back to draft: ${(err as Error)?.message ?? String(err)}`,
-      );
+  // Past the refusal above the answer is `true`: the PR is already a draft,
+  // there is nothing to put back, and the run publishes with the state it read.
+  if (observed === true) return { ...found, isDraft: observed };
+  await f.prDraft(found.number).catch((err: unknown) => {
+    throw new PublishInfraError(
+      `could not put the reused PR #${found.number} back to draft: ${(err as Error)?.message ?? String(err)}`,
+    );
+  });
+  // A `prDraft` that returned without throwing is a CLAIM, not an observation:
+  // the head is already pushed at this point, so a forge that accepted the call
+  // and left the PR READY would hand back `ok` with a mergeable PR standing
+  // behind unverified bytes. Read it back; only `isDraft === true` is an answer
+  // that lets the run continue. The rejection message is kept for the same
+  // reason `draftStateOf` keeps its own: an operator has to be able to tell a
+  // forge that was unreachable from one that answered `ready`.
+  let why: string | undefined;
+  const after = await f
+    .prView(found.number)
+    .then((v) => v?.isDraft)
+    .catch((err: unknown) => {
+      why = (err as Error)?.message ?? String(err);
+      return undefined;
     });
-    // A `prDraft` that returned without throwing is a CLAIM, not an observation:
-    // the head is already pushed at this point, so a forge that accepted the call
-    // and left the PR READY would hand back `ok` with a mergeable PR standing
-    // behind unverified bytes. Read it back; only `isDraft === true` is an answer
-    // that lets the run continue.
-    const after = await f
-      .prView(found.number)
-      .then((v) => v?.isDraft)
-      .catch(() => undefined);
-    if (after !== true)
-      throw new PublishInfraError(
-        `the reused PR #${found.number} does not report itself a draft after prDraft, and a not-green run must not leave it ready`,
-      );
-    return { ...found, isDraft: after };
-  }
-  return { ...found, isDraft: observed };
+  if (after !== true)
+    throw new PublishInfraError(
+      `the reused PR #${found.number} does not report itself a draft after prDraft, and a not-green run must not leave it ready${why === undefined ? "" : ` (${why})`}`,
+    );
+  return { ...found, isDraft: after };
 }
 
 /**

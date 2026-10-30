@@ -12,6 +12,8 @@
  *       the step's throw and reaches the state file the engine writes
  *   (o) rows are carried ONLY for a step that owns `dispatches` — a `publish`
  *       throw with rows on it must not make the run's own state file unloadable
+ *   (p) a throw carrying more rows than the validator allows still loads — the
+ *       engine clips to the bound instead of producing an unreadable record
  *
  * (n) runs against the same real repo as the build suite, so the row it follows
  * out of the step is one a real dispatch produced, and is read back through
@@ -23,6 +25,7 @@ import { BuildInfraError } from "../src/lean/build-errors.ts";
 import { type LeanHandlers, runLean } from "../src/lean/engine.ts";
 import { errorOutcome } from "../src/lean/error-outcome.ts";
 import { loadRun } from "../src/lean/state.ts";
+import { DISPATCHES_MAX_ROWS } from "../src/lean/state-outcome.ts";
 import { ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
 import { tempDir } from "./lib/lean-engine-fixtures.ts";
 
@@ -115,6 +118,54 @@ function assert(cond: boolean, msg: string): void {
     notAnArray.dispatches === undefined && badRow.dispatches === undefined,
     "(o) a non-array and an unusable row are dropped, never written to the record",
   );
+}
+
+// -------------------- (p) too many rows on a throw still leave the run loadable
+//
+// `dispatchesProblem` REFUSES a `dispatches` array over `DISPATCHES_MAX_ROWS`,
+// so an engine that copied a fat throw's rows straight onto the record would
+// write a state file `loadRun` rejects — a run that hit one infra throw would
+// lose its whole durable record. The helper clips to the bound instead, and
+// keeps the TAIL: rows arrive in dispatch order and the child that ran last is
+// the one that decided the step.
+{
+  const many = Array.from({ length: DISPATCHES_MAX_ROWS + 1 }, (_, i) => ({
+    role: `role-${String(i)}`,
+    ms: 1000,
+    ok: false,
+    usage: { input: 11, output: 2, cacheRead: 3, cacheWrite: 1, cost: 0.5, turns: 4 },
+  }));
+  const clipped = errorOutcome("build", Object.assign(new Error("died"), { dispatches: many }));
+  assert(
+    clipped.dispatches?.length === DISPATCHES_MAX_ROWS,
+    `(p) a throw carrying ${String(DISPATCHES_MAX_ROWS + 1)} rows records at most ${String(DISPATCHES_MAX_ROWS)} (got ${String(clipped.dispatches?.length)})`,
+  );
+  assert(
+    clipped.dispatches?.[DISPATCHES_MAX_ROWS - 1]?.role === `role-${String(DISPATCHES_MAX_ROWS)}`,
+    `(p) the clip keeps the TAIL, so the child that decided the step is recorded (got ${String(clipped.dispatches?.[DISPATCHES_MAX_ROWS - 1]?.role)})`,
+  );
+  const { dir, cleanup } = tempDir();
+  try {
+    const handlers: LeanHandlers = {
+      ready: async () => ({ kind: "ok" }),
+      specify: async () => ({ kind: "ok" }),
+      build: async () => {
+        throw Object.assign(new Error("build dispatch failed: exit 1"), { dispatches: many });
+      },
+    };
+    const crashed = await runLean({ repoRoot: dir, issue: 131, handlers });
+    assert(
+      crashed.state === "handed-back" && crashed.code === 10,
+      `(p) the run whose build threw over-sized rows ends handed-back 10 (got ${crashed.state} ${crashed.code})`,
+    );
+    const loaded = loadRun(dir, 131);
+    assert(
+      loaded !== undefined,
+      "(p) a throw carrying 17 rows still lets loadRun load the run's state file",
+    );
+  } finally {
+    cleanup();
+  }
 }
 
 for (const dir of ROOTS) {

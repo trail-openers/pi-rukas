@@ -368,14 +368,14 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
 
 /**
  * The rows of every dispatch the step paid for, across both attempts, clipped
- * to the validator's bound for ONE outcome ({@link DISPATCHES_MAX_ROWS}).
+ * to the validator's bound for ONE outcome ({@link DISPATCHES_MAX_ROWS}) by
+ * keeping the TAIL: rows are appended in dispatch order, so the clip keeps the
+ * child that actually decided the verdict and drops the earliest ones.
  *
  * `specify` folds up to two children into one record, so it is the one step
- * that can exceed what `outcomeProblem` will load: the cheapest attempt is the
- * one kept, since the rows are appended in dispatch order and the child that
- * actually decided the verdict is the last one.
+ * that can exceed what `outcomeProblem` will load.
  */
 function mergedRows(all: DispatchUsageRow[][]): DispatchUsageRow[] | undefined {
-  const rows = all.flat().slice(0, DISPATCHES_MAX_ROWS);
+  const rows = all.flat().slice(-DISPATCHES_MAX_ROWS);
   return rows.length === 0 ? undefined : rows;
 }
