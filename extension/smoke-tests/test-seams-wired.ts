@@ -194,14 +194,6 @@ for (const seam of [...SEAMS, ...SEAMS_1454]) {
   const PENDING_PRODUCTION_CALLER = new Set([
     "forge-detect.ts",
     "forge.ts",
-    // #1920 slice A — the lean cost fold over `Outcome.dispatches`. Its
-    // production caller is the schema-5 headless result (slice B, #1920), not
-    // yet shipped; `leanUsage` is exported so that caller has one fold to read,
-    // and only `test-lean-usage.ts` calls it today. The `SEAMS` table's own
-    // `pending` map is per-EXPORT and its asserts require a production importer
-    // and a canary, so it cannot express "this WHOLE module awaits slice B" —
-    // this set is the mechanism that does. Remove it when slice B lands.
-    "lean/usage-sum.ts",
     // #660 B2 — companion extension loaded via --extension at dispatch time
     // (FACTS_EXTRA_ARGS in the /agents-md pre-pass), not via a static import.
     // Same pattern as policy-reporter.ts / lens-reporter.ts / plan-reporter.ts,

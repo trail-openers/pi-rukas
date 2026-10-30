@@ -326,7 +326,8 @@ export function phase1Handlers(
     const rules = failedRulesFromLog(ctx.steps);
     try {
       await postNotReady(repoRoot, issue, rules);
-      return { kind: "done" };
+      // The comment reached the forge — the typed claim `leanHandoff` reads.
+      return { kind: "done", posted: true };
     } catch (err) {
       // NOT `done`: the step log memoizes a completed step forever, so a
       // swallowed throw here would read as "the comment was posted" when it
@@ -335,7 +336,11 @@ export function phase1Handlers(
       // spec refused it whether or not the forge took the comment — and the
       // reason on the record says the comment never went out. It is NOT
       // retried on resume: the step log and the reason are the record.
-      return { kind: REPORT_FAILED_KIND, reason: `comment not posted: ${(err as Error).message}` };
+      return {
+        kind: REPORT_FAILED_KIND,
+        posted: false,
+        reason: `comment not posted: ${(err as Error).message}`,
+      };
     }
   };
   return handlers;

@@ -187,6 +187,16 @@ export interface Outcome {
    */
   draft?: boolean;
   /**
+   * `handback` and `decline` only: whether the comment this step was the run's
+   * way of telling someone actually reached the forge. The step never throws
+   * either way — the run ends on its verdict regardless of the comment — so this
+   * field is the ONLY record of a failed post, and a result that printed
+   * "delivered" without it would send a host to look at a comment nobody posted.
+   * Absent means no claim was recorded, which every reader treats as NOT
+   * delivered.
+   */
+  posted?: boolean;
+  /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step
    * paid for, including the ones that died or were stopped by their budget.
    * #1920 slice A groundwork for the lean result's per-role usage: a row is
@@ -453,7 +463,15 @@ const NON_TERMINAL: readonly LeanState[] = [
   "decline",
 ];
 
-/** The states that REPORT how a run ended rather than do work on it. */
+/**
+ * The states that REPORT how a run ended rather than do work on it.
+ *
+ * Defined in `state-outcome.ts` — the module that owns which step may record which
+ * field, the only reader that distinguishes these two from the work states — and
+ * re-exported here so callers reach it from the record it is a property of. It
+ * cannot be re-exported with `export { … } from`: `state.ts` is that module's
+ * importer, so the cycle would read the binding before it was initialised.
+ */
 export const REPORT_STATES: readonly LeanState[] = ["handback", "decline"];
 
 /**

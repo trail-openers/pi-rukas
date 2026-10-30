@@ -260,11 +260,15 @@ export async function handbackOutcome(
       ...(prUrl === undefined ? {} : { prUrl }),
     });
     await post(ctx.repoRoot, ctx.issue, body);
-    return { kind: "done", reason: "handback comment posted" };
+    // `posted: true` is the only place the claim lives: the kind is `done` either
+    // way, so without the field a refused post and a delivered one are the same
+    // record to a later reader.
+    return { kind: "done", reason: "handback comment posted", posted: true };
   } catch (err) {
     // The run ends here either way; the record says whether anyone was told.
     return {
       kind: "done",
+      posted: false,
       reason: `handback comment NOT posted: ${(err as Error)?.message || String(err)}`,
     };
   }

@@ -42,7 +42,6 @@ import { PLAN_FLAGS } from "./plan.ts";
 import { RESEARCH_FLAGS } from "./research.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
 import { WORK_LEAN_FLAGS } from "./work-lean.ts";
-
 /**
  * The version of the capabilities object itself. Bump on any change to the
  * answer's shape (added/removed top-level fields); the caller's drift test
@@ -94,6 +93,16 @@ export const HEADLESS_FEATURES = {
    * its flags under `verbs["work-lean"].flags`.
    */
   workLeanVerb: true,
+  /**
+   * #1920 slice B — `work-lean`'s success document is the SAME schema the
+   * `work` verb writes: `schemaVersion: 5` and one `issues[]` entry with
+   * `status`, `cap`, `failure`, `branch`, `prUrl`, `usage` (with `byRole`) and
+   * the lean-only typed `prState` (`ready` | `draft` | `none`), so a host needs
+   * no second reader to compare the two engines. A build without this feature
+   * writes lean's own pre-#1920 document (`state`/`summary`/`steps`/`prUrl`)
+   * and has no `prState` to switch on — refuse the image rather than guess.
+   */
+  workLeanResultSchema: RESULT_SCHEMA_VERSION,
 } as const;
 
 export interface Capabilities {

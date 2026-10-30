@@ -17,8 +17,19 @@
 import type { DispatchUsage } from "../types.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
-import type { LeanState, Outcome } from "./state.ts";
+import type { LeanState, Outcome, Step } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
+
+/**
+ * The states that REPORT how a run ended rather than do work on it. The single
+ * definition lives in `state.ts` (the record's own module, which is where every
+ * caller looks for it); this module keeps a LOCAL copy for the ownership table
+ * below only because `state.ts` imports this file as its validator, so a value
+ * binding reaching back across that edge is a cycle and the array would be read
+ * before it was initialised. `test-lean-state-outcome.ts` pins the two lists
+ * being equal, which is what keeps the copy honest.
+ */
+const REPORTING_STATES: readonly LeanState[] = ["handback", "decline"];
 
 /** A sha256 in the hex form the `specify` step freezes into its outcome. */
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -102,13 +113,19 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
  * produced it is not extra information — it is a forged record that reads as
  * evidence. `draft` is the publish step's answer to "what did I hand the forge",
  * and `dispatches` is the per-child cost of the three dispatching steps, so both
- * belong to no other state either. `assertRun` refuses a breach at load with the
+ * belong to no other state either. `posted` is the two REPORTING steps' answer to
+ * "did the comment reach the forge": a report step that claimed delivery when
+ * nobody posted anything is a record that reads as delivery, which is why no
+ * other state may carry it. `assertRun` refuses a breach at load with the
  * step's own key in the message, so a hand-edited file naming a PR this run never
  * opened (or claiming a head this run never verified) is never driven.
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
   prUrl: "publish",
   draft: "publish",
+  // The two steps that REPORT how a run ended are the only ones that may claim a
+  // comment reached the forge.
+  posted: REPORTING_STATES,
   dispatches: BUDGET_STATES,
   verifiedHead: "verify",
   commandCriteria: "verify",
@@ -397,6 +414,11 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (oc.prUrl.length > PR_URL_MAX_CHARS)
       return `outcome prUrl must be at most ${PR_URL_MAX_CHARS} characters`;
   }
+  // `posted` is the report steps' delivery claim, so it is a boolean or nothing:
+  // a truthy string would survive a reader that asks `if (outcome.posted)` and
+  // print a handoff as delivered when the forge refused it.
+  if (oc.posted !== undefined && typeof oc.posted !== "boolean")
+    return "outcome posted must be a boolean";
   return undefined;
 }
 
@@ -461,6 +483,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
     ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),
+    ...(typeof oc.posted === "boolean" ? { posted: oc.posted } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),

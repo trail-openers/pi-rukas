@@ -295,6 +295,35 @@ for (const [label, issue, step, expect] of [
     },
     /outcome draft is only recorded by a publish step/,
   ],
+  [
+    // #1920 B — `posted` is the two REPORTING steps' delivery claim, and the headless
+    // result reads it to decide whether to tell a host a comment exists. On a step
+    // that posts nothing it is a delivery the run never made.
+    "posted on a publish step",
+    62,
+    {
+      key: "62:publish:0",
+      state: "publish",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "ok", prUrl: "https://github.com/o/r/pull/1", posted: true },
+    },
+    /outcome posted is only recorded by a handback,decline step/,
+  ],
+  [
+    // A truthy string survives `if (outcome.posted)` and prints a park as
+    // delivered, so the field is a boolean or the record is refused.
+    "posted as a string on a handback step",
+    63,
+    {
+      key: "63:handback:0",
+      state: "handback",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "done", posted: "yes", reason: "handback comment posted" },
+    },
+    /outcome posted must be a boolean/,
+  ],
 ] as const) {
   const { dir, cleanup } = tempDir();
   try {

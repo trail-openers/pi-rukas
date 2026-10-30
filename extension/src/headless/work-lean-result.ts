@@ -1,0 +1,479 @@
+/**
+ * headless/work-lean-result — the schema-5 projection of ONE lean run
+ * (#1920 slice B). Pure: reads a `LeanRun` and its exit code, never writes,
+ * never shells out.
+ *
+ * `work-lean` used to answer a host with its own document (`subcommand`,
+ * `issue`, `exitCode`, `state`, `summary`, `steps`, `prUrl`). A host that
+ * drives `work` headless, one issue per container, already reads
+ * `issues[]` with `status`, `cap`, `failedStep`, `failure`, `branch`, `prUrl`
+ * and `usage`, and had to keep a second reader for the lean engine it was
+ * supposed to be comparable against. This module is the projection that lets
+ * it keep one: the same field names, the same meanings, exactly one issue.
+ *
+ * The one field with no counterpart in `work` is `prState`. Lean exits 10 for
+ * EVERY run that reaches `publish`, because `review`, `ci` and `land` are not
+ * built: exit 10 covers a green PR waiting for a merge, a draft behind
+ * unverified bytes, and a run that opened nothing. `status`/`cap` alone cannot
+ * tell those apart, and the issue asks for a typed answer, so `prState` is the
+ * third discriminator beside them.
+ *
+ * Why the caps are chosen the way they are. `work`'s cap vocabulary is a closed
+ * union checked against the driver's `WorkCapLiteral`, and no entry there
+ * describes a lean run's cause — a lean handback is a different machine's
+ * verdict, and inventing a name would put a word in the host's `switch` that
+ * `--capabilities` never published. So exactly ONE published cap is used, and
+ * only where it says what a lean run did: `awaiting-human-merge` for a PR that
+ * publish opened READY and the run's own gate cleared. Every other cause rides
+ * `failure`, whose `kind` is an OPEN list built for this (`FAILURE_KINDS`, and
+ * `test-headless-failure-usage.ts` asserts the published list equals the live
+ * array).
+ *
+ * `lens-review-timeout` is deliberately NOT used, though it is the one published
+ * name that sounds like a lean budget breach. It is not: it names the classic
+ * driver's six-pass review loop, whose budget a lean run never had — a lean
+ * `budget` outcome is a step's own ceiling on its own child. Borrowing the name
+ * to make prose legible would be a cap the run did not hit, and the typed
+ * outcome (`kind === "budget"` with its `limit`) already says what happened.
+ */
+
+import { specifyBranch } from "../lean/specify-tree.ts";
+import { validPrUrl } from "../lean/state-outcome.ts";
+import { type LeanRun, type Outcome, type Step, newestDecided } from "../lean/state.ts";
+import { leanUsage } from "../lean/usage-sum.ts";
+import { handoffMarker } from "../work-driver-handoff-channel.ts";
+import type { WorkState } from "../workflow-state.ts";
+import { type HeadlessCap, capStep } from "./caps.ts";
+import { EXIT } from "./exit-code.ts";
+import type { ResultFailure } from "./failure.ts";
+import {
+  type HandoffResult,
+  type IssueResult,
+  RESULT_SCHEMA_VERSION,
+  type ResultUsage,
+  type StepTiming,
+  handoffOf,
+} from "./result.ts";
+
+/** What `work` reports for a finished PR waiting on a person (#1675's vocabulary). */
+const AWAITING = "awaiting-human-merge";
+
+/** A lean `failure.step` must be a `WorkStep`; `handback` has no counterpart. */
+const LEAN_FAILURE_STEP = "handoff" as const;
+
+/** The run's durable record, named the way the engine names it. */
+function stateFileOf(issue: number): string {
+  return `.pi/lean-state/${issue}.json`;
+}
+/** The run's own words for why it ended, preferring the outcome's reason. */
+function outcomeText(outcome: Outcome | undefined): string | undefined {
+  if (outcome === undefined) return undefined;
+  for (const text of [outcome.reason, outcome.message]) {
+    if (typeof text === "string" && text.trim() !== "") return text.trim();
+  }
+  return undefined;
+}
+
+/** The newest step whose outcome reports a failure of its own, or undefined. */
+function newestFailureStep(steps: Step[]): Step | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const kind = steps[i]?.outcome?.kind;
+    if (kind === "error" || kind === "red" || kind === "exhausted" || kind === "refused")
+      return steps[i];
+  }
+  return undefined;
+}
+
+/** The newest step the run WORKED on, skipping the steps that only report. */
+function newestWorkStep(steps: Step[]): Step | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step === undefined) continue;
+    // `handback` and `decline` are the run REPORTING how it ended, never the
+    // work that ended it — the same exclusion `lean/handback.ts`'s `budgetCause`
+    // makes before it will blame a ceiling for a run.
+    if (step.state === "handback" || step.state === "decline") continue;
+    return step;
+  }
+  return undefined;
+}
+
+/** Is this budget verdict's trio complete enough to be the run's cause? */
+function budgetOutcome(step: Step | undefined): Outcome | undefined {
+  const outcome = step?.outcome;
+  if (outcome?.kind !== "budget") return undefined;
+  if (outcome.limit === undefined) return undefined;
+  if (typeof outcome.value !== "number" || typeof outcome.used !== "number") return undefined;
+  return outcome;
+}
+
+/** The budget sentence, rendered from the typed trio as `lean/handback.ts` does. */
+function budgetText(step: Step, fired: Outcome): string {
+  return `${step.state} stopped: ${String(fired.limit)} budget ${String(fired.value)} exceeded (used ${String(fired.used)})`;
+}
+
+/** The role of the newest dispatching step's last child — the child a host blames. */
+function lastRole(steps: Step[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const rows = steps[i]?.outcome?.dispatches;
+    if (rows === undefined || rows.length === 0) continue;
+    return rows[rows.length - 1]?.role;
+  }
+  return undefined;
+}
+
+/**
+ * Why the run stopped, as the host contract's stable fields.
+ *
+ * The order is the order of USEFULNESS, not of recency, and it is `lean/handback
+ * .ts`'s `neededFromLog` order restated for a typed field: a gate that called
+ * the work red is something a developer can act on, so it outranks a later CI
+ * red; a handler that threw outranks a ceiling the table carried past. A budget
+ * breach counts ONLY when it is the newest working step — since #1883 a
+ * `challenge` breach routes on and the run goes on to `verify`, so a breach the
+ * run survived is not its cause, and position is the only honest test of that.
+ */
+function leanFailure(run: LeanRun): ResultFailure | undefined {
+  const steps = run.steps;
+  const worked = newestWorkStep(steps);
+  const fired = budgetOutcome(worked);
+  let failure: ResultFailure;
+  if (worked !== undefined && fired !== undefined) {
+    failure = {
+      kind: "timeout",
+      message: budgetText(worked, fired),
+    };
+  } else {
+    const step = newestFailureStep(steps);
+    if (step === undefined) return undefined;
+    const kind = step.outcome?.kind;
+    const message = outcomeText(step.outcome) ?? `${step.state} step reported ${String(kind)}`;
+    failure = {
+      kind:
+        kind === "error"
+          ? // A handler threw: the engine recorded its message and handed back.
+            "crashed"
+          : kind === "red"
+            ? // The run's own gate judged the code.
+              "verify"
+            : // `exhausted` / `refused`: the step ran out of rounds, or the forge
+              // refused. Neither is a judge of the code and none is transient.
+              "process",
+      message,
+    };
+  }
+  failure.step = LEAN_FAILURE_STEP;
+  const role = lastRole(steps);
+  if (role !== undefined) failure.role = role;
+  return failure;
+}
+
+/**
+ * The cap. `undefined` when no published cap name says what happened — the
+ * cause is then on `failure` alone, which is the open list.
+ *
+ * A PR URL is NOT enough for `awaiting-human-merge`: a run can push a branch,
+ * open a PR, and then have its own gate call the work red, and that is a park,
+ * not a hold. Nor is handing back with a PR enough — publish keeps a PR it
+ * opened as a DRAFT whenever its own gate was not green, and a draft behind
+ * unverified bytes is not work waiting on a person. It takes the typed
+ * `prState: "ready"` — publish recorded `draft === false` AND the gate cleared
+ * the head the PR stands on — to mean what that cap says in `work`.
+ *
+ * A budget breach gets no cap. `lens-review-timeout` is the classic driver's
+ * six-pass review budget, and a lean run has no such loop: its `budget` outcome
+ * is one step's ceiling on one child. The breach is on `failure` with
+ * `kind: "timeout"` and the sentence rendered from the typed trio, which is the
+ * honest report and needs no borrowed name.
+ */
+function leanCap(
+  status: IssueResult["status"],
+  prUrl: string | undefined,
+  prState: IssueResult["prState"],
+): HeadlessCap | undefined {
+  if (prUrl !== undefined && status === "handoff" && prState === "ready") return AWAITING;
+  return undefined;
+}
+
+/**
+ * The terminal status, from the state the run reached and the code it stamped.
+ *
+ * `landed` is the only success and `not-ready` is the one verdict that says the
+ * ISSUE was refused (an issue-text fault is `causeClass: "issue"` in `work`'s
+ * vocabulary, not a change fault). A run that reached no terminal state and
+ * still reported a code is the shape a future `--timeout` produces (#1920 item
+ * 2): no new step started, a result handed back — the same answer `work` gives a
+ * cycle its deadline cut off, which is `interrupted`.
+ */
+function leanStatus(run: LeanRun, code: number): IssueResult["status"] {
+  if (run.state === "landed") return "merged";
+  if (run.state === "not-ready") return "aborted";
+  if (run.state === "handed-back") return "handoff";
+  return code === EXIT.merged ? "running" : "interrupted";
+}
+
+/**
+ * The newest DECIDED `publish` step's URL, if the run got that far.
+ *
+ * `newestDecided` is the log's own rule (an outcome-less step is a crash
+ * mid-step and has said nothing), so a newer `publish` that decided without a
+ * URL reports no URL — reading one from an earlier publish would hand the host
+ * the address of a PR this run replaced. The value is then re-checked with the
+ * load-time rule `handback` applies rather than trusted: the log this projection
+ * reads is a `Step[]`, and the loader is not the only thing that hands one over.
+ * A URL that breaks the shape is not a link a host should open, and it is not a
+ * PR either — which is why `prState` asks THIS function, not the raw field.
+ */
+function prUrlOf(steps: Step[]): string | undefined {
+  return validPrUrl(newestDecided(steps, "publish")?.outcome?.prUrl);
+}
+
+/** Is `sha` the 40-hex commit sha a verify outcome is allowed to name? */
+function isSha(sha: unknown): sha is string {
+  return typeof sha === "string" && /^[0-9a-f]{40}$/.test(sha);
+}
+
+/**
+ * The full head the publish step says it shipped, read back out of its own
+ * reason line: `… published [draft ]PR <url> at <sha>`.
+ *
+ * Publish records the head it pushed ONLY inside that sentence — the typed
+ * `verifiedHead` belongs to `verify`, and `state-outcome.ts` refuses it on any
+ * other step, so there is no field to read. The prefix is read back rather than
+ * trusted: the `<url>` half of the template is re-checked against the same
+ * load-time URL rule that decides whether this step reported a PR at all, and
+ * the `<sha>` half against the verify record it must equal, so a hand-written
+ * line cannot name a head that no gate cleared. A shorter prefix is all publish
+ * prints, hence the comparison is `startsWith` — the same relation the land gate
+ * asserts, in the direction the record actually permits.
+ *
+ * A publish whose reason says nothing of a head returns `undefined`, and
+ * `undefined` is what makes `prState` refuse `ready`: a claim nobody can check
+ * is not a claim to hand a host that merges on it.
+ */
+function publishedHead(publish: Step | undefined): string | undefined {
+  if (publish === undefined) return undefined;
+  const reason = publish.outcome?.reason;
+  if (typeof reason !== "string") return undefined;
+  const at = reason.lastIndexOf(" at ");
+  if (at < 0) return undefined;
+  const tail = reason.slice(at + 4).trim();
+  // The template's own shape must hold, or this is not a head claim: the words
+  // "published" and "PR" and the URL the step recorded all sit before it.
+  if (!reason.includes("published") || !reason.includes("PR ")) return undefined;
+  const url = publish.outcome?.prUrl;
+  if (validPrUrl(url) === undefined || !reason.includes(`PR ${url} at `)) return undefined;
+  return /^[0-9a-f]{7,40}$/.test(tail) ? tail : undefined;
+}
+
+/**
+ * Did the gate clear the exact tree this publish step shipped?
+ *
+ * Two records have to agree, the same rule publish applies before it will push
+ * at all: a green `verify` whose `verifiedHead` does not begin with the head
+ * publish named is a verdict about a DIFFERENT commit, and calling that "ready"
+ * would tell a host to merge bytes this run never ran its frozen tests against.
+ * A verify that began after this publish is a later round's verdict and says
+ * nothing about this PR; a publish that named no head, or a green that recorded
+ * no head to compare, is UNOBSERVED, and unobserved goes to `draft`.
+ */
+function gateClearedPublishedHead(steps: Step[], publish: Step, head: string | undefined): boolean {
+  if (head === undefined) return false;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step === undefined || step.state !== "verify" || step.outcome === undefined) continue;
+    if (step.startedAt > publish.startedAt) continue;
+    if (step.outcome.kind !== "green") return false;
+    return isSha(step.outcome.verifiedHead) && step.outcome.verifiedHead.startsWith(head);
+  }
+  return false;
+}
+
+/**
+ * Was the PR ready, a draft, or was there no PR at all? The typed answer to the
+ * question exit 10 cannot ask.
+ *
+ * - `ready` — publish recorded `draft === false` AND the newest green `verify`
+ *   named the very head publish says it shipped (the land gate's own rule);
+ * - `draft` — publish recorded `draft === true`, or anything about the claim is
+ *   missing;
+ * - `none` — no publish step left a PR URL.
+ *
+ * AN UNOBSERVED DRAFT STATE GOES TO `draft`, THE SAFE SIDE. `publish` records
+ * the state the forge REPORTED rather than the one it asked for (that is
+ * #1920 slice A's rule, and why the field is optional), so a publish outcome
+ * with no `draft` is the one case where nobody knows. Guessing `ready` tells a
+ * host to merge bytes its own gate never cleared; guessing `draft` costs a
+ * person one look at the PR. The asymmetry decides it, and it decides every
+ * missing half of the `ready` evidence the same way.
+ */
+function prStateOf(steps: Step[]): IssueResult["prState"] {
+  const publish = newestDecided(steps, "publish");
+  if (publish === undefined || prUrlOf(steps) === undefined) return "none";
+  // `draft === true` is the forge's own answer and needs no second opinion.
+  if (publish.outcome?.draft === true) return "draft";
+  // `ready` is the only claim here that needs ALL THREE halves of its evidence:
+  // the forge said the PR is not a draft (`draft === false`, the value the
+  // read-back records), the run's own gate went green, and that green was
+  // decided about the head publish pushed. Anything else is `draft`, the safe
+  // side. A host told `ready` merges; a host told `draft` goes and looks.
+  if (publish.outcome?.draft !== false) return "draft";
+  return gateClearedPublishedHead(steps, publish, publishedHead(publish)) ? "ready" : "draft";
+}
+
+/** Start/end per step, in log order — the shape `StepTiming[]` has. */
+function stepTimings(steps: Step[]): StepTiming[] {
+  return steps.map((s) => ({
+    step: s.state,
+    startedAt: new Date(s.startedAt).toISOString(),
+    endedAt: new Date(s.endedAt ?? s.startedAt).toISOString(),
+  }));
+}
+
+/** First start to last end, or 0 when the log cannot say. */
+function durationOf(steps: Step[]): number {
+  const first = steps[0]?.startedAt;
+  const last = steps[steps.length - 1];
+  const end = last?.endedAt ?? last?.startedAt;
+  return typeof first === "number" && typeof end === "number" ? Math.max(0, end - first) : 0;
+}
+
+/**
+ * The run's report, projected through the SAME reader `work`'s result uses.
+ *
+ * The projection reports only what the run OBSERVED. `handback` and `decline`
+ * post their comment themselves and never throw, so the only account of whether
+ * it reached the forge is the typed `posted` on their outcome — and a step that
+ * recorded no claim at all is NOT delivered either, because the alternative is
+ * printing "delivered" on the strength of a field nobody wrote. So:
+ *
+ *   - `delivery`/`channel` are `dispatch`/`forge` only when `posted === true`;
+ *     an undelivered report asserts no delivery provenance at all — `delivery`
+ *     records where a post that HAPPENED came from, so its absence is "nobody
+ *     posted", and `channel` stays `forge` because the report was addressed to the
+ *     forge and simply never got there (the host channel means the host OWNS that
+ *     channel by contract, which is a different fact);
+ *   - `bodyError: "not-recorded"` is set on an undelivered report. That is the
+ *     field `HandoffResult` carries for "this handoff published nothing", and
+ *     `handoffOf` refuses to publish a `body` beside it — so an unposted comment
+ *     cannot be read as one that was posted, which is the fabrication this whole
+ *     block exists to stop;
+ *   - `labelApplied` is false, because lean applies no `needs-human-attention`
+ *     label on any path — there is no label step in the machine, so `true` would
+ *     be a claim from a run that has no such step to make it. It is NOT recorded
+ *     as `labelSkipped: "host-channel"` either, for the same reason as above;
+ *   - no `handoffBodyPath`: nothing in `lean/` writes a report file, and
+ *     `handoffOf` turns one into `bodyFile` — a diagnostic path a person would
+ *     open to find no file there.
+ *
+ * `body` is the run's OWN record (the marker line, then the reason the step left
+ * on the log), never a re-read of a file, which is #1327's rule for this field.
+ * It travels only on a delivered report; when the forge refused the post, the
+ * record says `not-recorded` rather than handing out text no one was shown.
+ *
+ * The event handed to `handoffOf` is a value this module builds and no
+ * consumer persists — lean's durable record is `lean/state.ts`'s own, and its
+ * loader refuses anything else — so it is assembled once here as data and the
+ * shared reader does the projection, rather than a cast over an invented shape.
+ */
+function leanHandoff(run: LeanRun, cap: HeadlessCap | undefined): HandoffResult | undefined {
+  const reported = newestDecided(run.steps, "handback") ?? newestDecided(run.steps, "decline");
+  const reason = outcomeText(reported?.outcome);
+  if (reason === undefined) return undefined;
+  const posted = reported?.outcome?.posted === true;
+  const marker = handoffMarker(run.issue, cap);
+  const event: Record<string, unknown> = {
+    kind: "handoff-emitted",
+    at: reported?.endedAt ?? reported?.startedAt ?? 0,
+    // Lean has no label step, so it never claims one — posted or not.
+    labelApplied: false,
+    targetType: "issue",
+    targetNumber: run.issue,
+  };
+  // Both fields assigned ONLY when the post returned: `delivery` is provenance for
+  // a delivery, and `body` is the text the forge took — `handoffOf` publishes no
+  // body beside a non-delivery, so leaving both out is what makes the failed post
+  // read as `bodyError: "not-recorded"` without this module restating that rule.
+  if (posted) {
+    event.delivery = "dispatch";
+    event.body = `${marker}\n\n${reason}`;
+  }
+  // `handoffOf` reads nothing but this event and `state.issue`, so the shell
+  // around it is the two fields it touches and no more.
+  const state = { issue: run.issue, eventLog: [event] } as unknown as WorkState;
+  return handoffOf(state, cap);
+}
+
+/** The fold's totals flattened into the host contract's `usage` shape. */
+function resultUsageOf(steps: Step[]): ResultUsage {
+  const { total, byRole } = leanUsage(steps);
+  return { ...total, byRole };
+}
+
+/**
+ * Project one lean run into the single `IssueResult` its document carries.
+ *
+ * `code` is the code the run stamped (`RunLeanResult.code`). Every field comes
+ * from the run's own record; a field with no lean counterpart is absent rather
+ * than guessed — which is why there is no `prNumber` (the lean forge adapter
+ * returns a URL, not a number) and no `parkReason` (no lean step records one).
+ */
+export function leanIssueResult(run: LeanRun, code: number): IssueResult {
+  const steps = run.steps;
+  const prUrl = prUrlOf(steps);
+  const status = leanStatus(run, code);
+  const failure = leanFailure(run);
+  const prState = prStateOf(steps);
+  const cap = leanCap(status, prUrl, prState);
+  const result: IssueResult = {
+    issue: run.issue,
+    status,
+    stateFile: stateFileOf(run.issue),
+    durationMs: durationOf(steps),
+    steps: stepTimings(steps),
+    exitCode: code,
+    resumable: false,
+    usage: resultUsageOf(steps),
+    // The same derivation every lean surface uses, so the branch the document
+    // names is the branch the steps worked on (`lean/`'s own fallback).
+    branch: specifyBranch(run.branch, run.issue),
+    prState,
+  };
+  if (cap !== undefined) result.cap = cap;
+  // `failedStep` is reported ONLY when the cap names it: `capStep()` is the
+  // driver's own rule for a step-template cap, and lean's states are not
+  // `WorkStep`s, so a guessed step would be a wrong answer rather than a
+  // missing one.
+  const named = cap === undefined ? undefined : capStep(cap);
+  if (named !== undefined) result.failedStep = named;
+  if (failure !== undefined) result.failure = failure;
+  if (prUrl !== undefined) result.prUrl = prUrl;
+  const handoff = leanHandoff(run, cap);
+  if (handoff !== undefined) result.handoff = handoff;
+  return result;
+}
+
+/**
+ * The success-path document: a schema-5 result for one lean run, in the shape a
+ * verb returns (`exitCode` + `doc`).
+ *
+ * `schemaVersion` / `issues[]` mirror `ResultDocument`, and `buildCommit` /
+ * `buildVersion` are deliberately NOT filled here: `runSubcommand` (cli.ts)
+ * spreads the build fields into whatever a verb returns, and the verb's tests
+ * drive it through that path — so the CLI owns those two and this module cannot
+ * contradict it. The `error` field is absent by construction: this is the path
+ * where the run answered, and the refusal/crash documents (#1924) stay exactly
+ * as `work-lean.ts` builds them.
+ */
+export function leanResultDocument(
+  run: LeanRun,
+  code: number,
+): { exitCode: number; doc: Record<string, unknown> } {
+  return {
+    exitCode: code,
+    doc: {
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      issues: [leanIssueResult(run, code)],
+    },
+  };
+}
