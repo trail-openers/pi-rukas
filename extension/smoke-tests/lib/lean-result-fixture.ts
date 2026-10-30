@@ -23,8 +23,8 @@
  *     would report every delivered report as undelivered.
  */
 
-import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
+import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import { fakeRun, verbRun } from "./work-lean-verb-fixture.ts";
 
 /** The PR's address every case uses. */
@@ -92,6 +92,10 @@ export interface LeanLogOpts {
   withPublishedHead?: boolean;
   /** Whether the handback comment reached the forge (default: it did). */
   posted?: boolean;
+  /** Whether a green `ci` step follows the publish (default: it does not).
+   *  The engine's land gate reads the newest decided `ci` beside the newest
+   *  decided `verify`, and so does `prState`. */
+  ci?: "green";
 }
 
 /** The whole log one ending is made of — see the module header for its rules. */
@@ -105,19 +109,14 @@ export function leanLog(opts: LeanLogOpts): Step[] {
     stepWith("build", { kind: "ok" }),
     stepWith("verify", {
       kind: opts.verify ?? "green",
-      ...(opts.verify === "red"
-        ? { reason: "acceptance test x is red" }
-        : { verifiedHead: head }),
+      ...(opts.verify === "red" ? { reason: "acceptance test x is red" } : { verifiedHead: head }),
     }),
   ];
   if (opts.prUrl !== undefined) {
     // The head publish records as typed data, never as a prefix in prose:
     // `publishedHead` absent is the unobserved case, and a value unequal to the
     // green's `verifiedHead` is the drift case.
-    const published =
-      opts.withPublishedHead === false
-        ? undefined
-        : (opts.publishedHead ?? head);
+    const published = opts.withPublishedHead === false ? undefined : (opts.publishedHead ?? head);
     steps.push(
       stepWith("publish", {
         kind: "ok",
@@ -127,6 +126,12 @@ export function leanLog(opts: LeanLogOpts): Step[] {
         reason: `published ${opts.draft === true ? "draft " : ""}PR ${opts.prUrl} at ${head.slice(0, 12)}`,
       }),
     );
+  }
+  if (opts.ci === "green") {
+    // The pipeline's verdict on the head the PR stands on: a decided `ci` that
+    // is not green is as much a refusal as a red gate, and a later red verify is
+    // newer than the publish either way.
+    steps.push(stepWith("ci", { kind: "green" }));
   }
   steps.push(
     stepWith("handback", {

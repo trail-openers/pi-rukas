@@ -31,7 +31,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { postHandback } from "./io.ts";
 import { validPrUrl } from "./state-outcome.ts";
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
-import { budgetTrio } from "./step-budget.ts";
+import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify.ts";
 
@@ -132,7 +132,7 @@ function budgetCause(steps: Step[]): string | undefined {
   const step = steps[newest];
   const fired = budgetTrio(step?.outcome);
   if (fired === undefined) return undefined;
-  return `${step?.state ?? "the step"} stopped: ${fired.limit} budget ${String(fired.value)} exceeded (used ${String(fired.used)})`;
+  return step === undefined ? undefined : budgetSentence(step.state, fired);
 }
 
 /**

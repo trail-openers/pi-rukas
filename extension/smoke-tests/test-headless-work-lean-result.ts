@@ -23,9 +23,17 @@
  */
 
 import { runWorkLeanVerb } from "../src/headless/work-lean.ts";
-import type { LeanRun } from "../src/lean/state.ts";
+import type { LeanRun, Step } from "../src/lean/state.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
-import { CHILDREN, HEAD, URL, driveLean, leanLog, stepWith, withReason } from "./lib/lean-result-fixture.ts";
+import {
+  CHILDREN,
+  HEAD,
+  URL,
+  driveLean,
+  leanLog,
+  stepWith,
+  withReason,
+} from "./lib/lean-result-fixture.ts";
 import { REPO, fakeRun, verbRun } from "./lib/work-lean-verb-fixture.ts";
 
 const { assert, state } = makeAssert();
@@ -33,10 +41,13 @@ const { assert, state } = makeAssert();
 const drive = driveLean;
 const log = leanLog;
 
-
 // ── (1) a green run with a READY PR: publish said `draft: false`, verify green.
 {
-  const r = await drive("handed-back", 10, log({ prUrl: URL, draft: false, dispatches: CHILDREN }));
+  const r = await drive(
+    "handed-back",
+    10,
+    log({ prUrl: URL, draft: false, ci: "green", dispatches: CHILDREN }),
+  );
   assert(r.violations.length === 0, `ready: output contract (${r.violations.join("; ")})`);
   assert(r.doc.schemaVersion === 5, `ready: schemaVersion 5 (got ${String(r.doc.schemaVersion)})`);
   assert(Array.isArray(r.doc.issues) && r.doc.issues.length === 1, "ready: exactly one issue");
@@ -90,7 +101,8 @@ const log = leanLog;
     `draft: nothing failed — the draft state is the whole story (got ${JSON.stringify(i.failure)})`,
   );
   assert(
-    JSON.stringify([i.prState, i.status, i.cap]) === JSON.stringify(["draft", "handoff", undefined]),
+    JSON.stringify([i.prState, i.status, i.cap]) ===
+      JSON.stringify(["draft", "handoff", undefined]),
     `draft: told apart from the other two endings by prState/status/cap alone`,
   );
 }
@@ -164,7 +176,9 @@ const log = leanLog;
 // the reason line back.
 {
   const steps = log({ prUrl: URL, draft: false, dispatches: CHILDREN, withPublishedHead: false });
-  const prose = steps.map((s) => (s.state === "publish" ? withReason(s, `published PR ${URL} at ${HEAD.slice(0, 12)}`) : s));
+  const prose = steps.map((s) =>
+    s.state === "publish" ? withReason(s, `published PR ${URL} at ${HEAD.slice(0, 12)}`) : s,
+  );
   const r = await drive("handed-back", 10, prose);
   const i = r.issue ?? {};
   assert(
@@ -172,6 +186,39 @@ const log = leanLog;
     `prose-head: a reason line is not a published head (got ${String(i.prState)})`,
   );
   assert(i.cap === undefined, `prose-head: and no cap (got ${String(i.cap)})`);
+}
+
+// ── (2f) A red gate decided AFTER publish, and a red `ci`, both refuse ready:
+// the publish step's own clock is not the run's verdict. A table that re-runs
+// `verify` after `publish` leaves a red newer than the PR, and a decided red `ci`
+// is the pipeline's verdict on the very head the PR stands on — `lean/engine.ts`
+// refuses to merge over either, so a projection that said `ready` over one would
+// tell a host to merge bytes both gates called red.
+{
+  const base = log({ prUrl: URL, draft: false, ci: "green", dispatches: CHILDREN });
+  // The log is append-only, so "decided after publish" is a LATER ENTRY, not a
+  // later clock: a re-run appends `verify:1` and the land gate reads that one
+  // (`newestDecided`), whichever wall-clock stamp it carries.
+  const lateRed: Step[] = [
+    ...base,
+    stepWith("verify", { kind: "red", reason: "acceptance test x went red" }, 1),
+  ];
+  const r = await drive("handed-back", 10, lateRed);
+  const i = r.issue ?? {};
+  assert(
+    i.prState === "draft",
+    `late-red: a red gate newer than publish is not ready (got ${String(i.prState)})`,
+  );
+  assert(i.cap === undefined, `late-red: and no awaiting-human-merge (got ${String(i.cap)})`);
+}
+{
+  const redCi = log({ prUrl: URL, draft: false, ci: "green", dispatches: CHILDREN }).map((s) =>
+    s.state === "ci" ? { ...s, outcome: { kind: "red", reason: "ci failed" } } : s,
+  );
+  const r = await drive("handed-back", 10, redCi);
+  const i = r.issue ?? {};
+  assert(i.prState === "draft", `red-ci: a red ci is not ready (got ${String(i.prState)})`);
+  assert(i.cap === undefined, `red-ci: and no awaiting-human-merge (got ${String(i.cap)})`);
 }
 
 // ── (3) NO PR: the run handed back before any publish step decided.
@@ -189,14 +236,17 @@ const log = leanLog;
     `no-pr: the gate's red verdict is the failure (got ${JSON.stringify(failure)})`,
   );
   const usage = i.usage as Record<string, unknown>;
-  assert(usage.dispatches === 3, `no-pr: usage still counts the children (got ${usage.dispatches})`);
+  assert(
+    usage.dispatches === 3,
+    `no-pr: usage still counts the children (got ${usage.dispatches})`,
+  );
 }
 
 // ── (3b) the three endings are pairwise distinct on those three fields alone.
 {
   const seen = new Set<string>();
   for (const [label, steps] of [
-    ["ready", log({ prUrl: URL, draft: false })],
+    ["ready", log({ prUrl: URL, draft: false, ci: "green" })],
     ["draft", log({ prUrl: URL, draft: true })],
     ["none", log({})],
   ] as const) {

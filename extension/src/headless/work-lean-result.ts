@@ -38,9 +38,17 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import { redactClip } from "../decision-log.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
-import { type LeanRun, type Outcome, type Step, newestDecided } from "../lean/state.ts";
+import {
+  type LeanRun,
+  type Outcome,
+  REPORT_STATES,
+  type Step,
+  newestDecided,
+} from "../lean/state.ts";
+import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
 import { leanUsage } from "../lean/usage-sum.ts";
 import { handoffMarker } from "../work-driver-handoff-channel.ts";
 import { makeHandoffEmittedEvent } from "../work-driver-handoff-post.ts";
@@ -63,6 +71,13 @@ const AWAITING = "awaiting-human-merge";
 /** A lean `failure.step` must be a `WorkStep`; `handback` has no counterpart. */
 const LEAN_FAILURE_STEP = "handoff" as const;
 
+/**
+ * How long one piece of the run's own prose may be on the host's document. Same
+ * bound and seam as `headless/failure.ts`: redaction happens BEFORE the clip, so
+ * a cut cannot leave a fragment no pattern recognises.
+ */
+const TEXT_MAX = 500;
+
 /** The run's durable record, named the way the engine names it. */
 function stateFileOf(issue: number): string {
   return `.pi/lean-state/${issue}.json`;
@@ -70,13 +85,19 @@ function stateFileOf(issue: number): string {
 /** The run's own words for why it ended, preferring the outcome's reason. */
 function outcomeText(outcome: Outcome | undefined): string | undefined {
   if (outcome === undefined) return undefined;
+  // `Outcome`'s two prose fields are optional strings, and the log this
+  // projection reads is a `Step[]` the loader is not the only thing that hands
+  // over — so both are re-checked rather than trusted.
   for (const text of [outcome.reason, outcome.message]) {
     if (typeof text === "string" && text.trim() !== "") return text.trim();
   }
   return undefined;
 }
 
-/** The newest step whose outcome reports a failure of its own, or undefined. */
+/**
+ * The newest step whose outcome reports a failure of its own, or undefined —
+ * child text a host prints, so its reason is bounded and redacted on exit.
+ */
 function newestFailureStep(steps: Step[]): Step | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const kind = steps[i]?.outcome?.kind;
@@ -91,27 +112,14 @@ function newestWorkStep(steps: Step[]): Step | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step === undefined) continue;
-    // `handback` and `decline` are the run REPORTING how it ended, never the
-    // work that ended it — the same exclusion `lean/handback.ts`'s `budgetCause`
-    // makes before it will blame a ceiling for a run.
-    if (step.state === "handback" || step.state === "decline") continue;
+    // The report states are the run REPORTING how it ended, never the work that
+    // ended it — the same exclusion `lean/handback.ts`'s `budgetCause` makes
+    // before it will blame a ceiling for a run. Read from the engine's own list
+    // so a new reporting state cannot be forgotten here.
+    if (REPORT_STATES.includes(step.state)) continue;
     return step;
   }
   return undefined;
-}
-
-/** Is this budget verdict's trio complete enough to be the run's cause? */
-function budgetOutcome(step: Step | undefined): Outcome | undefined {
-  const outcome = step?.outcome;
-  if (outcome?.kind !== "budget") return undefined;
-  if (outcome.limit === undefined) return undefined;
-  if (typeof outcome.value !== "number" || typeof outcome.used !== "number") return undefined;
-  return outcome;
-}
-
-/** The budget sentence, rendered from the typed trio as `lean/handback.ts` does. */
-function budgetText(step: Step, fired: Outcome): string {
-  return `${step.state} stopped: ${String(fired.limit)} budget ${String(fired.value)} exceeded (used ${String(fired.used)})`;
 }
 
 /** The role of the newest dispatching step's last child — the child a host blames. */
@@ -135,14 +143,13 @@ function lastRole(steps: Step[]): string | undefined {
  *      present), the failure is `kind: "timeout"` with the sentence rendered from
  *      those three. A breach the run survived — a `challenge` ceiling the table
  *      carried past on its way to `verify` (#1883) — is older than the newest
- *      working step and is therefore not the cause: position, not prose, decides;
+ *      working step, so position, not prose, decides;
  *   3. otherwise scan the WHOLE log backwards for the newest step whose own
- *      outcome reports a failure (`error` | `red` | `exhausted` | `refused`) and
- *      map it: `error` → `crashed` (a handler threw), `red` → `verify` (the run's
- *      own gate judged the code), `exhausted`/`refused` → `process` (out of
- *      rounds, or the forge refused — neither judges the code, none is transient).
- *      Its `message` is the outcome's own reason or message, or a fallback naming
- *      the state and kind;
+ *      outcome reports a failure and map it: `error` → `crashed` (a handler
+ *      threw), `red` → `verify` (the run's own gate judged the code),
+ *      `exhausted`/`refused` → `process` (out of rounds, or the forge refused —
+ *      neither judges the code, none is transient). Its `message` is the
+ *      outcome's own reason or message, or a fallback naming the state and kind;
  *   4. if no such step exists the run said nothing about failing: `undefined`.
  *
  * `step` is always `"handoff"` and `role` is the last child of the newest
@@ -152,12 +159,14 @@ function lastRole(steps: Step[]): string | undefined {
 function leanFailure(run: LeanRun): ResultFailure | undefined {
   const steps = run.steps;
   const worked = newestWorkStep(steps);
-  const fired = budgetOutcome(worked);
+  // The shared trio check: `limit` named and `value`/`used` numbers, or the
+  // breach is a half-record and falls through to the newest real failure.
+  const fired = worked === undefined ? undefined : budgetTrio(worked.outcome);
   let failure: ResultFailure;
   if (worked !== undefined && fired !== undefined) {
     failure = {
       kind: "timeout",
-      message: budgetText(worked, fired),
+      message: redactClip(budgetSentence(worked.state, fired), TEXT_MAX),
     };
   } else {
     const step = newestFailureStep(steps);
@@ -175,7 +184,7 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
             : // `exhausted` / `refused`: the step ran out of rounds, or the forge
               // refused. Neither is a judge of the code and none is transient.
               "process",
-      message,
+      message: redactClip(message, TEXT_MAX),
     };
   }
   failure.step = LEAN_FAILURE_STEP;
@@ -265,27 +274,27 @@ function publishedHeadOf(publish: Step | undefined): string | undefined {
 /**
  * Did the gate clear the exact tree this publish step shipped?
  *
- * ONE reader decides it: the newest DECIDED `verify` that had already STARTED by
- * the time this `publish` did. Everything else is a plain question of that one
- * record — was it green, and is its `verifiedHead` the head publish pushed?
+ * ONE reader decides it: the newest DECIDED `verify` in the WHOLE log — the same
+ * record the engine's own land gate reads (`lean/engine.ts`'s `landEarned`), so
+ * this projection cannot call ready bytes the engine would refuse to merge. The
+ * one rule it adds is that the green must be about the head `publish` pushed.
  *
- * Both halves are needed, the same rule `publish` applies before it will push at
- * all: a `verify` about a DIFFERENT commit is not a verdict about this PR, and
- * calling it one would tell a host to merge bytes this run never ran its frozen
- * tests against. A `verify` that started AFTER this publish is a later round's
- * verdict and says nothing about this PR — `publish` will not push over a green
- * it cannot see, so the gate's own rule is the reader's rule. An outcome-less
- * `verify` is a crash mid-step and has said nothing (`newestDecided`), and a
- * publish that named no head, or a green that named none, is UNOBSERVED — which
- * goes to `draft`.
+ * The `startedAt` filter this reader used to carry (a `verify` had to have
+ * STARTED by the publish's time) was the wrong rule: a table that re-runs
+ * `verify` after `publish` leaves a verdict NEWER than the publish, and reading
+ * an older green over it told a host to merge work its own gate had since called
+ * red. Position in the log, not the publish's clock, is what makes a verdict the * run's current one. A decided `ci` is read the same way: the newest one must be
+ * green, because it is the pipeline's verdict on the very head the PR stands on,
+ * and an older `verify` green says nothing about it.
+ *
+ * An outcome-less `verify` or `ci` is a crash mid-step and has said nothing
+ * (`newestDecided`), and a publish that named no head, or a green that named
+ * none, is UNOBSERVED — which goes to `draft`.
  */
-function gateClearedPublishedHead(steps: Step[], publish: Step, head: string | undefined): boolean {
+function gateClearedPublishedHead(steps: Step[], head: string | undefined): boolean {
   if (head === undefined) return false;
-  const started = steps.filter(
-    (step) =>
-      step.state === "verify" && step.outcome !== undefined && step.startedAt <= publish.startedAt,
-  );
-  const gate = started[started.length - 1];
+  if (newestDecided(steps, "ci")?.outcome?.kind !== "green") return false;
+  const gate = newestDecided(steps, "verify");
   if (gate?.outcome?.kind !== "green") return false;
   const verified = gate.outcome.verifiedHead;
   return typeof verified === "string" && isFullCommitSha(verified) && verified === head;
@@ -295,9 +304,9 @@ function gateClearedPublishedHead(steps: Step[], publish: Step, head: string | u
  * Was the PR ready, a draft, or was there no PR at all? The typed answer to the
  * question exit 10 cannot ask.
  *
- * - `ready` — publish recorded `draft === false` AND the newest `verify` that
- *   had started by then was green about the very head publish says it shipped
- *   (the land gate's own rule, read from typed fields only);
+ * - `ready` — publish recorded `draft === false` AND the newest decided `verify`
+ *   is green about the very head publish says it shipped AND the newest decided
+ *   `ci` is green (the land gate's own rule, read from typed fields only);
  * - `draft` — publish recorded `draft === true`, or anything about the claim is
  *   missing;
  * - `none` — no publish step left a PR URL.
@@ -315,13 +324,13 @@ function prStateOf(steps: Step[]): IssueResult["prState"] {
   if (publish === undefined || prUrlOf(steps) === undefined) return "none";
   // `draft === true` is the forge's own answer and needs no second opinion.
   if (publish.outcome?.draft === true) return "draft";
-  // `ready` is the only claim here that needs ALL THREE halves of its evidence:
-  // the forge said the PR is not a draft (`draft === false`, the value the
+  // `ready` is the only claim here that needs every half of its evidence: the
+  // forge said the PR is not a draft (`draft === false`, the value the
   // read-back records), the run's own gate went green, and that green was
   // decided about the head publish pushed. Anything else is `draft`, the safe
   // side. A host told `ready` merges; a host told `draft` goes and looks.
   if (publish.outcome?.draft !== false) return "draft";
-  return gateClearedPublishedHead(steps, publish, publishedHeadOf(publish)) ? "ready" : "draft";
+  return gateClearedPublishedHead(steps, publishedHeadOf(publish)) ? "ready" : "draft";
 }
 
 /** Start/end per step, in log order — the shape `StepTiming[]` has. */
@@ -351,59 +360,61 @@ function durationOf(steps: Step[]): number {
  * printing "delivered" on the strength of a field nobody wrote. So:
  *
  *   - `delivery`/`channel` are `dispatch`/`forge` only when `posted === true`;
- *     an undelivered report asserts no delivery provenance at all — `delivery`
- *     records where a post that HAPPENED came from, so its absence is "nobody
- *     posted", and `channel` stays `forge` because the report was addressed to the
- *     forge and simply never got there (the host channel means the host OWNS that
- *     channel by contract, which is a different fact);
- *   - `bodyError: "not-recorded"` is set on an undelivered report. That is the
- *     field `HandoffResult` carries for "this handoff published nothing", and
- *     `handoffOf` refuses to publish a `body` beside it — so an unposted comment
- *     cannot be read as one that was posted, which is the fabrication this whole
- *     block exists to stop;
+ *     an undelivered report asserts no delivery provenance — `delivery` records
+ *     where a post that HAPPENED came from, so its absence is "nobody posted",
+ *     and `channel` stays `forge` because the report was addressed to the forge
+ *     and never got there (the host channel means the host owns that channel by
+ *     contract, a different fact);
+ *   - `bodyError: "not-recorded"` is the field `HandoffResult` carries for "this
+ *     handoff published nothing", and no `body` is published beside it — so an
+ *     unposted comment cannot be read as one that was posted, which is the
+ *     fabrication this whole block exists to stop;
  *   - `labelApplied` is false, because lean applies no `needs-human-attention`
  *     label on any path — there is no label step in the machine, so `true` would
- *     be a claim from a run that has no such step to make it. It is NOT recorded
- *     as `labelSkipped: "host-channel"` either, for the same reason as above;
+ *     be a claim from a run that has no such step to make it (and NOT
+ *     `labelSkipped: "host-channel"` either, for the same reason);
  *   - no `handoffBodyPath`: nothing in `lean/` writes a report file, and
- *     `handoffOf` turns one into `bodyFile` — a diagnostic path a person would
- *     open to find no file there.
+ *     `handoffOf` turns one into `bodyFile` — a path a person would open to find
+ *     no file there.
  *
  * `body` is the run's OWN record (the marker line, then the reason the step left
- * on the log), never a re-read of a file, which is #1327's rule for this field.
- * It travels only on a delivered report; when the forge refused the post, the
- * record says `not-recorded` rather than handing out text no one was shown.
+ * on the log), never a re-read of a file — #1327's rule — bounded and redacted
+ * through `redactClip` before it composes, because the reason is a child's text
+ * and a host prints this document.
  *
- * The event handed to `handoffOf` is built by `makeHandoffEmittedEvent`, the
- * driver's own producer of that event, so it is a real `WorkEvent` rather than a
- * shape this module invented and a cast walked past — and `handoffOf` reads
- * nothing but that event and `state.issue`, so the state around it is
- * `initialState`'s own value with its `eventLog` replaced by the one event —
- * never a pretend one. Lean's durable record stays `lean/state.ts`'s; this is a
- * projection input.
+ * A posted report reaches `handoffOf` through `makeHandoffEmittedEvent`, the
+ * driver's own producer of that event, so it is a real `WorkEvent` and not a
+ * shape this module invented and a cast walked past; the state around it is
+ * `initialState`'s own value with its `eventLog` replaced by that one event.
+ * An UNPOSTED report is built directly instead: the event type REQUIRES a `body`
+ * (#1820 — a park whose body may be absent is a park that silently vanishes)
+ * and this projection has nothing to put in one when the forge took nothing.
  */
 function leanHandoff(run: LeanRun, cap: HeadlessCap | undefined): HandoffResult | undefined {
   const reported = newestDecided(run.steps, "handback") ?? newestDecided(run.steps, "decline");
   const reason = outcomeText(reported?.outcome);
   if (reason === undefined) return undefined;
-  const posted = reported?.outcome?.posted === true;
+  const at = reported?.endedAt ?? reported?.startedAt ?? 0;
   const marker = handoffMarker(run.issue, cap);
+  const posted = reported?.outcome?.posted === true;
+  if (!posted) {
+    // Nothing reached the forge, so the report asserts no delivery provenance at
+    // all and publishes no text — `HandoffResult`'s own not-delivered pair, the
+    // same fields `handoffOf` produces for an event that carried no body.
+    return { channel: "forge", marker, labelApplied: false, bodyError: "not-recorded" };
+  }
   const event = makeHandoffEmittedEvent({
-    at: reported?.endedAt ?? reported?.startedAt ?? 0,
+    at,
     // Lean posts through no driver seam that returns a URL, so there is no
     // comment address to record — only whether the post happened.
     commentUrl: undefined,
     // Lean has no label step, so it never claims one — posted or not.
     labelApplied: false,
     handoffBodyPath: "",
-    // Both fields carry NOTHING unless the post returned: `delivery` is
-    // provenance for a delivery, and `body` is the text the forge took —
-    // `handoffOf` publishes no body beside an absent one, so the failed post has
-    // to read as `bodyError: "not-recorded"`. The event type requires a `body`,
-    // but `handoffOf` tests it with `!== undefined`, so `undefined` here is the
-    // faithful record of "nothing was taken" rather than a cast over it.
-    body: (posted ? `${marker}\n\n${reason}` : undefined) as string,
-    ...(posted ? { delivery: "dispatch" as const } : {}),
+    // The text the forge took, bounded and redacted: `redactClip` scrubs BEFORE
+    // it clips, so a cut cannot leave a fragment no pattern recognises.
+    body: `${marker}\n\n${redactClip(reason, TEXT_MAX)}`,
+    delivery: "dispatch",
     targetType: "issue",
     targetNumber: run.issue,
     consolidated: false,
