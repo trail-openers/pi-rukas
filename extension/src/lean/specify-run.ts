@@ -155,16 +155,30 @@ function noteClause(label: string, notes: string[]): string {
   return `${label} ${notes.length}: ${shown.join("; ")}${more > 0 ? ` (+${more} more)` : ""}`;
 }
 
+/** A dropped row as the boundary reports it: the criterion, the path if it had one, the reason. */
+export interface DropLabel {
+  criterionId: string;
+  path?: string;
+  reason: string;
+}
+
+/**
+ * The attributed form of one drop, `<criterionId> <path>: <reason>` with the
+ * path omitted when there is none. The retry's feedback and the step's reason
+ * both print it, so the child and an operator read the same attribution.
+ */
+export function droppedLabel(d: DropLabel): string {
+  return `${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`;
+}
+
 /**
  * A `dropped N (…) — a; b; c` clause, with NO leading space: each call site
  * supplies the separator its own position needs, so the clause does not carry
  * padding that a caller then has to trim before joining.
  */
-function dropNote(dropped: { criterionId: string; path?: string; reason: string }[]): string {
+function dropNote(dropped: DropLabel[]): string {
   if (dropped.length === 0) return "";
-  const parts = dropped
-    .slice(0, NOTE_CAP)
-    .map((d) => clip(`${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`));
+  const parts = dropped.slice(0, NOTE_CAP).map((d) => clip(droppedLabel(d)));
   const more = dropped.length - parts.length;
   return `dropped ${dropped.length}${more > 0 ? ` (+${more} more)` : ""} — ${parts.join("; ")}`;
 }

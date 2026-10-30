@@ -17,6 +17,7 @@ import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import type { PiSpec } from "./spec.ts";
 import { MAX_TEST_BYTES, MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "./test-size.ts";
+import { oneLine } from "./text-fence.ts";
 
 export interface SpecifyPromptOpts {
   issue: number;
@@ -30,6 +31,43 @@ export interface SpecifyPromptOpts {
   testLocation?: TestLocation;
   /** Absolute path of the worktree the child works in. */
   worktree: string;
+  /**
+   * The attributed drops the boundary made on the PREVIOUS attempt, when this is
+   * the one retry (`specify.ts`). Undefined or empty on a first attempt.
+   */
+  refusal?: string[];
+}
+
+/** The most drop reasons {@link refusalFeedback} names; the rest are not repeated. */
+const REFUSAL_LINES_MAX = 20;
+/** One drop reason, clipped to this many characters before the ellipsis. */
+const REFUSAL_LINE_MAX = 300;
+
+/**
+ * The section a retried adversary reads after the normal prompt: each drop the
+ * boundary made on its last submission, attributed (`<criterionId> <path>: <reason>`,
+ * see `droppedLabel`), one per line. The child never saw those reasons, so a
+ * 130-line test and a green test were both indistinguishable from "the step
+ * found nothing" — naming them is the whole point of the retry. Identical lines
+ * are shown once; past the cap the section says how many it left out.
+ */
+export function refusalFeedback(reasons: string[]): string {
+  if (reasons.length === 0) return "";
+  // Deduped before clipping: two reasons that share their first 300 characters
+  // are two reasons, and clipping first would show the second as a repeat.
+  const lines = [...new Set(reasons)].map((reason) => oneLine(reason, REFUSAL_LINE_MAX));
+  const shown = lines.slice(0, REFUSAL_LINES_MAX).map((line) => `- ${line}`);
+  const more = lines.length - shown.length;
+  return [
+    "## Your previous submission was refused",
+    "",
+    "The parent dropped these submitted tests:",
+    "",
+    ...shown,
+    ...(more > 0 ? [`(+${more} more)`] : []),
+    "",
+    "Fix exactly these problems and call submit_tests again for every criterion. The limits in the contract above still apply.",
+  ].join("\n");
 }
 
 /** The criteria the child must produce tests for: only `verify: "test"`. */
@@ -128,7 +166,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
     opts.testRunner === undefined
       ? "No project test runner is configured, so run each file directly and report the command you used in `note`."
       : `The parent runs each file with the project template \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path, so the file must be executable by that command alone.`;
-  return [
+  const prompt = [
     `You are writing the ACCEPTANCE TESTS for issue #${opts.issue}, before anybody implements it.`,
     "",
     "## The problem",
@@ -182,4 +220,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         "Do not run the implementation. Do not try to make the tests pass.",
       ].join("\n"),
   ].join("\n");
+  return opts.refusal === undefined || opts.refusal.length === 0
+    ? prompt
+    : `${prompt}\n\n${refusalFeedback(opts.refusal)}`;
 }
