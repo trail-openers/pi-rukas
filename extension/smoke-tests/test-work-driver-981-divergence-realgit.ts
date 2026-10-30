@@ -123,20 +123,25 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     // clean tree to the tip instead of parking (previously this case parked
     // as `diverged`).
     //
-    // What the gate actually does here is measured, not assumed: after
-    // `integrate()` the local branch ref sits ON the round-1 commit, so with
-    // the worktree re-ff-only'd to that same commit the gate can answer
-    // `already-at-tip` without running either move arm. Asserting `backupRef`
-    // in this case would therefore be a tautology about a code path it never
-    // executes — the cherry arm's backup ref is asserted where the fixture
-    // genuinely reaches it, in test-work-driver-lens-fix-reposition-lagging-ref.ts
-    // (`1882: the accept path still wrote a backup ref`). J is the case in this
-    // file that runs an arm, and it asserts the fast-forward half of the
-    // invariant.
-    const rep = await repositionLensFixWorktree(realExec, wt5, s5.branchName, [981], "981 round-2");
+    // Measured, not reasoned: mutating the fast-forward arm of the gate to
+    // answer `already-at-tip` fails this case, so G really runs that arm and
+    // `backupRef === undefined` below is an assertion about a path it executes
+    // (the cherry arm's backup ref is asserted in
+    // test-work-driver-lens-fix-reposition-lagging-ref.ts).
+    const rep = await repositionLensFixWorktree(
+      realExec,
+      wt5,
+      s5.branchName,
+      [981],
+      "981 round-2",
+    );
     assert(
       rep.kind === "repositioned",
       `981 G: reposition guard moved the worktree to the tip (got ${rep.kind})`,
+    );
+    assert(
+      rep.kind === "repositioned" && rep.backupRef === undefined,
+      `981 G: the fast-forward arm set no backup ref (got ${rep.kind}${rep.kind === "repositioned" ? ` backupRef=${String(rep.backupRef)}` : ""})`,
     );
     const repHead = (await git(wt5, ["rev-parse", "HEAD"])).stdout.trim();
     const branchTipNow = (await git(repo5, ["rev-parse", s5.branchName])).stdout.trim();
@@ -389,12 +394,13 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
     );
     // The fast-forward arm runs `merge --ff-only` and returns without a
     // backup ref; the cherry arm cannot reach this state (an ancestor tree
-    // never falls through to `git cherry`). `backupRef === undefined` alone
-    // would also hold for `already-at-tip`, so `fromSha` is asserted too:
-    // it exists ONLY on a result that moved the tree.
+    // never falls through to `git cherry`). `tipSha` is the ref the arm was
+    // told to land on, so it identifies the arm: the local ref, not the stale
+    // origin ref (and `already-at-tip` would report the same tip without ever
+    // having moved the tree, which the HEAD check below proves).
     assert(
-      repJ.kind === "repositioned" && repJ.fromSha !== undefined,
-      `981 J: the gate MOVED the tree (a no-op would answer already-at-tip) (got ${repJ.kind})`,
+      repJ.kind === "repositioned" && repJ.tipSha === localTip,
+      `981 J: the fast-forward arm targeted the local tip (got ${repJ.kind}${repJ.kind === "repositioned" ? ` tipSha=${repJ.tipSha.slice(0, 12)} localTip=${localTip.slice(0, 12)} originTip=${originTip.slice(0, 12)}` : ""})`,
     );
     assert(
       repJ.kind === "repositioned" && repJ.backupRef === undefined,

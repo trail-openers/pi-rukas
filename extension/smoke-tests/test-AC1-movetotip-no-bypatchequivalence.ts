@@ -19,49 +19,69 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
-const TEST = "test-AC1-movetotip-no-bypatchequivalence.ts";
+const TEST = path.basename(import.meta.filename);
 /** Built so this file cannot match itself. */
 const NEEDLE = ["byPatch", "Equivalence"].join("");
-const MIN_FILES_SCANNED = 100;
 
 async function main() {
   const extensionDir = path.join(import.meta.dirname, "..");
   const self = import.meta.filename;
   const offenders: string[] = [];
-  let scanned = 0;
+  const scanned = { src: 0, "smoke-tests": 0 } as Record<"src" | "smoke-tests", number>;
 
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === "node_modules") continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile() && entry.name.endsWith(".ts")) {
-        if (full === self) continue;
-        scanned++;
-        if (readFileSync(full, "utf8").includes(NEEDLE)) {
-          offenders.push(path.relative(extensionDir, full));
+  const walk = (root: string, key: "src" | "smoke-tests") => {
+    let count = 0;
+    const walkDir = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === "node_modules") continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walkDir(full);
+        else if (entry.isFile() && entry.name.endsWith(".ts")) {
+          if (full === self) continue;
+          count++;
+          if (readFileSync(full, "utf8").includes(NEEDLE)) {
+            offenders.push(path.relative(extensionDir, full));
+          }
         }
       }
-    }
+    };
+    walkDir(root);
+    scanned[key] = count;
   };
 
-  walk(path.join(extensionDir, "src"));
-  walk(import.meta.dirname);
+  const srcDir = path.join(extensionDir, "src");
+  const smokeDir = import.meta.dirname;
+  walk(srcDir, "src");
+  walk(smokeDir, "smoke-tests");
 
-  if (scanned < MIN_FILES_SCANNED) {
+  // A walk that found no tree is not a clean scan, so each root is checked
+  // before the offender list is believed. The src floor is generous: this
+  // repo has several hundred .ts files there, so a low count means the walk
+  // pointed at the wrong directory.
+  for (const [name, dir] of [
+    ["src", srcDir],
+    ["smoke-tests", smokeDir],
+  ] as const) {
+    const floor = name === "src" ? 500 : 1;
+    if (scanned[name] < floor) {
+      console.error(
+        `FAIL ${TEST}: root ${dir} scanned ${scanned[name]} .ts files (< ${floor}) — the walk found no tree, so a clean result would prove nothing`,
+      );
+      process.exit(1);
+    }
+  }
+  if (offenders.length > 0) {
     console.error(
-      `FAIL ${TEST}: scanned only ${scanned} .ts files (< ${MIN_FILES_SCANNED}) — the walk found no tree, so a clean result would prove nothing`,
+      `FAIL ${TEST}: needle still referenced in ${offenders.length} file(s): ${offenders.join(", ")}`,
     );
     process.exit(1);
   }
-  if (offenders.length > 0) {
-    console.error(`FAIL ${TEST}: ${NEEDLE} still referenced in ${offenders.join(", ")}`);
-    process.exit(1);
-  }
-  console.log(`✓ ${NEEDLE} absent from all ${scanned} .ts files under src/ and smoke-tests/`);
+  console.log(
+    `✓ ${NEEDLE} absent from all ${scanned.src + scanned["smoke-tests"]} .ts files under src/ and smoke-tests/ (src ${scanned.src}, smoke-tests ${scanned["smoke-tests"]})`,
+  );
 }
 
-main().catch((e) => {
-  console.error(`FAIL ${TEST}: ${(e as Error)?.stack ?? e}`);
+main().catch((e: unknown) => {
+  console.error(`FAIL ${TEST}: ${e instanceof Error ? e.stack : String(e)}`);
   process.exit(1);
 });
