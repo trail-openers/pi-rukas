@@ -19,7 +19,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
-import { LeanConfigError, defaultConfig, loadWorkConfig } from "../src/lean/config.ts";
+import {
+  DEFAULT_BUDGETS,
+  LeanConfigError,
+  defaultConfig,
+  loadWorkConfig,
+} from "../src/lean/config.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -92,7 +97,10 @@ const VALID = JSON.stringify(
     assert(cfg.autoMerge === true, "the committed autoMerge wins over an edited working tree");
     assert(cfg.verify.full === "bash verify-loop.sh", "the committed verify.full wins");
     assert(cfg.budgets.build?.turns === 7, "the committed budget wins over the working tree's");
-    assert(cfg.budgets.specify?.turns === 80, "a state the file omits keeps its default budget");
+    assert(
+      cfg.budgets.specify?.turns === DEFAULT_BUDGETS.specify?.turns,
+      "a state the file omits keeps its default budget",
+    );
   } finally {
     cleanup();
   }
@@ -107,9 +115,12 @@ const VALID = JSON.stringify(
     assert(cfg.version === 1, "defaults carry version 1");
     assert(cfg.autoMerge === false, "no config means no auto-merge");
     assert(cfg.verify.full === undefined, "no verify-cmd means no full command");
-    assert(cfg.budgets.build?.minutes === 45, "defaults carry the build budget");
-    assert(cfg.budgets.ci?.minutes === 30, "defaults carry the ci budget");
-    assert(cfg.budgets.specify?.tokens === 10_000_000, "defaults carry the specify token budget");
+    assert(cfg.budgets.build?.minutes === DEFAULT_BUDGETS.build?.minutes, "defaults carry the build budget");
+    assert(cfg.budgets.ci?.minutes === DEFAULT_BUDGETS.ci?.minutes, "defaults carry the ci budget");
+    assert(
+      cfg.budgets.specify?.tokens === DEFAULT_BUDGETS.specify?.tokens,
+      "defaults carry the specify token budget",
+    );
   } finally {
     cleanup();
   }

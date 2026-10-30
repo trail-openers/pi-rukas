@@ -26,7 +26,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { defaultConfig } from "../src/lean/config.ts";
+import { DEFAULT_BUDGETS, defaultConfig } from "../src/lean/config.ts";
 import type { WorkConfig } from "../src/lean/config.ts";
 import type { Budget } from "../src/lean/config.ts";
 import { armBudget, budgetFor, budgetStop, readDispatched } from "../src/lean/step-budget.ts";
@@ -228,14 +228,17 @@ function progress(over: Partial<RunningState>): RunningState {
 
 // ── (7) the build STEP turns a breach into a verdict, not a throw ──────────
 {
-  // The default build ceiling is 150 turns, so a case that wants a breach has
-  // to say the child went past THAT rather than past a number it chose — which
-  // is also the more useful assertion: it proves the step armed the config's
-  // own budget and not some other figure.
+  // The default build ceiling is whatever `DEFAULT_BUDGETS` says, so a case
+  // that wants a breach has to say the child went past THAT rather than past a
+  // number it chose — which is also the more useful assertion: it proves the
+  // step armed the config's own budget and not some other figure.
   // The config is the one the STEP reads, so the number the verdict carries is
   // the one the config set — which is the whole claim of this case.
   const BUILD_TURNS = 3;
-  assert(defaultConfig().budgets.build?.turns === 150, "the shipped default stays 150 turns");
+  assert(
+    defaultConfig().budgets.build?.turns === DEFAULT_BUDGETS.build?.turns,
+    "the shipped default is the one DEFAULT_BUDGETS declares",
+  );
   const r = await runBuild({
     issue: 201,
     config: {
@@ -324,7 +327,7 @@ function progress(over: Partial<RunningState>): RunningState {
     "and the overridden turns ceiling is the one that fired",
   );
   assert(
-    budgetFor(merged, "specify")?.turns === 80,
+    budgetFor(merged, "specify")?.turns === DEFAULT_BUDGETS.specify?.turns,
     "an unoverridden state keeps its default rather than the override",
   );
   // A state the run can sit in but has no budget for: the lookup is keyed on

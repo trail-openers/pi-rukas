@@ -163,12 +163,17 @@ async function gitType(
  * Per-state ceilings. States not listed have none yet — a phase that adds a
  * handler adds its budget with it, rather than inheriting a number nobody
  * chose.
+ *
+ * Sized from the measured rate of the default model: ~150 turns per 20M tokens
+ * in 3-4 minutes. Two live runs stopped on the old turn ceilings at 3 minutes
+ * (specify at 81 of 80, challenge at 61 of 60), so each entry now leaves room
+ * for a full working session rather than a third of one.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
-  specify: Object.freeze({ turns: 80, tokens: 10_000_000, minutes: 20 }),
-  build: Object.freeze({ turns: 150, tokens: 20_000_000, minutes: 45 }),
-  challenge: Object.freeze({ turns: 60, tokens: 8_000_000, minutes: 15 }),
-  review: Object.freeze({ turns: 40, tokens: 6_000_000, minutes: 15 }),
+  specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),
+  build: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 45 }),
+  challenge: Object.freeze({ turns: 200, tokens: 25_000_000, minutes: 15 }),
+  review: Object.freeze({ turns: 150, tokens: 20_000_000, minutes: 15 }),
   ci: Object.freeze({ turns: 0, tokens: 0, minutes: 30 }),
 });
 
