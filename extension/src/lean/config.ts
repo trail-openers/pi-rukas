@@ -253,6 +253,16 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.budgets !== "object" || o.budgets === null || Array.isArray(o.budgets))
       return ".pi/work.json budgets must be an object";
     for (const [state, budget] of Object.entries(o.budgets as Record<string, unknown>)) {
+      // The KEY is validated too. A budget is read by exact state name
+      // (`budgetFor`), so a typo'd key — `spesify` for `specify` — is a
+      // perfectly valid object that silently does nothing while the real
+      // state keeps the default. Refusing it is the same reasoning as the
+      // invalid-JSON rule above: a typo'd budget must not quietly mean
+      // "the budget I thought I set".
+      if (!(state in DEFAULT_BUDGETS)) {
+        const known = Object.keys(DEFAULT_BUDGETS).join(", ");
+        return `.pi/work.json budgets.${state} is not a lean state (known: ${known})`;
+      }
       const reason = checkBudget(`.pi/work.json budgets.${state}`, budget);
       if (reason) return reason;
     }

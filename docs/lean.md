@@ -110,7 +110,7 @@ means defaults.** An invalid file is *not* defaulted: it raises
     "testDir": "extension/smoke-tests",
     "testGlob": "test-*.ts"
   },
-  "budgets": { "build": { "turns": 400, "tokens": 60000000, "minutes": 45 } }
+  "budgets": { "build": { "turns": 100, "tokens": 5000000, "minutes": 10 } }
 }
 ```
 
@@ -131,31 +131,33 @@ means defaults.** An invalid file is *not* defaulted: it raises
 - **`budgets`** — per state, each `{turns, tokens, minutes}`, non-negative
   integers (`0` is unbounded for turns and tokens, never for minutes), merged
   **over** the shipped defaults, so naming `build` alone keeps the defaults for
-  the others. A state with no default has no budget until a phase adds its
-  handler.
+  the others. A state name with no default row is **refused** — a typo'd key is
+  a ceiling nobody reads.
 
-**Shipped defaults** (`DEFAULT_BUDGETS` in `extension/src/lean/config.ts`),
-sized from the measured rate of the default model — about **150 turns per 20M
-tokens in 3–4 minutes**. Two live runs stopped on the old turn ceilings at 3
-minutes (specify at 81 of 80, challenge at 61 of 60), so each entry leaves room
-for a full working session rather than a third of one:
+**Shipped defaults** (`DEFAULT_BUDGETS` in `extension/src/lean/config.ts` — the
+jsdoc there carries the measurements they were sized from; `test-lean-config.ts`
+pins the table against literals, so changing a number is a deliberate edit):
 
 | State | turns | tokens | minutes |
 |---|---|---|---|
-| `specify` | 250 | 30 000 000 | 20 |
-| `build` | 400 | 60 000 000 | 45 |
-| `challenge` | 200 | 25 000 000 | 15 |
-| `review` | 150 | 20 000 000 | 15 |
-| `ci` | 0 | 0 | 30 |
+| `specify` | 250 | 30M | 20 |
+| `build` | 400 | 60M | 45 |
+| `challenge` | 200 | 25M | 15 |
+| `review` (no handler yet) | 150 | 20M | 15 |
+| `ci` (no handler yet) | 0 | 0 | 30 |
 
-**When a budget fires.** `minutes` becomes the child's wall clock;
-`turns`/`tokens` are watched on the child's progress stream and abort at a turn
-boundary. A breach is a **verdict**, not an infrastructure failure — the step
-returns `{kind: "budget"}` with `limit`, `value` and `used`, the table routes it
-to `handback`, and the run exits **10**. The handback comment names the ceiling
-that stopped the child (`build stopped: minutes budget 45 exceeded (used 47)`).
-With `PI_ENSEMBLE_DISPATCH_CAPS=0` the wall clock is inert and the step says so
-rather than describing a bound that never fired.
+**When a budget fires.** `turns` and `tokens` are watched on the child's
+progress stream and **abort at once** at a turn boundary. `minutes` is not a
+kill at the bound: it arms the child bound (`spawn-child-bound.ts`), which
+sends a **wrap-up steer at the bound** and kills at the bound **plus a 10-minute
+grace** (`childBoundGraceMs`). A child that finishes inside the grace is not a
+breach. A breach is a **verdict**, not an
+infrastructure failure — the step returns `{kind: "budget"}` with `limit`,
+`value` and `used`, the table routes it to `handback`, and the run exits **10**.
+The handback comment names the ceiling that stopped the child (`build stopped:
+minutes budget 45 exceeded (used 47)`); `used` is rounded up from elapsed time,
+which overshoots by the grace. With `PI_ENSEMBLE_DISPATCH_CAPS=0` the wall clock
+is inert and the step says so rather than describing a bound that never fired.
 
 **Bounds on a frozen test.** A kept acceptance test must be new at the base
 commit, at most **120 lines** (`MAX_TEST_LINES`), at most **16 KiB**
@@ -230,10 +232,9 @@ trusts. Read it when you want to know what a run actually decided.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
 budget breach, else the newest red `verify` reason, else the newest red `ci`,
-else the newest green verdict, else the last error the log holds; then the
-frozen acceptance tests (capped at 20 paths); then `Branch:` and `PR:` (or
-"no PR yet"). A comment that could not be posted is recorded as such and does
-not change the verdict.
+else the newest green verdict, else the last error; then the frozen acceptance
+tests (capped at 20 paths); then `Branch:` and `PR:` (or "no PR yet"). A comment
+that could not be posted is recorded as such, and does not change the verdict.
 
 ## Limits today
 
@@ -241,6 +242,9 @@ not change the verdict.
   table; their handlers throw `work-lean stage <state> is not built yet`, which
   the engine turns into `handler error at <state>: …`, a handback, exit 10.
   Nothing merges, so **`autoMerge` is read and never acted on.**
+- **`land` will need the same merge-authority resolution `/work` has** (#380 /
+  #407): a grant read from the project's `AGENTS.md` at the cycle's base sha,
+  plus executed forge evidence, before anything merges — `autoMerge` is intent.
 - In practice every run that reaches `publish` ends in a handback, because the
   very next state is unbuilt. Treat the PR, not the exit code, as the artefact.
 - **The old `/work` driver is a separate program.** `extension/src/work-driver.ts`

@@ -174,6 +174,15 @@ const invalidCases: Array<[string, string, string]> = [
     JSON.stringify({ version: 1, budgets: { build: { minutes: 1.5 } } }),
     "budgets.build.minutes must be a non-negative integer",
   ],
+  [
+    // The KEY, not just the shape: a budget named for a state that has no
+    // budget row is read by nobody, so the author's ceiling is inert while the
+    // real state keeps the default — the silent-no-op direction the loader
+    // exists to refuse.
+    "unknown budget state",
+    JSON.stringify({ version: 1, budgets: { spesify: { turns: 10, tokens: 10, minutes: 1 } } }),
+    "budgets.spesify is not a lean state (known: ",
+  ],
 ];
 
 for (const [name, content, expected] of invalidCases) {
@@ -276,5 +285,22 @@ assert(
   "defaultConfig() carries a supplied full command",
 );
 assert(defaultConfig().verify.full === undefined, "defaultConfig() without one leaves it absent");
+
+// The shipped table pinned against LITERALS, not against itself. The other
+// assertions in this file compare a loaded config to `DEFAULT_BUDGETS`, so
+// they still pass when the table moves; this one does not. Changing a default
+// is therefore a deliberate edit here too, and the numbers below are the ones
+// the user guide documents.
+assert(
+  JSON.stringify(DEFAULT_BUDGETS) ===
+    JSON.stringify({
+      specify: { turns: 250, tokens: 30_000_000, minutes: 20 },
+      build: { turns: 400, tokens: 60_000_000, minutes: 45 },
+      challenge: { turns: 200, tokens: 25_000_000, minutes: 15 },
+      review: { turns: 150, tokens: 20_000_000, minutes: 15 },
+      ci: { turns: 0, tokens: 0, minutes: 30 },
+    }),
+  "DEFAULT_BUDGETS is the documented table",
+);
 
 process.exit(exit);
