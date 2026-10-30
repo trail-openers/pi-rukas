@@ -11,9 +11,11 @@
  *   - invalid → `LeanConfigError` (a typo'd budget must not silently become
  *     "no budget", which is the expensive direction to be wrong)
  *
- * The defaults carry no budgets for states that phase 1 has no handler for
- * beyond handback, and a wall clock for `ci` where a stalled watch is the
- * whole risk.
+ * The shipped table has a row for every state the machine can visit, including
+ * `review` and `ci`, which phase 1 has no handler for beyond handback — `ci`
+ * carries a wall clock where a stalled watch is the whole risk. A key that is
+ * not in the table is refused at load, so there is no such thing as a budget
+ * for an unbuilt state.
  */
 
 import type { execp } from "../exec.ts";
@@ -163,12 +165,17 @@ async function gitType(
  * Per-state ceilings. States not listed have none yet — a phase that adds a
  * handler adds its budget with it, rather than inheriting a number nobody
  * chose.
+ *
+ * Sized from the measured rate of the default model: ~150 turns per 20M tokens
+ * in 3-4 minutes. Two live runs stopped on the old turn ceilings at 3 minutes
+ * (specify at 81 of 80, challenge at 61 of 60), so each entry now leaves room
+ * for a full working session rather than a third of one.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
-  specify: Object.freeze({ turns: 80, tokens: 10_000_000, minutes: 20 }),
-  build: Object.freeze({ turns: 150, tokens: 20_000_000, minutes: 45 }),
-  challenge: Object.freeze({ turns: 60, tokens: 8_000_000, minutes: 15 }),
-  review: Object.freeze({ turns: 40, tokens: 6_000_000, minutes: 15 }),
+  specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),
+  build: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 45 }),
+  challenge: Object.freeze({ turns: 200, tokens: 25_000_000, minutes: 15 }),
+  review: Object.freeze({ turns: 150, tokens: 20_000_000, minutes: 15 }),
   ci: Object.freeze({ turns: 0, tokens: 0, minutes: 30 }),
 });
 
@@ -188,6 +195,43 @@ function firstLine(content: string): string | undefined {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .find((l) => l.length > 0 && !l.startsWith("#"));
+}
+
+/**
+ * The shipped defaults plus the own, validated keys of the file's `budgets`.
+ *
+ * `validate` has already refused anything not an own key of `DEFAULT_BUDGETS`
+ * and any malformed member, so this only assembles — but it assembles by
+ * copying the three named fields from `Object.entries` rather than spreading,
+ * which is what keeps a prototype-polluting key out of the result object even
+ * if the caller hands it an object that got past validation some other way.
+ */
+function mergeBudgets(
+  overrides: Partial<Record<string, Budget>> | undefined,
+): WorkConfig["budgets"] {
+  const merged: Record<string, Budget> = {};
+  // `DEFAULT_BUDGETS` is typed as a `Record<string, Budget>`, so an index read
+  // is `Budget` by declaration yet `undefined` at runtime for an unknown key —
+  // the keys here come from `Object.keys`, so they are all present.
+  for (const state of Object.keys(DEFAULT_BUDGETS)) {
+    const base = DEFAULT_BUDGETS[state] as Budget;
+    merged[state] = { turns: base.turns, tokens: base.tokens, minutes: base.minutes };
+  }
+  for (const [state, budget] of Object.entries(overrides ?? {})) {
+    const base = DEFAULT_BUDGETS[state] as Budget | undefined;
+    if (!Object.hasOwn(DEFAULT_BUDGETS, state) || budget === undefined || base === undefined)
+      continue;
+    // Explicit fields, each defaulted to the shipped number: the JSON schema
+    // lets a budget omit any of the three (`{turns: 1}` is valid) and the
+    // declared type is `Partial<Record<…>>`, so an omitted member means
+    // "keep the default", not "undefined".
+    merged[state] = {
+      turns: budget.turns ?? base.turns,
+      tokens: budget.tokens ?? base.tokens,
+      minutes: budget.minutes ?? base.minutes,
+    };
+  }
+  return merged;
 }
 
 /** A budget whose members are all non-negative integers, or undefined to skip. */
@@ -248,6 +292,19 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.budgets !== "object" || o.budgets === null || Array.isArray(o.budgets))
       return ".pi/work.json budgets must be an object";
     for (const [state, budget] of Object.entries(o.budgets as Record<string, unknown>)) {
+      // The KEY is validated too. A budget is read by exact state name
+      // (`budgetFor`), so a typo'd key — `spesify` for `specify` — is a
+      // perfectly valid object that silently does nothing while the real
+      // state keeps the default. Refusing it is the same reasoning as the
+      // invalid-JSON rule above: a typo'd budget must not quietly mean
+      // "the budget I thought I set".
+      // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so
+      // `__proto__`, `constructor` and `toString` all "exist" in this table
+      // and would pass a check whose whole job is to refuse an inert key.
+      if (!Object.hasOwn(DEFAULT_BUDGETS, state)) {
+        const known = Object.keys(DEFAULT_BUDGETS).join(", ");
+        return `.pi/work.json budgets.${state} is not a lean state (known: ${known})`;
+      }
       const reason = checkBudget(`.pi/work.json budgets.${state}`, budget);
       if (reason) return reason;
     }
@@ -334,6 +391,10 @@ export async function loadWorkConfig(
     version: 1,
     autoMerge: o.autoMerge ?? false,
     verify: { ...(o.verify ?? {}) },
-    budgets: { ...DEFAULT_BUDGETS, ...(o.budgets ?? {}) },
+    // Built from the validated own keys only, never spread wholesale: a
+    // prototype-polluting key (`__proto__`) is an own property of the parsed
+    // object, and spreading it would put the object on the result rather than
+    // refuse it.
+    budgets: mergeBudgets(o.budgets),
   };
 }

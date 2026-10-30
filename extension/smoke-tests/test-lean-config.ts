@@ -19,7 +19,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
-import { LeanConfigError, defaultConfig, loadWorkConfig } from "../src/lean/config.ts";
+import type { Budget } from "../src/lean/config.ts";
+import {
+  DEFAULT_BUDGETS,
+  LeanConfigError,
+  defaultConfig,
+  loadWorkConfig,
+} from "../src/lean/config.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -92,7 +98,10 @@ const VALID = JSON.stringify(
     assert(cfg.autoMerge === true, "the committed autoMerge wins over an edited working tree");
     assert(cfg.verify.full === "bash verify-loop.sh", "the committed verify.full wins");
     assert(cfg.budgets.build?.turns === 7, "the committed budget wins over the working tree's");
-    assert(cfg.budgets.specify?.turns === 80, "a state the file omits keeps its default budget");
+    assert(
+      cfg.budgets.specify?.turns === DEFAULT_BUDGETS.specify?.turns,
+      "a state the file omits keeps its default budget",
+    );
   } finally {
     cleanup();
   }
@@ -107,9 +116,12 @@ const VALID = JSON.stringify(
     assert(cfg.version === 1, "defaults carry version 1");
     assert(cfg.autoMerge === false, "no config means no auto-merge");
     assert(cfg.verify.full === undefined, "no verify-cmd means no full command");
-    assert(cfg.budgets.build?.minutes === 45, "defaults carry the build budget");
-    assert(cfg.budgets.ci?.minutes === 30, "defaults carry the ci budget");
-    assert(cfg.budgets.specify?.tokens === 10_000_000, "defaults carry the specify token budget");
+    assert(cfg.budgets.build?.minutes === DEFAULT_BUDGETS.build?.minutes, "defaults carry the build budget");
+    assert(cfg.budgets.ci?.minutes === DEFAULT_BUDGETS.ci?.minutes, "defaults carry the ci budget");
+    assert(
+      cfg.budgets.specify?.tokens === DEFAULT_BUDGETS.specify?.tokens,
+      "defaults carry the specify token budget",
+    );
   } finally {
     cleanup();
   }
@@ -163,6 +175,29 @@ const invalidCases: Array<[string, string, string]> = [
     JSON.stringify({ version: 1, budgets: { build: { minutes: 1.5 } } }),
     "budgets.build.minutes must be a non-negative integer",
   ],
+  [
+    // The KEY, not just the shape: a budget named for a state that has no
+    // budget row is read by nobody, so the author's ceiling is inert while the
+    // real state keeps the default — the silent-no-op direction the loader
+    // exists to refuse.
+    "unknown budget state",
+    JSON.stringify({ version: 1, budgets: { spesify: { turns: 10, tokens: 10, minutes: 1 } } }),
+    "budgets.spesify is not a lean state (known: ",
+  ],
+  // Prototype keys answer `in` — `"constructor" in {}` is true — so a guard
+  // written with `in` lets them through and the author's ceiling lands on
+  // nothing while the real state keeps its default. `Object.hasOwn` is the fix
+  // and these three are the cases that prove it.
+  [
+    "prototype budget key: constructor",
+    JSON.stringify({ version: 1, budgets: { constructor: { turns: 1, tokens: 1, minutes: 1 } } }),
+    "budgets.constructor is not a lean state (known: ",
+  ],
+  [
+    "prototype budget key: toString",
+    JSON.stringify({ version: 1, budgets: { toString: { turns: 1, tokens: 1, minutes: 1 } } }),
+    "budgets.toString is not a lean state (known: ",
+  ],
 ];
 
 for (const [name, content, expected] of invalidCases) {
@@ -178,6 +213,40 @@ for (const [name, content, expected] of invalidCases) {
     assert(
       thrown instanceof Error && thrown.message.includes(expected),
       `${name}: names "${expected}"`,
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+// `__proto__` cannot be written as a literal key and be an own property — an
+// object literal's `__proto__:` sets the prototype — so the config is built
+// with `JSON.parse`, which is also how the loader actually receives it: a real
+// JSON document with `__proto__` as an own key. It must be refused like any
+// other prototype key rather than polluting the merged budgets.
+{
+  const polluted = JSON.parse(
+    '{"version": 1, "budgets": {"__proto__": {"turns": 1, "tokens": 1, "minutes": 1}}}',
+  );
+  assert(
+    Object.prototype.hasOwnProperty.call(polluted.budgets, "__proto__"),
+    // The fixture is only worth running if it really is an own key: a plain
+    // object literal would have set the prototype instead and the loader would
+    // be refusing nothing.
+    "the fixture really carries __proto__ as an own key (otherwise this test proves nothing)",
+  );
+  const { repoRoot, baseSha, cleanup } = makeRepo({ ".pi/work.json": JSON.stringify(polluted) });
+  try {
+    let thrown: unknown;
+    try {
+      await loadWorkConfig(execp, repoRoot, baseSha);
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown instanceof LeanConfigError, "a __proto__ budget key is rejected with LeanConfigError");
+    assert(
+      thrown instanceof Error && thrown.message.includes("budgets.__proto__ is not a lean state"),
+      'a __proto__ budget key names "budgets.__proto__ is not a lean state"',
     );
   } finally {
     cleanup();
@@ -265,5 +334,45 @@ assert(
   "defaultConfig() carries a supplied full command",
 );
 assert(defaultConfig().verify.full === undefined, "defaultConfig() without one leaves it absent");
+
+// The shipped table pinned against LITERALS, not against itself. The other
+// assertions in this file compare a loaded config to `DEFAULT_BUDGETS`, so
+// they still pass when the table moves; this one does not. Changing a default
+// is therefore a deliberate edit here too, and the numbers below are the ones
+// the user guide documents.
+//
+// Per key and per field, with the field named in the message: a single
+// `JSON.stringify` equality says "the table is wrong" and leaves the reader to
+// diff two objects by eye, and it also depends on key insertion order.
+const EXPECTED_BUDGETS: Record<string, Budget> = {
+  specify: { turns: 250, tokens: 30_000_000, minutes: 20 },
+  build: { turns: 400, tokens: 60_000_000, minutes: 45 },
+  challenge: { turns: 200, tokens: 25_000_000, minutes: 15 },
+  review: { turns: 150, tokens: 20_000_000, minutes: 15 },
+  ci: { turns: 0, tokens: 0, minutes: 30 },
+};
+
+assert(
+  Object.keys(DEFAULT_BUDGETS).sort().join(",") === Object.keys(EXPECTED_BUDGETS).sort().join(","),
+  `DEFAULT_BUDGETS has exactly the documented states (got: ${Object.keys(DEFAULT_BUDGETS).join(", ")})`,
+);
+
+for (const [state, expected] of Object.entries(EXPECTED_BUDGETS)) {
+  const actual = DEFAULT_BUDGETS[state] as Budget | undefined;
+  assert(actual !== undefined, `DEFAULT_BUDGETS has a row for ${state}`);
+  if (!actual) continue;
+  assert(
+    actual.turns === expected.turns,
+    `DEFAULT_BUDGETS.${state}.turns is ${expected.turns} (got ${actual.turns})`,
+  );
+  assert(
+    actual.tokens === expected.tokens,
+    `DEFAULT_BUDGETS.${state}.tokens is ${expected.tokens} (got ${actual.tokens})`,
+  );
+  assert(
+    actual.minutes === expected.minutes,
+    `DEFAULT_BUDGETS.${state}.minutes is ${expected.minutes} (got ${actual.minutes})`,
+  );
+}
 
 process.exit(exit);
