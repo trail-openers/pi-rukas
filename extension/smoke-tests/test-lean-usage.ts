@@ -145,4 +145,33 @@ function row(role: string, n: number, ok = true): DispatchUsageRow {
   );
 }
 
+// ------------------- (6) a role named `__proto__` is still a role that cost tokens
+//
+// `byRole` is keyed by a string the child reported. On a plain object literal
+// the assignment to `__proto__` sets the PROTOTYPE rather than a property, so
+// that child's cost vanishes from the per-role half of the report while `total`
+// still counts it — the two halves of one document disagreeing about the same
+// dispatch, and the lost one invisible in a host's per-role table.
+{
+  const steps = [
+    decided("build", { kind: "ok", dispatches: [row("__proto__", 3)] }),
+    decided("build", { kind: "ok", dispatches: [row("__proto__", 2)] }),
+    decided("specify", { kind: "ok", dispatches: [row("developer", 1)] }),
+  ];
+  const u = leanUsage(steps);
+  assert(
+    u.total.dispatches === 3 && u.total.input === 60,
+    `(6) total counts every dispatch including the odd-named one (got ${u.total.dispatches}, input ${u.total.input})`,
+  );
+  const odd = u.byRole.__proto__ as LeanUsageTotals | undefined;
+  assert(
+    odd?.dispatches === 2 && odd.input === 50,
+    `(6) a role named __proto__ is counted in byRole, not lost to the prototype (got ${JSON.stringify(odd)})`,
+  );
+  assert(
+    u.byRole.developer?.dispatches === 1,
+    `(6) and the ordinary role is unaffected (got ${String(u.byRole.developer?.dispatches)})`,
+  );
+}
+
 process.exit(exit);

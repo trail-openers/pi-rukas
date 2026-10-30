@@ -77,6 +77,7 @@ import {
   specifyWorktreePath,
   worktreeExists,
 } from "./specify-tree.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 
@@ -353,30 +354,28 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     attempts += 1;
   }
   const final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
-  // Every child the step paid for, in order: the rows the attempts reported for
-  // themselves rather than the ones their outcomes carry, so a retry's outcome
-  // cannot overwrite the first child's cost. A budget verdict keeps the rows its
-  // own attempt recorded (a stop is always the LAST dispatch), and the merge of
-  // both attempts' rows is what a non-budget outcome gets.
-  // A budget verdict ALREADY carries its own attempt's rows (`build` and
-  // `challenge` keep theirs the same way); the assignment above is the one path
-  // that overwrites rather than supplements, so it is also the one that must not
-  // run — except that it is the only way a multi-attempt stop keeps EVERY child.
+  // ONE rule: the step's outcome carries the FLAT rows of EVERY attempt, in
+  // order, whichever verdict survived. A retry is a second child and the step
+  // is one record, so a fold that kept only the last attempt's rows would
+  // report one child where the run paid for two — and the dropped one is the
+  // expensive case, since a child whose tests were rejected still spent its
+  // tokens. A budget verdict is no exception: its own attempt is the last
+  // dispatch, so the merge is its rows plus any earlier attempt's. `undefined`
+  // when no attempt dispatched, so a step that paid for nothing records no key.
   const dispatches = mergedRows(allRows);
   return dispatches === undefined ? final : { ...final, dispatches };
 }
 
 /**
- * The rows of every dispatch the step paid for, across both attempts.
+ * The rows of every dispatch the step paid for, across both attempts, clipped
+ * to the validator's bound for ONE outcome ({@link DISPATCHES_MAX_ROWS}).
  *
- * A retry is a second child, and the step's outcome is a single record: if the
- * second attempt's rows replaced the first's, the run would report one child
- * where it paid for two — and the dropped one is the expensive case, since a
- * child that got its tests rejected still spent its tokens. `undefined` when no
- * attempt dispatched, so a step that paid for nothing records no key at all
- * rather than an empty one the fold would read as "zero children".
+ * `specify` folds up to two children into one record, so it is the one step
+ * that can exceed what `outcomeProblem` will load: the cheapest attempt is the
+ * one kept, since the rows are appended in dispatch order and the child that
+ * actually decided the verdict is the last one.
  */
 function mergedRows(all: DispatchUsageRow[][]): DispatchUsageRow[] | undefined {
-  const rows = all.flat();
+  const rows = all.flat().slice(0, DISPATCHES_MAX_ROWS);
   return rows.length === 0 ? undefined : rows;
 }

@@ -78,7 +78,6 @@ import {
   type BudgetArms,
   type BudgetOpts,
   type BudgetStop,
-  type DispatchUsageRow,
   armBudget,
   budgetFor,
   budgetVerdictWithRows,
@@ -237,27 +236,19 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const budget = armBudget(budgetFor(config, "challenge"));
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
-  // The adversary's cost row is kept whatever it did, including the throw
-  // (see the same comment in `build.ts`).
-  let dispatched: [DispatchResult | BudgetStop, DispatchUsageRow];
-  try {
-    dispatched = await dispatchAdversary(deps.dispatch, {
-      issue,
-      spec,
-      frozenPaths: Object.keys(frozen),
-      wt,
-      repoRoot,
-      testRunner: runnerTemplate,
-      budget,
-      ...(testLocation === undefined ? {} : { testLocation }),
-      ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
-    });
-  } catch (err) {
-    if (err instanceof ChallengeInfraError)
-      throw new ChallengeInfraError(err.message, err.dispatches ?? []);
-    throw err;
-  }
-  const [adversary, row] = dispatched;
+  // The adversary's cost row rides on the throw and `settle` records it (see
+  // `build.ts`).
+  const [adversary, row] = await dispatchAdversary(deps.dispatch, {
+    issue,
+    spec,
+    frozenPaths: Object.keys(frozen),
+    wt,
+    repoRoot,
+    testRunner: runnerTemplate,
+    budget,
+    ...(testLocation === undefined ? {} : { testLocation }),
+    ...(deps.statReporter === undefined ? {} : { statReporter: deps.statReporter }),
+  });
   const rows = [row];
   const read = readDispatched(adversary);
   if ("stop" in read) {

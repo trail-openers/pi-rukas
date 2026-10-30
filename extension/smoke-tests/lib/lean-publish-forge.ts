@@ -58,6 +58,12 @@ export interface FakeForge {
   prCreateCalls: { title: string; head: string; body: string; draft?: boolean }[];
   /** Numbers the step asked the forge to put back to draft. */
   prDraftCalls: number[];
+  /**
+   * What `prView` reports for a number the step REUSED, overriding the row the
+   * `prList` reply carries. Models the split the real CLI has: `gh pr list
+   * --json` does not carry `isDraft`, `gh pr view --json …,isDraft,…` does.
+   */
+  viewIsDraft?: Map<number, boolean>;
   /** Numbers the step asked to read (the list reply carries no `isDraft`). */
   prViewCalls: number[];
   /** Make `prView` reject — the forge cannot tell the step anything. */
@@ -70,7 +76,19 @@ export interface FakeForge {
    * ready. `undefined` (the default) reports the state the PR carries.
    */
   afterDraft?: Map<number, boolean | undefined>;
+  /**
+   * What `prView` reports for a number the step has just CREATED, overriding
+   * what `prCreate` returned — the seam for `gh pr create --json`, which carries
+   * no `isDraft`: a forge that made a draft and reports it ready (or reports
+   * nothing) becomes a testable behaviour rather than an imagined one.
+   */
+  afterCreate?: Map<number, boolean | undefined>;
   prs: NormalizedPullRequest[];
+  /**
+   * The PRs `prCreate` made: readable by `prView`, invisible to `prList`, so a
+   * create case cannot turn into a reuse case by the fake listing its own output.
+   */
+  created: NormalizedPullRequest[];
   listThrows: boolean;
   prList: (opts?: { state?: string; sourceBranch?: string }) => Promise<NormalizedPullRequest[]>;
   prView: (number: number) => Promise<NormalizedPullRequest>;
@@ -92,10 +110,13 @@ export function fakeForge(
     prCreateCalls: [],
     prDraftCalls: [],
     prViewCalls: [],
+    viewIsDraft: undefined,
     viewThrows: false,
     draftThrows: false,
     prs: [],
+    created: [],
     listThrows: false,
+    afterCreate: undefined,
     // Placeholders, assigned just below: the methods close over `f` itself, so
     // they cannot appear in the object literal that creates `f`.
     prList: async () => [],
@@ -112,14 +133,32 @@ export function fakeForge(
   f.prView = async (n: number) => {
     f.prViewCalls.push(n);
     if (f.viewThrows) throw new Error("forge: prView could not reach the host");
-    const found = f.prs.find((pr) => pr.number === n);
-    if (found === undefined) throw new Error(`forge: no PR #${n}`);
-    // A PR the step has just asked to draft is reported as the case put there,
-    // which is what makes "the forge accepted prDraft and left it ready" a
-    // testable behaviour rather than an imagined one.
-    if (f.prDraftCalls.includes(n) && f.afterDraft !== undefined && f.afterDraft.has(n))
-      return { ...found, isDraft: f.afterDraft.get(n) };
-    return found;
+    // `gh pr list --json` carries no `isDraft`; `gh pr view --json …,isDraft,…`
+    // is the only reply that does. So a reused PR whose state the list row does
+    // not carry gets it from the SEED (`viewIsDraft`), and the state itself then
+    // lives on the forge's row like any other: a `prDraft` flips it, and the
+    // step's read-back afterwards sees the flip rather than a stale answer.
+    // `afterCreate`/`afterDraft` are the lies layered on top — "made a draft and
+    // reports it ready", "accepted prDraft and left it ready".
+    const seed =
+      f.prDraftCalls.length === 0 && f.viewIsDraft?.has(n) === true
+        ? f.viewIsDraft.get(n)
+        : undefined;
+    if (seed !== undefined) {
+      const row = f.prs.find((pr) => pr.number === n) ?? f.created.find((pr) => pr.number === n);
+      if (row !== undefined) row.isDraft = seed;
+    }
+    const answer = (pr: NormalizedPullRequest): NormalizedPullRequest =>
+      f.prDraftCalls.includes(n) && f.afterDraft !== undefined && f.afterDraft.has(n)
+        ? { ...pr, isDraft: f.afterDraft.get(n) }
+        : f.afterCreate?.has(n) === true
+          ? { ...pr, isDraft: f.afterCreate.get(n) }
+          : pr;
+    const reusable = f.prs.find((pr) => pr.number === n);
+    if (reusable !== undefined) return answer(reusable);
+    const made = f.created.find((pr) => pr.number === n);
+    if (made === undefined) throw new Error(`forge: no PR #${n}`);
+    return answer(made);
   };
   f.prDraft = async (n: number) => {
     f.prDraftCalls.push(n);
@@ -127,8 +166,11 @@ export function fakeForge(
     // A successful re-draft is a STATE CHANGE the fake has to keep: the step
     // reads the PR back afterwards, and a fake still reporting it ready would
     // make every honest run look like the lie the read-back exists to catch.
-    const found = f.prs.find((pr) => pr.number === n);
-    if (found !== undefined) found.isDraft = true;
+    // A successful re-draft is a STATE CHANGE the fake has to keep: the step
+    // reads the PR back afterwards, and a fake still reporting it ready would
+    // make every honest run look like the lie the read-back exists to catch.
+    const kept = f.prs.find((pr) => pr.number === n) ?? f.created.find((pr) => pr.number === n);
+    if (kept !== undefined) kept.isDraft = true;
   };
   f.prCreate = async (
     title: string,
@@ -137,7 +179,24 @@ export function fakeForge(
     opts?: { draft?: boolean },
   ): Promise<NormalizedPullRequest> => {
     f.prCreateCalls.push({ title, head: headBranch, body, draft: opts?.draft });
-    return fakePr(77, "https://forge.example/pull/77", headBranch);
+    // The step's `draft` argument is a real state change, so the row the fake
+    // keeps carries it: `gh pr create --draft` makes a draft, and `prView` must
+    // then report one. `afterCreate` lets a case override the ANSWER and make
+    // the forge report the opposite of what it was asked (`isDraft: false` over
+    // a requested draft) — the lie the step's read-back exists to catch.
+    const created = fakePr(77, "https://forge.example/pull/77", headBranch, opts?.draft === true);
+    f.created.push(created);
+    // What `prCreate` HANDS BACK carries no `isDraft` at all, because that is
+    // what the real adapter returns: `gh pr create` issues
+    // `--json number,title,state,url` and `isDraft` is absent from that reply
+    // (only `gh pr view --json …,isDraft,…` carries it). So the create reply is
+    // not an answer to "is it a draft" — a step that records the state must ask
+    // `prView`, which is the only reply that can tell it.
+    // The row stays OUT of `prs` on purpose: a step that found a PR on the
+    // branch would REUSE it instead of creating one, and every create case would
+    // silently become a reuse case.
+    const { isDraft: _none, ...asCreated } = created;
+    return asCreated as NormalizedPullRequest;
   };
   return f;
 }

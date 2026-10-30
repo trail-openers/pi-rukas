@@ -37,7 +37,6 @@ import { EXIT_CODES, exitCodeFor } from "../lean/machine.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
 import { type Step, newestDecided } from "../lean/state.ts";
 import { oneLine } from "../lean/text-fence.ts";
-import { leanUsage } from "../lean/usage-sum.ts";
 import { traceWarn } from "../trace.ts";
 import { EXIT } from "./exit-code.ts";
 import { type VerbContext, type VerbOutcome, badArguments, parseFlags } from "./verb.ts";
@@ -241,11 +240,11 @@ export async function runWorkLeanVerb(
     const summary = oneLine(clip(raw.summary), MESSAGE_MAX);
     say(`work-lean: ${summary}`);
     const prUrl = prUrlOf(raw.result.run.steps);
-    // #1920 slice A: the run's per-child cost, folded from the step log the way
-    // `work` folds its dispatch events (`usageOf` in `result.ts`), so a host
-    // comparing the engines reads one shape. Failed and budget-stopped children
-    // are in it — a run that ended in a stopped child was not a cheap one.
-    const usage = leanUsage(raw.result.run.steps);
+    // No usage fields here yet: the step log already carries the per-child rows
+    // (`Outcome.dispatches`), but the result document that reports them is
+    // schema 5, a later slice, which also adds the capability flag. This PR is
+    // record-only, so a host reading this document today gets no usage key at
+    // all rather than one it was never told to expect.
     return {
       exitCode: raw.result.code,
       doc: {
@@ -256,8 +255,6 @@ export async function runWorkLeanVerb(
         summary,
         steps: raw.result.run.steps.length,
         ...(prUrl === undefined ? {} : { prUrl }),
-        usage: usage.total,
-        usageByRole: usage.byRole,
       },
     };
   } catch (err) {

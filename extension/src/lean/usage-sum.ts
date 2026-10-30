@@ -66,7 +66,12 @@ function addUsage(t: LeanUsageTotals, u: DispatchUsage | undefined): void {
  */
 export function leanUsage(steps: Step[]): LeanUsage {
   const total: LeanUsageTotals = zeroUsage();
-  const byRole: Record<string, LeanUsageTotals> = {};
+  // A null-prototype map: a child whose role reported `__proto__` is still a
+  // child somebody paid for, and on a normal object literal the assignment to
+  // that key changes the prototype instead of setting a property, so the row is
+  // silently lost from `byRole` while `total` keeps counting it — the two
+  // halves of one report disagreeing about the cost of the same dispatch.
+  const byRole: Record<string, LeanUsageTotals> = Object.create(null);
   for (const step of steps) {
     for (const row of step.outcome?.dispatches ?? []) {
       addUsage(total, row.usage);

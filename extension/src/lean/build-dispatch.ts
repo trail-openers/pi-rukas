@@ -44,8 +44,10 @@ export interface BuildDispatchOpts {
  * throw; any other dead child is still infrastructure.
  *
  * The second element of the pair is the row this dispatch cost, and it is
- * returned on EVERY path that observed a child — the ok path, the budget stop,
- * and the throw included. A child that died mid-stream spent its tokens before
+ * returned on every path that RECEIVED a `DispatchResult` — the ok path, the
+ * budget stop, and the infra throw built from that result. A throw from before
+ * the result arrived (the dispatch seam rejecting, for instance) saw no child
+ * and carries no row. A child that died mid-stream spent its tokens before
  * anybody knew, and the caller has no way to build the row after a throw, so a
  * row dropped here is a cost the run's total silently forgets.
  */

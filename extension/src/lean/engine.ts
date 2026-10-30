@@ -14,11 +14,14 @@
  *
  * Handler calls are awaited strictly serially — one at a time, each settled
  * before the next state is considered. Nothing is fired and forgotten, because
- * a step's outcome is what its log line claims actually happened.
+ * a step's outcome is what its log line claims actually happened. A throw
+ * becomes its error outcome in `error-outcome.ts`, where a throw's dispatch rows
+ * join the record.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
+import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";
 import { REPORT_FAILED_KIND, exitCodeFor, hasTransition, next } from "./machine.ts";
 import { verifiedPosition } from "./resume.ts";
@@ -341,7 +344,7 @@ async function settle(
       now,
     });
   } catch (err) {
-    outcome = { kind: "error", message: (err as Error)?.message ?? String(err) };
+    outcome = errorOutcome(state, err) as Outcome;
   }
   const logged = withOutcome(run, key, outcome, now());
   if (outcome.kind === "error") {
@@ -472,22 +475,21 @@ async function driveLoop(
 
     // There is deliberately no "this entry already decided something, apply it
     // instead of running" branch here. The position the loop drives from is
-    // DERIVED by folding the log (`verifiedPosition`), and that fold consumes
-    // one entry per visit, so the state the loop stands in is always one whose
-    // entry it has not yet consumed: there is never a decided step of the
-    // current state to re-apply. The branch that used to do this is what made
-    // "log entry missing" a shape a real drive could produce, and with it the
-    // exemptions the fold needed to tolerate that shape.
+    // DERIVED by folding the log (`verifiedPosition`), and that fold consumes one
+    // entry per visit, so the state the loop stands in is always one whose entry
+    // it has not yet consumed: there is never a decided step of the current state
+    // to re-apply. The branch that used to do this is what made "log entry
+    // missing" a shape a real drive could produce, and with it the exemptions the
+    // fold needed to tolerate that shape.
     const key = stepKey(opts.issue, state, nextAttempt(run, state));
-    // Write-ahead BEFORE the handler runs: a process that dies here leaves a
-    // step with no outcome, which is exactly the "re-run this one" signal.
+    // Write-ahead BEFORE the handler runs: a process that dies here leaves a step
+    // with no outcome, which is exactly the "re-run this one" signal.
     const started = { ...run, steps: [...run.steps, { key, state, startedAt: now() }] };
     drive.save(started);
-    // One line when a step begins and one when it ends: a lean run drives a
-    // model per step and can sit inside one for twenty minutes, and without a
-    // line at each boundary an operator watching stderr cannot tell a step
-    // that is working from one that is hung. Stderr, gated like every other
-    // trace line, because stdout is the JSON stream in `-p` mode.
+    // A line at each boundary: a lean run drives a model per step and can sit
+    // inside one for twenty minutes, and without both an operator watching stderr
+    // cannot tell a step that is working from one that is hung. Stderr, gated
+    // like every other trace line, because stdout is the JSON stream in `-p` mode.
     trace(`lean #${opts.issue} ${key} start`);
     run = await settle(drive, opts, started, key, state, now);
     const verdict = newestDecided(run.steps, state)?.outcome?.kind ?? "undecided";

@@ -84,13 +84,6 @@ export function validPrUrl(url: unknown): string | undefined {
 const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
 
 /**
- * Which state is allowed to record which piece of evidence.
- *
- * `draft` is the publish step's answer to "what did I hand the forge", so any
- * other step carrying it is a readiness claim the run never made; `dispatches`
- * is the per-child cost of the three dispatching steps and belongs to no other.
- */
-/**
  * Which state is allowed to record which evidence-bearing field. One table, and
  * one `includes` reads it: an owner is a state or a SET of states, which is how
  * the budget verdict's three fields are expressed — `limit`/`value`/`used`
@@ -101,9 +94,11 @@ const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
  * `prUrl` is the address `handback` prints and `verifiedHead` is what the land
  * gate matches against the PR head, so a value that arrived on a step that never
  * produced it is not extra information — it is a forged record that reads as
- * evidence. `assertRun` refuses it at load with the step's own key in the
- * message, so a hand-edited file naming a PR this run never opened (or claiming
- * a head this run never verified) is never driven.
+ * evidence. `draft` is the publish step's answer to "what did I hand the forge",
+ * and `dispatches` is the per-child cost of the three dispatching steps, so both
+ * belong to no other state either. `assertRun` refuses a breach at load with the
+ * step's own key in the message, so a hand-edited file naming a PR this run never
+ * opened (or claiming a head this run never verified) is never driven.
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
   prUrl: "publish",
@@ -181,32 +176,16 @@ function commandCriteriaProblem(value: unknown): string | undefined {
 /** The token-count fields of a usage row; `cost` is checked as a measure, not a count. */
 const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
 
-/** How many dispatch rows one step may record. */
-const DISPATCHES_MAX_ROWS = 16;
+/**
+ * How many dispatch rows one step may record. Exported because `specify` folds
+ * two attempts into ONE outcome and clips its merge here rather than keeping a
+ * second copy of the bound the validator enforces.
+ */
+export const DISPATCHES_MAX_ROWS = 16;
 
 /** Is this a duration a child can honestly report? Finite and never negative. */
 function isMeasure(value: unknown): boolean {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-/**
- * The per-dispatch cost rows a step may attach to ANY verdict it returns.
- *
- * `dispatches` is owned by the three dispatching states, so a `budget` verdict
- * carries rows legally — and the trio `limit`/`value`/`used` belongs to a
- * `budget` verdict ALONE, because `handback` renders those three into the
- * operator's cause line. Without this cross-check, adding `dispatches` would
- * have widened the budget-trio guard: an `ok` step could report a ceiling it
- * never crossed just by also reporting what its children cost. Same rule as the
- * ownership table, read against `kind` rather than `state`.
- */
-function dispatchesKindProblem(oc: Record<string, unknown>): string | undefined {
-  if (oc.dispatches === undefined || oc.kind === "budget") return undefined;
-  for (const key of ["limit", "value", "used"] as const) {
-    if (oc[key] !== undefined)
-      return `outcome ${key} is only recorded by a budget verdict, which an outcome carrying dispatches is not`;
-  }
-  return undefined;
 }
 
 /** Is this value a usage row of the shape `DispatchUsage` describes? */
@@ -315,14 +294,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
         return `outcome ${field} is only recorded by a ${String(owner)} step, not a ${state} step`;
     }
   }
-  // Checked as a set: a breach naming neither ceiling nor overshoot is a
-  // sentence nobody can act on. Same place as the ownership rule above, so a
-  // budget verdict is judged by one reader for both questions.
   // The budget trio is only ever written by a budget verdict: `handback` renders
   // `limit`/`value`/`used` into the operator's cause line, so the same trio on a
   // step whose kind is not `budget` is a ceiling this run never crossed, printed
   // as the run's cause. Refused whatever the step's state, so an `ok` step on a
-  // budget-owning state cannot carry them either.
+  // budget-owning state cannot carry them either — which is also what stops a
+  // step reporting a ceiling merely because it reports what its children cost.
   if (oc.kind !== "budget") {
     for (const key of ["limit", "value", "used"] as const) {
       if (oc[key] !== undefined) return `outcome ${key} is only recorded by a budget verdict`;
@@ -401,12 +378,7 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
         return `outcome commandNotRunnable[${JSON.stringify(id)}] must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
     }
   }
-  // `prUrl` is the address `handback` prints, so it is refused when it is not
-  // https url text rather than carried into a comment as a fake link; the
-  // length bound keeps a blob a handler stuffed in here out of the record.
   if (oc.dispatches !== undefined) {
-    const kindProblem = dispatchesKindProblem(oc);
-    if (kindProblem !== undefined) return kindProblem;
     const problem = dispatchesProblem(oc.dispatches);
     if (problem !== undefined) return problem;
   }

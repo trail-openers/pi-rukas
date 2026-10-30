@@ -43,6 +43,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { challengeBudgetFromLog, publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import type { PublishForge } from "./publish-deps.ts";
+import { createdDraftState, reusedDraftState } from "./publish-draft.ts";
 import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -201,65 +202,16 @@ async function openPr(
 ): Promise<NormalizedPullRequest> {
   const open = await listOpenPrs(f, branch);
   const found = open.find((pr) => pr.headRefName === branch);
-  if (found === undefined)
-    return f.prCreate(`work-lean #${issue}: ${oneLineTitle(problem)}`, branch, body, { draft });
-  // The PR is the PREVIOUS run's: `prCreate`'s `draft` option applies only to a
-  // PR this step opens, so a reused one keeps whatever state it was left in. If
-  // this run is not green, a ready PR must not stand behind an unverified head,
-  // so it goes back to draft — and a `prDraft` that fails is infrastructure,
-  // never a no-op: silently leaving it ready is the lie this step exists to
-  // prevent. `gh pr list --json` carries no `isDraft`, so the state is read with
-  // `prView` when the list did not say; a read that cannot answer is refused
-  // rather than guessed at, because guessing "draft" is what would leave it ready.
-  if (!draft) return found;
-  if ((await draftStateOf(f, found)) === false) {
-    await f.prDraft(found.number).catch((err: unknown) => {
-      throw new PublishInfraError(
-        `could not put the reused PR #${found.number} back to draft: ${(err as Error)?.message ?? String(err)}`,
-      );
-    });
-    // A `prDraft` that returned without throwing is a CLAIM, not an observation:
-    // the head is already pushed at this point, so a forge that accepted the call
-    // and left the PR READY would hand back `ok` with a mergeable PR standing
-    // behind unverified bytes — the exact lie the step exists to prevent. Read
-    // it back; only `isDraft === true` is an answer that lets the run continue.
-    const after = await f
-      .prView(found.number)
-      .then((v) => v?.isDraft)
-      .catch(() => undefined);
-    if (after !== true)
-      throw new PublishInfraError(
-        `the reused PR #${found.number} does not report itself a draft after prDraft, and a not-green run must not leave it ready`,
-      );
+  if (found === undefined) {
+    const created = await f.prCreate(
+      `work-lean #${issue}: ${oneLineTitle(problem)}`,
+      branch,
+      body,
+      { draft },
+    );
+    return { ...created, isDraft: await createdDraftState(f, created) };
   }
-  return found;
-}
-
-/**
- * Whether a reused PR reports itself ready, asked of the forge when the list
- * reply did not carry the flag (`gh pr list --json` has no `isDraft`).
- *
- * Throws when neither reply said: a run that cannot tell must not decide the PR
- * is already a draft, because that decision is exactly what leaves an unverified
- * PR mergeable.
- */
-async function draftStateOf(f: PublishForge, pr: NormalizedPullRequest): Promise<boolean> {
-  if (pr.isDraft !== undefined) return pr.isDraft;
-  // The rejection message is kept rather than swallowed: "could not tell" is
-  // true either way, but an operator reading the handoff has to be able to tell
-  // a forge that was unreachable from one that answered with neither field.
-  let why: string | undefined;
-  const viewed = await f
-    .prView(pr.number)
-    .then((v) => v?.isDraft)
-    .catch((err: unknown) => {
-      why = (err as Error)?.message ?? String(err);
-      return undefined;
-    });
-  if (viewed !== undefined) return viewed;
-  throw new PublishInfraError(
-    `could not tell whether the reused PR #${pr.number} is a draft, and a not-green run must not leave it ready${why === undefined ? "" : ` (${why})`}`,
-  );
+  return reusedDraftState(f, found, draft);
 }
 
 /** A PR title is one line, and the issue's problem statement is not. */
@@ -440,13 +392,13 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   return {
     kind: "ok",
     prUrl,
-    // The state the PR is ACTUALLY in, as this step read it: `draft` is the
-    // value it passed to `prCreate`, and for a reused PR `openPr` answered
-    // "ready" without asking, so the recorded value is `false` even when this
-    // run asked for a draft and the forge left the PR mergeable. That is the
-    // fact the host needs — a recorded `true` over a ready PR is the lie the
-    // step's read-back exists to prevent.
-    draft: pr.isDraft ?? draft,
+    // The state as the forge REPORTED it, never as this run asked for it: the
+    // create path read the new PR back through `draftStateOf`, so a forge that
+    // left a requested draft mergeable is recorded `false`; a reply that
+    // already carried the flag is trusted as-is. A recorded `true` over a ready
+    // PR is the lie the read-back exists to prevent, and guessing the requested
+    // value would be the same lie in the other direction.
+    ...(pr?.isDraft === undefined ? {} : { draft: pr.isDraft }),
     reason: `${wrote ? "published" : "already on origin, published"} ${draft ? "draft " : ""}PR ${prUrl} at ${head.slice(0, 12)}`,
   };
 }

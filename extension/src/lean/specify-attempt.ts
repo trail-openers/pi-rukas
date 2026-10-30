@@ -77,9 +77,12 @@ export interface SpecifyAttemptResult {
 /**
  * The dispatch, with a non-OK child turned into the throw it deserves.
  *
- * The row this dispatch cost comes back on every path that saw a child: the ok
- * path, the budget stop, and the `SpecifyInfraError` (which carries it on the
- * error, because a throw records no outcome and the child still spent tokens).
+ * The row this dispatch cost comes back on every path that RECEIVED a
+ * `DispatchResult`: the ok path, the budget stop, and the `SpecifyInfraError`
+ * (which carries it on the error, because a throw records no outcome and the
+ * child still spent tokens). A throw from before the dispatch returned — a
+ * preflight that could not stat the reporter, a dispatch seam that rejected —
+ * saw no child and carries no row.
  */
 async function dispatchAdversary(
   deps: SpecifyDeps,

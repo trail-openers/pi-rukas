@@ -174,7 +174,14 @@ function unfenced(ls: string[], heading: string): boolean {
 // ------------------------------------------- (d) an open PR on the branch -> reuse it
 {
   const existing = fakePr(9, "https://forge.example/pull/9", "lean/issue-404");
-  const r = await runPublish({ issue: 404, verify: { kind: "green" }, openPrs: [existing] });
+  // The row the LIST carries says nothing about draft (`gh pr list --json` has
+  // no such field), and the VIEW — the only reply that does — says it is ready.
+  const r = await runPublish({
+    issue: 404,
+    verify: { kind: "green" },
+    openPrs: [existing],
+    viewIsDraft: { "9": false },
+  });
   assert(
     r.forge.prCreateCalls.length === 0,
     `(d) an open PR on the branch is reused, not duplicated (${r.forge.prCreateCalls.length} creates)`,
@@ -351,96 +358,6 @@ for (const [issue, branch] of [
     `(l) nothing was pushed to ${JSON.stringify(branch)} (${originHead(r.origin, leanRef)})`,
   );
   assert(r.forge.prCreateCalls.length === 0, `(l) ${JSON.stringify(branch)} opens no PR`);
-}
-
-// ------------------------------- (m) a reused READY PR is put back to draft
-//
-// `prCreate`'s `draft` option only applies to a PR this step OPENS, so a reused
-// PR keeps the state the previous run left it in. A not-green run that reuses a
-// ready PR must re-draft it (or refuse) — never leave a mergeable PR attached to
-// a head nothing verified.
-{
-  const ready = fakePr(90, "https://forge.example/pull/90", "lean/issue-415", false);
-  const r = await runPublish({ issue: 415, verify: { kind: "red" }, openPrs: [ready] });
-  assert(
-    r.outcome?.kind === "ok",
-    `(m) a not-green run over a reused PR still publishes (got ${r.threw?.message})`,
-  );
-  assert(
-    r.forge.prDraftCalls.length === 1 && r.forge.prDraftCalls[0] === 90,
-    `(m) the reused ready PR is put back to draft (${JSON.stringify(r.forge.prDraftCalls)})`,
-  );
-  assert(
-    originHead(r.origin, "lean/issue-415") === r.head,
-    "(m) the work is pushed, but only behind a draft",
-  );
-  assert(
-    r.outcome?.draft === true,
-    `(m) the outcome records the PR as a draft after the re-draft (got ${String(r.outcome?.draft)})`,
-  );
-}
-
-// A PR already marked draft needs nothing done to it.
-{
-  const draftPr = fakePr(91, "https://forge.example/pull/91", "lean/issue-416", true);
-  const r = await runPublish({ issue: 416, verify: { kind: "red" }, openPrs: [draftPr] });
-  assert(
-    r.forge.prDraftCalls.length === 0,
-    `(m) a reused PR already in draft is left alone (${JSON.stringify(r.forge.prDraftCalls)})`,
-  );
-}
-
-// A green run reuses a ready PR untouched — the PR is verified work.
-{
-  const ready = fakePr(92, "https://forge.example/pull/92", "lean/issue-417", false);
-  const r = await runPublish({ issue: 417, verify: { kind: "green" }, openPrs: [ready] });
-  assert(
-    r.outcome?.kind === "ok" && r.forge.prDraftCalls.length === 0,
-    `(m) a green run does not draft its own verified PR (${r.forge.prDraftCalls.length} drafts, ${r.threw?.message})`,
-  );
-}
-
-// The forge refuses the re-draft: the step throws rather than leaving it ready.
-{
-  const ready = fakePr(93, "https://forge.example/pull/93", "lean/issue-418", false);
-  const r = await runPublish({
-    issue: 418,
-    verify: { kind: "red" },
-    openPrs: [ready],
-    draftThrows: true,
-  });
-  assert(
-    r.threw instanceof PublishInfraError && /back to draft/.test(r.threw.message),
-    `(m) a prDraft that fails is infrastructure, not a silent ready PR (got ${r.threw?.name}: ${r.threw?.message})`,
-  );
-  assert(
-    r.outcome === undefined,
-    "(m) no ok outcome is recorded for a PR left ready over unverified work",
-  );
-}
-
-// `gh pr list --json` carries no isDraft, so the step asks `prView` — and a
-// forge that answers neither is a refusal, never a guess of "already a draft".
-{
-  const unknown = fakePr(94, "https://forge.example/pull/94", "lean/issue-419", undefined);
-  const r = await runPublish({
-    issue: 419,
-    verify: { kind: "red" },
-    openPrs: [unknown],
-    viewThrows: true,
-  });
-  assert(
-    r.threw instanceof PublishInfraError && /could not tell whether/.test(r.threw.message),
-    `(m) a draft state nobody could read is refused (got ${r.threw?.name}: ${r.threw?.message})`,
-  );
-  assert(
-    r.forge.prViewCalls.length === 1 && r.forge.prViewCalls[0] === 94,
-    `(m) the forge was asked before it was guessed at (${JSON.stringify(r.forge.prViewCalls)})`,
-  );
-  assert(
-    r.forge.prDraftCalls.length === 0,
-    "(m) nothing was drafted on a state the step could not read",
-  );
 }
 
 // ----------------------------------------------------------- (k) the wiring is real

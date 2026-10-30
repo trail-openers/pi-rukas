@@ -67,7 +67,6 @@ import {
   type BudgetArms,
   type BudgetOpts,
   type BudgetStop,
-  type DispatchUsageRow,
   armBudget,
   budgetFor,
   budgetVerdictWithRows,
@@ -203,32 +202,24 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
 
   // 4. The builder, under the state's budget (#1883). A breach is a routed
   //    verdict; the child's work goes back with the tree, nothing is committed.
+  //    A child that died THROWS, and a throw records no outcome — so the rows
+  //    ride on the error and the engine puts them on the error outcome it writes
+  //    (see `error-outcome.ts`, #1920 A). Nothing here catches them: the original
+  //    error already carries them, and re-wrapping it could only drop them.
   const reentry = reentryFromLog(ctx.steps);
   const budget = armBudget(budgetFor(config, "build"));
   if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
-  // The dispatch's cost row is kept whatever the child did. A child that died
-  // throws, and the engine records no outcome for a throw — so the rows ride on
-  // the error and this step's own catch puts them back on an outcome, or the
-  // tokens a failed round spent never reach the run's total (#1920 A).
-  let built: [DispatchResult | BudgetStop, DispatchUsageRow];
-  try {
-    built = await dispatchBuilder(deps.dispatch, {
-      issue,
-      spec,
-      frozen,
-      wt,
-      repoRoot,
-      attempt,
-      testRunner: config.verify.test,
-      budget,
-      ...(reentry === undefined ? {} : { reentry }),
-    });
-  } catch (err) {
-    if (err instanceof BuildInfraError)
-      throw new BuildInfraError(err.message, err.dispatches ?? []);
-    throw err;
-  }
-  const [dispatched, row] = built;
+  const [dispatched, row] = await dispatchBuilder(deps.dispatch, {
+    issue,
+    spec,
+    frozen,
+    wt,
+    repoRoot,
+    attempt,
+    testRunner: config.verify.test,
+    budget,
+    ...(reentry === undefined ? {} : { reentry }),
+  });
   const rows = [row];
   const read = readDispatched(dispatched);
   if ("stop" in read) return budgetVerdictWithRows("build", read.stop, rows);

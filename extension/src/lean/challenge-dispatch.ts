@@ -65,7 +65,10 @@ export interface ChallengeDispatchOpts {
  * Dispatch one adversary. A budget breach comes back as {@link BudgetStop}, not a
  * throw; any other dead child is still infrastructure.
  *
- * The row this dispatch cost travels on every path — see `dispatchBuilder`.
+ * The row this dispatch cost travels on every path that RECEIVED a
+ * `DispatchResult` — the ok path, the budget stop and the infra throw built
+ * from that result; a throw from before the result arrived carries none. See
+ * `dispatchBuilder`.
  */
 export async function dispatchAdversary(
   dispatch: ChallengeDispatch,
