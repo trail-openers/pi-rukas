@@ -29,7 +29,10 @@
  *       prDraft is called; when prDraft fails the step throws rather than
  *       leaving a ready PR over unverified work
  *   (n) the push runs with a non-interactive git env (no terminal / ssh prompt)
- *   (o) a push that reports `[forced update]` is a REFUSAL, not a success flag
+ *
+ * What ORIGIN's ref decides — the conditional force, the lease, and the open-PR
+ * refusal — is `test-lean-publish-remote.ts` (cases h and o-s there): same
+ * fixture, same recorder, split so neither file crosses the size cap.
  *
  * The PR-body RENDERER (`lean/publish-body`) has its own file,
  * `test-lean-publish-body.ts`; the cases here that read a body assert only what
@@ -40,7 +43,8 @@
 import { handbackOutcome } from "../src/lean/handback.ts";
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
-import { ROOTS, defaultSpec, fakePr, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
+import { fakePr } from "./lib/lean-publish-forge.ts";
+import { ROOTS, defaultSpec, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 import { decided, handbackCtx } from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;
@@ -188,6 +192,7 @@ function unfenced(ls: string[], heading: string): boolean {
     issue: 406,
     verify: { kind: "green" },
     commitAfterVerify: true,
+    noPush: true,
   });
   assert(
     r.threw instanceof PublishInfraError && /HEAD moved/.test(r.threw.message),
@@ -202,27 +207,13 @@ function unfenced(ls: string[], heading: string): boolean {
 
 // ------------------------------------------------------------- (g) a dirty tree
 {
-  const r = await runPublish({ issue: 407, verify: { kind: "green" }, dirty: true });
+  const r = await runPublish({ issue: 407, verify: { kind: "green" }, dirty: true, noPush: true });
   assert(
     r.threw instanceof PublishInfraError && /not clean/.test(r.threw.message),
     `(g) uncommitted bytes are refused (got ${r.threw?.message})`,
   );
   assert(originHead(r.origin, "lean/issue-407") === "", "(g) a dirty tree is not pushed");
   assert(r.forge.prCreateCalls.length === 0, "(g) a dirty tree opens no PR");
-}
-
-// ------------------------------------- (h) origin holds a foreign commit -> no force
-{
-  const r = await runPublish({ issue: 408, verify: { kind: "green" }, originForeign: true });
-  assert(
-    r.threw instanceof PublishInfraError,
-    `(h) a non-fast-forward push throws (got ${r.threw?.name}: ${r.threw?.message})`,
-  );
-  assert(r.forge.prCreateCalls.length === 0, "(h) a refused push opens no PR");
-  assert(
-    originHead(r.origin, "lean/issue-408") !== r.head,
-    "(h) origin still holds the foreign commit — the step never forced over it",
-  );
 }
 
 // ------------------------------------------------------ (i) injection into the body
@@ -320,6 +311,7 @@ for (const [issue, branch] of [
     verify: { kind: "green" },
     branch,
     worktreeBranch: leanRef,
+    noPush: true,
   });
   assert(
     r.threw instanceof PublishInfraError,
@@ -423,33 +415,6 @@ for (const [issue, branch] of [
   assert(
     r.forge.prDraftCalls.length === 0,
     "(m) nothing was drafted on a state the step could not read",
-  );
-}
-
-// ------------------- (o) a `forced update` is a refusal, never an accepted flag
-//
-// The step never passes `--force`, so git cannot print that flag for a push it
-// ran. Anything printing it rewrote history outside the clone, which is the one
-// act this step may not take under a success-looking exit code.
-{
-  const r = await runPublish({
-    issue: 421,
-    verify: { kind: "green" },
-    execOver: (cmd, opts) =>
-      opts?.argv?.includes("push") === true
-        ? Promise.resolve({
-            stdout: "To origin\n * [new branch]      abc -> lean/issue-421 [forced update]\nDone\n",
-            stderr: "",
-          })
-        : undefined,
-  });
-  assert(
-    r.threw instanceof PublishInfraError && /forced update/.test(r.threw.message),
-    `(o) a push reporting a forced update is refused (got ${r.threw?.name}: ${r.threw?.message})`,
-  );
-  assert(
-    r.forge.prCreateCalls.length === 0 && r.forge.prListCalls === 0,
-    "(o) a refused push opens no PR",
   );
 }
 

@@ -13,8 +13,11 @@
  *      pushed is REFUSED before the push — "green" is a claim about a named
  *      tree, and pushing something else under it is the one lie this step
  *      cannot take back;
- *   4. the push is non-forced and porcelain, so a rejection (a foreign commit
- *      already on the ref) is an error rather than a rewrite of history;
+ *   4. origin is read first (`remoteBranchSha`), an OPEN PR on the branch is
+ *      refused with its URL, and the push ALWAYS carries a lease bound to the
+ *      sha that read returned — so a rewrite is legitimate only because it was
+ *      bound to an observed sha and survived the PR check; success is decided
+ *      afterwards by reading origin again, never by parsing porcelain;
  *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told
  *      to create one. A `prList` that throws aborts the step: creating without
  *      looking is how a resumed run opens a second PR for the same work.
@@ -94,24 +97,68 @@ async function assertTree(
 }
 
 /**
- * Push the head to the branch on origin. Never forced; a rejection is fatal.
+ * What origin's branch points at, or `undefined` when absent. A read that
+ * cannot answer is infrastructure, never "absent".
+ */
+async function remoteBranchSha(
+  deps: PublishDeps,
+  wt: string,
+  branch: string,
+): Promise<string | undefined> {
+  const [ref, why] = [`refs/heads/${branch}`, `could not read origin's ${branch}`];
+  const out = await gitIn(deps, wt, ["ls-remote", "--heads", "origin", ref], why, 60_000);
+  if (out === "") return undefined;
+  // One line `<sha>\t<ref>`; a reply not naming the ref asked for is refused,
+  // not read as "absent".
+  const [sha = "", gotRef = ""] = out.split(/\s+/);
+  if (gotRef !== ref || !/^[0-9a-f]{40}$/.test(sha))
+    throw new PublishInfraError(`${why} (got ${out.slice(0, 120)})`);
+  return sha;
+}
+
+/**
+ * The head pushed to origin's branch under a lease bound to `remote` — the sha
+ * this step read from origin moments before, or `""` when the read said the
+ * branch is absent (git then requires the ref to STILL not exist).
+ *
+ * A forced update is legitimate here for exactly one reason: the lease binds the
+ * rewrite to the sha we observed and the open-PR check passed on that same
+ * branch, so nothing moves that this step did not read and clear. Hence no
+ * `--no-verify`, no unconditional `--force`, and no `rev-list` heuristic about
+ * how many commits separate the two tips — a realistic stale branch is 2-6
+ * commits deep, and a count gate that admits only 1 never replaces one.
+ *
+ * Success is origin, read back after the push — never porcelain. `git push
+ * --porcelain` prints a fast-forward UNBRACKETED (`abc..def`), so flag regexes
+ * have already been observed reporting a push that landed as "no success flag",
+ * and a rejection exits 0. So origin decides: origin at head is success whatever
+ * the porcelain says, and the porcelain travels only as a diagnostic when it
+ * does not.
  *
  * The ref name is checked with the driver's own `netRefProblem` BEFORE the
- * command line is built: `branch` is state-file data, and `assertSafeRef` only
- * says it is a legal git name — `+x`, `a:b` and `-f` all are, and git parses
- * them as a refspec, a force, or an option (see `netRefProblem`, #1095).
+ * command line: `branch` is state-file data, and `assertSafeRef` only says it is
+ * a legal git name — `+x`, `a:b` and `-f` all are, and git parses them as a
+ * refspec, a force, or an option (see `netRefProblem`, #1095).
  */
 async function pushHead(
   deps: PublishDeps,
   wt: string,
   head: string,
   branch: string,
+  remote: string,
 ): Promise<void> {
   const unsafe = netRefProblem(`refs/heads/${branch}`);
   if (unsafe !== undefined) throw new PublishInfraError(`refusing to push ${branch}: ${unsafe}`);
   const ran = await deps
     .exec("git", {
-      argv: [...NO_HOOKS, "push", "--porcelain", "origin", `${head}:refs/heads/${branch}`],
+      argv: [
+        ...NO_HOOKS,
+        "push",
+        "--porcelain",
+        `--force-with-lease=refs/heads/${branch}:${remote}`,
+        "origin",
+        `${head}:refs/heads/${branch}`,
+      ],
       cwd: wt,
       timeout: 120_000,
       maxBuffer: 4 * 1024 * 1024,
@@ -122,30 +169,26 @@ async function pushHead(
       const why = String(e?.stderr ?? e?.message ?? err).slice(0, 500);
       throw new PublishInfraError(`could not push ${branch}: ${why}`);
     });
-  // Porcelain form. git prints a `To <remote>` header, one `<from> <to> <flag>`
-  // line per ref, and a `Done` trailer — and for a brand-new ref it puts an
-  // ASTERISK in the from/to columns (`* <sha> refs/heads/x\t[new branch]`), so
-  // neither column is reliably a sha. The FLAG is git's own verdict: `[new
-  // branch]`, `[up to date]` and `[fast-forward]` are the successes and `[rejected]`
-  // is not — and the exit code stays 0 for the rejection too, which is exactly
-  // why the exit code cannot be the check.
+  // Origin is read FIRST: if it holds this head the push landed whatever the
+  // porcelain says, so the two rejection shapes git prints for one (`! [rejected]
+  // …` and any `!`-flagged ref line) cannot refute an observed fact.
+  const after = await remoteBranchSha(deps, wt, branch);
+  if (after === head) return;
+  // Only a ref that did NOT move is judged on its output, and then the porcelain
+  // is a diagnostic appended to the refusal, never the reason for it.
   const out = typeof ran?.stdout === "string" ? ran.stdout : "";
-  if (/\[rejected\]/.test(out))
-    throw new PublishInfraError(`the push of ${branch} was rejected: ${out.slice(0, 500)}`);
-  // `forced update` is deliberately NOT a success flag: this push never passes
-  // `--force`, so git cannot report one legitimately. A line saying the ref was
-  // rewritten is therefore evidence something else forced it (a `+refspec` or a
-  // hook), and history outside the clone is exactly what this step may not
-  // rewrite — so it refuses rather than accepting a flag it did not earn.
-  if (/\[forced update\]/.test(out))
-    throw new PublishInfraError(
-      `the push of ${branch} reported a forced update, which this step never asks for: ${out.slice(0, 500)}`,
-    );
-  if (!/\[(?:new branch|up to date|fast-forward)\]/.test(out))
-    throw new PublishInfraError(
-      `the push of ${branch} reported no success flag: ${out.slice(0, 500)}`,
-    );
+  const porcelain =
+    /\[rejected\]/.test(out) || /^\s*!/m.test(out)
+      ? `; porcelain reported a rejection: ${out.slice(0, 500)}`
+      : "";
+  throw new PublishInfraError(
+    `origin's ${branch} is ${after === undefined ? "absent" : after} after the push, expected ${head}${porcelain}`,
+  );
 }
+
+/** States that are not under review, and therefore do not hold a rewrite back. */
+const SETTLED_STATES: readonly string[] = ["CLOSED", "MERGED"];
+const isSettled = (s: unknown) => typeof s === "string" && SETTLED_STATES.includes(s.toUpperCase());
 
 /** Reuse an open PR on the branch, or create one. Never both. */
 async function openPr(
@@ -156,14 +199,8 @@ async function openPr(
   body: string,
   draft: boolean,
 ): Promise<NormalizedPullRequest> {
-  const open = await f.prList({ state: "open", sourceBranch: branch }).catch((err: unknown) => {
-    // Looking and failing is not the same as finding nothing: creating here is
-    // how a resumed run ends up with two PRs for one issue.
-    throw new PublishInfraError(
-      `could not list open PRs for ${branch}: ${(err as Error)?.message ?? String(err)}`,
-    );
-  });
-  const found = (open ?? []).find((pr) => pr.headRefName === branch);
+  const open = await listOpenPrs(f, branch);
+  const found = open.find((pr) => pr.headRefName === branch);
   if (found === undefined)
     return f.prCreate(`work-lean #${issue}: ${oneLineTitle(problem)}`, branch, body, { draft });
   // The PR is the PREVIOUS run's: `prCreate`'s `draft` option applies only to a
@@ -231,6 +268,58 @@ function oneLineTitle(problem: string): string {
 }
 
 /**
+ * The forge's open PRs for `branch`, or infrastructure. The list is scoped by
+ * `sourceBranch`, so every row in it is a row about THIS branch.
+ *
+ * Looking and failing is not the same as finding nothing: pushing or creating
+ * without the answer is how a resumed run rewrites a branch under review, or ends
+ * up with two PRs for one issue.
+ */
+async function listOpenPrs(f: PublishForge, branch: string): Promise<NormalizedPullRequest[]> {
+  const open = await f.prList({ state: "open", sourceBranch: branch }).catch((err: unknown) => {
+    throw new PublishInfraError(
+      `could not list open PRs for ${branch}: ${(err as Error)?.message ?? String(err)}`,
+    );
+  });
+  return open ?? [];
+}
+
+/**
+ * What origin's branch points at, as the lease's expected value: `""` when the
+ * ref is absent, `head` when it already matches (the push is then skipped).
+ *
+ * Any OTHER sha means this step is about to rewrite a branch, so it first asks
+ * the forge whether that branch is under review — and the check FAILS CLOSED:
+ * the list was asked for THIS branch, so ANY row it returns blocks unless its
+ * state positively reads CLOSED or MERGED once uppercased, whatever its
+ * `headRefName`. A lowercase `"open"`, an empty string or a missing head branch
+ * must refuse, not read as "no PR": `mapPrListReply` in `forge-list.ts`
+ * synthesises `state: ""` for a forge that answered with one bare number, and an
+ * exact `=== "OPEN"` comparison — or a head-branch match this step cannot rely
+ * on — would force-push over a branch somebody is reviewing.
+ */
+async function pushLeaseTarget(
+  deps: PublishDeps,
+  f: PublishForge,
+  wt: string,
+  head: string,
+  branch: string,
+): Promise<string> {
+  // The ref is read first and the forge is asked second, so the lease is bound to
+  // the value the forge check was about. A move after this read fails the lease
+  // at push time, which is the window the lease exists to close.
+  const remote = (await remoteBranchSha(deps, wt, branch)) ?? "";
+  if (remote === "" || remote === head) return remote;
+  // Not having looked is no licence to rewrite a branch somebody may be reading.
+  const blocking = (await listOpenPrs(f, branch)).find((pr) => !isSettled(pr.state));
+  if (blocking !== undefined)
+    throw new PublishInfraError(
+      `refusing to rewrite ${branch}: the forge returned an unsettled PR row (${blocking.url || "(no URL returned)"})`,
+    );
+  return remote;
+}
+
+/**
  * The `publish` step. Returns `ok` with `prUrl`; THROWS on infrastructure.
  *
  * `deps.forge` is the seam a test drives: production resolves the real adapter
@@ -259,6 +348,10 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   if (!parsed.ok) throw new PublishInfraError(`the issue's spec is unusable: ${parsed.reason}`);
   const spec = parsed.spec;
 
+  // Resolved ONCE: the stale-branch check and the PR check are two questions of
+  // one adapter, and resolving twice is two chances to get two different answers.
+  const f = await deps.forge(repoRoot);
+
   const v = newestDecided(ctx.steps, "verify");
   const verifyKind =
     v?.outcome?.kind === "green" || v?.outcome?.kind === "red" ? v.outcome.kind : undefined;
@@ -274,14 +367,25 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     // refuse — so it holds the PR as a draft exactly as a `manual` criterion does.
     spec.criteria.some((c) => c.verify === "command" && !v?.outcome?.commandCriteria?.[c.id]);
 
-  await pushHead(deps, wt, head, branch);
+  // Read origin, clear the branch against the forge, then push under a lease
+  // bound to that read. A move between the read and the push makes the lease
+  // refuse, which is the race the lease exists to close. When origin already holds
+  // this head there is nothing to write, and the step says so rather than pushing
+  // a no-op it cannot verify.
+  if (f === undefined)
+    throw new PublishInfraError(`no forge adapter: cannot check ${branch} is in review`);
+  const remote = await pushLeaseTarget(deps, f, wt, head, branch);
+  const wrote = remote !== head;
+  if (wrote) await pushHead(deps, wt, head, branch, remote);
   // From here on the head is OUTSIDE the clone. Every refusal below is a
   // handback over a pushed branch, so it says so — an error that reads only
-  // "could not open the PR" hides the one fact the operator needs first.
+  // "could not open the PR" hides the one fact the operator needs first. When
+  // origin already held this head nothing was written, so the text says so.
   const pushed = (what: string) =>
-    new PublishInfraError(`pushed ${head.slice(0, 12)} to ${branch}, but ${what}`);
+    new PublishInfraError(
+      `${wrote ? `pushed ${head.slice(0, 12)} to ${branch}` : `${branch} is already on origin`}, but ${what}`,
+    );
 
-  const f = await deps.forge(repoRoot);
   if (f === undefined) throw pushed("no forge adapter: cannot open the PR");
   const pr = await openPr(
     f,
@@ -329,6 +433,6 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   return {
     kind: "ok",
     prUrl,
-    reason: `published ${draft ? "draft " : ""}PR ${prUrl} at ${head.slice(0, 12)}`,
+    reason: `${wrote ? "published" : "already on origin, published"} ${draft ? "draft " : ""}PR ${prUrl} at ${head.slice(0, 12)}`,
   };
 }
