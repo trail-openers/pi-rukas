@@ -27,7 +27,8 @@
  */
 
 import { makeAssert } from "./headless-verb-harness.ts";
-import { CHILDREN, URL, driveLean, leanLog, stepWith } from "./lib/lean-result-fixture.ts";
+import { CHILDREN, URL, driveLean, leanLog, stepWith, withReason } from "./lib/lean-result-fixture.ts";
+import type { Step } from "../src/lean/state.ts";
 
 const { assert, state } = makeAssert();
 
@@ -145,6 +146,36 @@ const log = leanLog;
   assert(
     handoff.bodyFile === undefined,
     `posted: and names no body file (got ${String(handoff.bodyFile)})`,
+  );
+}
+
+// ── (3g) a long reason still leaves a body. The reason is clipped ONCE, to the
+// room the composed body has left after the marker line: clipping it to the whole
+// budget and letting the shared reader bound the body again cut the reason away
+// entirely the moment the marker was added, so a 480-char report published a
+// marker and nothing else.
+{
+  // The marker is `<!-- pi-rukas:handoff issue=7 cap=none -->` — 45 chars; the
+  // reason is a sentence of words, so nothing redacts, and the body must carry it.
+  const long = "defect ".repeat(68).trim();
+  const steps = log({ prUrl: URL, draft: false });
+  steps[steps.length - 1] = withReason(steps[steps.length - 1] as Step, long);
+  const r = await drive("handed-back", 10, steps);
+  assert(r.violations.length === 0, `long-reason: output contract (${r.violations.join("; ")})`);
+  const i = r.issue ?? {};
+  const handoff = i.handoff as Record<string, unknown>;
+  const body = handoff.body as string | undefined;
+  assert(
+    typeof body === "string" && body.length > 0 && body.includes(handoff.marker as string),
+    `long-reason: the body survives and carries its marker (got ${JSON.stringify(body)?.slice(0, 80)})`,
+  );
+  assert(
+    typeof body === "string" && body.includes("defect"),
+    `long-reason: and the reason itself, not just the marker (got ${String(body?.length)} chars)`,
+  );
+  assert(
+    typeof body === "string" && body.length <= 500,
+    `long-reason: and the composed body is inside the bound (got ${String(body?.length)})`,
   );
 }
 

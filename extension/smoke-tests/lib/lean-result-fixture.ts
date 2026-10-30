@@ -23,7 +23,7 @@
  *     would report every delivered report as undelivered.
  */
 
-import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
+import type { LeanRun, LeanState, Outcome, Step } from "../../src/lean/state.ts";
 import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import { fakeRun, verbRun } from "./work-lean-verb-fixture.ts";
 
@@ -97,6 +97,14 @@ export interface LeanLogOpts {
    *  so does `prState` — but only to REJECT: a run with no `ci` step is unjudged
    *  by the pipeline, not refused, because lean has no `ci` step built. */
   ci?: "green" | "red";
+  /** How many `verify` steps the log carries (default 1): the newest one is the
+   *  gate's current verdict, so 2 with `verifyCrashed` is a gate that died after
+   *  going green. */
+  verifySteps?: number;
+  /** Whether the NEWEST `verify`/`ci` step carries no outcome — a crash mid-step. */
+  crashed?: "verify" | "ci";
+  /** The run's `counters.draft` (default false) — the engine's own red marker. */
+  draftCounter?: boolean;
 }
 
 /** The whole log one ending is made of — see the module header for its rules. */
@@ -113,6 +121,20 @@ export function leanLog(opts: LeanLogOpts): Step[] {
       ...(opts.verify === "red" ? { reason: "acceptance test x is red" } : { verifiedHead: head }),
     }),
   ];
+  for (let n = 1; n < (opts.verifySteps ?? 1); n++) {
+    // A re-run's verdict, older than the newest one below: reading THIS green
+    // over a newer step is what the projection must not do.
+    steps.push(stepWith("verify", { kind: "green", verifiedHead: head }, n));
+  }
+  if (opts.crashed === "verify") {
+    // A crash mid-gate: no outcome, so the gate has said nothing since the green.
+    steps.push({
+      key: `7:verify:${String(opts.verifySteps ?? 1)}`,
+      state: "verify",
+      startedAt: 3_000,
+      endedAt: 3_001,
+    });
+  }
   if (opts.prUrl !== undefined) {
     // The head publish records as typed data, never as a prefix in prose:
     // `publishedHead` absent is the unobserved case, and a value unequal to the
@@ -133,6 +155,14 @@ export function leanLog(opts: LeanLogOpts): Step[] {
     // is not green is as much a refusal as a red gate. Its ABSENCE is neither —
     // lean has no `ci` step built, so a run with none is unjudged, not refused.
     steps.push(stepWith("ci", { kind: opts.ci }));
+    if (opts.crashed === "ci") {
+      steps.push({
+        key: "7:ci:1",
+        state: "ci",
+        startedAt: 3_002,
+        endedAt: 3_003,
+      });
+    }
   }
   steps.push(
     stepWith("handback", {
@@ -164,10 +194,16 @@ export async function driveLean(
   leanState: LeanRun["state"],
   code: number,
   steps: Step[],
+  counters?: Partial<LeanRun["counters"]>,
 ): Promise<LeanDrive> {
+  // The counters override drives its own verb run rather than patching this one:
+  // the record the projection reads is the one the verb was handed.
+  const base = fakeRun({ code, state: leanState, steps });
+  const run: LeanRun =
+    counters === undefined ? base.run : { ...base.run, counters: { ...base.run.counters, ...counters } };
   const r = await verbRun(["7"], async () => ({
     summary: `work-lean #7: ${leanState} (exit ${code})`,
-    result: fakeRun({ code, state: leanState, steps }),
+    result: { ...base, run },
   }));
   const issues = r.doc.issues as Record<string, unknown>[] | undefined;
   return {

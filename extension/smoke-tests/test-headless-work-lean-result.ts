@@ -241,6 +241,48 @@ const log = leanLog;
   );
 }
 
+// ── (2h) `counters.draft` is the engine's OWN red marker, and `landEarned`
+// reads it FIRST — before any green. So a record whose counters still carry the
+// draft is a PR the engine refuses to merge no matter what its `publish` outcome
+// said, and the projection that called it `ready` would tell a host to merge
+// bytes the run itself marked unverified. `fakeRun` builds `draft: false` and the
+// case overrides it, because the counter is the run's, not the step's.
+{
+  const r = await drive("handed-back", 10, log({ prUrl: URL, draft: false }), { draft: true });
+  assert(r.violations.length === 0, `draft-counter: output contract (${r.violations.join("; ")})`);
+  const i = r.issue ?? {};
+  assert(
+    i.prState === "draft",
+    `draft-counter: the counter beats a draft:false publish (got ${String(i.prState)})`,
+  );
+  assert(i.cap === undefined, `draft-counter: no cap (got ${String(i.cap)})`);
+}
+
+// ── (2i) a gate that CRASHED after going green is unobserved, not green: the
+// newest `verify` has no outcome at all (a crash mid-step), so the older green is
+// not the run's current verdict — and `newestDecided` would have skipped the
+// crash and read it as one. Same shape for a `ci` that died mid-pipeline.
+{
+  const r = await drive(
+    "handed-back",
+    10,
+    log({ prUrl: URL, draft: false, verifySteps: 2, crashed: "verify" }),
+  );
+  const i = r.issue ?? {};
+  assert(
+    i.prState === "draft",
+    `crashed-gate: an outcome-less newest verify is not ready (got ${String(i.prState)})`,
+  );
+  assert(i.cap === undefined, `crashed-gate: no cap (got ${String(i.cap)})`);
+  const ci = await drive("handed-back", 10, log({ prUrl: URL, draft: false, ci: "green", crashed: "ci" }));
+  const j = ci.issue ?? {};
+  assert(
+    j.prState === "draft",
+    `crashed-ci: an outcome-less newest ci is not ready (got ${String(j.prState)})`,
+  );
+  assert(j.cap === undefined, `crashed-ci: no cap (got ${String(j.cap)})`);
+}
+
 // ── (3) NO PR: the run handed back before any publish step decided.
 {
   const r = await drive("handed-back", 10, log({ dispatches: CHILDREN, verify: "red" }));
