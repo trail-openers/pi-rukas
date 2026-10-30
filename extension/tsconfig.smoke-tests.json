@@ -168,6 +168,9 @@
     "smoke-tests/test-lean-specify-retry.ts",
     "smoke-tests/test-lean-usage.ts",
     "smoke-tests/test-lean-build-usage.ts",
-    "smoke-tests/test-lean-state-dispatches.ts"
+    "smoke-tests/test-lean-state-dispatches.ts",
+    "smoke-tests/test-AC1-hostile-error-fail.ts",
+    "smoke-tests/test-AC2-nonerror-tostring-fail.ts",
+    "smoke-tests/test-AC3-empty-message-fallback.ts"
   ]
 }
