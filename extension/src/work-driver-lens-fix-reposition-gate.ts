@@ -61,9 +61,9 @@ import type { ExecFn } from "./worktree.ts";
  *   patch-equivalent on the tip (the NORMAL #981 case: previous round's
  *   fix was cherry-picked as a different commit). A backup ref IS created
  *   (points at the old tree HEAD). `fromSha` records the move source.
- *   Both cherry arms record the move the same way; the fast-forward arm
- *   above is the only one that moves without a backup ref, so `tipSha` and
- *   `backupRef` together say which arm accepted.
+ *   Both cherry arms record the move the same way; `backupRef` is present
+ *   exactly when the move went through `moveToTip` (the cherry arms) — the
+ *   fast-forward arm never sets it.
  * - `dirty` — uncommitted changes; fixer NOT dispatched.
  * - `unlanded` — clean and AHEAD of the tip (strict ancestor of the tree);
  *   holds commits the tip does not. Moved to backup ref; parks.

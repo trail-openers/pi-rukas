@@ -156,6 +156,7 @@
     "smoke-tests/test-lean-base-proof.ts",
     "smoke-tests/test-lean-base-infra.ts",
     "smoke-tests/test-work-driver-lens-fix-reposition-lagging-ref.ts",
+    "smoke-tests/test-AC1-movetotip-no-bypatchequivalence.ts",
     "smoke-tests/lib/lean-verify-command-fixture.ts",
     "smoke-tests/test-lean-test-location.ts",
     "smoke-tests/test-lean-test-location-steps.ts",

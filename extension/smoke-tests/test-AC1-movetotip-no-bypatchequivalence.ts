@@ -1,136 +1,67 @@
 #!/usr/bin/env bun
 /**
- * #1908 — `moveToTip`'s `byPatchEquivalence` parameter is dead.
+ * #1908 — guards the removal of `moveToTip`'s dead `byPatchEquivalence`
+ * parameter (and the `movedByPatchEquivalence` field it fed).
  *
- * Both callers in `work-driver-lens-fix-reposition-gate.ts` pass the literal
- * `true`, and the parameter's own jsdoc says so ("Every current caller passes
- * true ... the fast-forward arm does not come through here"). Everything it
- * feeds is therefore a constant: `movedByPatchEquivalence` on the result is
- * always true, and the `: "fast-forward to the remote tip"` half of the trace
- * clause is unreachable text.
+ * What it guards: nothing under `extension/src` or `extension/smoke-tests`
+ * may reference the identifier again. The parameter and its derived field are
+ * deleted outright, so a re-introduction — a caller passing it, a reader
+ * destructuring it, a stale test asserting on it — is a regression of this
+ * change, and this file is the gate that catches it.
  *
- * **What is observable is the arity.** Today the parameter sits between `why`
- * and the end of the signature, so the 8-argument call the removal leaves puts
- * `undefined` in `tipSha` and the SHA guard refuses before the checkout — the
- * tree does not move. Remove the parameter and that same call is the correct
- * one: `tipSha` is the sha in position 7, the tree lands on it, and the result
- * carries no `movedByPatchEquivalence` key at all (that field only ever existed
- * to carry the parameter's constant value). Both halves are asserted against
- * the real entry point over a real scratch repo.
- *
- * Second assertion: no file under `extension/src` mentions the name any more.
+ * Deliberately one assertion over repository text: the arity of the real call
+ * is exercised against the real entry point by
+ * `test-work-driver-lens-fix-reposition-lagging-ref.ts`, which a 1-arg-short
+ * call would fail loudly. Asserting arity by calling `moveToTip` with a
+ * hand-counted argument list here would be vacuous — the old 9-parameter
+ * signature accepts the same 8-argument call.
  */
-import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-import type { RepositionResult } from "../src/work-driver-lens-fix-reposition-gate.ts";
-import { moveToTip } from "../src/work-driver-lens-fix-reposition-move.ts";
-import type { ExecFn } from "../src/worktree.ts";
 
-const execFileP = promisify(execFile);
 const TEST = "test-AC1-movetotip-no-bypatchequivalence.ts";
-
-let exit = 0;
-function fail(msg: string) {
-  console.error(`FAIL ${TEST}: ${msg}`);
-  exit = 1;
-}
-
-/** Real exec honouring the driver's argv form, as the sibling git tests do. */
-const realExec: ExecFn = async (cmd, o) => {
-  if (o?.argv) {
-    const { stdout } = await execFileP(cmd, o.argv, {
-      cwd: o.cwd,
-      timeout: o.timeout,
-      env: o.env,
-      maxBuffer: o.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  }
-  const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-  });
-  return { stdout };
-};
-
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
-
-/** The call the removal leaves: execFn + 8 positional arguments, `tipSha`
- *  last-but-one and `why` last, and nothing after them. */
-const callMoveToTip = moveToTip as unknown as (...args: unknown[]) => Promise<RepositionResult>;
+/** Built so this file cannot match itself. */
+const NEEDLE = ["byPatch", "Equivalence"].join("");
+const MIN_FILES_SCANNED = 100;
 
 async function main() {
-  const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1908-"));
-  const tree = path.join(root, "repo");
-  try {
-    mkdirSync(tree, { recursive: true });
-    await git(tree, ["init", "-q"]);
-    await git(tree, ["config", "user.email", "t@example.invalid"]);
-    await git(tree, ["config", "user.name", "t"]);
-    await git(tree, ["config", "commit.gpgsign", "false"]);
-    mkdirSync(path.join(tree, "src"), { recursive: true });
-    writeFileSync(path.join(tree, "src", "a.ts"), "export const a = 1;\n");
-    await git(tree, ["add", "-A"]);
-    await git(tree, ["commit", "-q", "-m", "base"]);
-    const sha = (await git(tree, ["rev-parse", "HEAD"])).stdout.trim();
+  const extensionDir = path.join(import.meta.dirname, "..");
+  const self = import.meta.filename;
+  const offenders: string[] = [];
+  let scanned = 0;
 
-    const res = await callMoveToTip(
-      realExec,
-      tree,
-      "feature/issue-1908-example",
-      [1908],
-      "chore: remove the dead parameter",
-      sha,
-      sha,
-      "one worktree commit already on the branch",
-    );
-
-    if (res.kind !== "repositioned") {
-      fail(
-        `the 8-argument call returned "${res.kind}" (detail: ${res.detail ?? "n/a"}): with byPatchEquivalence still in the signature the 8th argument never reaches tipSha`,
-      );
-    } else if (res.tipSha !== sha) {
-      fail(
-        `the 8-argument call landed on ${res.tipSha.slice(0, 12)}, expected ${sha.slice(0, 12)}`,
-      );
-    } else if ("movedByPatchEquivalence" in res) {
-      fail(
-        `result still carries the key derived from the dead parameter: movedByPatchEquivalence=${JSON.stringify(res.movedByPatchEquivalence)}`,
-      );
-    } else {
-      console.log("✓ moveToTip moves the tree to the tip on an 8-argument call");
-      console.log("✓ the result no longer carries movedByPatchEquivalence");
-    }
-
-    // No file under extension/src mentions the dead name any more.
-    const extensionDir = path.join(import.meta.dirname, "..");
-    const offenders: string[] = [];
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) walk(full);
-        else if (
-          entry.name.endsWith(".ts") &&
-          readFileSync(full, "utf8").includes("byPatchEquivalence")
-        ) {
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules") continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(".ts")) {
+        if (full === self) continue;
+        scanned++;
+        if (readFileSync(full, "utf8").includes(NEEDLE)) {
           offenders.push(path.relative(extensionDir, full));
         }
       }
-    };
-    walk(path.join(extensionDir, "src"));
-    if (offenders.length > 0) {
-      fail(`byPatchEquivalence still referenced in ${offenders.join(", ")}`);
-    } else {
-      console.log("✓ no file under extension/src references byPatchEquivalence");
     }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  };
 
-  process.exit(exit);
+  walk(path.join(extensionDir, "src"));
+  walk(import.meta.dirname);
+
+  if (scanned < MIN_FILES_SCANNED) {
+    console.error(
+      `FAIL ${TEST}: scanned only ${scanned} .ts files (< ${MIN_FILES_SCANNED}) — the walk found no tree, so a clean result would prove nothing`,
+    );
+    process.exit(1);
+  }
+  if (offenders.length > 0) {
+    console.error(`FAIL ${TEST}: ${NEEDLE} still referenced in ${offenders.join(", ")}`);
+    process.exit(1);
+  }
+  console.log(`✓ ${NEEDLE} absent from all ${scanned} .ts files under src/ and smoke-tests/`);
 }
 
-main();
+main().catch((e) => {
+  console.error(`FAIL ${TEST}: ${(e as Error)?.stack ?? e}`);
+  process.exit(1);
+});

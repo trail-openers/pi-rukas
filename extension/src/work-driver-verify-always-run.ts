@@ -14,6 +14,7 @@
  */
 
 export const ALWAYS_RUN: readonly string[] = [
+  "smoke-tests/test-AC1-movetotip-no-bypatchequivalence.ts",
   "smoke-tests/test-adversarial-diff-cap-note.ts",
   "smoke-tests/test-adversarial-ledger-row-identity.ts",
   "smoke-tests/test-adversarial-range-recompute.ts",
@@ -137,8 +138,8 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-lean-seed-base.ts",
   "smoke-tests/test-lean-specify-rewrite.ts",
   "smoke-tests/test-lean-specify-tamper.ts",
-  "smoke-tests/test-lean-test-size.ts",
   "smoke-tests/test-lean-test-size-bytes.ts",
+  "smoke-tests/test-lean-test-size.ts",
   "smoke-tests/test-lean-work-config-committed.ts",
   "smoke-tests/test-ledger-isolation.ts",
   "smoke-tests/test-lens-evidence.ts",
