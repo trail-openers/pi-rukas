@@ -1,18 +1,22 @@
 /**
- * lean/text-fence — the two renderers that keep untrusted text from becoming
- * structure in a PR body or an issue comment.
+ * lean/text-fence — the renderers that keep untrusted text from becoming
+ * structure in a PR body, an issue comment, or a specialist's prompt.
  *
- * Both fields a lean step prints come from OUTSIDE the run: a criterion's text
- * is a string the issue author typed, and a verify reason is the tail of a
- * build log. Printed raw, a `### heading` inside either is a heading of the
- * comment, and a ``` inside a reason closes whatever fence the poster opened —
- * so the rest of the log becomes the poster's markdown. AGENTS.md's public-text
- * discipline is about not leaking; this is about not being spoofed.
+ * Every field these print comes from OUTSIDE the run: a criterion's text is a
+ * string the issue author typed, a verify reason is the tail of a build log, and
+ * a review step's gate label is a reviewer's own wording while its frozen-path
+ * list is read back from a durable state file. Printed raw, a `### heading`
+ * inside any of them is a heading of the comment — or, in a fixer's brief, a
+ * section of the prompt the step never wrote. A ``` inside a reason closes
+ * whatever fence the poster opened — so the rest of the log becomes the
+ * poster's markdown. AGENTS.md's public-text discipline is about not leaking;
+ * this is about not being spoofed.
  *
- * Two shapes because the two fields need different guarantees: a reason is
+ * Three shapes because the three fields need different guarantees: a reason is
  * multi-line prose that must stay readable, so it is fenced; a table cell or a
  * title must stay ONE line, so every control character goes, including the
- * newlines a fence would keep.
+ * newlines a fence would keep; and a value that goes inside backticks must stay
+ * one line without the markdown escaping a cell needs.
  */
 
 /** Control characters that still read as text inside a fence: newline and tab. */
@@ -71,6 +75,28 @@ export function fenceText(s: string, max: number): string {
 export function oneLine(s: string, max: number): string {
   let out = s.replace(ANY_CONTROL, " ").replace(/\|/g, "\\|");
   out = out.replace(/ {2,}/g, " ").trim();
+  if (out.length > max) out = `${out.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
+  return out;
+}
+
+/**
+ * Untrusted text that has to sit in a prompt as a bare inline value: a path in a
+ * bullet, a gate's name in a heading.
+ *
+ * `oneLine` is almost it, but not quite: it escapes `|`, which is right in a table
+ * cell and wrong inside backticks where the backslash now reads as part of the
+ * path. What a prompt actually needs refused is the *structure*: a `\n` that opens
+ * a new heading, a `\r` that rewrites the line, the Unicode separators some
+ * renderers treat as line breaks. So every control character goes — none is kept,
+ * as `fenceText` keeps newline — and nothing else is rewritten, because a fenced
+ * bullet cannot become a heading without one.
+ *
+ * This is not cosmetic for the fixer's brief. Its frozen-path list is read back
+ * from the durable state file and its gate label comes out of a reviewer's reply;
+ * either could otherwise open a section of the prompt the step never wrote.
+ */
+export function promptText(s: string, max: number): string {
+  let out = s.replace(ANY_CONTROL, " ").replace(/ {2,}/g, " ").trim();
   if (out.length > max) out = `${out.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
   return out;
 }

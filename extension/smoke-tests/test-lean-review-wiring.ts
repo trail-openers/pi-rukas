@@ -31,18 +31,26 @@
 
 import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
+import { prNumberFromLog } from "../src/lean/review-log.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";
 import type { DispatchSpec } from "../src/types.ts";
 import { put } from "./lib/lean-build-fixture.ts";
+import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
+  ADVERSARIAL_GATE_ROLE,
   BRANCH,
+  DISPATCHES_MAX_ROWS,
+  type DispatchUsageRow,
+  FIXER_ROLE,
+  LENS_ROLE,
+  MAX_REVIEW_ROUNDS,
   type ReviewDeps,
-  USAGE,
   cleanLensRound,
   cleanupRoots,
   ctxFor,
   depsWith,
+  fixerThatCommits,
   frozenBlob,
   git,
   lensRowResult,
@@ -52,14 +60,7 @@ import {
   setup,
 } from "./lib/lean-review-fixtures.ts";
 
-let exit = 0;
-function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
+const { assert, failures } = makeAssert();
 
 // ── (a) both gates clean → `done`, and the reason names the reviewed commit ──
 {
@@ -98,6 +99,22 @@ function assert(cond: boolean, msg: string): void {
   assert(
     (outcome?.dispatches ?? []).length === 7 && (outcome?.dispatches ?? []).every((r) => r.ok),
     `(a) every child of both gate rounds is recorded as its own cost row (got ${String((outcome?.dispatches ?? []).length)})`,
+  );
+  // H5, and the regression the synthetic row hid. The six lens rows must carry
+  // six DIFFERENT durations: one row per child with a shared `ms` is exactly the
+  // shape a folded round fakes, and a fold that dropped five children would still
+  // satisfy a count-only assertion.
+  const lensMs = (outcome?.dispatches ?? []).filter((r) => r.role === LENS_ROLE).map((r) => r.ms);
+  assert(
+    lensMs.length === 6 && new Set(lensMs).size === 6 && lensMs.every((m) => m > 0),
+    `(a) the six lens rows carry six DISTINCT non-zero durations — a synthetic row collapsed to one timing is visible here, not only in the count (${JSON.stringify(lensMs)})`,
+  );
+  // H5: the gate's row is attributed to the role the LOOP reports. The frozen
+  // driver records its adversarial dispatches the same way, which is what makes
+  // lean's `byRole` column comparable to the driver's at all.
+  assert(
+    (outcome?.dispatches ?? []).some((r) => r.role === ADVERSARIAL_GATE_ROLE),
+    `(a) the adversarial gate's row carries the loop's own synthesised role, so lean's byRole cost column lines up with the frozen driver's (got ${JSON.stringify((outcome?.dispatches ?? []).map((r) => r.role))})`,
   );
 }
 
@@ -152,7 +169,7 @@ function assert(cond: boolean, msg: string): void {
         put(spec.cwd ?? "", "fix.ts", "export const fixed = 1;\n");
         git(spec.cwd as string, "add", "-A");
         git(spec.cwd as string, "commit", "-q", "-m", "fix: the finding");
-        return result({ role: "developer" });
+        return result({ role: FIXER_ROLE });
       },
     }),
   );
@@ -206,7 +223,7 @@ function assert(cond: boolean, msg: string): void {
         put(spec.cwd as string, "second-fix.ts", "export const s = 1;\n");
         git(spec.cwd as string, "add", "-A");
         git(spec.cwd as string, "commit", "-q", "-m", "fix: the second finding");
-        return result({ role: "developer" });
+        return result({ role: FIXER_ROLE });
       },
     }),
   );
@@ -248,7 +265,7 @@ function assert(cond: boolean, msg: string): void {
         put(wt, "tests/AC1.test.ts", "// rewritten\n");
         git(wt, "add", "-A");
         git(wt, "commit", "-q", "-m", "fix: cheated");
-        return result({ role: "developer" });
+        return result({ role: FIXER_ROLE });
       },
     }),
   );
@@ -278,7 +295,7 @@ function assert(cond: boolean, msg: string): void {
   });
   const { threw } = await run(ctxFor(repoRoot, baseSha, "lean/issue-7-never-pushed"), counting);
   assert(
-    threw instanceof ReviewInfraError && /no lean\/issue-7-never-pushed/.test(threw.message),
+    threw instanceof ReviewInfraError && /lean\/issue-7-never-pushed/.test(threw.message),
     `(e1) a branch origin does not have is a refusal, never an empty-diff approval (${threw?.message})`,
   );
   assert(dispatched === 0, "(e1) no child was paid for a review that could not run");
@@ -290,87 +307,149 @@ function assert(cond: boolean, msg: string): void {
     `(e2) a run with no base is refused before a gate runs (${t2?.message})`,
   );
 
-  // A budget that cannot pay for a SECOND round is not a licence to certify the
-  // branch after one: a lens round that found something at the bound is a
-  // handback, because the step has no way to say the findings do not matter.
+  // (e3) H3 — THE SHIPPED DEFAULT BUYS MORE THAN ONE ROUND.
+  //
+  // `budgets.review.turns` ships at 150 and the round bound used to be
+  // `max(1, floor(turns / 300))` = 1, so the default configuration gave a step
+  // whose whole purpose is "fix, then RE-review" a single round: it could fix and
+  // then had to hand back a head its own fixer had moved without any gate having
+  // looked at it again. The round bound is now `MAX_REVIEW_ROUNDS`, a constant;
+  // the budget is money, not rounds. So driving the step at exactly the shipped
+  // default must produce MORE than one round of work — and asserting on the
+  // shipped default rather than a fixture-chosen 600 is the point: a fixture that
+  // picked a generous budget could not tell a working loop from a one-round one.
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 3;\n" });
-  const poor = depsWith({
+  let e3LensRounds = 0;
+  const atDefaultBudget = depsWith({
     adversarial: async () => result({ loopOutcome: "approved" }),
-    lens: async () => ({
-      ...cleanLensRound(),
-      verdict: "ISSUES_FOUND",
-      findings: "- [HIGH] SECURITY a.ts:1: leak",
-    }),
-    loadConfig: async () => ({
-      ...defaultConfig(),
-      budgets: { ...defaultConfig().budgets, review: { turns: 150, tokens: 1000, minutes: 5 } },
-    }),
+    // Findings that CHANGE each round. A fixer that commits and a gate that
+    // re-reports the identical text is a deterministic gate nobody can satisfy,
+    // and the step now breaks that tie rather than buying the same reply again
+    // (see `stagnantAgainstFix`) — which is the right behaviour and would make
+    // this case measure the break instead of the bound. Varying the finding says
+    // the gate is genuinely looking at a new head each round.
+    lens: async () => {
+      e3LensRounds++;
+      return {
+        ...cleanLensRound(),
+        verdict: "ISSUES_FOUND" as const,
+        findings: `- [HIGH] SECURITY a.ts:1: leak (round ${String(e3LensRounds)})`,
+      };
+    },
+    dispatch: fixerThatCommits("e3"),
   });
-  const { threw: t3, outcome: o3 } = await run(ctxFor(repoRoot, baseSha, BRANCH), poor);
+  const { threw: t3, outcome: o3 } = await run(ctxFor(repoRoot, baseSha, BRANCH), atDefaultBudget);
   assert(
-    t3 instanceof ReviewInfraError && /still open after 1 review round/.test(t3.message),
-    `(e3) findings at a budget that pays for one round hand back rather than passing (${t3?.message ?? `got ${String(o3?.kind)}`})`,
+    t3 instanceof ReviewInfraError && /still open after 3 review round/.test(t3.message),
+    `(e3) at the SHIPPED 150-turn default the step runs all ${String(MAX_REVIEW_ROUNDS)} rounds before handing back — the round bound is the constant, not the budget (${t3?.message ?? `got ${String(o3?.kind)}`})`,
   );
   assert(
-    (t3 as ReviewInfraError | undefined)?.dispatches.length === 7,
-    "(e3) the round the run did pay for is still recorded on the refusal (one reviewer, six lenses)",
+    e3LensRounds === MAX_REVIEW_ROUNDS,
+    `(e3) and it really paid for ${String(MAX_REVIEW_ROUNDS)} lens rounds rather than one (${String(e3LensRounds)})`,
+  );
+  assert(
+    (t3 as ReviewInfraError | undefined)?.dispatches.length ===
+      MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1),
+    (t3 as ReviewInfraError | undefined)?.dispatches.length === DISPATCHES_MAX_ROWS,
+    `(e3) the rows on the refusal are CLIPPED to the validator's own cap: this run paid for ${String(MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1))} children and the record may hold ${String(DISPATCHES_MAX_ROWS)}, so an unbounded handback would have been dropped by the loader whole (got ${String((t3 as ReviewInfraError | undefined)?.dispatches.length)})`,
+  );
+  // The clip is the point of the case, and a tail clip is only distinguishable
+  // from a head slice when the roles differ between the two ends. This run's
+  // first seven rows are one round's reviewer + six lenses and its last are the
+  // final round's lenses, so `FIXER_ROLE` is a fair claim but a weak one: it is
+  // the head slice's failure to produce. Both are asserted.
+  const e3Rows = (t3 as ReviewInfraError | undefined)?.dispatches ?? [];
+  assert(
+    e3Rows.some((r) => r.role === FIXER_ROLE),
+    "(e3) and the clip keeps the TAIL, so the last fixer — the child that decided the step — is among them",
+  );
+  assert(
+    e3Rows[0]?.role !== ADVERSARIAL_GATE_ROLE,
+    `(e3) and it kept the TAIL rather than the HEAD: the first row is not the first round's reviewer, which a head slice would have kept (${String(e3Rows[0]?.role)})`,
   );
 
   // (f) What a handback owes the operator is the cost of EVERY round, not the
   // one that failed. A total re-derived per round would report a two-round run
-  // as a one-round one, and the next run would be bought on that lie. The budget
-  // is set to two rounds' worth so the loop is forced to fix AND re-review.
+  // as a one-round one, and the next run would be bought on that lie. This run
+  // pays for the FULL bound — more children than the row cap can record — so the
+  // assertion below also drives the clip, which a 15-row run never reaches.
   const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
   await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 4;\n" });
-  const twoRounds = {
-    ...defaultConfig(),
-    budgets: { ...defaultConfig().budgets, review: { turns: 600, tokens: 1000, minutes: 5 } },
-  };
+  let fRound = 0;
   const neverClears = depsWith({
-    loadConfig: async () => twoRounds,
     adversarial: async () => result({ loopOutcome: "approved" }),
+    // Varies per round: an identical text from a gate that keeps seeing a moved
+    // head is a deterministic gate, and the step breaks that tie rather than
+    // paying for the bound (see `stagnantAgainstFix`).
     lens: async () => ({
       ...cleanLensRound(),
-      verdict: "ISSUES_FOUND",
-      findings: "- [HIGH] SECURITY a.ts:1: leak",
+      verdict: "ISSUES_FOUND" as const,
+      findings: `- [HIGH] SECURITY a.ts:1: leak (round ${String(++fRound)})`,
     }),
+    // Every fixer commits, so no round is refused for fixing nothing, and each
+    // carries its tree's `runId` — the field the resume path matches on.
+    dispatch: fixerThatCommits("f"),
   });
   const { threw: t4 } = await run(ctxFor(rr2, bs2, BRANCH), neverClears);
+  // MAX_REVIEW_ROUNDS rounds, each one reviewer + six lenses + one fixer, so the
+  // step paid for 3*(rounds+1) children — far more than the 16 a single outcome
+  // may record.
+  // MAX_REVIEW_ROUNDS rounds, each one reviewer + six lenses, and a fixer after
+  // every round that did not clear.
+  const paid = MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1);
   assert(
-    t4 instanceof ReviewInfraError && /still open after 2 review round/.test(t4.message),
-    `(f) the loop runs to the round the budget pays for, then throws (${t4?.message})`,
-  );
-  // 2 reviewers + 2 six-lens rounds + the fixer between them = 15 rows now that
-  // each lens child is billed individually (was 5 when a round was one row).
-  assert(
-    (t4 as ReviewInfraError | undefined)?.dispatches.length === 15,
-    `(f) the handback carries every child it paid for — 2 reviewers, 12 lens children and the fixer between them (got ${String((t4 as ReviewInfraError | undefined)?.dispatches.length)})`,
-  );
-  assert(
-    (t4 as ReviewInfraError | undefined)?.dispatches.filter(
-      (r) => r.role === "code-review-specialist",
-    ).length === 12,
-    "(f) the six-lens rounds bill SIX rows each: a round collapsed to one row under-billed every lens review the run paid for and reported its wall clock as zero",
+    t4 instanceof ReviewInfraError &&
+      new RegExp(`still open after ${String(MAX_REVIEW_ROUNDS)} review round`).test(t4.message),
+    `(f) the loop runs to the bound, then throws (${t4?.message})`,
   );
   assert(
-    (t4 as ReviewInfraError | undefined)?.dispatches
-      .filter((r) => r.role === "code-review-specialist")
-      .every((r) => r.ms > 0) === true,
+    paid > DISPATCHES_MAX_ROWS,
+    `(f) precondition: this run paid for ${String(paid)} children, more than the ${String(DISPATCHES_MAX_ROWS)} the record may hold — so the clip is exercised rather than merely declared`,
+  );
+  assert(
+    (t4 as ReviewInfraError | undefined)?.dispatches.length === DISPATCHES_MAX_ROWS,
+    `(f) and the handback records exactly the cap's worth, not the uncapped total the loader would reject (got ${String((t4 as ReviewInfraError | undefined)?.dispatches.length)})`,
+  );
+  const fRows = (t4 as ReviewInfraError | undefined)?.dispatches ?? [];
+  assert(
+    fRows.filter((r) => r.role === LENS_ROLE).length === 12,
+    `(f) the tail it kept holds TWELVE lens rows — six per round for the last two rounds: a round collapsed to one row under-billed every lens review the run paid for (got ${String(fRows.filter((r) => r.role === LENS_ROLE).length)})`,
+  );
+  assert(
+    fRows.filter((r) => r.role === LENS_ROLE).every((r) => r.ms > 0),
     "(f) and each carries the timing its own child reported, not a synthetic 0",
   );
   assert(
-    (t4 as ReviewInfraError | undefined)?.dispatches.some((r) => r.role === "developer") === true,
+    fRows
+      .filter((r) => r.role === LENS_ROLE)
+      .map((r) => r.ms)
+      .filter((m, i, a) => a.indexOf(m) === i).length >= 6,
+    "(f) and those twelve timings are not one value repeated — six distinct child timings per round survive the clip",
+  );
+  assert(
+    fRows.some((r) => r.role === FIXER_ROLE),
     "(f) the FIXER is billed too: a step whose cost report omits the round that did the work cannot be used to price the next run",
   );
   assert(
-    (t4 as ReviewInfraError | undefined)?.dispatches.filter(
-      (r) => r.role === "adversarial-developer",
-    ).length === 2,
-    "(f) both adversarial passes appear in the record the operator is handed",
+    fRows.filter((r) => r.role === ADVERSARIAL_GATE_ROLE).length >= 1,
+    `(f) the adversarial passes appear under the LOOP's role, the same role the frozen driver's events use — so the byRole columns are comparable (${JSON.stringify(fRows.map((r) => r.role))})`,
+  );
+  // T1 — the fixer row keeps its OWN duration and carries the tree id in its own
+  // field. The row that used to smuggle the id through `ms` reported a 13-digit
+  // "duration" for the step's most expensive child.
+  const fixerRow = fRows.find((r) => r.role === FIXER_ROLE);
+  assert(
+    fixerRow !== undefined && fixerRow.ms >= 0 && fixerRow.ms < 1e12,
+    `(T1) the fixer's \`ms\` is a duration again, not a 13-digit epoch (${String(fixerRow?.ms)})`,
+  );
+  assert(
+    fixerRow?.runId !== undefined && FIX_RUN_ID_SHAPE.test(fixerRow.runId),
+    `(T1) and the tree identity rides in \`runId\`, in the shape the validator accepts (${String(fixerRow?.runId)})`,
   );
 
   // (g) A budget that pays for no round at all still gets exactly one look, and
   // a head that was not reviewed is never reported as reviewed.
+  let gRound = 0;
   const { threw: t5 } = await run(
     ctxFor(rr2, bs2, BRANCH),
     depsWith({
@@ -381,9 +460,10 @@ function assert(cond: boolean, msg: string): void {
       adversarial: async () => result({ loopOutcome: "approved" }),
       lens: async () => ({
         ...cleanLensRound(),
-        verdict: "ISSUES_FOUND",
-        findings: "- [HIGH] SECURITY a.ts:1: leak",
+        verdict: "ISSUES_FOUND" as const,
+        findings: `- [HIGH] SECURITY a.ts:1: leak (round ${String(gRound++)})`,
       }),
+      dispatch: fixerThatCommits("g"),
     }),
   );
   assert(
@@ -393,4 +473,4 @@ function assert(cond: boolean, msg: string): void {
 }
 
 cleanupRoots();
-process.exit(exit);
+process.exit(failures());

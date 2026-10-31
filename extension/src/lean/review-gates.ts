@@ -8,7 +8,7 @@
  * carries before any verdict is read: an adversarial pass with no verdict, a lens
  * round that ran no lens, a round that reported no usage from any child.
  *
- * Two rules both halves obey, and neither is visible from the caller's side:
+ * Three rules both halves obey, and none is visible from the caller's side:
  *
  * - **The row each child cost is APPENDED to the caller's running total, never
  *   returned.** A copy handed back and re-assigned per round is how a handback
@@ -17,20 +17,27 @@
  * - **Absence is never a pass.** Each throws with the rows it paid for attached,
  *   because a gate that did not run is not a gate that approved and the run must
  *   hand back rather than carry an unreviewed head forward.
+ * - **"Could not read" is never "clean".** `buildEvidence` and `runClaimScan`
+ *   answer `undefined` / `[]` both for "found nothing" and for "the branch would
+ *   not open" — so the precondition is established BEFORE them, by a read that
+ *   does distinguish the two, and a failed read throws rather than reporting an
+ *   empty scan. This is the same invariant `reviewedHead` enforces by refusing to
+ *   return `""`; a lens round fed an evidence set nobody could read is a lens
+ *   round that reviewed less than the ledger says it did.
  */
 
 import { lensFixDelta } from "../fix-delta.ts";
 import { buildEvidence, runClaimScan } from "../lens-evidence.ts";
+import { traceWarn } from "../trace.ts";
 import type { AdversarialVerdictStatus } from "../types.ts";
 import type { DispatchResult } from "../types.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { lensContext } from "./review-deps.ts";
 import { rangeDiff, reviewedHead } from "./review-git.ts";
-import { lensContext } from "./review-prompt.ts";
-import { lensRows } from "./review-tree.ts";
 import type { LensRound, ReviewDeps } from "./review.ts";
 import { ReviewInfraError } from "./review.ts";
-import type { DispatchUsageRow } from "./step-budget.ts";
-import { dispatchUsageRow } from "./step-budget.ts";
+import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
+import { dispatchUsageRow, lensRows } from "./step-budget.ts";
 
 /**
  * The status that alone means "nothing is outstanding", and the text the loop
@@ -60,9 +67,11 @@ const PASSED_WITH_FINDINGS_MARK = "PASSED WITH FINDINGS";
  *
  * The status is read off `adversarialRounds` (#485: the loop's own per-round
  * records, threaded as data rather than recovered from prose), falling back to
- * the `PASSED WITH FINDINGS` marker only when a result carries no records —
- * `""` there means "no record to read", which is not a status an adversarial
- * gate ever approved with.
+ * the `PASSED WITH FINDINGS` marker only when a result carries no records — `""`
+ * there means "no record to read", which is not a status an adversarial gate ever
+ * approved with. A record whose status is anything but `APPROVED` is findings,
+ * whatever `loopOutcome` was bucketed as: the records are what the loop judged
+ * round by round, and the trailing record is the one that ended it.
  */
 function openFromPass(result: DispatchResult): string {
   const records = result.adversarialRounds;
@@ -70,6 +79,28 @@ function openFromPass(result: DispatchResult): string {
   if (last !== undefined) return last.status === CLEAN_PASS ? "" : result.text;
   return result.text.includes(PASSED_WITH_FINDINGS_MARK) ? result.text : "";
 }
+
+/**
+ * The role the adversarial gate's row carries.
+ *
+ * The loop does NOT report under `adversarial-developer` — that is the role of
+ * the child it spawns. The result it hands back is synthesised
+ * (`synthesizeResult` in `adversarial-verdict.ts`) and carries `role:
+ * "adversarial-loop"`, the same string `headless/caps.ts` names. Billing the
+ * step's most expensive child under the reviewer's role made lean's `byRole`
+ * cost comparison against the frozen driver wrong: the driver records its
+ * adversarial dispatches as `adversarial-loop` and lean recorded them as
+ * something else, so the two columns never lined up. Asserted against the real
+ * synthesised role here and in `test-lean-review-wiring.ts`, with the fixture's
+ * default carrying the same value — a fixture and an assertion that both spell
+ * the wrong role agree with each other and prove nothing.
+ */
+export const ADVERSARIAL_GATE_ROLE = "adversarial-loop";
+
+/** What the adversarial gate hands the step: findings, or the budget's verdict. */
+export type AdversarialGate =
+  | { findings: string; stop?: undefined }
+  | { findings?: undefined; stop: BudgetFired };
 
 /**
  * The adversarial gate: one report-only pass, and the finding text it left open.
@@ -88,8 +119,10 @@ export async function adversarialGate(
     issueBody: string;
     round: number;
     rows: DispatchUsageRow[];
+    /** The step's armed budget: the reviewer's bound, abort and progress hook. */
+    budget: BudgetArms;
   },
-): Promise<{ findings: string }> {
+): Promise<AdversarialGate> {
   let result: DispatchResult;
   try {
     result = await deps.adversarial({
@@ -101,6 +134,7 @@ export async function adversarialGate(
       issueBody: opts.issueBody,
       round: opts.round,
       headless: deps.headless,
+      budget: opts.budget,
     });
   } catch (err) {
     throw new ReviewInfraError(
@@ -108,7 +142,22 @@ export async function adversarialGate(
       opts.rows,
     );
   }
-  opts.rows.push(dispatchUsageRow(result));
+  // The row is the LOOP's cost, under the role the loop actually reports —
+  // `synthesizeResult`'s, not the inner reviewer's. See `ADVERSARIAL_GATE_ROLE`
+  // for why attributing it to `adversarial-developer` made the per-role cost
+  // comparison against the frozen driver wrong.
+  const row = dispatchUsageRow(result);
+  if (row.role !== ADVERSARIAL_GATE_ROLE)
+    traceWarn(
+      `lean review #${String(ctx.issue)}: the adversarial gate reported role ${JSON.stringify(row.role)}, not ${JSON.stringify(ADVERSARIAL_GATE_ROLE)} — the loop's synthesised role is what the run's cost record keys on`,
+    );
+  opts.rows.push(row);
+  // The step's own ceiling ending the reviewer is a routed verdict, and it is
+  // read FIRST: a stopped child has no verdict, and the arm below would otherwise
+  // report the operator's budget as "the gate produced no verdict" — infrastructure
+  // for something that was a decision the operator made.
+  const fired = opts.budget.fired(result);
+  if (fired !== undefined) return { stop: fired };
   if (result.loopOutcome === "approved") return { findings: openFromPass(result) };
   if (result.loopOutcome === "rejected") return { findings: result.text };
   throw new ReviewInfraError(
@@ -126,6 +175,12 @@ export async function adversarialGate(
  * holds: if the round before left origin somewhere else, that is the fact the
  * next verdict should be stated against. Two gates reviewing two different
  * commits have reviewed neither.
+ *
+ * The diff is read ONCE and handed to the evidence builders, which take it as a
+ * parameter. They do not need their own read of it and did not have one; what
+ * they need from the caller is the guarantee that the branch opened at all, which
+ * a successful diff read establishes. Before this the round paid for the range
+ * three times over and passed none of it down.
  */
 export async function lensGate(
   deps: ReviewDeps,
@@ -138,10 +193,24 @@ export async function lensGate(
     pr: number | undefined;
     carried: string | undefined;
     rows: DispatchUsageRow[];
+    /** The step's armed budget, threaded to the six lens children. */
+    budget: BudgetArms;
   },
 ): Promise<LensRound & { head: string }> {
   const head = await reviewedHead(deps, ctx.repoRoot, opts.branch, opts.rows);
+  // Throws on a range it could not read, so everything below runs only on a
+  // branch this step has positively opened.
   const diff = await rangeDiff(deps, ctx.repoRoot, opts.base, head, opts.rows);
+  // `rangeDiff` throws rather than returning empty, so a missing diff never gets
+  // here — but the type says `string | undefined` because the read itself can
+  // fail, and nothing below may receive an `undefined` it would read as "an empty
+  // diff". Restated rather than asserted so a future change to `rangeDiff`'s
+  // contract has to pass this gate again.
+  if (diff === undefined)
+    throw new ReviewInfraError(
+      `could not read the diff ${opts.base.slice(0, 12)}...${head.slice(0, 12)} for the six-lens pass`,
+      opts.rows,
+    );
   // What the last fix pass moved, so a lens reads the delta first and weighs it
   // specifically for what the fix broke beside the line it repaired. The step
   // passes NO `since`: `lensFixDelta` resolves the current pushed head itself and
@@ -154,10 +223,12 @@ export async function lensGate(
   // internally (`lens-evidence.ts`, `work-driver-diff.ts`), and `head` is a
   // resolved 40-hex sha, so `origin/<sha>` is a ref that cannot exist. Every
   // failure inside them is swallowed, so passing the sha does not throw — it
-  // silently reports "no claims to check, no prose to supply", which is the
-  // same shape as a clean scan. Same reason the frozen driver passes
-  // `ps.branchName` (work-driver-lens.ts:158-165). `head` stays what the review
-  // RANGES over; the branch is what these two read ON.
+  // silently reports "no claims to check, no prose to supply", which is the same
+  // shape as a clean scan. That is exactly why `diff` above is read first and
+  // throws rather than returning empty: it is the one call in this sequence that
+  // can tell "nothing to say" from "could not look". Same reason the frozen driver
+  // passes `ps.branchName` (work-driver-lens.ts:158-165). `head` stays what the
+  // review RANGES over; the branch is what these two read ON.
   const evidence = await buildEvidence(ctx.repoRoot, opts.branch, diff);
   const extraFindings = await runClaimScan(deps.exec, ctx.repoRoot, opts.branch, diff);
   let round: LensRound;
@@ -176,6 +247,7 @@ export async function lensGate(
       evidence,
       extraFindings,
       headless: deps.headless,
+      budget: opts.budget,
     });
   } catch (err) {
     throw new ReviewInfraError(

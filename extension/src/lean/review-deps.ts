@@ -1,11 +1,14 @@
 /**
- * lean/review-deps — the production wiring of the `review` step.
+ * lean/review-deps — the production wiring of the `review` step, and the briefs
+ * its children are dispatched with.
  *
  * `review.ts` is the decision procedure and takes every outside world through
  * `ReviewDeps`; this file is what the command hands it. Split out for the same
  * reason `publish-deps.ts` exists: the judgement and the process-spawning glue
  * change for different reasons, and a test drives the first with stubs while
- * never loading the second.
+ * never loading the second. The two prompt builders sit here rather than in a
+ * module of their own because the facts they state — which tree, which commit,
+ * which files are frozen, which budget — are the facts this seam already holds.
  *
  * Two choices here are load-bearing rather than mechanical, and both are the
  * review layer's own rules restated rather than lean's invention:
@@ -30,18 +33,31 @@ import type { LensReviewSummary } from "../lens-review-format.ts";
 import { runLensReview } from "../lens-review.ts";
 import { lensChildBoundMs } from "../spawn-child-bound.ts";
 import { makeRunId, spawnSpecialist } from "../spawn.ts";
+import { netGitEnv } from "../work-driver-net-git.ts";
 import { verifyTimeoutMs } from "../work-driver-verify-develop-helpers.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody } from "./io.ts";
-import { adversarialContext } from "./review-prompt.ts";
 import type { ReviewDeps } from "./review.ts";
+import type { BudgetArms, BudgetFired } from "./step-budget.ts";
+import { fenceText, promptText } from "./text-fence.ts";
 
-/** Production dependencies: the real executor, both gates, and the spawner. */
+/** Production dependencies: the real executor, both gates, the spawner, the push. */
 export function reviewDeps(headless: boolean): ReviewDeps {
   return {
     headless,
-    exec: (cmd, opts) => execp(cmd, opts ?? {}),
+    // The push inside `fixRound` is the one git call in this step that leaves the
+    // clone, so it is the one the executor gives the driver's non-interactive env
+    // to — the same `netGitEnv` `publish-deps.ts` applies (#1095: `GIT_TERMINAL_PROMPT=0`
+    // plus `-o BatchMode=yes`, so ssh fails instead of reading a passphrase from
+    // /dev/tty). Without it a lean review round could hang the step on a
+    // credential prompt no other step in lean can hang on. `o?.cwd` is passed
+    // through so `netGitEnv` still reads the repo's own `core.sshCommand`.
+    exec: (cmd, o) =>
+      execp(cmd, {
+        ...(o ?? {}),
+        ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv(process.env, o?.cwd) } : {}),
+      }),
     adversarial: (a) =>
       runAdversarialLoop(
         {
@@ -60,6 +76,10 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           branch: a.branch,
           commentTimeoutMs: verifyTimeoutMs(),
           processGroup: true,
+          // The step's budget, on the loop's own children: the wall clock, the
+          // abort the turns/tokens levers fire, and the progress hook that fires
+          // it. `runAdversarialLoop` forwards all three to every phase it spawns.
+          ...a.budget.opts,
           ...leanChildOpts(a.headless),
         },
         new AbortController().signal,
@@ -84,8 +104,14 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // The operator's own lever, read here rather than a number copied into
         // this file: `lensChildBoundMs()` is the single source for a lens child's
         // wall clock (`PI_ENSEMBLE_LENS_BOUND_MS`), and a literal here would make
-        // that knob silently inert for every lean run.
-        childBoundMs: lensChildBoundMs(),
+        // that knob silently inert for every lean run. The step's armed `childBoundMs`
+        // can only ever tighten it, never lengthen it — the smaller of the two is
+        // the bound, which is what a budget must mean.
+        childBoundMs: Math.min(
+          a.budget.opts.childBoundMs ?? Number.POSITIVE_INFINITY,
+          lensChildBoundMs(),
+        ),
+        ...a.budget.opts,
         ...leanChildOpts(a.headless),
       });
       return {
@@ -93,7 +119,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         findings: renderFindings(summary),
         usage: summary.usage,
         // The per-lens records, so the step bills one row per child that ran
-        // rather than one row per round (see `lensRows` in `review-git.ts`).
+        // rather than one row per round (see `lensRows` in `step-budget.ts`).
         lenses: summary.lenses,
         // The one field that distinguishes "no lens ran" from "lenses ran and
         // found nothing", and the only place it is stated — `verdict` says
@@ -110,7 +136,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
     dispatch: (spec, o) =>
       spawnSpecialist(spec, {
         processGroup: true,
+        writeFence: o.writeFence,
+        extraArgs: o.extraArgs,
         ...(o.childBoundMs === undefined ? {} : { childBoundMs: o.childBoundMs }),
+        ...(o.signal === undefined ? {} : { signal: o.signal }),
+        ...(o.onProgress === undefined ? {} : { onProgress: o.onProgress }),
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,
@@ -132,4 +162,122 @@ function renderFindings(summary: LensReviewSummary): string {
         `- [${f.severity}] ${f.lens} ${f.path}${f.line === undefined ? "" : `:${String(f.line)}`}: ${f.title}${f.description === undefined || f.description === "" ? "" : ` — ${f.description}`}`,
     )
     .join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The briefs. Both exist because lean has no caller to hand the step a context
+// string: the adversarial loop and the six-lens pass each take one free-text
+// `context`, and in the frozen driver the driver composed it — here the step is
+// the caller, so the framing is this module's. Short on purpose: the diff, the
+// issue body and the finding lists are the substance, and the loop and the lens
+// roster already say what to do with them.
+//
+// The fix brief is the more important one. A fixer handed findings without a
+// diff, an issue or a tree re-derives a solution from scratch — the frozen
+// driver's fix-developer got the reviewer's entire reply as "findings" and no
+// diff at all (#664), which is how a fix round undid a fix. So the finding text
+// arrives fenced and bounded (the `text-fence.ts` rule, one implementation), the
+// diff arrives as the command the step actually ran, and the frozen acceptance
+// tests are named as untouchable — the same claim `build-prompt` makes, because
+// the fixer is the second model that gets a worktree with the contract's tests
+// in it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The framing the adversarial reviewer is dispatched with. */
+function adversarialContext(issue: number, round: number, maxRounds: number): string {
+  return `/work-lean issue #${String(issue)}: gating the run's committed head before it merges (review step, round ${String(round)} of ${String(maxRounds)}).`;
+}
+
+/** The framing every lens is dispatched with. */
+export function lensContext(
+  issue: number,
+  round: number,
+  extra: { carried?: string; fixDelta?: string } = {},
+): string {
+  const parts = [`/work-lean issue #${String(issue)}, lens-review round ${String(round)}`];
+  const carried = extra.carried?.trim();
+  if (carried !== undefined && carried !== "")
+    parts.push(
+      `OUTSTANDING FROM THE ADVERSARIAL GATE (non-blocking there — judge them yourself):\n${carried}`,
+    );
+  const delta = extra.fixDelta?.trim();
+  if (delta !== undefined && delta !== "") parts.push(delta);
+  return parts.join("\n\n");
+}
+
+/**
+ * What the fixer is told about the tree it works in.
+ *
+ * The child's cwd is the worktree, but a model that has to infer which directory
+ * is its own will write somewhere else, so the three git facts it needs are
+ * stated: where, on what branch, against what base. `head` is the commit the
+ * review read — the tree the findings describe. A fixer given only the branch
+ * cannot tell whether it sits at the reviewed commit or one behind it.
+ */
+export interface ReviewFixArgs {
+  issue: number;
+  round: number;
+  /** Which gate produced the findings; names the list in the brief. */
+  gate: string;
+  findings: string;
+  /** Absolute path of the disposable tree the child works in. */
+  worktree: string;
+  /** The repo the tree belongs to, for the write fence's `repo` field. */
+  repoRoot: string;
+  branch: string;
+  base: string;
+  head: string;
+  /** The frozen acceptance test paths — the child may not edit these. */
+  frozenPaths: string[];
+  /** The step's armed budget, threaded to the child's bound/abort/progress. */
+  budget: BudgetArms;
+  /** Where `runFixer` reports a budget breach back to `fixRound`. */
+  stop: { fired?: BudgetFired };
+}
+
+/** The largest tree or branch name this step will print into a brief. */
+const NAME_MAX_CHARS = 200;
+
+export function fixPrompt(opts: ReviewFixArgs): string {
+  // Every value below that did not originate in this file goes through
+  // `promptText`: `frozenPaths` are keys read back from the durable state file
+  // and `gate` is reviewer-influenced prose. A newline in either opened a section
+  // of this brief the step never wrote — the same spoofing `text-fence` exists
+  // for in a PR body, one line rather than one block. (`frozenKeyProblem` in
+  // `state-outcome.ts` refuses a control character in a frozen key at load, so
+  // this is defence at the print site rather than the only check.)
+  const frozenList =
+    opts.frozenPaths.length === 0
+      ? "(none — this run froze no tests)"
+      : opts.frozenPaths.map((p) => `- \`${promptText(p, NAME_MAX_CHARS)}\``).join("\n");
+  const gate = promptText(opts.gate, 120);
+  return `You are fixing the findings one review gate raised against this run's work (issue #${String(
+    opts.issue,
+  )}, review step, round ${String(opts.round)}, gate: ${gate}).
+
+## The findings
+
+${fenceText(opts.findings, 20_000)}
+
+## The tree
+
+- Worktree: \`${promptText(opts.worktree, NAME_MAX_CHARS)}\` — work ONLY here.
+- Branch: \`${promptText(opts.branch, NAME_MAX_CHARS)}\`
+- Reviewed commit: \`${opts.head}\` (base \`${opts.base}\`)
+
+Read the diff you are changing with \`git diff ${opts.base}...${opts.head}\` before you edit anything: these findings describe that tree, not the whole repository.
+
+## Untouchable
+
+These files are the run's acceptance contract — frozen, and proved red before the implementation existed. Do NOT edit, rename or delete any of them, and do not add a new test file:
+
+${frozenList}
+
+A fix that turns a frozen test green by changing it has destroyed the only evidence this run has. If a finding can only be resolved by changing one of these, leave it and say so in your reply.
+
+## What to do
+
+Fix every finding you can without widening the change: no guards for inputs that cannot occur, no refactors beside the fix, no comments narrating this round. Check your own work by running the frozen tests and the project's fast typecheck and lint — **do not run the project's full test suite**, the verify step runs it.
+
+Commit what you changed (do not push, do not amend, do not rebase). If a finding is wrong or out of scope, leave it and say why in your reply rather than arguing with it in code.`;
 }

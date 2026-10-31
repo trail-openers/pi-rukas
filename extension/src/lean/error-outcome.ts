@@ -32,7 +32,7 @@
  * inside the size cap and the rules can be read — and tested — on their own.
  */
 
-import { BUDGET_STATES, DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-outcome.ts";
+import { DISPATCHES_MAX_ROWS, DISPATCH_STATES, validatedDispatches } from "./state-outcome.ts";
 import type { LeanState, Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -42,19 +42,16 @@ export type ErrorOutcome = Outcome & { kind: "error"; dispatches?: DispatchUsage
 /**
  * Which states may record what their children cost.
  *
- * `BUDGET_STATES` plus `review`. That step pays for a reviewer, six lenses and a
- * fixer per round, so it MUST record cost; it arms no per-child ceiling of its
- * own (each gate bounds its own children by wall clock), so it must NOT report a
- * budget verdict. That asymmetry is why `limit`/`value`/`used` stay keyed on
- * `BUDGET_STATES` alone in `state-outcome.ts`, and why the two lists are not one
- * constant — so both are pinned by `test-lean-state-dispatches.ts` on the two
- * paths a step's cost travels (the loader, and this module's read of a throw):
- * a widening that quietly lost `review` would drop the run's most expensive
- * numbers without a sound, and nobody reading the state file afterwards could
- * tell a step that cost nothing from a field that was never allowed to land.
+ * Read from `DISPATCH_STATES` in `state-outcome.ts` — the one statement of that
+ * set — rather than re-derived here. It used to be re-derived (`state ===
+ * "review" || BUDGET_STATES.includes(state)`), which put a second expression of
+ * the loader's own ownership rule on the throw path: a widening that landed on
+ * one side and not the other dropped the run's most expensive numbers without a
+ * sound, and nobody reading the state file afterwards could tell a step that cost
+ * nothing from a field that was never allowed to land.
  */
 function recordsDispatches(state: LeanState): boolean {
-  return state === "review" || BUDGET_STATES.includes(state);
+  return DISPATCH_STATES.includes(state);
 }
 
 /**

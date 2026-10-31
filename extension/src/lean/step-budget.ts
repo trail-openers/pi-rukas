@@ -12,6 +12,7 @@
  * becomes a throw.
  */
 
+import type { LensRunResult } from "../lens-review-types.ts";
 import type { RunningState } from "../progress.ts";
 import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
@@ -49,7 +50,31 @@ export interface DispatchUsageRow {
   ms: number;
   ok: boolean;
   usage: DispatchUsage;
+  /**
+   * The disposable tree a fixer worked in, when this row IS a fixer's.
+   *
+   * An explicit optional field, validated alongside `ms`, because the first
+   * version smuggled it by overwriting `ms` with a 13-digit epoch. That cost
+   * four things at once: the row lost the only duration the fixer ever
+   * reported; `isMeasure` could refuse it (`Number()` of a non-numeric id is
+   * `NaN`) and the loader then drops the row, silently under-billing the step's
+   * most expensive child; the row cap keeps the tail and could evict the very
+   * row carrying the id; and reading the id back meant matching the row's role,
+   * which for a fixer is `developer` — the builder's role too. `ms` is now what
+   * it always meant (the child's own wall clock) and nothing has to guess.
+   */
+  runId?: FixRunId;
 }
+
+/**
+ * A fixer row's tree identity: decimal epoch milliseconds, as data.
+ *
+ * A string of digits rather than a number, because a number is what `Number()`
+ * turns a malformed id into `NaN` on the way into the durable record. Validated
+ * by `isRunId` in `state-outcome.ts`, so a value that is not the shape `fixRunId`
+ * mints is refused at load rather than carried as a tree name nothing can name.
+ */
+export type FixRunId = string & { readonly __fixRunId: unique symbol };
 
 /** `spawn-child-bound.ts` stamps this on a child the wall clock ended. */
 const CHILD_BOUND_CAUSE = "child-bound";
@@ -295,6 +320,47 @@ export function dispatchUsageRow(result: DispatchResult): DispatchUsageRow {
 /** A child that reported nothing cost nothing that anybody observed. */
 function zeroDispatchUsage(): DispatchUsageRow["usage"] {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+}
+
+/**
+ * The role the six lens children report under, and the fixer's role.
+ *
+ * Both live here — beside the row that carries them — because the row's `role`
+ * is what `leanUsage` folds `usage.byRole` on, and a role spelled at a write
+ * site and again at a reader is how the two engines start disagreeing about who
+ * paid for what.
+ */
+export const LENS_ROLE = "code-review-specialist";
+export const FIXER_ROLE = "developer";
+
+/**
+ * One six-lens round's cost, as one row per lens child that ran.
+ *
+ * NOT one synthetic row for the round. The step's `dispatches` fold into
+ * `usage.byRole` through `leanUsage`, and a round collapsed to a single row both
+ * loses five children's wall clock (`ms: 0`, so every lean lens round reports
+ * itself as taking no time) and halves the child count a host compares against
+ * the frozen driver's per-lens dispatch events. Built from the per-lens records
+ * the review layer already returns — no new machinery — and a lens that reported
+ * no usage is billed a zero row rather than dropped, since `foldUsage` counts a
+ * dispatch whether or not it carried numbers.
+ *
+ * Lives here rather than with the worktree git surface it used to sit in: this
+ * is a pure cost fold with no git, no tree and no deps in it, and `dispatchUsageRow`
+ * — the sibling fold for a whole-child row — is its neighbour.
+ */
+export function lensRows(lenses: LensRunResult[]): DispatchUsageRow[] {
+  return lenses.map((lens) => ({
+    role: LENS_ROLE,
+    // `ms` is what the lens took; a child that died mid-spawn reported none, and
+    // zero is the honest "nobody measured it", not a claim of an instant review.
+    ms: lens.ms,
+    // `blocked` is a lens that never ran (a missing skill, an unreadable roster
+    // entry); `killCause` is the dispatch-cap kill. Neither is a review that
+    // happened, and a cost record that said otherwise priced the next run wrong.
+    ok: lens.ok && lens.blocked !== true && lens.killCause === undefined,
+    usage: lens.usage ?? zeroDispatchUsage(),
+  }));
 }
 
 /**

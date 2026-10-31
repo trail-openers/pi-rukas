@@ -92,13 +92,37 @@ export function validPrUrl(url: unknown): string | undefined {
 }
 
 /**
- * The states whose dispatch may be stopped by its budget, hence own those fields.
+ * The states whose dispatch may be stopped by its budget, hence own the
+ * `limit`/`value`/`used` trio.
  *
- * Exported as the answer to "may this state record `dispatches`": `errorOutcome`
- * asks it before copying rows off a throw, so the ownership rule the loader
- * enforces has exactly one statement in the pipeline.
+ * The narrower set: a step that arms a ceiling can report which ceiling fired.
+ * `DISPATCH_STATES` below is the wider set of steps that may record cost — the
+ * two are deliberately not one constant, and `test-lean-state-dispatches.ts`
+ * pins both on the two paths a step's cost travels.
  */
 export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
+
+/**
+ * The states that may record what their children cost.
+ *
+ * The ONE statement of that set. Two readers used to hand-derive it from
+ * opposite directions — `OWNER_OF_FIELD.dispatches` below spelled it as a list
+ * built from `BUDGET_STATES` plus `"review"`, and `recordsDispatches` in
+ * `error-outcome.ts` re-wrote `state === "review" || BUDGET_STATES.includes(state)`
+ * — and two expressions of one rule is how a widening can land on one side and
+ * silently lose the step whose children cost the most: the loader would drop the
+ * rows, or the throw path would refuse to copy them, and either way a run's
+ * cost record just got smaller with nothing said.
+ *
+ * `review` is in this set but NOT in `BUDGET_STATES`: it pays for a reviewer,
+ * six lenses and a fixer per round, so it MUST record cost — and since this
+ * round it arms its ceiling through `armBudget` like the other three, so a
+ * breach routes as a budget verdict. `BUDGET_STATES` stays the narrower set that
+ * owns the `limit`/`value`/`used` trio for the pre-existing steps; widening it
+ * to include `review` would name `review` as the owner of a trio only a
+ * `budget`-kind outcome may carry.
+ */
+export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review"];
 
 /**
  * Which state is allowed to record which evidence-bearing field. One table, and
@@ -130,7 +154,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The two steps that REPORT how a run ended are the only ones that may claim a
   // comment reached the forge.
   posted: REPORTING_STATES,
-  dispatches: [...BUDGET_STATES, "review" as const],
+  dispatches: DISPATCH_STATES,
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
@@ -211,6 +235,22 @@ function isMeasure(value: unknown): boolean {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+/**
+ * The shape of a fixer row's `runId`: the epoch milliseconds `fixRunId` mints,
+ * then `-<visit>` for the fix-tree creation that made this tree. No sign, no
+ * fraction, no exponent. `Number.isNaN` is not the risk this guards — a
+ * hand-edited record or a replayed child result carries `"1e12"`, `"-5"` and
+ * `"1.5"` all of which `Number()` would accept and no tree name ever has. The
+ * visit suffix is part of the name because a review round dispatches a fixer on
+ * two arms, so the epoch alone could not make two trees distinct.
+ */
+const FIX_RUN_ID = /^[0-9]{13,17}(-[0-9]{1,9})?$/;
+
+/** Is this a fixer row's tree identity, in the shape `fixRunId` mints? */
+function isRunId(value: unknown): boolean {
+  return typeof value === "string" && FIX_RUN_ID.test(value);
+}
+
 /** Is this value a usage row of the shape `DispatchUsage` describes? */
 function isUsageRow(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -252,6 +292,12 @@ function dispatchesProblem(value: unknown): string | undefined {
       return `outcome dispatches[${String(i)}].ms must be a finite number >= 0`;
     if (!isUsageRow(row.usage))
       return `outcome dispatches[${String(i)}].usage must carry non-negative integer input, output, cacheRead, cacheWrite, cost and turns`;
+    // `runId` is optional, but when present it must be the shape `fixRunId`
+    // mints: the reader that puts a resumed attempt back onto the tree its
+    // crashed self left matches on this field, and a value that is merely
+    // *present* would name a directory the step then treats as its own.
+    if (row.runId !== undefined && !isRunId(row.runId))
+      return `outcome dispatches[${String(i)}].runId must be a decimal epoch-millisecond string`;
   }
   return undefined;
 }
@@ -265,6 +311,7 @@ export function validatedDispatches(value: unknown): DispatchUsageRow[] {
     const row = raw as Record<string, unknown>;
     if (typeof row.role !== "string" || row.role === "") continue;
     if (typeof row.ok !== "boolean" || !isMeasure(row.ms) || !isUsageRow(row.usage)) continue;
+    if (row.runId !== undefined && !isRunId(row.runId)) continue;
     const u = row.usage as Record<string, unknown>;
     // Each count is RE-DERIVED from the check rather than cast: `isUsageRow`
     // already proved all six are non-negative safe integers, and reading them
@@ -282,6 +329,7 @@ export function validatedDispatches(value: unknown): DispatchUsageRow[] {
         cost: count("cost"),
         turns: count("turns"),
       },
+      ...(row.runId === undefined ? {} : { runId: row.runId as DispatchUsageRow["runId"] }),
     });
   }
   return out;

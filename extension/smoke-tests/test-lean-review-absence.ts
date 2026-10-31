@@ -57,8 +57,10 @@ import { ReviewInfraError } from "../src/lean/review.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";
 import type { DispatchSpec } from "../src/types.ts";
 import { put } from "./lib/lean-build-fixture.ts";
+import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
+  FIXER_ROLE,
   cleanLensRound,
   cleanupRoots,
   ctxFor,
@@ -76,14 +78,7 @@ function frozenSha(repoRoot: string): string {
   return sha256(frozenBlob(repoRoot, "HEAD"));
 }
 
-let exit = 0;
-function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
+const { assert, failures } = makeAssert();
 
 // ── (h) the evidence helpers read the BRANCH, not the resolved sha ───────────
 {
@@ -195,7 +190,7 @@ function assert(cond: boolean, msg: string): void {
   const runId = "1700000000000";
   const ctxJ = ctxFor(repoRoot, baseSha, BRANCH);
   ctxJ.now = () => Number(runId);
-  const planted = fixTreeName(repoRoot, 7, 1, runId);
+  const planted = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
   mkdirSync(planted, { recursive: true });
   put(planted, "planted-by-somebody-else.ts", "export const stolen = 1;\n");
   let fixerDispatched = 0;
@@ -208,7 +203,7 @@ function assert(cond: boolean, msg: string): void {
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
         git(spec.cwd as string, "add", "-A");
         git(spec.cwd as string, "commit", "-q", "-m", "fix: adopted the planted file");
-        return result({ role: "developer" });
+        return result({ role: FIXER_ROLE });
       },
     }),
   );
@@ -226,19 +221,32 @@ function assert(cond: boolean, msg: string): void {
   );
   rmSync(planted, { recursive: true, force: true });
 
-  // (j2) Two rounds of one run get two different trees, and the name carries
-  // both the round and the run: no two (issue, round, run) triples share a path,
-  // which is what makes "anything here is ours" true without a check.
-  const a = fixTreeName(repoRoot, 7, 1, runId);
-  const b = fixTreeName(repoRoot, 7, 1, runId);
-  const c = fixTreeName(repoRoot, 7, 2, runId);
-  const d = fixTreeName(repoRoot, 7, 1, "1700000009999");
-  assert(a === b, "(j2) the same (issue, round, run) derives the same path");
+  // (j2) Every (arm, round, attempt, run) quadruple gets its own tree, and the
+  // name carries all four: that is what makes "anything here is ours" true without
+  // a check, and what makes a RESUME re-derive the path its killed self used.
+  const a = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
+  const b = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
+  const c = fixTreeName(repoRoot, 7, "a", 2, 0, runId);
+  const d = fixTreeName(repoRoot, 7, "a", 1, 0, "1700000009999");
+  const lensArm = fixTreeName(repoRoot, 7, "l", 1, 0, runId);
+  const otherAttempt = fixTreeName(repoRoot, 7, "a", 1, 1, runId);
+  assert(
+    a === b,
+    "(j2) the same (arm, round, attempt, run) derives the SAME path — this is the resume property, and an in-memory counter would break it",
+  );
   assert(a !== c, "(j2) a different ROUND is a different tree");
   assert(a !== d, "(j2) a different RUN is a different tree");
   assert(
-    a.includes("lean-7-fix-1-") && c.includes("lean-7-fix-2-"),
-    `(j2) and the name itself carries the round it belongs to (${path.basename(a)}, ${path.basename(c)})`,
+    a !== lensArm,
+    "(j2) the lens arm's fix of the same round is a DIFFERENT tree from the adversarial arm's — one round dispatches two fixers, and sharing the path is what made `add --force` adopt a live tree",
+  );
+  assert(
+    a !== otherAttempt,
+    "(j2) a second concurrent attempt on the same issue, round and run gets its own path, so neither adopts the other's leftovers",
+  );
+  assert(
+    a.includes("lean-7-fix-a-1-0-") && c.includes("lean-7-fix-a-2-0-"),
+    `(j2) and the name itself carries the arm and round it belongs to (${path.basename(a)}, ${path.basename(c)})`,
   );
 
   // (j3) The name the step reaches for IS this path: the refusal above quoted it.
@@ -278,7 +286,7 @@ function assert(cond: boolean, msg: string): void {
     put(wt, "tests/AC1.test.ts", "// rewritten\n");
     git(wt, "add", "-A");
     git(wt, "commit", "-q", "-m", "fix: cheated");
-    return result({ role: "developer" });
+    return result({ role: FIXER_ROLE });
   };
   const { threw: tk } = await runStep(
     frozenRun(repoRoot, 7),
@@ -311,7 +319,7 @@ function assert(cond: boolean, msg: string): void {
   const removeTree = async (spec: DispatchSpec) => {
     await cheating(spec);
     git(rr2, "worktree", "remove", "--force", runTree);
-    return result({ role: "developer" });
+    return result({ role: FIXER_ROLE });
   };
   const { threw: tk2 } = await runStep(
     ctx2,
@@ -422,4 +430,4 @@ function assert(cond: boolean, msg: string): void {
 }
 
 cleanupRoots();
-process.exit(exit);
+process.exit(failures());
