@@ -21,7 +21,7 @@ import { FIXER_ROLE } from "./step-budget.ts";
  *
  * 1e12 is 2001-09: below it a value is a duration somebody measured, not a stamp
  * that names a tree. One constant, shared with the validator's shape rule for the
- * field (`FIX_RUN_ID` in `state-outcome.ts`) by the shape both read — a second
+ * field (`FIX_RUN_ID` in `state-dispatches.ts`) by the shape both read — a second
  * copy here would be a second answer to "is this a timestamp".
  */
 export const FIX_EPOCH_FLOOR_MS = 1e12;
@@ -44,7 +44,7 @@ export const FIX_EPOCH_FLOOR_MS = 1e12;
  * disjoint but not recoverable, and recoverability is the half a resume needs.
  * The digits-only form matters for a second reason: the id is a validated field
  * on the fixer's dispatch row (`runId`, checked by `isRunId` in
- * `state-outcome.ts`), and the only way to mint one is through here — so a value
+ * `state-dispatches.ts`), and the only way to mint one is through here — so a value
  * `Number()` would turn into `NaN` cannot exist. It is a namespace, not a secret,
  * and is not used as one.
  */
@@ -78,7 +78,7 @@ export function fixRunIdFromLog(steps: Step[]): FixRunId | undefined {
       // The tree id is a composite — the attempt's epoch plus the per-visit
       // counter — so it is read back as the WHOLE field, not as an integer. The
       // `FIX_RUN_ID` shape every fixer row carries is already checked by the
-      // validator on the way in (`state-outcome.ts`), and re-checking it with
+      // validator on the way in (`state-dispatches.ts`), and re-checking it with
       // `Number()` here would reject the composite and silently re-mint an id,
       // which strands the tree a crashed attempt left under a name this attempt
       // never prunes.
@@ -96,12 +96,18 @@ export function fixRunIdFromLog(steps: Step[]): FixRunId | undefined {
 
 /**
  * The tree identity a fixer row may carry: the epoch `fixRunId` mints, optionally
- * followed by the arm/round/attempt the tree is named for. One expression shared
- * with `state-outcome.ts`'s validator rather than two that can drift — the loader
- * refuses a row whose `runId` is not this shape, so a value read back off the log
- * here is already known to be it.
+ * followed by the arm/round/attempt the tree is named for.
+ *
+ * A RE-EXPORT of the validator's own constant, not a second literal. This file
+ * used to carry its own permissive literal while `state-dispatches.ts` carried a
+ * digits-only one, and the loader — the one that decides whether a row survives —
+ * held the narrower. Every test that claimed to protect the field asserted against
+ * THIS constant, so all three agreed with the writer and none agreed with the
+ * loader: the fixer's row was dropped from the cost record and the tests stayed
+ * green. Importing the rule from its owner makes the drift impossible rather than
+ * documented.
  */
-export const FIX_RUN_ID_SHAPE = /^[0-9]{13,17}(-[0-9a-z-]{1,24})?$/;
+export { FIX_RUN_ID as FIX_RUN_ID_SHAPE } from "./state-dispatches.ts";
 
 /**
  * This attempt's number for the review step: the engine's own per-attempt counter

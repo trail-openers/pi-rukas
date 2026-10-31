@@ -157,6 +157,3 @@ const { assert, failures } = makeAssert();
 
 cleanupRoots();
 process.exit(failures());
-
-cleanupRoots();
-process.exit(failures());

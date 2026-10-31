@@ -32,15 +32,36 @@ export function isMeasure(value: unknown): boolean {
 }
 
 /**
- * The shape of a fixer row's `runId`: the epoch milliseconds `fixRunId` mints,
- * then `-<visit>` for the fix-tree creation that made this tree. No sign, no
- * fraction, no exponent. `Number.isNaN` is not the risk this guards — a
- * hand-edited record or a replayed child result carries `"1e12"`, `"-5"` and
- * `"1.5"` all of which `Number()` would accept and no tree name ever has. The
- * visit suffix is part of the name because a review round dispatches a fixer on
- * two arms, so the epoch alone could not make two trees distinct.
+ * The ONE grammar of a fixer row's `runId`, and the only fix-run-id regex in the
+ * product source. Exported because a second copy is what broke this field: the
+ * reader in `review-log.ts` carried its own permissive literal while this validator
+ * carried a digits-only one, and since `validatedDispatches` `continue`s past a row
+ * it refuses rather than rejecting the array, the disagreement silently DELETED the
+ * fixer row from every review that fixed anything — under-billing the step's most
+ * expensive child in `usage.byRole` — while `assertRun` THREW on the same value on
+ * any path that persisted a raw row. A rule two files state is a rule one of them
+ * will violate.
+ *
+ * The shape: the epoch milliseconds `fixRunId` mints, then `-<arm>-<round>-<attempt>`
+ * for the fix-tree creation that made this tree (`fixRound` mints the composite).
+ * No sign, no fraction, no exponent. `Number.isNaN` is not the risk this guards — a
+ * hand-edited record or a replayed child result carries `"1e12"`, `"-5"` and `"1.5"`
+ * all of which `Number()` would accept and no tree name ever has.
+ *
+ * **Why the letters are admitted rather than the writer narrowed.** The suffix is
+ * what keeps the two arms of one round apart: `fixTreeName` is
+ * `lean-<issue>-fix-<arm>-<round>-<attempt>-<epoch>`, and a review round dispatches a
+ * fixer on BOTH arms (the adversarial gate's pass-with-findings, and the six-lens
+ * round's findings) at the SAME round and the SAME epoch, so a digits-only suffix
+ * cannot separate them — and `worktree add --force` ADOPTS a live tree at a path it
+ * is handed rather than refusing, which is the collision this suffix exists to close.
+ * Narrowing the writer to digits would have traded a billing bug for a correctness
+ * one. What the suffix must NOT be is a second free-floating grammar:
+ * `[0-9a-z-]{1,24}` admits exactly the suffix form the writer produces (two
+ * lowercase arm letters, two decimal counters) plus a bounded total length, and
+ * refuses the shapes `Number()` would happily accept.
  */
-const FIX_RUN_ID = /^[0-9]{13,17}(-[0-9]{1,9})?$/;
+export const FIX_RUN_ID = /^[0-9]{13,17}(-[0-9a-z-]{1,24})?$/;
 
 /** Is this a fixer row's tree identity, in the shape `fixRunId` mints? */
 function isRunId(value: unknown): boolean {
