@@ -76,6 +76,10 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // The worktree is detached, so the ledger write and the residual
         // disclosure can only be keyed on a branch this step names.
         branch: a.branch,
+        // The run's own PR, when it has one (see `LensArgs.pr`): the number the
+        // residual disclosure posts to, so the review layer does not spend a
+        // `gh pr list` per ISSUES_FOUND round rediscovering it.
+        ...(a.pr === undefined ? {} : { pr: a.pr }),
         processGroup: true,
         // The operator's own lever, read here rather than a number copied into
         // this file: `lensChildBoundMs()` is the single source for a lens child's
@@ -88,6 +92,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         verdict: summary.verdict,
         findings: renderFindings(summary),
         usage: summary.usage,
+        // The per-lens records, so the step bills one row per child that ran
+        // rather than one row per round (see `lensRows` in `review-git.ts`).
+        lenses: summary.lenses,
         // The one field that distinguishes "no lens ran" from "lenses ran and
         // found nothing", and the only place it is stated — `verdict` says
         // APPROVED for both. Dropping it here is what would let the empty-delta

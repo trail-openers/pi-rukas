@@ -30,25 +30,27 @@
  */
 
 import path from "node:path";
-import { ReviewInfraError } from "../src/lean/review.ts";
 import { defaultConfig } from "../src/lean/config.ts";
+import { ReviewInfraError } from "../src/lean/review.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";
 import type { DispatchSpec } from "../src/types.ts";
+import { put } from "./lib/lean-build-fixture.ts";
 import {
   BRANCH,
-  USAGE,
   type ReviewDeps,
+  USAGE,
+  cleanLensRound,
   cleanupRoots,
   ctxFor,
   depsWith,
   frozenBlob,
   git,
+  lensRowResult,
   makeRepo,
   result,
   runStep as run,
   setup,
 } from "./lib/lean-review-fixtures.ts";
-import { put } from "./lib/lean-build-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -76,7 +78,7 @@ function assert(cond: boolean, msg: string): void {
         // The production shape of a clean round: six lenses ran, so the round
         // reports their usage. A round with `usage: undefined` is a round that
         // ran nobody, and the step refuses it (`test-lean-review-absence.ts`).
-        return { verdict: "APPROVED", findings: "", usage: USAGE };
+        return cleanLensRound();
       },
     }),
   );
@@ -90,9 +92,12 @@ function assert(cond: boolean, msg: string): void {
     seen.length === 2 && seen[0] === `adv:${head}` && seen[1] === `lens:${head}`,
     `(a) both gates reviewed the SAME commit (${seen.join(", ")})`,
   );
+  // The adversarial pass is one row; the six-lens round is now SIX, one per
+  // child that ran (see `lensRows`) — a single synthetic row for the round was
+  // the defect, because it priced every lens review at one child's cost.
   assert(
-    (outcome?.dispatches ?? []).length === 2 && (outcome?.dispatches ?? []).every((r) => r.ok),
-    `(a) both gate rounds are recorded as cost rows`,
+    (outcome?.dispatches ?? []).length === 7 && (outcome?.dispatches ?? []).every((r) => r.ok),
+    `(a) every child of both gate rounds is recorded as its own cost row (got ${String((outcome?.dispatches ?? []).length)})`,
   );
 }
 
@@ -111,7 +116,7 @@ function assert(cond: boolean, msg: string): void {
   const { threw: t2 } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      lens: async () => ({ verdict: "REVIEW_INCOMPLETE", findings: "x", usage: USAGE }),
+      lens: async () => ({ ...cleanLensRound(), verdict: "REVIEW_INCOMPLETE", findings: "x" }),
     }),
   );
   assert(
@@ -140,7 +145,7 @@ function assert(cond: boolean, msg: string): void {
       },
       lens: async (a) => {
         reviewed.push(`lens:${a.head}`);
-        return { verdict: "APPROVED", findings: "", usage: USAGE };
+        return cleanLensRound();
       },
       dispatch: async (spec: DispatchSpec) => {
         // The fixer's own work, made where the step sent it.
@@ -196,7 +201,7 @@ function assert(cond: boolean, msg: string): void {
         if (seen2.length === 1) return result({ loopOutcome: "rejected", text: "1. leak" });
         return result({ loopOutcome: "approved" });
       },
-      lens: async () => ({ verdict: "APPROVED", findings: "", usage: USAGE }),
+      lens: async () => cleanLensRound(),
       dispatch: async (spec: DispatchSpec) => {
         put(spec.cwd as string, "second-fix.ts", "export const s = 1;\n");
         git(spec.cwd as string, "add", "-A");
@@ -235,8 +240,11 @@ function assert(cond: boolean, msg: string): void {
     ctx,
     depsWith({
       adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
-      dispatch: async (_spec: DispatchSpec) => {
-        const wt = path.join(repoRoot, ".worktrees", "lean-7-fix");
+      dispatch: async (spec: DispatchSpec) => {
+        // The tree the step sent it to, never a path this file guesses: the
+        // fixer's tree is named per round and per run, and a stub that hardcodes
+        // a location is a stub that quietly writes where nobody is looking.
+        const wt = spec.cwd as string;
         put(wt, "tests/AC1.test.ts", "// rewritten\n");
         git(wt, "add", "-A");
         git(wt, "commit", "-q", "-m", "fix: cheated");
@@ -265,7 +273,7 @@ function assert(cond: boolean, msg: string): void {
     },
     lens: async () => {
       dispatched++;
-      return { verdict: "APPROVED", findings: "", usage: USAGE };
+      return cleanLensRound();
     },
   });
   const { threw } = await run(ctxFor(repoRoot, baseSha, "lean/issue-7-never-pushed"), counting);
@@ -289,9 +297,9 @@ function assert(cond: boolean, msg: string): void {
   const poor = depsWith({
     adversarial: async () => result({ loopOutcome: "approved" }),
     lens: async () => ({
+      ...cleanLensRound(),
       verdict: "ISSUES_FOUND",
       findings: "- [HIGH] SECURITY a.ts:1: leak",
-      usage: USAGE,
     }),
     loadConfig: async () => ({
       ...defaultConfig(),
@@ -304,8 +312,8 @@ function assert(cond: boolean, msg: string): void {
     `(e3) findings at a budget that pays for one round hand back rather than passing (${t3?.message ?? `got ${String(o3?.kind)}`})`,
   );
   assert(
-    (t3 as ReviewInfraError | undefined)?.dispatches.length === 2,
-    "(e3) the round the run did pay for is still recorded on the refusal",
+    (t3 as ReviewInfraError | undefined)?.dispatches.length === 7,
+    "(e3) the round the run did pay for is still recorded on the refusal (one reviewer, six lenses)",
   );
 
   // (f) What a handback owes the operator is the cost of EVERY round, not the
@@ -322,9 +330,9 @@ function assert(cond: boolean, msg: string): void {
     loadConfig: async () => twoRounds,
     adversarial: async () => result({ loopOutcome: "approved" }),
     lens: async () => ({
+      ...cleanLensRound(),
       verdict: "ISSUES_FOUND",
       findings: "- [HIGH] SECURITY a.ts:1: leak",
-      usage: USAGE,
     }),
   });
   const { threw: t4 } = await run(ctxFor(rr2, bs2, BRANCH), neverClears);
@@ -332,9 +340,23 @@ function assert(cond: boolean, msg: string): void {
     t4 instanceof ReviewInfraError && /still open after 2 review round/.test(t4.message),
     `(f) the loop runs to the round the budget pays for, then throws (${t4?.message})`,
   );
+  // 2 reviewers + 2 six-lens rounds + the fixer between them = 15 rows now that
+  // each lens child is billed individually (was 5 when a round was one row).
   assert(
-    (t4 as ReviewInfraError | undefined)?.dispatches.length === 5,
-    `(f) the handback carries every child it paid for — 2 reviewers, 2 lens rounds and the fixer between them (got ${String((t4 as ReviewInfraError | undefined)?.dispatches.length)})`,
+    (t4 as ReviewInfraError | undefined)?.dispatches.length === 15,
+    `(f) the handback carries every child it paid for — 2 reviewers, 12 lens children and the fixer between them (got ${String((t4 as ReviewInfraError | undefined)?.dispatches.length)})`,
+  );
+  assert(
+    (t4 as ReviewInfraError | undefined)?.dispatches.filter(
+      (r) => r.role === "code-review-specialist",
+    ).length === 12,
+    "(f) the six-lens rounds bill SIX rows each: a round collapsed to one row under-billed every lens review the run paid for and reported its wall clock as zero",
+  );
+  assert(
+    (t4 as ReviewInfraError | undefined)?.dispatches
+      .filter((r) => r.role === "code-review-specialist")
+      .every((r) => r.ms > 0) === true,
+    "(f) and each carries the timing its own child reported, not a synthetic 0",
   );
   assert(
     (t4 as ReviewInfraError | undefined)?.dispatches.some((r) => r.role === "developer") === true,
@@ -358,9 +380,9 @@ function assert(cond: boolean, msg: string): void {
       }),
       adversarial: async () => result({ loopOutcome: "approved" }),
       lens: async () => ({
+        ...cleanLensRound(),
         verdict: "ISSUES_FOUND",
         findings: "- [HIGH] SECURITY a.ts:1: leak",
-        usage: USAGE,
       }),
     }),
   );

@@ -21,9 +21,11 @@ import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
+import type { LensRound } from "../../src/lean/review.ts";
 import { type ReviewDeps, ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
+import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { put } from "./lean-build-fixture.ts";
@@ -65,6 +67,72 @@ export function makeRepo(): { repoRoot: string; origin: string; baseSha: string 
 
 export const USAGE = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.5, turns: 10 };
 
+/**
+ * One lens child's record, as the review layer reports it and as `lensRows`
+ * bills it. `n` makes the six rows of a round distinguishable in an assertion:
+ * `ms` and every usage counter scale with it, so a fold that collapsed the
+ * round into one row or dropped a child is visible in the totals.
+ */
+export function lensRowResult(n: number, over: Partial<LensRunResult> = {}): LensRunResult {
+  return {
+    lens: LENS_NAMES[n % LENS_NAMES.length],
+    ok: true,
+    ms: 100 * (n + 1),
+    startMs: 0,
+    findings: [],
+    summary: `lens ${String(n)} clean`,
+    attempts: 1,
+    blocked: false,
+    usage: {
+      input: 10 * (n + 1),
+      output: n + 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.1 * (n + 1),
+      turns: n + 1,
+    },
+    ...over,
+  };
+}
+
+/** The six lens names, so a round's rows read like the real roster's. */
+const LENS_NAMES: LensName[] = [
+  "SECURITY",
+  "PERFORMANCE",
+  "SIMPLICITY",
+  "ARCHITECTURE",
+  "ERROR_HANDLING",
+  "TYPE_SAFETY",
+];
+
+/**
+ * A clean six-lens round: six children, each with its own usage, which is what
+ * a round that actually ran looks like. A round with `usage: undefined` is a
+ * round that ran nobody, and the step refuses it (`test-lean-review-absence.ts`).
+ */
+export function cleanLensRound(): LensRound {
+  const lenses = LENS_NAMES.map((_, i) => lensRowResult(i));
+  return {
+    verdict: "APPROVED",
+    findings: "",
+    lenses,
+    usage: lenses.reduce(
+      (acc, l) =>
+        l.usage === undefined
+          ? acc
+          : {
+              input: acc.input + l.usage.input,
+              output: acc.output + l.usage.output,
+              cacheRead: acc.cacheRead + l.usage.cacheRead,
+              cacheWrite: acc.cacheWrite + l.usage.cacheWrite,
+              cost: acc.cost + l.usage.cost,
+              turns: acc.turns + l.usage.turns,
+            },
+      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    ),
+  };
+}
+
 export function result(over: Partial<DispatchResult> = {}): DispatchResult {
   return {
     role: "adversarial-developer",
@@ -84,7 +152,10 @@ export function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
     headless: false,
     exec: (cmd, o) => execp(cmd, { ...(o ?? {}), env: { ...gitEnv(), ...(o?.env ?? {}) } }),
     adversarial: async () => result({ loopOutcome: "approved" }),
-    lens: async () => ({ verdict: "APPROVED", findings: "", usage: USAGE }),
+    // The production shape of a clean round: six lenses ran, each with its own
+    // usage. A round with no lens records is a round that ran nobody, and the
+    // step refuses it (`test-lean-review-absence.ts`).
+    lens: async () => cleanLensRound(),
     dispatch: async () => result({ role: "developer" }),
     fetchIssueBody: async () => "body",
     loadConfig: async () => defaultConfig(),
@@ -137,11 +208,15 @@ export const BRANCH = "lean/issue-7";
  * that would change the bytes.
  */
 export function frozenBlob(repoRoot: string, ref: string): string {
-  const r = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "show", `${ref}:tests/AC1.test.ts`], {
-    cwd: repoRoot,
-    encoding: "latin1",
-    env: gitEnv(),
-  });
+  const r = spawnSync(
+    "git",
+    ["-c", "core.hooksPath=/dev/null", "show", `${ref}:tests/AC1.test.ts`],
+    {
+      cwd: repoRoot,
+      encoding: "latin1",
+      env: gitEnv(),
+    },
+  );
   if (r.status !== 0)
     throw new Error(`git show ${ref}:tests/AC1.test.ts failed: ${(r.stderr ?? "").trim()}`);
   return r.stdout ?? "";
