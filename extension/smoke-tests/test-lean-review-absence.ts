@@ -66,6 +66,7 @@ import {
   ctxFor,
   depsWith,
   frozenBlob,
+  fixRunId,
   git,
   makeRepo,
   result,
@@ -187,7 +188,7 @@ const { assert, failures } = makeAssert();
   // and names the path the step is about to reach for: driving the collision
   // requires naming it, which is also the property that makes a resumed attempt
   // re-enter its own tree rather than a stranger's.
-  const runId = "1700000000000";
+  const runId = fixRunId("1700000000000");
   const ctxJ = ctxFor(repoRoot, baseSha, BRANCH);
   ctxJ.now = () => Number(runId);
   const planted = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
@@ -227,7 +228,7 @@ const { assert, failures } = makeAssert();
   const a = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
   const b = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
   const c = fixTreeName(repoRoot, 7, "a", 2, 0, runId);
-  const d = fixTreeName(repoRoot, 7, "a", 1, 0, "1700000009999");
+  const d = fixTreeName(repoRoot, 7, "a", 1, 0, fixRunId("1700000009999"));
   const lensArm = fixTreeName(repoRoot, 7, "l", 1, 0, runId);
   const otherAttempt = fixTreeName(repoRoot, 7, "a", 1, 1, runId);
   assert(
