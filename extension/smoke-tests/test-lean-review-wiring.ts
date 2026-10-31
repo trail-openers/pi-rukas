@@ -299,8 +299,9 @@ const { assert, failures } = makeAssert();
   });
   const { threw: t3, outcome: o3 } = await run(ctxFor(repoRoot, baseSha, BRANCH), atDefaultBudget);
   assert(
-    t3 instanceof ReviewInfraError && /still open after 3 review round/.test(t3.message),
-    `(e3) at the SHIPPED 150-turn default the step runs all ${String(MAX_REVIEW_ROUNDS)} rounds before handing back — the round bound is the constant, not the budget (${t3?.message ?? `got ${String(o3?.kind)}`})`,
+    t3 instanceof ReviewInfraError &&
+      /reached round 4 at the step's bound of 3 rounds/.test(t3.message),
+    `(e3) at the SHIPPED 150-turn default the step runs all ${String(MAX_REVIEW_ROUNDS)} rounds and then refuses — the round bound is the constant, not the budget (${t3?.message ?? `got ${String(o3?.kind)}`})`,
   );
   assert(
     e3LensRounds === MAX_REVIEW_ROUNDS,
@@ -311,18 +312,24 @@ const { assert, failures } = makeAssert();
     `(e3) the rows on the refusal are CLIPPED to the validator's own cap: this run paid for ${String(MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1))} children and the record may hold ${String(DISPATCHES_MAX_ROWS)}, so an unbounded handback would have been dropped by the loader whole (got ${String((t3 as ReviewInfraError | undefined)?.dispatches.length)})`,
   );
   // The clip is the point of the case, and a tail clip is only distinguishable
-  // from a head slice when the roles differ between the two ends. This run's
-  // first seven rows are one round's reviewer + six lenses and its last are the
-  // final round's lenses, so `FIXER_ROLE` is a fair claim but a weak one: it is
-  // the head slice's failure to produce. Both are asserted.
+  // from a head slice when the roles differ between the two ends. What the clip
+  // holds HERE is arithmetic: `MAX_REVIEW_ROUNDS` rounds x 7 gate children fill
+  // the cap exactly, so the TAIL IS the WHOLE ARRAY and no role is excluded from
+  // either end. Asserting "the first row is not a reviewer" against that was a
+  // coincidence, not evidence — and it went red the moment the round bound moved
+  // to the top of the loop body (where it belongs, and where it now covers the
+  // adversarial arm too), because the bound stopped spending a round-4 reviewer
+  // before refusing. The head/tail distinction is asserted WHERE ARITHMETIC ALLOWS
+  // IT — in `(f)`, whose extra adversarial passes overfill the cap — rather than
+  // restated where it is foreclosed.
   const e3Rows = (t3 as ReviewInfraError | undefined)?.dispatches ?? [];
   assert(
     e3Rows.some((r) => r.role === FIXER_ROLE),
     "(e3) and the clip keeps the TAIL, so the last fixer — the child that decided the step — is among them",
   );
   assert(
-    e3Rows[0]?.role !== ADVERSARIAL_GATE_ROLE,
-    `(e3) and it kept the TAIL rather than the HEAD: the first row is not the first round's reviewer, which a head slice would have kept (${String(e3Rows[0]?.role)})`,
+    e3Rows.length === DISPATCHES_MAX_ROWS,
+    `(e3) precondition made explicit: this run's rows EXACTLY fill the cap, so the clip is a no-op here and the case cannot tell head from tail — ${String(MAX_REVIEW_ROUNDS)} rounds x 7 gate children = ${String(MAX_REVIEW_ROUNDS * 7)} rows reach the refusal (the fixers are consumed within a round, before the bound trips) and the cap is ${String(DISPATCHES_MAX_ROWS)}; that is why the head/tail assertion lives in \`(f)\`, where the extra adversarial passes overfill it (got ${String(e3Rows.length)})`,
   );
 
   // (f) What a handback owes the operator is the cost of EVERY round, not the
@@ -356,7 +363,9 @@ const { assert, failures } = makeAssert();
   const paid = MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1);
   assert(
     t4 instanceof ReviewInfraError &&
-      new RegExp(`still open after ${String(MAX_REVIEW_ROUNDS)} review round`).test(t4.message),
+      new RegExp(
+        `reached round ${String(MAX_REVIEW_ROUNDS + 1)} at the step's bound of ${String(MAX_REVIEW_ROUNDS)} rounds`,
+      ).test(t4.message),
     `(f) the loop runs to the bound, then throws (${t4?.message})`,
   );
   assert(
@@ -442,6 +451,98 @@ const { assert, failures } = makeAssert();
   assert(
     gRound <= MAX_REVIEW_ROUNDS,
     `(g) and the loop is bounded by the rounds constant rather than by a turn division, so it cannot run away on a zero budget (${String(gRound)} <= ${String(MAX_REVIEW_ROUNDS)})`,
+  );
+}
+
+// ── (e4) THE ADVERSARIAL ARM IS BOUNDED TOO — the CRITICAL this handler shipped
+// with.
+//
+// `(e3)`/`(f)` above drive the LENS arm to the bound, and the round guard sat with
+// them, inside the lens arm. The adversarial arm's findings branch called `fixRound`
+// and `continue`d without ever passing that guard, so a gate that keeps returning
+// findings looped forever and every pass bought a reviewer AND a fixer. Measured on
+// this same loop: **550 fix rounds in 90 seconds**, every one a paid child — the
+// exact shape that made the frozen driver unmergeable, and the reason this case
+// exists rather than a comment asserting the bound covers both arms.
+//
+// The stub is the adversarial arm's worst honest case: `loopOutcome: "rejected"`
+// with findings that VARY per round. Varying them is deliberate — this arm has two
+// stop conditions, `stagnantAgainstFix` (same gate, same text, a head that moved)
+// and the round bound, and a stub with one fixed string trips the earlier one, so
+// the case would measure the tie-breaker and never reach the bound. Varying the text
+// says the gate is genuinely re-looking at a new head and only the bound can stop
+// it, which is the defect's shape.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 5;\n" });
+  let advAsks = 0;
+  let fixers = 0;
+  let lensRounds = 0;
+  // ONE `fixerThatCommits` instance for the whole case, counted on the way through
+  // rather than re-created per call: its per-tree commit counter has to keep
+  // advancing or two rounds write byte-identical trees.
+  const alwaysCommit = fixerThatCommits("always-findings");
+  const { outcome, threw } = await run(
+    ctxFor(repoRoot, baseSha, BRANCH),
+    depsWith({
+      adversarial: async () =>
+        result({
+          loopOutcome: "rejected",
+          text: `1. unbounded read (round ${String(++advAsks)})`,
+        }),
+      // Never consulted on this arm — the findings branch `continue`s before the
+      // lens gate runs. Counted so the case can say the loop never even reached the
+      // arm that used to hold the only guard.
+      lens: async () => {
+        lensRounds++;
+        return cleanLensRound();
+      },
+      dispatch: async (spec: DispatchSpec) => {
+        fixers++;
+        return alwaysCommit(spec);
+      },
+    }),
+  );
+  // The bound fires rather than the step reporting the head reviewed. `done` here
+  // would be the worst answer available: an unreviewed head carried on to `ci`.
+  assert(
+    outcome === undefined,
+    `(e4) an adversarial gate that never clears is never reported as reviewed (got kind ${String(outcome?.kind)})`,
+  );
+  assert(
+    threw instanceof ReviewInfraError &&
+      /reached round 4 at the step's bound of 3 rounds/.test(threw.message),
+    `(e4) the ADVERSARIAL arm stops at the stated bound rather than looping — the guard is at the top of the loop body, so it covers this arm too (${threw?.message})`,
+  );
+  // THE MEASURED NUMBER, and the one this case exists to hold. Before the hoist the
+  // same shape was unbounded (the lens arm of this loop measured 550 fix rounds in
+  // 90 seconds); a regression that puts the guard back inside the lens arm takes
+  // this back to hundreds, which is why it is an exact equality and not a `<=`.
+  assert(
+    fixers === MAX_REVIEW_ROUNDS,
+    `(e4) exactly ${String(MAX_REVIEW_ROUNDS)} fix rounds were bought by the always-findings stub — the unbounded arm bought hundreds (measured 550 in 90s) and every one of them was a paid child (got ${String(fixers)})`,
+  );
+  assert(
+    advAsks === MAX_REVIEW_ROUNDS,
+    `(e4) and the same for the reviewer — ${String(MAX_REVIEW_ROUNDS)} passes, no bound-breaking extra (${String(advAsks)})`,
+  );
+  assert(
+    lensRounds === 0,
+    `(e4) and the loop never reached the lens arm at all, which is where the guard used to live and why this arm had none (${String(lensRounds)} lens rounds ran)`,
+  );
+  // The findings that stopped it reach the operator, so the handback says what was
+  // outstanding rather than only that the loop gave up.
+  assert(
+    (threw as ReviewInfraError | undefined)?.message.includes("unbounded read") === true,
+    `(e4) and the refusal names the findings still open, since a bound with nothing to show for it cannot be triaged (${(threw as ReviewInfraError | undefined)?.message.slice(0, 200)})`,
+  );
+  // The cost of those rounds is on the record even though the step threw, clipped to
+  // the loader's cap — a run that bought three fixers and reported none is the
+  // under-billing this suite exists to prevent.
+  assert(
+    (threw as ReviewInfraError | undefined)?.dispatches.some((r) => r.role === FIXER_ROLE) ===
+      true,
+    "(e4) and the fixers this arm bought are billed on the refusal",
   );
 }
 

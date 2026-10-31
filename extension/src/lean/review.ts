@@ -295,22 +295,47 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
    * neither sees the case where the fixer DID land a commit and the gate that
    * asked for it comes back with the identical findings anyway. That is not a
    * reviewer being stubborn, it is a deterministic gate: `adversarialGate` reads
-     the head it was handed and re-reports what it saw, and a finding it did not
+   * the head it was handed and re-reports what it saw, and a finding it did not
    * fix (out of scope, or unfisable without touching a frozen test, which the
    * fixer's brief tells it to leave alone) recurs verbatim. Measured: a run whose
    * fixer commits on every round and whose adversarial gate always returns one
-   * finding dispatched fixers forever — the round counter incremented, the
-   * `round >= MAX_REVIEW_ROUNDS` guard lives on the LENS arm only, so nothing
-   * bounded the adversarial arm at all.
+   * finding dispatched fixers forever — the round counter incremented, but the
+   * round guard lived on the LENS arm only, so nothing bounded the adversarial arm
+   * at all. That guard now sits at the top of the loop body where both arms pass
+   * it — the bound is what stops a gate that merely never stops talking — and this
+   * tie-breaker is what fires EARLIER, on the gate that says the same thing twice.
    *
    * So: if a fix round moved the head and the SAME gate then reported the SAME
    * findings against the new head, the loop is not making progress and the next
    * round will not either. Hand back with the findings, rather than buying them.
    */
   let lastFix: { gate: string; findings: string; from: string } | undefined;
+  /**
+   * The findings the loop is still trying to answer, for the round bound's cause
+   * line. Read lazily — the bound check runs before any gate has spoken, and
+   * `lastFix` is the request the LAST fix round was handed, so it still names what
+   * is outstanding on the arm that moved the head without recording `carried` (the
+   * lens arm). Never a guess about what a gate would have said.
+   */
+  const openFindings = (): string => carried ?? lastFix?.findings ?? "";
 
   try {
     for (let round = 1; ; round++) {
+      // **THE ROUND BOUND, ON BOTH ARMS, BEFORE ANY CHILD IS PAID.** This guard
+      // used to live below, inside the lens arm only, so the adversarial arm
+      // reached `fixRound` without ever passing it: a gate that kept returning
+      // findings looped forever, each pass buying a reviewer AND a fixer. The same
+      // loop measured on the lens arm — which did have a guard, and still ran away
+      // once — reached **550 fix rounds in 90 seconds**, every one a paid child.
+      // It sits here, at the top of the body before `adversarialGate`, rather than
+      // as a second copy beside the first: two copies of one bound are two answers
+      // to "how many rounds may this step buy", and the arm that had none is what
+      // made the other arm's copy a lie about the step.
+      if (round > MAX_REVIEW_ROUNDS)
+        throw new ReviewInfraError(
+          `the review loop reached round ${String(round)} at the step's bound of ${String(MAX_REVIEW_ROUNDS)} rounds (the per-child turns ceiling was ${String(turnCap)}) — a gate that keeps returning findings is not a gate a fix round will satisfy: ${openFindings().slice(0, 500)}`,
+          rows,
+        );
       const gate = await adversarialGate(deps, ctx, {
         base,
         head,
@@ -421,11 +446,11 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
           `the six-lens review did not complete (${lens.verdict}${lens.note === undefined ? "" : `; disclosure: ${lens.note}`}) — an incomplete round is not a pass to fix against`,
           rows,
         );
-      if (round >= MAX_REVIEW_ROUNDS)
-        throw new ReviewInfraError(
-          `findings still open after ${String(round)} review round(s) at the step's bound of ${String(MAX_REVIEW_ROUNDS)} rounds (the per-child turns ceiling was ${String(turnCap)}): ${lens.findings.slice(0, 500)}`,
-          rows,
-        );
+      // The bound that decides whether THIS round may buy a fixer is the loop-head
+      // guard above, which both arms pass. It reads `round > MAX_REVIEW_ROUNDS`
+      // because round `MAX_REVIEW_ROUNDS` is still allowed to review; reaching
+      // here therefore means a fixer is still affordable, and no second copy of
+      // the check sits beside the first — the arm that had none WAS the bug.
       const fix = await fixRound(deps, ctx, {
         head: lens.head,
         frozen,
