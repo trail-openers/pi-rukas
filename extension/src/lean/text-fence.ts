@@ -32,6 +32,21 @@ const ANY_CONTROL = /[\p{Cc}\u2028\u2029\u0085]/gu;
 /** A run of 3+ backticks — the sequence that would close or open a fence. */
 const BACKTICK_RUN = /`{3,}/g;
 const HORIZONTAL_ELLIPSIS = "…";
+/**
+ * The line a clipped fence says instead of stopping dead.
+ *
+ * A fence is the one shape in this module that keeps newlines, so the reader is
+ * reading it as a document — and a document that simply ends is indistinguishable
+ * from a complete one. A single `…` at the end of 20 KB of prose is decoration:
+ * it does not say a bound was applied, what the bound was, or that more existed.
+ * The findings block a lens reviewer weighs as EVIDENCE is exactly the payload
+ * where "nothing else" and "cut off" must not read the same way, so the cut is
+ * stated inside the fence, on its own line, with the number that caused it. This
+ * is the same family of defect as a gate that cannot fail: a silent truncation is
+ * a lie by omission told to the one reader who cannot check.
+ */
+const TRUNCATION_MARKER = (max: number): string =>
+  `\n[truncated at ${String(max)} characters]`;
 
 /** Replace control characters that are not \n or \t with a space. */
 function soften(s: string): string {
@@ -57,12 +72,19 @@ function soften(s: string): string {
  * `### INJ` inside it is a line of a block, not a section of the comment. Any
  * run of 3+ backticks in the payload is neutralised by swapping each backtick
  * for U+02CB (same count), so no sequence inside can close the fence early.
+ *
+ * The truncation marker is emitted INSIDE the fence (so it is part of what the
+ * reader sees) and AFTER the backtick neutralisation (so it can never be a
+ * payload's own text that happens to look like the marker, and can never itself
+ * be mangled). A payload at or under `max` gains nothing — the marker's absence
+ * is what makes its presence meaningful.
  */
 export function fenceText(s: string, max: number): string {
   let body = soften(s);
-  if (body.length > max) body = `${body.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
+  const clipped = body.length > max;
+  if (clipped) body = `${body.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
   body = body.replace(BACKTICK_RUN, (run) => "\u02cb".repeat(run.length));
-  return `\`\`\`text\n${body}\n\`\`\``;
+  return `\`\`\`text\n${body}${clipped ? TRUNCATION_MARKER(max) : ""}\n\`\`\``;
 }
 
 /**
