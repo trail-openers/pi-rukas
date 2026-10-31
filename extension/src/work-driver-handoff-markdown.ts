@@ -238,7 +238,12 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
             "",
           ]),
       "Patterns to look for:",
-      "  - Same lens flagging the same shape across rounds → spec-level problem (MAST 41.77%)",
+      // "MAST 41.77%" is nowhere in arXiv 2503.13657 — it was a fabrication, and
+      // the paper makes no cross-category ranking, so the superlative the bullet
+      // prints stays scoped to the FM-1.x list. Full figures: AGENTS.md §7, a
+      // pointer kept in this comment rather than the bullet, which a reader sees
+      // on GitHub with no repository to open.
+      "  - Same lens flagging the same shape across rounds → spec-level problem (MAST, arXiv 2503.13657 — the largest single FM-1.x mode is step repetition FM-1.3 at 15.7%)",
       "  - Orthogonal local bugs → genuine work remains, not a doctrine failure",
       "",
     );

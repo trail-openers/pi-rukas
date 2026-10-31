@@ -4,9 +4,15 @@
  * `/work` used to assume an issue tells it what to build. Real backlogs do not
  * honour that: issues are hand-written, terse, imported from another project,
  * or simply wrong. Measured externally, 38.3% of real GitHub issues are
- * underspecified (SWE-bench Verified, 93 annotators over 1,699 samples), and
- * 41.77% of multi-agent failures are specification and system design (MAST) —
- * the largest single category.
+ * underspecified (SWE-bench Verified, 93 annotators over 1,699 samples). In the
+ * MAST taxonomy (Cemri et al., arXiv 2503.13657): the largest single FM-1.x
+ * mode is step repetition FM-1.3 at 15.7%, and disobeying the task
+ * specification FM-1.1 is 11.8%; the paper's best orchestration-layer
+ * intervention, a high-level objective-verification step, was worth +15.6%
+ * task success with completion rates still low, and it reports that tactical
+ * approaches get only limited results — which is why this
+ * module refuses to build on an unreadable spec rather than retrying the
+ * worker.
  *
  * Two structural problems this replaces:
  *

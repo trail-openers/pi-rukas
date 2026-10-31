@@ -69,7 +69,14 @@ export function explainOther(cap: Cap, state: WorkState): string {
             e.kind === "step-back-completed",
         );
       const elem = sb?.sddElement ?? "(spec element not specified)";
-      return `explore stepped back and identified a spec-level gap in **${elem}** — the lens-review fix loop kept flagging the same shape across rounds (MAST 41.77% — spec-level problem fingerprint). The handoff body includes a proposed revision. After updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec`;
+      // "MAST 41.77%" is nowhere in Cemri et al., arXiv 2503.13657 — it was a
+      // fabrication, and the paper makes no cross-category ranking, so the
+      // superlative this line prints stays scoped to the FM-1.x list. Full
+      // figures: AGENTS.md §7 — a pointer kept in this comment, which a
+      // maintainer reads with the repo open, not in the emitted line, which
+      // reaches the operator through `/work-status` with no repository in front
+      // of them.
+      return `explore stepped back and identified a spec-level gap in **${elem}**. The lens-review fix loop kept flagging the same shape across rounds — the fingerprint of a spec-level problem. The handoff body includes a proposed revision; after updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec — in MAST (arXiv 2503.13657) the largest single FM-1.x mode is step repetition FM-1.3 at 15.7%, and the paper reports tactical approaches get only limited results`;
     }
     default:
       return `unhandled explain-other cap: ${cap}`;
