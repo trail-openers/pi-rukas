@@ -1,305 +1,458 @@
 #!/usr/bin/env bun
 /**
- * AGENTS.md §7 is the single authoritative MAST block four other sites point
- * at, so a figure that silently leaves it orphans four pointers.
+ * AGENTS.md §7 is the single authoritative MAST block, and the other sites that
+ * cite the paper (arXiv 2503.13657) restate a subset of it — so a figure that
+ * silently leaves §7 orphans every pointer, and a pointer that drifts contradicts
+ * the block it points at. Nothing enforced either direction until this file.
  *
- * This branch removed statistics attributed to the MAST taxonomy (Cemri et
- * al., arXiv 2503.13657) that the paper does not contain. When the citation
- * was collapsed, AGENTS.md §7's step-back paragraph became the one place the
- * real figures live; `agents-base/project-manager.md`, `work-driver-intent.ts`,
- * `work-driver-verify-pr17.ts` and the two rendered surfaces (`work-driver-
- * handoff-markdown.ts`, `work-driver-explain-other.ts`) all restate a subset
- * of it. Nothing enforced that the authoritative block still carries them.
+ * The branch these assertions came from removed statistics attributed to the
+ * paper that the paper does not contain. When the citation was collapsed, §7's
+ * step-back paragraph became the one place the real figures live.
  *
- * A gate that only asserts "the file mentions 15.7% somewhere" is worthless —
- * it stays green when the figure moves to an unrelated paragraph and §7 loses
- * it. So the scope is the §7 STEP-BACK PARAGRAPH specifically (identified by
- * its heading token, not by line number, so a reflow of the file does not
- * break the canary), and the assertion is on the facts it must contain.
+ * A gate that only asserts "the file mentions 15.7% somewhere" is worthless, and
+ * this file's first version was that gate: an adversarial reviewer ran real
+ * mutants against it and it passed green on three classes of corruption —
+ * a prepended digit (`115.7%` satisfies `includes("15.7%")`), a swapped
+ * attribution (ten independent `includes` all stay true while the sentence
+ * becomes false), and a seventh citing site nobody registered. The fact table,
+ * the mutants and the checker live in `lib/mast-canary-fixtures.ts`; the
+ * mutants here are those DEMONSTRATED passes, not hypothetical ones.
  *
- * The FM-1.x scoping word is asserted TOGETHER with the superlative. That
- * scoping is the actual content of this branch: the paper's three top-level
- * categories are System Design Issues / Inter-Agent Misalignment / Task
- * Verification, and FM-1.3 at 15.7% is the largest mode only WITHIN FM-1.x —
- * the paper makes no cross-category ranking. A block that keeps "largest
- * single mode… 15.7%" while dropping "FM-1.x" has reverted to the fabrication
- * this branch removed, and must fail here.
+ * Two structural rules this version adds:
+ *
+ *  - Figures are asserted JOINED to their labels, so a true substring next to a
+ *    false one proves nothing. A mis-paired figure is the same error class as an
+ *    unscoped superlative; the superlative had a positional check, the pairing
+ *    had none.
+ *  - The site registry is DERIVED from the tree, and every site carries its own
+ *    expectation. A hand-maintained list of four files cannot see a fifth, so a
+ *    new site carrying the unscoped fabrication passed while the registry stayed
+ *    green. Sites that legitimately cite the paper for a narrower claim declare
+ *    that claim and are checked against IT, not against one negation shared by
+ *    all sites.
  *
  * Asserted in BOTH directions, as `test-review-threshold-quote.ts` does: the
- * real §7 block contains everything it must, and a deliberately-deficient
- * copy of it is CAUGHT. A gate never observed to fail is worthless.
+ * real block passes, and each deficiency is CAUGHT. A gate never observed to
+ * fail is worthless.
  */
 
-import fs from "node:fs/promises";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
+import {
+  ARXIV,
+  CATEGORY_ORDER,
+  DEFECTS,
+  FACTS,
+  PARA_HEAD,
+  SUPERLATIVE,
+  UNSCOPED,
+  assertMutates,
+  checkBlock,
+  flatten,
+  isStepBackHeading,
+  nonCommentText,
+  stepBackParagraph,
+} from "./lib/mast-canary-fixtures.ts";
+
+const failures: string[] = [];
+function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`✓ ${msg}`);
   else {
     console.error(`✗ ${msg}`);
-    exit = 1;
+    failures.push(msg);
   }
 }
 
-const agentsMd = await fs.readFile(
-  path.resolve(import.meta.dirname, "..", "..", "AGENTS.md"),
-  "utf8",
-);
+const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
+const SELF = "extension/smoke-tests/test-mast-authoritative-block.ts";
+const FIXTURES = "extension/smoke-tests/lib/mast-canary-fixtures.ts";
+const AUTHORITATIVE = "AGENTS.md";
 
-/** The §7 step-back paragraph — the authoritative MAST block. */
-function stepBackParagraph(text: string): string | undefined {
-  return text.split("\n").find((line) => line.startsWith("**Theme-clustered cap-hits get a step-back**"));
+/** Read a repository file by name, reporting an unreadable one as a named failure. */
+function readRepoFile(file: string): string | undefined {
+  try {
+    return readFileSync(path.join(REPO_ROOT, file), "utf8");
+  } catch (err) {
+    assert(
+      false,
+      `${file} is readable (${(err as Error).message}) — a canary that crashes on a missing file reports nothing about why`,
+    );
+    return undefined;
+  }
 }
 
+const agentsMd = readRepoFile(AUTHORITATIVE);
+if (agentsMd === undefined) {
+  console.error("\nFATAL: AGENTS.md unreadable — the §7 assertions cannot run.");
+  process.exit(1);
+}
+
+// ------------------------------------------------------- the §7 block, located
+
+// Located by heading token and read to the next blank line, so a reflow of the
+// prose cannot narrow the gate. Exactly ONE paragraph may carry the heading:
+// reading the first and ignoring the rest lets a copy-pasted duplicate — with
+// its own wording — become a second authority the reader cannot distinguish.
+const HEADED = agentsMd.split("\n").filter(isStepBackHeading);
+assert(
+  HEADED.length === 1,
+  `exactly one §7 step-back paragraph carries the heading token (got ${HEADED.length}) — a duplicate is an unchecked second authority`,
+);
 const PARA = stepBackParagraph(agentsMd);
 assert(
   PARA !== undefined,
-  "§7's step-back paragraph is found in AGENTS.md — the assertions below are derived from it, so an absence is this file failing, not passing vacuously",
+  "§7's step-back paragraph is found — the assertions below are derived from it, so an absence fails loudly rather than vacuously",
 );
-// The paragraph must be a paragraph, not a stub: it is the whole taxonomy
-// citation in one line, so a truncation looks like a hit to a token search.
+if (PARA === undefined) {
+  console.error(
+    "\nFATAL: §7 step-back paragraph not found — every figure assertion below is meaningless.",
+  );
+  process.exit(1);
+}
+const BLOCK = PARA;
 assert(
-  (PARA ?? "").length > 500,
-  `the located line is the full paragraph, not a truncated stub (got ${(PARA ?? "").length} chars)`,
+  BLOCK.length > 500,
+  `the located block is the full paragraph, not a truncated stub (got ${BLOCK.length} chars)`,
 );
 
-// Every figure the four pointing sites restate, and the two qualifiers that
-// make them true. Spelled out individually so a failure names the figure lost.
-const REQUIRED: ReadonlyArray<readonly [string, string]> = [
-  ["arXiv 2503.13657", "the paper is named by id, so a reader can reach the primary source"],
-  ["System Design Issues 41.8%", "top-level category figure"],
-  ["Inter-Agent Misalignment 36.9%", "top-level category figure"],
-  ["Task Verification 21.3%", "top-level category figure"],
-  ["FM-1.1", "FM-1 failure mode id"],
-  ["11.8%", "FM-1.1 disobeying the task specification figure"],
-  ["FM-1.2", "FM-1 failure mode id"],
-  ["1.5%", "FM-1.2 disobeying the agent role figure"],
-  ["FM-1.3", "FM-1 failure mode id"],
-  ["15.7%", "FM-1.3 step repetition figure"],
-  ["FM-1.4", "FM-1 failure mode id"],
-  ["2.8", "FM-1.4 context loss figure"],
-  ["FM-1.5", "FM-1 failure mode id"],
-  ["12.4%", "FM-1.5 not recognising completion figure"],
-  ["+15.6%", "the best orchestration-layer intervention's task-success gain"],
-  ["objective-verification", "what that intervention actually was"],
-  ["Appendix H", "where the paper's own limitation is stated"],
-  ["top-level", "the word that scopes the three CATEGORY figures"],
-  ["FM-1.x", "the word that scopes the superlative to the FM-1.x list"],
-  ["largest single", "the superlative, scoped by FM-1.x above"],
-];
+// ------------------------------------------------------- the facts it must carry
 
-for (const [token, why] of REQUIRED) {
-  assert((PARA ?? "").includes(token), `§7's MAST block contains "${token}" (${why})`);
+for (const fact of FACTS) {
+  assert(BLOCK.includes(fact.token), `§7's MAST block states "${fact.token}" (${fact.why})`);
 }
 
-// --------------------------------------------- the two directions are distinct
-
-// The superlative and its scope must be in the SAME clause, not merely both
-// present in the paragraph — "largest single mode" two sentences from "FM-1.x"
-// is exactly the unscoped fabrication the branch removed.
+// The superlative and its scope in the SAME clause: "largest single mode" two
+// sentences from "FM-1.x" is exactly the unscoped fabrication the branch removed.
 {
-  const superIndex = (PARA ?? "").indexOf("largest single");
-  const scopeIndex = (PARA ?? "").indexOf("FM-1.x");
+  const superIndex = BLOCK.indexOf("largest single");
+  const scopeIndex = BLOCK.indexOf("FM-1.x");
   assert(
     superIndex >= 0 && scopeIndex >= 0 && Math.abs(superIndex - scopeIndex) < 40,
-    `the superlative sits WITH its FM-1.x scope (offsets ${superIndex}/${scopeIndex}) — a superlative the scope word has drifted away from reads as a cross-category claim the paper never makes`,
+    `the superlative sits WITH its FM-1.x scope (offsets ${superIndex}/${scopeIndex}) — a drifted scope word reads as a cross-category claim the paper never makes`,
   );
 }
 
-// "top-level" must belong to the three category figures and nothing else. The
+// "top-level" belongs to the three category figures and nothing else. The
 // branch's founding error was calling FM-1.1 a top-level failure mode.
 {
-  const topLevelHits = (PARA ?? "").split("top-level").length - 1;
+  const hits = BLOCK.split("top-level").length - 1;
   assert(
-    topLevelHits === 1,
-    `"top-level" appears exactly once in the block, against the three category figures (got ${topLevelHits}) — more than one means a failure mode has been promoted to a category`,
+    hits === 1,
+    `"top-level" appears exactly once, against the three category figures (got ${hits}) — a second use promotes a failure mode to a category`,
   );
-  const categories = ["System Design Issues", "Inter-Agent Misalignment", "Task Verification"];
-  const firstCategory = (PARA ?? "").indexOf(categories[0]);
-  const lastCategory = (PARA ?? "").indexOf("Task Verification");
-  const topLevelIndex = (PARA ?? "").indexOf("top-level");
+  const positions = CATEGORY_ORDER.map((c) => BLOCK.indexOf(c));
+  const at = BLOCK.indexOf("top-level");
   assert(
-    topLevelIndex >= 0 && topLevelIndex <= firstCategory + 40 && topLevelIndex < lastCategory,
-    `the single "top-level" sits with the category list (top-level@${topLevelIndex}, categories @${firstCategory}..${lastCategory})`,
+    positions.every((p) => p >= 0) &&
+      positions.every((p, i) => i === 0 || p > positions[i - 1]) &&
+      positions.every((p) => p > at),
+    `the single "top-level" precedes the three category figures IN THE PAPER'S ORDER (top-level@${at}, categories @${positions.join(",")}) — a reordered list reads as a ranking the paper never publishes`,
   );
 }
 
-// The one canonical grammar for the FM-1.3 superlative. Every site restating
-// it uses these words; the point of the branch is that readers compare sites.
-const SUPERLATIVE = "the largest single FM-1.x mode is step repetition FM-1.3 at 15.7%";
+// ------------------------------------------------------------ the sites, derived
+
+/** What a site is chartered to carry, and the figures it must restate. */
+interface Site {
+  readonly file: string;
+  readonly what: string;
+  /** Carries the canonical superlative (true) or must not carry either form (false). */
+  readonly superlative: boolean;
+  /** Phrases this site must contain, each a figure joined to its label. */
+  readonly expects: readonly string[];
+}
 
 /**
- * A near-variant of the canonical superlative for this site — the wording the
- * site carried before this branch collapsed the variants. Returned so the
- * caller can assert the checker rejects it; `undefined` where the site has no
- * historical near-variant to test against.
+ * Every site's own expectation. The roster is checked against a derived scan
+ * below: a citing file absent from this list fails, and so does an entry whose
+ * file stopped citing the paper. Legitimate narrower sites (`verify-pr17.ts`
+ * says "For context only" and "The gate itself does not rest on those figures";
+ * the driver files cite in comments; the PM file cites FM-1.1) pin THEIR claim
+ * rather than the superlative.
  */
-function nearVariant(file: string, body: string): string | undefined {
-  const flat = body.replace(/^[ \t]*\*[ ]?/gm, "").replace(/\s+/g, " ");
-  // The variant the site itself used, if it is still present in any form, is
-  // the one worth negating; otherwise fall back to the generic unscope.
-  for (const candidate of [
-    "step repetition FM-1.3 is the largest FM-1.x mode at 15.7%",
-    "within its FM-1.x list step repetition FM-1.3 is the largest mode at 15.7%",
-    "the largest single failure mode within the FM-1.x list is step repetition FM-1.3 at 15.7%",
-    "the largest single mode is step repetition FM-1.3 at 15.7%",
-  ]) {
-    if (flat.includes(candidate)) return candidate;
-  }
-  void file;
-  return SUPERLATIVE.replace(" FM-1.x mode", " mode");
-}
-
-// ------------------------------------ the other sites must not contradict §7
-
-// The block is authoritative only if the sites pointing at it say the same
-// thing. Checked here rather than in each site's own test, because the failure
-// this guards is drift BETWEEN them, which no single-site test can see.
-{
-  const root = path.resolve(import.meta.dirname, "..", "..");
-  const siblings: ReadonlyArray<readonly [string, string, string]> = [
-    ["agents-base/project-manager.md", SUPERLATIVE, "PM doctrine's step-back citation"],
-    ["extension/src/work-driver-intent.ts", SUPERLATIVE, "intent resolver's rationale"],
-    ["extension/src/work-driver-handoff-markdown.ts", SUPERLATIVE, "the rendered GitHub handoff bullet"],
-    ["extension/src/work-driver-explain-other.ts", SUPERLATIVE, "the rendered /work-status line"],
-  ];
-  for (const [file, canonical, what] of siblings) {
-    const body = await fs.readFile(path.join(root, file), "utf8");
-    // Comments wrap at ~80 columns and jsdoc blocks repeat a `*` on every
-    // line, so a canonical phrase normally spans several lines. Compare on
-    // whitespace-collapsed, bullet-stripped text: what is checked is that the
-    // WORDS are canonical, not where the wrap or the `*` falls.
-    const flat = body.replace(/^[ \t]*\*[ ]?/gm, "").replace(/\s+/g, " ");
-    // The same both-directions discipline as the §7 mutants: a substring test
-    // that can never fail is not a gate. One near-variant per site — the shapes
-    // this branch actually collapsed — must be rejected.
-    const negation = nearVariant(file, body);
-    assert(
-      negation === undefined || !flat.includes(negation),
-      `${file}: the checker REJECTS the near-variant "${(negation ?? "(n/a)").slice(0, 52)}…" — an assertion that cannot fail is not a gate`,
-    );
-    assert(
-      flat.includes(canonical),
-      `${file} carries the canonical superlative verbatim (${what}) — a near-variant is worse than the original error, because readers compare sites`,
-    );
-  }
-}
-
-// Nothing the reader sees may point at a file the reader cannot open. Both
-// surfaces emit into contexts with no repository: a GitHub issue comment, and
-// an unwrapped `/work-status` line.
-{
-  const root = path.resolve(import.meta.dirname, "..", "..");
-  for (const file of [
-    "extension/src/work-driver-handoff-markdown.ts",
-    "extension/src/work-driver-explain-other.ts",
-  ]) {
-    const body = await fs.readFile(path.join(root, file), "utf8");
-    const emitted = body
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("//") && !line.trimStart().startsWith("*"))
-      .filter((line) => /AGENTS\.md/.test(line));
-    assert(
-      emitted.length === 0,
-      `${file} has no AGENTS.md pointer in a NON-comment line (got ${emitted.length}) — a pointer in an emitted string is a pointer to a file its reader has no way to open`,
-    );
-  }
-}
-
-// ---------------------------------------- the deficient fixture is actually caught
-
-// A canary nobody watched fail is a canary nobody trusts. Each mutant below is
-// a regression this branch has already lived through, applied to a COPY of the
-// real paragraph; the checker must reject every one.
-type Defect = readonly [string, string, string];
-const DEFECTS: readonly Defect[] = [
-  [
-    "drops a top-level category figure",
-    (p) => p.replace("Inter-Agent Misalignment 36.9%", "Inter-Agent Misalignment"),
-    "Inter-Agent Misalignment 36.9%",
-  ],
-  [
-    "drops an FM-1 figure",
-    (p) => p.replace("12.4%", ""),
-    "12.4%",
-  ],
-  [
-    "drops the completion-recognition mode entirely",
-    (p) => p.replace("not recognising completion FM-1.5 is 12.4%, ", ""),
-    "FM-1.5",
-  ],
-  [
-    "drops the context-loss mode entirely",
-    (p) => p.replace("context loss FM-1.4 is 2.80% and ", ""),
-    "FM-1.4",
-  ],
-  [
-    "drops the intervention figure",
-    (p) => p.replace("+15.6%", ""),
-    "+15.6%",
-  ],
-  [
-    "drops the Appendix H limitation",
-    (p) => p.replace(/Appendix H states that tactical approaches get only limited results/, "and it helps"),
-    "Appendix H",
-  ],
-  [
-    "unscopes the superlative (the fabrication this branch removed)",
-    (p) => p.replace("the largest single FM-1.x mode is step repetition FM-1.3 at 15.7%", "the largest single mode is step repetition FM-1.3 at 15.7%"),
-    "FM-1.x",
-  ],
-  [
-    "promotes an FM-1.x mode to top-level",
-    (p) => p.replace("the largest single FM-1.x mode is step repetition FM-1.3", "a top-level failure mode, step repetition FM-1.3"),
-    "top-level",
-  ],
-  [
-    "invents a figure the paper does not carry",
-    (p) => p.replace("context loss FM-1.4 is 2.80%", "context loss FM-1.4 is 41.77%"),
-    "2.8",
-  ],
-  [
-    "deletes the whole block",
-    () => "**Theme-clustered cap-hits get a step-back**: PM dispatches one `@explore`.",
-    "arXiv 2503.13657",
-  ],
+const SITES: readonly Site[] = [
+  {
+    file: "agents-base/project-manager.md",
+    what: "PM doctrine's step-back citation",
+    superlative: true,
+    expects: ["The MAST taxonomy (Cemri et al., arXiv 2503.13657) bears this out"],
+  },
+  {
+    file: "extension/src/work-driver-intent.ts",
+    what: "the intent resolver's rationale for refusing a bad spec",
+    superlative: true,
+    expects: ["disobeying the task specification FM-1.1 is 11.8%", "was worth +15.6% task success"],
+  },
+  {
+    file: "extension/src/work-driver-verify-pr17.ts",
+    what: "the verification gate's context-only citation",
+    superlative: false,
+    expects: [
+      "Task Verification, 21.3%",
+      "was worth +15.6% task success",
+      "For context only",
+      "The gate itself does not rest",
+    ],
+  },
+  {
+    file: "extension/src/work-driver-handoff-markdown.ts",
+    what: "the rendered GitHub handoff bullet",
+    superlative: true,
+    expects: ["(MAST, arXiv 2503.13657"],
+  },
+  {
+    file: "extension/src/work-driver-explain-other.ts",
+    what: "the rendered /work-status line",
+    superlative: true,
+    expects: ["in MAST (arXiv 2503.13657)"],
+  },
+  {
+    file: "extension/smoke-tests/test-intent-resolution.ts",
+    what: "the intent-resolution canary's own rationale comment",
+    superlative: true,
+    expects: ["disobeying the task specification FM-1.1 is 11.8%"],
+  },
 ];
 
-function checkBlock(text: string, para: string | undefined): string[] {
-  const misses: string[] = [];
-  if (para === undefined) return ["block not found"];
-  if (para.length <= 500) misses.push("block truncated");
-  for (const [token] of REQUIRED) if (!para.includes(token)) misses.push(token);
-  const superIndex = para.indexOf("largest single");
-  const scopeIndex = para.indexOf("FM-1.x");
-  if (!(superIndex >= 0 && scopeIndex >= 0 && Math.abs(superIndex - scopeIndex) < 40))
-    misses.push("superlative unscoped");
-  if (para.split("top-level").length - 1 !== 1) misses.push("top-level");
-  void text;
-  return misses;
+/** Every repository file that names the paper — derived, never hand-listed. */
+function discoverCitingFiles(): string[] {
+  const skip = new Set([
+    ".git",
+    "node_modules",
+    "dist",
+    "tmp",
+    ".worktrees",
+    "outputs",
+    "coverage",
+  ]);
+  const out: string[] = [];
+  const walk = (dir: string, rel: string): void => {
+    let entries: ReturnType<typeof readdirSync>;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (skip.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      const relative = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(full, relative);
+      else if (entry.isFile() && (relative.endsWith(".ts") || relative.endsWith(".md"))) {
+        // The detector's own exclusion: `.d.ts` declarations are not sites.
+        if (relative.endsWith(".d.ts")) continue;
+        try {
+          if (readFileSync(full, "utf8").includes(ARXIV)) out.push(relative);
+        } catch {
+          /* unreadable — not a site, and not this gate's problem */
+        }
+      }
+    }
+  };
+  walk(REPO_ROOT, "");
+  return out.sort();
 }
+
+const discovered = discoverCitingFiles().filter((f) => f !== SELF && f !== FIXTURES);
+const registered = new Set(SITES.map((s) => s.file));
+
+for (const file of discovered) {
+  assert(
+    file === AUTHORITATIVE || registered.has(file),
+    `${file} cites the paper (${ARXIV}) and is accounted for by the registry — an unregistered site is an unreviewed restatement, which is how a fabricated figure reached a rendered surface in the first place`,
+  );
+}
+for (const site of SITES) {
+  assert(
+    discovered.includes(site.file),
+    `${site.file} is registered AND still cites the paper — a site that stopped citing it is a stale entry that can never fail`,
+  );
+}
+
+/** A synthetic near-variant, built from the canonical string rather than read from the site. */
+const NEAR_VARIANTS: readonly string[] = [
+  UNSCOPED, // scope word dropped
+  SUPERLATIVE.replace(" at 15.7%", ""), // figure dropped, superlative kept
+  SUPERLATIVE.replace("step repetition FM-1.3 at 15.7%", "FM-1.3 step repetition at 15.7%"), // clause order permuted
+];
+
+for (const site of SITES) {
+  const body = readRepoFile(site.file);
+  if (body === undefined) continue;
+  const flat = flatten(body);
+
+  for (const phrase of site.expects) {
+    assert(
+      flat.includes(phrase),
+      `${site.file} carries "${phrase}" joined as one phrase (${site.what})`,
+    );
+  }
+
+  if (site.superlative) {
+    assert(
+      flat.includes(SUPERLATIVE),
+      `${site.file} carries the canonical superlative verbatim (${site.what}) — a near-variant is worse than the original error, because readers compare sites`,
+    );
+  } else {
+    // The site's OWN expectation: a context-only citation is not chartered to
+    // rank anything, so either superlative form appearing here is scope creep
+    // beyond what that file's own comment claims.
+    for (const forbidden of [SUPERLATIVE, UNSCOPED]) {
+      assert(
+        !flat.includes(forbidden),
+        `${site.file} does NOT carry "${forbidden.slice(0, 46)}…" — it declares a narrower claim (${site.what}), and a superlative added here is one its own comment does not support`,
+      );
+    }
+  }
+
+  // Negative control, SYNTHESISED: the checker must accept the canonical
+  // sentence and reject a corrupted copy of it. Each variant is built from
+  // `SUPERLATIVE`, never read out of the site, so the control judges a text the
+  // gate wrote — not a substring test against live content that can never fail.
+  // Negative control, SYNTHESISED. Each variant is built from `SUPERLATIVE`,
+  // never read out of the site, so the control judges a text the gate wrote —
+  // not a substring test against live content that can never fail. A
+  // superlative site's variants are all corruptions of the canonical sentence
+  // (superlative still present, so it must fail the verbatim check); a narrower
+  // site is chartered against ANY superlative form, so it is polluted with the
+  // canonical one and the unscoped one (its expectation must now fail).
+  const control = site.superlative
+    ? { sample: `preamble ${SUPERLATIVE} trailer`, pollutions: NEAR_VARIANTS }
+    : { sample: `preamble ${ARXIV} trailer`, pollutions: [SUPERLATIVE, UNSCOPED] };
+  for (const variant of control.pollutions) {
+    const sample = flatten(control.sample);
+    const acceptsCanonical = site.superlative
+      ? sample.includes(SUPERLATIVE)
+      : ![SUPERLATIVE, UNSCOPED].some((f) => sample.includes(f));
+    const polluted = site.superlative
+      ? sample.replace(SUPERLATIVE, variant)
+      : `${sample} ${variant}`;
+    const stillPasses = site.superlative
+      ? polluted.includes(SUPERLATIVE)
+      : ![SUPERLATIVE, UNSCOPED].some((f) => polluted.includes(f));
+    assert(
+      acceptsCanonical && polluted !== sample && !stillPasses,
+      `${site.file}: the checker accepts the canonical sample then REJECTS it polluted to "${variant.slice(0, 42)}…" (${site.superlative ? "superlative-chartered" : "narrower"} site) — an assertion that cannot fail is not a gate`,
+    );
+  }
+
+  // The fabricated figure belongs ONLY in the provenance comment that explains
+  // why it was removed. In an emitted string it is a lie the reader sees.
+  assert(
+    !nonCommentText(body).includes("41.77"),
+    `${site.file} never prints "41.77" in NON-comment text — the figure this branch removed because the paper does not contain it, and an operator-facing string is not a provenance comment`,
+  );
+}
+
+// Nothing the reader sees may point at a file the reader cannot open: both
+// rendered surfaces emit into contexts with no repository (a GitHub comment,
+// an unwrapped `/work-status` line).
+for (const file of [
+  "extension/src/work-driver-handoff-markdown.ts",
+  "extension/src/work-driver-explain-other.ts",
+]) {
+  const body = readRepoFile(file);
+  if (body === undefined) continue;
+  const emitted = body
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("//") && !line.trimStart().startsWith("*"))
+    .filter((line) => /AGENTS\.md/.test(line));
+  assert(
+    emitted.length === 0,
+    `${file} has no AGENTS.md pointer in a NON-comment line (got ${emitted.length}) — a pointer in an emitted string points at a file its reader cannot open`,
+  );
+}
+
+// ------------------------------------------- the deficient copy is actually caught
 
 {
-  // Sanity: the checker must PASS on the real block. Without this, every
-  // "caught" below could be a checker that always says no.
+  const real = checkBlock(BLOCK);
   assert(
-    checkBlock(agentsMd, PARA).length === 0,
-    "the checker passes the real §7 block — so a mutant it rejects below is a real defect, not a broken checker",
+    real.length === 0,
+    `the checker passes the real §7 block — so a mutant it rejects below is a defect, not a broken checker (got ${JSON.stringify(real)})`,
   );
+
   let caught = 0;
-  for (const [name, mutate, expectMissing] of DEFECTS) {
-    const mutated = mutate(PARA ?? "");
-    const misses = checkBlock(agentsMd, mutated);
-    const detected = misses.length > 0 && misses.includes(expectMissing);
+  for (const defect of DEFECTS) {
+    const mutated = defect.mutate(BLOCK);
+    // A mutant that did not mutate is not evidence of anything; and the defect
+    // must be absent from the MUTATED text while present in the real one, so
+    // "the checker flags some token" is never mistaken for "it flags this one".
+    let error = "";
+    try {
+      assertMutates(defect.name, BLOCK, mutated);
+    } catch (err) {
+      error = (err as Error).message;
+    }
+    const hadIt = checkBlock(BLOCK).includes(defect.expectMissing);
+    const flagsIt = checkBlock(mutated).includes(defect.expectMissing);
     assert(
-      detected,
-      `canary: the checker CATCHES a §7 block that ${name} (expected to flag "${expectMissing}", got ${JSON.stringify(misses)})`,
+      error === "" && !hadIt && flagsIt,
+      `canary: the checker CATCHES a §7 block that ${defect.name} (expected to flag "${defect.expectMissing}"${error ? `; ${error}` : ""}, got ${JSON.stringify(checkBlock(mutated))})`,
     );
-    if (detected) caught++;
+    if (error === "" && !hadIt && flagsIt) caught++;
   }
-  assert(caught === DEFECTS.length, `every mutant caught (${caught}/${DEFECTS.length})`);
+  assert(caught === DEFECTS.length, `every §7 mutant caught (${caught}/${DEFECTS.length})`);
 }
 
-console.log(`\nexit ${exit}`);
-process.exit(exit);
+// The duplicate-authority mutant runs against the FILE: only the exactly-one
+// count sees a second heading at all, and the block is read to the blank line so
+// a reflow of the prose cannot hide it from either check.
+{
+  const lines = agentsMd.split("\n");
+  const at = lines.findIndex(isStepBackHeading);
+  // The corrupt copy strips the scope word from the block's own text, so it
+  // stays a real mutation however the prose wraps — replacing a multi-word
+  // phrase would no-op on a reflowed file, and a no-op mutant proves nothing.
+  const blockLines = [];
+  for (let i = at; i < lines.length && lines[i].trim() !== ""; i++) blockLines.push(i);
+  const scopeLine = blockLines.find((i) => lines[i].includes(" FM-1.x mode"));
+  const corrupt = scopeLine === undefined ? "" : lines[scopeLine].replace(" FM-1.x mode", " mode");
+  assert(
+    scopeLine !== undefined && corrupt !== lines[scopeLine],
+    "the duplicate-heading mutant is a real mutation (an unchanged copy would prove nothing)",
+  );
+  const inserted = scopeLine === undefined ? [] : [corrupt];
+  const withDuplicate = [...lines.slice(0, at), ...inserted, ...lines.slice(at)].join("\n");
+  const headed = withDuplicate.split("\n").filter(isStepBackHeading);
+  const first = stepBackParagraph(withDuplicate);
+  assert(
+    headed.length === 2 &&
+      first !== undefined &&
+      checkBlock(first).includes("superlative unscoped"),
+    `canary: a SECOND step-back paragraph carrying the unscoped superlative is caught by the exactly-one assertion (found ${headed.length}, first block flags ${JSON.stringify(first ? checkBlock(first).slice(0, 3) : [])}) — reading only the first paragraph let the corrupt copy be the one read, green`,
+  );
+}
+
+// A site that cites the paper without being registered must fail the gate,
+// proven against the real discovery function on the real tree.
+{
+  const orphan = "extension/src/work-driver-verify-pr17.ts";
+  assert(
+    discovered.includes(orphan),
+    `discovery finds ${orphan} as a site citing the paper (derived, not hand-listed)`,
+  );
+  const kept = new Set(SITES.filter((s) => s.file !== orphan).map((s) => s.file));
+  const unaccounted = discovered.filter((f) => f !== AUTHORITATIVE && !kept.has(f));
+  assert(
+    unaccounted.length === 1 && unaccounted[0] === orphan,
+    `canary: dropping one site from the registry leaves exactly that file UNACCOUNTED-FOR (got ${JSON.stringify(unaccounted)}) — the seventh-site class that passed green while the roster was hand-maintained`,
+  );
+
+  // And the unscoped fabrication smuggled into a narrower site: its own
+  // expectation must reject it, which one shared generic negation could not do.
+  const body = readRepoFile(orphan);
+  if (body !== undefined) {
+    const clean = flatten(body);
+    const smuggled = `${clean} ${UNSCOPED}`;
+    assert(
+      clean !== smuggled && !clean.includes(UNSCOPED) && smuggled.includes(UNSCOPED),
+      `canary: ${orphan}'s narrower-site expectation would REJECT the unscoped superlative if the site added it (absent before, present after) — one generic negation for every site could not tell these apart`,
+    );
+  }
+}
+
+console.log(`\n${failures.length === 0 ? "exit 0" : `${failures.length} failure(s)`}`);
+for (const f of failures) console.error(`  - ${f.slice(0, 160)}`);
+process.exit(failures.length === 0 ? 0 : 1);
