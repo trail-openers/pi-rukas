@@ -47,8 +47,8 @@ const execp: VerifyExecFn = (cmd, opts) =>
  * anything until post-PR CI. Agents claim "done" and the driver trusted
  * the claim — the documented silent-merge (#245/#253) and phantom-handoff
  * incidents are exactly the failure class the MAST taxonomy (Cemri et al.,
- * arXiv 2503.13657) attributes to weak verification: its Task Verification
- * failure category is 21.3% of annotated failures, and the paper's own remedy
+ * arXiv 2503.13657) counts as a top-level category: its Task Verification
+ * failure category accounts for 21.3% of annotated failures, and the paper's own remedy
  * is an objective-verification step at the orchestration layer (+15.6% task
  * success, completion rates still low). This gate checks executed
  * evidence, costs zero LLM tokens, and shortens the failure loop from
