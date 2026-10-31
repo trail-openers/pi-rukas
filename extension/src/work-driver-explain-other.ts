@@ -69,11 +69,12 @@ export function explainOther(cap: Cap, state: WorkState): string {
             e.kind === "step-back-completed",
         );
       const elem = sb?.sddElement ?? "(spec element not specified)";
-      // "MAST 41.77%" printed here is not a figure in Cemri et al., arXiv
-      // 2503.13657 — the string appears nowhere in the paper. Quote what it
-      // does measure, and its own caveat that tactical fixes get limited
-      // results, so the operator-facing line is citable.
-      return `explore stepped back and identified a spec-level gap in **${elem}** — the lens-review fix loop kept flagging the same shape across rounds, which is the fingerprint of a spec-level problem: in the MAST taxonomy (Cemri et al., arXiv 2503.13657) disobeying the task specification FM-1.1 is 11.8% and step repetition FM-1.3 is 15.7%, the largest single FM-1.x mode, and the paper's best orchestration-layer fix was a high-level objective-verification step worth +15.6% task success, with completion rates still low — tactical fixes get only limited results. The handoff body includes a proposed revision. After updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec`;
+      // The figure this line used to print — "MAST 41.77%" — appears nowhere
+      // in Cemri et al., arXiv 2503.13657; the paper's figure for this line's
+      // own claim is step repetition FM-1.3 at 15.7%, the largest mode WITHIN
+      // the FM-1.x list only (it makes no cross-category ranking). Full
+      // taxonomy and intervention figures: AGENTS.md §7.
+      return `explore stepped back and identified a spec-level gap in **${elem}**. The lens-review fix loop kept flagging the same shape across rounds — the fingerprint of a spec-level problem. The handoff body includes a proposed revision; after updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec. In MAST (arXiv 2503.13657) step repetition FM-1.3 is 15.7%, the largest single FM-1.x mode, and the paper reports that tactical fixes get only limited results`;
     }
     default:
       return `unhandled explain-other cap: ${cap}`;

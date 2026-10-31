@@ -6,9 +6,9 @@
  * verdict meant "build it" — silence was permission. Externally, 38.3% of
  * real GitHub issues are underspecified (SWE-bench Verified), and in the MAST
  * taxonomy (Cemri et al., arXiv 2503.13657) disobeying the task specification
- * FM-1.1 is 11.8% while step repetition FM-1.3 is 15.7% — the largest single FM-1.x
- * mode — so underspecification
- * is the modal case rather than an edge case.
+ * FM-1.1 is 11.8% while step repetition FM-1.3 is 15.7% — the largest single
+ * FM-1.x mode — so underspecification is the modal case rather than an edge
+ * case.
  *
  * The fixtures below are what a real backlog actually contains: a full spec, a
  * one-line human bug report, an issue contradicted by the code, an issue

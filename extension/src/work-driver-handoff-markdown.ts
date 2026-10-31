@@ -238,14 +238,12 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
             "",
           ]),
       "Patterns to look for:",
-      // The figure this line used to print — "MAST 41.77%" — appears nowhere
-      // in Cemri et al., arXiv 2503.13657 (the real top-level grouping is
-      // System Design Issues 41.8%). Print the one figure that supports this
-      // bullet's own claim, and cite the paper so the operator can check it;
-      // the full taxonomy (categories, intervention number) lives in AGENTS.md
-      // and agents-base/project-manager.md. "Largest single mode" is scoped to
-      // the FM-1.x list because the paper makes no such claim across modes.
-      "  - Same lens flagging the same shape across rounds → spec-level problem (in MAST, arXiv 2503.13657, disobeying the task specification FM-1.1 is 11.8% and step repetition FM-1.3 is 15.7%, the largest single FM-1.x mode — the paper reports tactical fixes get only limited results)",
+      // The figure this bullet used to print — "MAST 41.77%" — appears nowhere
+      // in arXiv 2503.13657; the real top-level figure is System Design Issues
+      // 41.8%. The paper makes no cross-category ranking, so any "largest
+      // single mode" superlative is scoped to the FM-1.x list. Full figures:
+      // AGENTS.md §7.
+      "  - Same lens flagging the same shape across rounds → spec-level problem (MAST, arXiv 2503.13657 — step repetition FM-1.3 is the largest FM-1.x mode at 15.7%; full figures in AGENTS.md §7)",
       "  - Orthogonal local bugs → genuine work remains, not a doctrine failure",
       "",
     );

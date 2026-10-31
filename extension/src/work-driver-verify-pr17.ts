@@ -48,11 +48,11 @@ const execp: VerifyExecFn = (cmd, opts) =>
  * the claim — the documented silent-merge (#245/#253) and phantom-handoff
  * incidents are exactly the failure class the MAST taxonomy (Cemri et al.,
  * arXiv 2503.13657) counts as a top-level category: its Task Verification
- * failure category accounts for 21.3% of annotated failures, and the paper's own remedy
- * is an objective-verification step at the orchestration layer (+15.6% task
- * success, completion rates still low). This gate checks executed
- * evidence, costs zero LLM tokens, and shortens the failure loop from
- * post-PR CI churn to pre-commit.
+ * failure category accounts for 21.3% of annotated failures, and the paper's
+ * best orchestration-layer intervention, a high-level objective-verification
+ * step, was worth +15.6% task success with completion rates still low. This
+ * gate checks executed evidence, costs zero LLM tokens, and shortens the
+ * failure loop from post-PR CI churn to pre-commit.
  *
  * Checks by step:
  *
