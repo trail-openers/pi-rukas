@@ -291,6 +291,26 @@ export function cleanupRoots(): void {
   }
 }
 
+/**
+ * An adversarial stub that asks once, then clears.
+ *
+ * The review step refuses to pay for a second look at findings it already asked
+ * a fixer to fix (`stagnantAgainstFix` in `review.ts`): same gate, same text, a
+ * head that moved. So a stub that answers `rejected` with ONE fixed string
+ * converges exactly once — the fixer commits, the step asks again, and the break
+ * fires. That is the step working, and a fixture that reads it as a bug is
+ * testing its own stub. A case that needs more than one fix round must say so
+ * explicitly: this helper clears after `asks` refusals rather than leaving the
+ * caller to discover the break by timeout.
+ */
+export function rejectsThenClears(text: string, asks = 1): () => Promise<DispatchResult> {
+  let n = 0;
+  return async () =>
+    n++ < asks
+      ? result({ loopOutcome: "rejected", text })
+      : result({ loopOutcome: "approved", text: "" });
+}
+
 export { MAX_REVIEW_ROUNDS, ReviewInfraError } from "../../src/lean/review.ts";
 export type { DispatchUsageRow, FixRunId } from "../../src/lean/step-budget.ts";
 import type { FixRunId as _FixRunId } from "../../src/lean/step-budget.ts";

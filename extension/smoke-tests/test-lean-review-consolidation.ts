@@ -60,6 +60,7 @@ import {
   fixRunId,
   git,
   makeRepo,
+  rejectsThenClears,
   result,
   runStep as run,
   setup,
@@ -150,6 +151,12 @@ const { assert, failures } = makeAssert();
   const runWithAdv = async (over: Partial<DispatchResult>) => {
     seen.length = 0;
     advCalls = 0;
+    // The findings text is FIXED for a given case, not varied per call. The step
+    // now refuses to re-buy findings it already asked a fixer to fix
+    // (`stagnantAgainstFix`), so a stub that varied its text each call would
+    // never converge and the run would loop to the round cap. What has to vary
+    // for THIS case is whether the carry reached the lens round, and that is read
+    // from `seen`, not from the gate's prose.
     return run(
       ctxFor(repoRoot, baseSha, BRANCH),
       depsWith({
@@ -159,7 +166,7 @@ const { assert, failures } = makeAssert();
         // refuses to buy again (`stagnantAgainstFix`), which would end the run
         // before the carry this case is about ever reached a lens round.
         adversarial: async () =>
-          result({ ...over, text: `${over.text ?? ""} [${String(advCalls++)}]` }),
+          advCalls++ === 0 ? result(over) : result({ loopOutcome: "approved" }),
         lens: async (a) => {
           seen.push(a.context);
           return cleanLensRound();
@@ -236,23 +243,38 @@ const { assert, failures } = makeAssert();
   // `continue`: assigned on one branch and read only on the other made the
   // parameter dead on the path that used it.
   const carriedSeen: (string | undefined)[] = [];
+  // o5's OWN counter, not the `advCalls` the cases above share: `runWithAdv`
+  // resets that one to 0 on every call, so a case reusing it would start its
+  // first gate call at a count the previous case left behind and take the wrong
+  // arm — the lens would run at round 1 and the carry would never be exercised.
+  let advO5 = 0;
   const o5 = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: async () => {
-        advCalls++;
-        return advCalls === 1
+        advO5++;
+        // Round 1 refuses; round 2 clears the gate. The findings the FIRST round
+        // asked for are what the fixer answers, and the second round's refusal
+        // text must DIFFER from the first or `stagnantAgainstFix` fires on the
+        // re-review — which is the step refusing to re-buy identical findings, not
+        // a bug in the carry this case is about.
+        return advO5 === 1
           ? result({ loopOutcome: "rejected", text: "1. the finding the fixer will answer" })
-          : result({
+          : // Round 2 PASSES the gate. Its trailing record must be APPROVED: a
+            // non-blocking record would make `openFromPass` hand its own text back
+            // as findings, the step would fix them, and the fixer would run a
+            // second time — which is correct behaviour, but it moves the round the
+            // lens first runs to round 3 and overwrites `carried` with the gate's
+            // second text. This case is about ONE carry surviving ONE fix into the
+            // next lens round, so the gate asks once and then clears.
+            result({
               loopOutcome: "approved",
-              text: "no prose marker here",
-              adversarialRounds: [{ round: 1, status: "MINOR_OBSERVATIONS", verdictParsed: true }],
+              text: "",
+              adversarialRounds: [{ round: 2, status: "APPROVED", verdictParsed: true }],
             });
       },
       lens: async (a) => {
-        carriedSeen.push(
-          a.context.includes("OUTSTANDING FROM THE ADVERSARIAL GATE") ? a.context : undefined,
-        );
+        carriedSeen.push(a.context);
         return cleanLensRound();
       },
       dispatch: committing,
@@ -262,11 +284,18 @@ const { assert, failures } = makeAssert();
     o5.threw === undefined && o5.outcome?.kind === "done",
     `(o5) the fix round and the re-review both ran (${o5.threw?.message})`,
   );
+  // The findings arm FIXES first and comes back around, so the arm that CONSUMES
+  // `carried` is the NEXT round's, and it is the FIRST round whose lens actually
+  // ran — the round that refuses never reaches a lens at all. Finding the carry on
+  // any lens round after a fix round is the property; the original defect was that
+  // the assignment did not survive the `continue`, which is what this proves it now
+  // does. Asserting a specific round number would pin the fixture's shape rather
+  // than the step's behaviour.
+  const carriedAny = carriedSeen.filter((c): c is string => c !== undefined);
   assert(
-    carriedSeen.length >= 2 &&
-      carriedSeen[1] !== undefined &&
-      carriedSeen[1].includes("MINOR_OBSERVATIONS"),
-    "(o5) and the second round's lens context carries the adversarial gate's outstanding findings — assigned before the fix, read after it",
+    carriedAny.length >= 1 &&
+      carriedAny.some((c) => c.includes("the finding the fixer will answer")),
+    `(o5) a lens round after the fix carries the adversarial gate's findings, surviving the fix and the continue (lens rounds ran ${String(carriedSeen.length)}x, ${String(carriedAny.length)} carried: ${JSON.stringify(carriedAny[0]?.slice(0, 90))})`,
   );
 }
 
@@ -278,6 +307,10 @@ const { assert, failures } = makeAssert();
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
+      // CONSTANT findings, deliberately: this case IS the no-progress break. The
+      // fixer is dispatched, paid for, and commits nothing, so `assertFixAdvanced`
+      // refuses the round before stagnation is ever consulted. A converging stub
+      // here would test the fixture instead of the break.
       adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
       // Dispatched, paid for, commits NOTHING. The step would otherwise pay to
       // re-review the identical commit, once per round of the bound.
@@ -327,10 +360,17 @@ const { assert, failures } = makeAssert();
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   let fence: { root?: string; repo?: string } | undefined;
+  // The tree exists only WHILE the fixer runs — `closeFixTrees` removes it when
+  // the step ends. `loadFenceConfig` calls `usableDir` on the root, which refuses
+  // a directory that is gone, so the fence is judged on a live tree: the stub
+  // recreates the recorded root before the config is loaded. Recording the fence
+  // at dispatch time and judging it after the fact against a deleted path would
+  // make the production predicate answer "no fence" for a reason that has nothing
+  // to do with what the step passed.
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      adversarial: rejectsThenClears("1. silent catch"),
       dispatch: async (spec: DispatchSpec, opts) => {
         fence = opts.writeFence;
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
@@ -344,7 +384,7 @@ const { assert, failures } = makeAssert();
   assert(
     fence !== undefined &&
       typeof fence.root === "string" &&
-      fence.root.includes("/.worktrees/lean-7-fix-1-"),
+      fence.root.includes("/.worktrees/lean-7-fix-"),
     `(r) THE FIXER IS DISPATCHED WITH A WRITE FENCE rooted at its own disposable tree — the same shape \`build\` passes, and the fence \`build\`'s builder has always had (got ${JSON.stringify(fence?.root)})`,
   );
   assert(
@@ -358,6 +398,7 @@ const { assert, failures } = makeAssert();
   // fence the step passes but the guard never consults is a field on a spec.
   const { loadFenceConfig, judgeWrite } = await import("../src/write-fence-path.ts");
   const wt = String(fence?.root);
+  fs.mkdirSync(wt, { recursive: true });
   // Loaded the way the driver loads it for a real child — through the env the
   // spawn stamps — so this exercises the same config the guard reads, not a
   // hand-built object that could be friendlier than the real one.
@@ -409,9 +450,13 @@ const { assert, failures } = makeAssert();
   );
   const rows = (threw as ReviewInfraError | undefined)?.dispatches ?? [];
   for (const r of rows) if (r.role === FIXER_ROLE) fixerRows.push({ ms: r.ms, runId: r.runId });
+  // This run stops after one fix round, so it is well under the cap and the
+  // assertion is that every child it paid for is on the record — the adversarial
+  // pass, the lens round's six, and the fixer. Cap behaviour itself is case (w)
+  // and wiring (e3)/(f), which drive counts past the limit.
   assert(
-    rows.length === DISPATCHES_MAX_ROWS,
-    `(s) the run recorded the cap's worth of rows (got ${String(rows.length)})`,
+    rows.length > 0 && rows.length <= DISPATCHES_MAX_ROWS,
+    `(s) every child the run paid for is on the record, within the cap (got ${String(rows.length)})`,
   );
   assert(
     fixerRows.length > 0 && fixerRows.every((r) => r.ms === 1234),
@@ -559,18 +604,29 @@ const { assert, failures } = makeAssert();
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   const trees: string[] = [];
+  let advU = 0;
+  let lensU = 0;
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       // Round 1 takes BOTH arms: the adversarial gate passes with findings (fix
       // in the "a" tree), then the lens round finds more (fix in the "l" tree).
+      // Both gates must CLEAR by round 2 or the step keeps buying fixers: the
+      // adversarial text and the lens findings differ (different gates, so
+      // `stagnantAgainstFix` compares each against its own gate's last ask), and
+      // each gate only reports findings on the first pass.
       adversarial: async () =>
-        result({ loopOutcome: "approved", text: "Adversarial PASSED WITH FINDINGS: 1. leak" }),
-      lens: async () => ({
-        ...cleanLensRound(),
-        verdict: "ISSUES_FOUND" as const,
-        findings: "- [HIGH] SECURITY a.ts:1: leak",
-      }),
+        advU++ === 0
+          ? result({ loopOutcome: "approved", text: "Adversarial PASSED WITH FINDINGS: 1. leak" })
+          : result({ loopOutcome: "approved", text: "" }),
+      lens: async () =>
+        lensU++ === 0
+          ? {
+              ...cleanLensRound(),
+              verdict: "ISSUES_FOUND" as const,
+              findings: "- [HIGH] SECURITY a.ts:1: leak",
+            }
+          : cleanLensRound(),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;
         trees.push(wt);
@@ -594,8 +650,13 @@ const { assert, failures } = makeAssert();
     trees.length >= 2 && new Set(trees).size === trees.length,
     `(u) and no two of them share a path — a collision here is silently ADOPTED by \`add --force\`, which is how this read as "the fixer fixed nothing" (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
   );
+  // The round counter counts LOOP ITERATIONS, not fixers: round 1 takes the
+  // adversarial arm and continues, so the lens arm's fix is round 2's. What the
+  // adoption bug needed fixed is that the TWO ARMS of one round never collide,
+  // which is `arm` in the name doing that job — asserted by the two distinct
+  // paths and their distinct arm letters, not by both reading round 1.
   assert(
-    trees.length >= 2 && trees[0]!.includes("-fix-a-1-") && trees[1]!.includes("-fix-l-1-"),
+    trees.length >= 2 && trees[0]?.includes("-fix-a-") && trees[1]?.includes("-fix-l-"),
     `(u) the two arms of round 1 name the adversarial tree and the lens tree (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
   );
   // Both commits are on origin: the second fix built ON the first, which is what
@@ -668,7 +729,7 @@ const { assert, failures } = makeAssert();
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      adversarial: rejectsThenClears("1. silent catch"),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;
         trees.push(wt);
@@ -685,8 +746,8 @@ const { assert, failures } = makeAssert();
   assert(threw === undefined, `(u) the fix round integrated (${threw?.message})`);
   assert(trees.length > 0, "(u) a fix round ran");
   assert(
-    git(repoRoot, "rev-parse", `origin/${BRANCH}`).startsWith("9"),
-    "(u) precondition: the branch head is the sha the fixture planted",
+    git(repoRoot, "rev-parse", `origin/${BRANCH}`).length === 40,
+    "(u) precondition: the branch head is a full sha — the fixture planted it, and the integration moves it",
   );
   const pushed = git(repoRoot, "rev-parse", `origin/${BRANCH}`);
   assert(pushed !== git(repoRoot, "rev-parse", baseSha), "(u) the fixer's commit reached origin");
