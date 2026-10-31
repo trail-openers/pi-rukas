@@ -153,6 +153,27 @@ async function driveBranch(name: string): Promise<{
 }
 
 // ── (x1) A refusal, before anything left the clone ──────────────────────────
+
+// The loop below is the whole unsafe-name case, and a loop over an empty table is
+// vacuously green: an adversarial reviewer that deleted every entry from `UNSAFE`
+// watched this suite exit 0. That is the fail-open a protective table must not
+// have, so the table's own shape is asserted as a precondition — the same habit
+// `test-lean-review-lens-fence.ts` shows in `unfenced()`, which refuses to read a
+// bare brief as a contained one instead of letting the strip return something the
+// later assertions then judge vacuously. Reported through the shared reporter
+// rather than thrown, so the remaining sections still report. Asserted as a FLOOR
+// and a PREMISE, never as equality to three: entries may be added, and the case
+// only needs one name that both shipped checks accept — the guard's uniqueness
+// claim lives entirely on those entries.
+assert(
+  UNSAFE.length >= 2,
+  `(x1) precondition: the UNSAFE table is populated — ${String(UNSAFE.length)} entr(ies), and a table with fewer than 2 leaves the unsafe-name loop vacuously green (${JSON.stringify(UNSAFE)})`,
+);
+assert(
+  UNSAFE.some((entry) => entry.bothShip),
+  `(x1) precondition: at least one UNSAFE entry carries bothShip — the entries that clear BOTH shipped checks are the only ones that prove the refusal is the new guard's alone, and without one the case degrades to an ordering check while still reporting green (${JSON.stringify(UNSAFE)})`,
+);
+
 for (const { name, bothShip } of UNSAFE) {
   // The premise, pinned as a FACT about each of the two checks the step already
   // had — and the two disagree by design, which is the whole reason the push
