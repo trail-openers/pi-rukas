@@ -10,6 +10,7 @@
  * "the step does not know", which every caller treats as the fallback it is,
  * rather than as a value that reads like evidence.
  */
+import { isRunId } from "./state-dispatches.ts";
 import { validPrUrl } from "./state-outcome.ts";
 import type { Step } from "./state.ts";
 import { newestDecided } from "./state.ts";
@@ -76,19 +77,20 @@ export function fixRunIdFromLog(steps: Step[]): FixRunId | undefined {
     for (const row of step.outcome?.dispatches ?? []) {
       if (row.role !== FIXER_ROLE) continue;
       // The tree id is a composite — the attempt's epoch plus the per-visit
-      // counter — so it is read back as the WHOLE field, not as an integer. The
-      // `FIX_RUN_ID` shape every fixer row carries is already checked by the
-      // validator on the way in (`state-dispatches.ts`), and re-checking it with
-      // `Number()` here would reject the composite and silently re-mint an id,
-      // which strands the tree a crashed attempt left under a name this attempt
-      // never prunes.
+      // counter — so it is read back as the WHOLE field, not as an integer, and it
+      // is checked against `isRunId`, the VALIDATOR'S OWN predicate rather than a
+      // second grammar this file kept. The reader used to run
+      // `Number.isSafeInteger(Number(id.slice(0, 17).split("-")[0]))` plus a floor
+      // check of its own, which ACCEPTED what the validator refuses — `"1e12"`, a
+      // leading sign, a fraction — so the claim that the validator had already
+      // checked the field was false, and a resumed attempt could adopt a tree no
+      // writer ever minted. Asking the module that owns the grammar makes the claim
+      // true by construction rather than by assertion. A row with no `runId` —
+      // including every row the validator refused — answers undefined and the step
+      // mints a fresh id, which is the safe direction: a new id means a new tree,
+      // never a borrowed one.
       const id = row.runId;
-      if (
-        id !== undefined &&
-        Number.isSafeInteger(Number(id.slice(0, 17).split("-")[0])) &&
-        Number(id.split("-")[0]) >= FIX_EPOCH_FLOOR_MS
-      )
-        return id as FixRunId;
+      if (id !== undefined && isRunId(id)) return id;
     }
   }
   return undefined;
