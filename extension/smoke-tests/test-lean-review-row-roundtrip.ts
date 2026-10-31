@@ -75,77 +75,21 @@ import {
 } from "./lib/lean-review-fixtures.ts";
 
 const { assert, failures } = makeAssert();
-
-/** What one fix round costs, and the tree it was worked in. */
-const FIXER_MS = 4_321;
-const FIXER_USAGE = { input: 900, output: 90, cacheRead: 0, cacheWrite: 0, cost: 0.75, turns: 12 };
-
 /**
- * Run the step once through a fix round, and hand back the rows it billed.
- *
- * The adversarial gate refuses once and then clears, so the step buys exactly one
- * fixer: the same shape `test-lean-review-tree.ts` (s) drives. What is added here
- * is the child's own usage — a row that costs nothing cannot demonstrate that it
- * went unbilled.
+ * The four fixtures both fix-run-id suites need — a step that buys exactly one
+ * fixer, a record carrying given rows, and a `loadRun` that reports its throw —
+ * now in `lib/lean-review-roundtrip-helpers.ts`, shared with
+ * `test-lean-review-run-id-rules.ts` so neither suite keeps its own definition of
+ * the shape the engine persists.
  */
-async function fixRoundRows(repoRoot: string, baseSha: string): Promise<DispatchUsageRow[]> {
-  const { outcome, threw } = await run(
-    ctxFor(repoRoot, baseSha, BRANCH),
-    depsWith({
-      adversarial: rejectsThenClears("1. silent catch"),
-      dispatch: async (spec) => {
-        const wt = spec.cwd as string;
-        put(wt, "fix.ts", "export const x = 1;\n");
-        git(wt, "add", "-A");
-        git(wt, "commit", "-q", "-m", "fix: the finding");
-        return result({ role: FIXER_ROLE, ms: FIXER_MS, usage: FIXER_USAGE });
-      },
-    }),
-  );
-  assert(threw === undefined, `(1) the fix round completed (${threw?.message})`);
-  // The step's own accumulated rows, which on this path arrive on the `done`
-  // outcome — the same array the engine writes into the durable record. A throw
-  // carries them on the error instead, and either is what the record gets.
-  return outcome?.dispatches ?? (threw as ReviewInfraError | undefined)?.dispatches ?? [];
-}
-
-/** The one fixer row among `rows`, or undefined. */
-function fixerOf(rows: readonly DispatchUsageRow[]): DispatchUsageRow | undefined {
-  return rows.find((r) => r.role === FIXER_ROLE);
-}
-
-/**
- * A run record whose `review` step carries `rows` — the shape the engine persists
- * after `settle` folds the handler's outcome. `kind: "done"` is the only kind the
- * review state may record (`review: ["done"]` in `machine.ts`).
- */
-function runWithRows(rows: DispatchUsageRow[], baseSha: string) {
-  const rec = createRun({ issue: 7, version: "test", models: {}, baseSha, branch: BRANCH });
-  return {
-    ...rec,
-    steps: [
-      {
-        key: "7:review:0",
-        state: "review" as const,
-        startedAt: 1,
-        endedAt: 2,
-        outcome: { kind: "done", reason: "reviewed", dispatches: rows },
-      },
-    ],
-  };
-}
-
-/** `loadRun`, with the throw captured so a case can assert on its absence. */
-function tryLoad(
-  repoRoot: string,
-  issue: number,
-): { loaded?: ReturnType<typeof loadRun>; thrown?: unknown } {
-  try {
-    return { loaded: loadRun(repoRoot, issue) };
-  } catch (err) {
-    return { thrown: err };
-  }
-}
+import {
+  FIXER_MS,
+  FIXER_USAGE,
+  fixRoundRows,
+  fixerOf,
+  runWithRows,
+  tryLoad,
+} from "./lib/lean-review-roundtrip-helpers.ts";
 
 // ── (1)+(4) the durable round trip, through the engine's own write and read ─
 {
@@ -350,74 +294,6 @@ function tryLoad(
   );
 }
 
-// ── (5b) SKIP, do not REJECT: one malformed row must not take the array with it ─
-//
-// Case (1) claimed to tell "a validator that refused the WHOLE array" from "one
-// row missing", and could not: under its fixture both produced the identical
-// observable — the fixer row absent — so no change to `validatedDispatches` could
-// have failed it. Two lenses raised this independently. This case is row-granular:
-// a VALID `adversarial-loop` row sits beside a fixer row carrying a malformed
-// `runId`, and the assertion is that the valid row SURVIVES while only the fixer is
-// dropped. That is the observable separating a per-row `continue` from a whole-array
-// `return []`, and it is the one (1) could not see.
-{
-  const { repoRoot, baseSha } = makeRepo();
-  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
-  const rows = await fixRoundRows(repoRoot, baseSha);
-  const adversarial = rows.find((r) => r.role === ADVERSARIAL_GATE_ROLE);
-  assert(
-    adversarial !== undefined,
-    `(5b) precondition: the run billed an ${ADVERSARIAL_GATE_ROLE} row to stand beside the fixer (${JSON.stringify(rows.map((r) => r.role))})`,
-  );
-  const poisoned = rows.map((r) =>
-    r.role === FIXER_ROLE ? { ...r, runId: "not-a-run-id" as DispatchUsageRow["runId"] } : r,
-  );
-  // (a) the fold, on the path the loader and `errorOutcome` both use.
-  const { validatedDispatches } = await import("../src/lean/state-dispatches.ts");
-  const kept = validatedDispatches(poisoned);
-  assert(
-    kept.some((r) => r.role === ADVERSARIAL_GATE_ROLE),
-    `(5b) THE VALID ROW SURVIVES a sibling's malformed id: a per-row skip drops the bad row and keeps the good one, where a whole-array refusal drops both — and every other assertion in this file is blind to the difference because they all look at the fixer (${JSON.stringify(kept.map((r) => r.role))} of ${JSON.stringify(poisoned.map((r) => r.role))})`,
-  );
-  assert(
-    kept.some((r) => r.role === FIXER_ROLE) === false,
-    "(5b) and the malformed fixer row is the one that went, not merely a row of the same count",
-  );
-  assert(
-    kept.length === poisoned.length - 1,
-    `(5b) and exactly ONE row was lost, which is what makes this row-granular rather than array-level (in ${String(poisoned.length)} / out ${String(kept.length)})`,
-  );
-  // The surviving row is the SAME row, not a re-derived lookalike: its role, its
-  // duration and its usage all came from the input that validated cleanly.
-  const surviving = kept.find((r) => r.role === ADVERSARIAL_GATE_ROLE);
-  assert(
-    surviving?.ms === adversarial?.ms && surviving?.usage.cost === adversarial?.usage.cost,
-    `(5b) and the surviving row kept what it went in with, so a sibling's refusal is not silently re-writing its numbers (${JSON.stringify([surviving?.ms, surviving?.usage.cost])})`,
-  );
-  // (b) the same claim through the ERROR path, which folds through the same
-  // validator off an untrusted throw — the place a whole-array refusal would cost
-  // the operator every child the step paid for, not just the one that was malformed.
-  const oc = errorOutcome("review", Object.assign(new Error("x"), { dispatches: poisoned }));
-  assert(
-    (oc.dispatches ?? []).some((r) => r.role === ADVERSARIAL_GATE_ROLE),
-    `(5b) and the error path keeps the valid row too — a whole-array refusal here un-bills the reviewer as well as the fixer (${JSON.stringify((oc.dispatches ?? []).map((r) => r.role))})`,
-  );
-  assert(
-    fixerOf(oc.dispatches ?? []) === undefined,
-    "(5b) and still drops the malformed fixer rather than recording a tree name nothing can name",
-  );
-  // (c) and the harsher path, where a refusal THROWS: `assertRun` rejects the whole
-  // record for a malformed row, which is correct there and deliberately NOT the
-  // fold's behaviour. Asserting both keeps the two rules from being merged.
-  saveRun(repoRoot, runWithRows(poisoned, baseSha));
-  const { thrown } = tryLoad(repoRoot, 7);
-  assert(
-    (thrown as Error)?.name === "LeanStateError" &&
-      /runId must be a decimal epoch-millisecond string/.test((thrown as Error)?.message ?? ""),
-    `(5c) \`loadRun\` still refuses the WHOLE record for a malformed row — the fold skips and the loader refuses, and collapsing those two would either launder a bad id or lose a whole run over one row (${String(thrown)})`,
-  );
-}
-
 // ── (6) the writer's own form, recovered from the tree the fixer ran in ─────
 {
   // `fixRound` mints `${runId}-${arm}-${round}-${attempt}`; the validator must keep
@@ -474,71 +350,6 @@ function tryLoad(
   assert(
     loadRun(repoRoot, 9) !== undefined,
     "(7) a run with no dispatches at all still loads — `runId` is optional and stays so",
-  );
-}
-
-// ── (8) the RESUME path reads the field back through the validator's own grammar ─
-//
-// `fixRunIdFromLog` decides which tree a resumed attempt re-enters, and until now
-// NOTHING drove it: no case in any suite put a review step with a fixer row in front
-// of it. It also carried its own grammar — `Number.isSafeInteger(Number(id.slice(0,
-// 17).split("-")[0]))` plus a floor check — which ACCEPTED what `FIX_RUN_ID` refuses,
-// so its own comment ("already checked by the validator on the way in") was false and
-// a resumed attempt could adopt a tree no writer minted. It now asks `isRunId`, the
-// validator's predicate, so the claim holds by construction. These cases are what make
-// the routing observable rather than merely true.
-{
-  const { fixRunIdFromLog } = await import("../src/lean/review-log.ts");
-  const { FIX_RUN_ID: SHAPE } = await import("../src/lean/state-dispatches.ts");
-  /** A step log holding one decided `review` step whose fixer row carries `runId`. */
-  const logWith = (runId: string | undefined) =>
-    runWithRows(
-      [
-        {
-          role: FIXER_ROLE,
-          ms: 10,
-          ok: true,
-          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.1, turns: 1 },
-          ...(runId === undefined ? {} : { runId: runId as DispatchUsageRow["runId"] }),
-        },
-      ],
-      FIXTURE_BASE_SHA,
-    ).steps;
-
-  // The resume case that must work: the composite the writer mints is read back
-  // whole, so the resumed attempt names the tree its killed self left.
-  const composite = "1793451347919-l-2-0";
-  assert(
-    fixRunIdFromLog(logWith(composite)) === composite,
-    `(8) a resumed attempt reads its OWN composite tree id back off the log and re-enters the tree its killed self left (${String(fixRunIdFromLog(logWith(composite)))} vs ${composite})`,
-  );
-  // The values the OLD reader accepted and the validator refuses. Each must now
-  // answer `undefined` — the step mints a fresh id rather than adopting a tree name
-  // nothing wrote. This is the half the false comment papered over.
-  for (const acceptedByTheOldGrammarButNotByTheValidator of [
-    "1e12",
-    "-1793451347919",
-    "1793451347919.5",
-    "1793451347919-../x",
-  ]) {
-    assert(
-      !SHAPE.test(acceptedByTheOldGrammarButNotByTheValidator),
-      `(8) precondition: the validator refuses ${JSON.stringify(acceptedByTheOldGrammarButNotByTheValidator)}`,
-    );
-    assert(
-      fixRunIdFromLog(logWith(acceptedByTheOldGrammarButNotByTheValidator)) === undefined,
-      `(8) and the READER now refuses it too, so the resume mints a fresh tree instead of adopting a name no writer minted (read ${JSON.stringify(acceptedByTheOldGrammarButNotByTheValidator)} as ${String(fixRunIdFromLog(logWith(acceptedByTheOldGrammarButNotByTheValidator)))})`,
-    );
-  }
-  // No row, and a row with no id, both answer undefined — the safe direction, and
-  // the one that keeps a first attempt from borrowing a stranger's tree.
-  assert(
-    fixRunIdFromLog(logWith(undefined)) === undefined,
-    "(8) a fixer row with no id does not answer, so the step mints a fresh one",
-  );
-  assert(
-    fixRunIdFromLog([]) === undefined,
-    "(8) and neither does a log with no review step at all",
   );
 }
 
