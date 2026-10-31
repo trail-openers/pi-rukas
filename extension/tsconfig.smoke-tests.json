@@ -174,6 +174,8 @@
     "smoke-tests/test-lean-state-dispatches.ts",
     "smoke-tests/test-AC1-hostile-error-fail.ts",
     "smoke-tests/test-AC2-nonerror-tostring-fail.ts",
-    "smoke-tests/test-AC3-empty-message-fallback.ts"
+    "smoke-tests/test-AC3-empty-message-fallback.ts",
+    "smoke-tests/lib/mast-canary-fixtures.ts",
+    "smoke-tests/test-mast-authoritative-block.ts"
   ]
 }

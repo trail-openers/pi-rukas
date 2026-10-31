@@ -4,7 +4,7 @@
  *
  * Background: trust-mode (#215) stripped per-call permission gating, leaving
  * doctrine alone to keep agents in their roles. Under load, doctrine grip
- * slips. Research (Flue + LangGraph + MAST) names per-role tool gating at
+ * slips. Research (Flue + LangGraph) names per-role tool gating at
  * the dispatch boundary as the primary structural lever — Flue's
  * `defineAgentProfile({ tools })` filters the model's toolbox so it cannot
  * call what it wasn't given, regardless of what the prompt says.
