@@ -518,8 +518,16 @@ const { assert, failures } = makeAssert();
     `(T1) and the tree identity rides in \`runId\`, in the shape the validator accepts (${String(fixerRow?.runId)})`,
   );
 
-  // (g) A budget that pays for no round at all still gets exactly one look, and
-  // a head that was not reviewed is never reported as reviewed.
+  // (g) A budget that pays for no round at all still gets a real look, and a head
+  // that was not reviewed is never reported as reviewed.
+  //
+  // This case used to assert "one look, then refuses", reading the round cap off
+  // `turns` (`max(1, floor(turns / 300))`). That derivation is HIGH#2 and is gone:
+  // it made the default 150-turn budget yield ONE round, so the step could fix but
+  // never re-review. The round cap is `MAX_REVIEW_ROUNDS` now and the budget bounds
+  // the MONEY, so what this case still has to prove is the two things that survived
+  // — a degenerate budget does not skip the review, and it does not certify a head
+  // nobody looked at. Asserting the old sentence would have pinned the bug.
   let gRound = 0;
   const { threw: t5 } = await run(
     ctxFor(rr2, bs2, BRANCH),
@@ -538,8 +546,16 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(
-    t5 instanceof ReviewInfraError && /budget of 0 turns/.test(t5.message),
-    `(g) a zero review budget still gets one look, then refuses (${t5?.message})`,
+    gRound >= 1,
+    `(g) a zero review budget still pays for at least one lens look — it does not silently skip the review (${String(gRound)} lens round(s) ran)`,
+  );
+  assert(
+    t5 instanceof ReviewInfraError,
+    `(g) and a head the review could not clear is an error, never a pass (${t5?.message ?? `kind ${String((t5 as undefined) === undefined ? "none" : "other")}`})`,
+  );
+  assert(
+    gRound <= MAX_REVIEW_ROUNDS,
+    `(g) and the loop is bounded by the rounds constant rather than by a turn division, so it cannot run away on a zero budget (${String(gRound)} <= ${String(MAX_REVIEW_ROUNDS)})`,
   );
 }
 
