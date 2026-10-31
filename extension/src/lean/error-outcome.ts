@@ -4,9 +4,9 @@
  * A handler that throws is infrastructure, so the step records
  * `{kind: "error", message}` and the run ends handed-back. That record is also
  * the only place a failed step's cost can still be read: a dispatch that died
- * spent its tokens, and `state.ts` gives the three dispatching steps
- * (`specify`, `build`, `challenge`) a `dispatches` field for exactly that
- * (#1920 A). The steps therefore hand their rows back on the error itself —
+ * spent its tokens, and `state.ts` gives the four dispatching steps
+ * (`specify`, `build`, `challenge`, `review`) a `dispatches` field for exactly
+ * that (#1920 A). The steps therefore hand their rows back on the error itself —
  * `BuildInfraError`, `ChallengeInfraError` and `SpecifyInfraError` each carry a
  * `dispatches` array — and this module is what moves them onto the record.
  *
@@ -40,13 +40,31 @@ import type { DispatchUsageRow } from "./step-budget.ts";
 export type ErrorOutcome = Outcome & { kind: "error"; dispatches?: DispatchUsageRow[] };
 
 /**
+ * Which states may record what their children cost.
+ *
+ * `BUDGET_STATES` plus `review`. That step pays for a reviewer, six lenses and a
+ * fixer per round, so it MUST record cost; it arms no per-child ceiling of its
+ * own (each gate bounds its own children by wall clock), so it must NOT report a
+ * budget verdict. That asymmetry is why `limit`/`value`/`used` stay keyed on
+ * `BUDGET_STATES` alone in `state-outcome.ts`, and why the two lists are not one
+ * constant — so both are pinned by `test-lean-state-dispatches.ts` on the two
+ * paths a step's cost travels (the loader, and this module's read of a throw):
+ * a widening that quietly lost `review` would drop the run's most expensive
+ * numbers without a sound, and nobody reading the state file afterwards could
+ * tell a step that cost nothing from a field that was never allowed to land.
+ */
+function recordsDispatches(state: LeanState): boolean {
+  return state === "review" || BUDGET_STATES.includes(state);
+}
+
+/**
  * The outcome the engine records for a handler that threw `err` in `state`.
  * A non-empty `message` always survives; the rows are added only when both
  * rules above hold.
  */
 export function errorOutcome(state: LeanState, err: unknown): ErrorOutcome {
   const message = (err as Error)?.message ?? String(err);
-  const rows = BUDGET_STATES.includes(state)
+  const rows = recordsDispatches(state)
     ? validatedDispatches((err as { dispatches?: unknown })?.dispatches).slice(-DISPATCHES_MAX_ROWS)
     : [];
   return rows.length === 0

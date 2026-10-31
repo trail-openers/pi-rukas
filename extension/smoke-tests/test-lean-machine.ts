@@ -306,6 +306,15 @@ assert(
   next(run("review"), { kind: "done" }).counters.reviewDone === true,
   "review done sets reviewDone",
 );
+// The step's single kind is the ONLY way out of it. Both gates clearing is what
+// a handler returns; everything else — a gate that could not run, findings still
+// open at the bound, a fix round that broke the frozen contract — is a throw the
+// engine turns into a handback. A second kind would be a route for an unreviewed
+// head to reach `ci`, so the table having exactly one is the thing asserted.
+assert(
+  outcomeKindsFor("review").length === 1 && outcomeKindsFor("review")[0] === "done",
+  `review has exactly one outcome kind, "done" (got ${JSON.stringify(outcomeKindsFor("review"))})`,
+);
 assert(next(run("ci"), { kind: "green" }).state === "land", "ci green → land");
 assert(next(run("land"), { kind: "merged" }).state === "landed", "land merged → landed");
 assert(next(run("land"), { kind: "refused" }).state === "handback", "land refused → handback");

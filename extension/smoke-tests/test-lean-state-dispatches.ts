@@ -25,6 +25,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { errorOutcome } from "../src/lean/error-outcome.ts";
 import { INITIAL_COUNTERS, type LeanState, leanStateFile, loadRun } from "../src/lean/state.ts";
 import { FIXTURE_BASE_SHA, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
 
@@ -219,6 +220,54 @@ for (const [label, issue, outcome, expected] of [
   } finally {
     cleanup();
   }
+}
+
+// ── `review` is a row-stating state, on BOTH paths a step's cost takes ───────
+//
+// `review` pays for a reviewer, six lenses and a fixer per round, so its cost is
+// the most expensive number a lean run produces. It also arms no per-child
+// ceiling of its own, so it is NOT one of the budget states — and the two
+// membership lists are therefore separate, in two different modules, with no
+// type checking the difference. Both are pinned here because each fails
+// silently: a loader that refused the field would drop the step's rows on load,
+// and an `errorOutcome` that did not know the state would drop them on the way
+// to the handback. Neither is visible to whoever reads the state file next.
+{
+  const { dir, cleanup } = tempDir();
+  try {
+    seedWithOutcome(dir, 90, "review", { kind: "done", dispatches: [ROW] });
+    let thrown: unknown;
+    let loaded: ReturnType<typeof loadRun>;
+    try {
+      loaded = loadRun(dir, 90);
+    } catch (err) {
+      thrown = err;
+    }
+    assert(thrown === undefined, `a review step's rows load (got: ${String(thrown)})`);
+    assert(
+      loaded?.steps?.[0]?.outcome?.dispatches?.length === 1,
+      "the review step keeps its row through the loader",
+    );
+  } finally {
+    cleanup();
+  }
+
+  // The throw path: the same rows, off an error, onto the record the handback
+  // writes. `ReviewInfraError` carries `dispatches` for exactly this.
+  const thrown = new Error("the fixer rewrote a frozen test") as Error & {
+    dispatches: typeof ROW[];
+  };
+  thrown.dispatches = [ROW];
+  assert(
+    errorOutcome("review", thrown).dispatches?.length === 1,
+    "a review step's rows survive its throw into the handback record",
+  );
+  // And the asymmetry, stated as a positive: a state that never dispatches
+  // records nothing, so `review` is a widening and not a wildcard.
+  assert(
+    errorOutcome("ready", thrown).dispatches === undefined,
+    "a step that dispatches nothing still records no rows — `review` is added, not everything",
+  );
 }
 
 process.exit(failures());
