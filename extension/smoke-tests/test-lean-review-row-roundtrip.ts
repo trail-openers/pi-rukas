@@ -477,5 +477,70 @@ function tryLoad(
   );
 }
 
+// ── (8) the RESUME path reads the field back through the validator's own grammar ─
+//
+// `fixRunIdFromLog` decides which tree a resumed attempt re-enters, and until now
+// NOTHING drove it: no case in any suite put a review step with a fixer row in front
+// of it. It also carried its own grammar — `Number.isSafeInteger(Number(id.slice(0,
+// 17).split("-")[0]))` plus a floor check — which ACCEPTED what `FIX_RUN_ID` refuses,
+// so its own comment ("already checked by the validator on the way in") was false and
+// a resumed attempt could adopt a tree no writer minted. It now asks `isRunId`, the
+// validator's predicate, so the claim holds by construction. These cases are what make
+// the routing observable rather than merely true.
+{
+  const { fixRunIdFromLog } = await import("../src/lean/review-log.ts");
+  const { FIX_RUN_ID: SHAPE } = await import("../src/lean/state-dispatches.ts");
+  /** A step log holding one decided `review` step whose fixer row carries `runId`. */
+  const logWith = (runId: string | undefined) =>
+    runWithRows(
+      [
+        {
+          role: FIXER_ROLE,
+          ms: 10,
+          ok: true,
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.1, turns: 1 },
+          ...(runId === undefined ? {} : { runId: runId as DispatchUsageRow["runId"] }),
+        },
+      ],
+      FIXTURE_BASE_SHA,
+    ).steps;
+
+  // The resume case that must work: the composite the writer mints is read back
+  // whole, so the resumed attempt names the tree its killed self left.
+  const composite = "1793451347919-l-2-0";
+  assert(
+    fixRunIdFromLog(logWith(composite)) === composite,
+    `(8) a resumed attempt reads its OWN composite tree id back off the log and re-enters the tree its killed self left (${String(fixRunIdFromLog(logWith(composite)))} vs ${composite})`,
+  );
+  // The values the OLD reader accepted and the validator refuses. Each must now
+  // answer `undefined` — the step mints a fresh id rather than adopting a tree name
+  // nothing wrote. This is the half the false comment papered over.
+  for (const acceptedByTheOldGrammarButNotByTheValidator of [
+    "1e12",
+    "-1793451347919",
+    "1793451347919.5",
+    "1793451347919-../x",
+  ]) {
+    assert(
+      !SHAPE.test(acceptedByTheOldGrammarButNotByTheValidator),
+      `(8) precondition: the validator refuses ${JSON.stringify(acceptedByTheOldGrammarButNotByTheValidator)}`,
+    );
+    assert(
+      fixRunIdFromLog(logWith(acceptedByTheOldGrammarButNotByTheValidator)) === undefined,
+      `(8) and the READER now refuses it too, so the resume mints a fresh tree instead of adopting a name no writer minted (read ${JSON.stringify(acceptedByTheOldGrammarButNotByTheValidator)} as ${String(fixRunIdFromLog(logWith(acceptedByTheOldGrammarButNotByTheValidator)))})`,
+    );
+  }
+  // No row, and a row with no id, both answer undefined — the safe direction, and
+  // the one that keeps a first attempt from borrowing a stranger's tree.
+  assert(
+    fixRunIdFromLog(logWith(undefined)) === undefined,
+    "(8) a fixer row with no id does not answer, so the step mints a fresh one",
+  );
+  assert(
+    fixRunIdFromLog([]) === undefined,
+    "(8) and neither does a log with no review step at all",
+  );
+}
+
 cleanupRoots();
 process.exit(failures());
