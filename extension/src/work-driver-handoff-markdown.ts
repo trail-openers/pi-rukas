@@ -242,8 +242,10 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
       // in arXiv 2503.13657; the real top-level figure is System Design Issues
       // 41.8%. The paper makes no cross-category ranking, so any "largest
       // single mode" superlative is scoped to the FM-1.x list. Full figures:
-      // AGENTS.md §7.
-      "  - Same lens flagging the same shape across rounds → spec-level problem (MAST, arXiv 2503.13657 — step repetition FM-1.3 is the largest FM-1.x mode at 15.7%; full figures in AGENTS.md §7)",
+      // AGENTS.md §7 — a pointer the maintainer can follow, kept in this
+      // comment rather than the emitted bullet, which a reader sees on GitHub
+      // with no repository to open.
+      "  - Same lens flagging the same shape across rounds → spec-level problem (MAST, arXiv 2503.13657 — the largest single FM-1.x mode is step repetition FM-1.3 at 15.7%)",
       "  - Orthogonal local bugs → genuine work remains, not a doctrine failure",
       "",
     );
