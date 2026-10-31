@@ -238,7 +238,13 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
             "",
           ]),
       "Patterns to look for:",
-      "  - Same lens flagging the same shape across rounds → spec-level problem (MAST 41.77%)",
+      // The figure this line used to print — "MAST 41.77%" — appears nowhere
+      // in Cemri et al., arXiv 2503.13657 (the real top-level grouping is
+      // System Design Issues 41.8%). Print what the paper actually measured,
+      // and its own conclusion that tactical fixes get limited results, so the
+      // number an operator reads is citable. "Largest single mode" is scoped to
+      // the FM-1.x list because the paper makes no such claim across modes.
+      "  - Same lens flagging the same shape across rounds → spec-level problem (in MAST, arXiv 2503.13657, System Design Issues are 41.8% of annotated failures; disobeying the task specification FM-1.1 is 11.8% and step repetition FM-1.3 is 15.7%, the largest single FM-1.x mode. The paper's best orchestration fix was a high-level objective-verification step, +15.6% task success, completion rates still low — tactical fixes get limited results)",
       "  - Orthogonal local bugs → genuine work remains, not a doctrine failure",
       "",
     );

@@ -45,9 +45,12 @@ const execp: VerifyExecFn = (cmd, opts) =>
  * Every quality gate before this PR was LLM judgment (adversarial + six
  * lenses reading diffs/transcripts); nothing driver-side ever EXECUTED
  * anything until post-PR CI. Agents claim "done" and the driver trusted
- * the claim — the documented silent-merge (#245/#253) and phantom-
- * handoff incidents are exactly this failure class (MAST: verification
- * failures = 21.3% of multi-agent failures). This gate checks executed
+ * the claim — the documented silent-merge (#245/#253) and phantom-handoff
+ * incidents are exactly the failure class the MAST taxonomy (Cemri et al.,
+ * arXiv 2503.13657) attributes to weak verification: its Task Verification
+ * failure category is 21.3% of annotated failures, and the paper's own remedy
+ * is an objective-verification step at the orchestration layer (+15.6% task
+ * success, completion rates still low). This gate checks executed
  * evidence, costs zero LLM tokens, and shortens the failure loop from
  * post-PR CI churn to pre-commit.
  *
