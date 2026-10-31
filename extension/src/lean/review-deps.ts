@@ -214,7 +214,15 @@ export function lensContext(
   const carried = extra.carried?.trim();
   if (carried !== undefined && carried !== "")
     parts.push(
-      `OUTSTANDING FROM THE ADVERSARIAL GATE (non-blocking there — judge them yourself):\n${carried}`,
+      // The findings the adversarial gate passed on are reviewer-authored prose
+      // read back off a dispatch result, and they cross into six children's briefs
+      // through this line. The branch's rule is that a value crossing into a
+      // child's brief is DISARMED AT THE PRINT SITE — `promptText` for the
+      // fixer's `head`/`base`, `fenceText` for the fixer's findings — because one
+      // `### heading` inside a carried finding becomes a section of the lens
+      // prompt the step never wrote, and the lenses are told to weigh this block
+      // as evidence. Same seam, same rule, same bound as the fixer's findings.
+      `OUTSTANDING FROM THE ADVERSARIAL GATE (non-blocking there — judge them yourself):\n${fenceText(carried, 20_000)}`,
     );
   const delta = extra.fixDelta?.trim();
   if (delta !== undefined && delta !== "") parts.push(delta);
