@@ -22,20 +22,32 @@
  *
  * The gates and the fixer are the three injected seams of `ReviewDeps`, so no
  * child process is spawned and no token is spent.
+ *
+ * The two cases that pin ABSENCE OF SIGNAL — a lens round that ran no lens, and
+ * the evidence helpers reading a ref that cannot exist — live in
+ * `test-lean-review-absence.ts`, which shares this file's repo harness through
+ * `lib/lean-review-fixtures.ts`.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import path from "node:path";
-import { execp } from "../src/exec.ts";
+import { ReviewInfraError } from "../src/lean/review.ts";
 import { defaultConfig } from "../src/lean/config.ts";
-import type { HandlerCtx } from "../src/lean/engine.ts";
-import { type ReviewDeps, ReviewInfraError, reviewOutcome } from "../src/lean/review.ts";
-import type { Outcome } from "../src/lean/state.ts";
-import { createRun } from "../src/lean/state.ts";
-import type { DispatchResult, DispatchSpec } from "../src/types.ts";
-import { gitTestEnv } from "./lib/git-test-env.ts";
+import { sha256 } from "../src/lean/specify-proof.ts";
+import type { DispatchSpec } from "../src/types.ts";
+import {
+  BRANCH,
+  USAGE,
+  type ReviewDeps,
+  cleanupRoots,
+  ctxFor,
+  depsWith,
+  git,
+  makeRepo,
+  result,
+  runStep as run,
+  setup,
+} from "./lib/lean-review-fixtures.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 
 let exit = 0;
@@ -46,117 +58,6 @@ function assert(cond: boolean, msg: string): void {
     exit = 1;
   }
 }
-
-const ROOTS: string[] = [];
-
-function gitEnv(): Record<string, string> {
-  return {
-    ...gitTestEnv(),
-    GIT_AUTHOR_NAME: "t",
-    GIT_AUTHOR_EMAIL: "t@t",
-    GIT_COMMITTER_NAME: "t",
-    GIT_COMMITTER_EMAIL: "t@t",
-  };
-}
-
-function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
-  if (r.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
-  return (r.stdout ?? "").trim();
-}
-
-/** A repo with a base commit, a `main` branch, and a bare origin it pushes to. */
-function makeRepo(): { repoRoot: string; origin: string; baseSha: string } {
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-review-"));
-  const origin = mkdtempSync(path.join(tmpdir(), "lean-review-origin-"));
-  ROOTS.push(repoRoot, origin);
-  git(repoRoot, "init", "-q", "-b", "main");
-  git(origin, "init", "-q", "--bare");
-  put(repoRoot, "a.ts", "export const a = 1;\n");
-  put(repoRoot, "tests/AC1.test.ts", "// frozen\n");
-  git(repoRoot, "add", "-A");
-  git(repoRoot, "commit", "-q", "-m", "base");
-  git(repoRoot, "remote", "add", "origin", origin);
-  git(repoRoot, "push", "-q", "-u", "origin", "main");
-  return { repoRoot, origin, baseSha: git(repoRoot, "rev-parse", "HEAD") };
-}
-
-const FROZEN = { "tests/AC1.test.ts": "" }; // filled per case with the real hash
-
-const USAGE = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.5, turns: 10 };
-
-function result(over: Partial<DispatchResult> = {}): DispatchResult {
-  return {
-    role: "adversarial-developer",
-    ok: true,
-    text: "",
-    toolUses: [],
-    ms: 5,
-    exitCode: 0,
-    usage: USAGE,
-    ...over,
-  };
-}
-
-/** The step under test, with the outside world replaced by these. */
-function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
-  return {
-    headless: false,
-    exec: (cmd, o) => execp(cmd, { ...(o ?? {}), env: { ...gitEnv(), ...(o?.env ?? {}) } }),
-    adversarial: async () => result({ loopOutcome: "approved" }),
-    lens: async () => ({ verdict: "APPROVED", findings: "", usage: USAGE }),
-    dispatch: async () => result({ role: "developer" }),
-    fetchIssueBody: async () => "body",
-    loadConfig: async () => defaultConfig(),
-    ...over,
-  };
-}
-
-function ctxFor(repoRoot: string, baseSha: string, branch: string): HandlerCtx {
-  const run = createRun({ issue: 7, version: "test", models: {}, baseSha, branch });
-  return { repoRoot, issue: 7, run, steps: run.steps, stepKey: "7:review:0", now: () => 1 };
-}
-
-/** Publish `branch` on origin and in the run's worktree, at a commit on `base`. */
-async function setup(opts: {
-  repoRoot: string;
-  baseSha: string;
-  branch: string;
-  /** A file the head commit adds, so the head is not the base. */
-  feature?: string;
-  /** A frozen test the head commit tampers with (case (d)). */
-  tamper?: boolean;
-}): Promise<string> {
-  const wt = path.join(opts.repoRoot, ".worktrees", "lean-7");
-  git(opts.repoRoot, "worktree", "add", "-B", opts.branch, wt, opts.baseSha);
-  if (opts.feature !== undefined) {
-    put(wt, "feature.ts", opts.feature);
-    git(wt, "add", "-A");
-    git(wt, "commit", "-q", "-m", "feat: the work");
-  }
-  if (opts.tamper === true) {
-    put(wt, "tests/AC1.test.ts", "// edited by the fixer\n");
-    git(wt, "add", "-A");
-    git(wt, "commit", "-q", "-m", "fix: broke the contract");
-  }
-  git(wt, "push", "-q", "origin", `refs/heads/${opts.branch}`);
-  return git(wt, "rev-parse", "HEAD");
-}
-
-/** Run the step; a throw comes back as the error so each case asserts on it. */
-async function run(
-  ctx: HandlerCtx,
-  deps: ReviewDeps,
-): Promise<{ outcome?: Outcome; threw?: Error }> {
-  try {
-    return { outcome: await reviewOutcome(ctx, deps) };
-  } catch (err) {
-    return { threw: err as Error };
-  }
-}
-
-const BRANCH = "lean/issue-7";
 
 // ── (a) both gates clean → `done`, and the reason names the reviewed commit ──
 {
@@ -172,6 +73,9 @@ const BRANCH = "lean/issue-7";
       },
       lens: async (a) => {
         seen.push(`lens:${a.head}`);
+        // The production shape of a clean round: six lenses ran, so the round
+        // reports their usage. A round with `usage: undefined` is a round that
+        // ran nobody, and the step refuses it (`test-lean-review-absence.ts`).
         return { verdict: "APPROVED", findings: "", usage: USAGE };
       },
     }),
@@ -207,7 +111,7 @@ const BRANCH = "lean/issue-7";
   const { threw: t2 } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      lens: async () => ({ verdict: "REVIEW_INCOMPLETE", findings: "x", usage: undefined }),
+      lens: async () => ({ verdict: "REVIEW_INCOMPLETE", findings: "x", usage: USAGE }),
     }),
   );
   assert(
@@ -272,8 +176,7 @@ const BRANCH = "lean/issue-7";
   const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   const ctx = ctxFor(repoRoot, baseSha, BRANCH);
   const frozenFile = path.join(repoRoot, ".worktrees", "lean-7", "tests/AC1.test.ts");
-  const { sha256 } = await import("../src/lean/specify-proof.ts");
-  FROZEN["tests/AC1.test.ts"] = sha256(readFileSync(frozenFile));
+  const frozen = { "tests/AC1.test.ts": sha256(readFileSync(frozenFile)) };
   // The frozen record must reach the step the way the machine puts it there: a
   // decided `specify:ok` step carrying the map.
   ctx.run.steps.push({
@@ -281,7 +184,7 @@ const BRANCH = "lean/issue-7";
     state: "specify",
     startedAt: 1,
     endedAt: 2,
-    outcome: { kind: "ok", frozen: { ...FROZEN }, tests: { AC1: ["tests/AC1.test.ts"] } },
+    outcome: { kind: "ok", frozen, tests: { AC1: ["tests/AC1.test.ts"] } },
   });
   const { threw } = await run(
     ctx,
@@ -422,11 +325,5 @@ const BRANCH = "lean/issue-7";
   );
 }
 
-for (const dir of ROOTS) {
-  try {
-    rmSync(dir, { recursive: true, force: true });
-  } catch {
-    /* best effort */
-  }
-}
+cleanupRoots();
 process.exit(exit);

@@ -54,7 +54,7 @@ const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
 const CORE_OWNERS = new Set(["dispatch.ts", "work-driver-cycle-entry.ts"]);
 
 /**
- * The registry section 4 audits the lean closure against: only the three lean
+ * The registry section 4 audits the lean closure against: only the lean
  * dispatch sites. Kept separate from `REGISTRY` because the driver's closure
  * never loads `lean/` and the auditor reports a registry entry it cannot see —
  * one list would fail section 2 for files it legitimately cannot reach.
@@ -63,6 +63,10 @@ const LEAN_REGISTRY: typeof REGISTRY = {
   "lean/build.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
   "lean/challenge.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
   "lean/command.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
+  // The review step's fixer. Same threaded-mode stamp as its siblings: the
+  // dispatch is `reviewDeps(headless)`'s, so the stamp comes from the run's
+  // mode the deps builder was built with, never a process flag.
+  "lean/review.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
 };
 
 /** The code on each line: whole-line comments dropped, trailing ` // …` comments cut. */
