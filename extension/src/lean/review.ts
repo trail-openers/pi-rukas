@@ -45,25 +45,18 @@
  * earn. A gate that did not run is never a gate that passed.
  */
 
-import { MAX_ROUNDS, runAdversarialLoop } from "../adversarial.ts";
-import { execp } from "../exec.ts";
 import { lensFixDelta } from "../fix-delta.ts";
 import { buildEvidence, runClaimScan } from "../lens-evidence.ts";
-import type { LensReviewSummary } from "../lens-review-format.ts";
-import { runLensReview } from "../lens-review.ts";
-import { makeRunId, spawnSpecialist } from "../spawn.ts";
+import type { Finding } from "../lens-review-types.ts";
+import type { AdversarialVerdictStatus } from "../types.ts";
 import type { DispatchResult, DispatchSpec, DispatchUsage } from "../types.ts";
-import { verifyTimeoutMs } from "../work-driver-verify-develop-helpers.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import { frozenFromLog } from "./build.ts";
-import { leanChildOpts } from "./child-opts.ts";
 import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { fetchIssueBody } from "./io.ts";
 import { fixRound, lensRow, rangeDiff, reviewedHead } from "./review-git.ts";
-import { adversarialContext, lensContext } from "./review-prompt.ts";
+import { lensContext } from "./review-prompt.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
@@ -90,9 +83,6 @@ export class ReviewInfraError extends Error {
  * answer — the operator named that budget, and only they can lift it.
  */
 const NO_FIX_VERDICTS = ["REVIEW_INCOMPLETE", "ROUND_CAP_REACHED", "REVIEW_INCOMPLETE_STREAK"];
-
-/** One lens child's wall clock; a lens ended at it leaves its lane not-reviewed. */
-const LENS_CHILD_BOUND_MS = 15 * 60_000;
 
 /** The fixer's wall clock, the same shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
@@ -159,7 +149,7 @@ export interface LensArgs {
   context: string;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
-  extraFindings: Parameters<typeof runLensReview>[0]["extraFindings"];
+  extraFindings: Finding[];
   /** The headless trust stamp this run's children carry. */
   headless: boolean;
 }
@@ -180,11 +170,50 @@ export interface ReviewDeps {
 }
 
 /**
+ * The status that alone means "nothing is outstanding", and the text the loop
+ * writes when it passed with something still open. Both are constants of the
+ * loop that produces them (`adversarial-verdict.ts`): its `passedRoundText` is
+ * `clean ? "Adversarial APPROVED…" : "Adversarial PASSED WITH FINDINGS…"`, and
+ * this step reads the same verdict object the loop did rather than guessing from
+ * prose alone.
+ */
+const CLEAN_PASS: AdversarialVerdictStatus = "APPROVED";
+const PASSED_WITH_FINDINGS_MARK = "PASSED WITH FINDINGS";
+
+/**
+ * What one report-only adversarial pass left open, and the step's own judgement
+ * of whether that counts as a pass.
+ *
+ * `loopOutcome: "approved"` alone is NOT one. The loop reaches it from either
+ * verdict (see `decideLoopAction` in `adversarial.ts`): a clean `APPROVED`, or a
+ * non-blocking one it calls **PASSED WITH FINDINGS** — "these findings are
+ * unresolved and travel to the PR body and the lens review". In the frozen
+ * driver that carrying is a real act: `work-driver-adversarial.ts` puts the text
+ * on the `adversarial-approved` event and `adversarial-findings.ts` renders it
+ * into the PR body, and every one of the six lenses is told to judge it. Lean has
+ * no PR body and no `commit-pr` step to hand them to, so the pass is read here
+ * the same way and handed to the lens round by `lensContext`'s `carried` block —
+ * which is the only reason that parameter exists.
+ *
+ * The status is read off `adversarialRounds` (#485: the loop's own per-round
+ * records, threaded as data rather than recovered from prose), falling back to
+ * the `PASSED WITH FINDINGS` marker only when a result carries no records —
+ * `""` there means "no record to read", which is not a status an adversarial
+ * gate ever approved with.
+ */
+function openFromPass(result: DispatchResult): string {
+  const records = result.adversarialRounds;
+  const last = records === undefined ? undefined : records[records.length - 1];
+  if (last !== undefined) return last.status === CLEAN_PASS ? "" : result.text;
+  return result.text.includes(PASSED_WITH_FINDINGS_MARK) ? result.text : "";
+}
+
+/**
  * The adversarial gate: one report-only pass, and the finding text it left open.
- * `""` is the gate's pass. Anything else THROWS — a gate that produced no verdict
- * is not a gate that approved, and this one has no fixer of its own to blame.
- * The row this pass cost is APPENDED to the caller's running total, not returned:
- * a copy handed back and re-assigned per round is how a handback ends up
+ * `""` is the gate's clean pass. Anything else THROWS — a gate that produced no
+ * verdict is not a gate that approved, and this one has no fixer of its own to
+ * blame. The row this pass cost is APPENDED to the caller's running total, not
+ * returned: a copy handed back and re-assigned per round is how a handback ends up
  * reporting the cost of one round as the cost of the step.
  */
 async function adversarialGate(
@@ -218,7 +247,7 @@ async function adversarialGate(
     );
   }
   opts.rows.push(dispatchUsageRow(result));
-  if (result.loopOutcome === "approved") return { findings: "" };
+  if (result.loopOutcome === "approved") return { findings: openFromPass(result) };
   if (result.loopOutcome === "rejected") return { findings: result.text };
   throw new ReviewInfraError(
     `the adversarial gate produced no verdict (${String(result.loopOutcome)}${
@@ -411,89 +440,4 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     });
     head = pushed;
   }
-}
-
-/** Production dependencies: the real executor, both gates, and the spawner. */
-export function reviewDeps(headless: boolean): ReviewDeps {
-  return {
-    headless,
-    exec: (cmd, opts) => execp(cmd, opts ?? {}),
-    adversarial: (a) =>
-      runAdversarialLoop(
-        {
-          base: a.base,
-          head: a.head,
-          workCwd: a.cwd,
-          context: adversarialContext(a.issue, a.round, MAX_ROUNDS),
-          issueBody: a.issueBody,
-          // The reviewer's lane is one verdict; the fix round is this step's, so
-          // the loop must not dispatch a fixer of its own.
-          reportOnly: true,
-          reportVerdict: "routed",
-          reportRound: a.round,
-          // Lean's worktrees are detached, so the ledger writer cannot recover
-          // the branch from HEAD and this is the only place it can come from.
-          branch: a.branch,
-          commentTimeoutMs: verifyTimeoutMs(),
-          processGroup: true,
-          ...leanChildOpts(a.headless),
-        },
-        new AbortController().signal,
-        makeRunId(),
-      ),
-    lens: async (a) => {
-      const summary = await runLensReview({
-        // The refs, not a pasted diff: the review computes `git diff
-        // <base>...<head>` itself, so its diff is one the lenses can re-read and
-        // the ledger can bind to a commit rather than to a string this step
-        // handed it (the caller-supplied arm is recorded as never counting as a
-        // passing review).
-        base: a.base,
-        head: a.head,
-        cwd: a.cwd,
-        context: a.context,
-        evidence: a.evidence,
-        extraFindings: a.extraFindings,
-        // The worktree is detached, so the ledger write and the residual
-        // disclosure can only be keyed on a branch this step names.
-        branch: a.branch,
-        processGroup: true,
-        childBoundMs: LENS_CHILD_BOUND_MS,
-        ...leanChildOpts(a.headless),
-      });
-      return {
-        verdict: summary.verdict,
-        findings: renderFindings(summary),
-        usage: summary.usage,
-        // The one field that distinguishes "no lens ran" from "lenses ran and
-        // found nothing", and the only place it is stated — `verdict` says
-        // APPROVED for both. Dropping it here is what would let the empty-delta
-        // outcome read as a clean review.
-        ...(summary.noReview === true ? { noReview: true } : {}),
-        // The disclosure the round owed and may not have made. `runLensReview`
-        // posts it itself for an ISSUES_FOUND round and reports a failed post
-        // here, so this step adds nothing and only carries the reason to the
-        // operator as part of the handback cause.
-        ...(summary.note === undefined ? {} : { note: summary.note }),
-      };
-    },
-    dispatch: (spec, o) =>
-      spawnSpecialist(spec, {
-        processGroup: true,
-        ...(o.childBoundMs === undefined ? {} : { childBoundMs: o.childBoundMs }),
-        ...leanChildOpts(headless),
-      }),
-    fetchIssueBody,
-    loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
-  };
-}
-
-/** The round's findings as one line each, severity and source first. */
-function renderFindings(summary: LensReviewSummary): string {
-  return summary.findings
-    .map(
-      (f) =>
-        `- [${f.severity}] ${f.lens} ${f.path}${f.line === undefined ? "" : `:${String(f.line)}`}: ${f.title}${f.description === undefined || f.description === "" ? "" : ` — ${f.description}`}`,
-    )
-    .join("\n");
 }

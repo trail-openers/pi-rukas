@@ -63,10 +63,13 @@ const LEAN_REGISTRY: typeof REGISTRY = {
   "lean/build.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
   "lean/challenge.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
   "lean/command.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
-  // The review step's fixer. Same threaded-mode stamp as its siblings: the
-  // dispatch is `reviewDeps(headless)`'s, so the stamp comes from the run's
-  // mode the deps builder was built with, never a process flag.
-  "lean/review.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
+  // The review step's fixer and its two gates. Same threaded-mode stamp as its
+  // siblings: every dispatch is `reviewDeps(headless)`'s, so the stamp comes from
+  // the run's mode the deps builder was built with, never a process flag. The
+  // deps live apart from the decision procedure (`review-deps.ts`) so the step's
+  // judgement is drivable with stubs and no child is ever spawned from the file
+  // that decides — which is also why THIS is the file the auditor must see.
+  "lean/review-deps.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
 };
 
 /** The code on each line: whole-line comments dropped, trailing ` // …` comments cut. */
