@@ -32,8 +32,10 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { resolveHeadShaOutcome } from "../review-head-sha.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult } from "../types.ts";
+import { netRefProblem } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
+import { assertPublishableBranch } from "./publish-deps.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
@@ -327,6 +329,18 @@ async function integrate(
     const undone = await restore(deps, wt, branch, opts.gateRead);
     throw new ReviewInfraError(`${why}${restoredSentence(undone, wt, opts.gateRead)}`, opts.rows);
   };
+  // The push target is state-file data, so it gets `publish`'s guard BEFORE the
+  // first mutating git operation: `resetWorktreeToBase` below moves the run's
+  // branch with `-B` and cleans its tree, which mutates the one tree `verify`
+  // and `publish` read next. `assertSafeRef` alone only proves the name is a
+  // LEGAL git ref, and `main` is legal — so this, the second writer to origin in
+  // the pipeline, reused `publish`'s own decision rather than writing a third
+  // validator. Its documented fail-open for a clone with no `origin/HEAD` and no
+  // `gh` is kept as-is: an unresolvable mainline is ordinary, and refusing every
+  // fix push on it would be a new failure mode, not a tighter guard.
+  await assertPublishableBranch(repoRoot, branch).catch((err: unknown) => {
+    throw new ReviewInfraError((err as Error)?.message ?? String(err), opts.rows);
+  });
   if (!isFullCommitSha(opts.fixHead))
     throw new ReviewInfraError(
       `the fix round reported no commit to integrate (${JSON.stringify(opts.fixHead.slice(0, 40))})`,
@@ -411,6 +425,16 @@ async function integrate(
   // `publish`'s executor applies (#1095: `GIT_TERMINAL_PROMPT=0` plus
   // `-o BatchMode=yes`, so ssh fails instead of reading a passphrase from
   // /dev/tty and hanging the step). Every other call here is local.
+  //
+  // The name is checked with the driver's own `netRefProblem` immediately before
+  // the argv is built — the placement `publish`'s `pushHead` uses (#1095). It
+  // reads the same charset `assertPublishableBranch` applied above, so this is
+  // not the guard; it is the check that sits beside the command line it protects,
+  // so an edit that moves or drops the earlier one cannot silently put a refspec
+  // (`a:b`), a force (`+x`) or an option (`-f`) — all of which `assertSafeRef`
+  // calls legal — in front of a network git call.
+  const unsafe = netRefProblem(`refs/heads/${branch}`);
+  if (unsafe !== undefined) return await fail(`refusing to push ${branch}: ${unsafe}`);
   const pushed = await gitQuiet(deps.exec, wt, [
     "push",
     "origin",
