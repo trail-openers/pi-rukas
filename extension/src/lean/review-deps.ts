@@ -267,6 +267,15 @@ export function fixPrompt(opts: ReviewFixArgs): string {
       ? "(none — this run froze no tests)"
       : opts.frozenPaths.map((p) => `- \`${promptText(p, NAME_MAX_CHARS)}\``).join("\n");
   const gate = promptText(opts.gate, 120);
+  // `head` and `base` are git reads whose bytes an earlier stage or a hostile
+  // branch can influence — a ref name, a commit subject, or a value an earlier step
+  // recorded. Every sibling value in this brief already goes through `promptText`
+  // at the print site (`worktree`, `branch`, `gate`, `frozenPaths`), and the
+  // inconsistency WAS the vulnerability: one raw `\n` in a head opened a section of
+  // the fixer's brief the step never wrote, and one `\r` rewrote the line the
+  // instructions sit on. Same call, same rule, for the two that were left out.
+  const head = promptText(opts.head, NAME_MAX_CHARS);
+  const base = promptText(opts.base, NAME_MAX_CHARS);
   return `You are fixing the findings one review gate raised against this run's work (issue #${String(
     opts.issue,
   )}, review step, round ${String(opts.round)}, gate: ${gate}).
@@ -279,9 +288,9 @@ ${fenceText(opts.findings, 20_000)}
 
 - Worktree: \`${promptText(opts.worktree, NAME_MAX_CHARS)}\` — work ONLY here.
 - Branch: \`${promptText(opts.branch, NAME_MAX_CHARS)}\`
-- Reviewed commit: \`${opts.head}\` (base \`${opts.base}\`)
+- Reviewed commit: \`${head}\` (base \`${base}\`)
 
-Read the diff you are changing with \`git diff ${opts.base}...${opts.head}\` before you edit anything: these findings describe that tree, not the whole repository.
+Read the diff you are changing with \`git diff ${base}...${head}\` before you edit anything: these findings describe that tree, not the whole repository.
 
 ## Untouchable
 
