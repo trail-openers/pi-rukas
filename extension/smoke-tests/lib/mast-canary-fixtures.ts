@@ -136,6 +136,28 @@ const join = (f: Figure): string =>
 const corruptJoin = (f: Figure): string =>
   f.verb === "" ? `${f.mode} ${f.corrupt}` : `${f.mode} ${f.verb} ${f.corrupt}`;
 
+/**
+ * The three category rows, named by position so the joined tokens below read a
+ * tuple the compiler knows is populated. Under `noUncheckedIndexedAccess` a
+ * bare `FIGURES[0]` is `Figure | undefined`, and an `undefined` here would
+ * stringify to `"undefined 41.8%"` — a token no paragraph can contain, which
+ * would fail every run rather than pass silently.
+ */
+const CATEGORY_FIGURES: readonly [Figure, Figure, Figure] = [
+  FIGURES[0] as Figure,
+  FIGURES[1] as Figure,
+  FIGURES[2] as Figure,
+];
+// The cast above is honest because this assertion is the guard: if the table is
+// ever reordered or a category row is dropped, the tokens below would silently
+// read "undefined 41.8%" — a token no paragraph contains, failing every run.
+// Naming the shape here turns that into a compile-time promise.
+if (CATEGORY_FIGURES.some((f) => f === undefined || f.figure === undefined)) {
+  throw new Error(
+    "mast-canary-fixtures: the first three FIGURES rows must be the three categories",
+  );
+}
+
 /** Every numeric fact §7 must carry, each joined to the label it belongs to. */
 export const FACTS: readonly MastFact[] = [
   {
@@ -145,7 +167,7 @@ export const FACTS: readonly MastFact[] = [
   },
   {
     label: "categories-introduced",
-    token: `the top-level categories are ${FIGURES[0].mode} ${FIGURES[0].figure}`,
+    token: `the top-level categories are ${CATEGORY_FIGURES[0].mode} ${CATEGORY_FIGURES[0].figure}`,
     why: "the word that scopes the three CATEGORY figures, joined to the first of them",
   },
   ...FIGURES.map((f) => ({ label: f.label, token: join(f), why: f.why })),
@@ -281,10 +303,11 @@ export function checkBlock(para: string): string[] {
   if (para.split("top-level").length - 1 !== 1) misses.push("top-level count");
   const positions = CATEGORY_ORDER.map((c) => para.indexOf(c));
   const topLevelIndex = para.indexOf("top-level");
+  const afterPrevious = (p: number, i: number): boolean => i === 0 || p > (positions[i - 1] ?? -1);
   if (
     !(
       positions.every((p) => p >= 0) &&
-      positions.every((p, i) => i === 0 || p > positions[i - 1]) &&
+      positions.every(afterPrevious) &&
       positions.every((p) => p > topLevelIndex)
     )
   )
@@ -338,7 +361,13 @@ export function stepBackParagraph(text: string): string | undefined {
   const lines = text.split("\n");
   const at = lines.findIndex(isStepBackHeading);
   if (at < 0) return undefined;
-  const block = [lines[at]];
-  for (let i = at + 1; i < lines.length && lines[i].trim() !== ""; i++) block.push(lines[i]);
+  const heading = lines[at];
+  if (heading === undefined) return undefined;
+  const block = [heading];
+  for (let i = at + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined || line.trim() === "") break;
+    block.push(line);
+  }
   return block.join(" ");
 }

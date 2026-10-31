@@ -143,9 +143,10 @@ for (const fact of FACTS) {
   );
   const positions = CATEGORY_ORDER.map((c) => BLOCK.indexOf(c));
   const at = BLOCK.indexOf("top-level");
+  const afterPrevious = (p: number, i: number): boolean => i === 0 || p > (positions[i - 1] ?? -1);
   assert(
     positions.every((p) => p >= 0) &&
-      positions.every((p, i) => i === 0 || p > positions[i - 1]) &&
+      positions.every(afterPrevious) &&
       positions.every((p) => p > at),
     `the single "top-level" precedes the three category figures IN THE PAPER'S ORDER (top-level@${at}, categories @${positions.join(",")}) — a reordered list reads as a ranking the paper never publishes`,
   );
@@ -228,16 +229,20 @@ function discoverCitingFiles(): string[] {
   ]);
   const out: string[] = [];
   const walk = (dir: string, rel: string): void => {
-    let entries: ReturnType<typeof readdirSync>;
+    let entries: import("node:fs").Dirent<string>[];
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      // Without an explicit encoding `withFileTypes` resolves to the
+      // buffer-typed overload, so the element type is named here: `entry.name`
+      // has to be a string before it reaches path.join and the .endsWith tests.
+      entries = readdirSync(dir, { withFileTypes: true, encoding: "utf8" });
     } catch {
       return;
     }
     for (const entry of entries) {
-      if (skip.has(entry.name)) continue;
-      const full = path.join(dir, entry.name);
-      const relative = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      const name: string = entry.name;
+      if (skip.has(name)) continue;
+      const full = path.join(dir, name);
+      const relative = rel === "" ? name : `${rel}/${name}`;
       if (entry.isDirectory()) walk(full, relative);
       else if (entry.isFile() && (relative.endsWith(".ts") || relative.endsWith(".md"))) {
         // The detector's own exclusion: `.d.ts` declarations are not sites.
@@ -405,15 +410,21 @@ for (const file of [
   // The corrupt copy strips the scope word from the block's own text, so it
   // stays a real mutation however the prose wraps — replacing a multi-word
   // phrase would no-op on a reflowed file, and a no-op mutant proves nothing.
-  const blockLines = [];
-  for (let i = at; i < lines.length && lines[i].trim() !== ""; i++) blockLines.push(i);
-  const scopeLine = blockLines.find((i) => lines[i].includes(" FM-1.x mode"));
-  const corrupt = scopeLine === undefined ? "" : lines[scopeLine].replace(" FM-1.x mode", " mode");
+  const blockLines: number[] = [];
+  for (let i = at; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined || line.trim() === "") break;
+    blockLines.push(i);
+  }
+  const scopeLine = blockLines.find((i) => (lines[i] ?? "").includes(" FM-1.x mode"));
+  const scopeText = scopeLine === undefined ? undefined : lines[scopeLine];
+  const corrupt =
+    scopeText === undefined || scopeText === "" ? "" : scopeText.replace(" FM-1.x mode", " mode");
   assert(
-    scopeLine !== undefined && corrupt !== lines[scopeLine],
+    scopeText !== undefined && corrupt !== "" && corrupt !== scopeText,
     "the duplicate-heading mutant is a real mutation (an unchanged copy would prove nothing)",
   );
-  const inserted = scopeLine === undefined ? [] : [corrupt];
+  const inserted = corrupt === "" ? [] : [corrupt];
   const withDuplicate = [...lines.slice(0, at), ...inserted, ...lines.slice(at)].join("\n");
   const headed = withDuplicate.split("\n").filter(isStepBackHeading);
   const first = stepBackParagraph(withDuplicate);
