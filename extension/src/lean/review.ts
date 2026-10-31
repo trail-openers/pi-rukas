@@ -100,14 +100,17 @@ export const FIX_BOUND_MS = 20 * 60_000;
 /**
  * One round's cost, in the unit the step's budget is counted in.
  *
- * A round is a reviewer, the six lenses, and a fixer, so a round is not one
- * child's 150 turns — that figure is what `runAdversarialLoop` bills PER CHILD,
- * and a child capped there makes every later claim a lower bound. Reading the
- * committed budget through that number gave 150 / 150 = **one** round, which is
- * not a review loop at all: a round that finds something can only fix, and the
- * fix is never re-reviewed, so the step certifies a head no gate looked at. Two
- * children's worth is the smallest number under which a budget of one round can
- * still fix and re-review, which is the whole point of the step.
+ * A round is one reviewer dispatch (report-only, so the loop runs no fixer of
+ * its own), the six lens children, and one fixer — so the honest lower bound is
+ * the reviewer's turns plus a fixer's. Measured reviewer rounds run to hundreds
+ * of turns, and charging a round a SINGLE child's figure made
+ * `budgets.review.turns` buy exactly ONE round. One round is not a review loop:
+ * a round that finds something can only fix, never re-review, so the step
+ * certifies a head no gate looked at (what it shipped as, at 150/150). Two
+ * children's worth is the smallest figure under which the committed budget still
+ * fixes AND re-reviews. A cost ESTIMATE, not a per-child ceiling: `review` arms
+ * no budget of its own (see `BUDGET_STATES` in `state-outcome.ts`) and each gate
+ * bounds its children by wall clock, so under-bounding costs rounds, not safety.
  */
 const TURNS_PER_ROUND = 300;
 
@@ -118,6 +121,17 @@ export interface LensRound {
   findings: string;
   /** What the six children reported, or `undefined` when none of them ran. */
   usage: DispatchUsage | undefined;
+  /**
+   * The round ran no lens at all — the empty-delta outcome the review layer
+   * reports as "NO REVIEW", which is deliberately NOT an approval even though
+   * its verdict field is `APPROVED`. Carried rather than derived from `usage`
+   * because a round that ran its lenses and reported no usage is a different
+   * fact from one that ran none, and this step refuses both for different
+   * reasons. The frozen driver reads the same field on the summary and routes
+   * it to handoff (`work-driver-lens.ts`); it never reaches `done` there, and
+   * must not here either.
+   */
+  noReview?: boolean;
   /** Why the round owed the PR a residual-findings disclosure and did not make it. */
   note?: string;
 }
@@ -143,7 +157,7 @@ export interface LensArgs {
   round: number;
   /** The context lines this step composes (see `review-prompt.ts`). */
   context: string;
-  /** Post-change prose and the deterministic claim scan, read from the head ref. */
+  /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
   extraFindings: Parameters<typeof runLensReview>[0]["extraFindings"];
   /** The headless trust stamp this run's children carry. */
@@ -239,10 +253,16 @@ async function lensGate(
   // What the last fix pass moved, so a lens reads the delta first and weighs it
   // specifically for what the fix broke beside the line it repaired.
   const delta = await lensFixDelta(ctx.repoRoot, opts.branch, opts.since);
-  // Both of these read the HEAD REF, never the filesystem: the trees lean works
-  // in are detached at the base, so anything opened here is the pre-change text.
-  const evidence = await buildEvidence(ctx.repoRoot, head, diff);
-  const extraFindings = await runClaimScan(deps.exec, ctx.repoRoot, head, diff);
+  // Both read the BRANCH, not `head`: each builds an `origin/<branch>` ref
+  // internally (`lens-evidence.ts`, `work-driver-diff.ts`), and `head` is a
+  // resolved 40-hex sha, so `origin/<sha>` is a ref that cannot exist. Every
+  // failure inside them is swallowed, so passing the sha does not throw — it
+  // silently reports "no claims to check, no prose to supply", which is the
+  // same shape as a clean scan. Same reason the frozen driver passes
+  // `ps.branchName` (work-driver-lens.ts:158-165). `head` stays what the review
+  // RANGES over; the branch is what these two read ON.
+  const evidence = await buildEvidence(ctx.repoRoot, opts.branch, diff);
+  const extraFindings = await runClaimScan(deps.exec, ctx.repoRoot, opts.branch, diff);
   let round: LensRound;
   try {
     round = await deps.lens({
@@ -345,6 +365,25 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       carried,
       rows,
     });
+    // "A gate that did not run is never a gate that passed", enforced on the
+    // lens round itself rather than only on the adversarial one: the review
+    // layer reports an empty-delta round as `verdict: "APPROVED"` with no lens
+    // behind it (its own docs say every consumer must branch on `noReview`),
+    // and a round whose lenses all died reports no usage at all. Either one
+    // reaching `done` would tell the operator the head was reviewed when the
+    // step paid for nobody to look at it.
+    if (lens.noReview === true)
+      throw new ReviewInfraError(
+        `the six-lens review ran no lens (nothing changed since the last recorded run${
+          lens.note === undefined ? "" : `: ${lens.note}`
+        }) — a head nobody re-reviewed is not a pass`,
+        rows,
+      );
+    if (lens.usage === undefined)
+      throw new ReviewInfraError(
+        `the six-lens review reported ${lens.verdict} with no usage from any lens child — that is not a pass: ${lens.findings.slice(0, 300)}`,
+        rows,
+      );
     if (lens.verdict === "APPROVED")
       return {
         kind: "done",
@@ -426,6 +465,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         verdict: summary.verdict,
         findings: renderFindings(summary),
         usage: summary.usage,
+        // The one field that distinguishes "no lens ran" from "lenses ran and
+        // found nothing", and the only place it is stated — `verdict` says
+        // APPROVED for both. Dropping it here is what would let the empty-delta
+        // outcome read as a clean review.
+        ...(summary.noReview === true ? { noReview: true } : {}),
         // The disclosure the round owed and may not have made. `runLensReview`
         // posts it itself for an ISSUES_FOUND round and reports a failed post
         // here, so this step adds nothing and only carries the reason to the
