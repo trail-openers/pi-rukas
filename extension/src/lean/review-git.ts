@@ -127,11 +127,24 @@ async function runFixer(
   opts: ReviewFixArgs & { rows: DispatchUsageRow[]; worktreeRunId: FixRunId },
 ): Promise<void> {
   let result: DispatchResult;
+  // The budget arms are DESTRUCTURED rather than spread, for the one reason
+  // `review-deps.ts` gives for the lens leg: spreading `opts.budget.opts` after
+  // `childBoundMs: FIX_BOUND_MS` re-supplied the key and the budget's value WON,
+  // which made this constant decoration. `arms` is what the fixer may inherit
+  // (the abort signal and the progress hook) with the one key it must not own
+  // taken out of the object AND out of the type, so a future spread that could
+  // carry a `childBoundMs` is a compile error rather than a bug waiting for
+  // someone to reorder the lines. Same shape as `review-deps.ts`'s lens seam —
+  // one shape for this rule in the module, not a helper.
+  const { childBoundMs: budgetBoundMs, ...arms } = opts.budget.opts;
   try {
     result = await deps.dispatch(
       { role: FIXER_ROLE, prompt: fixPrompt(opts), cwd: opts.worktree },
       {
-        childBoundMs: FIX_BOUND_MS,
+        // The smaller of the step's own ceiling and the armed budget's: a budget
+        // may only ever TIGHTEN the fixer's bound, never lengthen it, which is
+        // what a budget has to mean for the most expensive child this step buys.
+        childBoundMs: Math.min(FIX_BOUND_MS, budgetBoundMs ?? Number.POSITIVE_INFINITY),
         // The fixer is a developer with a worktree and a contract, which is what
         // `build`'s builder is too — so it gets the same fence. Without one a
         // fixer could write anywhere the process can write, and the whole
@@ -148,10 +161,10 @@ async function runFixer(
             `lean-${String(opts.issue)}`,
           ),
         },
-        // The step's budget, not just a wall clock: the fixer is the child this
-        // step pays the most for after the six lenses, and it was the one running
-        // with no ceiling armed at all.
-        ...opts.budget.opts,
+        // The step's budget's other arms: the abort the turns/tokens levers fire
+        // and the progress hook that fires it. `childBoundMs` is the one arm taken
+        // out above, so the spread cannot re-supply it.
+        ...arms,
       },
     );
   } catch (err) {
