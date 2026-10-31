@@ -27,6 +27,7 @@ import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
+import { FIX_RUN_ID_SHAPE } from "../../src/lean/review-log.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
@@ -97,7 +98,7 @@ export const USAGE = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0
  */
 export function lensRowResult(n: number, over: Partial<LensRunResult> = {}): LensRunResult {
   return {
-    lens: LENS_NAMES[n % LENS_NAMES.length],
+    lens: LENS_NAMES[n % LENS_NAMES.length] as LensName,
     ok: true,
     ms: 100 * (n + 1),
     startMs: 0,
@@ -292,6 +293,23 @@ export function cleanupRoots(): void {
 
 export { MAX_REVIEW_ROUNDS, ReviewInfraError } from "../../src/lean/review.ts";
 export type { DispatchUsageRow, FixRunId } from "../../src/lean/step-budget.ts";
+import type { FixRunId as _FixRunId } from "../../src/lean/step-budget.ts";
+/**
+ * A tree-run identity the step will accept.
+ *
+ * `FixRunId` is a branded string — the brand is what stops an arbitrary string
+ * reaching `fixTreeName` and naming a tree nobody claims. A fixture has to build
+ * one legitimately rather than `as never` past the check, or the suite drives a
+ * value production would refuse and the assertion proves nothing about the real
+ * path. The shape asserted here is `FIX_RUN_ID_SHAPE`'s own, so a fixture that
+ * drifted from the validator's grammar fails at construction, not in a
+ * downstream assertion that would have blamed the step.
+ */
+export function fixRunId(millis: string): _FixRunId {
+  if (!FIX_RUN_ID_SHAPE.test(millis))
+    throw new Error(`not a tree-run identity: ${JSON.stringify(millis)}`);
+  return millis as _FixRunId;
+}
 export { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
 export { DISPATCHES_MAX_ROWS } from "../../src/lean/state-outcome.ts";
 export { FIXER_ROLE, LENS_ROLE } from "../../src/lean/step-budget.ts";

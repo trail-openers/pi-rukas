@@ -38,10 +38,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
+import { errorOutcome } from "../src/lean/error-outcome.ts";
+import type { DispatchUsageRow } from "../src/lean/step-budget.ts";
 import { FIX_RUN_ID_SHAPE, prNumberFromLog, reviewAttemptFromLog } from "../src/lean/review-log.ts";
 import { fixTreeName } from "../src/lean/review-tree.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
-import type { DispatchSpec } from "../src/types.ts";
+import type { DispatchResult, DispatchSpec } from "../src/types.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
@@ -55,6 +57,7 @@ import {
   cleanupRoots,
   ctxFor,
   depsWith,
+  fixRunId,
   git,
   makeRepo,
   result,
@@ -144,7 +147,7 @@ const { assert, failures } = makeAssert();
     return result({ role: FIXER_ROLE });
   };
   let advCalls = 0;
-  const runWithAdv = async (over: Parameters<typeof result>[0]) => {
+  const runWithAdv = async (over: Partial<DispatchResult>) => {
     seen.length = 0;
     advCalls = 0;
     return run(
@@ -155,7 +158,8 @@ const { assert, failures } = makeAssert();
         // against a head the fixer moved is a deterministic gate the step now
         // refuses to buy again (`stagnantAgainstFix`), which would end the run
         // before the carry this case is about ever reached a lens round.
-        adversarial: async () => result({ ...over, text: `${over.text} [${String(advCalls++)}]` }),
+        adversarial: async () =>
+          result({ ...over, text: `${over.text ?? ""} [${String(advCalls++)}]` }),
         lens: async (a) => {
           seen.push(a.context);
           return cleanLensRound();
@@ -181,7 +185,7 @@ const { assert, failures } = makeAssert();
     `(o1) the round still clears once the gate is happy (${o1.threw?.message})`,
   );
   assert(
-    seen.length >= 1 && seen[0].includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
+    seen.length >= 1 && seen[0]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
     "(o1) and the non-APPROVED trailing record reached the lens context — decided by the RECORD, not the prose, which never said PASSED WITH FINDINGS",
   );
 
@@ -196,7 +200,7 @@ const { assert, failures } = makeAssert();
     `(o2) an APPROVED trailing record clears (${o2.threw?.message})`,
   );
   assert(
-    seen.length >= 1 && !seen[0].includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
+    seen.length >= 1 && !seen[0]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
     "(o2) and nothing is carried forward on an APPROVED record, even though the prose holds the findings marker",
   );
 
@@ -213,7 +217,7 @@ const { assert, failures } = makeAssert();
     `(o3) the step does not throw on an unparsed trailing record (${o3.threw?.message})`,
   );
   assert(
-    seen.length >= 1 && seen[0].includes("a real finding"),
+    seen.length >= 1 && seen[0]!.includes("a real finding"),
     "(o3) and the unparsed trailing record still counts as outstanding — a defaulted status is not an approval",
   );
 
@@ -223,7 +227,7 @@ const { assert, failures } = makeAssert();
     text: "Adversarial PASSED WITH FINDINGS: 2. the carried one",
   });
   assert(
-    o4.threw === undefined && seen.length >= 1 && seen[0].includes("the carried one"),
+    o4.threw === undefined && seen.length >= 1 && seen[0]!.includes("the carried one"),
     "(o4) with no records at all, the prose marker is what carries the findings",
   );
 
@@ -362,8 +366,13 @@ const { assert, failures } = makeAssert();
     PI_ENSEMBLE_WRITE_REPO: String(fence?.repo),
     PI_ENSEMBLE_WRITE_SCRATCH: path.join(repoRoot, "scratch"),
   });
+  // The fence config is the one the SPAWN stamps, read through the loader the
+  // guard itself uses. If it did not load there is no fence to judge with and
+  // the case is vacuous, so it fails here rather than judging a `undefined` cfg
+  // into an agreeable verdict.
+  if (cfg === undefined) throw new Error("(r) the fence config did not load from the spawn's env");
   assert(
-    cfg !== undefined && cfg.root !== undefined,
+    cfg.root !== undefined,
     "(r) the fence config loads from the spawn's env",
   );
   const inside = judgeWrite(path.join(wt, "src", "ok.ts"), wt, cfg);
@@ -460,7 +469,7 @@ const { assert, failures } = makeAssert();
     `(t) and so do the six lens children, clamped no higher than the step's own ceiling (got ${String(seen.lensBound)})`,
   );
   assert(
-    clean.outcome?.dispatches.some((r) => r.role === FIXER_ROLE) === false,
+    clean.outcome?.dispatches?.some((r) => r.role === FIXER_ROLE) === false,
     "(t) a clean branch dispatches no fixer, so the fixer's bound is asserted on the fix path below",
   );
 
@@ -477,7 +486,13 @@ const { assert, failures } = makeAssert();
       adversarial: async (a) => {
         // The child reports progress past the ceiling, exactly as `spawn.ts`'s
         // stdout handler does, and the armed hook must abort on it.
-        a.budget.opts.onProgress?.({ turns: 9, totalTokens: 9_000_000 });
+        a.budget.opts.onProgress?.({
+          role: FIXER_ROLE,
+          turns: 9,
+          toolUses: 9,
+          totalTokens: 9_000_000,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 9 },
+        } as never);
         abortSeen.push(a.budget.opts.signal?.aborted === true ? 1 : 0);
         // A child the abort ended comes back with its cause stamped, as `spawn.ts`
         // returns it. Reporting `approved` here would let the step keep going on a
@@ -520,7 +535,7 @@ const { assert, failures } = makeAssert();
     value: number;
     used: number;
     dispatches?: DispatchUsageRow[];
-  };
+  } & Record<string, unknown>;
   assert(
     stop.limit === "minutes" && stop.value === reviewMinutes && stop.used === 31,
     `(t) and the verdict names the lever, the ceiling from \`budgets.review\` and the usage the child reported, so the operator can see which number to raise (got ${JSON.stringify([stop.limit, stop.value, stop.used])})`,
@@ -580,7 +595,7 @@ const { assert, failures } = makeAssert();
     `(u) and no two of them share a path — a collision here is silently ADOPTED by \`add --force\`, which is how this read as "the fixer fixed nothing" (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
   );
   assert(
-    trees.length >= 2 && trees[0].includes("-fix-a-1-") && trees[1].includes("-fix-l-1-"),
+    trees.length >= 2 && trees[0]!.includes("-fix-a-1-") && trees[1]!.includes("-fix-l-1-"),
     `(u) the two arms of round 1 name the adversarial tree and the lens tree (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
   );
   // Both commits are on origin: the second fix built ON the first, which is what
@@ -602,7 +617,7 @@ const { assert, failures } = makeAssert();
     "l",
     2,
     reviewAttemptFromLog(ctxA.steps),
-    "1793451347919" as never,
+    fixRunId("1793451347919"),
   );
   const resumed = fixTreeName(
     repoRoot,
@@ -610,7 +625,7 @@ const { assert, failures } = makeAssert();
     "l",
     2,
     reviewAttemptFromLog(ctxA.steps),
-    "1793451347919" as never,
+    fixRunId("1793451347919"),
   );
   assert(
     first === resumed,
@@ -622,7 +637,7 @@ const { assert, failures } = makeAssert();
     "l",
     2,
     reviewAttemptFromLog(ctxA.steps) + 1,
-    "1793451347919" as never,
+    fixRunId("1793451347919"),
   );
   assert(
     concurrent !== first,
@@ -683,6 +698,71 @@ const { assert, failures } = makeAssert();
   assert(
     leftover.length === 0,
     `(u) no fixer tree survives the step (${JSON.stringify(leftover)})`,
+  );
+}
+
+// ── (w) a row count BEYOND the cap: what the loader's own validator keeps ──
+//
+// (s) and wiring (e3)/(f) prove the step CLIPS what it hands back. They do not
+// prove the recording path agrees, and the two are separate code: `errorOutcome`
+// runs `validatedDispatches` and then clips again, on an err whose `dispatches`
+// came from somewhere else entirely — a resumed run, a hand-built record, a
+// future caller. A row that fails validation is DROPPED rather than recorded
+// wrong, so a cap test that only counted would pass while silently losing rows.
+// This drives more rows than the cap allows, plus two that must not survive
+// validation, and asserts the survivor set exactly.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+  const rowAt = (n: number) => ({
+    role: FIXER_ROLE,
+    ms: 1000 + n,
+    ok: true,
+    usage: { input: n, output: n, cacheRead: 0, cacheWrite: 0, cost: n, turns: 1 },
+  });
+  // Four rows more than the record may hold, with distinct `ms` so an ordering
+  // mistake (keep-the-head instead of keep-the-tail) is visible rather than
+  // plausible.
+  const many = Array.from({ length: DISPATCHES_MAX_ROWS + 3 }, (_, i) => rowAt(i + 1));
+  // One malformed row: `ms` is not a number, so `isMeasure` refuses it and the
+  // validator drops the whole row rather than coercing it. `ms` is typed `number`
+  // on a valid row, so the drop is proved by the survivor SET below (the bad row
+  // is not among them) and by the total (one fewer than was offered), not by a
+  // comparison against a value the type says cannot exist.
+  const bad = { role: FIXER_ROLE, ms: "not-a-number", ok: true, usage: {} };
+  const err = Object.assign(new Error("over the cap"), {
+    dispatches: [...many.slice(0, 3), bad, ...many.slice(3)],
+  });
+  const recorded = errorOutcome("review", err);
+  assert(
+    recorded.kind === "error" && recorded.message === "over the cap",
+    `(w) the message always survives, whatever the rows do (${recorded.kind})`,
+  );
+  const kept = recorded.dispatches ?? [];
+  assert(
+    kept.length === DISPATCHES_MAX_ROWS,
+    `(w) the record holds exactly the cap's worth of rows, not the ${String(many.length + 1)} the thrower offered (got ${String(kept.length)})`,
+  );
+  assert(
+    !kept.some((r) => String(r.ms) === "not-a-number"),
+    "(w) the malformed row is DROPPED by the validator rather than recorded with a non-numeric duration",
+  );
+  // Keep-the-tail: the last DISPATCHES_MAX_ROWS of the well-formed rows, in order.
+  const want = many.slice(-(DISPATCHES_MAX_ROWS)).map((r) => r.ms);
+  const got = kept.map((r) => r.ms);
+  assert(
+    want.length === got.length && want.every((v, i) => got[i] === v),
+    `(w) and the survivors are the NEWEST rows, not the oldest — an eviction that kept the head would report the cheap early children and drop the expensive fixers (${got[0]}..${got[got.length - 1]})`,
+  );
+  // And the corollary the whole clip exists for: a record this long is one the
+  // loader accepts rather than drops whole.
+  const reloaded = errorOutcome("review", {
+    dispatches: kept,
+    message: "over the cap",
+  });
+  assert(
+    (reloaded.dispatches ?? []).length === DISPATCHES_MAX_ROWS,
+    "(w) a clipped record survives a second pass through the validator — it is the shape the loader keeps, not the one it discards",
   );
 }
 

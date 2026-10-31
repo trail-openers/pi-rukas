@@ -31,7 +31,7 @@
 
 import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
-import { prNumberFromLog } from "../src/lean/review-log.ts";
+import { FIX_RUN_ID_SHAPE, prNumberFromLog } from "../src/lean/review-log.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";
 import type { DispatchSpec } from "../src/types.ts";
@@ -279,6 +279,79 @@ const { assert, failures } = makeAssert();
   );
 }
 
+// ── (d2) the frozen proof holds for paths git makes awkward ─────────────────
+//
+// The frozen map is keyed by path and the proof re-hashes `git show <ref>:<path>`.
+// Two path shapes have broken path-keyed proofs before: a NESTED path, where a
+// proof that joined the key onto a tree root without the subdirectory reads the
+// wrong blob and matches nothing (or worse, matches the wrong file); and a path
+// containing a SPACE, where any read that went through a shell string rather
+// than an argv array splits into two arguments. (d) drives one flat path, so
+// neither shape was ever exercised. Both must still be refused when rewritten,
+// and the flat case must still pass.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+  const show = (ref: string, p: string): string =>
+    git(repoRoot, "show", `${ref}:${p}`);
+
+  // The two awkward paths, created and committed at HEAD.
+  const NESTED = "tests/nested/deep/AC2.test.ts";
+  const SPACED = "tests/AC 3 spaced.test.ts";
+  put(repoRoot, NESTED, "// frozen nested\n");
+  put(repoRoot, SPACED, "// frozen spaced\n");
+  git(repoRoot, "add", "-A");
+  git(repoRoot, "commit", "-q", "-m", "test: frozen contract with nested and spaced paths");
+
+  const frozen: Record<string, string> = {
+    [NESTED]: sha256(show("HEAD", NESTED)),
+    [SPACED]: sha256(show("HEAD", SPACED)),
+  };
+  assert(
+    Object.keys(frozen).length === 2 && frozen[NESTED] !== frozen[SPACED],
+    "(d2) precondition: the two odd paths are distinct frozen entries, read back through git",
+  );
+
+  const ctx = ctxFor(repoRoot, baseSha, BRANCH);
+  ctx.run.steps.push({
+    key: "7:specify:0",
+    state: "specify",
+    startedAt: 1,
+    endedAt: 2,
+    outcome: { kind: "ok", frozen, tests: { AC2: [NESTED], AC3: [SPACED] } },
+  });
+
+  // Both frozen files rewritten in one round: the refusal must name BOTH.
+  const { threw } = await run(
+    ctx,
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      dispatch: async (spec: DispatchSpec) => {
+        const wt = spec.cwd as string;
+        put(wt, NESTED, "// cheated nested\n");
+        put(wt, SPACED, "// cheated spaced\n");
+        git(wt, "add", "-A");
+        git(wt, "commit", "-q", "-m", "fix: cheated both");
+        return result({ role: FIXER_ROLE });
+      },
+    }),
+  );
+  assert(
+    threw instanceof ReviewInfraError && /frozen acceptance contract/.test(threw.message),
+    `(d2) a fixer that rewrote the nested and space-bearing frozen tests is refused (${threw?.message})`,
+  );
+  assert(
+    threw !== undefined &&
+      threw.message.includes("nested") &&
+      threw.message.includes("spaced"),
+    `(d2) and the refusal NAMES both odd paths, so the operator can see which two files the fixer touched (${threw?.message})`,
+  );
+  assert(
+    git(repoRoot, "rev-parse", `origin/${BRANCH}`) === head,
+    "(d2) neither cheat reached origin",
+  );
+}
+
 // ── the preconditions, all paid for before any child is ─────────────────────
 {
   const { repoRoot, baseSha } = makeRepo();
@@ -348,8 +421,6 @@ const { assert, failures } = makeAssert();
     `(e3) and it really paid for ${String(MAX_REVIEW_ROUNDS)} lens rounds rather than one (${String(e3LensRounds)})`,
   );
   assert(
-    (t3 as ReviewInfraError | undefined)?.dispatches.length ===
-      MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1),
     (t3 as ReviewInfraError | undefined)?.dispatches.length === DISPATCHES_MAX_ROWS,
     `(e3) the rows on the refusal are CLIPPED to the validator's own cap: this run paid for ${String(MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1))} children and the record may hold ${String(DISPATCHES_MAX_ROWS)}, so an unbounded handback would have been dropped by the loader whole (got ${String((t3 as ReviewInfraError | undefined)?.dispatches.length)})`,
   );
