@@ -21,11 +21,14 @@ import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
-import type { LensRound } from "../../src/lean/review.ts";
-import { type ReviewDeps, ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
+import { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
+import type { LensRound, ReviewDeps } from "../../src/lean/review.ts";
+import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
+import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
+import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { put } from "./lean-build-fixture.ts";
@@ -47,6 +50,25 @@ export function git(dir: string, ...args: string[]): string {
   if (r.status !== 0)
     throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
   return (r.stdout ?? "").trim();
+}
+
+/**
+ * The env the harness's REAL `execp` hands its children.
+ *
+ * `execp` forwards `opts.env` verbatim — no merge with `process.env` — and
+ * `src/lean/review-deps.ts` builds that env as the git view plus nothing else.
+ * A minimal env with no PATH is an env in which `git` cannot be found, so the
+ * step's own git reads all came back as failures; and with no HOME or identity,
+ * a fixer's `git commit` died on "Please tell me who you are" — which read as a
+ * broken integration rather than a fixture that had quietly replaced the
+ * environment. So: the real parent env, plus the isolation the git view needs,
+ * plus the identity. The fixture's git calls and the step's git calls must see
+ * the same environment, or a case only ever proves the stub works.
+ */
+export function stepGitEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
+  return { ...env, ...gitEnv() };
 }
 
 /** A repo with a base commit, a `main` branch, and a bare origin it pushes to. */
@@ -109,6 +131,12 @@ const LENS_NAMES: LensName[] = [
  * A clean six-lens round: six children, each with its own usage, which is what
  * a round that actually ran looks like. A round with `usage: undefined` is a
  * round that ran nobody, and the step refuses it (`test-lean-review-absence.ts`).
+ *
+ * The round's aggregate comes from `aggregateLensUsage`, the PRODUCTION fold the
+ * review layer itself uses. A fixture that hand-rolled the sum was a second
+ * definition of "what a round cost" inside the tests: it kept agreeing with the
+ * fixture's own arithmetic while the rows the step actually bills came from
+ * `lensRows`, and the two could drift with nothing red.
  */
 export function cleanLensRound(): LensRound {
   const lenses = LENS_NAMES.map((_, i) => lensRowResult(i));
@@ -116,26 +144,21 @@ export function cleanLensRound(): LensRound {
     verdict: "APPROVED",
     findings: "",
     lenses,
-    usage: lenses.reduce(
-      (acc, l) =>
-        l.usage === undefined
-          ? acc
-          : {
-              input: acc.input + l.usage.input,
-              output: acc.output + l.usage.output,
-              cacheRead: acc.cacheRead + l.usage.cacheRead,
-              cacheWrite: acc.cacheWrite + l.usage.cacheWrite,
-              cost: acc.cost + l.usage.cost,
-              turns: acc.turns + l.usage.turns,
-            },
-      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-    ),
+    usage: aggregateLensUsage(lenses),
   };
 }
 
+/**
+ * One dispatch result. The default role is `ADVERSARIAL_GATE_ROLE` — the role
+ * the adversarial LOOP synthesises, not the inner reviewer's — because the
+ * adversarial stubs here stand for the loop's return value. Spelling the wrong
+ * role in the fixture and the same wrong role in the assertion is how this row
+ * was mis-attributed for a whole release: both sides agreed and nothing pinned
+ * it, so the fixture carries the production constant instead.
+ */
 export function result(over: Partial<DispatchResult> = {}): DispatchResult {
   return {
-    role: "adversarial-developer",
+    role: ADVERSARIAL_GATE_ROLE,
     ok: true,
     text: "",
     toolUses: [],
@@ -150,13 +173,13 @@ export function result(over: Partial<DispatchResult> = {}): DispatchResult {
 export function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
   return {
     headless: false,
-    exec: (cmd, o) => execp(cmd, { ...(o ?? {}), env: { ...gitEnv(), ...(o?.env ?? {}) } }),
+    exec: (cmd, o) => execp(cmd, { ...(o ?? {}), env: { ...stepGitEnv(), ...(o?.env ?? {}) } }),
     adversarial: async () => result({ loopOutcome: "approved" }),
     // The production shape of a clean round: six lenses ran, each with its own
     // usage. A round with no lens records is a round that ran nobody, and the
     // step refuses it (`test-lean-review-absence.ts`).
     lens: async () => cleanLensRound(),
-    dispatch: async () => result({ role: "developer" }),
+    dispatch: async () => result({ role: FIXER_ROLE }),
     fetchIssueBody: async () => "body",
     loadConfig: async () => defaultConfig(),
     ...over,
@@ -222,6 +245,28 @@ export function frozenBlob(repoRoot: string, ref: string): string {
   return r.stdout ?? "";
 }
 
+/**
+ * A fixer stub that DOES its job: writes a file and commits it in the tree the
+ * step dispatched it to.
+ *
+ * The default `dispatch` above commits nothing, which is the right stub for the
+ * no-progress case and the wrong one for every case that needs the loop to reach
+ * a later round: a fixer that commits nothing is refused by `assertFixAdvanced`
+ * (correct product behaviour) and the case then measures that break instead of
+ * what it names. `tag` makes each round's commit unique, so two rounds cannot
+ * produce byte-identical trees and the head genuinely advances each time.
+ */
+export function fixerThatCommits(tag: string) {
+  let n = 0;
+  return async (spec: DispatchSpec): Promise<DispatchResult> => {
+    const wt = spec.cwd as string;
+    put(wt, `fix-${tag}-${String(n++)}.ts`, "export const x = 1;\n");
+    git(wt, "add", "-A");
+    git(wt, "commit", "-q", "-m", `fix: ${tag}`);
+    return result({ role: FIXER_ROLE });
+  };
+}
+
 /** Run the step; a throw comes back as the error so each case asserts on it. */
 export async function runStep(
   ctx: HandlerCtx,
@@ -245,5 +290,9 @@ export function cleanupRoots(): void {
   }
 }
 
-export { ReviewInfraError };
+export { MAX_REVIEW_ROUNDS, ReviewInfraError } from "../../src/lean/review.ts";
+export type { DispatchUsageRow, FixRunId } from "../../src/lean/step-budget.ts";
+export { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
+export { DISPATCHES_MAX_ROWS } from "../../src/lean/state-outcome.ts";
+export { FIXER_ROLE, LENS_ROLE } from "../../src/lean/step-budget.ts";
 export type { DispatchSpec, Outcome, ReviewDeps };
