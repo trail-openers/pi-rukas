@@ -37,7 +37,6 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { assertPublishableBranch } from "./publish-deps.ts";
 import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
 import {
   type FixArm,
@@ -342,18 +341,13 @@ async function integrate(
     const undone = await restore(deps, wt, branch, opts.gateRead);
     throw new ReviewInfraError(`${why}${restoredSentence(undone, wt, opts.gateRead)}`, opts.rows);
   };
-  // The push target is state-file data, so it gets `publish`'s guard BEFORE the
-  // first mutating git operation: `resetWorktreeToBase` below moves the run's
-  // branch with `-B` and cleans its tree, which mutates the one tree `verify`
-  // and `publish` read next. `assertSafeRef` alone only proves the name is a
-  // LEGAL git ref, and `main` is legal — so this, the second writer to origin in
-  // the pipeline, reused `publish`'s own decision rather than writing a third
-  // validator. Its documented fail-open for a clone with no `origin/HEAD` and no
-  // `gh` is kept as-is: an unresolvable mainline is ordinary, and refusing every
-  // fix push on it would be a new failure mode, not a tighter guard.
-  await assertPublishableBranch(repoRoot, branch).catch((err: unknown) => {
-    throw new ReviewInfraError((err as Error)?.message ?? String(err), opts.rows);
-  });
+  // The push target was already refused at the STEP ENTRY POINT —
+  // `reviewOutcome` calls `publish`'s `assertPublishableBranch` beside its
+  // `assertSafeRef`, before a child is paid or a tree is touched. It is deliberately
+  // NOT re-asked here: it spawns two subprocesses to resolve the mainline, the
+  // answer cannot change while a step runs, and this function is called once per
+  // fix round. What stays here is the cheap charset check beside the argv it
+  // protects, below.
   if (!isFullCommitSha(opts.fixHead))
     throw new ReviewInfraError(
       `the fix round reported no commit to integrate (${JSON.stringify(opts.fixHead.slice(0, 40))})`,
@@ -441,15 +435,17 @@ async function integrate(
   //
   // The name is checked with the driver's own `netRefProblem` immediately before
   // the argv is built — the placement `publish`'s `pushHead` uses (#1095). It
-  // reads the same charset `assertPublishableBranch` applied above, so this is
-  // NOT the guard — deleting it alone keeps every refusal in
-  // `test-lean-review-push-guards.ts` green, because the earlier call refuses the
-  // same names first. It is the check that sits beside the command line it
-  // protects, so an edit that MOVES or drops the earlier one cannot silently put a
-  // refspec (`a:b`), a force (`+x`) or an option (`-f`) — all of which
-  // `assertSafeRef` calls legal — in front of a network git call. The case that
-  // proves that layering is (x1)"s "refused before the worktree was touched"
-  // assertion, which goes red the moment `assertPublishableBranch` is removed.
+  // reads the same charset the entry-point `assertPublishableBranch` applied before
+  // this step paid for anything, so this is NOT the guard — deleting it alone keeps
+  // every refusal in `test-lean-review-push-guards.ts` green, because the earlier
+  // call refuses the same names first. It is the check that sits beside the command
+  // line it protects, so an edit that MOVES or drops the entry-point one cannot
+  // silently put a refspec (`a:b`), a force (`+x`) or an option (`-f`) — all of
+  // which `assertSafeRef` calls legal — in front of a network git call. The case
+  // that proves that layering is (x1)'s "refused before anything mutated" assertion
+  // (no `checkout -B`, no `reset --hard`, no `clean -fdx`, no `worktree add` in the
+  // recorded argv), which goes red the moment the entry-point call is moved back to
+  // after the first mutating git call — verified by performing that move.
   const unsafe = netRefProblem(`refs/heads/${branch}`);
   if (unsafe !== undefined) return await fail(`refusing to push ${branch}: ${unsafe}`);
   const pushed = await gitQuiet(deps.exec, wt, [

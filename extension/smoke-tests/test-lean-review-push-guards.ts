@@ -120,6 +120,7 @@ async function driveBranch(name: string): Promise<{
   head: string;
   pushed: string[];
   gitArgv: string[];
+  dispatches: number;
 }> {
   const { repoRoot, origin, baseSha } = makeRepo();
   const head = await setup({
@@ -130,9 +131,13 @@ async function driveBranch(name: string): Promise<{
   });
   const pushed: string[] = [];
   const gitArgv: string[] = [];
+  let dispatches = 0;
   const deps: ReviewDeps = depsWith({
     adversarial: rejectsThenClears("1. the finding the fixer will answer"),
-    dispatch: async () => result({ role: FIXER_ROLE }),
+    dispatch: async () => {
+      dispatches++;
+      return result({ role: FIXER_ROLE });
+    },
   });
   const exec = deps.exec;
   deps.exec = (cmd, o) => {
@@ -149,6 +154,7 @@ async function driveBranch(name: string): Promise<{
     head,
     pushed,
     gitArgv,
+    dispatches,
   };
 }
 
@@ -207,16 +213,32 @@ for (const { name, bothShip } of UNSAFE) {
     r.originMain !== r.head,
     `(x1) and origin's mainline is positively not the reviewed head (${r.originMain.slice(0, 12)} vs ${r.head.slice(0, 12)})`,
   );
-  // The placement, stated as an observation of what git was actually asked: the
-  // branch move (`checkout -B`) and the tree clean (`clean -fdx`) are the
-  // mutations the guard sits ahead of, and a guard placed after them would still
-  // throw and still damage the tree `verify` and `publish` read next.
+  // The placement, stated as an observation of what git was ACTUALLY ASKED — the
+  // assertion this case exists for, and the one a guard placed anywhere later still
+  // fails. The three shapes are the whole mutating surface a hostile name can
+  // damage before the refusal: `checkout -B` moves the run's branch, `reset --hard`
+  // throws away its commits, `clean -fdx` takes the tree (and the provisioner's
+  // dependency links) that `verify` and `publish` read next, and `worktree add`
+  // creates the fixer's disposable tree the round is paid for. A guard after any of
+  // them still throws, still bills the child, and still damages the tree — which is
+  // exactly where this guard shipped, and the reason "it threw" is not the claim.
   const mutated = r.gitArgv.filter(
-    (a) => a.includes("checkout") || a.includes("clean -fdx") || a.includes("reset"),
+    (a) =>
+      a.includes("checkout -B") ||
+      a.includes("reset --hard") ||
+      a.includes("clean -fdx") ||
+      a.includes("worktree add"),
   );
   assert(
     mutated.length === 0,
-    `(x1) and ${JSON.stringify(name)} was refused before the run's worktree was touched — the branch move/clean never ran (${JSON.stringify(mutated)})`,
+    `(x1) and ${JSON.stringify(name)} was refused BEFORE the first mutating git call — no branch move, no hard reset, no tree clean, no fix tree created (${JSON.stringify(mutated)})`,
+  );
+  // And the refusal cost nothing: the guard sits ahead of the adversarial gate and
+  // the fixer, so a hostile state file buys no child. An ordering guarantee that
+  // tolerates a paid fixer is a guarantee about argv alone, not about the run.
+  assert(
+    r.dispatches === 0,
+    `(x1) and no child was dispatched for ${JSON.stringify(name)} either — the refusal is before the step pays for anything (${String(r.dispatches)} dispatch(es))`,
   );
 }
 
