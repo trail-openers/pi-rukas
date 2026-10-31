@@ -489,6 +489,9 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       lastFix = lensRequested;
     }
   } finally {
-    await closeFixTrees(deps, ctx);
+    // Scoped to THIS attempt's trees (issue, attempt, epoch) — see `closeFixTrees`.
+    // An unscoped `-fix-` match tore down a concurrent attempt's live tree, which
+    // is the case `test-lean-review-tree.ts` (w) now drives.
+    await closeFixTrees(deps, ctx, attempt, runId);
   }
 }

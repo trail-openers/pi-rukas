@@ -223,7 +223,38 @@ export async function removeWorktree(
  * adopt: it holds the dead attempt's commits, and `--force` would have it adopted
  * rather than refused. A tree that is absent from the list costs one `prune`.
  */
-export async function closeFixTrees(deps: ReviewDeps, ctx: HandlerCtx): Promise<void> {
+/**
+ * Destroy the disposable trees THIS ATTEMPT opened, whatever ended the step.
+ *
+ * The step's `finally` calls this. A round that threw between `worktree add` and
+ * the child would otherwise leave a registered tree under a path this step owns
+ * exclusively, and the next attempt for the same issue and round could not create
+ * it again.
+ *
+ * **Scoped to what this attempt could have created, and that is the whole point.**
+ * The selector used to be `-fix-` anywhere in the path, which matched every fix
+ * tree of EVERY attempt: two attempts in flight — a resumed run, or a second cycle
+ * on the same issue — and one step's `finally` deleted the other's LIVE tree out
+ * from under a running fixer, so that child's `git commit` landed in a directory
+ * that no longer existed. The prefix now carries the issue, the attempt and the
+ * epoch this attempt read from the log (`fixTreeName`'s own shape, up to the
+ * per-visit arm/round part), so a sibling attempt's tree is not even a candidate.
+ *
+ * The registry is a `git` question, not a memory one: it lists every attached
+ * worktree under this clone's own `.git` (which `worktreePath` is), so it finds a
+ * tree this PROCESS never made — including the one a killed attempt of THE SAME
+ * run left behind, which a Set in memory could only ever find after a restart that
+ * had already lost it. A fix tree that survived a crash is exactly the tree a
+ * resume must not adopt: it holds the dead attempt's commits, and `--force` would
+ * have it adopted rather than refused. A tree that is absent from the list costs
+ * one `prune`.
+ */
+export async function closeFixTrees(
+  deps: ReviewDeps,
+  ctx: HandlerCtx,
+  attempt: number,
+  runId: FixRunId,
+): Promise<void> {
   const listed = await gitQuiet(deps.exec, ctx.repoRoot, [
     "worktree",
     "list",
@@ -234,11 +265,22 @@ export async function closeFixTrees(deps: ReviewDeps, ctx: HandlerCtx): Promise<
   // An unreadable list is not a claim that nothing is attached, so this does not
   // fall through to "no trees" — it prunes stale registrations and moves on, and
   // a tree that was there stays registered and traced by `removeWorktree`.
-  const prefix = `${worktreePath(ctx.repoRoot, "")}${path.sep}`;
+  // Built from `fixTreeName`'s own components rather than spelled out here: the
+  // layout comes from `worktreePath` (the repo's one expression of where worktrees
+  // live) and the component ORDER is the writer's —
+  // `lean-<issue>-fix-<arm>-<round>-<attempt>-<epoch>` — so the prefix and the names
+  // it selects cannot drift apart. The head stops before `<arm>` because one attempt
+  // opens trees on both arms and at every round; the tail is `<attempt>-<epoch>`,
+  // and those two components are what exclude a concurrent attempt's LIVE tree,
+  // which is the whole point of the scope. A tree of the same issue and attempt is
+  // named solely by this attempt's `fixTreeName` calls, so the pair selects exactly
+  // this attempt's fix trees and nothing a sibling or another issue owns.
+  const head = `${worktreePath(ctx.repoRoot, `lean-${String(ctx.issue)}-fix-`)}`;
+  const tail = `-${String(attempt)}-${runId}`;
   for (const line of (listed?.stdout ?? "").split("\n")) {
     if (!line.startsWith("worktree ")) continue;
     const wt = line.slice("worktree ".length).trim();
-    if (!wt.startsWith(prefix) || !wt.includes("-fix-")) continue;
+    if (!wt.startsWith(head) || !wt.endsWith(tail)) continue;
     await removeWorktree(deps, ctx.repoRoot, wt);
   }
 }
