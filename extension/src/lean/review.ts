@@ -262,8 +262,12 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // review costs.
   const budget = armBudget(budgetFor(config, "review"));
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
-  // What the budget's turn ceiling is, for the cause line only — the round
-  // count never reads it (see `MAX_REVIEW_ROUNDS`).
+  // What the turns lever is, for the cause line only. It bounds a CHILD's turn
+  // count (armed on every child through `armBudget`, which aborts the child whose
+  // progress passes it) — it never bounded the ROUND count, which is
+  // `MAX_REVIEW_ROUNDS` alone. Naming the number here says only what it bounds, so
+  // an operator raising `turns` is not led to expect more rounds (see
+  // `MAX_REVIEW_ROUNDS` for the one statement of how the two interact).
   const turnCap = budgetFor(config, "review")?.turns ?? 0;
 
   // `rows` accumulates across the WHOLE step, not one round: the handback must
@@ -419,7 +423,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         );
       if (round >= MAX_REVIEW_ROUNDS)
         throw new ReviewInfraError(
-          `findings still open after ${String(round)} review round(s) at the step's bound of ${String(MAX_REVIEW_ROUNDS)} rounds / ${String(turnCap)} turns: ${lens.findings.slice(0, 500)}`,
+          `findings still open after ${String(round)} review round(s) at the step's bound of ${String(MAX_REVIEW_ROUNDS)} rounds (the per-child turns ceiling was ${String(turnCap)}): ${lens.findings.slice(0, 500)}`,
           rows,
         );
       const fix = await fixRound(deps, ctx, {
