@@ -156,19 +156,25 @@ assert(
 //
 // A guard that dropped or mangled the real finding would be worse than the hole:
 // the step carries these findings precisely so the six lenses judge them.
+// (Not a bare block: biome's noUselessLoneBlockStatements refuses one that
+// declares nothing, and these section blocks are for reading, not scoping.)
 {
-  assert(
-    ctx.includes("a real finding the lenses must still see"),
-    "(3) the genuine finding still reaches the lens brief, byte for byte — the fence is an escaper, not a filter",
-  );
-  assert(
-    ctx.includes("[HIGH] SECURITY src/a.ts:12"),
-    "(3) and with its severity, lens and location intact, since the lens prompt's contract is one line per finding",
-  );
-  assert(
-    ctx.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
-    "(3) and still under the heading that tells the lens to weigh it itself",
-  );
+  const expected = [
+    [
+      "a real finding the lenses must still see",
+      "byte for byte — the fence is an escaper, not a filter",
+    ],
+    [
+      "[HIGH] SECURITY src/a.ts:12",
+      "with its severity, lens and location intact, since the lens prompt's contract is one line per finding",
+    ],
+    [
+      "OUTSTANDING FROM THE ADVERSARIAL GATE",
+      "still under the heading that tells the lens to weigh it itself",
+    ],
+  ] as const;
+  for (const [needle, why] of expected)
+    assert(ctx.includes(needle), `(3) the genuine finding still reaches the lens brief: ${why}`);
 }
 
 // ── (4) NO CARRIED BLOCK, NO BLOCK AT ALL ───────────────────────────────────

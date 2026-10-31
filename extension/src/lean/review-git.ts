@@ -35,9 +35,9 @@ import type { DispatchResult } from "../types.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
-import { assertPublishableBranch } from "./publish-deps.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { assertPublishableBranch } from "./publish-deps.ts";
 import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
 import {
   type FixArm,
@@ -442,10 +442,14 @@ async function integrate(
   // The name is checked with the driver's own `netRefProblem` immediately before
   // the argv is built — the placement `publish`'s `pushHead` uses (#1095). It
   // reads the same charset `assertPublishableBranch` applied above, so this is
-  // not the guard; it is the check that sits beside the command line it protects,
-  // so an edit that moves or drops the earlier one cannot silently put a refspec
-  // (`a:b`), a force (`+x`) or an option (`-f`) — all of which `assertSafeRef`
-  // calls legal — in front of a network git call.
+  // NOT the guard — deleting it alone keeps every refusal in
+  // `test-lean-review-push-guards.ts` green, because the earlier call refuses the
+  // same names first. It is the check that sits beside the command line it
+  // protects, so an edit that MOVES or drops the earlier one cannot silently put a
+  // refspec (`a:b`), a force (`+x`) or an option (`-f`) — all of which
+  // `assertSafeRef` calls legal — in front of a network git call. The case that
+  // proves that layering is (x1)"s "refused before the worktree was touched"
+  // assertion, which goes red the moment `assertPublishableBranch` is removed.
   const unsafe = netRefProblem(`refs/heads/${branch}`);
   if (unsafe !== undefined) return await fail(`refusing to push ${branch}: ${unsafe}`);
   const pushed = await gitQuiet(deps.exec, wt, [
