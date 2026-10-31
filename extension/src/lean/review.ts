@@ -59,53 +59,20 @@ import type { HandlerCtx } from "./engine.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
 import { fixRunId, fixRunIdFromLog, prNumberFromLog, reviewAttemptFromLog } from "./review-log.ts";
+import { assertFixAdvanced, stagnantAgainstFix } from "./review-progress.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+// The error lives in a leaf module so the extracted predicates can throw it without
+// importing this handler back. Re-exported so every existing `import { ... }
+// from "./review.ts"` — including the smoke fixtures' — keeps working.
+export { ReviewInfraError } from "./review-errors.ts";
+import { ReviewInfraError } from "./review-errors.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow, FixRunId } from "./step-budget.ts";
 import { armBudget, budgetFor, budgetVerdictWithRows } from "./step-budget.ts";
 
 /** The step's own throw: the run hands back, with this sentence as its cause. */
-export class ReviewInfraError extends Error {
-  override readonly name = "ReviewInfraError";
-  constructor(message: string, rows: DispatchUsageRow[] = []) {
-    super(message);
-    // CLIPPED HERE, once, rather than at each of the fifteen throw sites. Every
-    // `rows` in this step accumulates across the whole step, so a late throw
-    // carries every earlier round's children; past the validator's cap the loader
-    // does not reject the record, it DROPS the `dispatches` field, which silently
-    // un-bills the step's most expensive child. The tail is kept, so the child
-    // that decided the outcome is always among the rows the operator is handed —
-    // the same rule `error-outcome.ts` applies on the way out and the `done`
-    // return below applies on the way in.
-    this.dispatches = rows.slice(-DISPATCHES_MAX_ROWS);
-  }
-  readonly dispatches: DispatchUsageRow[];
-}
-
-/**
- * Did the gate just repeat itself? True when the same gate hands back the same
- * findings text against a head the fix round moved.
- *
- * `from !== after` is the whole point of the check: a gate that reports identical
- * findings against an UNmoved head is the `assertFixAdvanced` case, which throws
- * first and says something truer. This one fires only when a fix landed and the
- * verdict did not change, which is the shape of a deterministic gate nobody will
- * ever satisfy by fixing the same thing again.
- */
-function stagnantAgainstFix(
-  last: { gate: string; findings: string; from: string } | undefined,
-  now: { gate: string; findings: string; from: string },
-  after: string,
-): boolean {
-  return (
-    last !== undefined &&
-    last.gate === now.gate &&
-    last.findings === now.findings &&
-    now.from !== after
-  );
-}
 
 /** The state this step records under, for its budget verdict and its cause lines. */
 const STEP_NAME = "review";
@@ -243,40 +210,6 @@ export interface ReviewDeps {
   dispatch: BuildDispatch;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
-}
-
-/**
- * A fix round that moved nothing is infrastructure, not a clean round.
- *
- * The step would otherwise pay to re-review the identical commit it just
- * reviewed — and it would do so `MAX_REVIEW_ROUNDS` times, because nothing
- * else breaks the tie. A fixer that received findings and committed nothing did
- * not fix them; the next round returns the same findings.
- */
-async function assertFixAdvanced(
-  before: string,
-  after: string | undefined,
-  rows: DispatchUsageRow[],
-): Promise<string> {
-  // An integration that returned neither a head nor a stop is not a round that
-  // worked; it is a step that cannot say what it did, and `""` would compare
-  // unequal to `before` and sail through.
-  if (after === undefined || after === "")
-    throw new ReviewInfraError(
-      `the fix round reported no head and no budget stop — the step cannot tell what it did to ${before.slice(0, 12)}`,
-      rows,
-    );
-  if (after === before)
-    throw new ReviewInfraError(
-      `the fix round left the branch at ${before.slice(0, 12)} — it fixed nothing, and re-reviewing an identical commit is a round the run should not pay for`,
-      rows,
-    );
-  if (!isFullCommitSha(after))
-    throw new ReviewInfraError(
-      `the fix round returned an unusable head ${JSON.stringify(after.slice(0, 40))}`,
-      rows,
-    );
-  return after;
 }
 
 /** The `review` step. Returns `done` or a routed budget verdict; THROWS on anything else. */
