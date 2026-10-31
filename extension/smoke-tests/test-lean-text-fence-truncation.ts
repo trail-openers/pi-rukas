@@ -76,7 +76,7 @@ function fencedBody(rendered: string): string[] {
     `(2) a payload AT the bound is not clipped and carries NO marker — a marker that leaked into every fence would keep this suite's (1) green while telling six lens children their evidence was cut (${JSON.stringify(rendered)})`,
   );
   assert(
-    rendered === "```text\n" + under + "\n```",
+    rendered === `\`\`\`text\n${under}\n\`\`\``,
     `(2) and an unclipped fence is byte-identical to what it was before the marker existed — no stray blank line, no suffix (${JSON.stringify(rendered)})`,
   );
   const empty = fenceText("", MAX);
@@ -99,14 +99,15 @@ function fencedBody(rendered: string): string[] {
   );
   // The renderer's marker is appended after the backtick swap, so a payload full
   // of fence delimiters cannot break the line the marker sits on.
-  const hostile = ("```text\n".repeat(20) + "x").repeat(6);
+  const hostile = `${"```text\n".repeat(20)}x`.repeat(6);
   const clippedHostile = fenceText(hostile, MAX);
   assert(
     fencedBody(clippedHostile).includes(MARKER),
     `(3) and a hostile payload that gets clipped still gets its marker as a clean line — the backtick neutralisation runs before the marker is appended, not after (${JSON.stringify(fencedBody(clippedHostile).slice(-3))})`,
   );
   assert(
-    !clippedHostile.includes("```text\ntext") && fencedBody(clippedHostile).filter((l) => l === "```").length === 0,
+    !clippedHostile.includes("```text\ntext") &&
+      fencedBody(clippedHostile).filter((l) => l === "```").length === 0,
     "(3) and no payload backtick run closed the fence before the marker line",
   );
 }

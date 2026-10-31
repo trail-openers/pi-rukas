@@ -97,10 +97,7 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
 // ------------------------------------------------------ (a) text-fence's guarantees
 {
   const fenceOnly: unknown[] = [];
-  assert(
-    fenceText("a\nb", 100).startsWith("```text\n"),
-    "fenceText opens a text fence",
-  );
+  assert(fenceText("a\nb", 100).startsWith("```text\n"), "fenceText opens a text fence");
   // A clip is now LOUD. The old expectation — `…` and nothing else — is the
   // defect: a reader of a 20 KB findings block cannot tell "that is all there
   // was" from "the rest was cut off", and this block is one the lens reviewer is

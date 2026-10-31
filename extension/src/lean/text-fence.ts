@@ -45,8 +45,7 @@ const HORIZONTAL_ELLIPSIS = "…";
  * is the same family of defect as a gate that cannot fail: a silent truncation is
  * a lie by omission told to the one reader who cannot check.
  */
-const TRUNCATION_MARKER = (max: number): string =>
-  `\n[truncated at ${String(max)} characters]`;
+const TRUNCATION_MARKER = (max: number): string => `\n[truncated at ${String(max)} characters]`;
 
 /** Replace control characters that are not \n or \t with a space. */
 function soften(s: string): string {
