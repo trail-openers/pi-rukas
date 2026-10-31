@@ -97,10 +97,18 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
 // ------------------------------------------------------ (a) text-fence's guarantees
 {
   const fenceOnly: unknown[] = [];
-  assert(fenceText("a\nb", 100).startsWith("```text\n"), "fenceText opens a text fence");
   assert(
-    fenceText("x".repeat(20), 5) === "```text\nxxxxx…\n```",
-    "fenceText clips with an ellipsis",
+    fenceText("a\nb", 100).startsWith("```text\n"),
+    "fenceText opens a text fence",
+  );
+  // A clip is now LOUD. The old expectation — `…` and nothing else — is the
+  // defect: a reader of a 20 KB findings block cannot tell "that is all there
+  // was" from "the rest was cut off", and this block is one the lens reviewer is
+  // told to weigh as evidence. `…` stays (it marks the cut in the payload itself)
+  // and now rides with a line naming the bound that produced it.
+  assert(
+    fenceText("x".repeat(20), 5) === "```text\nxxxxx…\n[truncated at 5 characters]\n```",
+    "fenceText clips with an ellipsis AND says so inside the fence, with the bound",
   );
   assert(!fenceText("```` evil", 100).includes("````"), "fenceText neutralises a run of backticks");
   assert(oneLine("a\n### b\tc", 50) === "a ### b c", "oneLine flattens every control character");
