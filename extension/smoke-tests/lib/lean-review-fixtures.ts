@@ -258,10 +258,30 @@ export function frozenBlob(repoRoot: string, ref: string): string {
  * produce byte-identical trees and the head genuinely advances each time.
  */
 export function fixerThatCommits(tag: string) {
+  // Counted per (tree, tag), not per factory instance. A factory shared across
+  // cases in one repo — which is what the suite does, and correctly, since `setup`
+  // moves `origin/<branch>` for each — restarted at 0 for the next case and wrote
+  // `fix-<tag>-0.ts` again. The round's fix tree is named for
+  // arm-round-attempt-epoch, and the fixture's clock is frozen at 1, so a second
+  // case's round-1 tree reuses the first case's path; `git worktree add --force`
+  // then ADOPTS that registration with the earlier commit still in it, and the
+  // child's byte-identical commit is a no-op. The step sees the branch move twice
+  // for one fix round and integrates a head no child produced. Each distinct tree
+  // therefore gets its own counter, so every fix round's commit is genuinely new
+  // wherever in the suite it is dispatched.
+  const written = new Map<string, number>();
   let n = 0;
   return async (spec: DispatchSpec): Promise<DispatchResult> => {
     const wt = spec.cwd as string;
-    put(wt, `fix-${tag}-${String(n++)}.ts`, "export const x = 1;\n");
+    const seen = written.get(wt) ?? 0;
+    written.set(wt, seen + 1);
+    const name = `fix-${tag}-${String(seen)}.ts`;
+    // `put` skips a write whose content already matches, so a name that collided
+    // with a file in an adopted tree would leave the tree dirty in a way the fixer
+    // never caused. A second fix in the same tree gets a fresh name; the assertion
+    // that this exists for is in `test-lean-review-wiring.ts` (e3), where a branch
+    // that moved twice for one round shifts the cost-row clip by one.
+    put(wt, name, `export const x = ${String(n++)};\n`);
     git(wt, "add", "-A");
     git(wt, "commit", "-q", "-m", `fix: ${tag}`);
     return result({ role: FIXER_ROLE });
