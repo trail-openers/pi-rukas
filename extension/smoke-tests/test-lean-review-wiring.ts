@@ -29,7 +29,6 @@
  * `lib/lean-review-fixtures.ts`.
  */
 
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { defaultConfig } from "../src/lean/config.ts";
@@ -42,6 +41,7 @@ import {
   cleanupRoots,
   ctxFor,
   depsWith,
+  frozenBlob,
   git,
   makeRepo,
   result,
@@ -125,8 +125,10 @@ function assert(cond: boolean, msg: string): void {
   const { repoRoot, baseSha } = makeRepo();
   const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   const reviewed: string[] = [];
+  const seen2: string[] = [];
+  const ctx = ctxFor(repoRoot, baseSha, BRANCH);
   const { outcome, threw } = await run(
-    ctxFor(repoRoot, baseSha, BRANCH),
+    ctx,
     depsWith({
       adversarial: async (a) => {
         reviewed.push(`adv:${a.head}`);
@@ -165,8 +167,51 @@ function assert(cond: boolean, msg: string): void {
     `(c) round 2's reviewer read the FIXED head, not round 1's (${reviewed.join(", ")})`,
   );
   assert(
-    git(repoRoot, "merge-base", "--is-ancestor", head, branchHead) === "" || true,
+    git(repoRoot, "merge-base", "--is-ancestor", head, branchHead) === "",
     "(c) the pushed head descends from the reviewed head (git's own ancestry claim held)",
+  );
+
+  // (c2) THE SAME RUN, WITH THE FROZEN RECORD PRESENT. `integrate` proves every
+  // frozen blob at the fixer's head still hashes to its record before it pushes.
+  // That proof is a `git show` re-hashed against a sha256; a probe reading an
+  // OBJECT ID instead (`rev-parse <ref>:<path>`) matches nothing at all, so it
+  // would refuse every fix round that ever committed — in the one place the step
+  // claims to enforce the contract. A run that froze nothing cannot catch that:
+  // `frozen` is empty and the comparison never runs. So this is (c) again with
+  // the map the fixture's own base commit hashes to, and asserts the half (d)
+  // cannot: a legitimate fix still lands.
+  const frozenNow = { "tests/AC1.test.ts": sha256(frozenBlob(repoRoot, "HEAD")) };
+  ctx.run.steps.push({
+    key: "7:specify:0",
+    state: "specify",
+    startedAt: 1,
+    endedAt: 2,
+    outcome: { kind: "ok", frozen: frozenNow, tests: { AC1: ["tests/AC1.test.ts"] } },
+  });
+  const second = await run(
+    ctx,
+    depsWith({
+      adversarial: async () => {
+        seen2.push("x");
+        if (seen2.length === 1) return result({ loopOutcome: "rejected", text: "1. leak" });
+        return result({ loopOutcome: "approved" });
+      },
+      lens: async () => ({ verdict: "APPROVED", findings: "", usage: USAGE }),
+      dispatch: async (spec: DispatchSpec) => {
+        put(spec.cwd as string, "second-fix.ts", "export const s = 1;\n");
+        git(spec.cwd as string, "add", "-A");
+        git(spec.cwd as string, "commit", "-q", "-m", "fix: the second finding");
+        return result({ role: "developer" });
+      },
+    }),
+  );
+  assert(
+    second.threw === undefined && second.outcome?.kind === "done",
+    `(c2) a fix round touching ONLY unfrozen files passes the frozen proof — the probe hashes bytes, not an object id (${second.threw?.message ?? String(second.outcome?.kind)})`,
+  );
+  assert(
+    git(repoRoot, "log", "--format=%s", `origin/${BRANCH}`).includes("fix: the second finding"),
+    "(c2) and its commit is on origin — the proof did not refuse a legitimate fix",
   );
 }
 
@@ -175,8 +220,8 @@ function assert(cond: boolean, msg: string): void {
   const { repoRoot, baseSha } = makeRepo();
   const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   const ctx = ctxFor(repoRoot, baseSha, BRANCH);
-  const frozenFile = path.join(repoRoot, ".worktrees", "lean-7", "tests/AC1.test.ts");
-  const frozen = { "tests/AC1.test.ts": sha256(readFileSync(frozenFile)) };
+  const frozenFile = frozenBlob(repoRoot, "HEAD");
+  const frozen = { "tests/AC1.test.ts": sha256(frozenFile) };
   // The frozen record must reach the step the way the machine puts it there: a
   // decided `specify:ok` step carrying the map.
   ctx.run.steps.push({

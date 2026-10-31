@@ -125,6 +125,28 @@ export async function setup(opts: {
 
 export const BRANCH = "lean/issue-7";
 
+/**
+ * The frozen acceptance test's committed bytes at `ref`, byte for byte.
+ *
+ * The hash the step must be handed is the one `specify` froze, and that is a hash
+ * of the COMMITTED bytes — so this reads them out of git rather than off a
+ * working copy, which is whatever the last case in this file left behind. `latin1`
+ * is the one encoding that round-trips every byte, so a frozen test holding
+ * invalid UTF-8 still hashes to the record the freeze made (same reasoning as
+ * `blobAt` in `src/lean/build-git.ts`). `trim()` is deliberately NOT applied —
+ * that would change the bytes.
+ */
+export function frozenBlob(repoRoot: string, ref: string): string {
+  const r = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "show", `${ref}:tests/AC1.test.ts`], {
+    cwd: repoRoot,
+    encoding: "latin1",
+    env: gitEnv(),
+  });
+  if (r.status !== 0)
+    throw new Error(`git show ${ref}:tests/AC1.test.ts failed: ${(r.stderr ?? "").trim()}`);
+  return r.stdout ?? "";
+}
+
 /** Run the step; a throw comes back as the error so each case asserts on it. */
 export async function runStep(
   ctx: HandlerCtx,

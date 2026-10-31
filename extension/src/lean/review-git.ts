@@ -28,6 +28,7 @@ import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
+import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewFixArgs } from "./review-prompt.ts";
 import { fixPrompt } from "./review-prompt.ts";
@@ -133,6 +134,17 @@ async function removeWorktree(deps: ReviewDeps, repoRoot: string, wt: string): P
  * what the integration moves onto the branch. `--force` is for this step's own
  * path only — `worktree remove` refuses a path it does not own, so no tree at
  * any other location is ever touched here.
+ *
+ * The clean proof is read WITHOUT `-uall`, and that is deliberate rather than
+ * loose: `provisionWorktree` has just linked the project's dependency trees into
+ * this directory, and `git status --porcelain -uall` expands a directory of
+ * links into every file inside it (measured: `?? node_modules/pkg/j.js` for a
+ * tree the provisioner made, with nothing in `git status`'s default view). A
+ * proof that read it that way would report every provisioned tree as dirty and
+ * refuse every fix round on the very step that prepares it. What the default
+ * form still reports is enough for the claim being made: any untracked path — a
+ * whole directory included — is listed, so a leftover from a killed round cannot
+ * pass, and a child's edits to tracked files are listed too.
  */
 async function fixTree(
   deps: ReviewDeps,
@@ -148,20 +160,21 @@ async function fixTree(
       `could not create the fix worktree at ${wt} for ${head.slice(0, 12)}`,
       rows,
     );
-  const provision = await provisionWorktree(deps.exec, repoRoot, wt).catch((err: unknown) => {
-    throw new ReviewInfraError(
-      `the fix worktree ${wt} could not be provisioned: ${(err as Error)?.message ?? String(err)}`,
-      rows,
-    );
-  });
+  // No catch: `provisionWorktree` resolves whatever happens — every probe and git
+  // call inside it turns a fault into a `problem` field rather than a rejection
+  // (#1394, because a rejected provision used to fail the branch step) — so a
+  // rejection-handling arm here would be code for a failure that cannot occur.
+  // The `problem` it does report is traced and carried on: a bare or partly
+  // linked tree costs the fixer a failed typecheck, not the run.
+  const provision = await provisionWorktree(deps.exec, repoRoot, wt);
   if (provision.problem !== undefined)
     traceWarn(`lean review #${String(issue)}: fix worktree ${provision.problem}`);
-  const dirty = await git(deps, wt, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const dirty = await git(deps, wt, ["status", "--porcelain=v1"]);
   if (dirty === undefined) {
     await removeWorktree(deps, repoRoot, wt);
     throw new ReviewInfraError(`could not read the fix worktree's state in ${wt}`, rows);
   }
-  const left = dirty.stdout.split("\0").filter((s) => s !== "");
+  const left = dirty.stdout.split("\n").filter((s) => s.trim() !== "");
   if (left.length > 0) {
     await removeWorktree(deps, repoRoot, wt);
     throw new ReviewInfraError(
@@ -183,7 +196,7 @@ async function fixTree(
 async function runFixer(
   deps: ReviewDeps,
   opts: ReviewFixArgs & { rows: DispatchUsageRow[] },
-): Promise<DispatchUsageRow> {
+): Promise<void> {
   let result: DispatchResult;
   try {
     result = await deps.dispatch(
@@ -196,26 +209,32 @@ async function runFixer(
       opts.rows,
     );
   }
+  // Billed BEFORE the verdict is read, and billed once: a child that died still
+  // spent its tokens, and a handback that cannot say so understates what the run
+  // cost. The row goes onto the caller's running total here rather than being
+  // returned — a total the caller re-derives per round is how a handback ends up
+  // reporting one round's cost as the step's, and returning it on the success arm
+  // while appending the death arm's copy is how one fixer gets billed twice.
   const row = dispatchUsageRow(result);
+  opts.rows.push(row);
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const why =
       result.killCause ??
       result.errorStop?.message ??
       result.errorStop?.reason ??
       `exit ${String(result.exitCode)}`;
-    throw new ReviewInfraError(`the fix child failed: ${String(why)}`, [...opts.rows, row]);
+    throw new ReviewInfraError(`the fix child failed: ${String(why)}`, opts.rows);
   }
-  return row;
 }
 
 /**
  * One fix round: the child in its disposable tree, then its commits moved onto the
  * branch.
  *
- * The row it paid for is APPENDED to the caller's running total rather than
- * returned — a total the caller re-derives per round is how a handback ends up
- * reporting one round's cost as the step's. The head it returns is the head now on
- * origin, read back from git rather than assumed from what the child reported doing.
+ * The head it returns is the head now on origin, read back from git rather than
+ * assumed from what the child reported doing. The row the child cost is appended
+ * to `opts.rows` by `runFixer`, on both arms — success and death — so this
+ * function never touches it.
  */
 export async function fixRound(
   deps: ReviewDeps,
@@ -232,7 +251,7 @@ export async function fixRound(
   const wt = await fixTree(deps, ctx, opts.head, opts.rows);
   let fixHead = "";
   try {
-    const row = await runFixer(deps, {
+    await runFixer(deps, {
       issue: ctx.issue,
       round: opts.round,
       gate: opts.gate,
@@ -244,12 +263,6 @@ export async function fixRound(
       frozenPaths: Object.keys(opts.frozen),
       rows: opts.rows,
     });
-    // Billed here and not inside `runFixer`: a fixer that DIED mid-round still
-    // cost what it spent and throws with that row attached, so this is the only
-    // place a SUCCESSFUL fixer's row is recorded. A fix round is a whole child's
-    // tokens, and a cost report that omits the round that did the work cannot
-    // price the next run.
-    opts.rows.push(row);
     // Read BEFORE the tree is destroyed: what the child's last commit IS is the
     // one value the integration acts on, and once `worktree remove` has run
     // there is no commit left to ask about. A child that committed nothing
@@ -339,20 +352,26 @@ async function integrate(
   // commit this step checked out for it (the child committed nothing, so the
   // round was a no-op) or a descendant of it (the child committed on top). A
   // child that reset, rebased or checked something else out fails here, before
-  // origin sees any of it.
-  if (opts.fixHead !== opts.gateRead) {
-    const ancestor = await git(deps, repoRoot, [
-      "merge-base",
-      "--is-ancestor",
-      opts.gateRead,
-      opts.fixHead,
-    ]);
-    if (ancestor === undefined)
-      return fail(
-        `the fixer's head ${opts.fixHead.slice(0, 12)} does not descend from the ${opts.gateRead.slice(0, 12)} this step checked out for it`,
-      );
-  }
-  const broken = await frozenTrouble(deps, repoRoot, opts.fixHead, opts.frozen);
+  // origin sees any of it. Checked for the no-op case too: `--is-ancestor X X`
+  // is true, so the same one probe proves the child left the tree where this step
+  // put it rather than checking something else out and calling that a no fix.
+  const ancestor = await git(deps, repoRoot, [
+    "merge-base",
+    "--is-ancestor",
+    opts.gateRead,
+    opts.fixHead,
+  ]);
+  if (ancestor === undefined)
+    return fail(
+      `the fixer's head ${opts.fixHead.slice(0, 12)} does not descend from the ${opts.gateRead.slice(0, 12)} this step checked out for it`,
+    );
+  // `frozenMatches` rather than a probe of this file's: the frozen record is a
+  // sha256 of the committed BYTES, so the only comparison that means anything is
+  // `git show <ref>:<path>` re-hashed — an object-id read (e.g. `rev-parse
+  // <ref>:<path>`) is a sha1 of a different thing and matches nothing, which
+  // would refuse every fix round that ever committed. Same proof `build` and
+  // `verify` apply, so the three cannot disagree about what a frozen file is.
+  const broken = await frozenMatches(deps.exec, repoRoot, opts.fixHead, opts.frozen);
   if (broken.length > 0)
     return fail(
       `the fix round changed the frozen acceptance contract: ${broken.slice(0, 6).join(", ")}`,
@@ -407,23 +426,6 @@ async function restore(deps: ReviewDeps, wt: string, branch: string, head: strin
   const back = await git(deps, wt, ["checkout", "-B", branch, head]);
   if (back === undefined)
     traceWarn(`lean review: could not put ${wt} back at ${head.slice(0, 12)}`);
-}
-
-/** The frozen paths whose blob at `head` no longer hashes to its record. */
-async function frozenTrouble(
-  deps: ReviewDeps,
-  cwd: string,
-  head: string,
-  frozen: Record<string, string>,
-): Promise<string[]> {
-  const broken: string[] = [];
-  for (const [rel, want] of Object.entries(frozen)) {
-    const out = await git(deps, cwd, ["rev-parse", `${head}:${rel}`]);
-    // A path missing from the commit answers empty, which is the worst version of
-    // the same offence: the contract's file is gone from what the run merges.
-    if ((out?.stdout ?? "").trim() !== want) broken.push(rel);
-  }
-  return broken;
 }
 
 /** One six-lens round's aggregate as a cost row; a round where nothing ran is not ok. */
