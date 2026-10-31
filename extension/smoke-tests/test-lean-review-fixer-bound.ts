@@ -26,8 +26,8 @@ import type { DispatchResult } from "../src/types.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
-  type ReviewDeps,
   FIXER_ROLE,
+  type ReviewDeps,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -38,7 +38,6 @@ import {
   runStep as run,
   setup,
 } from "./lib/lean-review-fixtures.ts";
-import { FIX_BOUND_MS } from "../src/lean/review.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -99,7 +98,7 @@ async function deliver(
     // fixer receives are still `runFixer`'s, and only what the clamp must not
     // touch is added here.
     const inner = deps.dispatch;
-      // `extraArms` FIRST, so `runFixer`'s own object wins: an arm supplied this way
+    // `extraArms` FIRST, so `runFixer`'s own object wins: an arm supplied this way
     // only fills a gap, and the value under test is never one the test wrote.
     deps.dispatch = async (spec, o) => inner(spec, { ...(o ?? {}), ...extraArms } as never);
   }

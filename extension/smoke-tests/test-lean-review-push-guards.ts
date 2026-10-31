@@ -23,24 +23,24 @@
  * branch with `-B` and cleans the tree `verify` and `publish` read next.
  */
 
-import { mkdtempSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assertPublishableBranch } from "../src/lean/publish-deps.ts";
-import { assertSafeRef } from "../src/worktree-loss.ts";
 import { netRefProblem } from "../src/work-driver-net-git.ts";
+import { assertSafeRef } from "../src/worktree-loss.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
-  type DispatchUsageRow,
-  type ReviewDeps,
   BRANCH,
+  type DispatchUsageRow,
   FIXER_ROLE,
+  type ReviewDeps,
   cleanupRoots,
   ctxFor,
-  gitEnv,
   depsWith,
   git,
+  gitEnv,
   makeRepo,
   rejectsThenClears,
   result,
@@ -66,12 +66,26 @@ const { assert, failures } = makeAssert();
  * names the mainline — rule 1's own sentence, `work-lean pushes only lean/
  * branches`, is separately asserted absent.
  */
-const MAINLINE = "trunk";
+const MAINLINE: string = "trunk";
 
 /**
  * The state-file names the review push must refuse and both shipped checks accept.
  */
-const UNSAFE: readonly string[] = ["main", "+x"];
+const UNSAFE: readonly { name: string; bothShip: boolean }[] = [
+  // Accepted by both shipped checks, so the refusal can only be the new guard's.
+  { name: "main", bothShip: true },
+  { name: "+x", bothShip: true },
+  // `a:b` is refused by BOTH shipped checks, not just one: `assertSafeRef` rejects
+  // it as an illegal ref name and `netRefProblem` rejects the `:` as refspec syntax
+  // a network git call will not take. It cannot earn the "accepted by both" premise
+  // `main` and `+x` earn, and the test does not pretend it does — but it still
+  // belongs in this list, because it is one of the shapes the push must refuse and
+  // the guarantee that matters for it is the same one asserted below: NO push entry
+  // ever reaches the argv the injected deps.exec received. Its precondition is
+  // stated as what is actually true, so a later relaxation of either check that
+  // made the claim false would go red rather than quietly narrowing the case.
+  { name: "a:b", bothShip: false },
+];
 
 /** Did the shipped charset check accept this name? (premise, not predicate) */
 function shippedCheckAccepts(name: string): boolean {
@@ -139,17 +153,20 @@ async function driveBranch(name: string): Promise<{
 }
 
 // ── (x1) A refusal, before anything left the clone ──────────────────────────
-for (const name of UNSAFE) {
+for (const { name, bothShip } of UNSAFE) {
   // The premise, pinned as a FACT about each of the two checks the step already
   // had — and the two disagree by design, which is the whole reason the push
-  // needed a third. `assertSafeRef` proves legality (so `a:b` and `-f`, which it
-  // refuses, prove nothing about the new guard); `netRefProblem` proves a name is
-  // inert to a network git call (so `main`, which it accepts, proves nothing
-  // either). A name only earns this case by being accepted by BOTH and refused by
-  // the guard — which is what the pair of lines below establishes per name.
+  // needed a third. `assertSafeRef` proves legality (so `main`, which it accepts,
+  // proves nothing about the new guard); `netRefProblem` proves a name is inert to
+  // a network git call (so `main`, which it accepts, proves nothing either). The
+  // names that clear BOTH are the ones only the reused publish guard can refuse,
+  // and they are the point of this case; `a:b` is stated with its own facts so the
+  // case cannot silently shrink if either check is relaxed later.
   assert(
-    shippedCheckAccepts(name) && netRefClean(name),
-    `(x1) precondition: ${JSON.stringify(name)} is accepted by BOTH checks the review push shipped with (assertSafeRef ${String(shippedCheckAccepts(name))}, netRefProblem ${String(netRefClean(name))}), so the refusal asserted next is the new guard's and not one they already made`,
+    bothShip
+      ? shippedCheckAccepts(name) && netRefClean(name)
+      : !shippedCheckAccepts(name) && !netRefClean(name),
+    `(x1) precondition: ${JSON.stringify(name)} is ${bothShip ? "accepted by BOTH checks the review push shipped with, so the refusal asserted next is the new guard's alone" : "refused by BOTH shipped checks as well, so this case proves the ordering guarantee (no push argv) rather than the guard's uniqueness"} (assertSafeRef ${String(shippedCheckAccepts(name))}, netRefProblem ${String(netRefClean(name))})`,
   );
   const r = await driveBranch(name);
   assert(
@@ -228,8 +245,7 @@ for (const name of UNSAFE) {
   git(repoRoot, "update-ref", `refs/remotes/origin/${MAINLINE}`, mainSha);
   git(repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${MAINLINE}`);
   assert(
-    git(repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD") ===
-      `refs/remotes/origin/${MAINLINE}`,
+    git(repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD") === `refs/remotes/origin/${MAINLINE}`,
     `(x2) precondition: this clone's mainline is ${MAINLINE}`,
   );
   const { chmodSync, writeFileSync } = await import("node:fs");
