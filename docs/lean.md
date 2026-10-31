@@ -14,8 +14,8 @@ a model's recollection of what happened.
 
     ready → specify → build → challenge → build → verify → publish → review → ci → land
 
-`review`, `ci` and `land` are in the table but have no handlers yet — see
-[Limits today](#limits-today). A run that reaches any of them ends at `handback`.
+`ci` and `land` are in the table but have no handlers yet — see
+[Limits today](#limits-today). A run that reaches either ends at `handback`.
 
 | Step | Who | What it does |
 |---|---|---|
@@ -25,7 +25,8 @@ a model's recollection of what happened.
 | `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once. New tests earn one more build round; none — or a round stopped by its own budget — go to verify. |
 | `verify` | driver | The run's own gate, no model in it: clean tree, frozen-test integrity (blobs still hash to their records), a compiler canary, every frozen test, then `verify.fast` / `verify.full`, then the spec's `command` criteria. `green` or `red`. |
 | `publish` | driver | Pushes the branch under a lease bound to a sha it just read from origin, and opens (or reuses) the PR. Refuses to publish a green it did not observe at the head it is pushing. |
-| `review`, `ci`, `land` | — | In the table, not in the build. Their handlers throw `work-lean stage <state> is not built yet`. |
+| `review` | both gates, driver-routed | The run's gate. One report-only adversarial pass and one six-lens round at a resolved commit from origin; findings between them earn a bounded fix round in a disposable worktree of its own. Both clean is `done`; anything else — findings at the bound, a gate with no verdict, a fixer that rewrote the frozen contract — throws and the run hands back. |
+| `ci`, `land` | — | In the table, not in the build. Their handlers throw `work-lean stage <state> is not built yet`. |
 | `handback` | driver | Posts one issue comment saying what the run still needs, then ends the run. |
 
 Two refusals sit beside the main line: `decline` posts the rules an unreadable
@@ -143,7 +144,7 @@ pins the table against literals, so changing a number is a deliberate edit):
 | `specify` | 250 | 30M | 20 |
 | `build` | 400 | 60M | 45 |
 | `challenge` | 200 | 25M | 15 |
-| `review` (no handler yet) | 150 | 20M | 15 |
+| `review` | 150 | 20M | 15 |
 | `ci` (no handler yet) | 0 | 0 | 30 |
 
 **When a budget fires.** `turns` and `tokens` abort at once at a turn boundary.
@@ -260,15 +261,19 @@ recorded; it never changes the verdict.
 
 ## Limits today
 
-- **No `review`, `ci` or `land` steps.** The states and their edges exist in the
-  table; their handlers throw `work-lean stage <state> is not built yet`, which
-  the engine turns into `handler error at <state>: …`, a handback, exit 10.
+- **No `ci` or `land` steps.** Those states and their edges exist in the table;
+  their handlers throw `work-lean stage <state> is not built yet`, which the
+  engine turns into `handler error at <state>: …`, a handback, exit 10.
   Nothing merges, so **`autoMerge` is read and never acted on** — and when
   `land` is built it will need the same merge-authority resolution `/work` has
   (#380 / #407): a grant read from the project's `AGENTS.md` at the cycle's
   base sha, plus executed forge evidence, before anything merges.
-- In practice every run that reaches `publish` ends in a handback, because the
-  very next state is unbuilt. Treat the PR, not the exit code, as the artefact.
+- **`review` is built, and it does not clear the run on its own.** It runs both
+  gates against a commit read from origin and can only say `done` or throw — a
+  `done` moves the run to `ci`, which is unbuilt. A cleared review is therefore
+  not a mergeable run: the handback and the PR are still what the run leaves.
+- In practice every run that reaches `publish` ends in a handback, because a
+  state past it is unbuilt. Treat the PR, not the exit code, as the artefact.
 - **The old `/work` driver is a separate program.** `extension/src/work-driver.ts`
   with state at `.pi/work-state/<issue>.json`; lean is
   `extension/src/lean/` with state at `.pi/lean-state/<issue>.json`. Neither
