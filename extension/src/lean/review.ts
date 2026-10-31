@@ -1,0 +1,342 @@
+/**
+ * lean/review — the run's gate: the adversarial loop, the six-lens pass, and a
+ * bounded number of fix rounds between them.
+ *
+ * Both gates are the frozen driver's own code, called rather than copied:
+ * `runAdversarialLoop` in report-only mode (it reviews and fixes nothing; this
+ * step routes its verdict) and `runLensReview` for the six lenses. What is
+ * lean's own is which tree they read, who fixes what they find, and when the
+ * loop stops. Where the bytes are and how they move is `review-git.ts`; this
+ * file is the decision procedure.
+ *
+ * **Both gates read a resolved commit, never a working copy.** A gate approves
+ * the bytes at a commit, and the only value that cannot be dirtied underneath
+ * the step between two rounds is a commit sha resolved from a ref. This step
+ * resolves origin's branch once per round and hands the same value to both
+ * gates, to the fixer, and to the integration — five uses of one commit cannot
+ * disagree, and a working copy would give each of them a different tree. Both
+ * gates therefore get a ref range they compute their own diff from rather than
+ * a string this step pasted: a pasted diff is a value the reviewer cannot
+ * re-read, and a range is one it can.
+ *
+ * **The fix runs in a disposable tree of its own** (see `fixRound` in
+ * `review-git.ts`), detached at the reviewed commit and destroyed at the end of
+ * the round — because the fixer must not touch the tree `verify` and `publish`
+ * read. A child loose in the run's worktree between two gates would leave the
+ * green verdict describing one commit and the PR holding another. Detached on
+ * purpose: a fixer that commits there moves no branch, so a child that committed
+ * twice, amended, or reset could not corrupt what the run merges. Only the
+ * integration moves anything, and only after its claims hold.
+ *
+ * **The bound is the run's, not this file's.** What the step may spend is one
+ * number already in the state: `budgets.review.turns` in `.pi/work.json`, the
+ * same ceiling the engine bills this step's children against. Each round of the
+ * loop — a reviewer, the six lenses, and a fixer — is charged that many turns,
+ * and the loop stops when the budget has no whole round left in it. No new knob:
+ * a step that invented its own round cap would be a second answer to "when does
+ * this stop", and the two would drift.
+ *
+ * **What ends the step.** Both gates clean is `done`, and the run goes to `ci`.
+ * Anything else THROWS: findings still open at the bound, a gate that produced
+ * no verdict, a head that moved or vanished mid-round, a fixer that rewrote the
+ * frozen contract, an integration that could not be proven. A throw is the
+ * engine's infrastructure path — the run hands back at exit 10 with the cause
+ * named, rather than carrying an unreviewed head forward on a `done` it did not
+ * earn. A gate that did not run is never a gate that passed.
+ */
+
+import type { Finding, LensRunResult } from "../lens-review-types.ts";
+import type { DispatchResult, DispatchSpec, DispatchUsage } from "../types.ts";
+import { assertSafeRef } from "../worktree-loss.ts";
+import type { ExecFn } from "../worktree.ts";
+import { frozenFromLog } from "./build.ts";
+import type { WorkConfig } from "./config.ts";
+import type { HandlerCtx } from "./engine.ts";
+import { adversarialGate, lensGate } from "./review-gates.ts";
+import { fixRound, reviewedHead } from "./review-git.ts";
+import { fixRunId, fixRunIdFromLog, prNumberFromLog } from "./review-log.ts";
+import { specifyBranch } from "./specify-tree.ts";
+import type { Outcome } from "./state.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
+import { budgetFor } from "./step-budget.ts";
+
+/** The step's own throw: the run hands back, with this sentence as its cause. */
+export class ReviewInfraError extends Error {
+  override readonly name = "ReviewInfraError";
+  constructor(
+    message: string,
+    readonly dispatches: DispatchUsageRow[] = [],
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * What this step may never "fix" its way past.
+ *
+ * A lens round that did not complete reviewed nothing, so its verdict is not
+ * evidence to fix against: an empty round whose fixer then changed nothing would
+ * read as a resolution and let the run merge unreviewed. The round-cap verdicts
+ * are another component's budget refusing this run, which a fix round cannot
+ * answer — the operator named that budget, and only they can lift it.
+ */
+const NO_FIX_VERDICTS = ["REVIEW_INCOMPLETE", "ROUND_CAP_REACHED", "REVIEW_INCOMPLETE_STREAK"];
+
+/** The fixer's wall clock, the same shape the other steps pass as `childBoundMs`. */
+export const FIX_BOUND_MS = 20 * 60_000;
+
+/**
+ * One round's cost, in the unit the step's budget is counted in.
+ *
+ * A round is one reviewer dispatch (report-only, so the loop runs no fixer of
+ * its own), the six lens children, and one fixer — so the honest lower bound is
+ * the reviewer's turns plus a fixer's. Measured reviewer rounds run to hundreds
+ * of turns, and charging a round a SINGLE child's figure made
+ * `budgets.review.turns` buy exactly ONE round. One round is not a review loop:
+ * a round that finds something can only fix, never re-review, so the step
+ * certifies a head no gate looked at (what it shipped as, at 150/150). Two
+ * children's worth is the smallest figure under which the committed budget still
+ * fixes AND re-reviews. A cost ESTIMATE, not a per-child ceiling: `review` arms
+ * no budget of its own (see `BUDGET_STATES` in `state-outcome.ts`) and each gate
+ * bounds its children by wall clock, so under-bounding costs rounds, not safety.
+ */
+const TURNS_PER_ROUND = 300;
+
+/** What one six-lens round answered, as the step reads it. */
+export interface LensRound {
+  verdict: string;
+  /** The round's findings as the text a fixer is handed — one line each. */
+  findings: string;
+  /** What the six children reported, or `undefined` when none of them ran. */
+  usage: DispatchUsage | undefined;
+  /**
+   * One record per lens child that ran, for the step's cost rows (see
+   * `lensRows`). Carried rather than folded here because the fold lives with
+   * every other dispatch row in `review-git.ts`, next to the fixer's.
+   */
+  lenses: LensRunResult[];
+  /**
+   * The round ran no lens at all — the empty-delta outcome the review layer
+   * reports as "NO REVIEW", which is deliberately NOT an approval even though
+   * its verdict field is `APPROVED`. Carried rather than derived from `usage`
+   * because a round that ran its lenses and reported no usage is a different
+   * fact from one that ran none, and this step refuses both for different
+   * reasons. The frozen driver reads the same field on the summary and routes
+   * it to handoff (`work-driver-lens.ts`); it never reaches `done` there, and
+   * must not here either.
+   */
+  noReview?: boolean;
+  /** Why the round owed the PR a residual-findings disclosure and did not make it. */
+  note?: string;
+}
+
+/** What the step hands one round of the adversarial gate. */
+export interface AdversarialArgs {
+  base: string;
+  head: string;
+  branch: string;
+  cwd: string;
+  issue: number;
+  issueBody: string;
+  round: number;
+  headless: boolean;
+}
+
+/** What the step hands one round of the six-lens pass. */
+export interface LensArgs {
+  base: string;
+  head: string;
+  branch: string;
+  cwd: string;
+  round: number;
+  /**
+   * The run's PR number, when this run opened one. `publish` records the PR's
+   * URL and the number is the tail of it; without it the review layer has to
+   * ask the forge which PR belongs to the branch on every ISSUES_FOUND round
+   * (a `gh pr list` per round for an answer this run already holds), and the
+   * round's residual-findings disclosure is keyed on whatever that lookup
+   * picked.
+   */
+  pr: number | undefined;
+  /** The context lines this step composes (see `review-prompt.ts`). */
+  context: string;
+  /** Post-change prose and the deterministic claim scan, read from the branch ref. */
+  evidence: string | undefined;
+  extraFindings: Finding[];
+  /** The headless trust stamp this run's children carry. */
+  headless: boolean;
+}
+
+/** The step's dependencies: the outside world, injected. */
+export interface ReviewDeps {
+  /** The headless mode this run was started in; its children's permission stamp. */
+  headless: boolean;
+  exec: ExecFn;
+  /** One round of the adversarial gate. Injected so a test drives verdicts with no child. */
+  adversarial: (args: AdversarialArgs) => Promise<DispatchResult>;
+  /** One round of the six-lens pass. */
+  lens: (args: LensArgs) => Promise<LensRound>;
+  /** The fixer, in the tree its `cwd` names. */
+  dispatch: (spec: DispatchSpec, opts: { childBoundMs?: number }) => Promise<DispatchResult>;
+  fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
+  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+}
+
+/** The `review` step. Returns `done`; THROWS on anything it cannot settle. */
+export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<Outcome> {
+  const { repoRoot, issue } = ctx;
+  const branch = specifyBranch(ctx.run.branch, issue);
+  const base = ctx.run.baseSha;
+  try {
+    assertSafeRef(branch);
+    if (base !== "") assertSafeRef(base);
+  } catch (err) {
+    throw new ReviewInfraError((err as Error).message);
+  }
+  if (!/^[0-9a-f]{40}$/.test(base))
+    throw new ReviewInfraError(
+      `the run has no base commit to review against: ${JSON.stringify(base.slice(0, 80))}`,
+    );
+
+  // The contract, the config and the issue, all read before any child is paid:
+  // a step that discovered its spec was unreadable after two rounds of review
+  // had spent those rounds for nothing.
+  const frozen = frozenFromLog(ctx.steps);
+  /**
+   * The PR number of the PR this run's `publish` opened, from its recorded URL —
+   * or undefined when no step has recorded one. Read from the log rather than a
+   * closure so a resumed run has it too, and derived rather than stored: `publish`
+   * records the URL and this is its tail (see `prNumberFromLog`).
+   */
+  const pr = prNumberFromLog(ctx.steps);
+  const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
+    throw new ReviewInfraError(`could not load the project config: ${(err as Error).message}`);
+  });
+  const issueBody = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
+    throw new ReviewInfraError(`could not read the issue: ${(err as Error).message}`);
+  });
+
+  // The bound, from the number the run already carries. One round is charged
+  // what a round costs (`TURNS_PER_ROUND`, which is a reviewer, the six lenses
+  // and a fixer), so the loop stops when the step's budget cannot pay for
+  // another whole one — rather than when this file guessed a round count.
+  const budget = budgetFor(config, "review")?.turns ?? 0;
+  const maxRounds = Math.max(1, Math.floor(budget / TURNS_PER_ROUND));
+
+  // `rows` accumulates across the WHOLE step, not one round: the handback must
+  // say what every round cost, including the one that failed. Nothing re-derives
+  // it per round — a total rebuilt each round reports a two-round run to the
+  // operator as a one-round one.
+  const rows: DispatchUsageRow[] = [];
+  let head = await reviewedHead(deps, repoRoot, branch, rows);
+  /**
+   * One identity for every disposable tree this attempt makes (see
+   * `fixTreeName`). Read off the log and minted only when no earlier attempt
+   * used one, so a resumed run re-enters the paths of the tree it left behind
+   * and a restarted cycle for the same issue cannot name the same path at the
+   * same round as this one. Read before the loop so it cannot move between
+   * rounds and strand a killed round's tree under a name nothing prunes.
+   */
+  const runId = fixRunIdFromLog(ctx.steps) ?? fixRunId(ctx.now);
+  /** Findings the adversarial gate passed on without blocking, for the lenses to weigh. */
+  let carried: string | undefined;
+  /**
+   * The round's disclosure note, once the step has cleared: the review layer's
+   * wording that this round owed the PR a residual-findings post and did not make
+   * it, which is condition 5 of the merge guard's round-cap path. Surfaced on the
+   * `done` reason rather than dropped — see the `note` clause below.
+   */
+  let disclosure: string | undefined;
+
+  for (let round = 1; ; round++) {
+    const gate = await adversarialGate(deps, ctx, {
+      base,
+      head,
+      branch,
+      issueBody,
+      round,
+      rows,
+    });
+    if (gate.findings !== "") {
+      carried = gate.findings;
+      const { head: pushed } = await fixRound(deps, ctx, {
+        head,
+        frozen,
+        findings: gate.findings,
+        gate: "adversarial loop",
+        round,
+        runId,
+        rows,
+      });
+      head = pushed;
+      continue;
+    }
+
+    const lens = await lensGate(deps, ctx, {
+      base,
+      branch,
+      round,
+      pr,
+      carried,
+      rows,
+    });
+    // "A gate that did not run is never a gate that passed", enforced on the
+    // lens round itself rather than only on the adversarial one: the review
+    // layer reports an empty-delta round as `verdict: "APPROVED"` with no lens
+    // behind it (its own docs say every consumer must branch on `noReview`),
+    // and a round whose lenses all died reports no usage at all. Either one
+    // reaching `done` would tell the operator the head was reviewed when the
+    // step paid for nobody to look at it.
+    if (lens.noReview === true)
+      throw new ReviewInfraError(
+        `the six-lens review ran no lens (nothing changed since the last recorded run${
+          lens.note === undefined ? "" : `: ${lens.note}`
+        }) — a head nobody re-reviewed is not a pass`,
+        rows,
+      );
+    if (lens.usage === undefined)
+      throw new ReviewInfraError(
+        `the six-lens review reported ${lens.verdict} with no usage from any lens child — that is not a pass: ${lens.findings.slice(0, 300)}`,
+        rows,
+      );
+    if (lens.verdict === "APPROVED") {
+      // The note a cleared round still owes. `finishLensReview` sets it ONLY on
+      // an ISSUES_FOUND round whose disclosure post failed or could not be
+      // attempted, so it cannot arrive on this verdict — but "cannot happen" is
+      // not a reason to drop it, and a note that is carried into the step and
+      // read by nothing is the silent version of the failure it reports. The
+      // merge guard's round-cap path refuses a merge until the marker carrying
+      // these findings is on the PR (condition 5, `merge-guard-round-cap.ts`), so
+      // a note this step swallowed would cost the run the ability to merge with
+      // nobody able to say why. Surfaced, not dropped.
+      if (lens.note !== undefined && lens.note.trim() !== "") disclosure = lens.note;
+      return {
+        kind: "done",
+        reason: `adversarial and six-lens review clean at ${lens.head.slice(0, 12)} (${String(round)} round(s))${
+          disclosure === undefined ? "" : `; DISCLOSURE NOT POSTED: ${disclosure}`
+        }`,
+        dispatches: rows,
+      };
+    }
+    if (NO_FIX_VERDICTS.includes(lens.verdict))
+      throw new ReviewInfraError(
+        `the six-lens review did not complete (${lens.verdict}${lens.note === undefined ? "" : `; disclosure: ${lens.note}`}) — an incomplete round is not a pass to fix against`,
+        rows,
+      );
+    if (round >= maxRounds)
+      throw new ReviewInfraError(
+        `findings still open after ${String(round)} review round(s) at the step's budget of ${String(budget)} turns: ${lens.findings.slice(0, 500)}`,
+        rows,
+      );
+    const { head: pushed } = await fixRound(deps, ctx, {
+      head: lens.head,
+      frozen,
+      findings: lens.findings,
+      gate: `six-lens review (${lens.verdict})`,
+      round,
+      runId,
+      rows,
+    });
+    head = pushed;
+  }
+}
