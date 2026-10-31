@@ -60,6 +60,7 @@ import { leanUsage } from "../src/lean/usage-sum.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { FIXTURE_BASE_SHA, makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
+  ADVERSARIAL_GATE_ROLE,
   BRANCH,
   FIXER_ROLE,
   cleanupRoots,
@@ -346,6 +347,74 @@ function tryLoad(
   assert(
     fixerOf(oc.dispatches ?? []) === undefined,
     "(5) and the error path drops a malformed row rather than recording a tree name nothing can name",
+  );
+}
+
+// ── (5b) SKIP, do not REJECT: one malformed row must not take the array with it ─
+//
+// Case (1) claimed to tell "a validator that refused the WHOLE array" from "one
+// row missing", and could not: under its fixture both produced the identical
+// observable — the fixer row absent — so no change to `validatedDispatches` could
+// have failed it. Two lenses raised this independently. This case is row-granular:
+// a VALID `adversarial-loop` row sits beside a fixer row carrying a malformed
+// `runId`, and the assertion is that the valid row SURVIVES while only the fixer is
+// dropped. That is the observable separating a per-row `continue` from a whole-array
+// `return []`, and it is the one (1) could not see.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+  const rows = await fixRoundRows(repoRoot, baseSha);
+  const adversarial = rows.find((r) => r.role === ADVERSARIAL_GATE_ROLE);
+  assert(
+    adversarial !== undefined,
+    `(5b) precondition: the run billed an ${ADVERSARIAL_GATE_ROLE} row to stand beside the fixer (${JSON.stringify(rows.map((r) => r.role))})`,
+  );
+  const poisoned = rows.map((r) =>
+    r.role === FIXER_ROLE ? { ...r, runId: "not-a-run-id" as DispatchUsageRow["runId"] } : r,
+  );
+  // (a) the fold, on the path the loader and `errorOutcome` both use.
+  const { validatedDispatches } = await import("../src/lean/state-dispatches.ts");
+  const kept = validatedDispatches(poisoned);
+  assert(
+    kept.some((r) => r.role === ADVERSARIAL_GATE_ROLE),
+    `(5b) THE VALID ROW SURVIVES a sibling's malformed id: a per-row skip drops the bad row and keeps the good one, where a whole-array refusal drops both — and every other assertion in this file is blind to the difference because they all look at the fixer (${JSON.stringify(kept.map((r) => r.role))} of ${JSON.stringify(poisoned.map((r) => r.role))})`,
+  );
+  assert(
+    kept.some((r) => r.role === FIXER_ROLE) === false,
+    "(5b) and the malformed fixer row is the one that went, not merely a row of the same count",
+  );
+  assert(
+    kept.length === poisoned.length - 1,
+    `(5b) and exactly ONE row was lost, which is what makes this row-granular rather than array-level (in ${String(poisoned.length)} / out ${String(kept.length)})`,
+  );
+  // The surviving row is the SAME row, not a re-derived lookalike: its role, its
+  // duration and its usage all came from the input that validated cleanly.
+  const surviving = kept.find((r) => r.role === ADVERSARIAL_GATE_ROLE);
+  assert(
+    surviving?.ms === adversarial?.ms && surviving?.usage.cost === adversarial?.usage.cost,
+    `(5b) and the surviving row kept what it went in with, so a sibling's refusal is not silently re-writing its numbers (${JSON.stringify([surviving?.ms, surviving?.usage.cost])})`,
+  );
+  // (b) the same claim through the ERROR path, which folds through the same
+  // validator off an untrusted throw — the place a whole-array refusal would cost
+  // the operator every child the step paid for, not just the one that was malformed.
+  const oc = errorOutcome("review", Object.assign(new Error("x"), { dispatches: poisoned }));
+  assert(
+    (oc.dispatches ?? []).some((r) => r.role === ADVERSARIAL_GATE_ROLE),
+    `(5b) and the error path keeps the valid row too — a whole-array refusal here un-bills the reviewer as well as the fixer (${JSON.stringify((oc.dispatches ?? []).map((r) => r.role))})`,
+  );
+  assert(
+    fixerOf(oc.dispatches ?? []) === undefined,
+    "(5b) and still drops the malformed fixer rather than recording a tree name nothing can name",
+  );
+  // (c) and the harsher path, where a refusal THROWS: `assertRun` rejects the whole
+  // record for a malformed row, which is correct there and deliberately NOT the
+  // fold's behaviour. Asserting both keeps the two rules from being merged.
+  saveRun(repoRoot, runWithRows(poisoned, baseSha));
+  const { thrown } = tryLoad(repoRoot, 7);
+  assert(
+    (thrown as Error)?.name === "LeanStateError" &&
+      /runId must be a decimal epoch-millisecond string/.test((thrown as Error)?.message ?? ""),
+    `(5c) \`loadRun\` still refuses the WHOLE record for a malformed row — the fold skips and the loader refuses, and collapsing those two would either launder a bad id or lose a whole run over one row (${String(thrown)})`,
   );
 }
 
