@@ -47,6 +47,7 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { LensReviewSummary, Verdict } from "../lens-review-format.ts";
 import type { Finding, LensRunResult } from "../lens-review-types.ts";
+import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec, DispatchUsage } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
@@ -210,6 +211,16 @@ export interface ReviewDeps {
   dispatch: BuildDispatch;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+  /**
+   * The six-lens engine, defaulting to `runLensReview` in the wiring.
+   *
+   * One reason only, and it is a test reason: the clamp that keeps
+   * `PI_ENSEMBLE_LENS_BOUND_MS` from being overwritten by the budget arms can only
+   * be asserted on the options the lens call ACTUALLY received. An assertion on the
+   * input passed the bug — the input was correct in that bug, and only what reached
+   * `runLensReview` was wrong. Production never sets this.
+   */
+  lensEngine?: typeof runLensReview;
 }
 
 /** The `review` step. Returns `done` or a routed budget verdict; THROWS on anything else. */

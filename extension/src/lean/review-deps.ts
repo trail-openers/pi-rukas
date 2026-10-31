@@ -44,7 +44,13 @@ import { fenceText, promptText } from "./text-fence.ts";
 
 /** Production dependencies: the real executor, both gates, the spawner, the push. */
 export function reviewDeps(headless: boolean): ReviewDeps {
-  return {
+  // Declared as a `let` read at CALL time (not at literal-build time) so a test can
+  // install an observer on the object it gets back: the lens engine is the one
+  // outside-world call a test of THE CLAMP has to observe, and a clamp asserted on
+  // its input cannot fail — the input was correct in the bug, and only what reached
+  // `runLensReview` was wrong. Production never sets the field and gets
+  // `runLensReview`.
+  const deps: ReviewDeps = {
     headless,
     // The push inside `fixRound` is the one git call in this step that leaves the
     // clone, so it is the one the executor gives the driver's non-interactive env
@@ -86,7 +92,19 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         makeRunId(),
       ),
     lens: async (a) => {
-      const summary = await runLensReview({
+      // The budget arms are DESTRUCTURED rather than spread, so the clamp below
+      // cannot be re-supplied: spreading `a.budget.opts` after
+      // `childBoundMs: Math.min(...)` handed back the budget's own `childBoundMs`
+      // and it WON, which made `PI_ENSEMBLE_LENS_BOUND_MS` silently inert — a hung
+      // lens child ran to the generic bound and the operator's tuning knob was
+      // decoration. `arms` is what the lens is allowed to inherit (the abort signal
+      // and the progress hook) with the one key it must not own taken out of the
+      // object AND out of the type, so a future spread that could carry a
+      // `childBoundMs` is a compile error rather than a bug waiting for someone to
+      // reorder the lines. Asserted on the delivered value in
+      // `test-lean-review-deps-bound.ts`, never on the input.
+      const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
+      const summary = await (deps.lensEngine ?? runLensReview)({
         base: a.base,
         head: a.head,
         cwd: a.cwd,
@@ -107,11 +125,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // that knob silently inert for every lean run. The step's armed `childBoundMs`
         // can only ever tighten it, never lengthen it — the smaller of the two is
         // the bound, which is what a budget must mean.
-        childBoundMs: Math.min(
-          a.budget.opts.childBoundMs ?? Number.POSITIVE_INFINITY,
-          lensChildBoundMs(),
-        ),
-        ...a.budget.opts,
+        childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, lensChildBoundMs()),
+        ...arms,
         ...leanChildOpts(a.headless),
       });
       return {
@@ -146,6 +161,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
   };
+  return deps;
 }
 
 /**
