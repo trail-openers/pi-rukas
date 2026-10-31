@@ -130,7 +130,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The two steps that REPORT how a run ended are the only ones that may claim a
   // comment reached the forge.
   posted: REPORTING_STATES,
-  dispatches: BUDGET_STATES,
+  dispatches: [...BUDGET_STATES, "review" as const],
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",

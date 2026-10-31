@@ -143,13 +143,14 @@ const shaOf = (b: Buffer): string => createHash("sha256").update(b).digest("hex"
 // `no transition for <state> + "done"` instead of naming the stage that was
 // missing — a handler bug by the engine's own definition, reported as a table
 // bug. They throw now, so this asserts the reason reaches the operator.
-// `verify`, `handback` and `publish` are real steps now (see
-// `test-lean-verify-wiring.ts` and `test-lean-publish.ts`), so the stub asserted
-// on is `review`, which is still unbuilt.
+// `verify`, `handback`, `publish` and `review` are real steps now (see
+// `test-lean-verify-wiring.ts`, `test-lean-publish.ts` and
+// `test-lean-review-wiring.ts`), so the stub asserted on is `ci`, which is still
+// unbuilt — and the real `review` step is asserted NOT to be a stub below.
 {
   const { phase1Handlers } = await import("../src/lean/command.ts");
-  const unbuilt = ["review", "ci", "land"] as const;
-  const stub = phase1Handlers("/nonexistent", 1).review as (ctx: unknown) => Promise<unknown>;
+  const unbuilt = ["ci", "land"] as const;
+  const stub = phase1Handlers("/nonexistent", 1).ci as (ctx: unknown) => Promise<unknown>;
   let threw = "";
   try {
     const out = await stub({} as never);
@@ -158,12 +159,32 @@ const shaOf = (b: Buffer): string => createHash("sha256").update(b).digest("hex"
     threw = (err as Error).message;
   }
   assert(
-    threw === "work-lean stage review is not built yet",
+    threw === "work-lean stage ci is not built yet",
     `stubs: an unbuilt stage THROWS its reason rather than returning an outcome (${threw})`,
   );
   assert(
     unbuilt.every((name) => typeof phase1Handlers("/nonexistent", 1)[name] === "function"),
     "stubs: every unbuilt stage still has a handler, so the engine reaches it and its throw is what the run reports",
+  );
+  // The other half: a step that became real must not still be reachable through
+  // the stub, or the run reports "not built yet" for a gate that exists.
+  let reviewMsg = "";
+  try {
+    // No run, no repo: the step refuses the garbage context before it dispatches
+    // anything, so the only way this message is the stub's is if the wiring broke.
+    await (phase1Handlers("/nonexistent", 1).review as (ctx: unknown) => Promise<unknown>)({
+      repoRoot: "/nonexistent",
+      issue: 1,
+      run: { branch: "", baseSha: "" },
+      steps: [],
+    } as never);
+    reviewMsg = "returned without throwing";
+  } catch (err) {
+    reviewMsg = (err as Error).message;
+  }
+  assert(
+    !/not built yet/.test(reviewMsg),
+    `review: the handler is the real step, not the notBuilt stub (${reviewMsg})`,
   );
 }
 
