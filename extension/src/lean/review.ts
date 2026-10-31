@@ -44,20 +44,18 @@
  * that passed.
  */
 
-import { isFullCommitSha } from "../commit-sha.ts";
 import type { LensReviewSummary, Verdict } from "../lens-review-format.ts";
 import type { Finding, LensRunResult } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec, DispatchUsage } from "../types.ts";
-import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import type { BuildDispatch } from "./build-types.ts";
 import { frozenFromLog } from "./build.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { assertPublishableBranch } from "./publish-deps.ts";
+import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
 import { fixRunId, fixRunIdFromLog, prNumberFromLog, reviewAttemptFromLog } from "./review-log.ts";
@@ -229,50 +227,12 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   const { repoRoot, issue } = ctx;
   const branch = specifyBranch(ctx.run.branch, issue);
   const base = ctx.run.baseSha;
-  try {
-    assertSafeRef(branch);
-    if (base !== "") assertSafeRef(base);
-  } catch (err) {
-    throw new ReviewInfraError((err as Error).message);
-  }
-  if (!isFullCommitSha(base))
-    throw new ReviewInfraError(
-      `the run has no base commit to review against: ${JSON.stringify(base.slice(0, 80))}`,
-    );
-  // **THE PUSH TARGET IS VALIDATED AT THE ENTRY POINT, NOT AT THE PUSH.** `branch`
-  // is state-file data and this step is the SECOND writer to `origin` in the
-  // pipeline, so it gets `publish`'s own decision reused rather than a third
-  // validator written here — including that guard's documented FAIL-OPEN: a clone
-  // with no `origin/HEAD` and no `gh` cannot resolve its mainline, that is
-  // ordinary, and such a lean push passes quietly (pinned by
-  // `test-lean-review-push-guards.ts` (x3); do not tighten it).
-  //
-  // The PLACEMENT is the substance of this. `integrate()` used to call the guard
-  // after `resetWorktreeToBase` — a `checkout -B` that moves the run's branch, a
-  // `reset --hard` and a `clean -fdx` that take the tree (and the provisioner's
-  // dependency links) with it — so a hostile name did its damage before the
-  // refusal, and the restore that follows can itself fail and report a clean tree
-  // that is not clean. Worse, the functions that mutate the branch ref run BEFORE
-  // `integrate()` at all, so a guard inside it never guarded them. Now the refusal
-  // sits beside `assertSafeRef` at the top of the step, ahead of every child
-  // dispatch, every `worktree add` and every ref move: same position
-  // `publishOutcome` gives the same call, one answer to "when is a push target
-  // refused". The cheap `netRefProblem` stays beside the push argv — that layering
-  // and the mutation that proves it are stated in `review-git.ts`.
-  //
-  // Resolved ONCE per attempt rather than per round: the guard spawns two
-  // subprocesses (`resolveMainline` reads `origin/HEAD`, then `gh repo view`) and
-  // the review loop runs up to `MAX_REVIEW_ROUNDS` fix rounds per step, so calling
-  // it from inside the loop bought six subprocesses to re-ask a question whose
-  // answer cannot change while the step runs.
-  try {
-    await assertPublishableBranch(repoRoot, branch);
-  } catch (err) {
-    // No `rows` to carry: this throw is the step's FIRST event and nothing has been
-    // dispatched, so the empty default is the whole truth rather than a dropped
-    // cost record.
-    throw new ReviewInfraError((err as Error).message);
-  }
+  // **THE ENTRY GATE, BEFORE ANYTHING IS PAID FOR OR TOUCHED.** The four refusals
+  // and the reason their placement is the substance of the change live in
+  // `review-entry.ts`, whose whole contract is "refuse a run this step must not
+  // start"; the ordering mutation that proves the guarantee is stated at the push
+  // site in `review-git.ts`.
+  await assertReviewEntry({ repoRoot, branch, base });
 
   // The contract, the config and the issue, all read before any child is paid:
   // a step that discovered its spec was unreadable after two rounds of review
