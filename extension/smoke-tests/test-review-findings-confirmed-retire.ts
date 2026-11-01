@@ -6,16 +6,17 @@
  * Three surfaces, and the split is the point: the pure rule (`rowFate`'s
  * confirmation arm), the query that decides whether a confirmation exists
  * (`confirmationsFor`), and the round that consumes one (`applyFindingRound`
- * through the real store, on a real clone).
+ * through the real store, on a real clone. The four ACs, named at their
+ * assertion sites below: AC1 a bound confirmation retires a re-reported CRITICAL
+ * with provenance; AC2 a mismatched/absent/unreadable confirmation retires
+ * nothing; AC3 the delta veto and the retirement arm agree; AC4 a lapsed
+ * confirmation re-opens the row unchanged and reports the lapse.
  *
- * AC1 — an open non-SECURITY CRITICAL whose cited line is BYTE-UNCHANGED at
- *       head, and which a round DOES re-report, retires on a confirmation.
- * AC2 — a mismatched / absent / unreadable confirmation retires NOTHING.
- * AC3 — the veto predicate and the retirement arm agree: a row the delta veto
- *       forces a full round for is a row the confirmation arm can retire.
- * AC4 — a lapsed confirmation leaves the row `open` and unchanged, is
- *       re-evaluated per round rather than latched, and stamps the row with a
- *       `confirmationLapsed` disclosure field.
+ * Split for the AGENTS.md §12 500-line gate: this file is the PURE rule and the
+ * store; the render half of AC1/AC4 (`confirmedBy` reaching `resolvedSection`, a
+ * lapse reaching `confirmationLapseSection` on both operator surfaces) is
+ * test-review-findings-disclosure-render.ts, which also says why each half alone
+ * leaves a seam unasserted.
  *
  * Isolation follows test-auto-delta-critical-forced-full.ts: `PI_ENSEMBLE_
  * REVIEW_LEDGER_FILE` pins BOTH the ledger and the findings store into the

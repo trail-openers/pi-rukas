@@ -44,7 +44,12 @@ import { execp } from "./exec.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
-import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
+import {
+  confirmationLapseSection,
+  resolvedSection,
+  setAsideSection,
+  suppressedSection,
+} from "./lens-residuals.ts";
 import { severityLabel } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
@@ -325,6 +330,13 @@ async function doPost(
     ),
     ...resolvedSection(summary.resolved),
     ...setAsideSection(summary.setAside),
+    // #1934 AC4 — the lapse disclosure reaches BOTH operator surfaces, not just
+    // the summary: the residual comment is what the round-cap merge guard reads,
+    // so a retirement that expired would be silent on the one artefact a merge
+    // is decided against. `memoryDisclosureSections` is the ONE place the order
+    // of the three blocks is stated (lens-residuals.ts) — calling the set rather
+    // than the two above is what keeps the surfaces from disagreeing.
+    ...confirmationLapseSection(summary.lapsed),
     ...advisorySection(summary.advisory),
     ...(summary.memoryNote ? ["", neutraliseEvidence(summary.memoryNote)] : []),
     ...(summary.deltaReview?.fallback
