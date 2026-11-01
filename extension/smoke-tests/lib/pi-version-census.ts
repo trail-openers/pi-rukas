@@ -131,8 +131,9 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // 10 past `pi-coding-agent`. The 1.4.1s in the :321 assert MESSAGES sit 24
     // and 53 past the nearest marker end, so only the :320 occurrences of that
     // line's pair are claims — which is why this row declares 1.4.1 at all.
-    // The `floorRuleViolated("1.4.1", "1.0.0")` CALL ARGUMENTS (the :377/:380
-    // call site) are NOT detected: nearest marker end 112 chars ahead for
+    // The `floorRuleViolated("1.4.1", "1.0.0")` CALL ARGUMENTS (the
+    // test-pi-version-drift.ts:379 call site, which moved from :377 when this
+    // block grew) are NOT detected: nearest marker end 112 chars ahead for
     // 1.4.1, 120 for 1.0.0 — 92 and 100 past the 20-char window — so the
     // detector sees the prose, not the call, and moving these literals into
     // code alone would make this row dead. 1.0.0 is likewise detected only at
