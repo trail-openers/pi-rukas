@@ -123,9 +123,11 @@ export function applyFindingRound(opts: {
   // `rowId`; bounding that match to the rows the round owns is what keeps a
   // stale rowId left in the ledger by an earlier round from winning the
   // per-kind race and hiding the confirmation this round's own row needs.
-  // A round holding NO rows passes `undefined`, which is the unbounded scan —
-  // the same answer it had before this argument existed, so absence preserves
-  // today's no-match behaviour exactly. A caller that supplies no
+  // A round holding NO rows passes an EMPTY set, so the join's bound rejects every
+  // ledger row and the round confirms nothing — which is what a round with no rows
+  // of its own must do. It is NOT the unbounded scan: `confirmationsFor` treats
+  // an empty set as a bound that matches nothing and `undefined` as unbounded, and
+  // this call site never passes `undefined`. A caller that supplies no
   // `confirmations` consults none, exactly as before.
   const heldRowIds = new Set(mine.map((r) => r.id));
   // A working copy of the taken ids: a new row's id must not collide with an

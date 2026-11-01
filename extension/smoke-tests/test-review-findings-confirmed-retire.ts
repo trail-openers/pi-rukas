@@ -191,12 +191,22 @@ const refusals: Array<[string, LedgerEntry | undefined]> = [
     const got = ask(entry ? [entry] : []);
     assert(got.size === 0, `AC2: ${why} → no confirmation (got ${[...got.values()].join(",")})`);
   }
-  // The two faults a ledger read used to be asserted against (`ledgerPathFor`
-  // and `readLedgerAt` throwing) belonged to `confirmationsForBranch`, whose
-  // only importer was this test. It is gone and the read now lives in
-  // `recordFindingRunOutcome` (review-findings-store.ts), whose catch hands the
-  // join an empty array — both faults, plus the `"test"` kind that has no
-  // producer, are asserted in that shape in test-review-confirmation-join.ts.
+  // What became of the assertions this block used to carry for
+  // `confirmationsForBranch` (whose only importer was this test, and which is
+  // gone). Named precisely, because a comment that over-claims reads as
+  // coverage while asserting nothing:
+  //   - the `"test"` kind that has no producer → asserted in
+  //     test-review-confirmation-join.ts (`ask([good({ kind: "test" })])`);
+  //   - the unreadable-ledger read fault (malformed JSON, or `readLedgerAt`
+  //     throwing) → asserted in that same file, in the shape
+  //     `recordFindingRunOutcome`'s catch now produces: the round's ledger read
+  //     hands the join an EMPTY array, so a row that would otherwise confirm
+  //     does not retire;
+  //   - `ledgerPathFor` throwing → NOT asserted anywhere. The sibling's AC1 store
+  //     block probes that resolver once (`const probeLedger = await lpf(execp,
+  //     f.dir)`) to pin the fixture, which asserts the path RESOLVES — not that a
+  //     round whose path cannot be resolved retires nothing. If that fault is
+  //     wanted, it needs its own assertion; this comment no longer claims it.
   // The store's own round is the AC2 store block below.
 }
 

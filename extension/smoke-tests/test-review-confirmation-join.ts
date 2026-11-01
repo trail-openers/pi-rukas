@@ -34,7 +34,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import path from "node:path";
 import type { Finding } from "../src/lens-review-types.ts";
@@ -43,6 +43,7 @@ import type { LedgerEntry } from "../src/review-ledger-entry.ts";
 import { lineHashAt, snippetHashAt } from "../src/review-findings-match.ts";
 import type { StoredFinding } from "../src/review-findings-file.ts";
 import { readBranchRows, recordFindingRunOutcome } from "../src/review-findings-store.ts";
+import { readLedgerAt } from "../src/review-ledger-read.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { execp } from "../src/exec.ts";
 import { resetFindingsStateCache } from "../src/review-state-path.ts";
@@ -294,6 +295,88 @@ async function reReport(dir: string, headSha: string, patchId: string) {
       `join store: the provenance names THIS round's row and the reviewed commit (got ${JSON.stringify(after?.confirmedBy)})`,
     );
   } finally {
+    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    delete process.env.PI_AGENT_DIR;
+    resetFindingsStateCache();
+    rmSync(f.root, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE ledger is not a confirmation — asserted in the shape the store's
+// own catch produces
+// ---------------------------------------------------------------------------
+
+{
+  // The assertion this file's split was reported as having inherited, and had
+  // not: the retired `confirmationsForBranch` used to be asserted against a
+  // `readLedgerAt` that threw (malformed JSON / unreadable file). That read now
+  // lives in `recordFindingRunOutcome` (review-findings-store.ts), whose catch
+  // leaves `ledgerRows` at `[]` and still passes `confirmations`, so the shape
+  // that matters is not "the reader throws" — it is "the join is handed an EMPTY
+  // array". This block drives exactly that: the same fixture as the AC1 store
+  // block above, with the ledger file the round resolves to made unreadable
+  // while the review identity still resolves. `readLedgerAt` swallows the fs
+  // fault (`readLedgerFileSafe`), so the round reaches the join with no rows.
+  const f = makeFixture();
+  try {
+    const row = await seed(f.dir, f.headSha);
+    // The identity the round will key on, and the row it would confirm: both
+    // come from the fixture's own accessors, so the ONLY difference from the
+    // green case above is the read fault — a red below cannot be blamed on a
+    // mismatched patch id or a stale `seen` window.
+    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
+    assert(
+      pid !== undefined,
+      "fault: the review identity resolved for the unreadable-ledger round",
+    );
+    writeLedger(f.ledgerFile, [
+      {
+        branch: "feature/work",
+        kind: "adversarial",
+        patchId: pid,
+        passed: true,
+        at: Date.now(),
+        headSha: f.headSha,
+        rowId: row.id,
+        round: 2,
+      },
+    ]);
+    // The fault itself: a file that exists whose bytes cannot be read. 0o000
+    // makes `readFileSync` throw EACCES for any user who is not the file's
+    // owner; the assert below is what stops a run that ignores 0o000 from
+    // silently asserting nothing.
+    chmodSync(f.ledgerFile, 0o000);
+    let readable = true;
+    try {
+      readFileSync(f.ledgerFile, "utf8");
+    } catch {
+      readable = false;
+    }
+    assert(
+      !readable,
+      `fault: the fixture's ledger really is unreadable before the round (readable=${readable})`,
+    );
+    assert(
+      readLedgerAt(f.ledgerFile).length === 0,
+      "fault: the store's own reader answers an unreadable ledger with NO rows",
+    );
+    const out = await reReport(f.dir, f.headSha, pid!);
+    const after = (await readBranchRows(f.dir, "feature/work")).find((r) => r.id === row.id);
+    assert(
+      out.ok && after?.status === "open",
+      `unreadable ledger: the round still records, and the row the ledger would have confirmed stays open (${out.ok ? after?.status : out.reason})`,
+    );
+    assert(
+      after?.resolvedReason === undefined && after?.confirmedBy === undefined,
+      `unreadable ledger: nothing is retired on bytes nobody read — no reason, no provenance (${JSON.stringify([after?.status, after?.resolvedReason, after?.confirmedBy])})`,
+    );
+  } finally {
+    try {
+      chmodSync(f.ledgerFile, 0o600);
+    } catch {
+      // The dir removal below owns the file either way.
+    }
     delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     delete process.env.PI_AGENT_DIR;
     resetFindingsStateCache();
