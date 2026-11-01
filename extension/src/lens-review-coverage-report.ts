@@ -28,14 +28,28 @@ import { neutraliseEvidence } from "./comment-evidence.ts";
  * order moves between rounds cannot be diffed or compared, and the one caller
  * that forgot is the one that ships. Empty input contributes nothing, so a
  * round whose every lens left evidence behind reads exactly as it did before
- * this section existed. */
+ * this section existed.
+ *
+ * Each lane string goes through `neutraliseEvidence`, like the paths below and
+ * like every other agent-adjacent field on this report. A lane string is NOT
+ * renderer prose: `incompleteLanes` (lens-review-incomplete.ts) builds it as
+ * `` `${r.lens}: ${laneReason(r)}` ``, and `laneReason` returns `r.parseError`
+ * verbatim for a `child-bound` kill — text the child (or a findings file an
+ * agent wrote) produced. `neutraliseMarkdownField` is deliberately NOT used
+ * here: these sections reach a tool reply via `renderSummary`'s single
+ * non-test caller, and the PR-visible post bodies (`lens-review-residuals.ts`,
+ * `work-driver-lens-cap.ts`) build from findings/suppressed/resolved/set-aside/
+ * advisory and never call either coverage section — so the markdown-post
+ * neutraliser would be applied to a surface that does not go through a post.
+ * `neutraliseEvidence` is also the stronger fit for a single line: it flattens
+ * CR/LF, so a hostile lane cannot end its own bullet. */
 export function unreviewedLanesSection(lanes: readonly string[]): string[] {
   if (lanes.length === 0) return [];
   const named = [...lanes].sort();
   return [
     "",
     `⛔ REVIEW INCOMPLETE — ${named.length} lens(es) came back having reviewed nothing (no finding reported and no closing summary written):`,
-    ...named.map((l) => `  - ${l}`),
+    ...named.map((l) => `  - ${neutraliseEvidence(l)}`),
     "",
     "A lens that reviewed nothing is not a lens that found nothing: the round does not count as a pass. Re-dispatch dispatch_lens_review, or override and proceed despite the unreviewed lanes.",
   ];
@@ -108,7 +122,7 @@ export function coverageDenominatorSection(state: {
   if (state.hasDenominator && state.coverageComplete) {
     return [
       "",
-      "✓ COVERAGE — every file in this round's denominator was named by a finding or a summary.",
+      "✓ COVERAGE — every file in this round's denominator is named by recorded evidence, and at least one is cited by a structured `report_finding`. Prose that merely quotes a path is not reading it.",
     ];
   }
   if (state.hasDenominator) {

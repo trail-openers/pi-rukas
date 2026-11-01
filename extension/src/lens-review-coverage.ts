@@ -212,38 +212,46 @@ export function unaccountedFiles(
 }
 
 /**
-/**
  * Does `summary` NAME `file` as a path, rather than merely CONTAIN its
  * characters? See the call site: the denominator is a handful of paths and the
  * diff is IN the lens's own prompt, so an unanchored `includes` cannot tell a
  * citation apart from a recital.
  *
- * THE TWO FLANKS ARE DELIBERATELY ASYMMETRIC, and that asymmetry is the
- * invariant this function exists to hold:
+ * THE TWO FLANKS ARE NOT THE SAME TEST, and each carries its own load — do not
+ * "simplify" them into one shared set:
  *
- *   LEFT  — `(^|NOT_PATH)`: the start of the summary, or a character a path is
- *           not built from — which INCLUDES a newline, so a path opening at a
- *           line start is admitted by `NOT_PATH` itself, not by a separate
- *           arm. THIS is the recital
- *           guard: `--- a/x`, `+++ b/x`, `+++ "b/x"`, `<src/a.ts>`,
- *           `load("src/a.ts")` and `src/b.ts@default` are all refused HERE,
- *           because `-`, `"`, `<` and `@` cannot OPEN a citation.
- *   RIGHT — `NOT_PATH|(?:TERMINATOR?$)`: the summary continues with a non-path
- *           character, or the path runs to the end of the summary with at most
- *           one sentence terminator after it.
+ *   LEFT  — `(^|NOT_PATH)`: start of the summary, or a non-path character —
+ *           and a newline IS one, so a path opening at a line start is admitted
+ *           by `NOT_PATH`, not by a dedicated alternative. This half alone is
+ *           the recital guard: `--- a/x`,
+ *           `+++ b/x`, `+++ "b/x"`, a re-emitted `"…\n+src/a.ts"`,
+ *           `load("src/a.ts")` and `src/b.ts@default` are all refused here —
+ *           `"` and `@` are outside the path set, so `NOT_PATH` consumes them
+ *           and a path that opens at `+` is refused because `+` IS one.
+ *           HONESTY NOTE, measured against the shipped regex: a bare
+ *           `<src/a.ts>` and a quoted `load("src/a.ts")` are NOT refused when
+ *           that is the whole summary — at index 0 there is no character for
+ *           `NOT_PATH` to consume, so the `^` arm admits them. They are refused
+ *           in real prose, where a character does precede them. A prior copy of
+ *           this block asserted all six forms were refused "HERE" and also
+ *           claimed BOTH flanks read the SAME `NOT_PATH` constant, which the
+ *           right flank contradicts outright (it reads `NOT_LINE_BREAK`);
+ *           `test-lens-coverage-denominator.ts` pins the `^`-arm witness.
+ *   RIGHT — `NOT_LINE_BREAK(?!PATH_CHAR)`, or one `TERMINATOR` and then the end
+ *           of the line or summary. Reusing the left flank's `NOT_PATH` here
+ *           would reject every natural citation whose path runs into prose or a
+ *           full stop ("Read src/a.ts and …", "Reviewed src/a.ts."). What makes
+ *           the loose right flank safe is the negative lookahead plus the line
+ *           anchor: a citation may be followed by prose, but NOT by more path
+ *           characters, so `src/b.ts.spec` and `src/b.tsx` stay unaccounted
+ *           rather than accounting for a shorter file. The lookahead is
+ *           `PATH_CHAR`, a DIFFERENT class from the left flank's `NOT_PATH` —
+ *           the two constant lists are meant to differ, which is the opposite
+ *           of what the deleted block claimed.
  *
- * Why the right flank needs the terminator arm at all: `.` and `-` are PATH
- * characters, so a plain `NOT_PATH` flank read "Reviewed src/a.ts." and "No
- * issues in src/a.ts." — the way a lens actually closes — as unaccounted, and
- * the report printed a gap that was not there. Why it is still safe: the
- * `$` is the end of the WHOLE summary (no `m` flag — do not add one, it would
- * turn every header line into an end and re-admit `+++ b/src/a.ts`), and a
- * terminator is only tried AFTER the entire path matched. So a terminator can
- * never OPEN a match and never re-admit a left-flank refusal: `src/b.ts.spec`
- * stays unaccounted because its dot is followed by `spec`, not by the end.
- *
- * Both flanks read the SAME `NOT_PATH` constant on purpose — if the two lists
- * drifted apart the recital guard would quietly widen.
+ * No `m` flag: `$` is the end of the WHOLE summary and `\r?\n` is the explicit
+ * line end. Adding `m` would make every recited header line an end and
+ * re-admit `+++ b/src/a.ts`.
  */
 // The characters a real path is built from, negated: the LEFT flank. `+` sits
 // INSIDE the path set on purpose — a re-emitted diff line glues `+` or `+++`
@@ -261,9 +269,12 @@ const NOT_LINE_BREAK = String.raw`[^\r\n]`;
 // account — and anchoring it to `\r?\n`/`$` is what stops `src/b.ts` from
 // matching at the dot inside `src/b.ts.spec`.
 const TERMINATOR = String.raw`[!?,.;:\-]`;
-// A path character: the right flank refuses to close a citation while one of
-// these follows, so `src/b.ts.spec` and `src/b.tsx` are not `src/b.ts`/
-// `src/a.ts` named. `-` last, in `String.raw`, so it stays a literal.
+// A path character: interpolated into the right flank's negative lookahead, so
+// this constant IS the single definition of what refuses to close a citation —
+// `src/b.ts.spec` and `src/b.tsx` are not `src/b.ts`/`src/a.ts` named. It is
+// the mirror of the left flank's `NOT_PATH`, deliberately a SEPARATE class (the
+// right flank then reads `NOT_LINE_BREAK` on purpose). `-` last, in
+// `String.raw`, so it stays a literal.
 const PATH_CHAR = String.raw`[A-Za-z0-9_./+-]`;
 
 /**
@@ -298,7 +309,7 @@ const PATH_CHAR = String.raw`[A-Za-z0-9_./+-]`;
 function mentionsPath(summary: string, file: string): boolean {
   const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(
-    `(?:^|${NOT_PATH})${escaped}(?:(?![A-Za-z0-9_./+-])${NOT_LINE_BREAK}|${TERMINATOR}?(?:\\r?\\n|$))`,
+    `(?:^|${NOT_PATH})${escaped}(?:(?!${PATH_CHAR})${NOT_LINE_BREAK}|${TERMINATOR}?(?:\\r?\\n|$))`,
   );
   return re.test(summary);
 }

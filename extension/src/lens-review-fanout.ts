@@ -76,8 +76,13 @@ export interface LensFanOut {
  * blocked rows, and read the round's file-level coverage list off the result.
  *
  * The deck batch is opened by the caller and cleared here — the same pairing
- * the inline code had (`startPersistentBatch` before, `clearBatchEntry` after
- * the fan-out), kept intact by keeping both ends in one function.
+ * the inline code had (`startPersistentBatch` before, `clearBatchEntry` at the
+ * end of the fan-out), kept intact by keeping both ends in one function. The
+ * clear runs in a `finally`, not on the line after the await: `Promise.all`
+ * rejects on the first rejected child, so a line-after-await release is a
+ * success-path-only release and a throwing child leaked the batch row and its
+ * ticker for the rest of the run (pinned by
+ * `test-lens-fanout-batch-release.ts`).
  *
  * VERDICT-LEVEL vs DISCLOSURE-LEVEL, and why they are split:
  *
@@ -122,25 +127,37 @@ export async function runLensFanOut(args: {
    */
   extraFindings?: readonly Finding[];
 }): Promise<LensFanOut> {
-  const results = await Promise.all(
-    args.healthy.map((lens) =>
-      args.modelSlot(
-        lens.name,
-        () =>
-          args.lensChildFn({
-            lens,
-            runId: args.runId,
-            skillsDir: args.skillsDir,
-            context: args.context,
-            roster: args.roster,
-            opts: args.opts,
-            bumpBatch: args.bumpBatch,
-            ...(args.pi ? { pi: args.pi } : {}),
-          }),
-        args.signal,
+  // THE DECK BATCH IS RELEASED IN `finally`, NOT AFTER THE AWAIT. The caller
+  // (`runLensReview`) opened it with `startPersistentBatch` and this function is
+  // the only place that clears it, so on the line after the await the release
+  // was reachable only by the SUCCESS path: `Promise.all` rejects on the FIRST
+  // rejected child, and a `lensChildFn` that threw skipped the clear and left
+  // the batch row — and its 1s render ticker — in the deck for the rest of the
+  // run, with no error anywhere to explain the dangling `code-review-specialist×N`.
+  let results: LensRunResult[];
+  try {
+    results = await Promise.all(
+      args.healthy.map((lens) =>
+        args.modelSlot(
+          lens.name,
+          () =>
+            args.lensChildFn({
+              lens,
+              runId: args.runId,
+              skillsDir: args.skillsDir,
+              context: args.context,
+              roster: args.roster,
+              opts: args.opts,
+              bumpBatch: args.bumpBatch,
+              ...(args.pi ? { pi: args.pi } : {}),
+            }),
+          args.signal,
+        ),
       ),
-    ),
-  );
+    );
+  } finally {
+    dispatchDeck.clearBatchEntry(args.batchKey);
+  }
   const blockedRows = args.blocked.map(
     (e): LensRunResult => ({
       lens: e.name,
@@ -154,7 +171,6 @@ export async function runLensFanOut(args: {
     }),
   );
   const lensResults = [...results, ...blockedRows];
-  dispatchDeck.clearBatchEntry(args.batchKey);
   // The round's denominator, read from the diff the review itself resolved —
   // never from a caller-pasted string (`expectedFilesOf` refuses one). Absent
   // means "nothing to check", a different fact from "nothing covered", so it is
@@ -194,9 +210,12 @@ export async function runLensFanOut(args: {
     ...lensResults,
     ...(results.length > 0 ? extraFindings.map((f) => ({ findings: [f] })) : []),
   ];
+  // The SAME `results.length > 0` gate as the accounting list: an ungated merge
+  // let one caller-supplied row satisfy `hasFindingClaimedFile` on a round where
+  // no lane ran, which is the ✓ for a review that reviewed nothing.
   const claimedEvidence: readonly CoverageEvidence[] = [
     ...results,
-    ...extraFindings.map((f) => ({ findings: [f] })),
+    ...(results.length > 0 ? extraFindings.map((f) => ({ findings: [f] })) : []),
   ];
   const accounted = accountedFiles(accountedEvidence, expectedFiles ?? new Set());
   // `results.length > 0` is load-bearing: `[].every(...)` is TRUE, so without it
