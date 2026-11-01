@@ -2,7 +2,7 @@
 
 pi-rukas depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. Since 1.0.0, `--no-extensions` also disables built-in extensions (including the built-in MCP), which pi-rukas compensates for by passing `-e builtin:mcp` (and, unless `PI_ENSEMBLE_CHILD_CODEMODE=0`, `-e builtin:codemode`, issue #1030) to every subagent spawn (see `extension/src/spawn-support.ts` `childArgsBase()`).
 
-## Last verified against pi 1.0.0 (2026-10-02)
+## Last verified against pi 1.4.0 (2026-11-01)
 
 Verified by running `extension/smoke-tests/test-pi-shape-live.ts` against the host's installed pi — all event-shape assertions (agent_end, message_end, toolCall blocks, tool_execution_start/end) and the tool-roster integrity check passed.
 
@@ -10,7 +10,7 @@ This line is the single source of truth for the project's Pi version claim: the 
 
 - **Operators are free to upgrade Pi at any time** — `pi` is a global `npm install -g` outside the extension's package manager, and nothing in this project pins down which Pi version you run. If a newer Pi breaks something, this line is the documented fallback, not a ceiling.
 - The dev-dependency pins in `extension/package.json` (`@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`, co-pinned and moved in lockstep) are a **CI-reproducibility device, not a support claim**: they exist so `bun install --frozen-lockfile` in CI is reproducible. They are explicitly **non-normative** — they do not define what Pi versions the project supports or works with. A floating/latest pin is structurally impossible anyway: `extension/bunfig.toml` sets `minimumReleaseAge = 345600` (the 4-day embargo), which governs THIS project's dev dependency installs only — never your own Pi.
-- The sandbox image pins `npm install -g` to the install floor (`.devcontainer/Dockerfile`; the floor itself lives in `install-preflight.sh` `MIN_PI_VERSION`) and is independent of both the line above and the dev pins.
+- The sandbox image's `npm install -g @earendil-works/pi-coding-agent@<version>` line (`.devcontainer/Dockerfile`) carries its **own hardcoded literal**, which `test-prerequisite-drift.ts` enforces to be **at or above** the `install-preflight.sh` `MIN_PI_VERSION` floor (`test-dockerfile-pins.ts` separately enforces that it is pinned at all) — it does **not** derive from the floor or from the line above, and it is free to lag the verified line (it currently sits at the #959 capability version while the line above tracks the newest tested Pi).
 
 Sites asserting a Pi version and the relationship each must maintain (all checked by the drift gate):
 
