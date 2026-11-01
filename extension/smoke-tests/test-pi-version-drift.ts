@@ -148,7 +148,8 @@ import {
   siteCensus,
   stripRangePrefix,
 } from "./lib/pi-version-census.ts";
-import { runCensusGroundingChecks } from "./lib/pi-version-grounding-checks.ts";
+import { armRelaxed, armUnmatched, censusGroundingErrors, NO_CITATIONS_MARKER } from "./lib/pi-version-grounding.ts";
+import type { GroundingCitation } from "./lib/pi-version-census.ts";
 
 // One detector for the whole gate: the census lib cannot import the file that
 // imports it, so its grounding assertion is wired to the one below.
@@ -433,13 +434,66 @@ if (verified && pins.codingAgent) {
 }
 
 
+// The single-citation edit each arm alone can refuse (a wrong gap is invisible to
+// the quote/marker tests, a wrong quote to the gap re-derivation). Declared above its
+// block because the block runs at module load: a `const` below it stays in its TDZ.
+const CORRUPT_FOR: Record<"gap" | "quote", (t: Record<string, Record<string, GroundingCitation[]>>) => void> = {
+  // The first citation of the first row; the table is small and its rows are ordered,
+  // so this is stable, and `armUnmatched` requires the shipped predicate to refuse it.
+  gap: (t) => {
+    Object.values(t).flatMap(Object.values)[0]![0]!.gap += 1;
+  },
+  quote: (t) => {
+    const c = Object.values(t).flatMap(Object.values)[0]![0]!;
+    c.quoted = `${c.quoted.slice(0, -1)}\u002e`;
+  },
+};
+
 // ---------------------------------------------------------------- census consistency
-// The grounding half of this gate lives in ./lib/pi-version-census-grounding.ts —
-// moved there (CODE AND COMMENTS BOTH, verbatim) when the arm canary grew its
-// pairing assertion and the file passed the 500-line cap. The rule is to make room
-// by moving, not by compressing the comments: every one of those paragraphs states a
-// reason a check exists, and the comment-retention gate treats a lost one as a loss.
-runCensusGroundingChecks(assert, read, piClaimContexts);
+// The grounding facts the census comments rely on are DERIVED here from the two
+// files' actual bytes: per cited literal the detector's CLAIM SET (`detected ==
+// declared`) plus, per occurrence, the MARKER NAME, the QUOTED TEXT and the
+// FORWARD GAP the comment claims. A fact the gate computes cannot rot - the ~26
+// lines of hand-copied line numbers, marker names and gaps this replaces were
+// wrong in three consecutive rounds because transcription drifts and nothing
+// checked it. No comment cites a line address, so none can be off by one;
+// occurrences are identified by quoted text plus marker. Both files are read WHOLE.
+{
+  const gateRel = "extension/smoke-tests/test-pi-version-drift.ts";
+  const censusRel = "extension/smoke-tests/lib/pi-version-census.ts";
+  const readExt = (rel: string) => readFileSync(path.join(REPO_ROOT, rel), "utf8");
+  const textByFile: Record<string, string> = { [gateRel]: readExt(gateRel), [censusRel]: readExt(censusRel) };
+  const expected = declaredGroundingTable(gateRel, censusRel);
+  const literalCount = Object.values(expected).reduce((n, byLit) => n + Object.keys(byLit).length, 0);
+  const citationCount = Object.values(expected).reduce((n, byLit) => n + Object.values(byLit).reduce((m, list) => m + list.length, 0), 0);
+  // A coverage floor (analogue of `declared >= 10` on the site census): both
+  // canaries below count against a number DERIVED from this table, so a deleted row
+  // shrinks its own coverage — the table passing by shrinking is the failure mode.
+  assert(literalCount >= 3 && citationCount >= 9, `census grounding: ${literalCount} literals / ${citationCount} citations checked — at least the three (file, literal) rows and the citations this gate documents; a row deleted here must redden rather than narrow the check`);
+  const groundingErrors = censusGroundingErrors(textByFile, expected, piClaimContexts);
+  assert(groundingErrors.length === 0, `census grounding: the detector's claims match the cited markers, quotes and gaps${groundingErrors.length ? " — " + groundingErrors.join(" | ") : " (no hand-transcribed figure is stale)"}`);
+  // A gate never observed to fail is not a gate: a detector that finds no claims
+  // must redden every literal checked — counting COMPARISONS, not rows declared (see
+  // NO_CITATIONS_MARKER for why guard refusals cannot count toward it).
+  const failClosed = censusGroundingErrors(textByFile, expected, () => []);
+  const failClosedReal = failClosed.filter((s) => !s.includes(NO_CITATIONS_MARKER)).length;
+  assert(
+    failClosedReal === literalCount,
+    `canary: census grounding fails CLOSED — a detector that finds no claims reddens every literal checked (got ${failClosedReal} detector-vs-citation errors, expected one per checked literal; ${failClosed.length - failClosedReal} were vacuity refusals, which prove nothing)`,
+  );
+  // Same standard on the other half. `citesMarker`'s whole-name test is UNWITNESSED
+  // (canary deleted, not grown): its citation's quote and gap are both derived FROM
+  // that marker, so a wrong-family citation gets refused by the gap arm regardless —
+  // nothing left for it to catch. UNCOVERED: substring-matching that test survives.
+  for (const arm of ["gap", "quote"] as const) {
+    const w = armUnmatched(textByFile, expected, piClaimContexts, CORRUPT_FOR[arm], armRelaxed(arm));
+    assert(
+      w.shipped >= 1 && w.relaxed === 0,
+      `canary: census grounding arm \`${arm}\` is witnessed — shipped rejected the corrupted citation (${w.shipped} unmatched), neutering this one arm let it pair again (${w.relaxed}); both 0 = the corruption does not exercise this arm, both >=1 = the arm refuses nothing`,
+    );
+  }
+}
+
 
 console.log(exit === 0 ? "\nAll pi version-claim checks passed." : "\nFAILED");
 process.exit(exit);

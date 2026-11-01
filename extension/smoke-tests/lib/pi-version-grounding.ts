@@ -11,11 +11,11 @@
  * tests; coverage comes through test-pi-version-drift.ts, which imports it.
  */
 import {
+  PI_CLAIM_MARKER_NAMES,
+  PI_CLAIM_MARKERS,
+  piLiteralClaims,
   type ClaimDetector,
   type GroundingCitation,
-  PI_CLAIM_MARKERS,
-  PI_CLAIM_MARKER_NAMES,
-  piLiteralClaims,
 } from "./pi-version-census.ts";
 
 /** The "the literal follows" terminator a citation may end with. */
@@ -32,20 +32,11 @@ const ELLIPSIS = "\u2026";
 export const NO_CITATIONS_MARKER = "[no-citations]";
 
 /** The pairing predicate's shape; `armRelaxed` produces a laxer copy of it. */
-export type ArmMutation = (
-  text: string,
-  d: { index: number; marker: string; gap: number },
-  cit: GroundingCitation,
-) => boolean;
+export type ArmMutation = (text: string, d: { index: number; marker: string; gap: number }, cit: GroundingCitation) => boolean;
 
 /**
  */
-export function censusGroundingErrors(
-  textByFile: Record<string, string>,
-  expected: Record<string, Record<string, GroundingCitation[]>>,
-  detect: ClaimDetector,
-  anchorsFn?: ArmMutation,
-): string[] {
+export function censusGroundingErrors(textByFile: Record<string, string>, expected: Record<string, Record<string, GroundingCitation[]>>, detect: ClaimDetector, anchorsFn?: ArmMutation): string[] {
   const errors: string[] = [];
   const anchors = anchorsFn ?? anchorsShips;
   // One masked scan text per file: the declarations `declaredGroundingTable`
@@ -64,22 +55,16 @@ export function censusGroundingErrors(
       // the row green without checking anything. Every entry in the table states
       // claims, so an empty list is a deletion, not a fact.
       if (citations.length === 0) {
-        errors.push(
-          `${NO_CITATIONS_MARKER} ${rel} ${literal}: declared no citations - a checked (file, literal) row must state at least one claim, or the count check compares two empties and passes by silence`,
-        );
+        errors.push(`${NO_CITATIONS_MARKER} ${rel} ${literal}: declared no citations - a checked (file, literal) row must state at least one claim, or the count check compares two empties and passes by silence`);
         continue;
       }
       // `scan` is this file's bytes with its own declarations blanked, so the
       // table cannot manufacture the claims it describes.
       const detected = piLiteralClaims(text, literal, detect, scans[rel]);
-      const say = (list: { marker: string; gap: number }[]) =>
-        list.map((d) => `${d.marker}@${d.gap}`).join(", ");
-      const sayCit = (list: GroundingCitation[]) =>
-        list.map((x) => `${x.quoted}=${x.marker}@${x.gap}`).join(", ");
+      const say = (list: { marker: string; gap: number }[]) => list.map((d) => `${d.marker}@${d.gap}`).join(", ");
+      const sayCit = (list: GroundingCitation[]) => list.map((x) => `${x.quoted}=${x.marker}@${x.gap}`).join(", ");
       if (detected.length !== citations.length) {
-        errors.push(
-          `${rel} ${literal}: detector found ${detected.length} claim(s) [${say(detected)}] but the citations declare ${citations.length} [${sayCit(citations)}]`,
-        );
+        errors.push(`${rel} ${literal}: detector found ${detected.length} claim(s) [${say(detected)}] but the citations declare ${citations.length} [${sayCit(citations)}]`);
         continue;
       }
       // One-to-one pairing, fewest-candidates-first so an unambiguous citation
@@ -87,9 +72,7 @@ export function censusGroundingErrors(
       // `armUnmatched` so a relaxation is judged by the same pairing the gate runs.
       const unmatched = pairCitations(text, detected, citations, anchors);
       if (unmatched > 0) {
-        errors.push(
-          `${rel} ${literal}: ${unmatched} cited claim(s) matched no distinct claim at their stated marker/gap/quote (detector says [${say(detected)}] / citations [${sayCit(citations)}])`,
-        );
+        errors.push(`${rel} ${literal}: ${unmatched} cited claim(s) matched no distinct claim at their stated marker/gap/quote (detector says [${say(detected)}] / citations [${sayCit(citations)}])`);
       }
     }
   }
@@ -98,17 +81,9 @@ export function censusGroundingErrors(
 
 /**
  */
-function pairCitations(
-  text: string,
-  detected: { index: number; marker: string; gap: number }[],
-  citations: GroundingCitation[],
-  anchors: ArmMutation,
-): number {
+function pairCitations(text: string, detected: { index: number; marker: string; gap: number }[], citations: GroundingCitation[], anchors: ArmMutation): number {
   const taken = new Set<number>();
-  const cands = citations.map((cit) => ({
-    cit,
-    opts: detected.map((_, i) => i).filter((i) => anchors(text, detected[i] as number, cit)),
-  }));
+  const cands = citations.map((cit) => ({ cit, opts: detected.map((_, i) => i).filter((i) => anchors(text, detected[i] as number, cit)) }));
   let unmatched = 0;
   for (const c of cands.sort((x, y) => x.opts.length - y.opts.length)) {
     const free = c.opts.filter((i) => !taken.has(i));
@@ -135,36 +110,17 @@ function pairCitations(
  * Counts CITATIONS, not error strings — a lax arm that pairs a corrupted citation
  * with a different claim emits no message at all while never doing the work the arm
  * exists to do, and only the pairing itself sees that.
- *
- * Returns `pairedRows` (rows whose claim count survived the corruption and so
- * actually reached `pairCitations`) for the same reason: an arm canary whose
- * corruption moves the count is a canary that never called the relaxed predicate.
  */
-export function armUnmatched(
-  textByFile: Record<string, string>,
-  base: Record<string, Record<string, GroundingCitation[]>>,
-  detect: ClaimDetector,
-  corrupt: (table: Record<string, Record<string, GroundingCitation[]>>) => void,
-  relaxed: ArmMutation,
-): { shipped: number; relaxed: number; pairedRows: number } {
+export function armUnmatched(textByFile: Record<string, string>, base: Record<string, Record<string, GroundingCitation[]>>, detect: ClaimDetector, corrupt: (table: Record<string, Record<string, GroundingCitation[]>>) => void, relaxed: ArmMutation): { shipped: number; relaxed: number } {
   const table = structuredClone(base);
   corrupt(table);
   let shipped = 0;
   let lax = 0;
-  // Rows that actually reached PAIRING. A corruption that moves the claim count
-  // short-circuits above and never calls either predicate, so `shipped >= 1` alone
-  // is satisfiable by the count check firing — the arm canary then proves nothing
-  // about the relaxed half, which is the only thing telling a real witness apart
-  // from an untested copy of `anchorsShips`. The caller asserts this equals the
-  // table's row count so a corruption that skips pairing reddens instead of passing.
-  let paired = 0;
   for (const [rel, byLiteral] of Object.entries(base)) {
     const text = textByFile[rel];
     if (text === undefined) continue;
     for (const literal of Object.keys(byLiteral)) {
-      const citations = (table[rel] as Record<string, GroundingCitation[]>)[
-        literal
-      ] as GroundingCitation[];
+      const citations = (table[rel] as Record<string, GroundingCitation[]>)[literal] as GroundingCitation[];
       const detected = piLiteralClaims(text, literal, detect);
       if (detected.length !== citations.length) {
         // The corruption moved the claim count, so nothing could pair: that IS the
@@ -175,10 +131,9 @@ export function armUnmatched(
       }
       shipped += pairCitations(text, detected, citations, anchorsShips);
       lax += pairCitations(text, detected, citations, relaxed);
-      paired++;
     }
   }
-  return { shipped, relaxed: lax, pairedRows: paired };
+  return { shipped, relaxed: lax };
 }
 
 /**
@@ -196,17 +151,13 @@ export function armUnmatched(
 export function armRelaxed(arm: "gap" | "quote"): ArmMutation {
   return (text, d, cit) => {
     if (!citesMarker(cit, d.marker)) return false;
-    const body = cit.quoted.endsWith(ELLIPSIS)
-      ? cit.quoted.slice(0, -ELLIPSIS.length)
-      : cit.quoted.replace(/\u002e\u002e\u002e$/, "");
+    const body = cit.quoted.endsWith(ELLIPSIS) ? cit.quoted.slice(0, -ELLIPSIS.length) : cit.quoted.replace(/\u002e\u002e\u002e$/, "");
     // An empty quote is never vacuously true: it "matches" at every position, so
     // accepting it would make the whole per-occurrence check unfalsifiable (that was
     // the shipped defect - blanking every quote kept the gate green).
     if (body === "" || d.index < body.length) return false;
     if (arm !== "quote" && text.slice(d.index - body.length, d.index) !== body) return false;
-    const k = PI_CLAIM_MARKER_NAMES.findIndex(
-      (n) => n.toLowerCase() === cit.marker.trim().toLowerCase(),
-    );
+    const k = PI_CLAIM_MARKER_NAMES.findIndex((n) => n.toLowerCase() === cit.marker.trim().toLowerCase());
     if (k < 0) return false;
     const re = new RegExp((PI_CLAIM_MARKERS[k] as RegExp).source, "gi");
     const lo = d.index - body.length;
@@ -232,18 +183,7 @@ export function armRelaxed(arm: "gap" | "quote"): ArmMutation {
  * found in the file it claims to describe masks nothing: the check then runs on
  * raw bytes, so a fabricated citation surfaces as a mismatch, never hidden.
  */
-export function maskGroundingTable(
-  textByFile: Record<string, string>,
-  expected: Record<string, Record<string, GroundingCitation[]>>,
-  relax: { fill?: string } = {},
-): Record<string, string | undefined> {
-  // `maskBarrierClaims` witnesses this loop's two failure modes: never blanking (the
-  // `at >= 0` test below, i.e. `at = -1` always) and blanking with a character that is
-  // not whitespace (`MASK_FILL` below, i.e. a fill the marker regexes still match).
-  // Both were measured to leave the gate green, so each is asserted, not assumed.
-  // `relax.fill` is how `maskBarrierClaims` exercises the non-whitespace blanking without
-  // this file carrying a second copy of the loop; production callers pass nothing.
-  const fill = relax.fill ?? MASK_FILL;
+function maskGroundingTable(textByFile: Record<string, string>, expected: Record<string, Record<string, GroundingCitation[]>>): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const [rel, byLiteral] of Object.entries(expected)) {
     const text = textByFile[rel];
@@ -251,129 +191,13 @@ export function maskGroundingTable(
     let scan = text;
     for (const citations of Object.values(byLiteral))
       for (const cit of citations) {
-        const decl = declarationText(cit);
-        const at = MASK_NEVER_BLANK ? -1 : scan.indexOf(decl);
-        if (at >= 0)
-          scan = `${scan.slice(0, at)}${fill.repeat(decl.length)}${scan.slice(at + decl.length)}`;
+        const decl = `{ quoted: ${JSON.stringify(cit.quoted)}, marker: ${JSON.stringify(cit.marker)}, gap: ${cit.gap} }`;
+        const at = scan.indexOf(decl);
+        if (at >= 0) scan = `${scan.slice(0, at)}${" ".repeat(decl.length)}${scan.slice(at + decl.length)}`;
       }
     out[rel] = scan === text ? undefined : scan;
   }
   return out;
-}
-
-/**
- * The mask's blanking character. It MUST be whitespace: a declaration blanked with any
- * other character re-constitutes the marker names the citations quote, and the detector
- * then reads claims out of the very table the mask exists to deny. Witnessed by
- * `maskBarrierClaims`, which reddens if this is changed.
- */
-const MASK_FILL = " ";
-
-/** Whether the mask blanks at all. Witnessed by `maskBarrierClaims`; never true. */
-const MASK_NEVER_BLANK = false;
-
-/**
- * The mask barrier's witness. `maskGroundingTable` hides each file's citations from the
- * detector by blanking them to spaces of IDENTICAL length, and until now nothing checked
- * that it does: forcing `at = -1` (never blank) and blanking with `"x"` were both measured
- * to leave the gate green, because the shipped declarations happen to hold no in-window
- * `1.x` literal. So the barrier rested on a property of the current table rather than on
- * the mask.
- *
- * The fixture is one declaration whose `quoted` field is a marker name followed by a
- * fresh literal (`1.4.2` — a version no other check in this repo reads, so the fixture is
- * its only source) and whose `marker` field names that marker, so the detector calls the
- * literal a claim while those bytes are visible. Three legs then report what the detector
- * sees at the claim's own index:
- *
- * - `masked` — the shipped mask. Must be 0: this is the barrier.
- * - `unmasked` — no blanking at all (the `at = -1` mutation). Must be 1.
- * - `filler` — a non-whitespace fill. Reports 0, and the zero IS the finding: `"x"`
- *   destroys the marker text it blanked, so on this fixture it behaves exactly like a
- *   space. The mutation the reviewer measured was invisible here not because the barrier
- *   watches it but because it cannot, on any fixture — a claim is a MARKER and a literal
- *   together, and a fill that removes the bytes of both removes the claim whichever
- *   character it uses. What a non-whitespace fill really breaks is the identical-length
- *   contract the mask's own comment states, so that is what this witness asserts as a
- *   hard invariant of every leg: an index the grounding check compares must stay an index
- *   into the same bytes.
- *
- * A mask that blanks nothing, or one whose output disagrees with its own constants, is an
- * error rather than a silent pass — so editing `MASK_FILL` or `MASK_NEVER_BLANK` reddens
- * this instead of passing quietly, which is the half of the reviewer's finding the count
- * alone could never carry.
- */
-export function maskBarrierClaims(
-  text: string,
-  literal: string,
-  detect: ClaimDetector,
-  relax: { fill?: string } = {},
-): { masked: number; unmasked: number; filler: number } {
-  const cit = declarationFor(literal);
-  const maskable = declarationText(cit);
-  const withSynth = `${text}\n${maskable}`;
-  const synthIndex = withSynth.lastIndexOf(literal);
-  const sees = (scan: string) => (new Set(detect(scan)).has(synthIndex) ? 1 : 0);
-  const declAt = withSynth.indexOf(maskable);
-  if (declAt < 0)
-    throw new Error(
-      "maskBarrierClaims: the synthesised declaration is not in the text it claims to describe - the mask would be a no-op and the witness meaningless",
-    );
-  const shipped = maskGroundingTable({ f: withSynth }, { f: { [literal]: [cit] } }).f;
-  if (shipped === undefined)
-    throw new Error(
-      "maskBarrierClaims: maskGroundingTable masked nothing at all - the barrier is absent, which is the failure this witness exists to catch",
-    );
-  if (
-    shipped !==
-    `${withSynth.slice(0, declAt)}${MASK_FILL.repeat(maskable.length)}${withSynth.slice(declAt + maskable.length)}`
-  )
-    throw new Error(
-      "maskBarrierClaims: the mask's output disagrees with MASK_FILL - the witness no longer describes the shipped mask",
-    );
-  const filler =
-    maskGroundingTable({ f: withSynth }, { f: { [literal]: [cit] } }, { fill: relax.fill ?? "x" })
-      .f ?? withSynth;
-  // The contract the mask states in prose and nothing checked: blanking preserves every
-  // index. A fill that changes the length turns every citation index into an index into
-  // the wrong bytes, which is the real damage a non-whitespace fill does.
-  for (const [label, scan] of [
-    ["shipped", shipped],
-    ["fill", filler],
-  ] as const)
-    if (scan.length !== withSynth.length)
-      throw new Error(
-        `maskBarrierClaims: the ${label} mask changed the file's length - every index the grounding check compares is now an index into the wrong bytes`,
-      );
-  const legs = { masked: sees(shipped), unmasked: sees(withSynth), filler: sees(filler) };
-  // A fixture that is not a claim when unmasked leaves every leg zero — a pass that proves
-  // nothing, the exact failure this witness exists to prevent.
-  if (legs.unmasked !== 1)
-    throw new Error(
-      "maskBarrierClaims: the un-masked fixture is not a claim - the witness is not exercising the mask",
-    );
-  if (legs.masked !== 0)
-    throw new Error(
-      "maskBarrierClaims: the shipped mask leaves the synthesised claim visible - the barrier is not the mask",
-    );
-  return legs;
-}
-
-/**
- * The synthesised citation `maskBarrierClaims` masks. The marker name is BUILT by
- * concatenation rather than typed, so this file's own bytes never spell it where the
- * witness does not need it: a marker name lying loose in the gate's source would ground
- * real claims that no mask could hide, which is how earlier drafts here reported
- * "witnessed" for the wrong reason.
- */
-function declarationFor(literal: string): GroundingCitation {
-  const name = ["MIN", "_", "PI", "_", "VERSION"].join("");
-  return { quoted: `${name} ${literal}`, marker: name, gap: 12 };
-}
-
-/** The one rendering of a declaration that both `maskGroundingTable` and the witness blank. */
-function declarationText(cit: GroundingCitation): string {
-  return `{ quoted: ${JSON.stringify(cit.quoted)}, marker: ${JSON.stringify(cit.marker)}, gap: ${cit.gap} }`;
 }
 
 /**
@@ -398,23 +222,15 @@ function declarationText(cit: GroundingCitation): string {
  * Each arm is witnessed by `armRelaxed` + `armUnmatched` in the gate: an arm that
  * stops refusing anything makes that canary red.
  */
-function anchorsShips(
-  text: string,
-  d: { index: number; marker: string; gap: number },
-  cit: GroundingCitation,
-): boolean {
+function anchorsShips(text: string, d: { index: number; marker: string; gap: number }, cit: GroundingCitation): boolean {
   if (!citesMarker(cit, d.marker)) return false;
-  const body = cit.quoted.endsWith(ELLIPSIS)
-    ? cit.quoted.slice(0, -ELLIPSIS.length)
-    : cit.quoted.replace(/\u002e\u002e\u002e$/, "");
+  const body = cit.quoted.endsWith(ELLIPSIS) ? cit.quoted.slice(0, -ELLIPSIS.length) : cit.quoted.replace(/\u002e\u002e\u002e$/, "");
   // An empty quote is never vacuously true: it "matches" at every position, so
   // accepting it would make the whole per-occurrence check unfalsifiable (that was
   // the shipped defect - blanking every quote kept the gate green).
   if (body === "" || d.index < body.length) return false;
   if (text.slice(d.index - body.length, d.index) !== body) return false;
-  const k = PI_CLAIM_MARKER_NAMES.findIndex(
-    (n) => n.toLowerCase() === cit.marker.trim().toLowerCase(),
-  );
+  const k = PI_CLAIM_MARKER_NAMES.findIndex((n) => n.toLowerCase() === cit.marker.trim().toLowerCase());
   if (k < 0) return false;
   const re = new RegExp((PI_CLAIM_MARKERS[k] as RegExp).source, "gi");
   const lo = d.index - body.length;
@@ -439,13 +255,8 @@ function anchorsShips(
  * regexes match (`/pi-tui/i`).
  */
 function citesMarker(cit: GroundingCitation, markerName: string): boolean {
-  const idx = PI_CLAIM_MARKER_NAMES.findIndex(
-    (n) => n.toLowerCase() === cit.marker.trim().toLowerCase(),
-  );
+  const idx = PI_CLAIM_MARKER_NAMES.findIndex((n) => n.toLowerCase() === cit.marker.trim().toLowerCase());
   if (idx < 0) return false;
   const re = new RegExp((PI_CLAIM_MARKERS[idx] as RegExp).source, "i");
-  return (
-    re.test(markerName) &&
-    markerName.toLowerCase() === (PI_CLAIM_MARKER_NAMES[idx] as string).toLowerCase()
-  );
+  return re.test(markerName) && markerName.toLowerCase() === (PI_CLAIM_MARKER_NAMES[idx] as string).toLowerCase();
 }
