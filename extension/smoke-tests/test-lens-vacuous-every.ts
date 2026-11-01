@@ -41,6 +41,9 @@ import {
   teardown,
 } from "./lib/lens-coverage-fixture.ts";
 import { blockedRosterEntry, passthroughModelSlot } from "./lib/lens-vacuous-every-fixture.ts";
+import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
+
+isolateLedger();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

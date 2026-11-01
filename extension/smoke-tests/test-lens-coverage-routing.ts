@@ -46,6 +46,9 @@ import {
   round,
   teardown,
 } from "./lib/lens-coverage-fixture.ts";
+import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
+
+isolateLedger();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
