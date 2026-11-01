@@ -1,24 +1,23 @@
 /**
- * lens-flank-escape-probe — the two alternatives of `mentionsPath` that every
- * other coverage fixture leaves unpinned.
+ * lens-flank-escape-probe — the parts of `mentionsPath` that every other
+ * coverage fixture leaves unpinned.
  *
  * `mentionsPath` in `lens-review-coverage.ts` is
- * `(?:^|\n|NOT_PATH)ESCAPED(?:(?!PATH_CHAR)NOT_LINE_BREAK|TERMINATOR?(?:\r?\n|$))`.
+ * `(?:^|NOT_PATH)ESCAPED(?:(?!PATH_CHAR)NOT_LINE_BREAK|TERMINATOR?(?:\r?\n|$))`.
  * Two of its parts were mutation-invisible before these cases:
  *
- *   - the LEFT flank's `\n` alternative. NO case in this file witnesses it,
- *     and none can: deleting `\n|` from the alternation leaves the whole
- *     coverage suite green, and widening `NOT_PATH` back to include `\n` does
- *     too (both measured, 2026-11-XX — see MUTATION PROOF below). The reason
- *     is in the shipped regex, not in the fixtures: the right flank's
- *     `NOT_LINE_BREAK` is `[^\r\n]`, and the left flank's `NOT_PATH` is a
- *     NEGATED class, so both already match a newline. A bare `\n` left
- *     neighbour therefore satisfies the LEFT flank through `NOT_PATH` no matter
- *     whether the `\n|` alternative exists. `NL_OPEN` is kept because a bare
- *     newline-flanked citation must keep accounting, but it is NOT evidence
- *     that the `\n|` arm is reachable, and a future reader must not cite it as
- *     such. Making the arm reachable means making the two flank classes
- *     actually disjoint, which the product does not currently do.
+ *   - the LEFT flank. There is NO dedicated `\n` alternative and never should
+ *     be read into one: the left flank is `(^|NOT_PATH)`, and `NOT_PATH` is a
+ *     NEGATED class (`[^A-Za-z0-9_./+-]`) that already matches a newline. A
+ *     bare `\n` left neighbour therefore satisfies the LEFT flank through
+ *     `NOT_PATH` (or, at the very start of the summary, through `^`). The
+ *     `\n|` alternative that used to sit in that alternation was UNREACHABLE
+ *     product code and is deleted (2026-11-03 — see MUTATION PROOF below);
+ *     deleting it left the whole coverage suite green. `NL_OPEN` is kept as a
+ *     `BEHAVIOUR pin — a citation whose only left boundary is a line start must
+ *     keep accounting — and is NOT evidence for any separate arm. It is not
+ *     decoration either: excluding newline from `NOT_PATH` reddens it (see
+ *     MUTATION PROOF below).
  *   - the escape class `[.*+?^${}()|[\]\\]`. Every denominator path in the
  *     other fixtures is regex-inert, so narrowing the class to `/\./g` passed
  *     the whole suite before these cases existed. `src/(legacy).ts` is not
@@ -31,20 +30,28 @@
  *     positive case can still be satisfied by an over-permissive match, and
  *     the negative case is the one that says so.
  *
- * MUTATION PROOF — measured 2026-11-01 against the shipped `mentionsPath`,
- * each by editing `lens-review-coverage.ts`, running the cases, and restoring
- * the file byte-identically (`git hash-object` matched HEAD's blob after every
- * restore: `ec2f4039`). Verdicts below are what the run printed; nothing here
- * is claimed from reasoning.
- *   - delete `\n|` from the left flank        → REDS: NL_OPEN alone.
- *   - widen `NOT_PATH` to include `\r`/`\n`   → REVERSES the above: NL_OPEN
- *     greens again. This is the measurement that KILLS the claim that
- *     `NL_OPEN` witnesses the arm: if a fixture witnessed an alternative,
- *     making that alternative redundant could not silence it. It did, so the
- *     arm is dead code kept for future-proofing, not a covered branch. (The
- *     shipped `NOT_PATH` already excludes `\r`/`\n` at this commit; this line
- *     and the one above were run against the two variants side by side, so
- *     "widen" means the variant that re-admits them.)
+ * MUTATION PROOF — the `NOT_PATH` and escape-class rows below were measured
+ * 2026-11-01 against the shipped `mentionsPath`, each by editing
+ * `lens-review-coverage.ts`, running the cases, and restoring the file
+ * byte-identically (`git hash-object` matched HEAD's blob after every
+ * restore: `ec2f4039`). The `\n|`-deletion row and the exclude-newline row
+ * were re-measured against the post-deletion file, restored the same way.
+ * Verdicts below are what the run printed; nothing here is claimed from
+ * reasoning.
+ *   - delete `\n|` from the left flank        → suite stays GREEN (P: 5 F: 0),
+ *     which is the redundancy proof: the alternative was unreachable, so no
+ *     fixture could redden on its removal. (2026-11-03, after the header above
+ *     was written; the earlier claim in this block — "REDS: NL_OPEN alone" —
+ *     was measured never to hold and is corrected here.)
+ *   - exclude `\r`/`\n` from `NOT_PATH` (`[^A-Za-z0-9_./+\-\r\n]`, i.e. make
+ *     the left flank NOT match a newline) → NL_OPEN **FAILS** (`P: 4 F: 1`,
+ *     the only red is the NL_OPEN canary). So `NL_OPEN` DOES witness something:
+ *     it witnesses that the left flank admits a line-initial path — which, now
+ *     the `\n|` alternative is gone, is `NOT_PATH`'s job. `^` does NOT rescue
+ *     it, because the summary is `"Reviewed the delta.\nsrc/c.ts is fine"` and
+ *     the path sits at offset 19, not at offset 0. Conclusion: the fixture is
+ *     not decoration (it can go red), but what it witnesses is the negated
+ *     class, not a dedicated arm.
  *   - narrow the escape class to `/\./g`      → REDS: META_CITED **and**
  *     META_UNESCAPED_FIT (2 red). An earlier version of this header asserted
  *     the opposite — "META_CITED stays green, which is the point of pairing
@@ -68,16 +75,16 @@
 
 /** A citation whose ONLY left boundary is the start of a line: the character
  * before `src/c.ts` is `\n` and nothing else — no bullet, no colon, no space.
- * Expected: accounted (`summary`). KEEP THIS CASE: a bare newline-flanked
- * citation must keep accounting. But it does NOT witness the `\n|` alternative
- * — deleting that arm leaves it green, because the negated `NOT_PATH` class
- * matches a newline too (see MUTATION PROOF above). Do not describe it as
- * pinning that arm. */
+ * Expected: accounted (`summary`). KEEP THIS CASE: it pins the BEHAVIOUR that
+ * a line-initial path is cited. It does NOT pin a dedicated `\n` flank arm —
+ * the left flank is `(^|NOT_PATH)` and the negated `NOT_PATH` class matches a
+ * newline, so that is what admits this path (see MUTATION PROOF above). Do not
+ * describe it as pinning such an arm. */
 export const NL_OPEN: [string, string, "summary" | undefined, string] = [
   "Reviewed the delta.\nsrc/c.ts is fine",
   "src/c.ts",
   "summary",
-  "a path at the start of a line opens a citation on the \\n flank alone — no bullet, no non-path character in front",
+  "a path at the start of a line opens a citation — the line-initial position is admitted by the negated NOT_PATH class, which matches a newline (or by ^ at the very start)",
 ];
 
 /** The same path, spelled with regex metacharacters, cited as itself.

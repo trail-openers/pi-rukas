@@ -221,8 +221,10 @@ export function unaccountedFiles(
  * THE TWO FLANKS ARE DELIBERATELY ASYMMETRIC, and that asymmetry is the
  * invariant this function exists to hold:
  *
- *   LEFT  — `(^|\n|NOT_PATH)`: the start of the summary, the start of a line,
- *           or a character a path is not built from. THIS is the recital
+ *   LEFT  — `(^|NOT_PATH)`: the start of the summary, or a character a path is
+ *           not built from — which INCLUDES a newline, so a path opening at a
+ *           line start is admitted by `NOT_PATH` itself, not by a separate
+ *           arm. THIS is the recital
  *           guard: `--- a/x`, `+++ b/x`, `+++ "b/x"`, `<src/a.ts>`,
  *           `load("src/a.ts")` and `src/b.ts@default` are all refused HERE,
  *           because `-`, `"`, `<` and `@` cannot OPEN a citation.
@@ -273,8 +275,10 @@ const PATH_CHAR = String.raw`[A-Za-z0-9_./+-]`;
  * THE TWO FLANKS ARE NOT THE SAME TEST, and each carries its own load — do not
  * "simplify" them into one shared set:
  *
- *   LEFT  — `(^|\n|NOT_PATH)`: start of the summary, start of a line, or a
- *           non-path character. This half alone is the recital guard: `--- a/x`,
+ *   LEFT  — `(^|NOT_PATH)`: start of the summary, or a non-path character —
+ *           and a newline IS one, so a path opening at a line start is admitted
+ *           by `NOT_PATH`, not by a dedicated alternative. This half alone is
+ *           the recital guard: `--- a/x`,
  *           `+++ b/x`, `+++ "b/x"`, a re-emitted `"…\n+src/a.ts"`,
  *           `load("src/a.ts")` and `src/b.ts@default` are all refused here,
  *           because `-`, `+`, `"`, `@` cannot OPEN a citation.
@@ -294,7 +298,7 @@ const PATH_CHAR = String.raw`[A-Za-z0-9_./+-]`;
 function mentionsPath(summary: string, file: string): boolean {
   const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(
-    `(?:^|\\n|${NOT_PATH})${escaped}(?:(?![A-Za-z0-9_./+-])${NOT_LINE_BREAK}|${TERMINATOR}?(?:\\r?\\n|$))`,
+    `(?:^|${NOT_PATH})${escaped}(?:(?![A-Za-z0-9_./+-])${NOT_LINE_BREAK}|${TERMINATOR}?(?:\\r?\\n|$))`,
   );
   return re.test(summary);
 }
