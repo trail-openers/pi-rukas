@@ -157,7 +157,7 @@ function assert(cond: boolean, msg: string) {
       `AC4 store: the row with the new fields reads back VALID (not set aside as malformed)`,
     );
   } finally {
-    releaseFixture();
+    releaseFixture(f);
     removeFixture(f);
   }
 }
@@ -190,7 +190,7 @@ function assert(cond: boolean, msg: string) {
       "AC2 store: and no lapse field appears on a row nobody ever retired",
     );
   } finally {
-    releaseFixture();
+    releaseFixture(f);
     removeFixture(f);
   }
 }

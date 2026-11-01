@@ -60,6 +60,23 @@ export interface ConfirmationFixture {
   dir: string;
   ledgerFile: string;
   headSha: string;
+  /** The values BOTH env pins had BEFORE this fixture set them, so
+   * `releaseFixture` can restore them. `undefined` means "was not set". */
+  priorEnv: FixtureEnv;
+}
+
+/** The two env vars this fixture pins. `PI_ENSEMBLE_REVIEW_LEDGER_FILE` pins
+ * the ledger AND (via `review-state-path.ts`) the findings store; `PI_AGENT_DIR`
+ * pins whatever state a round resolves against the agent home. */
+const LEDGER_ENV = "PI_ENSEMBLE_REVIEW_LEDGER_FILE";
+const AGENT_DIR_ENV = "PI_AGENT_DIR";
+
+/** The two env values a fixture saved, so `releaseFixture` can put them back.
+ * `undefined` on either member means "this variable was not set when the
+ * fixture made it", which release restores as an actual delete. */
+export interface FixtureEnv {
+  ledgerFile: string | undefined;
+  agentDir: string | undefined;
 }
 
 /** Build an isolated clone whose head carries a fix in a DIFFERENT file, so the
@@ -95,16 +112,39 @@ export function makeFixture(): ConfirmationFixture {
   // `git rev-parse --git-common-dir` answer is resolved against `cwd`, so a
   // fixture that set the override first would key its store on a path under a
   // different directory than the one it writes to.
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
-  process.env.PI_AGENT_DIR = path.join(root, "agent");
+  // The pins are RESTORABLE, not destructive: whatever the process already had
+  // is recorded and `releaseFixture` writes it back. A fixture that deleted the
+  // variables instead would hand an OUTER fixture's rounds the host's real
+  // paths the moment an inner case finished — and a round then writes rows into
+  // the real per-clone review ledger or the developer's `~/.pi` state. Nothing
+  // here would fail; the data is simply gone.
+  const priorEnv = {
+    ledgerFile: process.env[LEDGER_ENV],
+    agentDir: process.env[AGENT_DIR_ENV],
+  };
+  process.env[LEDGER_ENV] = ledgerFile;
+  process.env[AGENT_DIR_ENV] = path.join(root, "agent");
   resetFindingsStateCache();
-  return { root, dir, ledgerFile, headSha };
+  return { root, dir, ledgerFile, headSha, priorEnv };
 }
 
-/** Drop the fixture's env pins. Call from a `finally`, before `removeFixture`. */
-export function releaseFixture(): void {
-  delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  delete process.env.PI_AGENT_DIR;
+/** Put back the env this fixture's `makeFixture` replaced. Call from a
+ * `finally`, before `removeFixture`. It writes back exactly what `make` saved
+ * (including "was unset" as an actual delete) and touches nothing else, so
+ * nesting a fixture inside another fixture restores the outer's pins rather
+ * than unpinning the process. */
+/** What `releaseFixture` needs from its argument: the record `makeFixture` kept
+ * of the env it replaced. A test that owns its own pins (it set them itself
+ * rather than through `makeFixture`) hands back an object of this shape. */
+export interface ReleaseTarget {
+  priorEnv: FixtureEnv;
+}
+
+export function releaseFixture(f: ReleaseTarget): void {
+  if (f.priorEnv.ledgerFile === undefined) delete process.env[LEDGER_ENV];
+  else process.env[LEDGER_ENV] = f.priorEnv.ledgerFile;
+  if (f.priorEnv.agentDir === undefined) delete process.env[AGENT_DIR_ENV];
+  else process.env[AGENT_DIR_ENV] = f.priorEnv.agentDir;
   resetFindingsStateCache();
 }
 

@@ -30,6 +30,15 @@
  * into the fixture dir, so a round reads and writes only this test's files.
  */
 
+let exit = 0;
+function assert(cond: boolean, msg: string) {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
+}
+
 import {
   makeFixture,
   releaseFixture,
@@ -41,16 +50,9 @@ import {
 } from "./lib/confirmation-store-fixture.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { execp } from "../src/exec.ts";
+import path from "node:path";
 import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixture.ts";
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
 
 {
   // HIGH 2 — the UNTOUCHED-row arm. A row this round did NOT re-report is the
@@ -112,8 +114,23 @@ function assert(cond: boolean, msg: string) {
     );
     // --- and the trust boundary in the SAME run: a row this round RE-REPORTED
     // must not retire on a confirmation written while the round was running.
+    // Snapshot the OUTER pins at the moment the inner fixture is created. The
+    // assertion in f2's finally compares against THIS, not against a value
+    // re-read at release time: the record the fixture kept is the contract, and
+    // a value re-read later would let an unrelated release anywhere in the file
+    // decide the outcome.
+    const outerPins = {
+      ledger: process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE,
+      agent: process.env.PI_AGENT_DIR,
+    };
+
     const f2 = makeFixture();
+
     try {
+      assert(
+        process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === f2.ledgerFile,
+        `nested fixture: the inner makeFixture re-pins the ledger to its own dir (${process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE})`,
+      );
       const row2 = await seed(f2.dir, f2.headSha);
       const pid2 = (await workingTreePatchId(execp, f2.dir)).patchId;
       assert(pid2 !== undefined, "re-reported: the review identity resolved");
@@ -143,12 +160,28 @@ function assert(cond: boolean, msg: string) {
         now: roundNow,
       });
       assert(during.ok, `re-reported: the round recorded (${during.ok ? "" : during.reason})`);
+
       const stillOpen = (await rowsOf(f2.dir)).find((r) => r.id === row2.id);
       assert(
         stillOpen?.status === "open" && stillOpen.resolvedReason === undefined,
         `trust boundary: a re-reported row does NOT retire on a confirmation written during the round (${stillOpen?.status}/${stillOpen?.resolvedReason})`,
       );
     } finally {
+      // NESTING HAZARD, asserted rather than assumed. This fixture is created
+      // INSIDE f's pins, so what f2 recorded as `priorEnv` IS f's pins, and
+      // releasing f2 must write them back. The release runs HERE, in this
+      // finally, so the assertion judges the release itself; the expectation is
+      // the snapshot taken just before f2 was created, which is what makes this
+      // red against a release that deletes instead of restoring
+      // (`got=undefined`) and green under a restorable one.
+      // The release happens HERE, in the finally, so the assertion judges the
+      // release and not the state before it.
+      releaseFixture(f2);
+      assert(
+        process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === outerPins.ledger &&
+          process.env.PI_AGENT_DIR === outerPins.agent,
+        `nested fixture: releasing the inner fixture restores the OUTER pins, not nothing (want=${String(outerPins.ledger)}, got=${String(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)})`,
+      );
       removeFixture(f2);
     }
     // A bound confirmation that must NOT be consulted: an UNTOUCHED row whose
@@ -189,9 +222,10 @@ function assert(cond: boolean, msg: string) {
       removeFixture(f3);
     }
   } finally {
-    releaseFixture();
+    releaseFixture(f);
     removeFixture(f);
   }
 }
 
 process.exit(exit);
+

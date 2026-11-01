@@ -166,14 +166,15 @@ export function applyFindingRound(opts: {
    * outcome the rule must never produce is a CRITICAL the lenses still see
    * disappearing from the store.
    *
-   * BOTH arms take the round's `now`; the arms differ in WHY they need it. Each
-   * sentence below names the line that enforces it:
+   * BOTH arms take the round's `now`; the arms differ in WHY they need it. The
+   * tests are named by the prefix their assert messages carry (line numbers rot):
+   * `guard:181 …` in smoke-tests/test-review-findings-window-guards.ts witnesses
+   * this arm (`boundary` reddens under the guard's deletion, `relax` under a
+   * `+ slack` on the comparison, `live` under a blanket `return undefined`).
    *
    *   - the lower bound is enforced by `if (r.firstSeen >= now) return undefined;`
    *     just below: a row this round FILED is not evidence a LATER review fixed
-   *     it (#1934 decision 1 — a later round is what confirms a fix). Relaxing
-   *     that `>=` to `>` lets a row retire in the round that filed it, and is
-   *     witnessed by `guard:181` in smoke-tests/test-review-findings-window-guards.ts;
+   *     it (#1934 decision 1 — a later round is what confirms a fix);
    *   - the upper bound is `const lastSeen = now;` below, enforced by
    *     `entry.at > seen.lastSeen` in review-confirmation.ts. For a row this round
    *     RE-REPORTED the findings pass above already stamped `lastSeen` to that
@@ -185,10 +186,16 @@ export function applyFindingRound(opts: {
    *     recorded after that round, so closing the window there rejects every real
    *     confirmation and the arm ships inert for untouched rows.
    *
-   * The AC4 pass below is the mirror of the upper bound and is bounded the same
-   * way — `if (r.lastSeen >= now) return;` — because a row this round observed is
-   * a row whose retirement it must not second-guess on its own clock; witnessed
-   * by `guard:222` in that same test file.
+   * The AC4 pass below is NOT a mirror of that upper bound and is not bounded the
+   * same way, whatever it looks like at a glance. `confirmedFor` asks "may this
+   * confirmation retire the row" and closes its window at the ROUND's clock; the
+   * AC4 pass asks "did THIS round observe this row" and compares the ROW's own
+   * stamp to that clock — `if (r.lastSeen >= now) return;`. A row stamped at or
+   * after `now` was seen by this round and it has no standing to call that
+   * retirement lapsed; a row stamped before it is the one AC4 exists for. The
+   * join gets a different bound there too (`{ lastSeen: r.lastSeen }`), which is
+   * why the arms share no helper. Witnessed by the `guard:222 …` assertions in
+   * that same test file, under the same three mutations.
    */
   const confirmedFor = (r: StoredFinding): string | undefined => {
     if (reviewable === undefined) return undefined;
