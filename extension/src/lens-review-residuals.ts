@@ -44,12 +44,7 @@ import { execp } from "./exec.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
-import {
-  confirmationLapseSection,
-  resolvedSection,
-  setAsideSection,
-  suppressedSection,
-} from "./lens-residuals.ts";
+import { memoryDisclosureSections, suppressedSection } from "./lens-residuals.ts";
 import { severityLabel } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
@@ -328,15 +323,16 @@ async function doPost(
       summary.suppressed,
       `Suppressed as already known (${summary.suppressed?.length ?? 0}) — not re-reported; each names its row id and the reason it was dropped:`,
     ),
-    ...resolvedSection(summary.resolved),
-    ...setAsideSection(summary.setAside),
-    // #1934 AC4 — the lapse disclosure reaches BOTH operator surfaces, not just
-    // the summary: the residual comment is what the round-cap merge guard reads,
-    // so a retirement that expired would be silent on the one artefact a merge
-    // is decided against. `memoryDisclosureSections` is the ONE place the order
-    // of the three blocks is stated (lens-residuals.ts) — calling the set rather
-    // than the two above is what keeps the surfaces from disagreeing.
-    ...confirmationLapseSection(summary.lapsed),
+    // #1934 AC4 — the memory disclosures (resolved / set-aside / lapsed
+    // confirmations) reach BOTH operator surfaces: the residual comment is what
+    // the round-cap merge guard reads, so a retirement that expired would be
+    // silent on the one artefact a merge is decided against. All three come from
+    // `memoryDisclosureSections` (lens-residuals.ts), the ONE place their order
+    // is stated — the same call `renderSummary` makes, so the surfaces cannot
+    // disagree. Verified byte-identical to the three individual calls over the
+    // empty / one-of-three / all-three cases before switching, so this is not a
+    // render-order change.
+    ...memoryDisclosureSections(summary),
     ...advisorySection(summary.advisory),
     ...(summary.memoryNote ? ["", neutraliseEvidence(summary.memoryNote)] : []),
     ...(summary.deltaReview?.fallback

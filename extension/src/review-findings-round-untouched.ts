@@ -15,7 +15,7 @@
 import type { CarriedFinding } from "./lens-review-types.ts";
 import type { ChangedRanges } from "./review-diff.ts";
 import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
-import type { SetAsideNotice, StoredFinding } from "./review-findings-file.ts";
+import type { StoredFinding } from "./review-findings-file.ts";
 import type { ResolvedNotice } from "./review-findings-file.ts";
 import type { HeadOf } from "./review-findings-round.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
@@ -29,7 +29,6 @@ export interface UntouchedRowSinks {
   deltaRanges?: ChangedRanges;
   carried: CarriedFinding[];
   resolved: ResolvedNotice[];
-  lapsed: SetAsideNotice[];
   confirmationLapses: ConfirmationLapse[];
   /** The round's confirmation lookup for one row; undefined when the round may not act on any. */
   confirmedFor: (row: StoredFinding) => string | undefined;
@@ -44,7 +43,6 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
     deltaRanges,
     carried,
     resolved,
-    lapsed,
     confirmationLapses,
     confirmedFor,
   } = opts;

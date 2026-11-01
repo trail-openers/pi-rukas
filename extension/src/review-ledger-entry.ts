@@ -101,6 +101,24 @@ export interface LedgerEntry {
    * Optional on purpose — hand-built rows and every pre-#1557 row carry
    * none and stay valid. */
   rowNonce?: string;
+  /** #1934 — the FINDINGS row an independent confirmation proves, and the JOIN
+   * KEY that decides which row a confirmation retires. A ledger row written by
+   * an adversarial round that confirms a fix carries the id of the findings row
+   * it vouches for; `confirmedRowId` (review-confirmation.ts) is its ONLY
+   * reader and accepts ONLY the store's own row-id shape — 8 lowercase hex, the
+   * `ROW_ID` rule in review-findings-store.ts / `newRowId` in
+   * review-findings-file.ts — so a row carrying anything else joins nothing.
+   * Declared here rather than reached through a cast: the field decides which
+   * row gets retired, and a join key the type does not name is a join key no
+   * compiler can check. WRITTEN by the confirmation producer (the writer that
+   * records an adversarial round alongside the findings row it reviewed), never
+   * by `appendLedgerEntry`'s ordinary callers, and read by NO guard: the merge
+   * guard selects on (branch, kind, max `at`), and a confirmation only ever
+   * changes whether a findings row is `open` — never a verdict, never
+   * `hasCritical`. Optional: every pre-#1934 row and every ordinary row carries
+   * none and stays valid, and an absent field is the ordinary "no confirmation"
+   * answer, which is the same answer as "there is none". */
+  rowId?: string;
 }
 
 export interface LedgerFile {

@@ -103,7 +103,7 @@ import type { LedgerEntry } from "./review-ledger.ts";
  * that writer exists the kind stays out, so the constant names only what
  * production can actually produce — a kind listed here with no writer is how a
  * dead path gets mistaken for a shipped one. */
-const CONFIRMING_KINDS: readonly string[] = ["adversarial"];
+const CONFIRMING_KINDS: readonly LedgerEntry["kind"][] = ["adversarial"];
 
 /** A confirmation older than this many characters of provenance is not rendered. */
 const PROVENANCE_MAX_CHARS = 160;
@@ -115,12 +115,15 @@ function short(sha: string): string {
 
 /** The row this confirmation proves, when a ledger row names one.
  *
- * `rowId` is not a field of `LedgerEntry` — the ledger's own schema forbids
- * nothing, so an untrusted file can carry one in any shape. Matched with the
- * store's own row-id rule (8 lowercase hex) rather than a `String(x)` cast:
+ * `rowId` is DECLARED on `LedgerEntry` (#1934, review-ledger-entry.ts) — the
+ * join key that decides which finding row a confirmation retires is a field the
+ * type names, not one reached through a cast. The ledger's own schema still
+ * forbids nothing (`validEntries` in review-ledger-read.ts passes unknown
+ * bytes), so an untrusted file can carry one in any shape: matched with the
+ * store's own row-id rule (8 lowercase hex) rather than a `String(x)` cast —
  * `[object Object]` is not a row id and must not become a join key. */
 function confirmedRowId(entry: LedgerEntry): string | undefined {
-  const raw = (entry as { rowId?: unknown }).rowId;
+  const raw = entry.rowId;
   if (typeof raw !== "string") return undefined;
   return /^[0-9a-f]{8}$/.test(raw) ? raw : undefined;
 }

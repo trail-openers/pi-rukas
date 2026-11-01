@@ -87,6 +87,19 @@ import { workingTreePatchId } from "./review-ledger.ts";
 import { type FindingsLocation, findingsStateDir } from "./review-state-path.ts";
 import { trace } from "./trace.ts";
 
+// The findings store's PUBLIC SURFACE is this module: callers import the round's
+// input and outcome shapes from here, not from the write half. #1934 moved those
+// declarations to review-findings-store-write.ts for the AGENTS.md §12 size gate
+// and the re-exports went with them, so four types silently left the public
+// surface while the file still documented itself as the store. Re-exported so a
+// caller that named `FindingRun` before the split still names it after it.
+export type {
+  AcceptOutcome,
+  FindingRun,
+  RecordOutcome,
+  WriteRows,
+} from "./review-findings-store-write.ts";
+
 /**
  * What a round decided for one finding, aligned by index with the findings it
  * was given. Declared in the leaf (review-findings-file.ts) and re-exported here

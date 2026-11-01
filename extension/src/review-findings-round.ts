@@ -179,15 +179,24 @@ export function applyFindingRound(opts: {
   const confirmedFor = (r: StoredFinding): string | undefined => {
     if (reviewable === undefined) return undefined;
     if (r.firstSeen >= now) return undefined;
-    // A row this round RE-REPORTED has its `lastSeen` already stamped to `now`
-    // by the findings pass above, and that stamp is not information about when
-    // the finding was last observed — the round itself just wrote it. The real
-    // bound for such a row is the round's own clock: a confirmation written
-    // after this round started is evidence recorded while (or after) the lenses
-    // were reporting the finding, and it confirms nothing. A row the round did
-    // not touch keeps an older `lastSeen`, and any confirmation recorded after
-    // that is evidence about a review that came later.
-    const lastSeen = r.lastSeen >= now ? now : r.lastSeen;
+    // The window's upper bound is the ROUND's clock, and each arm is for a
+    // different failure:
+    //
+    //   - a row this round RE-REPORTED has had its `lastSeen` stamped to `now`
+    //     by the findings pass above, so `now` is both the round's clock and the
+    //     re-report's stamp. The bound that matters is the round's clock: a
+    //     confirmation written after this round started is evidence recorded
+    //     while (or after) the lenses were reporting the finding, and it confirms
+    //     nothing — that is the shape `rowFate`'s CRITICAL arm must never accept;
+    //   - a row this round did NOT touch still carries the `lastSeen` an EARLIER
+    //     round stamped. Closing the window there rejects every real
+    //     confirmation, because a genuine one is by definition recorded after
+    //     the round that last reported the row (the fix landed, an independent
+    //     review covered the commit, then this round ran). The bound for such a
+    //     row is the round it is being asked about — `now` — and the row's own
+    // Both arms read the ROUND's clock, and the reason each needs it is
+    // different — see `confirmedFor`, whose window this is.
+    const lastSeen = now;
     return confirmationsFor(
       reviewable.ledger,
       branch,
@@ -339,6 +348,20 @@ export function applyFindingRound(opts: {
       row.confirmedBy !== undefined;
     const lapsedProvenance = lapseOnReopen ? row.confirmedBy : undefined;
     if (kept.status === "resolved") kept = reopen(kept);
+    // #1934 AC1 — the confirmation for THIS row, asked ONCE. One binding, used
+    // by both the eligibility test and the provenance written below: a second
+    // call (`confirmedFor(kept)` again inside the arm) made the string the row
+    // was retired with a value the compiler could not tie to the value the rule
+    // was satisfied by, and needed an `as string` cast to say so. Hoisting makes
+    // the non-undefined case a plain truthy test the compiler narrows, so the
+    // cast is gone and the two uses are the same string by construction.
+    //
+    // Re-reporting is what makes this arm necessary: the round just stamped
+    // `lastSeen: now`, so the confirmation must pre-date the round's own clock —
+    // one recorded after this round began is evidence written while the lenses
+    // were still reporting the finding, and confirms nothing.
+    const confirmCb =
+      kept.status === "open" && isRetirableOpenCriticalRow(kept) ? confirmedFor(kept) : undefined;
     // #1934 AC1 — a row this round RE-REPORTED. A re-report is the lenses saying
     // the problem is still there, so nothing retires on hash evidence: the cited
     // line is byte-unchanged by construction, and #1832's rule already refuses to
@@ -351,21 +374,16 @@ export function applyFindingRound(opts: {
     // confirmation and acts only on its answer. A row with no confirmation is
     // carried exactly as it was before this issue existed.
     if (
-      kept.status === "open" &&
-      isRetirableOpenCriticalRow(kept) &&
-      // Re-reported means the round just stamped `lastSeen: now`, so the
-      // confirmation must be older than the round's own clock: a confirmation
-      // recorded after this round began is evidence written while the lenses were
-      // still reporting the finding, and it confirms nothing.
+      confirmCb !== undefined &&
       (() => {
-        const cb = confirmedFor(kept);
-        if (cb === undefined) return false;
         const head = headOf(kept.path);
         if (head === undefined) return false;
-        return rowFate(kept, head, review, { deltaRanges, confirmedBy: cb }).kind === "resolve";
+        return (
+          rowFate(kept, head, review, { deltaRanges, confirmedBy: confirmCb }).kind === "resolve"
+        );
       })()
     ) {
-      const cb = confirmedFor(kept) as string;
+      const cb = confirmCb;
       // The re-report's own stamps are kept — the row's history is not rewritten
       // by a retirement — and the retirement notice is written here rather than
       // left over from an earlier retirement.
@@ -377,7 +395,11 @@ export function applyFindingRound(opts: {
         confirmedBy: cb,
         confirmationLapsed: undefined,
       };
-      resolved.push({ rowId: kept.id, title: kept.title, reason: "confirmed" });
+      // The provenance rides on the NOTICE as well as the row: the residual PR
+      // comment the round-cap merge guard reads renders `resolved` through
+      // `resolvedSection`, and a notice without it prints `[confirmed by: ]` —
+      // an empty attribution on the one artefact a merge is decided against.
+      resolved.push({ rowId: kept.id, title: kept.title, reason: "confirmed", confirmedBy: cb });
       // The matched-row bookkeeping is unchanged: the row WAS matched, and its
       // retirement is recorded in `resolved`, not by rewriting what this round
       // observed.
@@ -454,7 +476,6 @@ export function applyFindingRound(opts: {
     deltaRanges,
     carried,
     resolved,
-    lapsed,
     confirmationLapses,
     confirmedFor,
   });
