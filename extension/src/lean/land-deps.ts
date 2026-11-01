@@ -44,13 +44,27 @@ export interface LandDeps {
   /**
    * The squash subject the merge carries; absent, the forge's default is used.
    *
-   * `landDeps()` ALWAYS supplies this in production. A squash subject becomes the
-   * permanent commit record on main and release-please derives the version bump
-   * and the changelog entry from it, so a lean merge that left it to the forge's
-   * default was leaving the changelog to whatever the forge guessed.
+   * `landDeps()` always supplies this in production (see `primeMergeSubject`).
+   * A squash subject BECOMES the permanent commit record on main, and
+   * release-please derives the version bump and the changelog entry from it, so a
+   * lean merge that left it to the forge's default left the changelog to luck.
    */
   mergeSubject?: (issue: number) => string | undefined;
 }
+
+/**
+ * The squash subject per issue, filled by `primeMergeSubject`.
+ *
+ * The `mergeSubject` seam is called SYNCHRONOUSLY from inside the pinned merge
+ * call, so the forge read that produces the subject cannot happen at the call
+ * site. It happens at wiring time instead: `command.ts` primes this cache when it
+ * builds the deps for a run, and the seam answers from it. An issue that was
+ * never primed (a resumed run whose deps were built before the priming landed, a
+ * forge-less clone, an unreadable issue) gets `undefined`, which
+ * `prMergeSubjectFlag` renders as NO `--subject` flag — the forge's default,
+ * never a blank subject.
+ */
+const subjectCache = new Map<number, string | undefined>();
 
 /** Production wiring: the real evidence gatherer and the real adapter. */
 export function landDeps(): LandDeps {
@@ -74,46 +88,38 @@ export function landDeps(): LandDeps {
       return (await f.prView(prNumber))?.state;
     },
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
-    // The driver's ONE conventional-subject parser, not a lean-only format: the
-    // commit-pr path derives its title through `deriveConsolidationSubject` from
-    // the issue title (`work-driver-commit-title.ts`), and so does the handoff
-    // consolidation commit. A lean merge that invented its own subject would be a
-    // second parser disagreeing with the first about what a given change is.
-    //
-    // `undefined` (which `prMergeSubjectFlag` renders as NO `--subject` flag, so
-    // the forge default survives) is used only when there is genuinely nothing to
-    // say: no forge adapter for this clone, an unreadable issue, or an empty title.
-    // An empty subject would be worse than none — `gh pr merge --subject ''` is a
-    // blank commit record, not a default one.
-    mergeSubject: (issue) => squashSubject(issue),
+    // Read from the cache `primeMergeSubject` fills at wiring time. The format is
+    // the driver's ONE conventional-subject parser — the commit-pr path derives its
+    // title through `deriveConsolidationSubject` from the issue title
+    // (`work-driver-commit-title.ts`) and so does the handoff consolidation commit.
+    // A lean merge that invented its own subject would be a second parser
+    // disagreeing with the first about what the same change is.
+    mergeSubject: (issue) => subjectCache.get(issue),
   };
 }
 
 /**
- * The squash subject for this run's merge, derived from the issue's title.
+ * Read the issue's title and cache the conventional squash subject its merge carries.
  *
- * Async work is not allowed on the `mergeSubject` seam's signature (the step
- * calls it synchronously from inside the pinned merge call), so the title is
- * fetched up front and cached per issue. One `issueView` per issue per process is
- * the whole cost, and it is a read the driver already performs elsewhere.
+ * Called once per run, at wiring time, because the seam that returns it is sync
+ * (see `subjectCache`). `clipTitle` is the driver's own clipper, at the same 64 as
+ * `deriveCommitPrTitle`, and only the first line survives: `--subject` is a
+ * one-line shell argument, which is `prMergeSubjectFlag`'s contract. An absent
+ * forge, an unreadable issue, an empty title or a subject the parser refused all
+ * cache `undefined` — no flag, not a blank subject.
  */
-const subjectCache = new Map<number, string | undefined>();
-
-async function squashSubject(issue: number): Promise<string | undefined> {
-  const hit = subjectCache.get(issue);
-  if (hit !== undefined) return hit;
-  const repoRoot = process.cwd();
+export async function primeMergeSubject(
+  repoRoot: string,
+  issue: number,
+): Promise<string | undefined> {
   const f = await forgeFor(repoRoot);
   if (f === undefined) return undefined;
   const viewed = await f.issueView(issue).catch(() => undefined);
   const title = viewed?.title?.trim();
   if (!title) return undefined;
   const derived = deriveConsolidationSubject(title);
-  // `clipTitle` is the driver's own clipper (same 64 as `deriveCommitPrTitle`),
-  // and the newline is stripped because `--subject` is a one-line shell argument
-  // (`prMergeSubjectFlag`'s contract).
-  const subject = derived === undefined ? undefined : clipTitle(derived.split("\n")[0] ?? "", 64);
-  const value = subject === undefined || subject.trim() === "" ? undefined : subject.trim();
+  const first = derived === undefined ? "" : (derived.split("\n")[0] ?? "").trim();
+  const value = first === "" ? undefined : clipTitle(first, 64);
   subjectCache.set(issue, value);
   return value;
 }

@@ -48,7 +48,24 @@ export function ciDeps(): CiDeps {
   };
 }
 
-/** The two `gh` reads the CI verdict is made of, in their pinned argv form. */
+/**
+ * The two `gh` reads the CI verdict is made of, in their pinned argv form.
+ *
+ * ONE read carries both `mergeStateStatus` and `headRefOid` (and `mergeable`,
+ * the field `gh pr view --json` actually exposes — `isMergeable` is not a field
+ * of that subcommand), because the head and the verdict must come from the same
+ * moment: two reads of a moving PR are two moments, and a green about another
+ * head is no evidence about this one. That is `mergeEvidenceViewCmd`, the same
+ * read the driver's merge-evidence gate runs.
+ *
+ * The check rows are a SEPARATE read, and `--json` is load-bearing on it:
+ * `gh pr checks` without `--json` prints a human table, which is not parseable,
+ * so every row would be discarded and the `skipped`/`neutral` treatment would be
+ * unreachable through production code. `prChecksCmd` requests the fields `gh`
+ * supports (`name,state,bucket` — `conclusion` is not one of them, and the
+ * field list is pinned by `test-gh-argv.ts` alongside the #745 rule that
+ * `isRequired` must never come back).
+ */
 export function ghReads(prNumber: number): { view: string; checks: string } {
   return {
     view: mergeEvidenceViewCmd(prNumber),
