@@ -28,7 +28,7 @@ If any check fails: fix the issue, re-run, only then push. Do NOT:
 
 ### Live smoke tests are NOT in the pre-push set
 
-Files matching `extension/smoke-tests/test-*-live.ts` spawn real Pi children and cost real tokens (a few cents per run on Cerebras GLM-4.7). Run them only when:
+Files matching `extension/smoke-tests/test-*-live.ts` spawn real Pi children and cost real tokens (a few cents per run on a low-cost provider). Run them only when:
 
 - You changed `spawn.ts` (changes to child process behaviour)
 - You bumped the Pi version pin in `extension/package.json`
@@ -119,7 +119,7 @@ pi-rukas's `permission-guard.ts` runs in one of three states. The active state i
 
 *Subagents* (developer, ops, explore, code-review-specialist, adversarial-developer): when parent is in trust mode, `spawn.ts` propagates `PI_ENSEMBLE_TRUST_MODE=1` to the child env and skips the per-spawn broker socket. A headless /work cycle's children get the same marker per dispatch, without any process-wide trust (mechanism: [docs/headless.md](docs/headless.md)); develop and lens-fix children are write-fenced (bash included), explore/adversarial/lens children have the write, edit and multiedit tools structurally excluded but their bash is unfenced (a reviewer can still write through bash, as interactively), and ops is unfenced, as interactively. The boundary for every child is the mode-independent guards it loads, not a reviewer's read-only status. A bare `pi -p` child with no cycle stays on the strict broker path. When parent is in strict / headless mode, the subagent's pi-rukas extension is forwarded via `--extension` so the subagent guard can escalate `ask` verdicts to the parent over a Unix socket. Either way: **the role's system prompt is the actual behavioral guidance**; the runtime gate is either off (trust) or a soft fence (strict).
 
-*Extension auto-forward to subagents*: `discoverInstalledExtensions` in `extension/src/spawn.ts` scans `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) and re-injects every installed extension into the subagent via `--extension <real-path>`, except pi-rukas itself (matched by `package.json.name === "@trail-openers/pi-rukas"` to prevent recursive spawn) and `pi-mcp-adapter` (issue #959: an installed extension that registers the `/mcp` command replaces Pi's built-in MCP for the whole session — a lingering adapter would silently disable the native MCP the subagent gets via `-e builtin:mcp`). This means `pi-claude-auth` (Anthropic Claude Code identity headers) and other user-installed extensions reach subagents automatically once installed in the canonical location — no env-var wiring needed. Native MCP itself is not forwarded as an extension: since 1.0.0 it is a built-in that the subagent spawn path re-enables explicitly (`--no-extensions -e builtin:mcp -e builtin:codemode` — the `childArgsBase()` in `spawn-support.ts`), so it is independent of `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`. The `-e builtin:codemode` flag (default on; `PI_ENSEMBLE_CHILD_CODEMODE=0` restores the pre-#1030 argv) is what makes codemode *register* in the child; the child-guards companion (trust mode) or the strict subagent guard (strict/headless mode) then *activates* it by appending it to the active tool set on `session_start` via `child-codemode.ts` (epic #1026, sub-issue #1030).
+*Extension auto-forward to subagents*: `discoverInstalledExtensions` in `extension/src/spawn.ts` scans `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) and re-injects every installed extension into the subagent via `--extension <real-path>`, except pi-rukas itself (matched by `package.json.name === "@trail-openers/pi-rukas"` to prevent recursive spawn) and `pi-mcp-adapter` (issue #959: an installed extension that registers the `/mcp` command replaces Pi's built-in MCP for the whole session — a lingering adapter would silently disable the native MCP the subagent gets via `-e builtin:mcp`). This means user-installed extensions reach subagents automatically once installed in the canonical location — no env-var wiring needed. Native MCP itself is not forwarded as an extension: since 1.0.0 it is a built-in that the subagent spawn path re-enables explicitly (`--no-extensions -e builtin:mcp -e builtin:codemode` — the `childArgsBase()` in `spawn-support.ts`), so it is independent of `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`. The `-e builtin:codemode` flag (default on; `PI_ENSEMBLE_CHILD_CODEMODE=0` restores the pre-#1030 argv) is what makes codemode *register* in the child; the child-guards companion (trust mode) or the strict subagent guard (strict/headless mode) then *activates* it by appending it to the active tool set on `session_start` via `child-codemode.ts` (epic #1026, sub-issue #1030).
 
 For extensions outside the canonical install location (dev-mode, monorepo paths), `PI_ENSEMBLE_USER_EXTENSION` is still honoured as an additional forwarded extension. To disable auto-forward entirely (restoring the pre-#88 "subagents inherit nothing" behaviour), set `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1`. MCP server-side credentials remain the real capability boundary regardless.
 
@@ -581,9 +581,9 @@ The gate scans the **whole repository** — every `.ts`, `.sh` and workflow `.ym
 
 ## 13. Common pitfalls
 
-### 🚨 "None" placeholder text from GLM family
+### 🚨 Spurious placeholder text from a model family
 
-GLM-4.x / 5.x emits literal `{type: "text", text: "None"}` blocks between tool calls. The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents`. **Do NOT add inline GLM-specific filtering in shared paths.** If a new family has quirks, add an entry to `FAMILY_DETECTORS` in `model-adapters.ts`.
+A model family can emit literal `{type: "text", text: "None"}` blocks between tool calls. The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents`. **Do NOT add inline family-specific filtering in shared paths.** If a family you run has such a quirk, add an entry to `FAMILY_DETECTORS` in `model-adapters.ts` — which is also where the concrete family evidence for the existing entry lives.
 
 ### 🚨 PM trying to code
 
@@ -625,7 +625,6 @@ CLI flags and event shapes change between Pi minor versions. The dev pins in `ex
 | Live spawn test (real tokens) | `cd extension && bun run smoke-tests/test-spawn-live.ts` |
 | Live lens review (real tokens) | `cd extension && bun run smoke-tests/test-lens-review-live.ts` |
 | View Pi compat surface | `grep -r 'pi.sendUserMessage\|toolCall\|message_end' extension/src/` |
-| Check current model lineup before referencing | WebSearch for "current frontier LLMs <year>" — training data is stale |
 
 ---
 

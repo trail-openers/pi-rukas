@@ -42,7 +42,7 @@ Prerequisites for the full table.
 | `cd extension && bun run smoke-tests/test-spawn-live.ts` | **Live** — spawns a real Pi child, costs a few cents. |
 | `cd extension && bun run smoke-tests/test-parallel-live.ts` | **Live** — three concurrent children. |
 | `cd extension && bun run smoke-tests/test-progress-live.ts` | **Live** — multi-turn child verifies progress callbacks. |
-| `cd extension && bun run smoke-tests/test-lens-review-live.ts` | **Live** — full six-pass review against a synthetic diff (~$0.02 on Cerebras). |
+| `cd extension && bun run smoke-tests/test-lens-review-live.ts` | **Live** — full six-pass review against a synthetic diff (~$0.02). |
 
 CI runs the offline tests on every push and PR. Live tests run on the dev machine only and cost real tokens — gate them to changes in `spawn.ts` or Pi version bumps.
 
