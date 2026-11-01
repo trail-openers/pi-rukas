@@ -22,6 +22,11 @@
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
+import {
+  coverageDenominatorSection,
+  unaccountedSection,
+  unreviewedLanesSection,
+} from "./lens-review-coverage-report.ts";
 import { deltaFallbackText, forcedFullText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
 import {
@@ -222,6 +227,25 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     ...resolvedSection(s.resolved),
     ...setAsideSection(s.setAside),
     ...advisorySection(s.advisory),
+    // The coverage gate's verdict: named lanes that came back having reviewed
+    // nothing. Its own banner rather than a line appended to the blocked-lens
+    // one, because that names lanes that FAILED TO COMPLETE and this names lanes
+    // that COMPLETED and reviewed nothing — two different faults sending the
+    // operator after two different fixes.
+    ...unreviewedLanesSection(s.unreviewedLanes ?? []),
+    // The file-level disclosure: changed files no evidence accounts for. Warning,
+    // not verdict — a lens owes a summary, not a file inventory.
+    ...unaccountedSection(s.unaccountedFiles ?? []),
+    // The denominator's own state, read from the producer's field and NOT
+    // re-inferred from `coverageComplete`/`unaccountedFiles`: those two
+    // optionals are byte-identical for "denominator, all covered" and "no
+    // denominator", and a renderer that guesses turns a round that measured
+    // nothing into one that reports ✓ coverage.
+    ...coverageDenominatorSection({
+      hasDenominator: s.hasDenominator === true,
+      coverageComplete: s.coverageComplete === true,
+      unaccountedCount: s.unaccountedFiles?.length ?? 0,
+    }),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",
     "Transcripts:",

@@ -146,6 +146,59 @@ export interface LensReviewSummary {
    * the PR's changed lines: listed under the advisory heading, never counted
    * toward the verdict, `bySeverity` or the ledger's `hasCritical`. */
   advisory?: Finding[];
+  /**
+   * The lanes this round never reviewed: they came back from the fan-out having
+   * produced NEITHER a reported finding NOR the closing summary the lens prompt
+   * is required to write. Non-empty when a lane left no evidence at all; absent
+   * otherwise. When this is non-empty and nothing else refused the round, the
+   * verdict is `REVIEW_INCOMPLETE` — a lens that reviewed nothing is not a lens
+   * that found nothing.
+   *
+   * This is the coverage gate's verdict-bearing half, and it is deliberately not
+   * `lensProducedEvidence` restated: that predicate already refuses a silent lane
+   * inside `computeVerdict`, and what this field adds is the NAMED list the
+   * operator acts on — which lanes to re-run.
+   */
+  unreviewedLanes?: string[];
+  /**
+   * The round's COVERAGE DISCLOSURE: the files the diff changed that no lens
+   * accounted for — no `report_finding` call cited them and no closing summary
+   * named them. Non-empty when the round had a denominator to check (the review
+   * computed its own diff — never a caller-pasted string) and at least one
+   * selected file came back unnamed; absent otherwise, including the case
+   * where every selected file was accounted for (a clean round says nothing).
+   *
+   * DISCLOSURE, not a verdict — and the asymmetry against `unreviewedLanes` is
+   * the design. Each lens reads the whole diff through its own lens and owes the
+   * prompt a summary, not a file inventory, so a path nobody named is a gap to
+   * surface, not proof nobody read it. Measured: gating on this instead refused
+   * rounds whose six lenses all completed, redding three of this harness's own
+   * lens tests on a one-file diff whose lenses answered in prose.
+   */
+  unaccountedFiles?: string[];
+  /**
+   * The denominator's own state, and the reason the report can tell "every file
+   * was covered" apart from "there were no files to cover". `unaccountedFiles`
+   * is absent in both cases, so without this field an empty expected set (an
+   * empty diff, or a diff with no readable file section) renders the same
+   * silence as a fully covered round — and an absent warning is not evidence of
+   * coverage. Set only when the round HAD a denominator and every file in it was
+   * accounted for; absent when files are left over (the disclosure names those)
+   * and when there was no denominator at all (the report then says "no files in
+   * scope"). Disclosure either way: this field never decides a verdict.
+   */
+  coverageComplete?: boolean;
+  /**
+   * The producer's OWN record of whether this round had a coverage denominator
+   * at all — copied straight from `runLensFanOut`'s `hasDenominator`, never
+   * re-inferred downstream. It exists because the two optionals above cannot
+   * carry the tri-state: `coverageComplete: true` and `{}` are otherwise
+   * byte-identical objects for the two DIFFERENT facts "denominator, all
+   * covered" and "no denominator", and a renderer that guesses from them
+   * renders a ✓ next to a round that measured nothing. Disclosure either way:
+   * this field never decides a verdict.
+   */
+  hasDenominator?: boolean;
 }
 
 /**

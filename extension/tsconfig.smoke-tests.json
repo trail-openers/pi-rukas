@@ -176,6 +176,13 @@
     "smoke-tests/test-AC2-nonerror-tostring-fail.ts",
     "smoke-tests/test-AC3-empty-message-fallback.ts",
     "smoke-tests/lib/mast-canary-fixtures.ts",
-    "smoke-tests/test-mast-authoritative-block.ts"
+    "smoke-tests/test-mast-authoritative-block.ts",
+    "smoke-tests/test-lens-coverage-denominator.ts",
+    "smoke-tests/lib/lens-coverage-fixture.ts",
+    "smoke-tests/test-lens-coverage-routing.ts",
+    "smoke-tests/test-lens-vacuous-every.ts",
+    "smoke-tests/lib/lens-vacuous-every-fixture.ts",
+    "smoke-tests/test-lens-fanout-batch-release.ts",
+    "smoke-tests/test-lens-coverage-surface-neutralise.ts"
   ]
 }
