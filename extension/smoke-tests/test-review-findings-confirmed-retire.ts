@@ -408,7 +408,7 @@ async function reReport(dir: string, headSha: string, patchId: string) {
         rowId: row.id,
       },
     ]);
-    const reOpen = await recordFindingRunOutcome({
+    const second = await recordFindingRunOutcome({
       cwd: f.dir,
       branch: "feature/work",
       headSha: f.headSha,
@@ -422,15 +422,23 @@ async function reReport(dir: string, headSha: string, patchId: string) {
       patchId: "a-different-patch-not-the-reviewed-one",
       now: Date.now() + 20_000,
     });
-    assert(reOpen.ok, "AC4 store: the follow-up round recorded");
+    assert(second.ok, "AC4 store: the follow-up round recorded");
     const again = (await readBranchRows(f.dir, "feature/work")).find((r) => r.id === row.id);
     assert(
       again?.status === "open" && again.line === CITED && again.lineHash === row.lineHash,
       `AC4 store: the next round re-opens the row and leaves line+hashes UNCHANGED (${again?.status}, line ${again?.line})`,
     );
+    // The row cannot carry the provenance itself: the file's schema refuses
+    // `confirmedBy` on a row that is not resolved as confirmed, and this row is
+    // open again. So the disclosure is the NOTICE the round reported, whose
+    // provenance names the real ledger row the earlier retirement stood on.
     assert(
-      again?.confirmationLapsed === true,
-      `AC4 store: the row carries the disclosure field (got ${JSON.stringify(again?.confirmationLapsed)})`,
+      second.lapsed?.some((l) => l.rowId === row.id && /patch=/.test(l.provenance)) === true,
+      `AC4 store: the round reports the lapse with its provenance (got ${JSON.stringify(second.lapsed)})`,
+    );
+    assert(
+      again?.confirmedBy === undefined && again?.confirmationLapsed === undefined,
+      "AC4 store: the reopened row carries no stale provenance and no latch (the notice, not the row, is the disclosure)",
     );
     // And the field is written to disk in the shape the reader's schema accepts.
     const file = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!.replace(

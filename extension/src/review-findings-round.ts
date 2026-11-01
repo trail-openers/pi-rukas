@@ -34,7 +34,6 @@ import type {
   StoredFinding,
 } from "./review-findings-file.ts";
 import { newRowId } from "./review-findings-file.ts";
-import { trace } from "./trace.ts";
 import type { HeadState } from "./review-findings-head.ts";
 import { type FindingIdentity, identityOf, pickMatch, sameTitle } from "./review-findings-match.ts";
 
@@ -197,14 +196,21 @@ const confirmedFor = (r: StoredFinding): string | undefined => {
   if (reviewable !== undefined) {
     mine.forEach((r, i) => {
       if (r.status !== "resolved" || r.resolvedReason !== "confirmed") return;
+      if (r.lastSeen >= now) return;
+      const stillBindsQ = confirmationsFor(
+        reviewable.ledger,
+        branch,
+        { patchId: reviewable.patchId, headSha: reviewable.headSha },
+        { firstSeen: r.firstSeen, lastSeen: r.lastSeen },
+      );
       const stillBinds =
-        r.lastSeen < now &&
-        confirmationsFor(reviewable.ledger, branch, { patchId: reviewable.patchId, headSha: reviewable.headSha }, { firstSeen: r.firstSeen, lastSeen: r.lastSeen }).get(r.id) !== undefined;
+        confirmationsFor(
+          reviewable.ledger,
+          branch,
+          { patchId: reviewable.patchId, headSha: reviewable.headSha },
+          { firstSeen: r.firstSeen, lastSeen: r.lastSeen },
+        ).get(r.id) !== undefined;
       if (stillBinds) return;
-      // `confirmationLapsed` marks which retirements this driver made and could
-      // now lapse, so a row written by another route is not claimed; and a row
-      // already carrying the notice is not re-stamped (the array would grow every
-      // round and the disclosure would stop being about an event).
       // Two sources for the notice, and the rule is one: a row whose retirement
       // was made by a confirmation is this driver's own, so its lapse is reportable.
       // `confirmedBy` is the field that says so (written by both retirement sites
@@ -215,6 +221,16 @@ const confirmedFor = (r: StoredFinding): string | undefined => {
       if (r.confirmationLapsed === true) return;
       const provenance = r.confirmedBy;
       if (provenance === undefined) return;
+      // The row comes back EXACTLY as it stood — `reopen` clears the retirement
+      // and nothing else, so `line`, `lineHash` and `firstSeen` are the row's
+      // own — and it carries the notice that says why: a row whose retirement
+      // was made by a confirmation and whose confirmation no longer binds is
+      // open on changed evidence, not on its original filing.
+      // `confirmedBy` CANNOT survive the reopen: the file's schema refuses a row
+      // carrying provenance without the confirmed resolve reason (rowProblem in
+      // review-findings-file.ts), and the row is open again. So the provenance
+      // lives in the NOTICE this round reports, and the row carries only the
+      // boolean — which is what the store's reader accepts on an open row.
       mine[i] = {
         ...reopen(r),
         confirmedBy: undefined,
@@ -230,12 +246,22 @@ const confirmedFor = (r: StoredFinding): string | undefined => {
   // without a resolvable line - the lens omitted it, the path is not a readable
   // file at head, or the cited line is past the file's end - so the marker says
   // "this row cites no code" for all three, not just the first.
-  normalised.forEach((f, idx) => {
-    const i = idx;
-    const id = identities[i] as FindingIdentity;
+  normalised.forEach((f, findingIndex) => {
+    // The slot this row is written back to. NOT the finding's index into
+    // `findings` — the two arrays are unrelated, and writing a re-reported row at
+    // the finding's index wrote it onto whichever row happened to sit there while
+    // leaving the real row untouched. Set once `pickMatch` has returned the row by
+    // reference, so `indexOf` finds it by identity.
+    let i = -1;
+    const id = identities[findingIndex] as FindingIdentity;
     const critical = f.severity === "CRITICAL";
     const gone = noFile(f.path);
     const row = pickMatch(id, mine);
+    if (row !== undefined) {
+      // `pickMatch` returned a slot of `mine` by reference, so the index is found
+      // by identity — the ONLY correct write-back target for a re-reported row.
+      i = mine.indexOf(row);
+    }
     if (!row) {
       const fresh: StoredFinding = {
         id: newRowId(taken),
@@ -291,6 +317,18 @@ const confirmedFor = (r: StoredFinding): string | undefined => {
       ...(f.description ? { description: f.description } : {}),
       ...(f.suggestion ? { suggestion: f.suggestion } : {}),
     };
+    // #1934 AC4 — a row the round RE-REPORTED while it was still retired was
+    // reopened by `reopen` below, and a re-report is the strongest form of "the
+    // evidence no longer holds": the lenses are reporting this problem right now.
+    // So the reopen carries the lapse notice — and only for a retirement THIS
+    // driver made by confirmation (`confirmedBy`, which the file's schema ties to
+    // the confirmed resolve reason), never for the ordinary reopen of a row some
+    // other rule resolved.
+    const lapseOnReopen =
+      row.status === "resolved" &&
+      row.resolvedReason === "confirmed" &&
+      row.confirmedBy !== undefined;
+    const lapsedProvenance = lapseOnReopen ? row.confirmedBy : undefined;
     if (kept.status === "resolved") kept = reopen(kept);
     // #1934 AC1 — a row this round RE-REPORTED. A re-report is the lenses saying
     // the problem is still there, so nothing retires on hash evidence: the cited
@@ -348,6 +386,10 @@ const confirmedFor = (r: StoredFinding): string | undefined => {
     // it: the lapse notice goes with the retirement rather than claiming a row
     // the lenses are reporting right now was once confirmed fixed.
     if (kept.confirmationLapsed !== undefined) kept = { ...kept, confirmationLapsed: undefined };
+    if (lapseOnReopen && lapsedProvenance !== undefined) {
+      kept = { ...kept, confirmationLapsed: true };
+      confirmationLapses.push({ rowId: kept.id, title: kept.title, provenance: lapsedProvenance });
+    }
     // A line-bearing finding is bound to the snippet the operator accepted; a
     // no-line finding is bound to its title only (see sameTitle).
     if (
@@ -494,7 +536,6 @@ const confirmedFor = (r: StoredFinding): string | undefined => {
         ...(r.suggestion === undefined ? {} : { suggestion: r.suggestion }),
       });
       if (r.confirmationLapsed === undefined && r.confirmedBy !== undefined) {
-        trace(`DBG carry-lapse ${r.id}`);
         mine[i] = { ...r, confirmationLapsed: true };
         confirmationLapses.push({ rowId: r.id, title: r.title, provenance: r.confirmedBy });
       }
