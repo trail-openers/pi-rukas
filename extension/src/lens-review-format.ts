@@ -146,6 +146,23 @@ export interface LensReviewSummary {
    * the PR's changed lines: listed under the advisory heading, never counted
    * toward the verdict, `bySeverity` or the ledger's `hasCritical`. */
   advisory?: Finding[];
+  /**
+   * The round's COVERAGE DENOMINATOR: the files the diff changed that no lens
+   * accounted for — no `report_finding` call cited them and no closing summary
+   * named them. Non-empty when the round had a denominator to check (the review
+   * computed its own diff — never a caller-pasted string) and at least one
+   * selected file came back unjudged; absent otherwise, including the case
+   * where every selected file was accounted for (a clean round says nothing).
+   *
+   * This is NOT `lensProducedEvidence`'s question restated. That asks "did this
+   * lens produce findings or a summary" — output volume. This asks "which of
+   * the files the round was supposed to examine does the round's evidence
+   * actually speak about", and a lens can pass the first and fail the second:
+   * a complete, well-formed summary that never mentions one changed file is a
+   * lane that was not reviewed. When this is non-empty the verdict is
+   * `REVIEW_INCOMPLETE` — an unjudged file is never readable as APPROVED.
+   */
+  unaccountedFiles?: string[];
 }
 
 /**

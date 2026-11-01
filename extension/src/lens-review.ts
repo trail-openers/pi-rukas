@@ -10,6 +10,7 @@ import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { diffBaseOf } from "./lens-review-changed-ranges.ts";
 import { runLensChild } from "./lens-review-child.ts";
+import { accountedFiles, expectedFilesOf, unaccountedFiles } from "./lens-review-coverage.ts";
 import {
   type AutoDeltaInfo,
   type ForcedFullReason,
@@ -433,6 +434,13 @@ export async function runLensReview(opts: {
   );
   const lensResults = [...results, ...blockedRows];
   dispatchDeck.clearBatchEntry(batchKey);
+  // The round's coverage denominator, read from the diff the review itself
+  // resolved. Computed here, from the value the children were handed, so the
+  // denominator is the change set they were actually shown — and never from a
+  // caller-pasted string (`expectedFilesOf` refuses one). `undefined` when the
+  // round had no defensible denominator, which the accounting below reads as
+  // "nothing to check" rather than as "nothing was covered".
+  const expectedFiles = expectedFilesOf(resolved);
   // Deterministic findings are merged BEFORE dedup and verdict so they are
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
@@ -465,6 +473,27 @@ export async function runLensReview(opts: {
   });
   const reported = found.reported;
   const verdict = computeVerdict(reported, lensResults, threshold);
+  // The denominator's answer, from recorded data only — findings and the closing
+  // summaries the prompt already requires, never a model. `undefined` when there
+  // was no denominator to check (a pasted diff, or a diff with no readable file
+  // section): the round is judged exactly as before, because a penalty, like a
+  // discount, is not granted on evidence that could not be read. An UNJUDGED
+  // selected file makes the round REVIEW_INCOMPLETE: the existing state for
+  // "this pass did not review the diff", which the ledger already refuses to
+  // record as passed and the driver already parks on — no new verdict, severity
+  // or ledger field. `hasCritical` below stays keyed to the findings verdict
+  // only: this override never claims a CRITICAL, it says the round read nothing.
+  const accounted = accountedFiles(lensResults, expectedFiles ?? new Set());
+  const uncovered =
+    expectedFiles === undefined ? [] : unaccountedFiles(expectedFiles, accounted ?? new Map());
+  // A CRITICAL/HIGH verdict outranks this: an unaccounted file says the round is
+  // incomplete, and a round that ALREADY found something at the project's bar
+  // has been refused on its merits — replacing that verdict with a coverage
+  // complaint would hide the finding behind an unrelated message. So the gate
+  // converts a would-be pass into REVIEW_INCOMPLETE (the whole point: silence
+  // about a file is not approval of it) and, on a round that already blocks,
+  // reports the gap without moving the verdict.
+  const coverageBlocking = uncovered.length > 0 && verdict === "APPROVED";
   // #973 — the round-cap rule's inputs for the ledger write: `hasCritical`
   // from the BLOCKING findings (post-#1125: never an out-of-range one),
   // `headSha` from the ref the review actually covered. Both are undefined on
@@ -477,7 +506,7 @@ export async function runLensReview(opts: {
   // production; the await seam is for tests, not for the driver).
   return finishWith(
     {
-      verdict,
+      verdict: coverageBlocking ? "REVIEW_INCOMPLETE" : verdict,
       totalFindings: reported.length,
       bySeverity: bySeverityCounts(reported),
       lenses: lensResults,
@@ -486,6 +515,9 @@ export async function runLensReview(opts: {
       ...(found.resolved.length > 0 ? { resolved: found.resolved } : {}),
       ...(found.setAside ? { setAside: found.setAside } : {}),
       ...found.fields,
+      // Named, not merely reflected in the verdict: a verdict the operator cannot
+      // trace to a lane is a verdict they cannot act on.
+      ...(uncovered.length > 0 ? { unaccountedFiles: uncovered } : {}),
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token
       // budget) is surfaced on the summary so the driver emits the fixed-literal

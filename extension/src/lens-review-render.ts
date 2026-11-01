@@ -22,6 +22,7 @@
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
+import { unaccountedSection } from "./lens-review-coverage-report.ts";
 import { deltaFallbackText, forcedFullText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
 import {
@@ -222,6 +223,12 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     ...resolvedSection(s.resolved),
     ...setAsideSection(s.setAside),
     ...advisorySection(s.advisory),
+    // The coverage denominator's verdict: named files the round was supposed to
+    // examine and no evidence accounts for. Its own banner rather than a line
+    // appended to the blocked-lens one, because it names FILES and the blocked
+    // banner names LENSES — a round can have neither blocked and still be
+    // incomplete for want of coverage, and the operator needs the two apart.
+    ...unaccountedSection(s.unaccountedFiles ?? []),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",
     "Transcripts:",
